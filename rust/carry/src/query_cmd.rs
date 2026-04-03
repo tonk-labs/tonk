@@ -1,4 +1,4 @@
-//! `carry query` — query entities by domain or concept.
+//! `carry query` -- query entities by domain or concept.
 //!
 //! Supports both domain queries (`carry query io.gozala.person name age`)
 //! and concept queries (`carry query person name="Alice"`).
@@ -26,20 +26,18 @@ struct FilterConstraint {
     value: String,
 }
 
-/// Query results: entity DID → attribute name → values.
+/// Query results: entity DID -> attribute name -> values.
 pub type QueryResults = BTreeMap<String, BTreeMap<String, Vec<Value>>>;
 
-/// Execute `carry query <TARGET> [FIELD[=VALUE]...]` — prints results to stdout.
+/// Execute `carry query <TARGET> [FIELD[=VALUE]...]` -- prints results to stdout.
 pub async fn execute(site: &Site, target: Target, fields: Vec<Field>, format: &str) -> Result<()> {
     let (results, namespace) = query(site, target.clone(), fields).await?;
     match target {
         Target::Domain(_) => output_results(&results, &namespace, format),
         Target::Concept(ref concept) => {
             if format == "triples" {
-                // Triples format needs qualified selectors as keys — remap
-                // from the short field names returned by query().
-                let session = site.open_session().await?;
-                let resolved = schema::resolve_concept(&session, concept).await?;
+                let resolved =
+                    schema::resolve_concept(&site.branch, &site.operator, concept).await?;
                 let remapped = remap_to_selectors(&results, &resolved);
                 output_triples(&remapped)
             } else {
@@ -49,7 +47,7 @@ pub async fn execute(site: &Site, target: Target, fields: Vec<Field>, format: &s
     }
 }
 
-/// Query without printing — returns the result map and the namespace/concept name.
+/// Query without printing -- returns the result map and the namespace/concept name.
 pub async fn query(
     site: &Site,
     target: Target,
@@ -73,7 +71,8 @@ async fn domain_query_results(site: &Site, domain: &str, fields: &[Field]) -> Re
         anyhow::bail!("Domain query requires at least one field");
     }
 
-    let session = site.open_session().await?;
+    let branch = &site.branch;
+    let operator = &site.operator;
 
     // Build qualified attribute names
     let qualified_fields: Vec<(String, Option<String>)> = fields
@@ -90,7 +89,8 @@ async fn domain_query_results(site: &Site, domain: &str, fields: &[Field]) -> Re
 
     // Find entities that have ANY of the requested attributes
     let first_attr = schema::parse_claim_attribute(all_attr_names[0])?;
-    let candidate_entities = schema::find_entities_by_attribute(&session, first_attr).await?;
+    let candidate_entities =
+        schema::find_entities_by_attribute(branch, operator, first_attr).await?;
 
     // For each candidate, check filters and collect values
     let mut results: QueryResults = BTreeMap::new();
@@ -101,7 +101,7 @@ async fn domain_query_results(site: &Site, domain: &str, fields: &[Field]) -> Re
 
         for attr_name in &all_attr_names {
             let attr = schema::parse_claim_attribute(attr_name)?;
-            let values = schema::fetch_values(&session, entity, attr).await?;
+            let values = schema::fetch_values(branch, operator, entity, attr).await?;
 
             if values.is_empty() {
                 continue;
@@ -141,10 +141,11 @@ async fn concept_query_results(
     concept_name: &str,
     fields: &[Field],
 ) -> Result<QueryResults> {
-    let session = site.open_session().await?;
+    let branch = &site.branch;
+    let operator = &site.operator;
 
     // Resolve the concept from the database
-    let concept = schema::resolve_concept(&session, concept_name).await?;
+    let concept = schema::resolve_concept(branch, operator, concept_name).await?;
 
     // Get the attribute selectors for structural membership matching
     let schema_attrs = schema::concept_attribute_selectors(&concept);
@@ -154,12 +155,11 @@ async fn concept_query_results(
     }
 
     // Find entities belonging to this concept (structural matching)
-    let entities = schema::find_entities_by_concept(&session, &schema_attrs).await?;
+    let entities = schema::find_entities_by_concept(branch, operator, &schema_attrs).await?;
 
     // Determine which attributes to show and which to filter by
     let (show_attrs, filter_pairs): (Vec<FieldMapping>, Vec<FilterConstraint>) =
         if fields.is_empty() {
-            // No fields specified: show all concept attributes
             let show: Vec<FieldMapping> = concept
                 .with_fields
                 .iter()
@@ -171,7 +171,6 @@ async fn concept_query_results(
                 .collect();
             (show, Vec::new())
         } else {
-            // Fields specified: use as filters/projections
             let mut show = Vec::new();
             let mut filters = Vec::new();
             for f in fields {
@@ -198,7 +197,7 @@ async fn concept_query_results(
 
         for mapping in &show_attrs {
             let attr = schema::parse_claim_attribute(&mapping.selector)?;
-            let values = schema::fetch_values(&session, entity, attr).await?;
+            let values = schema::fetch_values(branch, operator, entity, attr).await?;
 
             if values.is_empty() {
                 continue;
@@ -230,7 +229,6 @@ async fn concept_query_results(
     Ok(results)
 }
 
-/// Format and print domain query results (grouped under domain namespace).
 /// Remap short field names back to qualified selectors for triples output.
 fn remap_to_selectors(results: &QueryResults, concept: &schema::ResolvedConcept) -> QueryResults {
     let field_to_selector: BTreeMap<&str, &str> = concept
@@ -298,7 +296,6 @@ fn output_results(
             Ok(())
         }
         _ => {
-            // YAML asserted notation output
             let yaml = format_asserted_yaml(results, namespace);
             print!("{}", yaml);
             Ok(())
@@ -344,7 +341,6 @@ fn output_concept_results(
             println!("{}", serde_json::to_string_pretty(&json_results)?);
         }
         _ => {
-            // YAML asserted notation output under concept name
             for (entity_id, attrs) in results {
                 println!("{}:", entity_id);
                 println!("  {}:", concept_name);
@@ -366,15 +362,6 @@ fn output_concept_results(
 }
 
 /// Format and print results as EAV triples in YAML.
-///
-/// Each attribute-value pair becomes a separate triple:
-/// ```yaml
-/// - the: <qualified_attribute>
-///   of: <entity_did>
-///   is: <value>
-/// ```
-///
-/// Multi-valued attributes expand into multiple triples.
 fn output_triples(results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>) -> Result<()> {
     let yaml = format_triples(results)?;
     if !yaml.is_empty() {
@@ -384,13 +371,6 @@ fn output_triples(results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>) -> R
 }
 
 /// Format results as asserted notation YAML string (entity-grouped).
-///
-/// Returns a YAML string with the structure:
-/// ```yaml
-/// <entity_did>:
-///   <namespace>:
-///     <field>: <value>
-/// ```
 pub fn format_asserted_yaml(
     results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>,
     namespace: &str,
@@ -422,9 +402,6 @@ pub fn format_asserted_yaml(
 }
 
 /// Format results as EAV triple YAML string.
-///
-/// Returns the YAML string (without printing). Used by `output_triples`
-/// and available for testing round-trips.
 pub fn format_triples(results: &BTreeMap<String, BTreeMap<String, Vec<Value>>>) -> Result<String> {
     if results.is_empty() {
         return Ok(String::new());
@@ -461,7 +438,6 @@ fn value_to_yaml(value: &Value) -> serde_yaml::Value {
     match value {
         Value::String(s) => serde_yaml::Value::String(s.clone()),
         Value::UnsignedInt(n) => {
-            // serde_yaml::Value doesn't support u128, downcast if possible
             if *n <= u64::MAX as u128 {
                 serde_yaml::Value::Number(serde_yaml::Number::from(*n as u64))
             } else {

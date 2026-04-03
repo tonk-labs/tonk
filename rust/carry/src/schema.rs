@@ -14,16 +14,18 @@
 
 use anyhow::{Context, Result};
 
+use dialog_artifacts::ArtifactSelector;
 /// Re-export the attribute type used in Artifacts (EAV triples).
 pub use dialog_artifacts::Attribute as ClaimAttribute;
-use dialog_artifacts::{ArtifactSelector, ArtifactStore};
-use dialog_query::{Entity, Value};
+pub use dialog_query::AttributeStatement;
+use dialog_query::{Entity, The, Value};
+use dialog_repository::{Branch, Operator};
 use futures_util::TryStreamExt;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
-// Typed primitive attributes (RFC §Appendix: Primitive domains)
+// Typed primitive attributes (RFC Appendix: Primitive domains)
 // ---------------------------------------------------------------------------
 
 /// Universal metadata attributes: names and descriptions for any entity.
@@ -64,10 +66,10 @@ pub mod dialog_attribute {
 /// The `attribute` concept: models a typed relation.
 ///
 /// CLI field mapping:
-///   `the`         → `dialog.attribute/id`
-///   `as`          → `dialog.attribute/type`
-///   `cardinality` → `dialog.attribute/cardinality`
-///   `description` → `dialog.meta/description`
+///   `the`         -> `dialog.attribute/id`
+///   `as`          -> `dialog.attribute/type`
+///   `cardinality` -> `dialog.attribute/cardinality`
+///   `description` -> `dialog.meta/description`
 #[derive(dialog_query::Concept, Debug, Clone)]
 pub struct AttributeDef {
     pub this: Entity,
@@ -81,7 +83,7 @@ pub struct AttributeDef {
 /// The `bookmark` concept: maps a name to any entity.
 ///
 /// CLI field mapping:
-///   `name` → `dialog.meta/name`
+///   `name` -> `dialog.meta/name`
 #[derive(dialog_query::Concept, Debug, Clone)]
 pub struct BookmarkDef {
     pub this: Entity,
@@ -104,7 +106,7 @@ pub struct ConceptDef {
 }
 
 // ---------------------------------------------------------------------------
-// Builtin concept field mapping (CLI field name → attribute selector)
+// Builtin concept field mapping (CLI field name -> attribute selector)
 // ---------------------------------------------------------------------------
 
 /// A field within a pre-registered concept's schema.
@@ -239,7 +241,7 @@ pub fn resolve_builtin_field(
             return Some((f.relation.to_string(), false));
         }
     }
-    // Check variable-keyed fields (e.g. "with.name" → prefix "with")
+    // Check variable-keyed fields (e.g. "with.name" -> prefix "with")
     for f in schema.with_fields.iter().chain(schema.maybe_fields.iter()) {
         if f.variable_keyed
             && let Some(key) = cli_field
@@ -342,7 +344,7 @@ pub fn derive_attribute_entity(
     derive_entity_from_hash(&hasher.finalize())
 }
 
-/// Derive a concept entity from its field→attribute mappings.
+/// Derive a concept entity from its field->attribute mappings.
 ///
 /// Per the RFC: identity = hash(sorted (field_name, attribute_entity) pairs).
 /// Both field names and attribute entities participate. `maybe` fields do NOT.
@@ -393,19 +395,61 @@ pub fn derive_entity_from_fields(fields: &[(String, String)]) -> Result<Entity> 
 }
 
 // ---------------------------------------------------------------------------
+// Branch query helpers
+// ---------------------------------------------------------------------------
+
+/// Build an `AttributeStatement` from runtime-resolved parts.
+///
+/// This is the workhorse for dynamic attribute construction in carry.
+/// The `The` is parsed from a string, and the value is a `Value` enum.
+/// Returns a type that implements `Statement`, suitable for
+/// `branch.transaction().assert(stmt)`.
+pub fn make_statement(the: &str, of: Entity, is: Value) -> Result<AttributeStatement> {
+    let attr =
+        The::from_str(the).map_err(|e| anyhow::anyhow!("Invalid attribute '{}': {}", the, e))?;
+    Ok(AttributeStatement {
+        the: attr,
+        of,
+        is,
+        cause: None,
+        cardinality: None,
+    })
+}
+
+/// Select artifacts from a branch matching the given selector.
+async fn select_artifacts(
+    branch: &Branch,
+    operator: &Operator,
+    selector: ArtifactSelector<dialog_artifacts::selector::Constrained>,
+) -> Result<Vec<dialog_artifacts::Artifact>> {
+    let results: Vec<_> = branch
+        .claims()
+        .select(selector)
+        .perform(operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .try_collect()
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
 // Concept resolution (runtime lookup via dialog.meta/name)
 // ---------------------------------------------------------------------------
 
 /// Look up any entity by its `dialog.meta/name` value.
-pub async fn lookup_entity_by_name<S: ArtifactStore>(
-    store: &S,
+pub async fn lookup_entity_by_name(
+    branch: &Branch,
+    operator: &Operator,
     name: &str,
 ) -> Result<Option<Entity>> {
     let name_attr: ClaimAttribute = dialog_meta::Name::the().into();
-    let entities = find_entities_by_attribute(store, name_attr.clone()).await?;
+    let entities = find_entities_by_attribute(branch, operator, name_attr.clone()).await?;
 
     for entity in entities {
-        let stored_names = fetch_string_values(store, &entity, name_attr.clone()).await?;
+        let stored_names =
+            fetch_string_values(branch, operator, &entity, name_attr.clone()).await?;
         if stored_names
             .iter()
             .any(|n| n.to_lowercase() == name.to_lowercase())
@@ -423,7 +467,7 @@ pub struct ResolvedConcept {
     pub entity: Entity,
     /// The concept's name.
     pub name: String,
-    /// Required fields: field_name → (attribute_entity, attribute_selector).
+    /// Required fields: field_name -> (attribute_entity, attribute_selector).
     pub with_fields: BTreeMap<String, (Entity, String)>,
     /// Optional fields: same structure.
     pub maybe_fields: BTreeMap<String, (Entity, String)>,
@@ -432,17 +476,19 @@ pub struct ResolvedConcept {
 /// Resolve a concept by name: look up the entity, fetch its
 /// `dialog.concept.with/*` and `dialog.concept.maybe/*` claims,
 /// and for each attribute entity fetch its `dialog.attribute/id`.
-pub async fn resolve_concept<S: ArtifactStore>(
-    store: &S,
+pub async fn resolve_concept(
+    branch: &Branch,
+    operator: &Operator,
     concept_name: &str,
 ) -> Result<ResolvedConcept> {
-    let concept_entity = lookup_entity_by_name(store, concept_name)
+    let concept_entity = lookup_entity_by_name(branch, operator, concept_name)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Concept '{}' not found", concept_name))?;
 
-    let with_fields = fetch_concept_fields(store, &concept_entity, "dialog.concept.with/").await?;
+    let with_fields =
+        fetch_concept_fields(branch, operator, &concept_entity, "dialog.concept.with/").await?;
     let maybe_fields =
-        fetch_concept_fields(store, &concept_entity, "dialog.concept.maybe/").await?;
+        fetch_concept_fields(branch, operator, &concept_entity, "dialog.concept.maybe/").await?;
 
     if with_fields.is_empty() {
         anyhow::bail!("Concept '{}' has no required fields", concept_name);
@@ -458,20 +504,23 @@ pub async fn resolve_concept<S: ArtifactStore>(
 
 /// Fetch concept fields from `dialog.concept.with/*` or `dialog.concept.maybe/*` claims.
 ///
-/// Returns a map of field_name → (attribute_entity, attribute_selector).
-async fn fetch_concept_fields<S: ArtifactStore>(
-    store: &S,
+/// Returns a map of field_name -> (attribute_entity, attribute_selector).
+async fn fetch_concept_fields(
+    branch: &Branch,
+    operator: &Operator,
     concept_entity: &Entity,
     prefix: &str,
 ) -> Result<BTreeMap<String, (Entity, String)>> {
     let mut fields = BTreeMap::new();
 
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(concept_entity.clone()))
-        .try_collect()
-        .await?;
+    let results = select_artifacts(
+        branch,
+        operator,
+        ArtifactSelector::new().of(concept_entity.clone()),
+    )
+    .await?;
 
-    let attr_id_selector = dialog_attribute::Id::the();
+    let attr_id_selector: ClaimAttribute = dialog_attribute::Id::the().into();
 
     for artifact in &results {
         let attr_str = artifact.the.to_string();
@@ -484,7 +533,7 @@ async fn fetch_concept_fields<S: ArtifactStore>(
                 _ => continue,
             };
 
-            let selector = fetch_string(store, &attr_entity, attr_id_selector.clone().into())
+            let selector = fetch_string(branch, operator, &attr_entity, attr_id_selector.clone())
                 .await?
                 .unwrap_or_default();
 
@@ -531,8 +580,9 @@ pub fn resolve_field_selector(concept: &ResolvedConcept, field_name: &str) -> Re
 // ---------------------------------------------------------------------------
 
 /// Find all entities belonging to a concept by checking ALL required attribute selectors.
-pub async fn find_entities_by_concept<S: ArtifactStore>(
-    store: &S,
+pub async fn find_entities_by_concept(
+    branch: &Branch,
+    operator: &Operator,
     schema_attrs: &[String],
 ) -> Result<Vec<Entity>> {
     if schema_attrs.is_empty() {
@@ -541,7 +591,7 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
 
     let first_attr = parse_claim_attribute(&schema_attrs[0])?;
     let mut result_set: std::collections::HashSet<String> =
-        find_entities_by_attribute(store, first_attr)
+        find_entities_by_attribute(branch, operator, first_attr)
             .await?
             .iter()
             .map(|e| e.to_string())
@@ -550,7 +600,7 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
     for attr in &schema_attrs[1..] {
         let claim_attr = parse_claim_attribute(attr)?;
         let attr_entities: std::collections::HashSet<String> =
-            find_entities_by_attribute(store, claim_attr)
+            find_entities_by_attribute(branch, operator, claim_attr)
                 .await?
                 .iter()
                 .map(|e| e.to_string())
@@ -562,7 +612,7 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
     }
 
     let first_attr = parse_claim_attribute(&schema_attrs[0])?;
-    let all_entities = find_entities_by_attribute(store, first_attr).await?;
+    let all_entities = find_entities_by_attribute(branch, operator, first_attr).await?;
     Ok(all_entities
         .into_iter()
         .filter(|e| result_set.contains(&e.to_string()))
@@ -577,9 +627,7 @@ pub async fn find_entities_by_concept<S: ArtifactStore>(
 ///
 /// Called during `carry init` to bootstrap the meta-schema.
 /// Claims are deterministic (content-addressed), so re-running is idempotent.
-pub async fn bootstrap_builtins<S: dialog_query::Store>(
-    session: &mut dialog_query::Session<S>,
-) -> Result<()> {
+pub async fn bootstrap_builtins(branch: &Branch, operator: &Operator) -> Result<()> {
     let builtins = [&BUILTIN_ATTRIBUTE, &BUILTIN_CONCEPT, &BUILTIN_BOOKMARK];
 
     // First pass: derive attribute entities for all fixed fields.
@@ -600,13 +648,8 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
         }
     }
 
-    let mut transaction = session.edit();
-
-    let name_attr = dialog_meta::Name::the();
-    let desc_attr = dialog_meta::Description::the();
-    let attr_id = dialog_attribute::Id::the();
-    let attr_type = dialog_attribute::Type::the();
-    let attr_card = dialog_attribute::Cardinality::the();
+    // Build a single transaction for all bootstrap claims.
+    let mut tx = branch.transaction();
 
     // Assert attribute entity claims
     for builtin in &builtins {
@@ -622,31 +665,22 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
             let entity = attr_entities[field.relation].clone();
 
             // dialog.attribute/id
-            transaction.associate(
-                attr_id.clone(),
-                entity.clone(),
-                Value::String(field.relation.to_string()),
-            );
+            tx = tx.assert(dialog_attribute::Id::of(entity.clone()).is(field.relation.to_string()));
 
             // dialog.attribute/type
-            transaction.associate(
-                attr_type.clone(),
-                entity.clone(),
-                Value::String(field.value_type.to_string()),
+            tx = tx.assert(
+                dialog_attribute::Type::of(entity.clone()).is(field.value_type.to_string()),
             );
 
             // dialog.attribute/cardinality
-            transaction.associate(
-                attr_card.clone(),
-                entity.clone(),
-                Value::String(field.cardinality.to_string()),
+            tx = tx.assert(
+                dialog_attribute::Cardinality::of(entity.clone()).is(field.cardinality.to_string()),
             );
 
             // dialog.meta/name = qualified name (e.g. "attribute/the")
-            transaction.associate(
-                name_attr.clone(),
-                entity.clone(),
-                Value::String(format!("{}/{}", builtin.name, field.cli_name)),
+            tx = tx.assert(
+                dialog_meta::Name::of(entity.clone())
+                    .is(format!("{}/{}", builtin.name, field.cli_name)),
             );
         }
     }
@@ -667,17 +701,12 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
         let concept_entity = derive_concept_entity(&with_fields)?;
 
         // dialog.meta/name
-        transaction.associate(
-            name_attr.clone(),
-            concept_entity.clone(),
-            Value::String(builtin.name.to_string()),
-        );
+        tx = tx.assert(dialog_meta::Name::of(concept_entity.clone()).is(builtin.name.to_string()));
 
         // dialog.meta/description
-        transaction.associate(
-            desc_attr.clone(),
-            concept_entity.clone(),
-            Value::String(builtin.description.to_string()),
+        tx = tx.assert(
+            dialog_meta::Description::of(concept_entity.clone())
+                .is(builtin.description.to_string()),
         );
 
         // dialog.concept.with/{field} = attribute_entity
@@ -686,12 +715,11 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
                 continue;
             }
             let rel = format!("dialog.concept.with/{}", field.cli_name);
-            let rel_attr = parse_claim_attribute(&rel)?;
-            transaction.associate(
-                rel_attr.into(),
+            tx = tx.assert(make_statement(
+                &rel,
                 concept_entity.clone(),
                 Value::Entity(attr_entities[field.relation].clone()),
-            );
+            )?);
         }
 
         // dialog.concept.maybe/{field} = attribute_entity
@@ -700,16 +728,19 @@ pub async fn bootstrap_builtins<S: dialog_query::Store>(
                 continue;
             }
             let rel = format!("dialog.concept.maybe/{}", field.cli_name);
-            let rel_attr = parse_claim_attribute(&rel)?;
-            transaction.associate(
-                rel_attr.into(),
+            tx = tx.assert(make_statement(
+                &rel,
                 concept_entity.clone(),
                 Value::Entity(attr_entities[field.relation].clone()),
-            );
+            )?);
         }
     }
 
-    session.commit(transaction).await?;
+    tx.commit()
+        .perform(operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to bootstrap builtins: {}", e))?;
+
     Ok(())
 }
 
@@ -749,15 +780,18 @@ pub fn attribute_namespace(attr: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 /// Fetch all string values for a multi-valued attribute on an entity.
-pub async fn fetch_string_values<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_string_values(
+    branch: &Branch,
+    operator: &Operator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Vec<String>> {
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(entity.clone()).the(attr))
-        .try_collect()
-        .await?;
+    let results = select_artifacts(
+        branch,
+        operator,
+        ArtifactSelector::new().of(entity.clone()).the(attr),
+    )
+    .await?;
 
     Ok(results
         .into_iter()
@@ -769,25 +803,29 @@ pub async fn fetch_string_values<S: ArtifactStore>(
 }
 
 /// Fetch a single string value for an attribute on an entity.
-pub async fn fetch_string<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_string(
+    branch: &Branch,
+    operator: &Operator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Option<String>> {
-    let values = fetch_string_values(store, entity, attr).await?;
+    let values = fetch_string_values(branch, operator, entity, attr).await?;
     Ok(values.into_iter().next())
 }
 
 /// Fetch all entity values for a multi-valued attribute.
-pub async fn fetch_entity_values<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_entity_values(
+    branch: &Branch,
+    operator: &Operator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Vec<Entity>> {
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(entity.clone()).the(attr))
-        .try_collect()
-        .await?;
+    let results = select_artifacts(
+        branch,
+        operator,
+        ArtifactSelector::new().of(entity.clone()).the(attr),
+    )
+    .await?;
 
     Ok(results
         .into_iter()
@@ -799,29 +837,35 @@ pub async fn fetch_entity_values<S: ArtifactStore>(
 }
 
 /// Fetch a single Value for an attribute on an entity.
-pub async fn fetch_value<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_value(
+    branch: &Branch,
+    operator: &Operator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Option<Value>> {
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(entity.clone()).the(attr))
-        .try_collect()
-        .await?;
+    let results = select_artifacts(
+        branch,
+        operator,
+        ArtifactSelector::new().of(entity.clone()).the(attr),
+    )
+    .await?;
 
     Ok(results.into_iter().next().map(|a| a.is))
 }
 
 /// Fetch all Values for a multi-valued attribute on an entity.
-pub async fn fetch_values<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_values(
+    branch: &Branch,
+    operator: &Operator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Vec<Value>> {
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(entity.clone()).the(attr))
-        .try_collect()
-        .await?;
+    let results = select_artifacts(
+        branch,
+        operator,
+        ArtifactSelector::new().of(entity.clone()).the(attr),
+    )
+    .await?;
 
     Ok(results.into_iter().map(|a| a.is).collect())
 }
@@ -832,26 +876,27 @@ pub async fn fetch_values<S: ArtifactStore>(
 /// given selector, then reads its `dialog.attribute/cardinality` value.
 /// Returns `"one"` (the documented default) if the attribute entity is not
 /// found or has no cardinality claim.
-pub async fn fetch_attribute_cardinality<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_attribute_cardinality(
+    branch: &Branch,
+    operator: &Operator,
     selector: &str,
 ) -> Result<String> {
     let id_attr: ClaimAttribute = dialog_attribute::Id::the().into();
     let card_attr: ClaimAttribute = dialog_attribute::Cardinality::the().into();
 
     // Find the attribute entity by its selector value: the=dialog.attribute/id, is=<selector>
-    let results: Vec<_> = store
-        .select(
-            ArtifactSelector::new()
-                .the(id_attr)
-                .is(Value::String(selector.to_string())),
-        )
-        .try_collect()
-        .await?;
+    let results = select_artifacts(
+        branch,
+        operator,
+        ArtifactSelector::new()
+            .the(id_attr)
+            .is(Value::String(selector.to_string())),
+    )
+    .await?;
 
     if let Some(artifact) = results.into_iter().next() {
         let attr_entity = artifact.of;
-        if let Some(card) = fetch_string(store, &attr_entity, card_attr).await? {
+        if let Some(card) = fetch_string(branch, operator, &attr_entity, card_attr).await? {
             return Ok(card);
         }
     }
@@ -865,14 +910,12 @@ pub async fn fetch_attribute_cardinality<S: ArtifactStore>(
 // ---------------------------------------------------------------------------
 
 /// Find all entities that have a given attribute (using the AEV index).
-pub async fn find_entities_by_attribute<S: ArtifactStore>(
-    store: &S,
+pub async fn find_entities_by_attribute(
+    branch: &Branch,
+    operator: &Operator,
     attr: ClaimAttribute,
 ) -> Result<Vec<Entity>> {
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().the(attr))
-        .try_collect()
-        .await?;
+    let results = select_artifacts(branch, operator, ArtifactSelector::new().the(attr)).await?;
 
     let mut seen = std::collections::HashSet::new();
     let mut entities = Vec::new();
@@ -890,15 +933,12 @@ pub fn parse_claim_attribute(attr_name: &str) -> Result<ClaimAttribute> {
 }
 
 /// Fetch all claims (as Artifacts) for an entity.
-pub async fn fetch_all_entity_claims<S: ArtifactStore>(
-    store: &S,
+pub async fn fetch_all_entity_claims(
+    branch: &Branch,
+    operator: &Operator,
     entity: &Entity,
 ) -> Result<Vec<dialog_artifacts::Artifact>> {
-    let results: Vec<_> = store
-        .select(ArtifactSelector::new().of(entity.clone()))
-        .try_collect()
-        .await?;
-    Ok(results)
+    select_artifacts(branch, operator, ArtifactSelector::new().of(entity.clone())).await
 }
 
 // ---------------------------------------------------------------------------
@@ -908,7 +948,7 @@ pub async fn fetch_all_entity_claims<S: ArtifactStore>(
 /// Parse a string input into a Value, trying integer -> float -> string.
 pub fn parse_value(input: &str) -> Value {
     if input.starts_with("did:")
-        && let Ok(entity) = dialog_query::Entity::from_str(input)
+        && let Ok(entity) = Entity::from_str(input)
     {
         return Value::Entity(entity);
     }

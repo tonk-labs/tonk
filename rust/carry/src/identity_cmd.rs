@@ -1,15 +1,15 @@
-//! `carry identity` — manage the local user identity.
+//! `carry identity` -- manage the local user identity.
 //!
 //! Identity is backed by a dialog-artifacts `Profile` which auto-generates
 //! and persists an Ed25519 keypair. The profile lives under the platform
 //! data directory via `Storage::profile("carry")`.
 
 use anyhow::{Context, Result};
-use dialog_artifacts::profile::Profile;
-use dialog_artifacts::storage::Storage;
-use dialog_artifacts::{Operator, Remote};
 use dialog_capability::storage::Location;
 use dialog_capability::{Capability, Subject};
+use dialog_repository::profile::Profile;
+use dialog_repository::storage::Storage;
+use dialog_repository::{Operator, Remote};
 use dialog_storage::provider::Address;
 
 /// A capability pointing to a profile's storage location.
@@ -31,8 +31,8 @@ pub struct Identity {
 /// Returns the Profile, Operator, and Storage.
 ///
 /// `location` controls where the profile is stored:
-/// - `None` → platform data directory (`Storage::profile("carry")`)
-/// - `Some(loc)` → custom location (e.g. `Storage::temp(...)` for tests)
+/// - `None` -> platform data directory (`Storage::profile("carry")`)
+/// - `Some(loc)` -> custom location (e.g. `Storage::temp(...)` for tests)
 pub async fn ensure_identity(location: Option<ProfileLocation>) -> Result<Identity> {
     let storage = Storage::new();
     let profile_location = location.unwrap_or_else(|| Storage::profile("carry"));

@@ -1,4 +1,4 @@
-//! `carry assert` — assert claims on entities.
+//! `carry assert` -- assert claims on entities.
 //!
 //! Supports domain targets, concept targets (both builtin and user-defined),
 //! file input, and stdin.
@@ -6,18 +6,17 @@
 //! ## Concept assertion sugar
 //!
 //! Builtin concepts (`attribute`, `concept`, `bookmark`) have special handling:
-//! - Fields are mapped through the builtin schema (e.g. `the` → `dialog.attribute/id`)
+//! - Fields are mapped through the builtin schema (e.g. `the` -> `dialog.attribute/id`)
 //! - Variable-keyed fields (e.g. `with.name=...`) are expanded
 //! - `@name` asserts `dialog.meta/name` on the entity
 //!
-//! User-defined concepts resolve via `dialog.meta/name` → concept entity →
-//! `dialog.concept.with/*` claims → attribute selectors.
+//! User-defined concepts resolve via `dialog.meta/name` -> concept entity ->
+//! `dialog.concept.with/*` claims -> attribute selectors.
 
 use crate::schema;
 use crate::site::Site;
 use crate::target::{Field, FirstArg, Target};
 use anyhow::{Context, Result};
-use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
 use dialog_query::Value;
 use std::collections::BTreeMap;
 use std::slice::from_ref;
@@ -87,38 +86,32 @@ async fn assert_with_target(
     }
 }
 
-/// Build retract instructions for existing values of a cardinality-one attribute.
+/// Build retract statements for existing values of a cardinality-one attribute.
 ///
 /// If the attribute's cardinality is `"one"` (the default) and the entity already
-/// has values for it, returns `Instruction::Retract` for each existing value so
-/// they can be committed alongside the new `Instruction::Assert`.
+/// has values for it, returns retract statements for each existing value so
+/// they can be committed alongside the new assert.
 ///
 /// Returns an empty vec when:
 /// - The attribute has `cardinality: many`
 /// - The entity has no existing values for the attribute
-async fn retract_cardinality_one_values<S: dialog_artifacts::ArtifactStore>(
-    store: &S,
+async fn retract_cardinality_one_values(
+    site: &Site,
     entity: &dialog_query::Entity,
     attr: &crate::schema::ClaimAttribute,
     attr_selector: &str,
-) -> Result<Vec<Instruction>> {
-    let cardinality = schema::fetch_attribute_cardinality(store, attr_selector).await?;
+) -> Result<Vec<schema::AttributeStatement>> {
+    let cardinality =
+        schema::fetch_attribute_cardinality(&site.branch, &site.operator, attr_selector).await?;
     if cardinality == "many" {
         return Ok(Vec::new());
     }
 
-    let existing = schema::fetch_values(store, entity, attr.clone()).await?;
-    Ok(existing
+    let existing = schema::fetch_values(&site.branch, &site.operator, entity, attr.clone()).await?;
+    existing
         .into_iter()
-        .map(|value| {
-            Instruction::Retract(Artifact {
-                the: attr.clone(),
-                of: entity.clone(),
-                is: value,
-                cause: None,
-            })
-        })
-        .collect())
+        .map(|value| schema::make_statement(&attr.to_string(), entity.clone(), value))
+        .collect()
 }
 
 /// Assert claims using a domain target (open-ended, no schema).
@@ -143,54 +136,9 @@ async fn assert_domain(
 
     let is_update = this_entity.is_some();
 
-    if is_update {
-        // Updating an existing entity — use raw instructions via Branch so we
-        // can retract old cardinality-one values in the same commit.
-        let mut branch = site.open_branch().await?;
-        let entity = resolve_entity(this_entity.as_ref().unwrap())?;
-        let mut instructions = Vec::new();
-
-        for f in fields {
-            let attr_name = f.qualified_name(domain);
-            let attr = crate::schema::ClaimAttribute::from_str(&attr_name)
-                .context(format!("Invalid attribute: {}", attr_name))?;
-            let value = schema::parse_value(f.value.as_deref().unwrap());
-
-            // Retract existing values if cardinality is "one"
-            instructions
-                .extend(retract_cardinality_one_values(&branch, &entity, &attr, &attr_name).await?);
-
-            instructions.push(Instruction::Assert(Artifact {
-                the: attr,
-                of: entity.clone(),
-                is: value,
-                cause: None,
-            }));
-        }
-
-        // Assert entity name if @name was provided
-        if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the().into();
-            let name_selector = "dialog.meta/name";
-            instructions.extend(
-                retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
-            );
-            instructions.push(Instruction::Assert(Artifact {
-                the: name_attr,
-                of: entity.clone(),
-                is: Value::String(name.clone()),
-                cause: None,
-            }));
-        }
-
-        branch
-            .commit(futures_util::stream::iter(instructions))
-            .await?;
-        print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
-        Ok(entity.to_string())
+    let entity = if is_update {
+        resolve_entity(this_entity.as_ref().unwrap())?
     } else {
-        // New entity derived from field content — no existing values to retract.
-        let mut session = site.open_session().await?;
         let field_pairs: Vec<(String, String)> = fields
             .iter()
             .map(|f| {
@@ -200,28 +148,58 @@ async fn assert_domain(
                 )
             })
             .collect();
-        let entity = schema::derive_entity_from_fields(&field_pairs)?;
+        schema::derive_entity_from_fields(&field_pairs)?
+    };
 
-        let mut transaction = session.edit();
+    let mut tx = site.branch.transaction();
 
+    if is_update {
+        // Retract existing cardinality-one values before asserting new ones
         for f in fields {
             let attr_name = f.qualified_name(domain);
-            let attr = crate::schema::ClaimAttribute::from_str(&attr_name)
-                .context(format!("Invalid attribute: {}", attr_name))?;
-            let value = schema::parse_value(f.value.as_deref().unwrap());
-            transaction.associate(attr.into(), entity.clone(), value);
+            for stmt in retract_cardinality_one_values(
+                site,
+                &entity,
+                &schema::parse_claim_attribute(&attr_name)?,
+                &attr_name,
+            )
+            .await?
+            {
+                tx = tx.retract(stmt);
+            }
         }
-
-        // Assert entity name if @name was provided
-        if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the();
-            transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
-        }
-
-        session.commit(transaction).await?;
-        print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
-        Ok(entity.to_string())
     }
+
+    for f in fields {
+        let attr_name = f.qualified_name(domain);
+        let value = schema::parse_value(f.value.as_deref().unwrap());
+        tx = tx.assert(schema::make_statement(&attr_name, entity.clone(), value)?);
+    }
+
+    // Assert entity name if @name was provided
+    if let Some(ref name) = entity_name {
+        if is_update {
+            for stmt in retract_cardinality_one_values(
+                site,
+                &entity,
+                &schema::dialog_meta::Name::the().into(),
+                "dialog.meta/name",
+            )
+            .await?
+            {
+                tx = tx.retract(stmt);
+            }
+        }
+        tx = tx.assert(schema::dialog_meta::Name::of(entity.clone()).is(name.clone()));
+    }
+
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
+
+    print_assert_result(&entity, fields.len(), entity_name.as_deref(), format);
+    Ok(entity.to_string())
 }
 
 /// Assert claims using a builtin concept target (attribute, concept, bookmark).
@@ -243,8 +221,6 @@ async fn assert_builtin_concept(
             );
         }
     }
-
-    let mut session = site.open_session().await?;
 
     // Apply defaults for attribute assertions: cardinality defaults to "one"
     let mut fields_with_defaults;
@@ -271,19 +247,14 @@ async fn assert_builtin_concept(
         if let Some((relation, is_variable)) = schema::resolve_builtin_field(builtin, &f.name) {
             if is_variable && builtin.name == "concept" {
                 // Variable-keyed field on concept: value is an attribute reference.
-                // If it contains '/', treat as a selector (look up or create attribute).
-                // Otherwise, treat as a bookmark reference to an existing attribute.
                 let attr_entity = if value_str.contains('/') {
-                    // Selector: look up or create attribute with defaults
-                    resolve_or_create_attribute(&mut session, value_str, "Text", "one").await?
+                    resolve_or_create_attribute(site, value_str, "Text", "one").await?
                 } else {
-                    // Bookmark reference: look up by name
-                    schema::lookup_entity_by_name(&session, value_str)
+                    schema::lookup_entity_by_name(&site.branch, &site.operator, value_str)
                         .await?
                         .ok_or_else(|| anyhow::anyhow!("Attribute '{}' not found", value_str))?
                 };
 
-                // Extract the field key from the dotted name (e.g. "with.name" → "name")
                 let field_key = f.name.split_once('.').map(|(_, k)| k).unwrap_or(&f.name);
                 concept_with_fields.insert(field_key.to_string(), attr_entity.clone());
                 resolved_claims.push((relation, Value::Entity(attr_entity)));
@@ -318,7 +289,6 @@ async fn assert_builtin_concept(
     } else {
         match builtin.name {
             "attribute" => {
-                // Attribute identity: hash(the, type, cardinality)
                 let selector = find_resolved_string(&resolved_claims, "dialog.attribute/id")
                     .ok_or_else(|| anyhow::anyhow!("Attribute requires `the` field"))?;
                 let value_type = find_resolved_string(&resolved_claims, "dialog.attribute/type")
@@ -329,14 +299,12 @@ async fn assert_builtin_concept(
                 schema::derive_attribute_entity(&selector, &value_type, &cardinality)?
             }
             "concept" => {
-                // Concept identity: hash(sorted field→attribute pairs)
                 if concept_with_fields.is_empty() {
                     anyhow::bail!("Concept requires at least one `with.{{name}}` field");
                 }
                 schema::derive_concept_entity(&concept_with_fields)?
             }
             _ => {
-                // Generic: derive from field content
                 let field_pairs: Vec<(String, String)> = resolved_claims
                     .iter()
                     .map(|(rel, val)| (rel.clone(), schema::format_value(val).to_string()))
@@ -346,62 +314,53 @@ async fn assert_builtin_concept(
         }
     };
 
+    let mut tx = site.branch.transaction();
+
     if this_entity.is_some() {
-        // Updating an existing entity — use raw instructions via Branch so we
-        // can retract old cardinality-one values in the same commit.
-        drop(session);
-        let mut branch = site.open_branch().await?;
-        let mut instructions = Vec::new();
-
-        for (relation, value) in &resolved_claims {
-            let attr = schema::parse_claim_attribute(relation)?;
-
-            // Retract existing values if cardinality is "one"
-            instructions
-                .extend(retract_cardinality_one_values(&branch, &entity, &attr, relation).await?);
-
-            instructions.push(Instruction::Assert(Artifact {
-                the: attr,
-                of: entity.clone(),
-                is: value.clone(),
-                cause: None,
-            }));
+        // Updating -- retract old cardinality-one values
+        for (relation, _) in &resolved_claims {
+            for stmt in retract_cardinality_one_values(
+                site,
+                &entity,
+                &schema::parse_claim_attribute(relation)?,
+                relation,
+            )
+            .await?
+            {
+                tx = tx.retract(stmt);
+            }
         }
-
-        // Assert entity name if @name was provided
-        if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the().into();
-            let name_selector = "dialog.meta/name";
-            instructions.extend(
-                retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
-            );
-            instructions.push(Instruction::Assert(Artifact {
-                the: name_attr,
-                of: entity.clone(),
-                is: Value::String(name.clone()),
-                cause: None,
-            }));
-        }
-
-        branch
-            .commit(futures_util::stream::iter(instructions))
-            .await?;
-    } else {
-        let mut transaction = session.edit();
-
-        for (relation, value) in &resolved_claims {
-            let attr = schema::parse_claim_attribute(relation)?;
-            transaction.associate(attr.into(), entity.clone(), value.clone());
-        }
-
-        // Assert entity name if @name was provided
-        if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the();
-            transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
-        }
-
-        session.commit(transaction).await?;
     }
+
+    for (relation, value) in &resolved_claims {
+        tx = tx.assert(schema::make_statement(
+            relation,
+            entity.clone(),
+            value.clone(),
+        )?);
+    }
+
+    // Assert entity name if @name was provided
+    if let Some(ref name) = entity_name {
+        if this_entity.is_some() {
+            for stmt in retract_cardinality_one_values(
+                site,
+                &entity,
+                &schema::dialog_meta::Name::the().into(),
+                "dialog.meta/name",
+            )
+            .await?
+            {
+                tx = tx.retract(stmt);
+            }
+        }
+        tx = tx.assert(schema::dialog_meta::Name::of(entity.clone()).is(name.clone()));
+    }
+
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     print_assert_result(
         &entity,
@@ -432,10 +391,8 @@ async fn assert_user_concept(
         }
     }
 
-    let session = site.open_session().await?;
-
     // Resolve the concept from the database
-    let concept = schema::resolve_concept(&session, concept_name).await?;
+    let concept = schema::resolve_concept(&site.branch, &site.operator, concept_name).await?;
 
     // Map each field to its attribute selector
     let mut qualified_fields: Vec<(String, String)> = Vec::new();
@@ -444,91 +401,70 @@ async fn assert_user_concept(
         qualified_fields.push((selector, f.value.clone().unwrap_or_default()));
     }
 
-    drop(session);
-
     let is_update = this_entity.is_some();
 
-    if is_update {
-        // Updating an existing entity — use raw instructions via Branch so we
-        // can retract old cardinality-one values in the same commit.
-        let mut branch = site.open_branch().await?;
-        let entity = resolve_entity(this_entity.as_ref().unwrap())?;
-        let mut instructions = Vec::new();
-
-        for (attr_name, value_str) in &qualified_fields {
-            let attr = schema::parse_claim_attribute(attr_name)?;
-            let value = schema::parse_value(value_str);
-
-            // Retract existing values if cardinality is "one"
-            instructions
-                .extend(retract_cardinality_one_values(&branch, &entity, &attr, attr_name).await?);
-
-            instructions.push(Instruction::Assert(Artifact {
-                the: attr,
-                of: entity.clone(),
-                is: value,
-                cause: None,
-            }));
-        }
-
-        // Assert entity name if @name was provided
-        if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the().into();
-            let name_selector = "dialog.meta/name";
-            instructions.extend(
-                retract_cardinality_one_values(&branch, &entity, &name_attr, name_selector).await?,
-            );
-            instructions.push(Instruction::Assert(Artifact {
-                the: name_attr,
-                of: entity.clone(),
-                is: Value::String(name.clone()),
-                cause: None,
-            }));
-        }
-
-        branch
-            .commit(futures_util::stream::iter(instructions))
-            .await?;
-        print_assert_result(
-            &entity,
-            qualified_fields.len(),
-            entity_name.as_deref(),
-            format,
-        );
-        Ok(entity.to_string())
+    let entity = if is_update {
+        resolve_entity(this_entity.as_ref().unwrap())?
     } else {
-        // New entity derived from field content — no existing values to retract.
-        let mut session = site.open_session().await?;
-        let entity = schema::derive_entity_from_fields(&qualified_fields)?;
+        schema::derive_entity_from_fields(&qualified_fields)?
+    };
 
-        let mut transaction = session.edit();
+    let mut tx = site.branch.transaction();
 
-        for (attr_name, value_str) in &qualified_fields {
-            let attr = schema::parse_claim_attribute(attr_name)?;
-            let value = schema::parse_value(value_str);
-            transaction.associate(attr.into(), entity.clone(), value);
+    if is_update {
+        for (attr_name, _) in &qualified_fields {
+            for stmt in retract_cardinality_one_values(
+                site,
+                &entity,
+                &schema::parse_claim_attribute(attr_name)?,
+                attr_name,
+            )
+            .await?
+            {
+                tx = tx.retract(stmt);
+            }
         }
-
-        // Assert entity name if @name was provided
-        if let Some(ref name) = entity_name {
-            let name_attr = schema::dialog_meta::Name::the();
-            transaction.associate(name_attr, entity.clone(), Value::String(name.clone()));
-        }
-
-        session.commit(transaction).await?;
-        print_assert_result(
-            &entity,
-            qualified_fields.len(),
-            entity_name.as_deref(),
-            format,
-        );
-        Ok(entity.to_string())
     }
+
+    for (attr_name, value_str) in &qualified_fields {
+        let value = schema::parse_value(value_str);
+        tx = tx.assert(schema::make_statement(attr_name, entity.clone(), value)?);
+    }
+
+    // Assert entity name if @name was provided
+    if let Some(ref name) = entity_name {
+        if is_update {
+            for stmt in retract_cardinality_one_values(
+                site,
+                &entity,
+                &schema::dialog_meta::Name::the().into(),
+                "dialog.meta/name",
+            )
+            .await?
+            {
+                tx = tx.retract(stmt);
+            }
+        }
+        tx = tx.assert(schema::dialog_meta::Name::of(entity.clone()).is(name.clone()));
+    }
+
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
+
+    print_assert_result(
+        &entity,
+        qualified_fields.len(),
+        entity_name.as_deref(),
+        format,
+    );
+    Ok(entity.to_string())
 }
 
 /// Look up or create an attribute entity from its selector, with default type and cardinality.
-async fn resolve_or_create_attribute<S: dialog_query::Store>(
-    session: &mut dialog_query::Session<S>,
+async fn resolve_or_create_attribute(
+    site: &Site,
     selector: &str,
     default_type: &str,
     default_cardinality: &str,
@@ -536,35 +472,31 @@ async fn resolve_or_create_attribute<S: dialog_query::Store>(
     let entity = schema::derive_attribute_entity(selector, default_type, default_cardinality)?;
 
     // Check if it already exists
-    let existing =
-        schema::fetch_string(session, &entity, schema::dialog_attribute::Id::the().into()).await?;
+    let existing = schema::fetch_string(
+        &site.branch,
+        &site.operator,
+        &entity,
+        schema::dialog_attribute::Id::the().into(),
+    )
+    .await?;
 
     if existing.is_some() {
         return Ok(entity);
     }
 
     // Create it with defaults
-    let mut transaction = session.edit();
-
-    let attr_id = schema::dialog_attribute::Id::the();
-    let attr_type = schema::dialog_attribute::Type::the();
-    let attr_card = schema::dialog_attribute::Cardinality::the();
-
-    transaction.associate(attr_id, entity.clone(), Value::String(selector.to_string()));
-
-    transaction.associate(
-        attr_type,
-        entity.clone(),
-        Value::String(default_type.to_string()),
-    );
-
-    transaction.associate(
-        attr_card,
-        entity.clone(),
-        Value::String(default_cardinality.to_string()),
-    );
-
-    session.commit(transaction).await?;
+    site.branch
+        .transaction()
+        .assert(schema::dialog_attribute::Id::of(entity.clone()).is(selector.to_string()))
+        .assert(schema::dialog_attribute::Type::of(entity.clone()).is(default_type.to_string()))
+        .assert(
+            schema::dialog_attribute::Cardinality::of(entity.clone())
+                .is(default_cardinality.to_string()),
+        )
+        .commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create attribute: {}", e))?;
 
     // Report the defaulting in non-interactive mode
     if !atty_stdout() {
@@ -660,9 +592,10 @@ async fn assert_from_content(
 /// Assert claims from formal JSON content.
 async fn assert_from_json(site: &Site, content: &str) -> Result<()> {
     let triples: Vec<serde_json::Value> = serde_json::from_str(content)?;
-    let mut branch = site.open_branch().await?;
 
-    let mut instructions = Vec::new();
+    let mut tx = site.branch.transaction();
+    let mut count = 0;
+
     for triple in &triples {
         let the = triple["the"]
             .as_str()
@@ -672,25 +605,23 @@ async fn assert_from_json(site: &Site, content: &str) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("Missing 'of' in triple"))?;
         let is = &triple["is"];
 
-        let attr = schema::parse_claim_attribute(the)?;
         let entity = resolve_entity(of)?;
         let value = json_to_value(is)?;
 
         // Retract existing values if cardinality is "one"
-        instructions.extend(retract_cardinality_one_values(&branch, &entity, &attr, the).await?);
+        let attr = schema::parse_claim_attribute(the)?;
+        for stmt in retract_cardinality_one_values(site, &entity, &attr, the).await? {
+            tx = tx.retract(stmt);
+        }
 
-        instructions.push(Instruction::Assert(Artifact {
-            the: attr,
-            of: entity,
-            is: value,
-            cause: None,
-        }));
+        tx = tx.assert(schema::make_statement(the, entity, value)?);
+        count += 1;
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     println!("Asserted {} claims", count);
     Ok(())
@@ -700,8 +631,8 @@ async fn assert_from_json(site: &Site, content: &str) -> Result<()> {
 ///
 /// Supports three formats:
 /// 1. EAV triple notation (sequence of `{the, of, is}` mappings)
-/// 2. Asserted notation with domain context (entity → domain → fields)
-/// 3. Asserted notation with concept context (name → concept_type → fields)
+/// 2. Asserted notation with domain context (entity -> domain -> fields)
+/// 3. Asserted notation with concept context (name -> concept_type -> fields)
 async fn assert_from_yaml(site: &Site, content: &str) -> Result<()> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)?;
 
@@ -715,14 +646,12 @@ async fn assert_from_yaml(site: &Site, content: &str) -> Result<()> {
                 // Single EAV triple (not wrapped in a sequence)
                 assert_from_eav_yaml(site, from_ref(&doc)).await
             } else if map.iter().any(|(_, v)| v.is_mapping()) {
-                // Asserted notation: entity → context → fields.
-                // Covers both domain context (level-2 key contains '.')
-                // and concept context (level-2 key has no '.').
+                // Asserted notation
                 assert_from_asserted_yaml(site, map).await
             } else {
                 anyhow::bail!(
                     "Unrecognized YAML format: expected EAV triples (sequence of {{the, of, is}}) \
-                     or asserted notation (entity → context → fields)"
+                     or asserted notation (entity -> context -> fields)"
                 )
             }
         }
@@ -732,9 +661,9 @@ async fn assert_from_yaml(site: &Site, content: &str) -> Result<()> {
 
 /// Assert claims from EAV triple YAML (sequence of `{the, of, is}` mappings).
 async fn assert_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Result<()> {
-    let mut branch = site.open_branch().await?;
+    let mut tx = site.branch.transaction();
+    let mut count = 0;
 
-    let mut instructions = Vec::new();
     for triple in triples {
         let the = triple["the"]
             .as_str()
@@ -743,26 +672,24 @@ async fn assert_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Res
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'of' in triple"))?;
 
-        let attr = schema::parse_claim_attribute(the)?;
         let entity = resolve_entity(of)?;
         let is = &triple["is"];
         let value = yaml_to_value(is)?;
 
         // Retract existing values if cardinality is "one"
-        instructions.extend(retract_cardinality_one_values(&branch, &entity, &attr, the).await?);
+        let attr = schema::parse_claim_attribute(the)?;
+        for stmt in retract_cardinality_one_values(site, &entity, &attr, the).await? {
+            tx = tx.retract(stmt);
+        }
 
-        instructions.push(Instruction::Assert(Artifact {
-            the: attr,
-            of: entity,
-            is: value,
-            cause: None,
-        }));
+        tx = tx.assert(schema::make_statement(the, entity, value)?);
+        count += 1;
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     println!("Asserted {} claims", count);
     Ok(())
@@ -772,26 +699,7 @@ async fn assert_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Res
 ///
 /// Handles both domain context (level-2 key contains '.') and concept context
 /// (level-2 key has no '.'), as specified by the carry RFC.
-///
-/// Domain context example:
-/// ```yaml
-/// did:key:zAlice:
-///   io.gozala.person:
-///     name: Alice
-///     age: 28
-/// ```
-///
-/// Concept context example:
-/// ```yaml
-/// task-title:
-///   attribute:
-///     description: Title of a task
-///     the: com.app.task/title
-///     as: Text
-///     cardinality: one
-/// ```
 async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -> Result<()> {
-    // Collect entries classified by context type.
     struct ConceptEntry<'a> {
         entity_name: Option<String>,
         this_entity: Option<String>,
@@ -821,7 +729,6 @@ async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -
                 .ok_or_else(|| anyhow::anyhow!("Expected context key to be a string"))?;
 
             if ctx_name.contains('.') {
-                // Domain context — collect for batch processing
                 let entity_entry = domain_map
                     .entry(entity_key.clone())
                     .or_insert(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
@@ -829,7 +736,6 @@ async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -
                     m.insert(ctx_key.clone(), fields_val.clone());
                 }
             } else {
-                // Concept context — entity name from level-1 key
                 let (entity_name, this_entity) = classify_entity_id(entity_id);
                 concept_entries.push(ConceptEntry {
                     entity_name,
@@ -842,7 +748,6 @@ async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -
     }
 
     // Sort concept entries: attributes first, then concepts, then others.
-    // This ensures attributes exist before concepts reference them.
     concept_entries.sort_by_key(|e| match e.concept_type.as_str() {
         "attribute" => 0,
         "concept" => 1,
@@ -874,7 +779,7 @@ async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -
         })?;
     }
 
-    // Process domain-context entries using raw branch (existing batch logic).
+    // Process domain-context entries using transaction
     if !domain_map.is_empty() {
         assert_domain_entries_from_yaml(site, &domain_map).await?;
     }
@@ -883,34 +788,17 @@ async fn assert_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -
 }
 
 /// Classify a level-1 entity identifier from asserted notation YAML.
-///
-/// Returns (entity_name, this_entity):
-/// - DID/URI (contains ':'): this_entity = the DID, no entity_name
-/// - `_` (anonymous): both None (entity derived from fields)
-/// - Bookmark name: entity_name = the name, no this_entity
 fn classify_entity_id(id: &str) -> (Option<String>, Option<String>) {
     if id.contains(':') {
-        // DID or URI — use as explicit entity
         (None, Some(id.to_string()))
     } else if id == "_" {
-        // Anonymous entity
         (None, None)
     } else {
-        // Bookmark name → becomes @name
         (Some(id.to_string()), None)
     }
 }
 
 /// Assert a concept-context entry from asserted notation YAML.
-///
-/// Converts YAML fields to CLI-style `Field`s and dispatches through
-/// `assert_with_target`, which handles builtin and user-defined concepts.
-///
-/// Handles:
-/// - Simple fields: `key: value` → `Field { name: key, value: Some(value) }`
-/// - Nested `with`/`maybe` maps: `with: { title: task-title }` → `Field { name: "with.title", value: Some("task-title") }`
-/// - Inline attribute definitions: `with: { name: { the: ..., as: ... } }` → asserts the
-///   attribute first, then references it by selector
 async fn assert_concept_from_yaml(
     site: &Site,
     concept_type: &str,
@@ -930,7 +818,6 @@ async fn assert_concept_from_yaml(
             .ok_or_else(|| anyhow::anyhow!("Expected string key in {} fields", concept_type))?;
 
         if (key_str == "with" || key_str == "maybe") && value.is_mapping() {
-            // Nested mapping: expand each sub-entry as a variable-keyed field
             let sub_map = value.as_mapping().unwrap();
             for (sub_key, sub_value) in sub_map {
                 let sub_key_str = sub_key
@@ -938,7 +825,6 @@ async fn assert_concept_from_yaml(
                     .ok_or_else(|| anyhow::anyhow!("Expected string key in {}.{{}}", key_str))?;
 
                 if sub_value.is_mapping() {
-                    // Inline attribute definition: assert it first, then use its selector
                     let selector = assert_inline_attribute_from_yaml(site, sub_value)
                         .await
                         .with_context(|| {
@@ -977,17 +863,6 @@ async fn assert_concept_from_yaml(
 }
 
 /// Assert an inline attribute definition from YAML and return its selector.
-///
-/// Used when a `with` block in a concept definition contains an inline mapping
-/// instead of a string reference:
-/// ```yaml
-/// with:
-///   name:
-///     description: The person's name
-///     the: io.gozala.person/name
-///     as: Text
-///     cardinality: one
-/// ```
 async fn assert_inline_attribute_from_yaml(
     site: &Site,
     fields_yaml: &serde_yaml::Value,
@@ -1048,16 +923,13 @@ fn yaml_scalar_to_string(v: &serde_yaml::Value) -> Result<String> {
     }
 }
 
-/// Assert domain-context entries from asserted notation YAML (batch via raw branch).
-///
-/// This handles the `entity → domain → field: value` structure where the
-/// domain key contains '.'.
+/// Assert domain-context entries from asserted notation YAML (batch via transaction).
 async fn assert_domain_entries_from_yaml(
     site: &Site,
     domain_map: &serde_yaml::Mapping,
 ) -> Result<()> {
-    let mut branch = site.open_branch().await?;
-    let mut instructions = Vec::new();
+    let mut tx = site.branch.transaction();
+    let mut count = 0;
 
     for (entity_key, namespace_map) in domain_map {
         let entity_id = entity_key
@@ -1083,46 +955,39 @@ async fn assert_domain_entries_from_yaml(
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("Expected field key to be a string"))?;
 
-                // Build the qualified attribute name: namespace/field
                 let qualified = format!("{}/{}", namespace, field_name);
-                let attr = schema::parse_claim_attribute(&qualified)?;
 
                 // Retract existing values if cardinality is "one"
-                instructions.extend(
-                    retract_cardinality_one_values(&branch, &entity, &attr, &qualified).await?,
-                );
+                let attr = schema::parse_claim_attribute(&qualified)?;
+                for stmt in retract_cardinality_one_values(site, &entity, &attr, &qualified).await?
+                {
+                    tx = tx.retract(stmt);
+                }
 
                 // Handle multi-valued fields (YAML sequences)
                 match value {
                     serde_yaml::Value::Sequence(seq) => {
                         for item in seq {
                             let val = yaml_to_value(item)?;
-                            instructions.push(Instruction::Assert(Artifact {
-                                the: attr.clone(),
-                                of: entity.clone(),
-                                is: val,
-                                cause: None,
-                            }));
+                            tx =
+                                tx.assert(schema::make_statement(&qualified, entity.clone(), val)?);
+                            count += 1;
                         }
                     }
                     _ => {
                         let val = yaml_to_value(value)?;
-                        instructions.push(Instruction::Assert(Artifact {
-                            the: attr,
-                            of: entity.clone(),
-                            is: val,
-                            cause: None,
-                        }));
+                        tx = tx.assert(schema::make_statement(&qualified, entity.clone(), val)?);
+                        count += 1;
                     }
                 }
             }
         }
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     println!("Asserted {} claims", count);
     Ok(())

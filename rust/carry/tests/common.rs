@@ -9,7 +9,7 @@
 use anyhow::{Context, Result};
 use carry::identity_cmd::ProfileLocation;
 use carry::site::Site;
-use dialog_artifacts::helpers::unique_location;
+use dialog_repository::helpers::unique_location;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -38,9 +38,8 @@ impl TestEnv {
         let site = Site::init(&site_path, Some(profile_location.clone())).await?;
         let profile_did = site.did();
 
-        // Open a session for bootstrapping
-        let mut session = site.open_session().await?;
-        carry::schema::bootstrap_builtins(&mut session).await?;
+        // Bootstrap pre-registered concepts
+        carry::schema::bootstrap_builtins(&site.branch, &site.operator).await?;
 
         Ok(Self {
             _temp_dir: temp_dir,

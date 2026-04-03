@@ -5,32 +5,17 @@
 //! `.carry/` directory, unless `--repo <PATH>` is supplied.
 //!
 //! After discovery, `Site::resolve()` opens the identity (Profile + Operator)
-//! and provides access to the data store for queries and mutations.
+//! and provides access to a `Branch` for queries and mutations.
 
 use crate::identity_cmd::{self, ProfileLocation};
 use anyhow::{Context, Result};
-use dialog_artifacts::profile::Profile;
-use dialog_artifacts::storage::Storage;
-use dialog_artifacts::{Artifacts, Operator, Repository};
-use dialog_query::Session;
-use dialog_storage::FileSystemStorageBackend;
+use dialog_repository::profile::Profile;
+use dialog_repository::storage::Storage;
+use dialog_repository::{Branch, Operator, Repository};
 use std::path::{Path, PathBuf};
 
-/// Type alias for the filesystem-backed storage backend.
-/// Key is Blake3Hash ([u8; 32]) as required by Artifacts.
-pub type FsBackend = FileSystemStorageBackend<[u8; 32], Vec<u8>>;
-
-/// Type alias for the filesystem-backed artifacts store.
-pub type FsArtifacts = Artifacts<FsBackend>;
-
-/// Subdirectory inside `.carry/` for artifact storage.
-const CLAIMS_DIR: &str = "claims";
-
-/// Identifier for the artifacts store within `.carry/claims/`.
-const STORE_ID: &str = "main";
-
 // ---------------------------------------------------------------------------
-// Site — the `.carry/` directory plus identity context
+// Site -- the `.carry/` directory plus identity context
 // ---------------------------------------------------------------------------
 
 /// Handle to a discovered `.carry/` site directory with identity context.
@@ -42,9 +27,11 @@ pub struct Site {
     /// The operator environment (derived from profile).
     pub operator: Operator,
     /// The backing storage.
-    pub storage: Storage,
+    pub storage: dialog_repository::storage::Storage,
     /// The capability-based repository (owns the delegation chain).
     pub repo: Repository,
+    /// The main branch for data operations.
+    pub branch: Branch,
     /// Profile storage location (kept for re-opening with the same identity).
     profile_location: Option<ProfileLocation>,
 }
@@ -102,6 +89,21 @@ impl Site {
         Self::discover_dir(&cwd).context("No .carry repo found (run `carry init` to create one)")
     }
 
+    /// Open a repository and its main branch.
+    async fn open_repo_and_branch(operator: &Operator) -> Result<(Repository, Branch)> {
+        let repo = Repository::open(Storage::current(".carry"))
+            .perform(operator)
+            .await
+            .context("Failed to open repository")?;
+        let branch = repo
+            .branch("main")
+            .open()
+            .perform(operator)
+            .await
+            .context("Failed to open main branch")?;
+        Ok((repo, branch))
+    }
+
     /// Resolve a site from an optional `--repo` flag. Opens identity + repo.
     ///
     /// `profile_location`: `None` for production (platform data dir),
@@ -112,16 +114,14 @@ impl Site {
     ) -> Result<Self> {
         let root = Self::locate(site_flag)?;
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
-        let repo = Repository::open(Storage::current(".carry"))
-            .perform(&id.operator)
-            .await
-            .context("Failed to open repository")?;
+        let (repo, branch) = Self::open_repo_and_branch(&id.operator).await?;
         Ok(Self {
             root,
             profile: id.profile,
             operator: id.operator,
             storage: id.storage,
             repo,
+            branch,
             profile_location,
         })
     }
@@ -136,11 +136,6 @@ impl Site {
         let carry_dir = parent.join(".carry");
         std::fs::create_dir_all(&carry_dir)
             .with_context(|| format!("Failed to create {}", carry_dir.display()))?;
-
-        // Ensure claims subdirectory exists
-        let claims_dir = carry_dir.join(CLAIMS_DIR);
-        std::fs::create_dir_all(&claims_dir)
-            .with_context(|| format!("Failed to create {}", claims_dir.display()))?;
 
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
 
@@ -164,12 +159,21 @@ impl Site {
             .await
             .context("Failed to save ownership delegation")?;
 
+        // Open the main branch
+        let branch = repo
+            .branch("main")
+            .open()
+            .perform(&id.operator)
+            .await
+            .context("Failed to open main branch")?;
+
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
             operator: id.operator,
             storage: id.storage,
             repo,
+            branch,
             profile_location,
         })
     }
@@ -187,16 +191,14 @@ impl Site {
             anyhow::bail!("No .carry directory found at {}", carry_dir.display());
         }
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
-        let repo = Repository::open(Storage::current(".carry"))
-            .perform(&id.operator)
-            .await
-            .context("Failed to open repository")?;
+        let (repo, branch) = Self::open_repo_and_branch(&id.operator).await?;
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
             operator: id.operator,
             storage: id.storage,
             repo,
+            branch,
             profile_location,
         })
     }
@@ -215,11 +217,6 @@ impl Site {
             .expect(".carry/ always has a parent directory")
     }
 
-    /// Path to the `claims/` storage directory.
-    pub fn claims_dir(&self) -> PathBuf {
-        self.root.join(CLAIMS_DIR)
-    }
-
     /// The profile DID.
     pub fn did(&self) -> String {
         self.profile.did().to_string()
@@ -233,33 +230,6 @@ impl Site {
     /// The profile storage location (for passing to sub-sites, e.g. join).
     pub fn profile_location(&self) -> Option<ProfileLocation> {
         self.profile_location.clone()
-    }
-
-    // -- Data access ---------------------------------------------------------
-
-    /// Open a filesystem-backed `Artifacts` store for this site.
-    async fn open_artifacts(&self) -> Result<Artifacts<FsBackend>> {
-        let claims_dir = self.claims_dir();
-        if !claims_dir.exists() {
-            std::fs::create_dir_all(&claims_dir)
-                .with_context(|| format!("Failed to create {}", claims_dir.display()))?;
-        }
-        let backend = FsBackend::new(claims_dir).await?;
-        let artifacts = Artifacts::open(STORE_ID.to_string(), backend)
-            .await
-            .context("Failed to open artifacts store")?;
-        Ok(artifacts)
-    }
-
-    /// Open a `Session` for reading and writing data.
-    pub async fn open_session(&self) -> Result<Session<Artifacts<FsBackend>>> {
-        let artifacts = self.open_artifacts().await?;
-        Ok(Session::open(artifacts))
-    }
-
-    /// Open a raw `Artifacts` store (for low-level Instruction commits).
-    pub async fn open_branch(&self) -> Result<Artifacts<FsBackend>> {
-        self.open_artifacts().await
     }
 }
 

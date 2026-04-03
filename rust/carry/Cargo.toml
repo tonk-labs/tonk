@@ -24,10 +24,11 @@ clap = { workspace = true, features = ["derive"] }
 clap_complete = { workspace = true }
 
 # Dialog DB
-dialog-artifacts = { workspace = true, features = ["helpers"] }
+dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true, features = ["ucan"] }
 dialog-credentials = { workspace = true }
 dialog-query = { workspace = true }
+dialog-repository = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
 dialog-varsig = { workspace = true }

@@ -104,11 +104,9 @@ dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "
 dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
 dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
-# dialog-s3-credentials removed on feat/credentials-as-capability branch
-# dialog-s3-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14", features = [
-#   "ucan"
-# ]
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
 # Dialog DB
 dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
 dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-02-14" }
@@ -122,10 +120,12 @@ dialog-common = { path = "../dialog-db/rust/dialog-common" }
 dialog-credentials = { path = "../dialog-db/rust/dialog-credentials" }
 dialog-effects = { path = "../dialog-db/rust/dialog-effects" }
 dialog-macros = { path = "../dialog-db/rust/dialog-macros" }
+dialog-operator = { path = "../dialog-db/rust/dialog-operator" }
 dialog-prolly-tree = { path = "../dialog-db/rust/dialog-prolly-tree" }
 dialog-query = { path = "../dialog-db/rust/dialog-query" }
 dialog-remote-s3 = { path = "../dialog-db/rust/dialog-remote-s3" }
 dialog-remote-ucan-s3 = { path = "../dialog-db/rust/dialog-remote-ucan-s3" }
+dialog-repository = { path = "../dialog-db/rust/dialog-repository" }
 dialog-storage = { path = "../dialog-db/rust/dialog-storage" }
 dialog-ucan = { path = "../dialog-db/rust/dialog-ucan" }
 dialog-varsig = { path = "../dialog-db/rust/dialog-varsig" }

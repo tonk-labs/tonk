@@ -1,4 +1,4 @@
-//! `carry init` — create a new `.carry/` repository.
+//! `carry init` -- create a new `.carry/` repository.
 //!
 //! Creates a `.carry/` directory and bootstraps pre-registered concepts
 //! (attribute, concept, bookmark) so they can be queried and used
@@ -7,6 +7,7 @@
 use crate::schema;
 use crate::site::Site;
 use anyhow::Result;
+use dialog_query::Value;
 use std::path::Path;
 
 /// Execute `carry init [<name>] [--repo <REPO>]`.
@@ -36,20 +37,23 @@ pub async fn execute(
     // Create site (initializes .carry/ directory and identity)
     let site = Site::init(&parent, profile_location).await?;
 
-    // Open a session for bootstrapping
-    let mut session = site.open_session().await?;
-
     // Bootstrap pre-registered concepts (attribute, concept, bookmark)
-    schema::bootstrap_builtins(&mut session).await?;
+    schema::bootstrap_builtins(&site.branch, &site.operator).await?;
 
     // If a name is provided, assert it as a label claim
     if let Some(ref label) = name {
         let entity = schema::derive_entity("space")?;
-        let name_attr = schema::dialog_meta::Name::the();
-        let value = dialog_query::Value::String(label.clone());
-        let mut transaction = session.edit();
-        transaction.associate(name_attr, entity, value);
-        session.commit(transaction).await?;
+        site.branch
+            .transaction()
+            .assert(schema::make_statement(
+                "dialog.meta/name",
+                entity,
+                Value::String(label.clone()),
+            )?)
+            .commit()
+            .perform(&site.operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to assert name: {}", e))?;
     }
 
     // Print result

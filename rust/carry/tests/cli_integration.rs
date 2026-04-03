@@ -20,13 +20,13 @@ async fn test_init_creates_site() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
     assert!(site.root().exists());
-    assert!(site.claims_dir().exists());
+    assert!(site.root().exists());
 }
 
 #[tokio::test]
 async fn test_init_with_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loc = dialog_artifacts::helpers::unique_location("carry-test");
+    let loc = dialog_repository::helpers::unique_location("carry-test");
     carry::init::execute(
         Some("my-project".to_string()),
         vec![],
@@ -40,13 +40,13 @@ async fn test_init_with_name() {
         .await
         .unwrap();
     assert!(site.root().exists());
-    assert!(site.claims_dir().exists());
+    assert!(site.root().exists());
 }
 
 #[tokio::test]
 async fn test_init_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loc = dialog_artifacts::helpers::unique_location("carry-test");
+    let loc = dialog_repository::helpers::unique_location("carry-test");
     carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
         .await
         .unwrap();
@@ -349,10 +349,9 @@ async fn test_assert_cardinality_one_replaces_value() {
     // Query: age should be [29], not [28, 29]
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_values = carry::schema::fetch_values(&session, &entity, age_attr)
+    let age_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
         .await
         .unwrap();
     assert_eq!(
@@ -369,7 +368,7 @@ async fn test_assert_cardinality_one_replaces_value() {
 
     // Name should still be Alice (unchanged)
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let name_values = carry::schema::fetch_values(&session, &entity, name_attr)
+    let name_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(name_values.len(), 1);
@@ -698,15 +697,14 @@ async fn test_roundtrip_triples_yaml() {
     .unwrap();
 
     // 3. Verify we can fetch the data
-    let session = ctx.open_session().await.unwrap();
+
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, name_attr)
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    drop(session);
 
     // 4. Build results map and format as triples YAML
     use dialog_query::Value;
@@ -732,16 +730,16 @@ async fn test_roundtrip_triples_yaml() {
         .unwrap();
 
     // 6. Verify the data still exists (round-trip preserved it)
-    let session = ctx.open_session().await.unwrap();
+
     let name_attr2 = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, name_attr2)
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr2)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
     assert_eq!(carry::schema::format_value(&values[0]), "Alice");
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_values = carry::schema::fetch_values(&session, &entity, age_attr)
+    let age_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
         .await
         .unwrap();
     assert_eq!(age_values.len(), 1);
@@ -808,9 +806,9 @@ async fn test_roundtrip_asserted_notation_yaml() {
     // 4. Verify data is still intact
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
+
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, name_attr)
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
@@ -838,10 +836,10 @@ async fn test_roundtrip_asserted_notation_multivalued() {
     // Verify
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
+
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
     let tag_attr = ClaimAttribute::from_str("io.test.person/tag").unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, tag_attr)
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, tag_attr)
         .await
         .unwrap();
     assert_eq!(
@@ -871,18 +869,18 @@ async fn test_assert_from_eav_triple_yaml() {
     // Verify
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
+
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
 
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, name_attr)
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
     assert_eq!(carry::schema::format_value(&values[0]), "Alice");
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_values = carry::schema::fetch_values(&session, &entity, age_attr)
+    let age_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
         .await
         .unwrap();
     assert_eq!(age_values.len(), 1);
@@ -924,15 +922,14 @@ async fn test_retract_from_eav_triple_yaml() {
     .unwrap();
 
     // Verify data exists
-    let session = ctx.open_session().await.unwrap();
+
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, age_attr.clone())
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr.clone())
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    drop(session);
 
     // Now retract the age via EAV triple YAML file
     let yaml = format!("- the: io.test.person/age\n  of: {}\n  is: 28\n", entity);
@@ -942,15 +939,15 @@ async fn test_retract_from_eav_triple_yaml() {
         .unwrap();
 
     // Verify age is retracted
-    let session = ctx.open_session().await.unwrap();
-    let values = carry::schema::fetch_values(&session, &entity, age_attr)
+
+    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 0, "Age should be retracted");
 
     // Name should still exist
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let name_values = carry::schema::fetch_values(&session, &entity, name_attr)
+    let name_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(name_values.len(), 1, "Name should still exist");
@@ -1013,17 +1010,17 @@ async fn test_retract_from_asserted_yaml() {
         .unwrap();
 
     // Verify both fields are retracted
-    let session = ctx.open_session().await.unwrap();
+
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let name_vals = carry::schema::fetch_values(&session, &entity, name_attr)
+    let name_vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(name_vals.len(), 0, "Name should be retracted");
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_vals = carry::schema::fetch_values(&session, &entity, age_attr)
+    let age_vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
         .await
         .unwrap();
     assert_eq!(age_vals.len(), 0, "Age should be retracted");
@@ -1053,14 +1050,13 @@ async fn test_retract_from_json_content() {
     // Verify exists
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
+
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, name_attr.clone())
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr.clone())
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
-    drop(session);
 
     // Retract via JSON
     let retract_json = format!(
@@ -1076,8 +1072,8 @@ async fn test_retract_from_json_content() {
         .unwrap();
 
     // Verify retracted
-    let session = ctx.open_session().await.unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, name_attr)
+
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 0, "Should be retracted");
@@ -1143,9 +1139,9 @@ async fn test_roundtrip_query_retract_triples() {
     // Verify both fields are retracted
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
+
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, name_attr)
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 0, "Name should be retracted");
@@ -1192,32 +1188,32 @@ async fn test_triples_format_contract() {
     // Verify each value was stored
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
-    let session = ctx.open_session().await.unwrap();
+
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
 
     let text_attr = ClaimAttribute::from_str("io.test.data/text").unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, text_attr)
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, text_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
     assert_eq!(carry::schema::format_value(&vals[0]), "hello world");
 
     let num_attr = ClaimAttribute::from_str("io.test.data/number").unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, num_attr)
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, num_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
     assert_eq!(carry::schema::format_value(&vals[0]), "42");
 
     let neg_attr = ClaimAttribute::from_str("io.test.data/negative").unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, neg_attr)
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, neg_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
     assert_eq!(carry::schema::format_value(&vals[0]), "-7");
 
     let flag_attr = ClaimAttribute::from_str("io.test.data/flag").unwrap();
-    let vals = carry::schema::fetch_values(&session, &entity, flag_attr)
+    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, flag_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
@@ -1470,10 +1466,9 @@ async fn test_site_resolve() {
 async fn test_init_bootstraps_builtins() {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx().await;
-    let session = ctx.open_session().await.unwrap();
 
     for name in &["attribute", "concept", "bookmark"] {
-        let entity = carry::schema::lookup_entity_by_name(&session, name)
+        let entity = carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, name)
             .await
             .unwrap();
         assert!(
@@ -1490,9 +1485,8 @@ async fn test_init_bootstraps_builtins() {
 async fn test_bootstrap_attribute_concept_has_fields() {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx().await;
-    let session = ctx.open_session().await.unwrap();
 
-    let concept = carry::schema::resolve_concept(&session, "attribute")
+    let concept = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "attribute")
         .await
         .unwrap();
 
@@ -1551,12 +1545,12 @@ async fn test_assert_attribute_creates_entity() {
     .unwrap();
 
     // Verify the attribute entity exists with the right dialog.attribute/id
-    let session = ctx.open_session().await.unwrap();
+
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let attr_id = ClaimAttribute::from_str("dialog.attribute/id").unwrap();
-    let entities = carry::schema::find_entities_by_attribute(&session, attr_id)
+    let entities = carry::schema::find_entities_by_attribute(&ctx.branch, &ctx.operator, attr_id)
         .await
         .unwrap();
 
@@ -1564,7 +1558,8 @@ async fn test_assert_attribute_creates_entity() {
     let mut found = false;
     for entity in &entities {
         let ids = carry::schema::fetch_string_values(
-            &session,
+            &ctx.branch,
+            &ctx.operator,
             entity,
             ClaimAttribute::from_str("dialog.attribute/id").unwrap(),
         )
@@ -1613,8 +1608,8 @@ async fn test_assert_attribute_with_name() {
     .unwrap();
 
     // Verify the attribute entity is discoverable by name
-    let session = ctx.open_session().await.unwrap();
-    let entity = carry::schema::lookup_entity_by_name(&session, "person-name")
+
+    let entity = carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, "person-name")
         .await
         .unwrap();
     assert!(
@@ -1655,12 +1650,11 @@ async fn test_assert_attribute_defaults_cardinality() {
     let entity =
         carry::schema::derive_attribute_entity("io.test.thing/color", "Text", "one").unwrap();
 
-    let session = ctx.open_session().await.unwrap();
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let card_attr = ClaimAttribute::from_str("dialog.attribute/cardinality").unwrap();
-    let values = carry::schema::fetch_string_values(&session, &entity, card_attr)
+    let values = carry::schema::fetch_string_values(&ctx.branch, &ctx.operator, &entity, card_attr)
         .await
         .unwrap();
     assert_eq!(
@@ -1777,17 +1771,18 @@ async fn test_assert_concept_with_named_attrs() {
     .unwrap();
 
     // Verify concept is discoverable by name
-    let session = ctx.open_session().await.unwrap();
-    let concept_entity = carry::schema::lookup_entity_by_name(&session, "test-person")
-        .await
-        .unwrap();
+
+    let concept_entity =
+        carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, "test-person")
+            .await
+            .unwrap();
     assert!(
         concept_entity.is_some(),
         "Concept should be discoverable as 'test-person'"
     );
 
     // Verify concept resolves with correct fields
-    let resolved = carry::schema::resolve_concept(&session, "test-person")
+    let resolved = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "test-person")
         .await
         .unwrap();
     assert_eq!(
@@ -1834,8 +1829,8 @@ async fn test_assert_concept_with_selector_attrs() {
     .unwrap();
 
     // Verify concept resolves
-    let session = ctx.open_session().await.unwrap();
-    let resolved = carry::schema::resolve_concept(&session, "test-widget")
+
+    let resolved = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "test-widget")
         .await
         .unwrap();
     assert_eq!(resolved.with_fields.len(), 1);
@@ -1984,14 +1979,14 @@ async fn test_concept_query_resolves_by_name() {
     .unwrap();
 
     // Verify at the data level that the concept resolved correctly
-    let session = ctx.open_session().await.unwrap();
-    let resolved = carry::schema::resolve_concept(&session, "cq-person")
+
+    let resolved = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "cq-person")
         .await
         .unwrap();
 
     // Find entities that match the concept's attributes
     let selectors = carry::schema::concept_attribute_selectors(&resolved);
-    let entities = carry::schema::find_entities_by_concept(&session, &selectors)
+    let entities = carry::schema::find_entities_by_concept(&ctx.branch, &ctx.operator, &selectors)
         .await
         .unwrap();
     assert_eq!(
@@ -2021,20 +2016,26 @@ async fn test_concept_query_with_filter() {
     .unwrap();
 
     // The query itself printed output; verify at data level that only Alice matches
-    let session = ctx.open_session().await.unwrap();
+
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let name_attr = ClaimAttribute::from_str("io.test.cq/name").unwrap();
-    let all_entities = carry::schema::find_entities_by_attribute(&session, name_attr.clone())
-        .await
-        .unwrap();
+    let all_entities =
+        carry::schema::find_entities_by_attribute(&ctx.branch, &ctx.operator, name_attr.clone())
+            .await
+            .unwrap();
 
     let mut alice_count = 0;
     for entity in &all_entities {
-        let names = carry::schema::fetch_string_values(&session, entity, name_attr.clone())
-            .await
-            .unwrap();
+        let names = carry::schema::fetch_string_values(
+            &ctx.branch,
+            &ctx.operator,
+            entity,
+            name_attr.clone(),
+        )
+        .await
+        .unwrap();
         if names.contains(&"Alice".to_string()) {
             alice_count += 1;
         }
@@ -2099,8 +2100,8 @@ async fn test_domain_assert_with_name() {
     .unwrap();
 
     // Verify the entity is discoverable by the @name
-    let session = ctx.open_session().await.unwrap();
-    let entity = carry::schema::lookup_entity_by_name(&session, "alice")
+
+    let entity = carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, "alice")
         .await
         .unwrap();
     assert!(
@@ -2121,27 +2122,32 @@ async fn test_retract_concept_field() {
     let ctx = env.site();
 
     // Find Alice's entity DID
-    let session = ctx.open_session().await.unwrap();
+
     use carry::schema::ClaimAttribute;
     use std::str::FromStr;
 
     let name_attr = ClaimAttribute::from_str("io.test.cq/name").unwrap();
-    let all_entities = carry::schema::find_entities_by_attribute(&session, name_attr.clone())
-        .await
-        .unwrap();
+    let all_entities =
+        carry::schema::find_entities_by_attribute(&ctx.branch, &ctx.operator, name_attr.clone())
+            .await
+            .unwrap();
 
     let mut alice_entity = None;
     for entity in &all_entities {
-        let names = carry::schema::fetch_string_values(&session, entity, name_attr.clone())
-            .await
-            .unwrap();
+        let names = carry::schema::fetch_string_values(
+            &ctx.branch,
+            &ctx.operator,
+            entity,
+            name_attr.clone(),
+        )
+        .await
+        .unwrap();
         if names.contains(&"Alice".to_string()) {
             alice_entity = Some(entity.clone());
             break;
         }
     }
     let alice_entity = alice_entity.expect("Alice should exist");
-    drop(session);
 
     // Retract age using concept field name
     carry::retract_cmd::execute(
@@ -2158,19 +2164,21 @@ async fn test_retract_concept_field() {
     .unwrap();
 
     // Verify age is gone but name remains
-    let session = ctx.open_session().await.unwrap();
+
     let age_attr = ClaimAttribute::from_str("io.test.cq/age").unwrap();
-    let age_values = carry::schema::fetch_string_values(&session, &alice_entity, age_attr)
-        .await
-        .unwrap();
+    let age_values =
+        carry::schema::fetch_string_values(&ctx.branch, &ctx.operator, &alice_entity, age_attr)
+            .await
+            .unwrap();
     assert!(
         age_values.is_empty(),
         "Age should have been retracted from Alice"
     );
 
-    let name_values = carry::schema::fetch_string_values(&session, &alice_entity, name_attr)
-        .await
-        .unwrap();
+    let name_values =
+        carry::schema::fetch_string_values(&ctx.branch, &ctx.operator, &alice_entity, name_attr)
+            .await
+            .unwrap();
     assert_eq!(
         name_values,
         vec!["Alice".to_string()],
@@ -2262,8 +2270,8 @@ async fn test_attribute_concept_data_roundtrip() {
     .unwrap();
 
     // 4. Verify concept resolves correctly
-    let session = ctx.open_session().await.unwrap();
-    let concept = carry::schema::resolve_concept(&session, "rt-book")
+
+    let concept = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "rt-book")
         .await
         .unwrap();
     assert_eq!(concept.with_fields.len(), 2);
@@ -2272,7 +2280,7 @@ async fn test_attribute_concept_data_roundtrip() {
 
     // 5. Find entities matching the concept
     let selectors = carry::schema::concept_attribute_selectors(&concept);
-    let entities = carry::schema::find_entities_by_concept(&session, &selectors)
+    let entities = carry::schema::find_entities_by_concept(&ctx.branch, &ctx.operator, &selectors)
         .await
         .unwrap();
     assert_eq!(entities.len(), 1, "Should find exactly 1 book entity");
@@ -2284,17 +2292,19 @@ async fn test_attribute_concept_data_roundtrip() {
     let title_attr = ClaimAttribute::from_str("io.test.book/title").unwrap();
     let pages_attr = ClaimAttribute::from_str("io.test.book/pages").unwrap();
 
-    let title_val = carry::schema::fetch_value(&session, &entities[0], title_attr)
-        .await
-        .unwrap();
+    let title_val =
+        carry::schema::fetch_value(&ctx.branch, &ctx.operator, &entities[0], title_attr)
+            .await
+            .unwrap();
     assert_eq!(
         title_val.map(|v| carry::schema::format_value(&v)),
         Some("Moby Dick".to_string())
     );
 
-    let pages_val = carry::schema::fetch_value(&session, &entities[0], pages_attr)
-        .await
-        .unwrap();
+    let pages_val =
+        carry::schema::fetch_value(&ctx.branch, &ctx.operator, &entities[0], pages_attr)
+            .await
+            .unwrap();
     assert_eq!(
         pages_val.map(|v| carry::schema::format_value(&v)),
         Some("635".to_string())
@@ -2383,7 +2393,7 @@ async fn test_invite_tokens_are_unique() {
 #[tokio::test]
 async fn test_site_reopen_preserves_dids() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loc = dialog_artifacts::helpers::unique_location("carry-test");
+    let loc = dialog_repository::helpers::unique_location("carry-test");
     carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
         .await
         .unwrap();
@@ -2430,12 +2440,12 @@ async fn test_join_site_can_write_and_read_data() {
     .await
     .unwrap();
 
-    // Open the joined site and bootstrap builtins
+    // Open the joined site and bootstrap builtins on it
     let joined = carry::site::Site::open(join_dir.path(), Some(env.profile_location.clone()))
         .await
         .unwrap();
-    let mut session = joined.open_session().await.unwrap();
-    carry::schema::bootstrap_builtins(&mut session)
+
+    carry::schema::bootstrap_builtins(&joined.branch, &joined.operator)
         .await
         .unwrap();
 

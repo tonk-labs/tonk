@@ -1,4 +1,4 @@
-//! `carry retract` — retract claims from entities.
+//! `carry retract` -- retract claims from entities.
 //!
 //! Supports domain targets, concept targets (builtin and user-defined),
 //! file input, and stdin.
@@ -7,7 +7,6 @@ use crate::schema;
 use crate::site::Site;
 use crate::target::{Field, FirstArg, Target};
 use anyhow::{Context, Result};
-use dialog_artifacts::{Artifact, ArtifactStoreMut, Instruction};
 use std::slice::from_ref;
 
 /// Execute `carry retract <TARGET>|<FILE>|- [this=<ENTITY>] [FIELD[=VALUE]...]`.
@@ -62,35 +61,34 @@ async fn retract_domain(
     fields: &[Field],
     format: &str,
 ) -> Result<()> {
-    let mut branch = site.open_branch().await?;
+    let branch = &site.branch;
+    let operator = &site.operator;
 
     if fields.is_empty() {
         // Retract ALL claims about this entity
-        let all_claims = schema::fetch_all_entity_claims(&branch, entity).await?;
+        let all_claims = schema::fetch_all_entity_claims(branch, operator, entity).await?;
         if all_claims.is_empty() {
             anyhow::bail!("Entity '{}' not found (no claims to retract)", entity);
         }
 
-        let instructions: Vec<Instruction> = all_claims
-            .into_iter()
-            .map(|artifact| {
-                Instruction::Retract(Artifact {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    cause: artifact.cause,
-                })
-            })
-            .collect();
+        let mut tx = branch.transaction();
+        for artifact in &all_claims {
+            tx = tx.retract(schema::make_statement(
+                &artifact.the.to_string(),
+                artifact.of.clone(),
+                artifact.is.clone(),
+            )?);
+        }
 
-        let count = instructions.len();
-        branch
-            .commit(futures_util::stream::iter(instructions))
-            .await?;
+        let count = all_claims.len();
+        tx.commit()
+            .perform(operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
         print_retract_result(entity, count, format);
     } else {
-        retract_specific_fields(&mut branch, entity, domain, fields, format).await?;
+        retract_specific_fields(site, entity, domain, fields, format).await?;
     }
 
     Ok(())
@@ -104,39 +102,36 @@ async fn retract_concept(
     fields: &[Field],
     format: &str,
 ) -> Result<()> {
+    let branch = &site.branch;
+    let operator = &site.operator;
+
     if fields.is_empty() {
         // Retract all claims about this entity
-        let mut branch = site.open_branch().await?;
-        let all_claims = schema::fetch_all_entity_claims(&branch, entity).await?;
+        let all_claims = schema::fetch_all_entity_claims(branch, operator, entity).await?;
         if all_claims.is_empty() {
             anyhow::bail!("Entity '{}' not found (no claims to retract)", entity);
         }
 
-        let instructions: Vec<Instruction> = all_claims
-            .into_iter()
-            .map(|artifact| {
-                Instruction::Retract(Artifact {
-                    the: artifact.the,
-                    of: artifact.of,
-                    is: artifact.is,
-                    cause: artifact.cause,
-                })
-            })
-            .collect();
+        let mut tx = branch.transaction();
+        for artifact in &all_claims {
+            tx = tx.retract(schema::make_statement(
+                &artifact.the.to_string(),
+                artifact.of.clone(),
+                artifact.is.clone(),
+            )?);
+        }
 
-        let count = instructions.len();
-        branch
-            .commit(futures_util::stream::iter(instructions))
-            .await?;
+        let count = all_claims.len();
+        tx.commit()
+            .perform(operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
         print_retract_result(entity, count, format);
         return Ok(());
     }
 
-    // Resolve the concept to get field→selector mappings
-    let session = site.open_session().await?;
-
-    // Try builtin first, then user-defined
+    // Resolve the concept to get field->selector mappings
     let resolved_fields: Vec<(String, Option<String>)> = if let Some(builtin) =
         schema::lookup_builtin(concept_name)
     {
@@ -151,7 +146,7 @@ async fn retract_concept(
             })
             .collect::<Result<Vec<_>>>()?
     } else {
-        let concept = schema::resolve_concept(&session, concept_name).await?;
+        let concept = schema::resolve_concept(branch, operator, concept_name).await?;
         fields
             .iter()
             .map(|f| {
@@ -161,45 +156,34 @@ async fn retract_concept(
             .collect::<Result<Vec<_>>>()?
     };
 
-    drop(session);
-    let mut branch = site.open_branch().await?;
-
-    let mut instructions = Vec::new();
+    let mut tx = branch.transaction();
+    let mut count = 0;
 
     for (attr_name, value) in &resolved_fields {
-        let attr = schema::parse_claim_attribute(attr_name)?;
-
         if let Some(val_str) = value {
             // Retract a specific value
             let value = schema::parse_value(val_str);
-            instructions.push(Instruction::Retract(Artifact {
-                the: attr,
-                of: entity.clone(),
-                is: value,
-                cause: None,
-            }));
+            tx = tx.retract(schema::make_statement(attr_name, entity.clone(), value)?);
+            count += 1;
         } else {
             // Retract all values for this attribute
-            let values = schema::fetch_values(&branch, entity, attr.clone()).await?;
+            let attr = schema::parse_claim_attribute(attr_name)?;
+            let values = schema::fetch_values(branch, operator, entity, attr).await?;
             for value in values {
-                instructions.push(Instruction::Retract(Artifact {
-                    the: attr.clone(),
-                    of: entity.clone(),
-                    is: value,
-                    cause: None,
-                }));
+                tx = tx.retract(schema::make_statement(attr_name, entity.clone(), value)?);
+                count += 1;
             }
         }
     }
 
-    if instructions.is_empty() {
+    if count == 0 {
         anyhow::bail!("No matching claims found to retract");
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     print_retract_result(entity, count, format);
     Ok(())
@@ -207,47 +191,43 @@ async fn retract_concept(
 
 /// Retract specific fields using domain-qualified names.
 async fn retract_specific_fields(
-    branch: &mut crate::site::FsArtifacts,
+    site: &Site,
     entity: &dialog_query::Entity,
     namespace: &str,
     fields: &[Field],
     format: &str,
 ) -> Result<()> {
-    let mut instructions = Vec::new();
+    let branch = &site.branch;
+    let operator = &site.operator;
+
+    let mut tx = branch.transaction();
+    let mut count = 0;
 
     for f in fields {
         let attr_name = f.qualified_name(namespace);
-        let attr = schema::parse_claim_attribute(&attr_name)?;
 
         if let Some(ref val_str) = f.value {
             let value = schema::parse_value(val_str);
-            instructions.push(Instruction::Retract(Artifact {
-                the: attr,
-                of: entity.clone(),
-                is: value,
-                cause: None,
-            }));
+            tx = tx.retract(schema::make_statement(&attr_name, entity.clone(), value)?);
+            count += 1;
         } else {
-            let values = schema::fetch_values(branch, entity, attr.clone()).await?;
+            let attr = schema::parse_claim_attribute(&attr_name)?;
+            let values = schema::fetch_values(branch, operator, entity, attr).await?;
             for value in values {
-                instructions.push(Instruction::Retract(Artifact {
-                    the: attr.clone(),
-                    of: entity.clone(),
-                    is: value,
-                    cause: None,
-                }));
+                tx = tx.retract(schema::make_statement(&attr_name, entity.clone(), value)?);
+                count += 1;
             }
         }
     }
 
-    if instructions.is_empty() {
+    if count == 0 {
         anyhow::bail!("No matching claims found to retract");
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     print_retract_result(entity, count, format);
     Ok(())
@@ -305,9 +285,10 @@ async fn retract_from_content(
 /// Retract claims from formal JSON content (EAV triples).
 async fn retract_from_json(site: &Site, content: &str) -> Result<()> {
     let triples: Vec<serde_json::Value> = serde_json::from_str(content)?;
-    let mut branch = site.open_branch().await?;
 
-    let mut instructions = Vec::new();
+    let mut tx = site.branch.transaction();
+    let mut count = 0;
+
     for triple in &triples {
         let the = triple["the"]
             .as_str()
@@ -317,32 +298,23 @@ async fn retract_from_json(site: &Site, content: &str) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("Missing 'of' in triple"))?;
         let is = &triple["is"];
 
-        let attr = schema::parse_claim_attribute(the)?;
         let entity = resolve_entity(of)?;
         let value = json_to_value(is)?;
 
-        instructions.push(Instruction::Retract(Artifact {
-            the: attr,
-            of: entity,
-            is: value,
-            cause: None,
-        }));
+        tx = tx.retract(schema::make_statement(the, entity, value)?);
+        count += 1;
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     println!("Retracted {} claims", count);
     Ok(())
 }
 
 /// Retract claims from YAML content.
-///
-/// Supports two formats:
-/// 1. EAV triple notation (sequence of `{the, of, is}` mappings)
-/// 2. Asserted notation (entity-grouped: `entity → namespace → field: value`)
 async fn retract_from_yaml(site: &Site, content: &str) -> Result<()> {
     let doc: serde_yaml::Value = serde_yaml::from_str(content)?;
 
@@ -360,7 +332,7 @@ async fn retract_from_yaml(site: &Site, content: &str) -> Result<()> {
             } else {
                 anyhow::bail!(
                     "Unrecognized YAML format: expected EAV triples (sequence of {{the, of, is}}) \
-                     or asserted notation (entity → namespace → fields)"
+                     or asserted notation (entity -> namespace -> fields)"
                 )
             }
         }
@@ -370,9 +342,9 @@ async fn retract_from_yaml(site: &Site, content: &str) -> Result<()> {
 
 /// Retract claims from EAV triple YAML.
 async fn retract_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Result<()> {
-    let mut branch = site.open_branch().await?;
+    let mut tx = site.branch.transaction();
+    let mut count = 0;
 
-    let mut instructions = Vec::new();
     for triple in triples {
         let the = triple["the"]
             .as_str()
@@ -381,23 +353,18 @@ async fn retract_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Re
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing 'of' in triple"))?;
 
-        let attr = schema::parse_claim_attribute(the)?;
         let entity = resolve_entity(of)?;
         let is = &triple["is"];
         let value = yaml_to_value(is)?;
 
-        instructions.push(Instruction::Retract(Artifact {
-            the: attr,
-            of: entity,
-            is: value,
-            cause: None,
-        }));
+        tx = tx.retract(schema::make_statement(the, entity, value)?);
+        count += 1;
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     println!("Retracted {} claims", count);
     Ok(())
@@ -405,8 +372,8 @@ async fn retract_from_eav_yaml(site: &Site, triples: &[serde_yaml::Value]) -> Re
 
 /// Retract claims from asserted notation YAML (entity-grouped mapping).
 async fn retract_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) -> Result<()> {
-    let mut branch = site.open_branch().await?;
-    let mut instructions = Vec::new();
+    let mut tx = site.branch.transaction();
+    let mut count = 0;
 
     for (entity_key, namespace_map) in top_map {
         let entity_id = entity_key
@@ -433,38 +400,33 @@ async fn retract_from_asserted_yaml(site: &Site, top_map: &serde_yaml::Mapping) 
                     .ok_or_else(|| anyhow::anyhow!("Expected field key to be a string"))?;
 
                 let qualified = format!("{}/{}", namespace, field_name);
-                let attr = schema::parse_claim_attribute(&qualified)?;
 
                 match value {
                     serde_yaml::Value::Sequence(seq) => {
                         for item in seq {
                             let val = yaml_to_value(item)?;
-                            instructions.push(Instruction::Retract(Artifact {
-                                the: attr.clone(),
-                                of: entity.clone(),
-                                is: val,
-                                cause: None,
-                            }));
+                            tx = tx.retract(schema::make_statement(
+                                &qualified,
+                                entity.clone(),
+                                val,
+                            )?);
+                            count += 1;
                         }
                     }
                     _ => {
                         let val = yaml_to_value(value)?;
-                        instructions.push(Instruction::Retract(Artifact {
-                            the: attr,
-                            of: entity.clone(),
-                            is: val,
-                            cause: None,
-                        }));
+                        tx = tx.retract(schema::make_statement(&qualified, entity.clone(), val)?);
+                        count += 1;
                     }
                 }
             }
         }
     }
 
-    let count = instructions.len();
-    branch
-        .commit(futures_util::stream::iter(instructions))
-        .await?;
+    tx.commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit: {}", e))?;
 
     println!("Retracted {} claims", count);
     Ok(())
