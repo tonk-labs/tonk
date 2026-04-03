@@ -49,7 +49,7 @@ pub async fn execute(
             } else {
                 std::env::current_dir().context("Failed to determine current directory")?
             };
-            Site::init(&parent, profile_location).await?
+            Site::init(&parent, profile_location, None).await?
         }
     };
 

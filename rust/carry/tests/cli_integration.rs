@@ -27,16 +27,18 @@ async fn test_init_creates_site() {
 async fn test_init_with_name() {
     let tmp = tempfile::TempDir::new().unwrap();
     let loc = dialog_repository::helpers::unique_location("carry-test");
+    let repo_loc = dialog_repository::helpers::unique_location("carry-test-repo");
     carry::init::execute(
         Some("my-project".to_string()),
         vec![],
         Some(tmp.path()),
         Some(loc.clone()),
+        Some(repo_loc.clone()),
     )
     .await
     .unwrap();
 
-    let site = carry::site::Site::open(tmp.path(), Some(loc))
+    let site = carry::site::Site::open(tmp.path(), Some(loc), Some(repo_loc.clone()))
         .await
         .unwrap();
     assert!(site.root().exists());
@@ -47,15 +49,28 @@ async fn test_init_with_name() {
 async fn test_init_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
     let loc = dialog_repository::helpers::unique_location("carry-test");
-    carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
-        .await
-        .unwrap();
+    let repo_loc = dialog_repository::helpers::unique_location("carry-test-repo");
+    carry::init::execute(
+        None,
+        vec![],
+        Some(tmp.path()),
+        Some(loc.clone()),
+        Some(repo_loc.clone()),
+    )
+    .await
+    .unwrap();
     // Second init should succeed (idempotent)
-    carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
-        .await
-        .unwrap();
+    carry::init::execute(
+        None,
+        vec![],
+        Some(tmp.path()),
+        Some(loc.clone()),
+        Some(repo_loc.clone()),
+    )
+    .await
+    .unwrap();
 
-    let site = carry::site::Site::open(tmp.path(), Some(loc))
+    let site = carry::site::Site::open(tmp.path(), Some(loc), Some(repo_loc.clone()))
         .await
         .unwrap();
     assert!(site.root().exists());
@@ -2394,18 +2409,25 @@ async fn test_invite_tokens_are_unique() {
 async fn test_site_reopen_preserves_dids() {
     let tmp = tempfile::TempDir::new().unwrap();
     let loc = dialog_repository::helpers::unique_location("carry-test");
-    carry::init::execute(None, vec![], Some(tmp.path()), Some(loc.clone()))
-        .await
-        .unwrap();
+    let repo_loc = dialog_repository::helpers::unique_location("carry-test-repo");
+    carry::init::execute(
+        None,
+        vec![],
+        Some(tmp.path()),
+        Some(loc.clone()),
+        Some(repo_loc.clone()),
+    )
+    .await
+    .unwrap();
 
-    let site1 = carry::site::Site::open(tmp.path(), Some(loc.clone()))
+    let site1 = carry::site::Site::open(tmp.path(), Some(loc.clone()), Some(repo_loc.clone()))
         .await
         .unwrap();
     let profile_did = site1.did();
     let repo_did = site1.repo_did();
     drop(site1);
 
-    let site2 = carry::site::Site::open(tmp.path(), Some(loc))
+    let site2 = carry::site::Site::open(tmp.path(), Some(loc), Some(repo_loc.clone()))
         .await
         .unwrap();
     assert_eq!(
@@ -2441,9 +2463,14 @@ async fn test_join_site_can_write_and_read_data() {
     .unwrap();
 
     // Open the joined site and bootstrap builtins on it
-    let joined = carry::site::Site::open(join_dir.path(), Some(env.profile_location.clone()))
-        .await
-        .unwrap();
+    let join_repo_loc = dialog_repository::helpers::unique_location("carry-test-join-repo");
+    let joined = carry::site::Site::open(
+        join_dir.path(),
+        Some(env.profile_location.clone()),
+        Some(join_repo_loc),
+    )
+    .await
+    .unwrap();
 
     carry::schema::bootstrap_builtins(&joined.branch, &joined.operator)
         .await

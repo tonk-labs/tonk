@@ -3,12 +3,12 @@
 //! Provides a `TestEnv` struct that creates an isolated `.carry/` site
 //! in a temporary directory, with a bootstrapped store.
 //!
-//! All tests use `Storage::temp()` for profile storage, so no test
-//! touches the real platform data directory.
+//! All tests use unique temp locations for both profile and repo storage,
+//! so tests can run in parallel without interference.
 
 use anyhow::{Context, Result};
 use carry::identity_cmd::ProfileLocation;
-use carry::site::Site;
+use carry::site::{RepoLocation, Site};
 use dialog_repository::helpers::unique_location;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -23,6 +23,7 @@ pub struct TestEnv {
     pub site_path: PathBuf,
     pub profile_did: String,
     pub profile_location: ProfileLocation,
+    pub repo_location: RepoLocation,
     site: Site,
 }
 
@@ -32,10 +33,16 @@ impl TestEnv {
     pub async fn new() -> Result<Self> {
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let site_path = temp_dir.path().to_path_buf();
-        let profile_location = unique_location("carry-test");
+        let profile_location = unique_location("carry-test-profile");
+        let repo_location = unique_location("carry-test-repo");
 
         // Initialize a site (creates .carry/ and bootstraps identity)
-        let site = Site::init(&site_path, Some(profile_location.clone())).await?;
+        let site = Site::init(
+            &site_path,
+            Some(profile_location.clone()),
+            Some(repo_location.clone()),
+        )
+        .await?;
         let profile_did = site.did();
 
         // Bootstrap pre-registered concepts
@@ -46,6 +53,7 @@ impl TestEnv {
             site_path,
             profile_did,
             profile_location,
+            repo_location,
             site,
         })
     }

@@ -142,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init { name, admins } => {
-            carry::init::execute(name, admins, repo_path, None).await?;
+            carry::init::execute(name, admins, repo_path, None, None).await?;
         }
         Commands::Query {
             target,

@@ -19,6 +19,7 @@ pub async fn execute(
     _admin_dids: Vec<String>,
     site_path: Option<&Path>,
     profile_location: Option<crate::identity_cmd::ProfileLocation>,
+    repo_location: Option<crate::site::RepoLocation>,
 ) -> Result<()> {
     let parent = if let Some(p) = site_path {
         p.to_path_buf()
@@ -28,14 +29,14 @@ pub async fn execute(
 
     // If a .carry/ directory already exists, report status and return
     if parent.join(".carry").is_dir() {
-        let site = Site::open(&parent, profile_location).await?;
+        let site = Site::open(&parent, profile_location, repo_location).await?;
         println!("Repository already exists at {}", site.root().display());
         println!("DID: {}", site.did());
         return Ok(());
     }
 
     // Create site (initializes .carry/ directory and identity)
-    let site = Site::init(&parent, profile_location).await?;
+    let site = Site::init(&parent, profile_location, repo_location).await?;
 
     // Bootstrap pre-registered concepts (attribute, concept, bookmark)
     schema::bootstrap_builtins(&site.branch, &site.operator).await?;

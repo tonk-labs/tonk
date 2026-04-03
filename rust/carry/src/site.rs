@@ -9,10 +9,16 @@
 
 use crate::identity_cmd::{self, ProfileLocation};
 use anyhow::{Context, Result};
+use dialog_capability::Capability;
+use dialog_capability::storage::Location;
 use dialog_repository::profile::Profile;
 use dialog_repository::storage::Storage;
 use dialog_repository::{Branch, Operator, Repository};
+use dialog_storage::provider::Address;
 use std::path::{Path, PathBuf};
+
+/// A capability pointing to a repository's storage location.
+pub type RepoLocation = Capability<Location<Address>>;
 
 // ---------------------------------------------------------------------------
 // Site -- the `.carry/` directory plus identity context
@@ -27,7 +33,7 @@ pub struct Site {
     /// The operator environment (derived from profile).
     pub operator: Operator,
     /// The backing storage.
-    pub storage: dialog_repository::storage::Storage,
+    pub storage: Storage,
     /// The capability-based repository (owns the delegation chain).
     pub repo: Repository,
     /// The main branch for data operations.
@@ -89,9 +95,18 @@ impl Site {
         Self::discover_dir(&cwd).context("No .carry repo found (run `carry init` to create one)")
     }
 
+    /// Default repo storage location (CWD-relative).
+    fn default_repo_location() -> RepoLocation {
+        Storage::current(".carry")
+    }
+
     /// Open a repository and its main branch.
-    async fn open_repo_and_branch(operator: &Operator) -> Result<(Repository, Branch)> {
-        let repo = Repository::open(Storage::current(".carry"))
+    async fn open_repo_and_branch(
+        operator: &Operator,
+        repo_location: Option<RepoLocation>,
+    ) -> Result<(Repository, Branch)> {
+        let location = repo_location.unwrap_or_else(Self::default_repo_location);
+        let repo = Repository::open(location)
             .perform(operator)
             .await
             .context("Failed to open repository")?;
@@ -114,7 +129,7 @@ impl Site {
     ) -> Result<Self> {
         let root = Self::locate(site_flag)?;
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
-        let (repo, branch) = Self::open_repo_and_branch(&id.operator).await?;
+        let (repo, branch) = Self::open_repo_and_branch(&id.operator, None).await?;
         Ok(Self {
             root,
             profile: id.profile,
@@ -132,15 +147,24 @@ impl Site {
     /// profile so the operator can act on behalf of the repo.
     ///
     /// `profile_location`: `None` for production, `Some(loc)` for tests.
-    pub async fn init(parent: &Path, profile_location: Option<ProfileLocation>) -> Result<Self> {
+    /// `repo_location`: `None` for production (CWD-relative), `Some(loc)` for tests.
+    pub async fn init(
+        parent: &Path,
+        profile_location: Option<ProfileLocation>,
+        repo_location: Option<RepoLocation>,
+    ) -> Result<Self> {
         let carry_dir = parent.join(".carry");
         std::fs::create_dir_all(&carry_dir)
             .with_context(|| format!("Failed to create {}", carry_dir.display()))?;
 
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
 
+        let location = repo_location
+            .clone()
+            .unwrap_or_else(Self::default_repo_location);
+
         // Create the repository (generates a repo credential)
-        let repo = Repository::open(Storage::current(".carry"))
+        let repo = Repository::open(location)
             .perform(&id.operator)
             .await
             .context("Failed to create repository")?;
@@ -181,7 +205,12 @@ impl Site {
     /// Open a site at an explicit path (for use by init when .carry/ already exists).
     ///
     /// `profile_location`: `None` for production, `Some(loc)` for tests.
-    pub async fn open(path: &Path, profile_location: Option<ProfileLocation>) -> Result<Self> {
+    /// `repo_location`: `None` for production, `Some(loc)` for tests.
+    pub async fn open(
+        path: &Path,
+        profile_location: Option<ProfileLocation>,
+        repo_location: Option<RepoLocation>,
+    ) -> Result<Self> {
         let carry_dir = if path.ends_with(".carry") {
             path.to_path_buf()
         } else {
@@ -191,7 +220,7 @@ impl Site {
             anyhow::bail!("No .carry directory found at {}", carry_dir.display());
         }
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
-        let (repo, branch) = Self::open_repo_and_branch(&id.operator).await?;
+        let (repo, branch) = Self::open_repo_and_branch(&id.operator, repo_location).await?;
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
