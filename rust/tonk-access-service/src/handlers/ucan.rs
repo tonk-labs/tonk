@@ -6,8 +6,8 @@
 //! 3. Returning the serialized AuthorizedRequest as CBOR
 
 use crate::error::{ErrorCode, ServiceError};
-use dialog_s3_credentials::ucan::UcanAuthorizer;
-use dialog_s3_credentials::{Address, s3};
+use dialog_remote_s3::{AccessError, Address, S3Credentials};
+use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
 /// Add CORS headers to a response for WASM compatibility.
@@ -20,13 +20,13 @@ fn with_cors_headers(response: Response) -> Response {
     response.with_headers(headers)
 }
 
-/// OPTIONS /ucan/ → Handle CORS preflight
+/// OPTIONS /ucan/ -> Handle CORS preflight
 pub async fn handle_options(_req: Request, _ctx: RouteContext<()>) -> Result<Response> {
     let response = Response::empty()?.with_status(204);
     Ok(with_cors_headers(response))
 }
 
-/// POST /ucan/ → Authorize UCAN invocation and return presigned S3 request
+/// POST /ucan/ -> Authorize UCAN invocation and return presigned S3 request
 pub async fn handle(mut req: Request, ctx: RouteContext<()>) -> Result<Response> {
     let response = match handle_inner(&mut req, &ctx).await {
         Ok(response) => response,
@@ -76,7 +76,6 @@ async fn handle_inner(
 
 /// Create UcanAuthorizer from environment configuration.
 fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthorizer, ServiceError> {
-    // Get R2 configuration from environment
     let account_id = ctx
         .var("R2_ACCOUNT_ID")
         .map_err(|e| {
@@ -120,27 +119,18 @@ fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthoriz
     // Build R2 endpoint URL
     let endpoint = format!("https://{}.r2.cloudflarestorage.com", account_id);
 
-    // Create S3 credentials for R2 (using "auto" region as R2 requires)
-    let address = Address::new(&endpoint, "auto", &bucket);
-    let s3_credentials = s3::Credentials::private(address, access_key_id, secret_access_key)
-        .map_err(|e| {
-            ServiceError::new(
-                ErrorCode::InternalError,
-                format!("Failed to create credentials: {}", e),
-            )
-        })?;
+    // Create address with credentials
+    let address = Address::new(&endpoint, "auto", &bucket)
+        .with_credentials(S3Credentials::new(access_key_id, secret_access_key));
 
-    Ok(UcanAuthorizer::new(s3_credentials))
+    Ok(UcanAuthorizer::new(address))
 }
 
 /// Map AccessError to ServiceError with appropriate error codes.
-fn map_access_error(err: dialog_s3_credentials::AccessError) -> ServiceError {
-    use dialog_s3_credentials::AccessError;
-
+fn map_access_error(err: AccessError) -> ServiceError {
     match err {
         AccessError::NoDelegation(msg) => ServiceError::new(ErrorCode::ChainInvalid, msg),
         AccessError::Invocation(msg) => {
-            // Check for specific error patterns
             if msg.contains("expired") {
                 ServiceError::new(ErrorCode::InvocationExpired, msg)
             } else if msg.contains("signature") {

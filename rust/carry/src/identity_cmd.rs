@@ -88,6 +88,10 @@ pub async fn execute(reset: bool) -> Result<()> {
 }
 
 /// Platform data directory for the carry profile.
+///
+/// `Storage::profile("carry")` resolves to `<data_dir>/dialog/carry`
+/// (the `dialog` prefix comes from the `profile://` scheme in
+/// `dialog-storage`).
 fn profile_data_dir() -> Option<std::path::PathBuf> {
-    dirs::data_dir().map(|d| d.join("carry"))
+    dirs::data_dir().map(|d| d.join("dialog").join("carry"))
 }

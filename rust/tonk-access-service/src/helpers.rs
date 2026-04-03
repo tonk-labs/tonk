@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Connection info for the UCAN access service test server.
 ///
-/// Contains all information needed to configure `ucan::Credentials` and
+/// Contains all information needed to configure UCAN credentials and
 /// connect to the backing S3 server for test verification.
 ///
 /// This struct is available on all platforms so it can be used as a test
@@ -32,8 +32,3 @@ pub mod server;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::*;
-
-// Re-export Ed25519Signer from dialog-storage for convenience in tests
-// (previously called Operator in older dialog-storage versions)
-#[cfg(not(target_arch = "wasm32"))]
-pub use dialog_storage::s3::helpers::Ed25519Signer as Operator;

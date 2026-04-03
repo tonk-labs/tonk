@@ -16,14 +16,12 @@ integration-tests = ["helpers"]
 # Enable test helpers (local access service server)
 helpers = [
     "dep:anyhow",
+    "dep:bytes",
+    "dep:http-body-util",
     "dep:hyper",
     "dep:hyper-util",
     "dep:tokio",
-    "dep:async-trait",
-    "dep:bytes",
-    "dep:http-body-util",
-    "dialog-storage/helpers",
-    "dialog-common/helpers",
+    "dialog-remote-s3/helpers",
 ]
 
 [dependencies]
@@ -31,16 +29,10 @@ helpers = [
 worker = { workspace = true }
 worker-macros = { workspace = true }
 
-# S3 presigning with UCAN support
-dialog-s3-credentials = { workspace = true, features = ["ucan"] }
-
-# UCAN
-dialog-ucan = { workspace = true }
-dialog-varsig = { workspace = true }
-dialog-credentials = { workspace = true }
-
-# Cryptography
-ed25519-dalek = { workspace = true }
+# S3 + UCAN authorization
+dialog-common = { workspace = true }
+dialog-remote-s3 = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
@@ -49,33 +41,20 @@ serde_ipld_dagcbor = { workspace = true }
 
 # Utilities
 thiserror = { workspace = true }
-getrandom_0_2 = { workspace = true }
-getrandom = { workspace = true }
 
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-async-trait = { workspace = true, optional = true }
-bytes = { workspace = true, optional = true }
-http-body-util = { workspace = true, optional = true }
-dialog-storage = { workspace = true, features = ["s3", "ucan"], optional = true }
-dialog-common = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Testing with dialog_common::test macro
-dialog-common = { workspace = true, features = ["helpers"] }
-dialog-storage = { workspace = true, features = ["s3", "ucan", "helpers"] }
-dialog-s3-credentials = { workspace = true, features = ["ucan", "helpers"] }
-dialog-ucan = { workspace = true }
 anyhow = { workspace = true }
-
-[lints.rust]
-# The dialog_common::test macro uses cfg conditions that originate from the macro crate.
-# We need to tell check-cfg to expect these values.
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(dialog_test_native_integration)',
-    'cfg(dialog_test_wasm_integration)',
-    'cfg(feature, values("web-integration-tests"))',
-] }
+dialog-capability = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-remote-s3 = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
+dialog-ucan = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

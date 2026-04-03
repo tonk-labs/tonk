@@ -5,10 +5,10 @@
 //! as a native HTTP server with CORS support for browser-based testing.
 
 use super::AccessServiceAddress;
-use dialog_common::helpers::{Provider, Service};
-use dialog_s3_credentials::ucan::UcanAuthorizer;
-use dialog_s3_credentials::{Address, s3};
-use dialog_storage::s3::helpers::LocalS3;
+use dialog_common::helpers::Provider as _;
+use dialog_remote_s3::helpers::LocalS3;
+use dialog_remote_s3::{Address, S3Credentials};
+use dialog_remote_ucan_s3::UcanAuthorizer;
 use hyper::body::Incoming;
 use hyper::header::{
     ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS, ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -33,26 +33,19 @@ pub struct AccessServer {
 
 impl AccessServer {
     /// Start a UCAN access service backed by a local S3 server.
-    ///
-    /// # Arguments
-    ///
-    /// * `s3_server` - A running LocalS3 server instance
-    /// * `bucket` - The bucket name to use
-    /// * `access_key` - AWS access key ID for S3 authentication
-    /// * `secret_key` - AWS secret access key for S3 authentication
     pub async fn start(
         s3_server: LocalS3,
         bucket: &str,
         access_key: &str,
         secret_key: &str,
     ) -> anyhow::Result<Self> {
-        // Create S3 credentials for the authorizer
-        let address = Address::new(&s3_server.endpoint, "us-east-1", bucket);
-        let s3_credentials =
-            s3::Credentials::private(address, access_key, secret_key)?.with_path_style(true);
+        // Create address with credentials for the authorizer
+        let address = Address::new(&s3_server.endpoint, "us-east-1", bucket)
+            .with_path_style()
+            .with_credentials(S3Credentials::new(access_key, secret_key));
 
         // Create UcanAuthorizer - the core of our service
-        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(s3_credentials)));
+        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -95,10 +88,6 @@ impl AccessServer {
 }
 
 /// Handle an incoming UCAN access service request.
-///
-/// This implements the same logic as the Cloudflare Worker handler:
-/// - POST /ucan/ → Authorize UCAN and return presigned URL
-/// - OPTIONS /ucan/ → CORS preflight
 async fn handle_request(
     req: Request<Incoming>,
     authorizer: Arc<RwLock<UcanAuthorizer>>,
@@ -116,7 +105,7 @@ async fn handle_request(
         ));
     }
 
-    // Only accept POST requests to /ucan/
+    // Only accept POST requests
     if req.method() != Method::POST {
         return Ok(cors_response(
             Response::builder()
@@ -143,12 +132,12 @@ async fn handle_request(
         }
     };
 
-    // Authorize the UCAN container using UcanAuthorizer
+    // Authorize the UCAN container
     let authorizer = authorizer.read().await;
     match authorizer.authorize(&body_bytes).await {
-        Ok(descriptor) => {
-            // Serialize the AuthorizedRequest as CBOR
-            match serde_ipld_dagcbor::to_vec(&descriptor) {
+        Ok(permit) => {
+            // Serialize as CBOR
+            match serde_ipld_dagcbor::to_vec(&permit) {
                 Ok(cbor_bytes) => Ok(cors_response(
                     Response::builder()
                         .status(StatusCode::OK)
@@ -198,12 +187,10 @@ fn cors_response<T>(mut response: Response<T>) -> Response<T> {
     response
 }
 
-#[async_trait::async_trait]
-impl Provider for AccessServer {
-    async fn stop(self) -> anyhow::Result<()> {
-        // Send shutdown signal - ignore error if receiver is already dropped
+impl AccessServer {
+    /// Shut down the access service and its backing S3 server.
+    pub async fn stop(self) -> anyhow::Result<()> {
         let _ = self.shutdown_tx.send(());
-        // Wait for the server task to complete
         let _ = self.server_handle.await;
         self.s3_server.stop().await
     }
@@ -230,13 +217,10 @@ impl Default for AccessServiceSettings {
     }
 }
 
-/// Provider function for AccessServiceAddress.
-///
-/// Starts both an S3 server and a UCAN access service.
-#[dialog_common::provider]
+/// Start a UCAN access service backed by a local S3 server.
 pub async fn access_service(
     settings: AccessServiceSettings,
-) -> anyhow::Result<Service<AccessServiceAddress, AccessServer>> {
+) -> anyhow::Result<(AccessServiceAddress, AccessServer)> {
     let bucket = if settings.bucket.is_empty() {
         "test-bucket"
     } else {
@@ -270,5 +254,5 @@ pub async fn access_service(
         secret_access_key: settings.secret_access_key,
     };
 
-    Ok(Service::new(address, access_server))
+    Ok((address, access_server))
 }
