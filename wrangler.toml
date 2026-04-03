@@ -1,17 +1,12 @@
 name = "tonk-access-service"
-main = "./result/tonk-access-service/worker/shim.mjs"
+main = "./result/worker/shim.mjs"
 compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 [build]
-command = "nix build .#tonk-cloudflare-artifacts"
+command = "nix build --accept-flake-config .#tonk-access-service && cp -rL result build-output && rm -f result && mv build-output result"
 
-[assets]
-directory = "./result/tonk-ui"
-not_found_handling = "single-page-application"
-binding = "ASSETS"
-
-# R2 bucket binding - for checking blob existence
+# R2 bucket binding
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "tonk-spaces"

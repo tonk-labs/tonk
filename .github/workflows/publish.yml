@@ -12,7 +12,7 @@ jobs:
       contents: read
       deployments: write
       pull-requests: write
-    name: Cloudflare Artifacts
+    name: Deploy Access Service
     steps:
       - uses: actions/checkout@v4
       - uses: wimpysworld/nothing-but-nix@main
@@ -23,34 +23,21 @@ jobs:
         with:
           name: tonk-test-cache
           authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-      - uses: mshick/add-pr-comment@v2
-        if: github.event_name == 'pull_request'
-        with:
-          message: |
-            Deploying Cloudflare artifacts...
-
-      - name: Build assets
-        run: |
-          nix build --accept-flake-config .#tonk-cloudflare-artifacts
 
       - name: Deploy preview
         if: github.event_name == 'pull_request'
         id: deploy-preview
-        working-directory: rust/tonk-access-service
         run: |
-          {
-            echo 'command-output<<EOF'
-            nix --accept-flake-config develop .#ci --command wrangler versions upload --preview-alias pr-${{ github.event.pull_request.number }}
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
+          echo 'Wrangler output for this change:' > "$RUNNER_TEMP/pr-comment.md"
+          echo '' >> "$RUNNER_TEMP/pr-comment.md"
+          nix --accept-flake-config develop .#ci --command wrangler versions upload --preview-alias pr-${{ github.event.pull_request.number }} 2>&1 | tail -30 >> "$RUNNER_TEMP/pr-comment.md"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy production
         if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
-        working-directory: rust/tonk-access-service
-        run: nix --accept-flake-config develop --command wrangler deploy
+        run: nix --accept-flake-config develop .#ci --command wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -58,8 +45,4 @@ jobs:
       - uses: mshick/add-pr-comment@v2
         if: github.event_name == 'pull_request'
         with:
-          message: |
-            Wrangler output for this change:
-            
-            ${{ steps.deploy-preview.outputs.command-output }}
-            
+          message-path: ${{ runner.temp }}/pr-comment.md

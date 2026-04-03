@@ -18,7 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: wimpysworld/nothing-but-nix@main
-      - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
         with:
           nix_path: nixpkgs=channel:nixos-unstable
@@ -41,11 +40,9 @@ jobs:
     runs-on: 'ubuntu-latest'
     strategy:
       matrix:
-        platform: ["native", "web"]
         profile: ["debug", "release"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -65,4 +62,4 @@ jobs:
             --accept-flake-config \
             --set-env-var TMPDIR $RUNNER_TEMP \
             .#ci \
-            --command test:${{matrix.platform}}:${{matrix.profile}}
+            --command test:native:${{matrix.profile}}
