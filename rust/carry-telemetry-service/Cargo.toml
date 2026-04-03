@@ -1,0 +1,41 @@
+[package]
+name = "carry-telemetry-service"
+description = "Minimal privacy-preserving telemetry for carry"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+helpers = [
+    "dep:anyhow",
+    "dep:bytes",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:tokio",
+]
+
+[dependencies]
+worker = { workspace = true }
+worker-macros = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Test helpers (optional, for integration testing)
+anyhow = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, optional = true, features = ["tokio"] }
+tokio = { workspace = true, optional = true, features = ["net", "sync", "rt", "macros"] }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }

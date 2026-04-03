@@ -14,6 +14,7 @@ path = "src/bin/carry.rs"
 
 [dev-dependencies]
 anyhow = { workspace = true }
+carry-telemetry-service = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
@@ -42,6 +43,7 @@ bs58 = { workspace = true }
 # Crypto
 ed25519-dalek = { workspace = true }
 
+reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 # Serialization
 serde_json = { workspace = true }

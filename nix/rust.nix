@@ -101,7 +101,8 @@ let
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # carry requires tokio["full"] which pulls in mio, a crate that needs
   # OS-level async I/O primitives (epoll/kqueue) unavailable in WASM.
-  wasmCargoExcludeArgs = "--workspace --exclude carry --exclude tonk-assess";
+  # If you add a new native-only crate, add it to the --exclude list here.
+  wasmCargoExcludeArgs = "--workspace --exclude carry --exclude tonk-assess --exclude carry-telemetry-service";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";

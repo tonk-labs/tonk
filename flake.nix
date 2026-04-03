@@ -140,12 +140,12 @@
         packages = {
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-access-service";
+            args = "--workspace --exclude tonk-access-service --exclude carry-telemetry-service";
           };
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--workspace --exclude tonk-access-service --release";
+            args = "--workspace --exclude tonk-access-service --exclude carry-telemetry-service --release";
           };
 
           tests-cli-integration = buildTestArchive {
@@ -193,6 +193,20 @@
               cd rust/tonk-access-service
               worker-build --release
               echo "fin"
+            '';
+
+            installPhase = ''
+              mkdir -p $out
+              cp -r ./build/* $out/
+            '';
+          };
+
+          carry-telemetry-service = buildWasmCrate {
+            pname = "carry-telemetry-service";
+
+            buildPhase = ''
+              cd rust/carry-telemetry-service
+              worker-build --release
             '';
 
             installPhase = ''

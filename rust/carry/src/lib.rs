@@ -14,6 +14,7 @@ pub mod retract_cmd;
 pub mod site;
 pub mod status_cmd;
 pub mod target;
+pub mod telemetry;
 
 // ---------------------------------------------------------------------------
 // Retained internal library modules
