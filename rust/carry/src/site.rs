@@ -11,6 +11,7 @@ use crate::identity_cmd::{self, ProfileLocation};
 use anyhow::{Context, Result};
 use dialog_capability::Capability;
 use dialog_capability::storage::Location;
+use dialog_credentials::credential::SignerCredential;
 use dialog_repository::profile::Profile;
 use dialog_repository::storage::Storage;
 use dialog_repository::{Branch, Operator, Repository};
@@ -35,7 +36,7 @@ pub struct Site {
     /// The backing storage.
     pub storage: Storage,
     /// The capability-based repository (owns the delegation chain).
-    pub repo: Repository,
+    pub repo: Repository<SignerCredential>,
     /// The main branch for data operations.
     pub branch: Branch,
     /// Profile storage location (kept for re-opening with the same identity).
@@ -104,7 +105,7 @@ impl Site {
     async fn open_repo_and_branch(
         operator: &Operator,
         repo_location: Option<RepoLocation>,
-    ) -> Result<(Repository, Branch)> {
+    ) -> Result<(Repository<SignerCredential>, Branch)> {
         let location = repo_location.unwrap_or_else(Self::default_repo_location);
         let repo = Repository::open(location)
             .perform(operator)
@@ -170,10 +171,13 @@ impl Site {
             .context("Failed to create repository")?;
 
         // Delegate repo ownership to the profile so the operator
-        // (derived from the profile) can act on the repo's behalf.
+        // (derived from the profile) can act on the repo's behalf. The
+        // repo claims authority over itself and re-delegates to the
+        // profile's DID; the profile then saves the resulting chain.
         let chain = repo
-            .ownership()
-            .delegate(&id.profile)
+            .access()
+            .claim(&repo)
+            .delegate(id.profile.did())
             .perform(&id.operator)
             .await
             .context("Failed to delegate repo ownership to profile")?;

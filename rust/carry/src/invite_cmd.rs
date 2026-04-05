@@ -9,8 +9,6 @@
 
 use crate::site::Site;
 use anyhow::{Context, Result};
-use dialog_capability::Subject;
-use dialog_capability::ucan::Ucan;
 use dialog_credentials::Ed25519Signer;
 use dialog_credentials::credential::SignerCredential;
 use dialog_ucan::DelegationChain;
@@ -41,9 +39,13 @@ pub async fn create_token(site: &Site) -> Result<String> {
         .context("Failed to generate membership credential")?;
     let membership = SignerCredential::from(membership_signer);
 
-    let chain = Ucan::delegate(&Subject::from(site.repo.did()))
-        .issuer(site.profile.credential().signer().clone())
-        .audience(membership.did())
+    // The profile claims its existing authority over the repo subject and
+    // re-delegates it to the freshly generated membership credential.
+    let chain = site
+        .profile
+        .access()
+        .claim(&site.repo)
+        .delegate(membership.did())
         .perform(&site.operator)
         .await
         .context("Failed to create delegation to membership credential")?;

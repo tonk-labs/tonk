@@ -120,6 +120,62 @@ mod inner {
             #[arg(value_name = "TOKEN")]
             token: String,
         },
+
+        /// Manage sync remotes for this repository
+        Remote {
+            #[command(subcommand)]
+            command: RemoteCommands,
+        },
+
+        /// Push local changes to the configured remote
+        Push {},
+
+        /// Pull and merge changes from the configured remote
+        Pull {},
+    }
+
+    #[derive(Subcommand)]
+    pub enum RemoteCommands {
+        /// Register a sync destination for this repository
+        Add {
+            /// Name of the remote (e.g. "origin")
+            #[arg(value_name = "NAME")]
+            name: String,
+
+            /// Remote URL. https:// for a UCAN-S3 access service
+            /// (recommended), or s3:// for direct S3 (see --endpoint /
+            /// --region / --bucket).
+            #[arg(value_name = "URL")]
+            url: String,
+
+            /// Repository subject DID at the remote. Defaults to this
+            /// repo's own DID (the common case); set this only when
+            /// pointing at somebody else's repository.
+            #[arg(long, value_name = "DID")]
+            subject: Option<String>,
+
+            /// S3 endpoint URL (only for s3:// remotes)
+            #[arg(long, value_name = "URL")]
+            endpoint: Option<String>,
+
+            /// S3 region (only for s3:// remotes)
+            #[arg(long, value_name = "REGION")]
+            region: Option<String>,
+
+            /// S3 bucket (only for s3:// remotes)
+            #[arg(long, value_name = "BUCKET")]
+            bucket: Option<String>,
+
+            /// S3 access key ID (only for private s3:// remotes).
+            /// WARNING: persisted in plaintext inside .carry/.
+            #[arg(long = "access-key", value_name = "KEY")]
+            access_key: Option<String>,
+
+            /// S3 secret access key (only for private s3:// remotes).
+            /// WARNING: persisted in plaintext inside .carry/.
+            #[arg(long = "secret-key", value_name = "SECRET")]
+            secret_key: Option<String>,
+        },
     }
 }
 
@@ -149,6 +205,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Identity { .. } => "identity",
         Commands::Invite { .. } => "invite",
         Commands::Join { .. } => "join",
+        Commands::Remote { .. } => "remote",
+        Commands::Push { .. } => "push",
+        Commands::Pull { .. } => "pull",
     };
 
     // Best-effort telemetry: resolve identity for the blinded ID, but
@@ -220,6 +279,42 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Join { token } => {
             carry::join_cmd::execute(&token, repo_path, None).await?;
+        }
+        Commands::Remote { command } => match command {
+            RemoteCommands::Add {
+                name,
+                url,
+                subject,
+                endpoint,
+                region,
+                bucket,
+                access_key,
+                secret_key,
+            } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute(
+                    &site,
+                    carry::remote_cmd::RemoteAddOptions {
+                        name,
+                        url,
+                        subject,
+                        s3_endpoint: endpoint,
+                        s3_region: region,
+                        s3_bucket: bucket,
+                        s3_access_key: access_key,
+                        s3_secret_key: secret_key,
+                    },
+                )
+                .await?;
+            }
+        },
+        Commands::Push {} => {
+            let site = carry::site::Site::resolve(repo_path, None).await?;
+            carry::push_cmd::execute(&site).await?;
+        }
+        Commands::Pull {} => {
+            let site = carry::site::Site::resolve(repo_path, None).await?;
+            carry::pull_cmd::execute(&site).await?;
         }
     }
 
