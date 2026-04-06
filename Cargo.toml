@@ -52,6 +52,7 @@ worker-macros = "0.7.4"
 # Dialog DB
 dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
 dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
+dialog-capability-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
 dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
