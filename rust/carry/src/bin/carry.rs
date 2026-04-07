@@ -493,15 +493,32 @@ mod tests {
 
     #[test]
     fn invite_parses() {
-        let cli = Cli::try_parse_from(["carry", "invite"]).unwrap();
-        assert!(matches!(cli.command, Commands::Invite { .. }));
+        let cli = Cli::try_parse_from(["carry", "invite", "did:key:z6Mktest1234"]).unwrap();
+        match cli.command {
+            Commands::Invite { ref did } => {
+                assert_eq!(did, "did:key:z6Mktest1234");
+            }
+            _ => panic!("Expected Invite command"),
+        }
     }
 
     #[test]
     fn invite_with_repo_flag() {
-        let cli = Cli::try_parse_from(["carry", "--repo", "/tmp/myrepo", "invite"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "carry",
+            "--repo",
+            "/tmp/myrepo",
+            "invite",
+            "did:key:z6Mktest5678",
+        ])
+        .unwrap();
         assert_eq!(cli.repo.as_deref(), Some("/tmp/myrepo"));
-        assert!(matches!(cli.command, Commands::Invite { .. }));
+        match cli.command {
+            Commands::Invite { ref did } => {
+                assert_eq!(did, "did:key:z6Mktest5678");
+            }
+            _ => panic!("Expected Invite command"),
+        }
     }
 
     // -- Join -------------------------------------------------------------------

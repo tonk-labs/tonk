@@ -129,6 +129,14 @@ impl Site {
         profile_location: Option<ProfileLocation>,
     ) -> Result<Self> {
         let root = Self::locate(site_flag)?;
+
+        // Ensure CWD is the project directory (parent of .carry/) so that
+        // Storage::current(".carry") resolves to the discovered repo,
+        // not whatever directory the process happened to start in.
+        let project_dir = root.parent().context(".carry/ has no parent directory")?;
+        std::env::set_current_dir(project_dir)
+            .with_context(|| format!("Failed to chdir to {}", project_dir.display()))?;
+
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
         let (repo, branch) = Self::open_repo_and_branch(&id.operator, None).await?;
         Ok(Self {
@@ -157,6 +165,14 @@ impl Site {
         let carry_dir = parent.join(".carry");
         std::fs::create_dir_all(&carry_dir)
             .with_context(|| format!("Failed to create {}", carry_dir.display()))?;
+
+        // When no explicit repo_location is given, ensure CWD is the
+        // project directory so Storage::current(".carry") resolves
+        // to the newly created directory.
+        if repo_location.is_none() {
+            std::env::set_current_dir(parent)
+                .with_context(|| format!("Failed to chdir to {}", parent.display()))?;
+        }
 
         let id = identity_cmd::ensure_identity(profile_location.clone()).await?;
 

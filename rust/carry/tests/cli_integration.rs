@@ -2340,24 +2340,25 @@ async fn test_invite_creates_token() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
 
-    // Create token via the public API
-    let token = carry::invite_cmd::create_token(site).await.unwrap();
+    // Create token via the public API (invite our own DID for testing)
+    let token = carry::invite_cmd::create_token(site, &site.profile.did())
+        .await
+        .unwrap();
 
     // Token should have the expected prefix
-    assert!(token.starts_with("carry_inv2_"));
+    assert!(token.starts_with("carry_inv_"));
 
     // Decode roundtrip should succeed
-    let (cred_bytes, chain) = carry::invite_cmd::decode_token(&token).unwrap();
-    assert!(!cred_bytes.is_empty());
+    let decoded = carry::invite_cmd::decode_token(&token).unwrap();
     // Chain should serialize/deserialize cleanly
-    assert!(chain.to_bytes().is_ok());
+    assert!(decoded.chain.to_bytes().is_ok());
 }
 
 #[tokio::test]
 async fn test_invite_decode_rejects_bad_tokens() {
     assert!(carry::invite_cmd::decode_token("not_a_token").is_err());
-    assert!(carry::invite_cmd::decode_token("carry_inv2_").is_err());
-    assert!(carry::invite_cmd::decode_token("carry_inv2_1111").is_err());
+    assert!(carry::invite_cmd::decode_token("carry_inv_").is_err());
+    assert!(carry::invite_cmd::decode_token("carry_inv_1111").is_err());
 }
 
 #[tokio::test]
@@ -2365,7 +2366,9 @@ async fn test_invite_join_roundtrip() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
 
-    let token = carry::invite_cmd::create_token(site).await.unwrap();
+    let token = carry::invite_cmd::create_token(site, &site.profile.did())
+        .await
+        .unwrap();
 
     // Join with the token in a new directory
     let join_dir = tempfile::TempDir::new().unwrap();
@@ -2387,7 +2390,9 @@ async fn test_invite_execute_succeeds() {
     let site = env.site();
 
     // execute() prints to stdout — verify the production path doesn't error
-    carry::invite_cmd::execute(site, "").await.unwrap();
+    carry::invite_cmd::execute(site, &site.profile.did().to_string())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -2395,9 +2400,14 @@ async fn test_invite_tokens_are_unique() {
     let env = TestEnv::new().await.unwrap();
     let site = env.site();
 
-    // Each invite should generate a distinct ephemeral credential
-    let token1 = carry::invite_cmd::create_token(site).await.unwrap();
-    let token2 = carry::invite_cmd::create_token(site).await.unwrap();
+    // Each invite for different audiences should produce different tokens
+    let other_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
+    let token1 = carry::invite_cmd::create_token(site, &site.profile.did())
+        .await
+        .unwrap();
+    let token2 = carry::invite_cmd::create_token(site, &other_did.parse().unwrap())
+        .await
+        .unwrap();
     assert_ne!(token1, token2);
 }
 
@@ -2452,7 +2462,9 @@ async fn test_join_site_can_write_and_read_data() {
     let site = env.site();
 
     // Invite → join (use the same test-scoped profile)
-    let token = carry::invite_cmd::create_token(site).await.unwrap();
+    let token = carry::invite_cmd::create_token(site, &site.profile.did())
+        .await
+        .unwrap();
     let join_dir = tempfile::TempDir::new().unwrap();
     carry::join_cmd::execute(
         &token,
