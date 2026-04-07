@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "carry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "carry-telemetry-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-access-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "tonk-assess"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
