@@ -112,7 +112,11 @@ mod inner {
         },
 
         /// Create an invite token for a collaborator
-        Invite {},
+        Invite {
+            /// DID of the collaborator to invite
+            #[arg(value_name = "DID")]
+            did: String,
+        },
 
         /// Join a repository using an invite token
         Join {
@@ -273,9 +277,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Identity { reset } => {
             carry::identity_cmd::execute(reset).await?;
         }
-        Commands::Invite {} => {
+        Commands::Invite { did } => {
             let site = carry::site::Site::resolve(repo_path, None).await?;
-            carry::invite_cmd::execute(&site, "").await?;
+            carry::invite_cmd::execute(&site, &did).await?;
         }
         Commands::Join { token } => {
             carry::join_cmd::execute(&token, repo_path, None).await?;

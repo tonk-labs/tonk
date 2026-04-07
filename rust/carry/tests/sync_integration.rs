@@ -10,6 +10,7 @@ use carry::site::{RepoLocation, Site};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
 use dialog_repository::helpers::unique_location;
+use dialog_varsig::Principal;
 use futures_util::TryStreamExt;
 
 /// Create an isolated Site with unique profile + repo storage.
@@ -32,7 +33,7 @@ async fn start_access_service() -> Result<(
         .context("Failed to start local UCAN access service")
 }
 
-/// Commit a single claim using carry's schema helpers.
+/// Commit a single claim.
 async fn assert_claim(site: &Site, the: &str, of: &str, is: &str) -> Result<()> {
     let entity = carry::schema::derive_entity(of)?;
     let stmt =
@@ -69,8 +70,7 @@ async fn query_values(site: &Site, the: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Set up a site as the repo owner with a UCAN remote. Site::init
-/// already does the repo->profile delegation, so we just add the remote.
+/// Set up a site as the repo owner with a UCAN remote.
 async fn setup_owner(label: &str, access_url: &str) -> Result<Site> {
     let site = isolated_site(label).await?;
 
@@ -81,88 +81,6 @@ async fn setup_owner(label: &str, access_url: &str) -> Result<Site> {
         .perform(&site.operator)
         .await?;
     let remote_main = origin.branch("main").open().perform(&site.operator).await?;
-    site.branch
-        .set_upstream(remote_main)
-        .perform(&site.operator)
-        .await?;
-
-    Ok(site)
-}
-
-/// Join a site using an invite token (mirrors `carry join` logic).
-async fn join_with_token(label: &str, token: &str) -> Result<Site> {
-    use dialog_capability::access::{Permit, Save};
-    use dialog_capability::storage::Storage as StorageCap;
-    use dialog_capability::{Policy, Subject};
-    use dialog_capability_ucan::Ucan;
-    use dialog_repository::helpers::unique_location;
-    use dialog_repository::profile::access::Access;
-    use dialog_storage::provider::Address;
-
-    let site = isolated_site(label).await?;
-    let decoded = carry::invite_cmd::decode_token(token)?;
-    let ra = decoded
-        .remote
-        .as_ref()
-        .expect("v3 token should contain remote address");
-
-    // Import credential (must be a signer)
-    let cred_export =
-        dialog_credentials::credential::export::CredentialExport::try_from(decoded.cred_bytes)?;
-    let credential = dialog_credentials::credential::Credential::import(cred_export).await?;
-    let membership_signer = match credential {
-        dialog_credentials::credential::Credential::Signer(s) => s,
-        _ => anyhow::bail!("expected signer"),
-    };
-
-    // 0. Mount membership DID at a temp location so we can save chains
-    let membership_did = dialog_varsig::Principal::did(&membership_signer);
-    let membership_loc = unique_location("membership");
-    let mount_addr = {
-        use dialog_capability::storage::Location;
-        Location::of(&membership_loc).address().clone()
-    };
-    StorageCap::mount::<Address>(membership_did.clone(), mount_addr)
-        .perform(&site.operator)
-        .await
-        .map_err(|e| anyhow::anyhow!("mount failed: {:?}", e))?;
-
-    // 1. Save token chain under membership DID
-    Subject::from(membership_did)
-        .attenuate(Permit)
-        .invoke(Save::<Ucan>::new(decoded.chain))
-        .perform(&site.operator)
-        .await?;
-
-    // 2. Membership re-delegates to our profile (claim against REMOTE subject)
-    let remote_subject: dialog_capability::Capability<dialog_capability::Subject> =
-        Subject::from(ra.subject().clone()).into();
-    let extended = Access::new(&membership_signer)
-        .claim(remote_subject)
-        .delegate(dialog_varsig::Principal::did(&site.profile))
-        .perform(&site.operator)
-        .await?;
-
-    // 3. Save extended chain under our profile
-    site.profile
-        .access()
-        .save(extended)
-        .perform(&site.operator)
-        .await?;
-
-    // Set up remote from the token
-    let bob_origin = site
-        .repo
-        .remote("origin")
-        .create(ra.site().clone())
-        .subject(ra.subject().clone())
-        .perform(&site.operator)
-        .await?;
-    let remote_main = bob_origin
-        .branch("main")
-        .open()
-        .perform(&site.operator)
-        .await?;
     site.branch
         .set_upstream(remote_main)
         .perform(&site.operator)
@@ -188,23 +106,52 @@ async fn basic_ucan_push_pull() -> Result<()> {
 }
 
 #[tokio::test]
-async fn alice_pushes_bob_joins_and_pulls() -> Result<()> {
+async fn alice_invites_bob_who_pulls() -> Result<()> {
     let (access_addr, _server) = start_access_service().await?;
     let alice = setup_owner("alice", &access_addr.access_service_url).await?;
 
     // Alice writes and pushes
     assert_claim(&alice, "com.test/title", "note:1", "hello from alice").await?;
-    let push = alice.branch.push().perform(&alice.operator).await?;
-    assert!(push.is_some(), "Alice's push should succeed");
+    alice.branch.push().perform(&alice.operator).await?;
 
-    // Alice generates invite
-    let token = carry::invite_cmd::create_token(&alice).await?;
-    assert!(token.starts_with("carry_inv3_"), "should be v3 token");
+    // Bob creates his site, shares his DID with Alice
+    let bob = isolated_site("bob").await?;
+    let bob_did = bob.profile.did();
 
-    // Bob joins and pulls
-    let bob = join_with_token("bob", &token).await?;
+    // Alice creates an invite for Bob's DID
+    let token = carry::invite_cmd::create_token(&alice, &bob_did).await?;
+    assert!(token.starts_with("carry_inv_"));
+
+    // Bob joins
+    let decoded = carry::invite_cmd::decode_token(&token)?;
+    assert!(decoded.url.is_some(), "token should include access URL");
+
+    bob.profile
+        .save(decoded.chain)
+        .perform(&bob.operator)
+        .await?;
+
+    // Bob sets up remote from the token
+    let bob_origin = bob
+        .repo
+        .remote("origin")
+        .create(SiteAddress::Ucan(UcanAddress::new(&decoded.url.unwrap())))
+        .subject(decoded.subject)
+        .perform(&bob.operator)
+        .await?;
+    let remote_main = bob_origin
+        .branch("main")
+        .open()
+        .perform(&bob.operator)
+        .await?;
+    bob.branch
+        .set_upstream(remote_main)
+        .perform(&bob.operator)
+        .await?;
+
+    // Bob pulls
     let pull = bob.branch.pull().perform(&bob.operator).await?;
-    assert!(pull.is_some(), "Bob's pull should find Alice's data");
+    assert!(pull.is_some(), "Bob should pull Alice's data");
 
     let values = query_values(&bob, "com.test/title").await?;
     assert_eq!(values, vec!["hello from alice"]);
@@ -213,23 +160,47 @@ async fn alice_pushes_bob_joins_and_pulls() -> Result<()> {
 }
 
 #[tokio::test]
-async fn bidirectional_sync_via_invite() -> Result<()> {
+async fn bidirectional_sync() -> Result<()> {
     let (access_addr, _server) = start_access_service().await?;
     let alice = setup_owner("bidir-alice", &access_addr.access_service_url).await?;
 
     assert_claim(&alice, "com.test/title", "note:alice", "alice's note").await?;
     alice.branch.push().perform(&alice.operator).await?;
 
-    // Bob joins and pulls
-    let token = carry::invite_cmd::create_token(&alice).await?;
-    let bob = join_with_token("bidir-bob", &token).await?;
+    // Bob joins
+    let bob = isolated_site("bidir-bob").await?;
+    let token = carry::invite_cmd::create_token(&alice, &bob.profile.did()).await?;
+    let decoded = carry::invite_cmd::decode_token(&token)?;
+
+    bob.profile
+        .save(decoded.chain)
+        .perform(&bob.operator)
+        .await?;
+
+    let bob_origin = bob
+        .repo
+        .remote("origin")
+        .create(SiteAddress::Ucan(UcanAddress::new(&decoded.url.unwrap())))
+        .subject(decoded.subject)
+        .perform(&bob.operator)
+        .await?;
+    let remote_main = bob_origin
+        .branch("main")
+        .open()
+        .perform(&bob.operator)
+        .await?;
+    bob.branch
+        .set_upstream(remote_main)
+        .perform(&bob.operator)
+        .await?;
+
     bob.branch.pull().perform(&bob.operator).await?;
 
     // Bob writes and pushes
     assert_claim(&bob, "com.test/title", "note:bob", "bob's note").await?;
     bob.branch.push().perform(&bob.operator).await?;
 
-    // Alice pulls Bob's changes
+    // Alice pulls
     let alice_pull = alice.branch.pull().perform(&alice.operator).await?;
     assert!(alice_pull.is_some(), "Alice should pull Bob's changes");
 

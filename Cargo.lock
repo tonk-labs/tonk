@@ -331,7 +331,6 @@ dependencies = [
  "clap_complete",
  "dialog-artifacts",
  "dialog-capability",
- "dialog-capability-ucan",
  "dialog-credentials",
  "dialog-query",
  "dialog-remote-s3",
