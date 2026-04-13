@@ -22,7 +22,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use dialog_capability::Did;
 use dialog_remote_s3::{Address as S3Address, S3Credentials};
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::SiteAddress;
+use dialog_repository::{SiteAddress, UpstreamState};
 
 /// The hidden branch name. Carry v1 does not expose branches.
 pub(crate) const HIDDEN_BRANCH: &str = "main";
@@ -91,6 +91,154 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
         "Added remote '{}' and set it as the sync target.",
         opts.name
     );
+    Ok(())
+}
+
+/// Discover remote names by scanning the `.carry/{repo_did}/memory/` directory
+/// for `remote/*/address` entries. Returns sorted names.
+fn list_remote_names(site: &Site) -> Result<Vec<String>> {
+    let memory_dir = site.root().join(site.repo_did()).join("memory");
+    let remote_dir = memory_dir.join("remote");
+    if !remote_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(&remote_dir)
+        .with_context(|| format!("failed to read {}", remote_dir.display()))?
+    {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let address_file = entry.path().join("address");
+            if address_file.exists()
+                && let Some(name) = entry.file_name().to_str()
+            {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Format a [`SiteAddress`] as a human-readable URL string.
+fn format_site_address(addr: &SiteAddress) -> String {
+    match addr {
+        SiteAddress::S3(s3) => format!("s3://{}/{}", s3.endpoint(), s3.bucket()),
+        SiteAddress::Ucan(ucan) => ucan.endpoint().to_string(),
+    }
+}
+
+/// Execute `carry remote list`.
+pub async fn execute_list(site: &Site) -> Result<()> {
+    let names = list_remote_names(site)?;
+    if names.is_empty() {
+        eprintln!("No remotes configured. Use `carry remote add` to register one.");
+        return Ok(());
+    }
+    for name in &names {
+        match site
+            .repo
+            .remote(name.as_str())
+            .load()
+            .perform(&site.operator)
+            .await
+        {
+            Ok(remote) => {
+                let url = format_site_address(remote.address().site());
+                println!("{}\t{}", name, url);
+            }
+            Err(_) => {
+                println!("{}\t<failed to load>", name);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execute `carry remote show <name>`.
+pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
+    let remote = site
+        .repo
+        .remote(name)
+        .load()
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("remote '{}' not found", name))?;
+
+    let addr = remote.address();
+    let url = format_site_address(addr.site());
+    let kind = match addr.site() {
+        SiteAddress::S3(_) => "s3 (direct)",
+        SiteAddress::Ucan(_) => "ucan-s3 (access service)",
+    };
+
+    let is_upstream = match site.branch.upstream() {
+        Some(UpstreamState::Remote {
+            name: ref upstream_name,
+            ..
+        }) => upstream_name == name,
+        _ => false,
+    };
+
+    println!("name:     {}", name);
+    println!("url:      {}", url);
+    println!("type:     {}", kind);
+    println!("subject:  {}", addr.subject());
+    if is_upstream {
+        println!("upstream: yes (sync target for this branch)");
+    }
+    Ok(())
+}
+
+/// Execute `carry remote remove <name>`.
+pub async fn execute_remove(site: &Site, name: &str) -> Result<()> {
+    site.repo
+        .remote(name)
+        .load()
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("remote '{}' not found", name))?;
+
+    let was_upstream = matches!(
+        site.branch.upstream(),
+        Some(UpstreamState::Remote {
+            name: ref upstream_name,
+            ..
+        }) if upstream_name == name
+    );
+
+    if was_upstream {
+        // dialog-repository doesn't have clear_upstream() yet, so we
+        // point at a non-existent local branch -- the same pattern
+        // dialog's own integration tests use to simulate "no remote".
+        site.branch
+            .set_upstream(UpstreamState::Local {
+                branch: "nowhere".into(),
+                tree: Default::default(),
+            })
+            .perform(&site.operator)
+            .await
+            .context("failed to clear upstream")?;
+    }
+
+    let remote_dir = site
+        .root()
+        .join(site.repo_did())
+        .join("memory")
+        .join("remote")
+        .join(name);
+
+    if remote_dir.exists() {
+        std::fs::remove_dir_all(&remote_dir)
+            .with_context(|| format!("failed to remove {}", remote_dir.display()))?;
+    }
+
+    if was_upstream {
+        eprintln!("Removed remote '{}' and cleared the sync target.", name);
+    } else {
+        eprintln!("Removed remote '{}'.", name);
+    }
+
     Ok(())
 }
 

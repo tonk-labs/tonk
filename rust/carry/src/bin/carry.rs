@@ -180,6 +180,25 @@ mod inner {
             #[arg(long = "secret-key", value_name = "SECRET")]
             secret_key: Option<String>,
         },
+
+        /// List configured remotes
+        #[command(alias = "ls")]
+        List {},
+
+        /// Show details of a specific remote
+        Show {
+            /// Name of the remote to inspect
+            #[arg(value_name = "NAME")]
+            name: String,
+        },
+
+        /// Remove a remote and clear its upstream link
+        #[command(alias = "rm")]
+        Remove {
+            /// Name of the remote to remove
+            #[arg(value_name = "NAME")]
+            name: String,
+        },
     }
 }
 
@@ -310,6 +329,18 @@ async fn main() -> anyhow::Result<()> {
                     },
                 )
                 .await?;
+            }
+            RemoteCommands::List {} => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_list(&site).await?;
+            }
+            RemoteCommands::Show { name } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_show(&site, &name).await?;
+            }
+            RemoteCommands::Remove { name } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_remove(&site, &name).await?;
             }
         },
         Commands::Push {} => {
