@@ -213,11 +213,6 @@
             args = "--release";
           };
 
-          tests-cli-integration = buildTestArchive {
-            name = "cli-integration";
-            args = "--package tonk-cli --test cli_integration";
-          };
-
           tests = pkgs.runCommand "tests-all" { } ''
             mkdir -p $out
             cp ${self.packages.${system}.tests-native-debug}/*.tar.zst $out/
@@ -225,23 +220,6 @@
             cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
-
-          tonk-cli = buildCrate {
-            pname = "tonk-cli";
-            cargoExtraArgs = "--package tonk-cli";
-            # Rewrite Nix store libiconv to the macOS system equivalent
-            # so the binary works on machines without Nix installed
-            fixupPhase = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-              for bin in $out/bin/*; do
-                if [ -f "$bin" ]; then
-                  NIX_ICONV=$(otool -L "$bin" | grep '/nix/store.*libiconv' | awk '{print $1}' || true)
-                  if [ -n "$NIX_ICONV" ]; then
-                    install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
-                  fi
-                fi
-              done
-            '';
-          };
 
           tonk-ui = buildTrunkCrate {
             pname = "tonk-ui";
