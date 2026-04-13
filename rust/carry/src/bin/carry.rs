@@ -241,12 +241,20 @@ async fn main() -> anyhow::Result<()> {
         Commands::Pull { .. } => "pull",
     };
 
-    // Best-effort telemetry: resolve identity for the blinded ID, but
-    // fall back silently if the profile doesn't exist yet.
-    let telemetry_handle = if let Ok(id) = carry::identity_cmd::ensure_identity(None).await {
-        carry::telemetry::ping(id.profile.did().as_ref(), command_name)
-    } else {
-        None
+    // Best-effort telemetry: load existing identity for the blinded ID,
+    // but fall back silently if no profile exists yet.
+    let telemetry_handle = {
+        use dialog_repository::profile::Profile;
+        use dialog_repository::storage::Storage;
+        let storage = Storage::new();
+        if let Ok(profile) = Profile::load(Storage::profile("carry"))
+            .perform(&storage)
+            .await
+        {
+            carry::telemetry::ping(profile.did().as_ref(), command_name)
+        } else {
+            None
+        }
     };
 
     match cli.command {

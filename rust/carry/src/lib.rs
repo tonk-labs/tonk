@@ -9,6 +9,7 @@ pub mod identity_cmd;
 pub mod init;
 pub mod invite_cmd;
 pub mod join_cmd;
+pub mod passkey;
 pub mod pull_cmd;
 pub mod push_cmd;
 pub mod query_cmd;

@@ -21,6 +21,7 @@ tonk-assess = { path = "./rust/tonk-assess" }
 
 # Common
 anyhow = "1"
+base64 = "0.22"
 blake3 = "1.5"
 bs58 = "0.5"
 bytes = "1"
@@ -30,9 +31,11 @@ clap_complete = { version = "4", features = ["unstable-dynamic"] }
 dirs = "5"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 futures-util = "0.3"
+getrandom = "0.3"
 http-body-util = "0.1"
-hyper = "1"
+hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = "0.1"
+open = "5"
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls"
