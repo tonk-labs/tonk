@@ -2,7 +2,6 @@
 
 members = [
     "rust/tonk-access-service",
-    "rust/tonk-blobs",
     "rust/tonk-core",
     "rust/tonk-common",
     "rust/tonk-space",
