@@ -192,6 +192,14 @@ mod inner {
             name: String,
         },
 
+        /// Set a remote as the sync target for push/pull
+        #[command(name = "set-upstream")]
+        SetUpstream {
+            /// Name of the remote to use as upstream
+            #[arg(value_name = "NAME")]
+            name: String,
+        },
+
         /// Remove a remote and clear its upstream link
         #[command(alias = "rm")]
         Remove {
@@ -337,6 +345,10 @@ async fn main() -> anyhow::Result<()> {
             RemoteCommands::Show { name } => {
                 let site = carry::site::Site::resolve(repo_path, None).await?;
                 carry::remote_cmd::execute_show(&site, &name).await?;
+            }
+            RemoteCommands::SetUpstream { name } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_set_upstream(&site, &name).await?;
             }
             RemoteCommands::Remove { name } => {
                 let site = carry::site::Site::resolve(repo_path, None).await?;

@@ -66,26 +66,12 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
         }
         None => create,
     };
-    let remote = create
+    create
         .perform(&site.operator)
         .await
         .with_context(|| format!("failed to register remote '{}'", opts.name))?;
 
-    // v1: exactly one (hidden) branch. Open its counterpart on the remote
-    // and wire it up as the upstream so `carry push` / `carry pull` have
-    // somewhere to go without enumeration.
-    let remote_branch = remote
-        .branch(HIDDEN_BRANCH)
-        .open()
-        .perform(&site.operator)
-        .await
-        .with_context(|| format!("failed to open remote branch on '{}'", opts.name))?;
-
-    site.branch
-        .set_upstream(remote_branch)
-        .perform(&site.operator)
-        .await
-        .with_context(|| format!("failed to set upstream to '{}'", opts.name))?;
+    set_upstream(site, &opts.name).await?;
 
     eprintln!(
         "Added remote '{}' and set it as the sync target.",
@@ -187,6 +173,39 @@ pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
     if is_upstream {
         println!("upstream: yes (sync target for this branch)");
     }
+    Ok(())
+}
+
+/// Execute `carry remote set-upstream <name>`.
+pub async fn execute_set_upstream(site: &Site, name: &str) -> Result<()> {
+    set_upstream(site, name).await?;
+    eprintln!("Updated upstream to remote '{}'.", name);
+    Ok(())
+}
+
+/// Load a named remote and wire it up as the upstream for `push`/`pull`.
+async fn set_upstream(site: &Site, name: &str) -> Result<()> {
+    let remote = site
+        .repo
+        .remote(name)
+        .load()
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("remote '{}' not found", name))?;
+
+    let remote_branch = remote
+        .branch(HIDDEN_BRANCH)
+        .open()
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("failed to open remote branch on '{}'", name))?;
+
+    site.branch
+        .set_upstream(remote_branch)
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("failed to set upstream to '{}'", name))?;
+
     Ok(())
 }
 
