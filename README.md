@@ -59,7 +59,6 @@ This is a Rust workspace where we are implementing our early experimentations on
 
 | Crate                   | Purpose                                                                                             |
 | ----------------------- | --------------------------------------------------------------------------------------------------- |
-| **tonk-cli**            | CLI tool (`tonk` binary) — the primary interface for managing spaces, concepts, instances, and sync |
 | **tonk-space**          | Core space primitives: operators, delegation, ownership, storage                                    |
 | **tonk-common**         | Cross-platform utilities (logging, etc.)                                                            |
 | **tonk-blobs**          | Content-addressed blob storage (filesystem + IndexedDB)                                             |
