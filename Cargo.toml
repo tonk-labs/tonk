@@ -2,7 +2,6 @@
 
 members = [
     "rust/tonk-access-service",
-    "rust/tonk-core",
     "rust/tonk-common",
     "rust/tonk-space",
     "rust/tonk-ui",
@@ -19,7 +18,6 @@ edition = "2024"
 [workspace.dependencies]
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-common = { path = "./rust/tonk-common" }
-tonk-core = { path = "./rust/tonk-core" }
 tonk-space = { path = "./rust/tonk-space" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
