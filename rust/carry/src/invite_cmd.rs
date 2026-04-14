@@ -1,31 +1,16 @@
-//! `carry invite [<MEMBER>]` -- generate an invite URL granting access to a space.
+//! `carry invite [<MEMBER>]` -- CLI command for generating invite URLs.
 //!
-//! When `<MEMBER>` (a `did:key`) is provided, the delegation targets that
-//! specific DID and the resulting URL contains no private key fragment.
-//!
-//! When `<MEMBER>` is omitted, carry generates a fresh ephemeral Ed25519
-//! keypair, delegates to it, and embeds the private key in the URL fragment
-//! (which is never sent to the server). Anyone who receives the URL can
-//! redelegate from the ephemeral key to their own identity via `carry join`.
-//!
-//! ## URL format
-//!
-//! ```text
-//! <base>?access=<base58-ucan-chain>#<base58-private-key>
-//! ```
-//!
-//! The `access` query parameter contains the base58-encoded delegation chain.
-//! The `#` fragment contains the ephemeral private key (only present for open
-//! invites). The fragment is never sent to the server per RFC 3986.
+//! Delegates to [`crate::invite`] for platform-independent primitives.
 
+use crate::invite;
 use crate::site::Site;
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::DelegationChain;
 use dialog_varsig::{Did, Principal};
 
-/// Default base URL for invite links.
-const DEFAULT_BASE_URL: &str = "https://tonk.xyz/join";
+// Re-export for callers that import from invite_cmd.
+pub use crate::invite::{parse_invite_url, redelegate};
 
 /// The result of creating an invite.
 pub struct Invite {
@@ -59,25 +44,25 @@ pub async fn create_invite(
     audience: Option<&Did>,
     base_url: Option<&str>,
 ) -> Result<Invite> {
-    let base = base_url.unwrap_or(DEFAULT_BASE_URL);
+    let base = base_url.unwrap_or(invite::DEFAULT_BASE_URL);
 
-    let (target_did, secret_fragment) = match audience {
+    let (target_did, secret_seed) = match audience {
         Some(did) => (did.clone(), None),
         None => {
             let ephemeral = Ed25519Signer::generate()
                 .await
                 .context("Failed to generate ephemeral keypair")?;
             let did = ephemeral.did();
-            let seed = ephemeral
+            let exported = ephemeral
                 .export()
                 .await
                 .context("Failed to export ephemeral key")?;
-            let seed_bytes = match seed {
+            let seed_bytes = match exported {
                 dialog_credentials::KeyExport::Extractable(bytes) => bytes,
                 #[allow(unreachable_patterns)]
                 _ => anyhow::bail!("Ephemeral key is not extractable"),
             };
-            (did, Some(bs58::encode(&seed_bytes).into_string()))
+            (did, Some(seed_bytes))
         }
     };
 
@@ -90,78 +75,19 @@ pub async fn create_invite(
         .await
         .context("Failed to create delegation")?;
 
-    let chain_bytes = chain
-        .to_bytes()
-        .context("Failed to serialize delegation chain")?;
-    let access = bs58::encode(&chain_bytes).into_string();
+    let remote_url = resolve_access_url(site).await;
 
-    let mut url = format!("{}?access={}", base, access);
-
-    // Include the access service URL so the joiner can configure sync.
-    if let Some(remote_url) = resolve_access_url(site).await {
-        url.push_str("&remote=");
-        url.push_str(&remote_url);
-    }
-
-    if let Some(ref fragment) = secret_fragment {
-        url.push('#');
-        url.push_str(fragment);
-    }
+    let url = invite::build_invite_url(
+        base,
+        &chain,
+        remote_url.as_deref(),
+        secret_seed.as_deref(),
+    )?;
 
     Ok(Invite {
         url,
         chain,
         audience: target_did,
-    })
-}
-
-/// Decoded invite URL contents.
-pub struct DecodedInvite {
-    /// The delegation chain granting access to the repo subject.
-    pub chain: DelegationChain,
-    /// The repo subject DID (extracted from the delegation chain).
-    pub subject: Did,
-    /// The ephemeral private key seed, if present in the URL fragment.
-    pub secret_seed: Option<Vec<u8>>,
-    /// The UCAN access service URL for sync, if included via `&remote=`.
-    pub remote_url: Option<String>,
-}
-
-// Parse URL string and return decoded invite
-pub fn parse_invite_url(url: &str) -> Result<DecodedInvite> {
-    let (url, secret_seed) = match url.split_once('#') {
-        Some((l, r)) => (l, Some(r)),
-        None => (url, None),
-    };
-
-    let (_, query) = url
-        .split_once("?access=")
-        .context("missing ?access= query parameter")?;
-
-    // Split access chain from optional &remote= parameter
-    let (access_b58, remote_url) = match query.split_once("&remote=") {
-        Some((chain, remote)) => (chain, Some(remote.to_string())),
-        None => (query, None),
-    };
-
-    let chain_bytes = bs58::decode(access_b58)
-        .into_vec()
-        .context("invalid base58 in access parameter")?;
-    let chain =
-        DelegationChain::try_from(chain_bytes.as_slice()).context("invalid delegation chain")?;
-    let subject = chain
-        .subject()
-        .cloned()
-        .context("delegation chain has no subject")?;
-    let secret_seed = secret_seed
-        .map(|f| bs58::decode(f).into_vec().context("invalid secret"))
-        .transpose()?;
-
-    Ok(DecodedInvite {
-        chain,
-        subject,
-        secret_seed,
-        remote_url,
     })
 }
 

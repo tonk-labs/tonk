@@ -12,15 +12,12 @@
 //!
 //! When no URL is provided, self-provisions an upstream for the space.
 
-use crate::invite_cmd;
+use crate::invite;
 use crate::remote_cmd::HIDDEN_BRANCH;
 use crate::site::Site;
 use anyhow::{Context, Result};
-use dialog_credentials::Ed25519Signer;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
-use dialog_ucan::DelegationBuilder;
-use dialog_ucan::subject::Subject as UcanSubject;
 use std::path::Path;
 
 /// Execute `carry join [<invite-url>] [--repo <REPO>]`.
@@ -36,7 +33,7 @@ pub async fn execute(
         }
     };
 
-    let decoded = invite_cmd::parse_invite_url(invite_url)?;
+    let decoded = invite::parse_invite_url(invite_url)?;
 
     // Resolve or create the .carry/ site
     let site = match Site::resolve(site_flag, profile_location.clone()).await {
@@ -64,31 +61,7 @@ pub async fn execute(
             anyhow::anyhow!("invalid seed length: expected 32, got {}", v.len())
         })?;
 
-        let ephemeral = Ed25519Signer::import(&seed_array)
-            .await
-            .context("Failed to import ephemeral key from invite URL")?;
-
-        // Build a new delegation: ephemeral -> local profile DID
-        let subject = decoded
-            .chain
-            .subject()
-            .cloned()
-            .map(UcanSubject::Specific)
-            .unwrap_or(UcanSubject::Any);
-
-        let delegation = DelegationBuilder::new()
-            .issuer(ephemeral)
-            .audience(&site.profile)
-            .subject(subject)
-            .command(vec![])
-            .try_build()
-            .await
-            .context("Failed to build redelgation")?;
-
-        decoded
-            .chain
-            .push(delegation)
-            .context("Failed to extend delegation chain")?
+        invite::redelegate(decoded.chain, &seed_array, &site.profile.did()).await?
     } else {
         // Scoped invite: verify audience matches our DID.
         let audience = decoded.chain.audience();

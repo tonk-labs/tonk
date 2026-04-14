@@ -1,26 +1,46 @@
-#![cfg(not(target_arch = "wasm32"))]
+// ---------------------------------------------------------------------------
+// Platform-independent modules (available on native and WASM)
+// ---------------------------------------------------------------------------
+pub mod invite;
 
 // ---------------------------------------------------------------------------
-// New carry modules (Phase 1)
+// Native-only modules (CLI, filesystem, passkey)
 // ---------------------------------------------------------------------------
+#[cfg(not(target_arch = "wasm32"))]
 pub mod assert_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod help;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod identity_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod init;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod invite_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod join_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod passkey;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pull_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod push_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod query_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod remote_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod retract_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod site;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod status_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod target;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod telemetry;
 
 // ---------------------------------------------------------------------------
 // Retained internal library modules
 // ---------------------------------------------------------------------------
+#[cfg(not(target_arch = "wasm32"))]
 pub mod schema;
