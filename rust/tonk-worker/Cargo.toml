@@ -16,24 +16,24 @@ base58 = { workspace = true }
 base64 = { workspace = true }
 axum-wasm-macros = { workspace = true }
 console_error_panic_hook = { workspace = true }
+dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-artifacts = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
-dialog-remote-s3 = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
+dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
+dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
 js-sys = { workspace = true }
-rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-common = { workspace = true }
 tower-service = { workspace = true }
-dialog-credentials = { workspace = true }
-dialog-ucan = { workspace = true }
-dialog-varsig = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
@@ -53,21 +53,18 @@ web-sys = { workspace = true, features = [
 web-time = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-idb = { workspace = true }
+getrandom = { workspace = true, features = ["wasm_js"] }
+getrandom_0_3 = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
+dialog-repository = { workspace = true, features = ["helpers"] }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-getrandom = { workspace = true, features = ["wasm_js"] }
-getrandom_0_3 = { workspace = true }
-
 [lints.rust]
-# The dialog_common::test macro uses cfg conditions that originate from the macro crate.
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(dialog_test_native_integration)',
     'cfg(dialog_test_wasm_integration)',

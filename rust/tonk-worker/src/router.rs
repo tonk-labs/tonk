@@ -7,31 +7,25 @@ use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
 
-mod authorize;
-pub use authorize::{AuthorizeResponse, authorize};
+mod claim;
+pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
-mod fact;
-pub use fact::{AssertResponse, FactQuery, FactResponse, QueryResponse, assert_fact, query_facts};
+mod init;
+pub use init::InitResponse;
 
-mod inspect;
-pub use inspect::{
-    BranchStatusResponse, CredentialsResponse, RemoteBranchStatusResponse, SiteStatusResponse,
-    UpstreamStatusResponse, branch, site,
-};
+pub mod inspect;
+pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
 mod status;
-pub use status::{StatusResponse, status};
+pub use status::StatusResponse;
 
 mod sync;
 pub use sync::SyncResponse;
 
 mod identify;
-pub use identify::{IdentifyResponse, identify};
+pub use identify::IdentifyResponse;
 
-mod delegations;
-pub use delegations::{DelegationsResponse, delegations};
-
-/// Shared application state containing identity and session.
+/// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
 /// Root handler that returns a welcome message.
@@ -46,72 +40,124 @@ pub fn api_router(state: TonkState) -> Router {
     let state: AppState = Arc::new(RwLock::new(state));
     Router::new()
         .route("/api", get(root))
-        .route("/api/identify", get(identify))
-        .route("/api/authorize", post(authorize))
-        .route("/api/status", get(status))
-        .route("/api/delegations", get(delegations))
-        .route("/api/inspect/branch/{branch_name}", get(inspect::branch))
-        .route("/api/inspect/site/{site_name}", get(inspect::site::site))
+        .route("/api/identify", get(identify::identify))
+        // Repository status
+        .route("/api/repository/{repo}/status", get(status::status))
+        // Branch init (set up UCAN remote + upstream)
         .route(
-            "/api/inspect/site/{site}/{repo_did}/branch/{branch}",
-            get(inspect::site::branch),
+            "/api/repository/{repo}/branch/{branch}/init",
+            post(init::init),
+        )
+        // Sync operations
+        .route(
+            "/api/repository/{repo}/branch/{branch}/sync",
+            post(sync::sync),
         )
         .route(
-            "/api/inspect/site/{site}/{repo_did}/archive/index/{hash}",
-            get(inspect::site::archive_block),
+            "/api/repository/{repo}/branch/{branch}/sync/pull",
+            post(sync::pull),
         )
         .route(
-            "/api/fact/assert/{entity}/{attribute_ns}/{attribute_name}",
-            post(assert_fact),
+            "/api/repository/{repo}/branch/{branch}/sync/push",
+            post(sync::push),
         )
-        .route("/api/fact/query", get(query_facts))
-        .route("/api/sync", post(sync::sync))
-        .route("/api/sync/pull", post(sync::pull))
-        .route("/api/sync/push", post(sync::push))
+        // Claim operations
+        .route(
+            "/api/repository/{repo}/branch/{branch}/claim/assert/{entity}/{attr_ns}/{attr_name}",
+            post(claim::assert_claim),
+        )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/claim/retract/{entity}/{attr_ns}/{attr_name}",
+            post(claim::retract_claim),
+        )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/claim/select",
+            get(claim::select_claims),
+        )
+        // Inspect operations
+        .route(
+            "/api/inspect/repository/{repo}/branch/{branch}",
+            get(inspect::branch::inspect_branch),
+        )
+        .route(
+            "/api/inspect/repository/{repo}/remote/{remote}",
+            get(inspect::remote::inspect_remote),
+        )
+        .route(
+            "/api/inspect/repository/{repo}/remote/{remote}/branch/{branch}",
+            get(inspect::remote::inspect_remote_branch),
+        )
+        .route(
+            "/api/inspect/repository/{repo}/archive/index/{hash}",
+            get(inspect::archive::inspect_archive_block),
+        )
+        .route(
+            "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
+            get(inspect::archive::inspect_remote_archive_block),
+        )
         .with_state(state)
 }
 
 /// Test utilities for router tests.
-#[cfg(test)]
+///
+/// These tests run in a WASM service worker context since TonkState
+/// requires IndexedDB (WASM) or filesystem (native) storage.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 pub mod tests {
-    use std::sync::Arc;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
 
+    use crate::api_router;
     use crate::worker::TonkState;
-    use crate::{Identity, api_router};
+
+    use dialog_capability::Subject;
+    use dialog_repository::RepositoryExt as _;
+    use dialog_repository::profile::Profile;
+    use dialog_storage::provider::storage::Storage;
+
+    use crate::worker::DefaultSpace;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    /// Creates a test state with identity and session for testing routes.
+    /// Creates a test state with the default storage backend.
     pub async fn test_state() -> TonkState {
-        let mut identity = Identity::load_or_create()
+        crate::patch_idb_versionchange();
+        let storage = Storage::<DefaultSpace>::default();
+        let profile = Profile::open("test-tonk")
+            .perform(&storage)
             .await
-            .expect("Failed to create test identity");
+            .expect("Failed to create test profile");
 
-        // Get known spaces, or create if none exist
-        let known_spaces = identity
-            .account()
-            .known_spaces()
+        let operator = profile
+            .derive(b"test-worker")
+            .allow(Subject::any())
+            .build(storage)
             .await
-            .expect("Could not query known spaces");
+            .expect("Failed to build test operator");
 
-        let session = if let Some(space_did) = known_spaces.first() {
-            identity
-                .open_session(space_did)
-                .await
-                .expect("Failed to open session")
-        } else {
-            identity
-                .create_session()
-                .await
-                .expect("Failed to create session")
-        };
+        // Open default repo
+        let repo = profile
+            .repository("home")
+            .open()
+            .perform(&operator)
+            .await
+            .expect("Failed to open test repo");
 
-        TonkState {
-            identity: Arc::new(identity),
-            session,
+        // Delegate repo access to profile
+        if let Some(access) = repo.try_access() {
+            if let Ok(chain) = access
+                .claim(&repo)
+                .delegate(profile.did())
+                .perform(&operator)
+                .await
+            {
+                let _ = profile.access().save(chain).perform(&operator).await;
+            }
         }
+
+        TonkState { profile, operator }
     }
 
     #[dialog_common::test]
@@ -136,5 +182,186 @@ pub mod tests {
             .await
             .expect("Failed to read response body");
         assert_eq!(body.as_ref(), b"Hello, Tonk!");
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_identify() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/identify")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::IdentifyResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.did.starts_with("did:key:"));
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_status() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::StatusResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp.repo_name, "home");
+        assert!(!resp.space_did.is_empty());
+        assert!(!resp.has_upstream);
+    }
+
+    #[dialog_common::test]
+    async fn it_asserts_and_selects_claims() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        // Assert a fact
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/branch/main/claim/assert/test:entity/test/name")
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("Test Name"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Query the fact
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/branch/main/claim/select?the=test/name&of=test:entity")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::QueryResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp.claims.len(), 1);
+        assert_eq!(resp.claims[0].is, serde_json::json!("Test Name"));
+    }
+
+    #[dialog_common::test]
+    async fn it_initializes_branch() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/branch/main/init")
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::InitResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.success);
+    }
+
+    #[dialog_common::test]
+    async fn it_syncs_after_commit() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        // First assert a fact so the branch has data
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/branch/main/claim/assert/test:sync/test/value")
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("sync test"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Now sync — without upstream it should return OK with no changes
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/branch/main/sync")
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[dialog_common::test]
+    async fn it_inspects_branch_after_commit() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        // Commit some data first so the branch exists
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home/branch/main/claim/assert/test:inspect/test/value")
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("inspect test"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Now inspect the branch
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/inspect/repository/home/branch/main")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

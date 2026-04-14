@@ -1,7 +1,8 @@
-//! Inspect routes for querying branch and site information.
+//! Inspect routes for querying branch, remote, and archive information.
 
+pub mod archive;
 pub mod branch;
-pub mod site;
+pub mod remote;
 
-pub use branch::{BranchStatusResponse, UpstreamStatusResponse, branch};
-pub use site::{CredentialsResponse, RemoteBranchStatusResponse, SiteStatusResponse};
+pub use branch::BranchStatusResponse;
+pub use remote::{RemoteBranchStatusResponse, RemoteStatusResponse};

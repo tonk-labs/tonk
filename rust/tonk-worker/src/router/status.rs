@@ -1,7 +1,8 @@
-//! Status route for querying current space state.
+//! Status route for querying current repository state.
 
-use ::axum::{Json, extract::State};
+use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_repository::RepositoryExt as _;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -9,69 +10,55 @@ use tokio::sync::oneshot;
 use super::AppState;
 use crate::TonkWorkerError;
 
-/// Status response indicating the current space state.
+/// Status response indicating the current repository state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StatusResponse {
-    /// The DID of the space.
+    /// The repository name.
+    pub repo_name: String,
+    /// The DID of the repository (space).
     pub space_did: String,
-    /// The DID of the operator.
+    /// The DID of the operator (profile).
     pub operator_did: String,
-    /// Whether the space has an upstream remote configured.
+    /// Whether the default branch has an upstream remote configured.
     pub has_upstream: bool,
 }
 
-/// Returns the current status of the space.
+/// Returns the current status of a repository.
+///
+/// Loads the repository by name, opens its "main" branch, and reports
+/// whether an upstream remote is configured.
 #[wasm_compat]
 pub async fn status(
     State(state): State<AppState>,
+    Path(repo_name): Path<String>,
 ) -> Result<Json<StatusResponse>, TonkWorkerError> {
     let tonk_state = state.read().await;
-    let space = tonk_state.session.space();
+
+    let repo = tonk_state
+        .profile
+        .repository(&repo_name)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to load repository '{}': {}", repo_name, e))
+        })?;
+
+    // Try to load the main branch to check upstream status
+    let has_upstream = match repo
+        .branch("main")
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+    {
+        Ok(branch) => branch.upstream().is_some(),
+        Err(_) => false,
+    };
 
     Ok(Json(StatusResponse {
-        space_did: space.did.clone(),
-        operator_did: tonk_state.identity.did().to_string(),
-        has_upstream: space.has_upstream().await,
+        repo_name,
+        space_did: repo.did().to_string(),
+        operator_did: tonk_state.profile.did().to_string(),
+        has_upstream,
     }))
-}
-
-#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
-mod tests {
-    use super::super::tests::test_state;
-    use super::*;
-    use crate::api_router;
-
-    use axum::body::Body;
-    use axum::http::{Request, StatusCode};
-    use tower::ServiceExt;
-
-    #[dialog_common::test]
-    async fn it_returns_status_without_upstream() {
-        let tonk_state = test_state().await;
-        let app = api_router(tonk_state);
-
-        let request = Request::builder()
-            .uri("/api/status")
-            .method("GET")
-            .body(Body::empty())
-            .expect("Failed to build request");
-
-        let response = app
-            .oneshot(request)
-            .await
-            .expect("Failed to execute request");
-
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("Failed to read response body");
-
-        let status_response: StatusResponse =
-            serde_json::from_slice(&body).expect("Failed to deserialize response");
-
-        assert!(!status_response.has_upstream);
-        assert!(!status_response.space_did.is_empty());
-        assert!(!status_response.operator_did.is_empty());
-    }
 }
