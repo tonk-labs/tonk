@@ -1,27 +1,42 @@
-//! `carry join <TOKEN>` — redeem an invite token to join a repository.
+//! `carry join [<INVITE-URL>]` -- join a space using an invite URL.
 //!
-//! Decodes the token, saves the delegation chain under the local profile,
-//! and — if the token includes an access service URL — sets up the sync
-//! remote and pulls the latest data.
+//! When an invite URL is provided:
 //!
-//! Because the invite was created for this profile's DID, the delegation
-//! chain's audience is already our DID. No re-delegation is needed.
+//! - If the URL has a `#` fragment (open invite), the fragment contains the
+//!   ephemeral private key. The joiner redelegates from the ephemeral key to
+//!   their own profile DID, extending the delegation chain.
+//!
+//! - If the URL has no fragment (scoped invite), the delegation was issued
+//!   directly to this profile's DID. The chain is used as-is after verifying
+//!   the audience matches.
+//!
+//! When no URL is provided, self-provisions an upstream for the space.
 
 use crate::invite_cmd;
 use crate::remote_cmd::HIDDEN_BRANCH;
 use crate::site::Site;
 use anyhow::{Context, Result};
+use dialog_credentials::Ed25519Signer;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
+use dialog_ucan::DelegationBuilder;
+use dialog_ucan::subject::Subject as UcanSubject;
 use std::path::Path;
 
-/// Execute `carry join <token> [--repo <REPO>]`.
+/// Execute `carry join [<invite-url>] [--repo <REPO>]`.
 pub async fn execute(
-    token: &str,
+    invite_url: Option<&str>,
     site_flag: Option<&Path>,
     profile_location: Option<crate::identity_cmd::ProfileLocation>,
 ) -> Result<()> {
-    let decoded = invite_cmd::decode_token(token)?;
+    let invite_url = match invite_url {
+        Some(url) => url,
+        None => {
+            anyhow::bail!("Self-provisioning is not yet implemented. Provide an invite URL.");
+        }
+    };
+
+    let decoded = invite_cmd::parse_invite_url(invite_url)?;
 
     // Resolve or create the .carry/ site
     let site = match Site::resolve(site_flag, profile_location.clone()).await {
@@ -42,25 +57,68 @@ pub async fn execute(
         }
     };
 
-    // Save the delegation chain. The audience is already our profile DID
-    // (Alice created the invite specifically for us), so the operator can
-    // use it immediately.
+    // Resolve the final delegation chain.
+    let chain = if let Some(seed) = decoded.secret_seed {
+        // Open invite: redelegate from ephemeral key to our profile DID.
+        let seed_array: [u8; 32] = seed.try_into().map_err(|v: Vec<u8>| {
+            anyhow::anyhow!("invalid seed length: expected 32, got {}", v.len())
+        })?;
+
+        let ephemeral = Ed25519Signer::import(&seed_array)
+            .await
+            .context("Failed to import ephemeral key from invite URL")?;
+
+        // Build a new delegation: ephemeral -> local profile DID
+        let subject = decoded
+            .chain
+            .subject()
+            .cloned()
+            .map(UcanSubject::Specific)
+            .unwrap_or(UcanSubject::Any);
+
+        let delegation = DelegationBuilder::new()
+            .issuer(ephemeral)
+            .audience(&site.profile)
+            .subject(subject)
+            .command(vec![])
+            .try_build()
+            .await
+            .context("Failed to build redelgation")?;
+
+        decoded
+            .chain
+            .push(delegation)
+            .context("Failed to extend delegation chain")?
+    } else {
+        // Scoped invite: verify audience matches our DID.
+        let audience = decoded.chain.audience();
+        let our_did = site.profile.did();
+        if *audience != our_did {
+            anyhow::bail!(
+                "Cannot join: this invite was issued to {} but this repository is {}",
+                audience,
+                our_did
+            );
+        }
+        decoded.chain
+    };
+
     site.profile
-        .save(decoded.chain)
+        .save(chain)
         .perform(&site.operator)
         .await
         .context("Failed to save delegation chain")?;
 
     eprintln!("Joined repository as {}", site.did());
 
-    // If the token includes an access URL, wire up sync and pull.
-    if let Some(url) = decoded.url {
+    // Configure sync remote from the remote URL and pull.
+    if let Some(ref remote_url) = decoded.remote_url {
         eprintln!("Configuring sync remote...");
 
         let remote = site
             .repo
             .remote("origin")
-            .create(SiteAddress::Ucan(UcanAddress::new(&url)))
+            .create(SiteAddress::Ucan(UcanAddress::new(remote_url)))
             .subject(decoded.subject)
             .perform(&site.operator)
             .await

@@ -111,18 +111,24 @@ mod inner {
             reset: bool,
         },
 
-        /// Create an invite token for a collaborator
+        /// Create an invite URL for a collaborator
         Invite {
-            /// DID of the collaborator to invite
-            #[arg(value_name = "DID")]
-            did: String,
+            /// DID of the collaborator to invite. If omitted, generates an
+            /// open invite that anyone with the URL can claim.
+            #[arg(value_name = "MEMBER")]
+            member: Option<String>,
+
+            /// Base URL for the invite link (default: https://tonk.xyz/join)
+            #[arg(long, value_name = "URL")]
+            url: Option<String>,
         },
 
-        /// Join a repository using an invite token
+        /// Join a repository using an invite URL
         Join {
-            /// The invite token received from a collaborator
-            #[arg(value_name = "TOKEN")]
-            token: String,
+            /// The invite URL received from a collaborator. If omitted,
+            /// self-provisions an upstream for the space.
+            #[arg(value_name = "INVITE-URL")]
+            invite_url: Option<String>,
         },
 
         /// Manage sync remotes for this repository
@@ -312,12 +318,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Identity { reset } => {
             carry::identity_cmd::execute(reset).await?;
         }
-        Commands::Invite { did } => {
+        Commands::Invite { member, url } => {
             let site = carry::site::Site::resolve(repo_path, None).await?;
-            carry::invite_cmd::execute(&site, &did).await?;
+            carry::invite_cmd::execute(&site, member.as_deref(), url.as_deref()).await?;
         }
-        Commands::Join { token } => {
-            carry::join_cmd::execute(&token, repo_path, None).await?;
+        Commands::Join { invite_url } => {
+            carry::join_cmd::execute(invite_url.as_deref(), repo_path, None).await?;
         }
         Commands::Remote { command } => match command {
             RemoteCommands::Add {
@@ -543,11 +549,42 @@ mod tests {
     // -- Invite -----------------------------------------------------------------
 
     #[test]
-    fn invite_parses() {
+    fn invite_parses_with_member() {
         let cli = Cli::try_parse_from(["carry", "invite", "did:key:z6Mktest1234"]).unwrap();
         match cli.command {
-            Commands::Invite { ref did } => {
-                assert_eq!(did, "did:key:z6Mktest1234");
+            Commands::Invite {
+                ref member,
+                ref url,
+            } => {
+                assert_eq!(member.as_deref(), Some("did:key:z6Mktest1234"));
+                assert!(url.is_none());
+            }
+            _ => panic!("Expected Invite command"),
+        }
+    }
+
+    #[test]
+    fn invite_parses_without_member() {
+        let cli = Cli::try_parse_from(["carry", "invite"]).unwrap();
+        match cli.command {
+            Commands::Invite { ref member, .. } => {
+                assert!(member.is_none());
+            }
+            _ => panic!("Expected Invite command"),
+        }
+    }
+
+    #[test]
+    fn invite_with_url_flag() {
+        let cli =
+            Cli::try_parse_from(["carry", "invite", "--url", "https://example.com/join"]).unwrap();
+        match cli.command {
+            Commands::Invite {
+                ref member,
+                ref url,
+            } => {
+                assert!(member.is_none());
+                assert_eq!(url.as_deref(), Some("https://example.com/join"));
             }
             _ => panic!("Expected Invite command"),
         }
@@ -565,8 +602,8 @@ mod tests {
         .unwrap();
         assert_eq!(cli.repo.as_deref(), Some("/tmp/myrepo"));
         match cli.command {
-            Commands::Invite { ref did } => {
-                assert_eq!(did, "did:key:z6Mktest5678");
+            Commands::Invite { ref member, .. } => {
+                assert_eq!(member.as_deref(), Some("did:key:z6Mktest5678"));
             }
             _ => panic!("Expected Invite command"),
         }
@@ -575,20 +612,25 @@ mod tests {
     // -- Join -------------------------------------------------------------------
 
     #[test]
-    fn join_parses_token() {
-        let tok = "carry_inv1_somebase64data";
-        let cli = Cli::try_parse_from(["carry", "join", tok]).unwrap();
+    fn join_parses_url() {
+        let url = "https://tonk.xyz/join?access=abc123#secret";
+        let cli = Cli::try_parse_from(["carry", "join", url]).unwrap();
         match cli.command {
-            Commands::Join { ref token } => {
-                assert_eq!(token, tok);
+            Commands::Join { ref invite_url } => {
+                assert_eq!(invite_url.as_deref(), Some(url));
             }
             _ => panic!("Expected Join command"),
         }
     }
 
     #[test]
-    fn join_missing_token_fails() {
-        let result = Cli::try_parse_from(["carry", "join"]);
-        assert!(result.is_err());
+    fn join_without_url_succeeds() {
+        let cli = Cli::try_parse_from(["carry", "join"]).unwrap();
+        match cli.command {
+            Commands::Join { ref invite_url } => {
+                assert!(invite_url.is_none());
+            }
+            _ => panic!("Expected Join command"),
+        }
     }
 }

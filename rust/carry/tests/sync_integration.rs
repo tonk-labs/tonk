@@ -10,7 +10,6 @@ use carry::site::{RepoLocation, Site};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
 use dialog_repository::helpers::unique_location;
-use dialog_varsig::Principal;
 use futures_util::TryStreamExt;
 
 /// Create an isolated Site with unique profile + repo storage.
@@ -118,24 +117,25 @@ async fn alice_invites_bob_who_pulls() -> Result<()> {
     let bob = isolated_site("bob").await?;
     let bob_did = bob.profile.did();
 
-    // Alice creates an invite for Bob's DID
-    let token = carry::invite_cmd::create_token(&alice, &bob_did).await?;
-    assert!(token.starts_with("carry_inv_"));
+    // Alice creates a scoped invite for Bob's DID
+    let invite = carry::invite_cmd::create_invite(&alice, Some(&bob_did), None).await?;
+    assert!(invite.url.contains("?access="));
 
-    // Bob joins
-    let decoded = carry::invite_cmd::decode_token(&token)?;
-    assert!(decoded.url.is_some(), "token should include access URL");
+    // Bob joins: parse URL, save delegation, set up remote
+    let decoded = carry::invite_cmd::parse_invite_url(&invite.url)?;
+    let remote_url = decoded
+        .remote_url
+        .expect("URL should include remote endpoint");
 
     bob.profile
         .save(decoded.chain)
         .perform(&bob.operator)
         .await?;
 
-    // Bob sets up remote from the token
     let bob_origin = bob
         .repo
         .remote("origin")
-        .create(SiteAddress::Ucan(UcanAddress::new(&decoded.url.unwrap())))
+        .create(SiteAddress::Ucan(UcanAddress::new(&remote_url)))
         .subject(decoded.subject)
         .perform(&bob.operator)
         .await?;
@@ -169,8 +169,11 @@ async fn bidirectional_sync() -> Result<()> {
 
     // Bob joins
     let bob = isolated_site("bidir-bob").await?;
-    let token = carry::invite_cmd::create_token(&alice, &bob.profile.did()).await?;
-    let decoded = carry::invite_cmd::decode_token(&token)?;
+    let invite = carry::invite_cmd::create_invite(&alice, Some(&bob.profile.did()), None).await?;
+    let decoded = carry::invite_cmd::parse_invite_url(&invite.url)?;
+    let remote_url = decoded
+        .remote_url
+        .expect("URL should include remote endpoint");
 
     bob.profile
         .save(decoded.chain)
@@ -180,7 +183,7 @@ async fn bidirectional_sync() -> Result<()> {
     let bob_origin = bob
         .repo
         .remote("origin")
-        .create(SiteAddress::Ucan(UcanAddress::new(&decoded.url.unwrap())))
+        .create(SiteAddress::Ucan(UcanAddress::new(&remote_url)))
         .subject(decoded.subject)
         .perform(&bob.operator)
         .await?;
