@@ -19,8 +19,9 @@ console_error_panic_hook = { workspace = true }
 dialog-common = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-query = { workspace = true }
-dialog-s3-credentials = { workspace = true, features = ["ucan"] }
-dialog-storage = { workspace = true, features = ["ucan"] }
+dialog-remote-s3 = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
+dialog-storage = { workspace = true }
 futures-util = { workspace = true }
 js-sys = { workspace = true }
 rand = { workspace = true }
@@ -29,7 +30,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-common = { workspace = true }
-tonk-space = { workspace = true }
 tower-service = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-ucan = { workspace = true }

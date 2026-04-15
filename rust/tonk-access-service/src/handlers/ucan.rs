@@ -6,8 +6,8 @@
 //! 3. Returning the serialized AuthorizedRequest as CBOR
 
 use crate::error::{ErrorCode, ServiceError};
-use dialog_s3_credentials::ucan::UcanAuthorizer;
-use dialog_s3_credentials::{Address, s3};
+use dialog_remote_s3::{Address, S3Authorization, s3::S3Credential};
+use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
 /// Add CORS headers to a response for WASM compatibility.
@@ -121,41 +121,39 @@ fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthoriz
     let endpoint = format!("https://{}.r2.cloudflarestorage.com", account_id);
 
     // Create S3 credentials for R2 (using "auto" region as R2 requires)
-    let address = Address::new(&endpoint, "auto", &bucket);
-    let s3_credentials = s3::Credentials::private(address, access_key_id, secret_access_key)
+    let address = Address::builder(&endpoint)
+        .region("auto")
+        .bucket(&bucket)
+        .build()
         .map_err(|e| {
             ServiceError::new(
                 ErrorCode::InternalError,
-                format!("Failed to create credentials: {}", e),
+                format!("Failed to create address: {}", e),
             )
         })?;
 
-    Ok(UcanAuthorizer::new(s3_credentials))
+    let credential = S3Credential::new(access_key_id, secret_access_key);
+    let authorization = S3Authorization::from(credential);
+
+    Ok(UcanAuthorizer::new(address, authorization))
 }
 
-/// Map AccessError to ServiceError with appropriate error codes.
-fn map_access_error(err: dialog_s3_credentials::AccessError) -> ServiceError {
-    use dialog_s3_credentials::AccessError;
-
-    match err {
-        AccessError::NoDelegation(msg) => ServiceError::new(ErrorCode::ChainInvalid, msg),
-        AccessError::Invocation(msg) => {
-            // Check for specific error patterns
-            if msg.contains("expired") {
-                ServiceError::new(ErrorCode::InvocationExpired, msg)
-            } else if msg.contains("signature") {
-                ServiceError::new(ErrorCode::SignatureInvalid, msg)
-            } else if msg.contains("audience") {
-                ServiceError::new(ErrorCode::AudienceMismatch, msg)
-            } else if msg.contains("subject") {
-                ServiceError::new(ErrorCode::SubjectNotAllowed, msg)
-            } else if msg.contains("command") || msg.contains("Command") {
-                ServiceError::new(ErrorCode::CommandMismatch, msg)
-            } else {
-                ServiceError::new(ErrorCode::InvalidArgument, msg)
-            }
-        }
-        AccessError::Service(msg) => ServiceError::new(ErrorCode::InternalError, msg),
-        AccessError::Configuration(msg) => ServiceError::new(ErrorCode::InternalError, msg),
+/// Map S3Error to ServiceError with appropriate error codes.
+fn map_access_error(err: dialog_remote_s3::S3Error) -> ServiceError {
+    let msg = err.to_string();
+    if msg.contains("expired") {
+        ServiceError::new(ErrorCode::InvocationExpired, msg)
+    } else if msg.contains("signature") {
+        ServiceError::new(ErrorCode::SignatureInvalid, msg)
+    } else if msg.contains("audience") {
+        ServiceError::new(ErrorCode::AudienceMismatch, msg)
+    } else if msg.contains("subject") {
+        ServiceError::new(ErrorCode::SubjectNotAllowed, msg)
+    } else if msg.contains("command") || msg.contains("Command") {
+        ServiceError::new(ErrorCode::CommandMismatch, msg)
+    } else if msg.contains("delegation") || msg.contains("chain") {
+        ServiceError::new(ErrorCode::ChainInvalid, msg)
+    } else {
+        ServiceError::new(ErrorCode::InvalidArgument, msg)
     }
 }

@@ -27,32 +27,88 @@
 mod axum;
 pub use axum::*;
 
-mod router;
-pub use router::*;
+// TODO: These modules are disabled while migrating from tonk-space to
+// dialog-repository. They will be rewritten in a follow-up PR.
+// mod router;
+// pub use router::*;
 
 mod error;
 pub use error::*;
 
-mod worker;
-pub use worker::*;
+// mod worker;
+// pub use worker::*;
 
 mod storage;
 pub use storage::*;
 
-mod account;
-pub use account::*;
+// mod account;
+// pub use account::*;
 
-mod key_store;
-pub use key_store::*;
+// mod key_store;
+// pub use key_store::*;
 
-mod identity;
-pub use identity::*;
+// mod identity;
+// pub use identity::*;
 
-mod session;
-pub use session::*;
-
-// Note: WebCryptoIssuer removed as part of Plan A (extractable keys).
-// Non-extractable WebCrypto support will be re-introduced in Plan B.
+// mod session;
+// pub use session::*;
 
 mod r#async;
 pub use r#async::*;
+
+// Stub types while migrating to dialog-repository.
+// These maintain the public API surface so tonk-ui compiles.
+
+/// Placeholder — will be reimplemented with dialog-repository.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StatusResponse {
+    /// Space DID.
+    pub space_did: String,
+    /// Whether an upstream remote is configured.
+    pub has_upstream: bool,
+}
+
+/// Placeholder — will be reimplemented with dialog-repository.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AuthorizeResponse {
+    /// Whether authorization succeeded.
+    pub ok: bool,
+}
+
+/// Placeholder — will be reimplemented with dialog-repository.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DelegationsResponse {
+    /// List of delegation CIDs.
+    pub delegations: Vec<String>,
+}
+
+/// Placeholder — will be reimplemented with dialog-repository.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct IdentifyResponse {
+    /// User DID.
+    pub did: String,
+}
+
+/// Placeholder — will be reimplemented with dialog-repository.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SyncResponse {
+    /// Whether sync succeeded.
+    pub success: bool,
+}
+
+/// Placeholder — will be reimplemented with dialog-repository.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub struct TonkServiceWorker;
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+impl TonkServiceWorker {
+    /// Create a new service worker instance.
+    #[wasm_bindgen(constructor)]
+    pub async fn new() -> Result<TonkServiceWorker, wasm_bindgen::JsError> {
+        Err(wasm_bindgen::JsError::new(
+            "TonkServiceWorker not yet reimplemented with dialog-repository",
+        ))
+    }
+}
