@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Join a space</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        max-width: 480px;
+        margin: 80px auto;
+        padding: 0 20px;
+        text-align: center;
+      }
+      h1 {
+        font-size: 1.4em;
+        margin-bottom: 0.5em;
+      }
+      p {
+        color: #666;
+        line-height: 1.5;
+      }
+      @media (prefers-color-scheme: dark) {
+        p {
+          color: #aaa;
+        }
+      }
+      .status {
+        margin-top: 2em;
+        font-size: 0.95em;
+      }
+      .error {
+        color: #c00;
+      }
+      .ok {
+        color: #080;
+      }
+      @media (prefers-color-scheme: dark) {
+        .ok {
+          color: #4c4;
+        }
+        .error {
+          color: #f66;
+        }
+      }
+      .did {
+        display: block;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 0.85em;
+        word-break: break-all;
+        margin-top: 1em;
+        padding: 0.75em;
+        background: rgba(128, 128, 128, 0.1);
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Join a space</h1>
+    <p>Claiming your invite in this browser...</p>
+    <div id="status" class="status">Initializing...</div>
+    <div id="details"></div>
+
+    <script type="module">
+      import init, {
+        parse_invite,
+        generate_identity,
+        claim_invite,
+      } from "/join/carry_web.js";
+
+      const status = document.getElementById("status");
+      const details = document.getElementById("details");
+
+      function setStatus(text, cls) {
+        status.textContent = text;
+        status.className = "status" + (cls ? " " + cls : "");
+      }
+
+      async function main() {
+        try {
+          setStatus("Loading carry...");
+          await init();
+
+          setStatus("Reading invite...");
+          const invite = parse_invite(window.location.href);
+          if (!invite.seed_b58) {
+            throw new Error(
+              "This invite has no ephemeral key. It may already have been claimed by a specific identity.",
+            );
+          }
+
+          setStatus("Creating your identity...");
+          const identity = await generate_identity();
+
+          setStatus("Claiming invite...");
+          const claimed = await claim_invite(
+            invite.chain_b58,
+            invite.seed_b58,
+            identity.did,
+          );
+
+          setStatus("Saving...");
+          const stored = {
+            did: identity.did,
+            seed_b58: identity.seed_b58,
+            chain_b58: claimed.chain_b58,
+            subject: claimed.subject,
+            remote_url: invite.remote_url || null,
+            claimed_at: new Date().toISOString(),
+          };
+          const existing = JSON.parse(
+            localStorage.getItem("carry.spaces") || "{}",
+          );
+          existing[claimed.subject] = stored;
+          localStorage.setItem("carry.spaces", JSON.stringify(existing));
+
+          setStatus("You've joined this space.", "ok");
+          details.innerHTML =
+            "<p>Your identity for this space:</p>" +
+            '<span class="did">' +
+            identity.did +
+            "</span>" +
+            '<p style="margin-top: 2em; font-size: 0.9em;">To sync data from the command line, install carry and run:</p>' +
+            '<span class="did">carry join \'' +
+            window.location.href +
+            "'</span>";
+        } catch (e) {
+          setStatus("Error: " + (e.message || e), "error");
+          console.error(e);
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

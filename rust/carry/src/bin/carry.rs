@@ -216,6 +216,7 @@ mod inner {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 use inner::*;
 
 #[cfg(target_arch = "wasm32")]

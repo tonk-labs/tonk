@@ -4,7 +4,15 @@ compatibility_date = "2026-01-01"
 compatibility_flags = ["nodejs_compat"]
 
 [build]
-command = "nix build --accept-flake-config .#tonk-access-service && cp -rL result build-output && rm -f result && mv build-output result"
+# Use --no-link + --print-out-paths so wrangler's filesystem watcher doesn't
+# see result/ as a "change" and re-trigger this build in a loop. We copy the
+# nix store path into ./result/ as a writable directory for wrangler to read.
+command = """
+out=$(nix build --accept-flake-config --no-link --print-out-paths .#tonk-access-service) && \
+rm -rf result && \
+cp -rL "$out" result && \
+chmod -R u+w result
+"""
 
 # R2 bucket binding
 [[r2_buckets]]

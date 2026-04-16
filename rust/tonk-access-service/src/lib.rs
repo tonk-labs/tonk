@@ -48,6 +48,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // UCAN authorization endpoint (with CORS preflight support)
         .options_async("/ucan/", handlers::ucan::handle_options)
         .post_async("/ucan/", handlers::ucan::handle)
+        // Browser invite claim flow
+        .get_async("/join", handlers::join::handle)
+        .get_async("/join/carry_web.js", handlers::join::handle_js)
+        .get_async("/join/carry_web_bg.wasm", handlers::join::handle_wasm)
         // 404 for everything else
         .run(req, env)
         .await

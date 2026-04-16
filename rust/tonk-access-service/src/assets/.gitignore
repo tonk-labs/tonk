@@ -1,0 +1,3 @@
+# Checked-in files here are placeholders. The real carry_web.js and
+# carry_web_bg.wasm are produced by `wasm-pack build rust/carry-web` and
+# overwritten during the Nix build. Run `web:build` in the dev shell.

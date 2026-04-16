@@ -1,0 +1,20 @@
+[package]
+name = "carry-web"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Carry browser client (Leptos SPA)"
+license.workspace = true
+
+[dependencies]
+# Shared carry client-side logic (URL parse, redelegate, etc.)
+carry = { workspace = true }
+
+# Leptos (CSR — entire app runs in the browser; no SSR).
+# `leptos_router` has no `csr` feature because CSR is its default mode;
+# only SSR is feature-gated.
+leptos = { version = "0.7", features = ["csr"] }
+leptos_router = "0.7"
+
+# Panic hook so Rust panics surface in the browser console during dev
+console_error_panic_hook = "0.1"

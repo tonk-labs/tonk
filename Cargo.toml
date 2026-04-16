@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "rust/carry",
   "rust/carry-telemetry-service",
+  "rust/carry-web",
   "rust/tonk-access-service",
   "rust/tonk-assess",
 ]

@@ -48,6 +48,8 @@
             cargo-nextest
             esbuild
             mdbook
+            trunk
+            wasm-pack
             worker-build
           ]
           ++ lib.optionals stdenv.isLinux [
@@ -86,7 +88,14 @@
 
         menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
 
-        inherit (menuHelpers) makeMenu makeDevShellHook menuTestCommand;
+        inherit (menuHelpers)
+          makeMenu
+          makeDevShellHook
+          menuTestCommand
+          webBuildCommand
+          webDevCommand
+          webInviteCommand
+          ;
 
         commands = {
           "lint" = {
@@ -101,6 +110,9 @@
             description = "Unit and integration tests (${system}, release)";
             package = "tests-native-release";
           };
+          "web:build" = webBuildCommand;
+          "web:dev" = webDevCommand;
+          "web:invite" = webInviteCommand;
           "menu" = {
             description = "Display all Tonk Shell commands";
             command = "showTonkMenu";
@@ -190,6 +202,38 @@
             pname = "tonk-access-service";
 
             buildPhase = ''
+              # Build carry-web (browser WASM) by calling cargo + wasm-bindgen
+              # directly. We avoid wasm-pack because it tries to write to
+              # $HOME/.cache, which is read-only inside the Nix sandbox.
+              echo "-> Building carry-web for wasm32..."
+              cargo build \
+                --package carry-web \
+                --release \
+                --target wasm32-unknown-unknown
+
+              echo "-> Generating JS bindings with wasm-bindgen..."
+              mkdir -p rust/carry-web/pkg
+              "$WASM_BINDGEN_BIN" \
+                --target web \
+                --out-dir rust/carry-web/pkg \
+                --out-name carry_web \
+                target/wasm32-unknown-unknown/release/carry_web.wasm
+
+              echo "-> Optimizing WASM with wasm-opt..."
+              "$WASM_OPT_BIN" -Oz \
+                rust/carry-web/pkg/carry_web_bg.wasm \
+                -o rust/carry-web/pkg/carry_web_bg.wasm.opt
+              mv rust/carry-web/pkg/carry_web_bg.wasm.opt \
+                 rust/carry-web/pkg/carry_web_bg.wasm
+
+              echo "-> Installing WASM assets into tonk-access-service..."
+              mkdir -p rust/tonk-access-service/src/assets
+              cp rust/carry-web/pkg/carry_web.js \
+                 rust/tonk-access-service/src/assets/carry_web.js
+              cp rust/carry-web/pkg/carry_web_bg.wasm \
+                 rust/tonk-access-service/src/assets/carry_web_bg.wasm
+
+              echo "-> Building worker..."
               cd rust/tonk-access-service
               worker-build --release
               echo "fin"

@@ -77,12 +77,8 @@ pub async fn create_invite(
 
     let remote_url = resolve_access_url(site).await;
 
-    let url = invite::build_invite_url(
-        base,
-        &chain,
-        remote_url.as_deref(),
-        secret_seed.as_deref(),
-    )?;
+    let url =
+        invite::build_invite_url(base, &chain, remote_url.as_deref(), secret_seed.as_deref())?;
 
     Ok(Invite {
         url,
