@@ -1,5 +1,7 @@
 use leptos::{logging::log, prelude::window};
-use tonk_worker::{IdentifyResponse, InitResponse, StatusResponse};
+use tonk_worker::{
+    ClaimInviteRequest, ClaimInviteResponse, IdentifyResponse, InitResponse, StatusResponse,
+};
 
 use crate::error::TonkUiError;
 
@@ -50,6 +52,27 @@ pub async fn init() -> Result<InitResponse, TonkUiError> {
             DEFAULT_REPO,
             DEFAULT_BRANCH
         ))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    response.json().await.map_err(into_api_error)
+}
+
+/// Redeems an invite URL via the service worker, which parses the URL,
+/// redelegates (for open invites) or verifies the audience (for scoped
+/// invites), and persists the resulting delegation chain to the profile.
+///
+/// The full URL including any `#fragment` must be passed — the fragment
+/// carries the ephemeral seed for open invites.
+pub async fn claim_invite(url: &str) -> Result<ClaimInviteResponse, TonkUiError> {
+    log!("Claiming invite…");
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/invite/claim", origin()))
+        .json(&ClaimInviteRequest {
+            url: url.to_string(),
+        })
         .send()
         .await
         .map_err(into_api_error)?;

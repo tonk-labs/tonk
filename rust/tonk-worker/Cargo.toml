@@ -25,6 +25,7 @@ dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
+dialog-ucan = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
 js-sys = { workspace = true }
@@ -33,6 +34,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-common = { workspace = true }
+tonk-invite = { workspace = true }
 tower-service = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }

@@ -13,6 +13,9 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 mod init;
 pub use init::InitResponse;
 
+mod invite;
+pub use invite::{ClaimInviteRequest, ClaimInviteResponse};
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
@@ -48,6 +51,8 @@ pub fn api_router(state: TonkState) -> Router {
             "/api/repository/{repo}/branch/{branch}/init",
             post(init::init),
         )
+        // Invite claim (redeem an invite URL and persist the chain)
+        .route("/api/invite/claim", post(invite::claim_invite))
         // Sync operations
         .route(
             "/api/repository/{repo}/branch/{branch}/sync",

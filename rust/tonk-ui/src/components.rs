@@ -9,6 +9,9 @@ use wasm_bindgen::prelude::*;
 
 use crate::api;
 
+mod join;
+pub use join::*;
+
 mod launcher;
 use launcher::*;
 
@@ -64,7 +67,12 @@ pub fn TonkShell() -> impl IntoView {
             log!("Remote added successfully");
         }
 
-        BrowserUrl::redirect(&format!("/space/{}", status.repo_name));
+        // Skip the default-space redirect when the user landed on `/join`
+        // — the TonkJoin component owns that path.
+        let pathname = window().location().pathname().unwrap_or_default();
+        if !pathname.starts_with("/join") {
+            BrowserUrl::redirect(&format!("/space/{}", status.repo_name));
+        }
 
         Ok::<_, crate::error::TonkUiError>(())
     });
