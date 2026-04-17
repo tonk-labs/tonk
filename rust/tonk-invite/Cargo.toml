@@ -1,0 +1,21 @@
+[package]
+name = "tonk-invite"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tonk invite URL format and claim orchestration, shared by CLI and web clients."
+
+[dependencies]
+anyhow = { workspace = true }
+bs58 = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+url = { workspace = true }
+
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }
