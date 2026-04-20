@@ -59,7 +59,9 @@ pub fn TonkFirstRunModal() -> impl IntoView {
                         log!("Created repo {local}; navigating");
                         navigate(&format!("/repo/{local}"), Default::default());
                     } else {
-                        error.set(Some("create succeeded but response had no local_repo".into()));
+                        error.set(Some(
+                            "create succeeded but response had no local_repo".into(),
+                        ));
                     }
                 }
                 Ok(resp) => {

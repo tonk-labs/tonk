@@ -163,7 +163,9 @@ pub async fn claim_invite(
         Some(false)
     };
 
-    log!("Claimed invite for subject {subject_str} as local repo '{local_name}' (remote_url={remote_url:?})");
+    log!(
+        "Claimed invite for subject {subject_str} as local repo '{local_name}' (remote_url={remote_url:?})"
+    );
 
     Ok(Json(ClaimInviteResponse {
         success: true,

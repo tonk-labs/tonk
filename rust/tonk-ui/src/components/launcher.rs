@@ -1,23 +1,21 @@
-use crate::components::{TonkEmpty, TonkJoin, TonkRepo, TonkSidebar, TonkSpace, TonkToolbar};
+use crate::components::{TonkEmpty, TonkJoin, TonkRepo, TonkSidebar};
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
     path,
 };
 
-/// Main launcher view: toolbar, persistent sidebar, and the routed view.
+/// Main launcher view: persistent sidebar and the routed view.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
     view! {
         <Router>
             <section class="launcher">
-                <TonkToolbar />
                 <TonkSidebar />
                 <Routes fallback=move || view!{ <section class="404">"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     <Route path=path!("") view=TonkEmpty />
                     <Route path=path!("join") view=TonkJoin />
                     <Route path=path!("repo/:name?") view=TonkRepo />
-                    <Route path=path!("space/:did?") view=TonkSpace />
                 </Routes>
             </section>
         </Router>

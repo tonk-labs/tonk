@@ -1,15 +1,10 @@
 use leptos::{logging::log, prelude::window};
 use tonk_worker::{
     ClaimInviteRequest, ClaimInviteResponse, CreateRepositoryRequest, CreateRepositoryResponse,
-    IdentifyResponse, InitResponse, StatusResponse,
+    IdentifyResponse,
 };
 
 use crate::error::TonkUiError;
-
-/// Default repository name used by the UI.
-const DEFAULT_REPO: &str = "home";
-/// Default branch name.
-const DEFAULT_BRANCH: &str = "main";
 
 fn into_api_error<T>(error: T) -> TonkUiError
 where
@@ -25,34 +20,17 @@ fn origin() -> String {
         .expect("Could not read window location")
 }
 
-/// Fetches the current status of the repository from the service worker.
-pub async fn status() -> Result<StatusResponse, TonkUiError> {
-    log!("Fetching status...");
+/// Creates a new self-owned repo via the service worker. The request's
+/// [`CreateRepositoryRequest::remote`] controls whether a sync remote is
+/// configured, and which one.
+pub async fn create_repository(
+    req: &CreateRepositoryRequest,
+) -> Result<CreateRepositoryResponse, TonkUiError> {
+    log!("Creating repo…");
 
     let response = reqwest::Client::new()
-        .get(format!(
-            "{}/api/repository/{}/status",
-            origin(),
-            DEFAULT_REPO
-        ))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    response.json().await.map_err(into_api_error)
-}
-
-/// Initializes sync by setting up the UCAN remote for the default branch.
-pub async fn init() -> Result<InitResponse, TonkUiError> {
-    log!("Initializing sync...");
-
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/repository/{}/branch/{}/init",
-            origin(),
-            DEFAULT_REPO,
-            DEFAULT_BRANCH
-        ))
+        .post(format!("{}/api/repository/create", origin()))
+        .json(req)
         .send()
         .await
         .map_err(into_api_error)?;
@@ -74,24 +52,6 @@ pub async fn claim_invite(url: &str) -> Result<ClaimInviteResponse, TonkUiError>
         .json(&ClaimInviteRequest {
             url: url.to_string(),
         })
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    response.json().await.map_err(into_api_error)
-}
-
-/// Creates a new self-owned repo via the service worker. The request's
-/// [`CreateRepositoryRequest::remote`] controls whether a sync remote is
-/// configured, and which one.
-pub async fn create_repository(
-    req: &CreateRepositoryRequest,
-) -> Result<CreateRepositoryResponse, TonkUiError> {
-    log!("Creating repo…");
-
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/repository/create", origin()))
-        .json(req)
         .send()
         .await
         .map_err(into_api_error)?;

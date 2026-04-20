@@ -36,7 +36,11 @@ fn default_access_service_url() -> String {
         let global = js_sys::global()
             .dyn_into::<ServiceWorkerGlobalScope>()
             .expect("Expected ServiceWorkerGlobalScope");
-        format!("{}{}", global.location().origin(), DEFAULT_ACCESS_SERVICE_PATH)
+        format!(
+            "{}{}",
+            global.location().origin(),
+            DEFAULT_ACCESS_SERVICE_PATH
+        )
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {

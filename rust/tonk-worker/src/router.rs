@@ -15,9 +15,6 @@ pub use create::{
     CreateRepositoryRequest, CreateRepositoryResponse, RemoteConfig, create_repository,
 };
 
-mod init;
-pub use init::InitResponse;
-
 mod invite;
 pub use invite::{ClaimInviteRequest, ClaimInviteResponse};
 
@@ -51,11 +48,6 @@ pub fn api_router(state: TonkState) -> Router {
         .route("/api/identify", get(identify::identify))
         // Repository status
         .route("/api/repository/{repo}/status", get(status::status))
-        // Branch init (set up UCAN remote + upstream)
-        .route(
-            "/api/repository/{repo}/branch/{branch}/init",
-            post(init::init),
-        )
         // Invite claim (redeem an invite URL and persist the chain)
         .route("/api/invite/claim", post(invite::claim_invite))
         // Repository create (new self-owned repo, optionally with remote)
@@ -349,7 +341,11 @@ pub mod tests {
         let resp: super::CreateRepositoryResponse = serde_json::from_slice(&body).unwrap();
         assert!(resp.success);
         assert!(resp.local_repo.as_deref().is_some_and(|s| !s.is_empty()));
-        assert!(resp.subject.as_deref().is_some_and(|s| s.starts_with("did:")));
+        assert!(
+            resp.subject
+                .as_deref()
+                .is_some_and(|s| s.starts_with("did:"))
+        );
         assert_eq!(resp.has_upstream, Some(true));
     }
 
@@ -383,30 +379,6 @@ pub mod tests {
         assert_eq!(resp.local_repo.as_deref(), Some("my-journal"));
         assert_eq!(resp.remote_url, None);
         assert_eq!(resp.has_upstream, Some(false));
-    }
-
-    #[dialog_common::test]
-    async fn it_initializes_branch() {
-        let state = test_state().await;
-        let app = api_router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/repository/home/branch/main/init")
-                    .method("POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::InitResponse = serde_json::from_slice(&body).unwrap();
-        assert!(resp.success);
     }
 
     #[dialog_common::test]
