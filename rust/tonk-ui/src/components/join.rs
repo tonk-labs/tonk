@@ -5,6 +5,7 @@
 //! parse/redelegate/persist work via `tonk-invite`. This component is a
 //! thin status surface; the claim logic lives in the service worker.
 
+use super::service_worker_activates;
 use crate::api;
 use leptos::{logging::log, prelude::*};
 
@@ -36,6 +37,11 @@ pub fn TonkJoin() -> impl IntoView {
         let url = current_url().ok_or_else(|| {
             crate::error::TonkUiError::ApiError("could not read current URL".into())
         })?;
+        // Wait for the service worker to take control before POSTing the
+        // claim — without this, the request can race past the SW and hit
+        // the SPA `index.html` fallback, producing an HTML response that
+        // fails to decode as JSON.
+        service_worker_activates().await;
         log!("Join flow: claiming URL");
         api::claim_invite(&url).await
     });

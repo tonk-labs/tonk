@@ -273,6 +273,7 @@
                   }
                   handle {
                       root * ${self.packages.${system}.tonk-ui}
+                      try_files {path} /index.html
                       file_server
                   }
               }
