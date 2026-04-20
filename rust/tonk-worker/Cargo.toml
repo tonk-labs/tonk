@@ -57,6 +57,7 @@ web-time = { workspace = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom_0_3 = { workspace = true }
+idb = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

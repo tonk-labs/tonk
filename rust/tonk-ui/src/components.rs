@@ -22,7 +22,7 @@ mod repo;
 use repo::*;
 
 mod sidebar;
-use sidebar::*;
+pub use sidebar::*;
 
 #[wasm_bindgen]
 extern "C" {

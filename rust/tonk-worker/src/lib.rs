@@ -57,6 +57,9 @@ extern "C" {
 mod axum;
 pub use axum::*;
 
+mod repo_index;
+pub use repo_index::{RepoEntry, RepoIndex, RepoIndexError};
+
 mod router;
 pub use router::*;
 

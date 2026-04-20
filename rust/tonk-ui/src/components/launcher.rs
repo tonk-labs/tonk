@@ -1,4 +1,5 @@
-use crate::components::{TonkEmpty, TonkJoin, TonkRepo, TonkSidebar};
+use crate::api;
+use crate::components::{RepoListResource, TonkEmpty, TonkJoin, TonkRepo, TonkSidebar};
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
@@ -6,8 +7,21 @@ use leptos_router::{
 };
 
 /// Main launcher view: persistent sidebar and the routed view.
+///
+/// Owns the repo-list resource and provides it via context so that
+/// sidebar (consumer), empty-state (gate for first-run modal), and
+/// create/claim flows (invalidate after success) all share a single
+/// source of truth.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
+    let repos = LocalResource::new(|| async {
+        api::list_repositories()
+            .await
+            .map(|r| r.repositories)
+            .map_err(|e| format!("{e}"))
+    });
+    provide_context(RepoListResource(repos));
+
     view! {
         <Router>
             <section class="launcher">
@@ -43,25 +57,6 @@ mod integration_tests {
     use thirtyfour::prelude::*;
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use tonk_invite::{Invite, InviteAudience};
-
-    #[dialog_common::test]
-    async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
-        let driver = test_environment.driver().await?;
-
-        let _launcher = driver
-            .query(By::Css(".launcher"))
-            .with_text("Nothing here ¯\\_(ツ)_/¯")
-            .first()
-            .await?;
-
-        let space = driver.query(By::Css(".space")).first().await?;
-
-        assert!(space.text().await?.starts_with("did:key:"));
-
-        driver.quit().await?;
-
-        Ok(())
-    }
 
     /// Navigate to `/join?...#...` with a freshly-minted open invite and
     /// assert the worker claims it, opens a local repo, configures the

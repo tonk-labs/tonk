@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 
 use super::AppState;
-use crate::TonkWorkerError;
+use crate::{RepoEntry, TonkWorkerError};
 
 /// Access service path used when [`RemoteConfig::Default`] is chosen.
 /// Mirrors the resolution performed by `router::init`.
@@ -92,26 +92,16 @@ pub struct CreateRepositoryRequest {
     pub remote: RemoteConfig,
 }
 
-/// Response from `POST /api/repository/create`. Fields mirror
-/// [`crate::router::ClaimInviteResponse`] so the two flows feed the
-/// same sidebar row shape.
+/// Response from `POST /api/repository/create`. Carries the same
+/// [`RepoEntry`] shape used by `claim_invite` and `GET /api/repositories`
+/// so every entry point into the repo list produces the same row.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CreateRepositoryResponse {
     /// Whether the repo was successfully created.
     pub success: bool,
-    /// Local repo name (storage key, URL path segment, API path segment).
+    /// The newly-created repo. Present iff `success` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_repo: Option<String>,
-    /// Subject DID the repo tracks. For self-owned repos this is the
-    /// local repo's own DID.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
-    /// Sync remote URL if one was configured.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote_url: Option<String>,
-    /// Whether the default branch has an upstream configured.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub has_upstream: Option<bool>,
+    pub repo: Option<RepoEntry>,
     /// Error message on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -126,7 +116,7 @@ pub async fn create_repository(
     let local_name = body.name.unwrap_or_else(generate_local_name);
     log!("Creating repo '{}'", local_name);
 
-    let tonk_state = state.write().await;
+    let mut tonk_state = state.write().await;
 
     let repo = tonk_state
         .profile
@@ -230,12 +220,22 @@ pub async fn create_repository(
         }
     };
 
+    let entry = RepoEntry {
+        local_repo: local_name,
+        subject,
+        remote_url,
+        has_upstream: has_upstream.unwrap_or(false),
+    };
+
+    tonk_state
+        .repo_index
+        .insert(entry.clone())
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to update repo index: {e}")))?;
+
     Ok(Json(CreateRepositoryResponse {
         success: true,
-        local_repo: Some(local_name),
-        subject: Some(subject),
-        remote_url,
-        has_upstream,
+        repo: Some(entry),
         error: None,
     }))
 }

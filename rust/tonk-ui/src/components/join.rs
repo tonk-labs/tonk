@@ -8,6 +8,7 @@
 
 use super::service_worker_activates;
 use crate::api;
+use crate::components::RepoListResource;
 use leptos::{logging::log, prelude::*};
 use leptos_router::hooks::use_navigate;
 
@@ -56,13 +57,17 @@ pub fn TonkJoin() -> impl IntoView {
     });
 
     let navigate = use_navigate();
+    let repos = use_context::<RepoListResource>().map(|ctx| ctx.0);
     Effect::new(move |_| {
         if let Some(Ok(resp)) = claim.get()
             && resp.success
-            && let Some(local) = resp.local_repo
+            && let Some(repo) = resp.repo
         {
-            log!("Claim succeeded; navigating to /repo/{local}");
-            navigate(&format!("/repo/{local}"), Default::default());
+            log!("Claim succeeded; navigating to /repo/{}", repo.local_repo);
+            if let Some(r) = repos {
+                r.refetch();
+            }
+            navigate(&format!("/repo/{}", repo.local_repo), Default::default());
         }
     });
 

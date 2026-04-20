@@ -18,6 +18,9 @@ pub use create::{
 mod invite;
 pub use invite::{ClaimInviteRequest, ClaimInviteResponse};
 
+mod repos;
+pub use repos::{ListRepositoriesResponse, list_repositories};
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
@@ -52,6 +55,8 @@ pub fn api_router(state: TonkState) -> Router {
         .route("/api/invite/claim", post(invite::claim_invite))
         // Repository create (new self-owned repo, optionally with remote)
         .route("/api/repository/create", post(create::create_repository))
+        // Repository list (drives the sidebar)
+        .route("/api/repositories", get(repos::list_repositories))
         // Sync operations
         .route(
             "/api/repository/{repo}/branch/{branch}/sync",
@@ -119,6 +124,7 @@ pub mod tests {
     use dialog_repository::profile::Profile;
     use dialog_storage::provider::storage::Storage;
 
+    use crate::RepoIndex;
     use crate::worker::DefaultSpace;
 
     use axum::body::Body;
@@ -161,7 +167,11 @@ pub mod tests {
             }
         }
 
-        TonkState { profile, operator }
+        TonkState {
+            profile,
+            operator,
+            repo_index: RepoIndex::default(),
+        }
     }
 
     #[dialog_common::test]
@@ -340,13 +350,10 @@ pub mod tests {
             .unwrap();
         let resp: super::CreateRepositoryResponse = serde_json::from_slice(&body).unwrap();
         assert!(resp.success);
-        assert!(resp.local_repo.as_deref().is_some_and(|s| !s.is_empty()));
-        assert!(
-            resp.subject
-                .as_deref()
-                .is_some_and(|s| s.starts_with("did:"))
-        );
-        assert_eq!(resp.has_upstream, Some(true));
+        let repo = resp.repo.expect("success implies repo present");
+        assert!(!repo.local_repo.is_empty());
+        assert!(repo.subject.starts_with("did:"));
+        assert!(repo.has_upstream);
     }
 
     #[dialog_common::test]
@@ -376,9 +383,10 @@ pub mod tests {
             .unwrap();
         let resp: super::CreateRepositoryResponse = serde_json::from_slice(&body).unwrap();
         assert!(resp.success);
-        assert_eq!(resp.local_repo.as_deref(), Some("my-journal"));
-        assert_eq!(resp.remote_url, None);
-        assert_eq!(resp.has_upstream, Some(false));
+        let repo = resp.repo.expect("success implies repo present");
+        assert_eq!(repo.local_repo, "my-journal");
+        assert_eq!(repo.remote_url, None);
+        assert!(!repo.has_upstream);
     }
 
     #[dialog_common::test]

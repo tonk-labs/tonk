@@ -10,6 +10,7 @@ use leptos_router::{components::A, hooks::use_navigate};
 use tonk_worker::{CreateRepositoryRequest, RemoteConfig};
 
 use crate::api;
+use crate::components::RepoListResource;
 
 /// Which remote option the user picked in the create-repo form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,18 +53,21 @@ pub fn TonkFirstRunModal() -> impl IntoView {
         };
 
         let navigate = use_navigate();
+        let repos = use_context::<RepoListResource>().map(|ctx| ctx.0);
         spawn_local(async move {
             match api::create_repository(&req).await {
-                Ok(resp) if resp.success => {
-                    if let Some(local) = resp.local_repo {
-                        log!("Created repo {local}; navigating");
-                        navigate(&format!("/repo/{local}"), Default::default());
-                    } else {
-                        error.set(Some(
-                            "create succeeded but response had no local_repo".into(),
-                        ));
+                Ok(resp) if resp.success => match resp.repo {
+                    Some(repo) => {
+                        log!("Created repo {}; navigating", repo.local_repo);
+                        if let Some(r) = repos {
+                            r.refetch();
+                        }
+                        navigate(&format!("/repo/{}", repo.local_repo), Default::default());
                     }
-                }
+                    None => {
+                        error.set(Some("create succeeded but response had no repo".into()));
+                    }
+                },
                 Ok(resp) => {
                     error.set(Some(resp.error.unwrap_or_else(|| "create failed".into())));
                 }

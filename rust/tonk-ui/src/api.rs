@@ -1,7 +1,7 @@
 use leptos::{logging::log, prelude::window};
 use tonk_worker::{
     ClaimInviteRequest, ClaimInviteResponse, CreateRepositoryRequest, CreateRepositoryResponse,
-    IdentifyResponse,
+    IdentifyResponse, ListRepositoriesResponse,
 };
 
 use crate::error::TonkUiError;
@@ -52,6 +52,18 @@ pub async fn claim_invite(url: &str) -> Result<ClaimInviteResponse, TonkUiError>
         .json(&ClaimInviteRequest {
             url: url.to_string(),
         })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    response.json().await.map_err(into_api_error)
+}
+
+/// Lists every repo the profile has access to. Drives the sidebar and
+/// the first-run-modal gating.
+pub async fn list_repositories() -> Result<ListRepositoriesResponse, TonkUiError> {
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/repositories", origin()))
         .send()
         .await
         .map_err(into_api_error)?;

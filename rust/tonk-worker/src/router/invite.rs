@@ -18,7 +18,7 @@ use tonk_common::log;
 
 use super::AppState;
 use super::create::generate_local_name;
-use crate::TonkWorkerError;
+use crate::{RepoEntry, TonkWorkerError};
 
 /// Body for `POST /api/invite/claim`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -29,25 +29,17 @@ pub struct ClaimInviteRequest {
     pub url: String,
 }
 
-/// Response from `POST /api/invite/claim`. Fields mirror
-/// [`crate::router::CreateRepositoryResponse`] so both flows feed the
-/// same sidebar row shape.
+/// Response from `POST /api/invite/claim`. Carries the same
+/// [`RepoEntry`] shape used by `create_repository` and
+/// `GET /api/repositories` so every entry point into the repo list
+/// produces the same row.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClaimInviteResponse {
     /// Whether the chain was successfully claimed and persisted.
     pub success: bool,
-    /// Local repo name (storage key, URL path segment, API path segment).
+    /// The newly-joined repo. Present iff `success` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_repo: Option<String>,
-    /// DID of the repo the invite targeted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub subject: Option<String>,
-    /// Sync remote URL declared by the inviter, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub remote_url: Option<String>,
-    /// Whether the default branch has an upstream configured.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub has_upstream: Option<bool>,
+    pub repo: Option<RepoEntry>,
     /// Error message on failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -66,7 +58,7 @@ pub async fn claim_invite(
 ) -> Result<Json<ClaimInviteResponse>, TonkWorkerError> {
     log!("Claiming invite…");
 
-    let tonk_state = state.write().await;
+    let mut tonk_state = state.write().await;
     let audience = tonk_state.profile.did();
 
     let claimed = tonk_invite::Invite::parse_url(&body.url)
@@ -167,12 +159,22 @@ pub async fn claim_invite(
         "Claimed invite for subject {subject_str} as local repo '{local_name}' (remote_url={remote_url:?})"
     );
 
+    let entry = RepoEntry {
+        local_repo: local_name,
+        subject: subject_str,
+        remote_url: remote_url.map(|u| u.to_string()),
+        has_upstream: has_upstream.unwrap_or(false),
+    };
+
+    tonk_state
+        .repo_index
+        .insert(entry.clone())
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to update repo index: {e}")))?;
+
     Ok(Json(ClaimInviteResponse {
         success: true,
-        local_repo: Some(local_name),
-        subject: Some(subject_str),
-        remote_url: remote_url.map(|u| u.to_string()),
-        has_upstream,
+        repo: Some(entry),
         error: None,
     }))
 }
