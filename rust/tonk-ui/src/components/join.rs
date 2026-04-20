@@ -2,20 +2,22 @@
 //!
 //! Reads the full current URL (including `#fragment`) and POSTs it to the
 //! service worker's `/api/invite/claim` endpoint, which does the actual
-//! parse/redelegate/persist work via `tonk-invite`. This component is a
-//! thin status surface; the claim logic lives in the service worker.
+//! parse/redelegate/persist work via `tonk-invite`. On success the user
+//! is navigated to `/repo/<local_repo>` where the sidebar and repo view
+//! take over.
 
 use super::service_worker_activates;
 use crate::api;
 use leptos::{logging::log, prelude::*};
+use leptos_router::hooks::use_navigate;
 
 /// Status of the in-progress claim.
 #[derive(Clone, Debug)]
 enum ClaimStatus {
     /// Waiting for the service worker and the claim request.
     Pending,
-    /// Claim succeeded; holds the subject (repo DID).
-    Ok { subject: String },
+    /// Claim succeeded; redirect is in flight.
+    Ok,
     /// Claim failed with a human-readable message.
     Err(String),
 }
@@ -29,8 +31,8 @@ fn current_url() -> Option<String> {
     window().location().href().ok()
 }
 
-/// `/join` route component. Kicks off the claim flow on mount and renders
-/// pending / ok / error status to the user.
+/// `/join` route component. Kicks off the claim flow on mount; on
+/// success, navigates to `/repo/<local_repo>`.
 #[component]
 pub fn TonkJoin() -> impl IntoView {
     let claim = LocalResource::new(|| async {
@@ -49,24 +51,30 @@ pub fn TonkJoin() -> impl IntoView {
     let status = Signal::derive_local(move || match claim.get() {
         None => ClaimStatus::Pending,
         Some(Err(e)) => ClaimStatus::Err(format!("{e}")),
-        Some(Ok(resp)) if resp.success => ClaimStatus::Ok {
-            subject: resp
-                .subject
-                .unwrap_or_else(|| "(unknown subject)".to_string()),
-        },
+        Some(Ok(resp)) if resp.success => ClaimStatus::Ok,
         Some(Ok(resp)) => ClaimStatus::Err(resp.error.unwrap_or_else(|| "claim failed".into())),
+    });
+
+    let navigate = use_navigate();
+    Effect::new(move |_| {
+        if let Some(Ok(resp)) = claim.get()
+            && resp.success
+            && let Some(local) = resp.local_repo
+        {
+            log!("Claim succeeded; navigating to /repo/{local}");
+            navigate(&format!("/repo/{local}"), Default::default());
+        }
     });
 
     view! {
         <section class="join">
-            <h1>"Join a space"</h1>
+            <h1>"Join a repo"</h1>
             {move || match status.get() {
                 ClaimStatus::Pending => view! {
                     <p class="status">"Claiming your invite in this browser…"</p>
                 }.into_any(),
-                ClaimStatus::Ok { subject } => view! {
-                    <p class="status ok">"Invite claimed."</p>
-                    <code class="did">{subject}</code>
+                ClaimStatus::Ok => view! {
+                    <p class="status ok">"Invite claimed. Redirecting…"</p>
                 }.into_any(),
                 ClaimStatus::Err(msg) => view! {
                     <p class="status error">"Could not claim this invite:"</p>

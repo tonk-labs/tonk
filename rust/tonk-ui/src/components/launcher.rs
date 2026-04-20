@@ -16,7 +16,7 @@ pub fn TonkLauncher() -> impl IntoView {
                 <Routes fallback=move || view!{ <section class="404">"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     <Route path=path!("") view=TonkEmpty />
                     <Route path=path!("join") view=TonkJoin />
-                    <Route path=path!("repo/:did?") view=TonkRepo />
+                    <Route path=path!("repo/:name?") view=TonkRepo />
                     <Route path=path!("space/:did?") view=TonkSpace />
                 </Routes>
             </section>
@@ -66,13 +66,13 @@ mod integration_tests {
     }
 
     /// Navigate to `/join?...#...` with a freshly-minted open invite and
-    /// assert the service worker claims it end-to-end.
+    /// assert the worker claims it, opens a local repo, configures the
+    /// remote against the test access service, and redirects the user to
+    /// `/repo/<local_name>`.
     ///
-    /// The test access service boots as part of [`TestEnvironment`] and is
-    /// proxied at `/ucan/`. The claim endpoint does not yet call out to
-    /// the access service with the embedded `remote_url` (see the comment
-    /// on `claim_invite` in `tonk-worker`), but wiring the URL realistically
-    /// now guards against regressions when that follow-up lands.
+    /// The test access service boots as part of [`TestEnvironment`] and
+    /// is proxied at `/ucan/`, which is what we embed in the invite's
+    /// `remote_url`.
     #[dialog_common::test]
     async fn it_claims_an_open_invite_via_the_join_route(
         test_environment: TestEnvironment,
@@ -108,19 +108,53 @@ mod integration_tests {
         let driver = test_environment.driver().await?;
         driver.goto(&invite_url).await?;
 
-        // Block until the claim resource resolves to either success or error.
-        let status = driver
-            .query(By::Css(".join .status.ok, .join .status.error"))
+        // The success path redirects to `/repo/<local_name>`; the failure
+        // path keeps us on `/join` with `.status.error`. Wait for either.
+        let landed = driver
+            .query(By::Css("section.repo, .join .status.error"))
             .first()
             .await?;
-        let status_class = status.attr("class").await?.unwrap_or_default();
+        let class = landed.attr("class").await?.unwrap_or_default();
         assert!(
-            status_class.contains("ok"),
-            "expected successful claim, got status classes {status_class:?}"
+            class.contains("repo") && !class.contains("status"),
+            "claim flow did not reach repo view; class={class:?}"
         );
 
-        let did = driver.query(By::Css(".join code.did")).first().await?;
-        assert_eq!(did.text().await?, subject_did.to_string());
+        let url = driver.current_url().await?;
+        assert!(
+            url.path().starts_with("/repo/"),
+            "expected redirect to /repo/<name>, got {}",
+            url.path()
+        );
+        let local_name = url
+            .path()
+            .trim_start_matches("/repo/")
+            .trim_end_matches('/')
+            .to_string();
+        assert!(!local_name.is_empty(), "local_name must be non-empty");
+
+        // Confirm the remote was configured by asking the worker directly.
+        let status_url = format!(
+            "{}api/repository/{}/status",
+            test_environment.tonk_web, local_name
+        );
+        let status_json = driver
+            .execute(
+                &format!(
+                    r#"
+                    const response = await fetch("{status_url}");
+                    return await response.json();
+                "#
+                ),
+                vec![],
+            )
+            .await?;
+        let status: serde_json::Value = status_json.json().clone();
+        assert_eq!(
+            status["has_upstream"].as_bool(),
+            Some(true),
+            "claim should configure upstream on main; status={status}"
+        );
 
         driver.quit().await?;
         Ok(())

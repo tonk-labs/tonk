@@ -47,7 +47,7 @@ fn default_access_service_url() -> String {
 /// Generate a unique local repo name. Used when the caller does not
 /// provide one. Collisions are implausible under realistic use because
 /// nanosecond timestamps are combined with a monotonic counter.
-fn generate_local_name() -> String {
+pub(super) fn generate_local_name() -> String {
     use dialog_common::time;
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let ts = time::now()

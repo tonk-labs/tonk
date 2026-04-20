@@ -1,19 +1,21 @@
-//! Per-repo view. Route param is the subject DID of the repo the profile
-//! has access to — the same string used as the local repo name, and the
-//! key under which `/api/repositories` will list this entry.
+//! Per-repo view. Route param is the *local name* (storage key) of the
+//! repo — distinct from the repo's own DID and from the subject DID it
+//! tracks (see `project_repo_three_identifiers.md`). `/api/repositories`
+//! will list entries keyed by this same local name.
 //!
-//! Current shape is a placeholder: renders the DID and nothing else. Data
-//! rendering slots in once the read API stabilizes on the new
-//! dialog-artifacts shape.
+//! Current shape is a placeholder: renders the local name. The subject
+//! DID (the identity the user actually thinks they're viewing) will be
+//! fetched from `/api/repository/<name>/status` once that endpoint
+//! surfaces it.
 
 use leptos::{either::Either, prelude::*};
 use leptos_router::{hooks::use_params, params::Params};
 
-/// Route params for `/repo/:did?`.
+/// Route params for `/repo/:name?`.
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkRepoParams {
-    /// Subject DID of the repo being viewed.
-    did: Option<String>,
+    /// Local repo name (storage key).
+    name: Option<String>,
 }
 
 /// Main area for a single repo.
@@ -21,13 +23,13 @@ pub struct TonkRepoParams {
 #[allow(clippy::unused_unit)]
 pub fn TonkRepo() -> impl IntoView {
     let params = use_params::<TonkRepoParams>();
-    let did = Signal::derive_local(move || params.get().ok().and_then(|p| p.did));
+    let name = Signal::derive_local(move || params.get().ok().and_then(|p| p.name));
 
     view! {
         <section class="repo">
         {
-            move || match did.get() {
-                Some(did) => Either::Left(view! { <code class="did">{ did }</code> }),
+            move || match name.get() {
+                Some(name) => Either::Left(view! { <code class="local-name">{ name }</code> }),
                 None => Either::Right(view! { <p class="empty">"Pick a repo from the sidebar."</p> }),
             }
         }
