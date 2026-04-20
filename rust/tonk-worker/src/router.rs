@@ -10,6 +10,11 @@ use crate::worker::TonkState;
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
+mod create;
+pub use create::{
+    CreateRepositoryRequest, CreateRepositoryResponse, RemoteConfig, create_repository,
+};
+
 mod init;
 pub use init::InitResponse;
 
@@ -53,6 +58,8 @@ pub fn api_router(state: TonkState) -> Router {
         )
         // Invite claim (redeem an invite URL and persist the chain)
         .route("/api/invite/claim", post(invite::claim_invite))
+        // Repository create (new self-owned repo, optionally with remote)
+        .route("/api/repository/create", post(create::create_repository))
         // Sync operations
         .route(
             "/api/repository/{repo}/branch/{branch}/sync",
@@ -237,6 +244,46 @@ pub mod tests {
         assert!(!resp.has_upstream);
     }
 
+    /// Sanity-check that `local_name` can be an arbitrary ASCII-safe
+    /// string (not just the hard-coded `"home"`). Multi-repo UX picks
+    /// names like ULIDs or user-supplied strings on create, so this
+    /// guards against any accidental special-casing of `"home"`.
+    #[dialog_common::test]
+    async fn it_addresses_a_repo_by_arbitrary_name() {
+        use dialog_repository::RepositoryExt as _;
+
+        let state = test_state().await;
+
+        let name = "scratch-01jhcs8abcd";
+        let _repo = state
+            .profile
+            .repository(name)
+            .open()
+            .perform(&state.operator)
+            .await
+            .expect("opening a repo with an arbitrary local name should succeed");
+
+        let app = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{name}/status"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::StatusResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp.repo_name, name);
+        assert!(!resp.space_did.is_empty());
+    }
+
     #[dialog_common::test]
     async fn it_asserts_and_selects_claims() {
         let state = test_state().await;
@@ -275,6 +322,67 @@ pub mod tests {
         let resp: super::QueryResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(resp.claims.len(), 1);
         assert_eq!(resp.claims[0].is, serde_json::json!("Test Name"));
+    }
+
+    #[dialog_common::test]
+    async fn it_creates_a_repo_with_default_remote() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let body = serde_json::json!({ "remote": { "kind": "default" } });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/create")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::CreateRepositoryResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.success);
+        assert!(resp.local_repo.as_deref().is_some_and(|s| !s.is_empty()));
+        assert!(resp.subject.as_deref().is_some_and(|s| s.starts_with("did:")));
+        assert_eq!(resp.has_upstream, Some(true));
+    }
+
+    #[dialog_common::test]
+    async fn it_creates_a_local_only_repo() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let body = serde_json::json!({
+            "name": "my-journal",
+            "remote": { "kind": "none" }
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/create")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::CreateRepositoryResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.success);
+        assert_eq!(resp.local_repo.as_deref(), Some("my-journal"));
+        assert_eq!(resp.remote_url, None);
+        assert_eq!(resp.has_upstream, Some(false));
     }
 
     #[dialog_common::test]

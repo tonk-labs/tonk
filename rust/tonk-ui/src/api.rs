@@ -1,6 +1,7 @@
 use leptos::{logging::log, prelude::window};
 use tonk_worker::{
-    ClaimInviteRequest, ClaimInviteResponse, IdentifyResponse, InitResponse, StatusResponse,
+    ClaimInviteRequest, ClaimInviteResponse, CreateRepositoryRequest, CreateRepositoryResponse,
+    IdentifyResponse, InitResponse, StatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -73,6 +74,24 @@ pub async fn claim_invite(url: &str) -> Result<ClaimInviteResponse, TonkUiError>
         .json(&ClaimInviteRequest {
             url: url.to_string(),
         })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    response.json().await.map_err(into_api_error)
+}
+
+/// Creates a new self-owned repo via the service worker. The request's
+/// [`CreateRepositoryRequest::remote`] controls whether a sync remote is
+/// configured, and which one.
+pub async fn create_repository(
+    req: &CreateRepositoryRequest,
+) -> Result<CreateRepositoryResponse, TonkUiError> {
+    log!("Creating repo…");
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/repository/create", origin()))
+        .json(req)
         .send()
         .await
         .map_err(into_api_error)?;
