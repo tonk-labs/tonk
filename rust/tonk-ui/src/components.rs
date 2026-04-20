@@ -9,11 +9,23 @@ use wasm_bindgen::prelude::*;
 
 use crate::api;
 
+mod empty;
+use empty::*;
+
 mod join;
 pub use join::*;
 
 mod launcher;
 use launcher::*;
+
+mod modal;
+pub use modal::*;
+
+mod repo;
+use repo::*;
+
+mod sidebar;
+use sidebar::*;
 
 mod toolbar;
 use toolbar::*;
