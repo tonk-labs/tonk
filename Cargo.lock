@@ -4592,7 +4592,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bs58",
+ "dialog-capability",
  "dialog-credentials",
+ "dialog-ucan",
  "dialog-ucan-core",
  "dialog-varsig",
  "tokio",

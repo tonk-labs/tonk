@@ -9,7 +9,9 @@ description = "Tonk invite URL format and claim orchestration, shared by CLI and
 [dependencies]
 anyhow = { workspace = true }
 bs58 = { workspace = true }
+dialog-capability = { workspace = true }
 dialog-credentials = { workspace = true }
+dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 url = { workspace = true }
