@@ -25,6 +25,10 @@ pub fn TonkSidebar() -> impl IntoView {
 
     view! {
         <aside class="sidebar">
+            <div class="brand">
+                <img src="/images/mark-white.svg" alt="" />
+                <span>"Tonk"</span>
+            </div>
             <ul class="repos">
                 {move || match repos.get() {
                     None => view! { <li class="loading">"Loading…"</li> }.into_any(),

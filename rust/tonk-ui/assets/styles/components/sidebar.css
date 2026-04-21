@@ -1,0 +1,124 @@
+.sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 16px 12px;
+    background-color: var(--tonk-sidebar-background-color, #F0F0F0);
+    border-right: 1px solid var(--color-night-100);
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.dark .sidebar {
+    background-color: var(--color-night-900);
+    border-right-color: var(--color-night-800);
+}
+
+.sidebar .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px 12px;
+    border-bottom: 1px solid var(--color-night-100);
+    font-weight: 500;
+    font-size: 1.05rem;
+    color: var(--color-night-800);
+}
+
+.dark .sidebar .brand {
+    border-bottom-color: var(--color-night-800);
+    color: var(--color-night-100);
+}
+
+.sidebar .brand img {
+    width: 24px;
+    height: 24px;
+    display: block;
+}
+
+.dark .sidebar .brand img {
+    filter: invert(1);
+}
+
+.sidebar .repos {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.sidebar .repos > li {
+    min-width: 0;
+}
+
+.sidebar .repos > li.loading,
+.sidebar .repos > li.empty {
+    color: var(--color-night-400);
+    padding: 10px 12px;
+    font-size: 0.9rem;
+}
+
+.sidebar .repos > li.error {
+    color: #dc2626;
+    padding: 10px 12px;
+    font-size: 0.9rem;
+    word-break: break-word;
+}
+
+.sidebar .repo-row > a {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    text-decoration: none;
+    color: var(--color-night-800);
+    min-width: 0;
+    transition: background-color 0.15s ease;
+}
+
+.dark .sidebar .repo-row > a {
+    color: var(--color-night-100);
+}
+
+.sidebar .repo-row > a:hover {
+    background-color: var(--color-night-100);
+}
+
+.dark .sidebar .repo-row > a:hover {
+    background-color: var(--color-night-800);
+}
+
+.sidebar .repo-row > a.active,
+.sidebar .repo-row > a[aria-current="page"] {
+    background-color: var(--color-night-200);
+    color: var(--color-night-900);
+}
+
+.dark .sidebar .repo-row > a.active,
+.dark .sidebar .repo-row > a[aria-current="page"] {
+    background-color: var(--color-night-700);
+    color: #fff;
+}
+
+.sidebar .repo-row .local-name {
+    font-weight: 500;
+    font-size: 0.95rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar .repo-row .subject {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.7rem;
+    color: var(--color-night-400);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+}

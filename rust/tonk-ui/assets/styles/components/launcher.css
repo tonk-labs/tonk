@@ -2,7 +2,99 @@
     display: grid;
     width: 100vw;
     height: 100vh;
-    grid-template-columns: 80px auto;
+    grid-template-columns: 260px minmax(0, 1fr);
     grid-template-rows: 100%;
-    grid-template-areas: "toolbar" "space";
+}
+
+.launcher > .empty,
+.launcher > .repo,
+.launcher > .join {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 32px;
+    overflow: auto;
+    min-width: 0;
+}
+
+.launcher > .empty .pick {
+    color: var(--color-night-400);
+    font-size: 1.05rem;
+}
+
+.launcher > .repo {
+    align-items: flex-start;
+    justify-content: flex-start;
+}
+
+.launcher > .repo .header {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.launcher > .repo .header h1 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 500;
+    color: var(--color-night-500);
+}
+
+.launcher > .repo .local-name {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 1.1rem;
+    padding: 8px 12px;
+    background: var(--color-night-100);
+    color: var(--color-night-800);
+    border-radius: 6px;
+}
+
+.dark .launcher > .repo .local-name {
+    background: var(--color-night-800);
+    color: var(--color-night-100);
+}
+
+.launcher > .repo .empty {
+    color: var(--color-night-400);
+}
+
+.launcher > .join {
+    max-width: 100%;
+}
+
+.launcher > .join h1 {
+    font-size: 1.5rem;
+    font-weight: 500;
+    margin: 0;
+}
+
+.launcher > .join .status {
+    color: var(--color-night-500);
+}
+
+.launcher > .join .status.ok {
+    color: #16a34a;
+}
+
+.launcher > .join .status.error {
+    color: #dc2626;
+}
+
+.launcher > .join code.error {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    padding: 10px 14px;
+    background: var(--color-night-100);
+    color: var(--color-night-800);
+    border-radius: 6px;
+    max-width: 640px;
+    word-break: break-all;
+    white-space: pre-wrap;
+}
+
+.dark .launcher > .join code.error {
+    background: var(--color-night-800);
+    color: var(--color-night-100);
 }

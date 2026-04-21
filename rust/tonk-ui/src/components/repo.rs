@@ -29,7 +29,12 @@ pub fn TonkRepo() -> impl IntoView {
         <section class="repo">
         {
             move || match name.get() {
-                Some(name) => Either::Left(view! { <code class="local-name">{ name }</code> }),
+                Some(name) => Either::Left(view! {
+                    <header class="header">
+                        <h1>"Repo"</h1>
+                        <code class="local-name">{ name }</code>
+                    </header>
+                }),
                 None => Either::Right(view! { <p class="empty">"Pick a repo from the sidebar."</p> }),
             }
         }

@@ -1,0 +1,147 @@
+dialog.first-run {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: static;
+    margin: 0;
+    padding: 28px 32px;
+    border: none;
+    border-radius: 12px;
+    max-width: 480px;
+    width: 100%;
+    background: var(--panel-background-color, #fff);
+    color: var(--color-night-900);
+    box-shadow:
+        0 2px 4px -2px rgba(0, 0, 0, 0.10),
+        0 10px 20px -4px rgba(0, 0, 0, 0.15);
+}
+
+.dark dialog.first-run {
+    background: var(--color-night-900);
+    color: var(--color-night-50);
+    box-shadow:
+        0 2px 4px -2px rgba(0, 0, 0, 0.3),
+        0 10px 30px -4px rgba(0, 0, 0, 0.5);
+}
+
+dialog.first-run h2 {
+    margin: 0;
+    font-size: 1.4rem;
+    font-weight: 500;
+}
+
+dialog.first-run > p {
+    margin: 0;
+    color: var(--color-night-500);
+    font-size: 0.95rem;
+    line-height: 1.45;
+}
+
+.dark dialog.first-run > p {
+    color: var(--color-night-300);
+}
+
+dialog.first-run .create-repo {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 4px;
+}
+
+dialog.first-run .create-repo > label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--color-night-600);
+}
+
+.dark dialog.first-run .create-repo > label {
+    color: var(--color-night-300);
+}
+
+dialog.first-run fieldset.remote {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    border: 1px solid var(--color-night-100);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin: 0;
+}
+
+.dark dialog.first-run fieldset.remote {
+    border-color: var(--color-night-700);
+}
+
+dialog.first-run fieldset.remote legend {
+    padding: 0 6px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--color-night-600);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.dark dialog.first-run fieldset.remote legend {
+    color: var(--color-night-300);
+}
+
+dialog.first-run fieldset.remote label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.95rem;
+    font-weight: 400;
+    cursor: pointer;
+    color: inherit;
+}
+
+dialog.first-run fieldset.remote input[type="radio"] {
+    margin: 0;
+    accent-color: var(--color-night-900);
+}
+
+.dark dialog.first-run fieldset.remote input[type="radio"] {
+    accent-color: var(--color-night-100);
+}
+
+dialog.first-run .ctas {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 4px;
+}
+
+dialog.first-run .ctas .redeem {
+    color: var(--color-night-500);
+    text-decoration: none;
+    font-size: 0.95rem;
+    padding: 8px 12px;
+    border-radius: 6px;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+dialog.first-run .ctas .redeem:hover {
+    color: var(--color-night-900);
+    background: var(--color-night-100);
+}
+
+.dark dialog.first-run .ctas .redeem {
+    color: var(--color-night-300);
+}
+
+.dark dialog.first-run .ctas .redeem:hover {
+    color: #fff;
+    background: var(--color-night-800);
+}
+
+dialog.first-run p.error {
+    margin: 0;
+    color: #dc2626;
+    font-size: 0.9rem;
+    padding: 8px 12px;
+    background: rgba(220, 38, 38, 0.08);
+    border-radius: 6px;
+}

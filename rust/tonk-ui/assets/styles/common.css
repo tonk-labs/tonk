@@ -45,15 +45,19 @@
     }
 
     body {
-        @apply m-0 flex items-center justify-center min-w-[320px] min-h-screen place-items-center;
-        @apply bg-white text-gray-900;
-        @apply dark:bg-[#242424] dark:text-white/87;
+        @apply m-0 min-h-screen;
+        @apply text-gray-900;
+        @apply dark:text-white/87;
 
         font-family: var(--font-gestalt);
         background: var(--body-background-color, #fafafa);
     }
 
+    .dark body {
+        background: var(--body-background-color-dark, var(--color-night-950));
+    }
+
     #root {
-        /* @apply w-screen; */
+        display: contents;
     }
 }
