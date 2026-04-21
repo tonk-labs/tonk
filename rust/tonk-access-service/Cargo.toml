@@ -70,6 +70,7 @@ dialog-storage = { workspace = true, optional = true }
 dialog-common = { workspace = true, optional = true }
 
 [dev-dependencies]
+dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-credentials = { workspace = true }
