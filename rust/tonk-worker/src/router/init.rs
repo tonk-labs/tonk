@@ -134,7 +134,7 @@ pub async fn init(
         .await
     {
         Ok(remote) => {
-            log!("Remote 'origin' created: {}", remote.name());
+            log!("Remote 'origin' created: {}", remote.site().name());
         }
         Err(e) => {
             let err_str = format!("{:?}", e);

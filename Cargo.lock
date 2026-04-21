@@ -484,6 +484,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -943,7 +944,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -978,7 +979,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "async-trait",
  "convert_case 0.6.0",
@@ -995,7 +996,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1023,7 +1024,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "async-trait",
  "base58",
@@ -1044,9 +1045,10 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "async-trait",
+ "base58",
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
@@ -1058,7 +1060,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -1068,9 +1070,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-network"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
+dependencies = [
+ "async-trait",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-effects",
+ "dialog-remote-s3",
+ "dialog-remote-ucan-s3",
+ "serde",
+]
+
+[[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1081,8 +1097,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
- "dialog-remote-s3",
- "dialog-remote-ucan-s3",
+ "dialog-network",
  "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
@@ -1105,7 +1120,7 @@ dependencies = [
 [[package]]
 name = "dialog-prolly-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1125,7 +1140,7 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "async-stream",
  "base58",
@@ -1148,12 +1163,13 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-trait",
  "base58",
  "base64",
+ "blake3",
  "bytes",
  "chrono",
  "dialog-capability",
@@ -1186,11 +1202,12 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-trait",
  "base58",
+ "blake3",
  "bytes",
  "dialog-capability",
  "dialog-common",
@@ -1220,7 +1237,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1231,6 +1248,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
+ "dialog-network",
  "dialog-operator",
  "dialog-prolly-tree",
  "dialog-query",
@@ -1255,7 +1273,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1298,7 +1316,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "async-trait",
  "base58",
@@ -1319,7 +1337,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1345,7 +1363,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fquery-integration-cleanup#888b4248a8816e857b63df30b495b847f551fe6f"
+source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-04-20#86d660fbb078e68566844032ff0efa6f0d3ee22c"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",
@@ -4236,7 +4254,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4583,6 +4601,7 @@ dependencies = [
  "dialog-common",
  "dialog-credentials",
  "dialog-effects",
+ "dialog-operator",
  "dialog-query",
  "dialog-remote-ucan-s3",
  "dialog-repository",

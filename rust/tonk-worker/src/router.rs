@@ -111,8 +111,8 @@ pub mod tests {
     use crate::worker::TonkState;
 
     use dialog_capability::Subject;
+    use dialog_operator::Profile;
     use dialog_repository::RepositoryExt as _;
-    use dialog_repository::profile::Profile;
     use dialog_storage::provider::storage::Storage;
 
     use crate::worker::DefaultSpace;

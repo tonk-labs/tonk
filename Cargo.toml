@@ -94,20 +94,20 @@ js-sys = "0.3"
 web-sys = { version = "0.3" }
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-04-20" }
 
 [profile.dev]
 opt-level = 1

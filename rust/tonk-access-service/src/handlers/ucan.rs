@@ -6,7 +6,7 @@
 //! 3. Returning the serialized AuthorizedRequest as CBOR
 
 use crate::error::{ErrorCode, ServiceError};
-use dialog_remote_s3::{Address, S3Authorization, s3::S3Credential};
+use dialog_remote_s3::{Address, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
@@ -133,9 +133,8 @@ fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthoriz
         })?;
 
     let credential = S3Credential::new(access_key_id, secret_access_key);
-    let authorization = S3Authorization::from(credential);
 
-    Ok(UcanAuthorizer::new(address, authorization))
+    Ok(UcanAuthorizer::new(address, Some(credential)))
 }
 
 /// Map S3Error to ServiceError with appropriate error codes.

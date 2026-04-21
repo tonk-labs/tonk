@@ -10,8 +10,8 @@ use crate::{
 };
 use axum::{Router, body::Body};
 use dialog_capability::Subject;
-use dialog_repository::profile::Profile;
-use dialog_repository::{Operator, RepositoryExt as _};
+use dialog_operator::{Operator, Profile};
+use dialog_repository::RepositoryExt as _;
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use tokio::sync::Mutex;

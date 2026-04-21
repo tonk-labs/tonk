@@ -92,7 +92,7 @@ pub async fn inspect_remote(
         .await
     {
         Ok(remote_repo) => Ok(Json(RemoteStatusResponse {
-            name: remote_repo.name().to_string(),
+            name: remote_repo.site().name().to_string(),
             subject: remote_repo.did().to_string(),
             exists: true,
         })),

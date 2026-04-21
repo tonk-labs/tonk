@@ -89,13 +89,13 @@ pub async fn inspect_branch(
         })?;
 
     let upstream = branch.upstream().map(|u| {
-        use dialog_repository::UpstreamState;
+        use dialog_repository::Upstream;
         match u {
-            UpstreamState::Local { branch, .. } => UpstreamInfo::Local {
+            Upstream::Local { branch, .. } => UpstreamInfo::Local {
                 branch: branch.to_string(),
             },
-            UpstreamState::Remote { name, branch, .. } => UpstreamInfo::Remote {
-                remote: name.to_string(),
+            Upstream::Remote { remote, branch, .. } => UpstreamInfo::Remote {
+                remote: remote.to_string(),
                 branch: branch.to_string(),
             },
         }

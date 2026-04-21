@@ -12,8 +12,8 @@ use ::axum::{
 use axum::extract::Query as AxumQuery;
 use axum_wasm_macros::wasm_compat;
 use base64::Engine;
-use dialog_artifacts::{Statement, Update};
-use dialog_repository::{ArtifactSelector, Attribute, Entity, RepositoryExt as _, Value};
+use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Statement, Update, Value};
+use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -5,7 +5,7 @@ use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use base58::FromBase58;
 use dialog_effects::archive as archive_fx;
-use dialog_repository::RepositoryExt as _;
+use dialog_repository::{RepositoryArchiveExt as _, RepositoryExt as _};
 use dialog_storage::Blake3Hash;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
