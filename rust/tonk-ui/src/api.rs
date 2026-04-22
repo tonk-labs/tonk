@@ -102,7 +102,7 @@ pub async fn init() -> Result<(), TonkUiError> {
 /// creating a new self-owned repo: `origin` remote at `/ucan/`, and
 /// `main` tracking `origin/main`. Shared by [`init`] and [`create`].
 fn default_configuration() -> RepositoryConfiguration {
-    let address = UcanAddress::new(&format!("{}{}", origin(), ACCESS_SERVICE_PATH));
+    let address = UcanAddress::new(format!("{}{}", origin(), ACCESS_SERVICE_PATH));
     RepositoryConfiguration::default()
         .remote("origin", RemoteConfiguration::new(address))
         .branch(
@@ -178,8 +178,20 @@ pub async fn list_repositories() -> Result<Vec<String>, TonkUiError> {
         .await
         .map_err(into_api_error)?;
 
-    let body: ListRepositoriesResponse = response.json().await.map_err(into_api_error)?;
-    Ok(body.repositories)
+    match response.status() {
+        StatusCode::OK => {
+            let body: ListRepositoriesResponse =
+                response.json().await.map_err(into_api_error)?;
+            Ok(body.repositories)
+        }
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "GET /api/repositories returned {}: {}",
+                status, text
+            )))
+        }
+    }
 }
 
 /// Fetches the current user's identity (DID) from the service worker.

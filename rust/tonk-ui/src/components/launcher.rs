@@ -1,6 +1,6 @@
 use crate::api;
 use crate::components::{
-    NewRepoVisible, RepoListResource, TonkJoin, TonkNewRepo, TonkSpace, TonkToolbar,
+    NewRepoVisible, RepoListResource, Status, TonkJoin, TonkNewRepo, TonkSpace, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -15,8 +15,23 @@ use leptos_router::{
 /// writer) and overlay components can share one source of truth.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
-    let repos =
-        LocalResource::new(|| async { api::list_repositories().await.map_err(|e| format!("{e}")) });
+    let status = use_context::<Signal<Status, LocalStorage>>().expect("Missing status");
+
+    // The list fetch is gated on `Status::Ready` — the worker's
+    // `GET /api/repositories` opens home, so it 500s until
+    // TonkShell's init has PUT home first. Tracking status here
+    // means the resource re-runs when init completes. Before then
+    // it resolves to an empty list, which is invisible anyway
+    // since the toolbar is translated off-screen until Ready.
+    let repos = LocalResource::new(move || {
+        let ready = matches!(status.get(), Status::Ready);
+        async move {
+            if !ready {
+                return Ok::<_, String>(Vec::new());
+            }
+            api::list_repositories().await.map_err(|e| format!("{e}"))
+        }
+    });
     provide_context(RepoListResource(repos));
 
     let new_repo_visible = RwSignal::new(false);
