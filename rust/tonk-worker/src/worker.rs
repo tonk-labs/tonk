@@ -11,7 +11,6 @@ use crate::{
 use axum::{Router, body::Body};
 use dialog_capability::Subject;
 use dialog_operator::{Operator, Profile};
-use dialog_repository::RepositoryExt as _;
 use dialog_storage::provider::storage::Storage;
 use js_sys::Promise;
 use tokio::sync::Mutex;
@@ -62,23 +61,15 @@ pub struct TonkServiceWorker {
 impl TonkServiceWorker {
     /// Creates a new service worker instance.
     ///
-    /// Initializes the user profile, operator, default repository, and API router.
-    ///
-    /// On first run:
-    /// - Creates a new profile identity
-    /// - Derives an operator with full capabilities
-    /// - Opens a default repository
-    /// - Delegates repository access to the profile
-    ///
-    /// On subsequent runs:
-    /// - Loads the existing profile from IndexedDB (WASM) or filesystem (native)
-    /// - Opens the same default repository
+    /// Initializes the user profile and operator — no repositories
+    /// are opened or created here. Repositories are created
+    /// on-demand via `PUT /api/repository/{name}`; subsequent
+    /// requests against routes that expect the repository to exist
+    /// will 404 until that happens.
     ///
     /// # Errors
     ///
     /// Returns a `JsError` if the service worker cannot be initialized.
-    /// Creates a new service worker instance. Called from the `activate()`
-    /// export in tonk-ui's worker binary.
     pub async fn new() -> Result<Self, JsError> {
         log!("Tonk worker initializing...");
 
@@ -104,35 +95,7 @@ impl TonkServiceWorker {
             .await
             .map_err(|e| JsError::new(&format!("Failed to build operator: {}", e)))?;
 
-        // 4. Open default repository
-        let repo = profile
-            .repository("home")
-            .open()
-            .perform(&operator)
-            .await
-            .map_err(|e| JsError::new(&format!("Failed to open default repo: {}", e)))?;
-        log!("Default repo DID: {}", repo.did());
-
-        // 5. Delegate repo access to profile (if it's a signer credential)
-        if let Some(access) = repo.try_access() {
-            match access
-                .claim(&repo)
-                .delegate(profile.did())
-                .perform(&operator)
-                .await
-            {
-                Ok(chain) => {
-                    if let Err(e) = profile.access().save(chain).perform(&operator).await {
-                        log!("Warning: failed to save repo delegation: {}", e);
-                    }
-                }
-                Err(e) => {
-                    log!("Warning: failed to delegate repo to profile: {}", e);
-                }
-            }
-        }
-
-        // 6. Build state and router
+        // 4. Build state and router
         let state = TonkState { profile, operator };
         let router = Arc::new(Mutex::new(api_router(state)));
 

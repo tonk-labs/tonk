@@ -49,22 +49,28 @@ pub enum Status {
 pub fn TonkShell() -> impl IntoView {
     log!("Tonk shell initializing...");
 
-    // Initialize the space: wait for SW, check status, setup remote if needed
+    // Initialize the space: wait for SW, ensure the default repo
+    // exists, then (if the user landed on `/`) redirect into it.
+    // The worker no longer auto-creates anything at startup — we
+    // `PUT` here with `If-None-Match: *`, which covers both
+    // "didn't exist, created" (201) and "already existed" (412) as
+    // success. Redirect only fires when the current path is `/`
+    // so deep links like `/space/home/branch/main` are respected.
     let init_resource = LocalResource::new(|| async {
         log!("Waiting for SW to activate...");
         service_worker_activates().await;
-        log!("SW is activated, fetching status...");
+        log!("SW is activated, ensuring default repository...");
 
-        let status = api::status().await?;
+        api::init().await?;
 
-        // If no upstream configured, add the remote (but don't set as upstream yet)
-        if !status.has_upstream {
-            log!("No upstream configured, adding remote...");
-            api::init().await?;
-            log!("Remote added successfully");
+        let pathname = window()
+            .location()
+            .pathname()
+            .unwrap_or_else(|_| "/".to_string());
+
+        if pathname == "/" {
+            BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
         }
-
-        BrowserUrl::redirect(&format!("/space/{}", status.repo_name));
 
         Ok::<_, crate::error::TonkUiError>(())
     });
@@ -96,7 +102,7 @@ mod tests {
     use anyhow::Result;
     #[cfg(not(target_arch = "wasm32"))]
     use thirtyfour::prelude::*;
-    use tonk_worker::{StatusResponse, SyncResponse};
+    use tonk_worker::{RepositoryInfo, SyncResponse};
 
     #[dialog_common::test]
     async fn it_falls_back_to_index_for_unhandled_routes(env: TestEnvironment) -> Result<()> {
@@ -127,21 +133,22 @@ mod tests {
         // Wait for toolbar to become visible (indicates UI is ready and authorized)
         assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
 
-        // Verify status shows upstream configured after auto-authorization
-        let status_result = driver
+        // Verify the default branch has an upstream after auto-authorization.
+        let info_result = driver
             .execute(
                 r#"
-                const response = await fetch('/api/repository/home/status');
+                const response = await fetch('/api/repository/home');
                 return await response.json();
                 "#,
                 vec![],
             )
             .await?;
 
-        let status: StatusResponse = serde_json::from_value(status_result.json().clone())?;
+        let info: RepositoryInfo = serde_json::from_value(info_result.json().clone())?;
+        let main = info.branch.get("main").expect("main branch present");
         assert!(
-            status.has_upstream,
-            "Expected upstream to be configured after initialization"
+            main.upstream.is_some(),
+            "Expected main branch to have an upstream after initialization"
         );
 
         driver.quit().await?;

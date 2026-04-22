@@ -110,12 +110,12 @@ fn parse_value(content_type: Option<&str>, body: &[u8]) -> Result<Value, TonkWor
     match content_type {
         Some(ct) if ct.starts_with("text/plain") => {
             let text = String::from_utf8(body.to_vec())
-                .map_err(|e| TonkWorkerError::Internal(format!("Invalid UTF-8: {}", e)))?;
+                .map_err(|e| TonkWorkerError::Router(format!("Invalid UTF-8: {}", e)))?;
             Ok(Value::String(text))
         }
         Some(ct) if ct.starts_with("application/json") => {
             let json: serde_json::Value = serde_json::from_slice(body)
-                .map_err(|e| TonkWorkerError::Internal(format!("Invalid JSON: {}", e)))?;
+                .map_err(|e| TonkWorkerError::Router(format!("Invalid JSON: {}", e)))?;
             json_to_value(json)
         }
         Some(ct) => {
@@ -141,7 +141,7 @@ fn json_to_value(json: serde_json::Value) -> Result<Value, TonkWorkerError> {
             } else if let Some(f) = n.as_f64() {
                 Ok(Value::Float(f))
             } else {
-                Err(TonkWorkerError::Internal("Invalid number".to_string()))
+                Err(TonkWorkerError::Router("Invalid number".to_string()))
             }
         }
         serde_json::Value::String(s) => Ok(Value::String(s)),
@@ -205,14 +205,15 @@ pub async fn assert_claim(
     );
 
     // Parse entity
-    let entity: Entity = path.entity.parse().map_err(|e| {
-        TonkWorkerError::Internal(format!("Invalid entity '{}': {}", path.entity, e))
-    })?;
+    let entity: Entity = path
+        .entity
+        .parse()
+        .map_err(|e| TonkWorkerError::Router(format!("Invalid entity '{}': {}", path.entity, e)))?;
 
     // Parse attribute
     let attribute: Attribute = attribute_str
         .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("Invalid attribute: {}", e)))?;
+        .map_err(|e| TonkWorkerError::Router(format!("Invalid attribute: {}", e)))?;
 
     // Get content type and parse value
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
@@ -228,7 +229,7 @@ pub async fn assert_claim(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load repository '{}': {}", path.repo, e))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", path.repo, e))
         })?;
 
     let branch = repo
@@ -286,9 +287,10 @@ pub async fn retract_claim(
     );
 
     // Parse entity
-    let entity: Entity = path.entity.parse().map_err(|e| {
-        TonkWorkerError::Internal(format!("Invalid entity '{}': {}", path.entity, e))
-    })?;
+    let entity: Entity = path
+        .entity
+        .parse()
+        .map_err(|e| TonkWorkerError::Router(format!("Invalid entity '{}': {}", path.entity, e)))?;
 
     // Get content type and parse value
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
@@ -304,7 +306,7 @@ pub async fn retract_claim(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load repository '{}': {}", path.repo, e))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", path.repo, e))
         })?;
 
     let branch = repo
@@ -319,7 +321,7 @@ pub async fn retract_claim(
     // Parse attribute
     let attribute: Attribute = attribute_str
         .parse()
-        .map_err(|e| TonkWorkerError::Internal(format!("Invalid attribute: {}", e)))?;
+        .map_err(|e| TonkWorkerError::Router(format!("Invalid attribute: {}", e)))?;
 
     let claim = RawClaim {
         the: attribute,
@@ -366,7 +368,7 @@ pub async fn select_claims(
 
     // At least one constraint is required
     if query.the.is_none() && query.of.is_none() {
-        return Err(TonkWorkerError::Internal(
+        return Err(TonkWorkerError::Router(
             "At least one of 'the' or 'of' must be specified".to_string(),
         ));
     }
@@ -380,19 +382,16 @@ pub async fn select_claims(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     let branch = repo
         .branch(params.branch.as_str())
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load branch '{}': {}", params.branch, e))
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
     // Build the constrained artifact selector.
@@ -404,13 +403,13 @@ pub async fn select_claims(
     let attribute: Option<Attribute> = match &query.the {
         Some(attr) => {
             if !attr.contains('/') {
-                return Err(TonkWorkerError::Internal(format!(
+                return Err(TonkWorkerError::Router(format!(
                     "Invalid attribute '{}': must be in 'namespace/name' format",
                     attr
                 )));
             }
             Some(attr.parse().map_err(|e| {
-                TonkWorkerError::Internal(format!("Invalid attribute '{}': {}", attr, e))
+                TonkWorkerError::Router(format!("Invalid attribute '{}': {}", attr, e))
             })?)
         }
         None => None,
@@ -419,7 +418,7 @@ pub async fn select_claims(
     // Parse optional entity
     let entity: Option<Entity> = match &query.of {
         Some(entity_str) => Some(entity_str.parse().map_err(|e| {
-            TonkWorkerError::Internal(format!("Invalid entity '{}': {}", entity_str, e))
+            TonkWorkerError::Router(format!("Invalid entity '{}': {}", entity_str, e))
         })?),
         None => None,
     };

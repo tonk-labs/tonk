@@ -13,7 +13,7 @@ pub fn TonkLauncher() -> impl IntoView {
             <section class="launcher">
                 <TonkToolbar />
                 <Routes fallback=move || view!{ <section class="404">"Nothing here ¯\\_(ツ)_/¯"</section> }>
-                    <Route path=path!("space/:did?") view=TonkSpace />
+                    <Route path=path!("space/:space?") view=TonkSpace />
                 </Routes>
             </section>
         </Router>

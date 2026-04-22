@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use ::axum::{Router, extract::State, routing::get, routing::post};
+use ::axum::{Router, extract::State, routing::get, routing::post, routing::put};
 use tokio::sync::RwLock;
 
 use crate::worker::TonkState;
@@ -10,14 +10,14 @@ use crate::worker::TonkState;
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
-mod init;
-pub use init::InitResponse;
-
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
-mod status;
-pub use status::StatusResponse;
+mod repository;
+pub use repository::{
+    BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    UpstreamConfiguration,
+};
 
 mod sync;
 pub use sync::SyncResponse;
@@ -41,12 +41,10 @@ pub fn api_router(state: TonkState) -> Router {
     Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
-        // Repository status
-        .route("/api/repository/{repo}/status", get(status::status))
-        // Branch init (set up UCAN remote + upstream)
+        // Repository lifecycle
         .route(
-            "/api/repository/{repo}/branch/{branch}/init",
-            post(init::init),
+            "/api/repository/{repo}",
+            put(repository::put_repository).get(repository::get_repository),
         )
         // Sync operations
         .route(
@@ -112,16 +110,19 @@ pub mod tests {
 
     use dialog_capability::Subject;
     use dialog_operator::Profile;
-    use dialog_repository::RepositoryExt as _;
     use dialog_storage::provider::storage::Storage;
 
     use crate::worker::DefaultSpace;
 
+    use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     /// Creates a test state with the default storage backend.
+    ///
+    /// The state has a profile and operator but *no* repository —
+    /// tests that need one must call [`put_home`] to create it.
     pub async fn test_state() -> TonkState {
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
@@ -137,27 +138,28 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
-        // Open default repo
-        let repo = profile
-            .repository("home")
-            .open()
-            .perform(&operator)
-            .await
-            .expect("Failed to open test repo");
-
-        // Delegate repo access to profile
-        if let Some(access) = repo.try_access() {
-            if let Ok(chain) = access
-                .claim(&repo)
-                .delegate(profile.did())
-                .perform(&operator)
-                .await
-            {
-                let _ = profile.access().save(chain).perform(&operator).await;
-            }
-        }
-
         TonkState { profile, operator }
+    }
+
+    /// Creates the default "home" repository via `PUT /api/repository/home`.
+    ///
+    /// Used by tests that need a repository to exist before hitting
+    /// other routes.
+    async fn put_home(app: &Router) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .header("if-none-match", "*")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     #[dialog_common::test]
@@ -208,14 +210,89 @@ pub mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_returns_status() {
+    async fn it_creates_repository() {
         let state = test_state().await;
         let app = api_router(state);
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/repository/home/status")
+                    .uri("/api/repository/home")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .header("if-none-match", "*")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp.name, "home");
+        assert!(!resp.subject.as_str().is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_precondition_failed_when_repo_exists() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        put_home(&app).await;
+
+        // Second PUT with If-None-Match: * should fail with 412.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .header("if-none-match", "*")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_conflict_when_repo_exists_without_precondition() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        put_home(&app).await;
+
+        // Second PUT without If-None-Match should fail with 409.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home")
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_repository_info() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        put_home(&app).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/home")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -226,16 +303,20 @@ pub mod tests {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let resp: super::StatusResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(resp.repo_name, "home");
-        assert!(!resp.space_did.is_empty());
-        assert!(!resp.has_upstream);
+        let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp.name, "home");
+        assert!(!resp.subject.as_str().is_empty());
+        // `put_home` creates an empty repo — no branches / remotes set up.
+        assert!(resp.branch.is_empty());
+        assert!(resp.remote.is_empty());
     }
 
     #[dialog_common::test]
     async fn it_asserts_and_selects_claims() {
         let state = test_state().await;
         let app = api_router(state);
+
+        put_home(&app).await;
 
         // Assert a fact
         let response = app
@@ -273,33 +354,11 @@ pub mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_initializes_branch() {
-        let state = test_state().await;
-        let app = api_router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/api/repository/home/branch/main/init")
-                    .method("POST")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::InitResponse = serde_json::from_slice(&body).unwrap();
-        assert!(resp.success);
-    }
-
-    #[dialog_common::test]
     async fn it_syncs_after_commit() {
         let state = test_state().await;
         let app = api_router(state);
+
+        put_home(&app).await;
 
         // First assert a fact so the branch has data
         let response = app
@@ -335,6 +394,8 @@ pub mod tests {
     async fn it_inspects_branch_after_commit() {
         let state = test_state().await;
         let app = api_router(state);
+
+        put_home(&app).await;
 
         // Commit some data first so the branch exists
         let response = app

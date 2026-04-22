@@ -57,19 +57,16 @@ pub async fn pull(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     let branch = repo
         .branch(params.branch.as_str())
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load branch '{}': {}", params.branch, e))
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
     match branch.pull().perform(&tonk_state.operator).await {
@@ -115,19 +112,16 @@ pub async fn push(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     let branch = repo
         .branch(params.branch.as_str())
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load branch '{}': {}", params.branch, e))
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
     match branch.push().perform(&tonk_state.operator).await {
@@ -173,19 +167,16 @@ pub async fn sync(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     let branch = repo
         .branch(params.branch.as_str())
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load branch '{}': {}", params.branch, e))
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
     // First pull

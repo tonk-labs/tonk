@@ -3,7 +3,7 @@
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_repository::RepositoryExt as _;
+use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -52,8 +52,8 @@ pub struct RemoteBranchStatusResponse {
     pub branch: String,
     /// Whether the resolution succeeded.
     pub success: bool,
-    /// Whether the remote branch has been fetched.
-    pub has_revision: bool,
+    /// The remote branch's cached revision, or `null` if not yet fetched.
+    pub revision: Option<Revision>,
     /// Error message if resolution failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -79,10 +79,7 @@ pub async fn inspect_remote(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     match repo
@@ -125,10 +122,7 @@ pub async fn inspect_remote_branch(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     let remote_repo = match repo
@@ -143,7 +137,7 @@ pub async fn inspect_remote_branch(
                 remote: params.remote,
                 branch: params.branch,
                 success: false,
-                has_revision: false,
+                revision: None,
                 error: Some(format!("Remote not found: {}", e)),
             }));
         }
@@ -151,7 +145,7 @@ pub async fn inspect_remote_branch(
 
     match remote_repo
         .branch(params.branch.as_str())
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
     {
@@ -159,14 +153,14 @@ pub async fn inspect_remote_branch(
             remote: params.remote,
             branch: remote_branch.name().to_string(),
             success: true,
-            has_revision: remote_branch.revision().is_some(),
+            revision: remote_branch.revision(),
             error: None,
         })),
         Err(e) => Ok(Json(RemoteBranchStatusResponse {
             remote: params.remote,
             branch: params.branch,
             success: false,
-            has_revision: false,
+            revision: None,
             error: Some(format!("{}", e)),
         })),
     }

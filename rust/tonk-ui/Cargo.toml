@@ -38,6 +38,7 @@ wasm-streams = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 tonk-worker = { workspace = true }
 url = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
 dialog-common = { workspace = true, optional = true }
 port_check = { workspace = true, optional = true }
 thirtyfour = { workspace = true, optional = true }

@@ -1,12 +1,19 @@
+use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
-use tonk_worker::{IdentifyResponse, InitResponse, StatusResponse};
+use reqwest::StatusCode;
+use tonk_worker::{
+    BranchConfiguration, IdentifyResponse, RemoteConfiguration, RepositoryConfiguration,
+    RepositoryInfo,
+};
 
 use crate::error::TonkUiError;
 
 /// Default repository name used by the UI.
-const DEFAULT_REPO: &str = "home";
+pub const DEFAULT_REPO: &str = "home";
 /// Default branch name.
 const DEFAULT_BRANCH: &str = "main";
+/// Path of the UCAN access service, resolved against the window origin.
+const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
 fn into_api_error<T>(error: T) -> TonkUiError
 where
@@ -22,39 +29,83 @@ fn origin() -> String {
         .expect("Could not read window location")
 }
 
-/// Fetches the current status of the repository from the service worker.
-pub async fn status() -> Result<StatusResponse, TonkUiError> {
-    log!("Fetching status...");
+/// Fetches the repository record at `GET /api/repository/{name}`.
+///
+/// `Ok(Some(...))` on 200, `Ok(None)` on 404, `Err(...)` for any
+/// other failure. Modelling 404 as an absence rather than an error
+/// lets the UI use `ErrorBoundary` for genuine failures while
+/// rendering a "not found" view through the normal value path.
+pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiError> {
+    log!("Fetching repository '{}'...", name);
 
     let response = reqwest::Client::new()
-        .get(format!(
-            "{}/api/repository/{}/status",
-            origin(),
-            DEFAULT_REPO
-        ))
+        .get(format!("{}/api/repository/{}", origin(), name))
         .send()
         .await
         .map_err(into_api_error)?;
 
-    response.json().await.map_err(into_api_error)
+    match response.status() {
+        StatusCode::OK => {
+            let info = response
+                .json::<RepositoryInfo>()
+                .await
+                .map_err(into_api_error)?;
+            Ok(Some(info))
+        }
+        StatusCode::NOT_FOUND => Ok(None),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "GET /api/repository/{} returned {}: {}",
+                name, status, text
+            )))
+        }
+    }
 }
 
-/// Initializes sync by setting up the UCAN remote for the default branch.
-pub async fn init() -> Result<InitResponse, TonkUiError> {
-    log!("Initializing sync...");
+/// Ensures the default repository exists via
+/// `PUT /api/repository/{name}` with `If-None-Match: *`.
+///
+/// Returns `Ok(())` whether the repo was just created (`201`) or
+/// already existed (`412`) — both are fine from the UI's point of
+/// view. Any other non-success status is turned into an error.
+///
+/// The body wires up an `origin` remote pointing at the UCAN access
+/// service (resolved against the current window origin) and sets
+/// the default branch to track `origin/{branch}`.
+pub async fn init() -> Result<(), TonkUiError> {
+    log!("Ensuring repository '{}' exists...", DEFAULT_REPO);
+
+    let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
+    // `RemoteConfiguration::new` accepts anything that converts
+    // into `SiteAddress`, and `UcanAddress` does via `NetworkAddress`.
+    let address = UcanAddress::new(&service_url);
+
+    let configuration = RepositoryConfiguration::default()
+        .remote("origin", RemoteConfiguration::new(address))
+        .branch(
+            DEFAULT_BRANCH,
+            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
+        );
 
     let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/repository/{}/branch/{}/init",
-            origin(),
-            DEFAULT_REPO,
-            DEFAULT_BRANCH
-        ))
+        .put(format!("{}/api/repository/{}", origin(), DEFAULT_REPO))
+        .header("If-None-Match", "*")
+        .json(&configuration)
         .send()
         .await
         .map_err(into_api_error)?;
 
-    response.json().await.map_err(into_api_error)
+    match response.status() {
+        StatusCode::CREATED | StatusCode::PRECONDITION_FAILED => Ok(()),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "PUT /api/repository/{} returned {}: {}",
+                DEFAULT_REPO, status, text
+            )))
+        }
+    }
 }
 
 /// Fetches the current user's identity (DID) from the service worker.

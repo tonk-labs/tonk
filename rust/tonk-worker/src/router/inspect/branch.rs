@@ -3,7 +3,7 @@
 use ::axum::extract::Path;
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_repository::RepositoryExt as _;
+use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -28,8 +28,8 @@ pub struct BranchStatusResponse {
     pub subject: String,
     /// The branch name.
     pub branch: String,
-    /// Whether the branch has any commits.
-    pub has_revision: bool,
+    /// The branch's current revision, or `null` if it has no commits.
+    pub revision: Option<Revision>,
     /// Upstream info if configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<UpstreamInfo>,
@@ -73,19 +73,16 @@ pub async fn inspect_branch(
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "Failed to load repository '{}': {}",
-                params.repo, e
-            ))
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
         })?;
 
     let branch = repo
         .branch(params.branch.as_str())
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to load branch '{}': {}", params.branch, e))
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
     let upstream = branch.upstream().map(|u| {
@@ -104,7 +101,7 @@ pub async fn inspect_branch(
     Ok(Json(BranchStatusResponse {
         subject: repo.did().to_string(),
         branch: branch.name().to_string(),
-        has_revision: branch.revision().is_some(),
+        revision: branch.revision(),
         upstream,
     }))
 }

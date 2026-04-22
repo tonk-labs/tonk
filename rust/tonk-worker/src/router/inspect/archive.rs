@@ -112,10 +112,10 @@ pub async fn inspect_archive_block(
         }
     };
 
-    // Load the main branch and read from its archive index catalog
+    // Open the main branch and read from its archive index catalog
     let branch = match repo
         .branch("main")
-        .load()
+        .open()
         .perform(&tonk_state.operator)
         .await
     {
@@ -126,7 +126,7 @@ pub async fn inspect_archive_block(
                 found: false,
                 data: None,
                 size: None,
-                error: Some(format!("Failed to load branch: {}", e)),
+                error: Some(format!("Failed to open branch: {}", e)),
             }));
         }
     };
