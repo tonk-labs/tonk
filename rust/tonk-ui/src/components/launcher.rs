@@ -1,20 +1,36 @@
-use crate::components::{TonkSpace, TonkToolbar};
+use crate::api;
+use crate::components::{
+    NewRepoVisible, RepoListResource, TonkJoin, TonkNewRepo, TonkSpace, TonkToolbar,
+};
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
     path,
 };
 
-/// Main launcher view that combines the toolbar and workspace.
+/// Main launcher view: toolbar column + routed workspace + overlays.
+///
+/// Owns the repo-list resource and the new-repo overlay visibility
+/// signal, and provides both via context so the toolbar (reader +
+/// writer) and overlay components can share one source of truth.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
+    let repos =
+        LocalResource::new(|| async { api::list_repositories().await.map_err(|e| format!("{e}")) });
+    provide_context(RepoListResource(repos));
+
+    let new_repo_visible = RwSignal::new(false);
+    provide_context(NewRepoVisible(new_repo_visible));
+
     view! {
         <Router>
             <section class="launcher">
                 <TonkToolbar />
                 <Routes fallback=move || view!{ <section class="404">"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     <Route path=path!("space/:space?") view=TonkSpace />
+                    <Route path=path!("join") view=TonkJoin />
                 </Routes>
+                <TonkNewRepo />
             </section>
         </Router>
     }

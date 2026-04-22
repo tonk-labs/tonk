@@ -9,14 +9,30 @@ use wasm_bindgen::prelude::*;
 
 use crate::api;
 
+mod join;
 mod launcher;
-use launcher::*;
-
+mod new_repo;
+mod space;
 mod toolbar;
+
+use join::*;
+use launcher::*;
+use new_repo::*;
+use space::*;
 use toolbar::*;
 
-mod space;
-use space::*;
+/// Context handle for the shared list of repos registered in home.
+///
+/// Owned by [`TonkLauncher`]; consumed by [`TonkToolbar`] (renders
+/// rows) and by create/claim flows (call `.refetch()` after success).
+#[derive(Clone, Copy)]
+pub struct RepoListResource(pub LocalResource<Result<Vec<String>, String>>);
+
+/// Context handle that controls visibility of the new-repo overlay.
+///
+/// Written by the toolbar's `+` click handler; read by [`TonkNewRepo`].
+#[derive(Clone, Copy)]
+pub struct NewRepoVisible(pub RwSignal<bool>);
 
 #[wasm_bindgen]
 extern "C" {

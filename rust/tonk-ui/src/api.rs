@@ -2,8 +2,8 @@ use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
-    BranchConfiguration, IdentifyResponse, RemoteConfiguration, RepositoryConfiguration,
-    RepositoryInfo,
+    BranchConfiguration, ClaimRequest, IdentifyResponse, ListRepositoriesResponse,
+    RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
 };
 
 use crate::error::TonkUiError;
@@ -76,17 +76,7 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
 pub async fn init() -> Result<(), TonkUiError> {
     log!("Ensuring repository '{}' exists...", DEFAULT_REPO);
 
-    let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
-    // `RemoteConfiguration::new` accepts anything that converts
-    // into `SiteAddress`, and `UcanAddress` does via `NetworkAddress`.
-    let address = UcanAddress::new(&service_url);
-
-    let configuration = RepositoryConfiguration::default()
-        .remote("origin", RemoteConfiguration::new(address))
-        .branch(
-            DEFAULT_BRANCH,
-            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
-        );
+    let configuration = default_configuration();
 
     let response = reqwest::Client::new()
         .put(format!("{}/api/repository/{}", origin(), DEFAULT_REPO))
@@ -106,6 +96,90 @@ pub async fn init() -> Result<(), TonkUiError> {
             )))
         }
     }
+}
+
+/// Build the default [`RepositoryConfiguration`] the UI uses when
+/// creating a new self-owned repo: `origin` remote at `/ucan/`, and
+/// `main` tracking `origin/main`. Shared by [`init`] and [`create`].
+fn default_configuration() -> RepositoryConfiguration {
+    let address = UcanAddress::new(&format!("{}{}", origin(), ACCESS_SERVICE_PATH));
+    RepositoryConfiguration::default()
+        .remote("origin", RemoteConfiguration::new(address))
+        .branch(
+            DEFAULT_BRANCH,
+            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
+        )
+}
+
+/// Create a new self-owned repo at `name` via `PUT /api/repository/{name}`.
+///
+/// Uses the same default configuration as [`init`] — `origin` pointed
+/// at the UCAN access service with `main` tracking `origin/main`.
+/// Returns the created [`RepositoryInfo`] on success. A 409 / 412
+/// (already exists) surfaces as an error — callers should pick a new
+/// name and retry.
+pub async fn create(name: &str) -> Result<RepositoryInfo, TonkUiError> {
+    log!("Creating repository '{}'...", name);
+
+    let response = reqwest::Client::new()
+        .put(format!("{}/api/repository/{}", origin(), name))
+        .json(&default_configuration())
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::CREATED => response.json().await.map_err(into_api_error),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "PUT /api/repository/{} returned {}: {}",
+                name, status, text
+            )))
+        }
+    }
+}
+
+/// Redeem an invite URL via `POST /api/claim`.
+///
+/// Pass the complete `window.location.href` — audience-open invites
+/// carry the ephemeral seed in the URL fragment, and browsers never
+/// send fragments on normal fetches, so the UI is responsible for
+/// forwarding the full string.
+pub async fn claim(url: &str) -> Result<RepositoryInfo, TonkUiError> {
+    log!("Claiming invite...");
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/claim", origin()))
+        .json(&ClaimRequest {
+            url: url.to_string(),
+        })
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => response.json().await.map_err(into_api_error),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/claim returned {}: {}",
+                status, text
+            )))
+        }
+    }
+}
+
+/// List every repo registered in the profile's home meta-index.
+pub async fn list_repositories() -> Result<Vec<String>, TonkUiError> {
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/repositories", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    let body: ListRepositoriesResponse = response.json().await.map_err(into_api_error)?;
+    Ok(body.repositories)
 }
 
 /// Fetches the current user's identity (DID) from the service worker.

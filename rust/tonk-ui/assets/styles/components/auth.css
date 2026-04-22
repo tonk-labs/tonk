@@ -17,3 +17,34 @@
         transform: translateY(-10px);
     }
 }
+
+.auth.new-repo {
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.auth.new-repo .panel {
+    min-width: 320px;
+    gap: 12px;
+}
+
+.auth.new-repo .panel h2 {
+    margin: 0;
+    font-weight: 500;
+    font-size: 1.1rem;
+}
+
+.auth.new-repo .panel .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.auth.new-repo .panel .error {
+    color: #dc2626;
+    margin: 0;
+    font-size: 0.9rem;
+}

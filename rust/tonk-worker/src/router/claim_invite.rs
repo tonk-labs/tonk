@@ -140,9 +140,7 @@ pub async fn claim_invite(
             .open()
             .perform(&tonk.operator)
             .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!("failed to open remote main: {e}"))
-            })?;
+            .map_err(|e| TonkWorkerError::Internal(format!("failed to open remote main: {e}")))?;
 
         branch
             .set_upstream(&remote_branch)
