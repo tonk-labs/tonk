@@ -106,19 +106,35 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_falls_back_to_index_for_unhandled_routes(env: TestEnvironment) -> Result<()> {
-        // 1. Navigate to the root to confirm that the page loads
         let driver = env.driver().await?;
-        let space = driver.query(By::Css(".space")).first().await?;
-        assert!(space.text().await?.starts_with("did:key:"));
 
-        // 2. Navigate again to /unhandled/route
+        // 1. Landing on `/` redirects into `/space/home` and renders
+        //    the repository JSON once the worker is up.
+        let repository = driver.query(By::Css("pre.repository")).first().await?;
+        assert!(
+            repository.text().await?.contains("did:key:"),
+            "expected repository JSON to include a did:key value",
+        );
+
+        // 2. Navigate to an unmatched route. The SPA router's
+        //    fallback should render the 404 section instead of
+        //    redirecting — deep links to unknown paths must not
+        //    silently rewrite to `/space/home`.
         driver
             .goto(&format!("{}/unhandled/route", env.tonk_web))
             .await?;
 
-        // 3. Confirm that the page loads (DID text rendered in the .space element)
-        let space = driver.query(By::Css(".space")).first().await?;
-        assert!(space.text().await?.starts_with("did:key:"));
+        // The fallback's class is `404`, which isn't a legal CSS
+        // identifier on its own — use an attribute selector
+        // instead.
+        let fallback = driver
+            .query(By::Css(r#"section[class="404"]"#))
+            .first()
+            .await?;
+        assert!(
+            fallback.text().await?.contains("Nothing here"),
+            "expected 404 fallback to render for unknown paths",
+        );
 
         driver.quit().await?;
         Ok(())

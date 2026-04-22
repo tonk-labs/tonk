@@ -38,15 +38,22 @@ mod integration_tests {
     async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
         let driver = test_environment.driver().await?;
 
-        let _launcher = driver
-            .query(By::Css(".launcher"))
-            .with_text("Nothing here ¯\\_(ツ)_/¯")
-            .first()
-            .await?;
+        // Wait for the shell's `PUT /api/repository/home` to complete
+        // and the redirect to land on `/space/home`; `.repository`
+        // appears when the fetch succeeds.
+        let repository = driver.query(By::Css("pre.repository")).first().await?;
 
-        let space = driver.query(By::Css(".space")).first().await?;
-
-        assert!(space.text().await?.starts_with("did:key:"));
+        // The server returns the repo's DID under `"subject"`, so
+        // the rendered JSON should at least mention it.
+        let text = repository.text().await?;
+        assert!(
+            text.contains("\"subject\""),
+            "expected repository JSON to include a subject field, got: {text}",
+        );
+        assert!(
+            text.contains("did:key:"),
+            "expected repository JSON to include a did:key value, got: {text}",
+        );
 
         driver.quit().await?;
 
