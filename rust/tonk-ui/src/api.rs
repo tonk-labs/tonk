@@ -3,7 +3,7 @@ use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
     BranchConfiguration, ClaimRequest, IdentifyResponse, ListRepositoriesResponse,
-    RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    QueryResponse, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo, SyncResponse,
 };
 
 use crate::error::TonkUiError;
@@ -189,6 +189,79 @@ pub async fn list_repositories() -> Result<Vec<String>, TonkUiError> {
             Err(TonkUiError::ApiError(format!(
                 "GET /api/repositories returned {}: {}",
                 status, text
+            )))
+        }
+    }
+}
+
+/// Pull remote state into `{repo}/{branch}` via the worker's
+/// sync route.
+pub async fn pull(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
+    log!("Pulling {}/{}...", repo, branch);
+
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/repository/{}/branch/{}/sync/pull",
+            origin(),
+            repo,
+            branch
+        ))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => response.json().await.map_err(into_api_error),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/branch/{}/sync/pull returned {}: {}",
+                repo, branch, status, text
+            )))
+        }
+    }
+}
+
+/// Query claims from `{repo}/{branch}` via the worker's select endpoint.
+///
+/// At least one of `the` (attribute, `namespace/name`) or `of` (entity)
+/// must be non-empty — this mirrors the worker-side validation.
+pub async fn select_claims(
+    repo: &str,
+    branch: &str,
+    the: Option<&str>,
+    of: Option<&str>,
+) -> Result<QueryResponse, TonkUiError> {
+    let base = format!(
+        "{}/api/repository/{}/branch/{}/claim/select",
+        origin(),
+        repo,
+        branch
+    );
+    let mut url = url::Url::parse(&base).map_err(into_api_error)?;
+    {
+        let mut q = url.query_pairs_mut();
+        if let Some(v) = the {
+            q.append_pair("the", v);
+        }
+        if let Some(v) = of {
+            q.append_pair("of", v);
+        }
+    }
+
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => response.json().await.map_err(into_api_error),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "GET /api/repository/{}/branch/{}/claim/select returned {}: {}",
+                repo, branch, status, text
             )))
         }
     }
