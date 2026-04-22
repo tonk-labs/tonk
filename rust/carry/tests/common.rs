@@ -9,7 +9,8 @@
 use anyhow::{Context, Result};
 use carry::identity_cmd::ProfileLocation;
 use carry::site::{RepoLocation, Site};
-use dialog_repository::helpers::unique_location;
+use dialog_effects::storage::Directory;
+use dialog_repository::helpers::unique_name;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -33,8 +34,9 @@ impl TestEnv {
     pub async fn new() -> Result<Self> {
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let site_path = temp_dir.path().to_path_buf();
-        let profile_location = unique_location("carry-test-profile");
-        let repo_location = unique_location("carry-test-repo");
+        let profile_location =
+            ProfileLocation::new(Directory::Temp, unique_name("carry-test-profile"));
+        let repo_location = RepoLocation::new(Directory::Temp, unique_name("carry-test-repo"));
 
         // Initialize a site (creates .carry/ and bootstraps identity)
         let site = Site::init(

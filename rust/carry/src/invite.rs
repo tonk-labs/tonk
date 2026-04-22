@@ -16,8 +16,8 @@
 
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
-use dialog_ucan::subject::Subject as UcanSubject;
-use dialog_ucan::{DelegationBuilder, DelegationChain};
+use dialog_ucan_core::subject::Subject as UcanSubject;
+use dialog_ucan_core::{DelegationBuilder, DelegationChain};
 use dialog_varsig::Did;
 
 /// Default base URL for invite links.

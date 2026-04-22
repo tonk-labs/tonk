@@ -20,8 +20,14 @@ pub use dialog_artifacts::Attribute as ClaimAttribute;
 pub use dialog_query::AttributeStatement;
 use dialog_query::{Entity, The, Value};
 use dialog_repository::{Branch, Operator};
+use dialog_storage::provider::storage::NativeSpace;
 use futures_util::TryStreamExt;
 use std::collections::BTreeMap;
+
+/// Concrete operator type used by carry's native CLI. All schema helpers
+/// are native-only, so they don't need to be generic over the backing
+/// storage space.
+type NativeOperator = Operator<NativeSpace>;
 use std::str::FromStr;
 
 // ---------------------------------------------------------------------------
@@ -419,7 +425,7 @@ pub fn make_statement(the: &str, of: Entity, is: Value) -> Result<AttributeState
 /// Select artifacts from a branch matching the given selector.
 async fn select_artifacts(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     selector: ArtifactSelector<dialog_artifacts::selector::Constrained>,
 ) -> Result<Vec<dialog_artifacts::Artifact>> {
     let results: Vec<_> = branch
@@ -441,7 +447,7 @@ async fn select_artifacts(
 /// Look up any entity by its `dialog.meta/name` value.
 pub async fn lookup_entity_by_name(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     name: &str,
 ) -> Result<Option<Entity>> {
     let name_attr: ClaimAttribute = dialog_meta::Name::the().into();
@@ -478,7 +484,7 @@ pub struct ResolvedConcept {
 /// and for each attribute entity fetch its `dialog.attribute/id`.
 pub async fn resolve_concept(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     concept_name: &str,
 ) -> Result<ResolvedConcept> {
     let concept_entity = lookup_entity_by_name(branch, operator, concept_name)
@@ -507,7 +513,7 @@ pub async fn resolve_concept(
 /// Returns a map of field_name -> (attribute_entity, attribute_selector).
 async fn fetch_concept_fields(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     concept_entity: &Entity,
     prefix: &str,
 ) -> Result<BTreeMap<String, (Entity, String)>> {
@@ -582,7 +588,7 @@ pub fn resolve_field_selector(concept: &ResolvedConcept, field_name: &str) -> Re
 /// Find all entities belonging to a concept by checking ALL required attribute selectors.
 pub async fn find_entities_by_concept(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     schema_attrs: &[String],
 ) -> Result<Vec<Entity>> {
     if schema_attrs.is_empty() {
@@ -627,7 +633,7 @@ pub async fn find_entities_by_concept(
 ///
 /// Called during `carry init` to bootstrap the meta-schema.
 /// Claims are deterministic (content-addressed), so re-running is idempotent.
-pub async fn bootstrap_builtins(branch: &Branch, operator: &Operator) -> Result<()> {
+pub async fn bootstrap_builtins(branch: &Branch, operator: &NativeOperator) -> Result<()> {
     let builtins = [&BUILTIN_ATTRIBUTE, &BUILTIN_CONCEPT, &BUILTIN_BOOKMARK];
 
     // First pass: derive attribute entities for all fixed fields.
@@ -782,7 +788,7 @@ pub fn attribute_namespace(attr: &str) -> &str {
 /// Fetch all string values for a multi-valued attribute on an entity.
 pub async fn fetch_string_values(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Vec<String>> {
@@ -805,7 +811,7 @@ pub async fn fetch_string_values(
 /// Fetch a single string value for an attribute on an entity.
 pub async fn fetch_string(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Option<String>> {
@@ -816,7 +822,7 @@ pub async fn fetch_string(
 /// Fetch all entity values for a multi-valued attribute.
 pub async fn fetch_entity_values(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Vec<Entity>> {
@@ -839,7 +845,7 @@ pub async fn fetch_entity_values(
 /// Fetch a single Value for an attribute on an entity.
 pub async fn fetch_value(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Option<Value>> {
@@ -856,7 +862,7 @@ pub async fn fetch_value(
 /// Fetch all Values for a multi-valued attribute on an entity.
 pub async fn fetch_values(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     entity: &Entity,
     attr: ClaimAttribute,
 ) -> Result<Vec<Value>> {
@@ -878,7 +884,7 @@ pub async fn fetch_values(
 /// found or has no cardinality claim.
 pub async fn fetch_attribute_cardinality(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     selector: &str,
 ) -> Result<String> {
     let id_attr: ClaimAttribute = dialog_attribute::Id::the().into();
@@ -912,7 +918,7 @@ pub async fn fetch_attribute_cardinality(
 /// Find all entities that have a given attribute (using the AEV index).
 pub async fn find_entities_by_attribute(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     attr: ClaimAttribute,
 ) -> Result<Vec<Entity>> {
     let results = select_artifacts(branch, operator, ArtifactSelector::new().the(attr)).await?;
@@ -935,7 +941,7 @@ pub fn parse_claim_attribute(attr_name: &str) -> Result<ClaimAttribute> {
 /// Fetch all claims (as Artifacts) for an entity.
 pub async fn fetch_all_entity_claims(
     branch: &Branch,
-    operator: &Operator,
+    operator: &NativeOperator,
     entity: &Entity,
 ) -> Result<Vec<dialog_artifacts::Artifact>> {
     select_artifacts(branch, operator, ArtifactSelector::new().of(entity.clone())).await

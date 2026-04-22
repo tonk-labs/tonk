@@ -7,7 +7,7 @@
 use super::AccessServiceAddress;
 use dialog_common::helpers::Provider as _;
 use dialog_remote_s3::helpers::LocalS3;
-use dialog_remote_s3::{Address, S3Credentials};
+use dialog_remote_s3::{Address, S3Authorization, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use hyper::body::Incoming;
 use hyper::header::{
@@ -39,13 +39,17 @@ impl AccessServer {
         access_key: &str,
         secret_key: &str,
     ) -> anyhow::Result<Self> {
-        // Create address with credentials for the authorizer
-        let address = Address::new(&s3_server.endpoint, "us-east-1", bucket)
-            .with_path_style()
-            .with_credentials(S3Credentials::new(access_key, secret_key));
+        let address = Address::builder(&s3_server.endpoint)
+            .region("us-east-1")
+            .bucket(bucket)
+            .path_style(true)
+            .build()?;
+
+        let credential = S3Credential::new(access_key, secret_key);
+        let authorization = S3Authorization::from(credential);
 
         // Create UcanAuthorizer - the core of our service
-        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address)));
+        let authorizer = Arc::new(RwLock::new(UcanAuthorizer::new(address, authorization)));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;

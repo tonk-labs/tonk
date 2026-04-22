@@ -54,18 +54,20 @@ worker = "0.7.4"
 worker-macros = "0.7.4"
 
 # Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-capability-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", rev = "ab6f1a083371c7b98e7c41f018b560c4a1434c36" }
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/query-integration-cleanup" }
 
 [profile.dev]
 opt-level = 1

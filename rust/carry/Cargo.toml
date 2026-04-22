@@ -15,7 +15,7 @@ path = "src/bin/carry.rs"
 anyhow = { workspace = true }
 bs58 = { workspace = true }
 dialog-credentials = { workspace = true }
-dialog-ucan = { workspace = true }
+dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 
 [dev-dependencies]
@@ -35,11 +35,14 @@ clap_complete = { workspace = true }
 # Dialog DB
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-s3 = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true }
+dialog-ucan = { workspace = true }
 
 # Async
 futures-util = { workspace = true }

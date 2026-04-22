@@ -6,11 +6,12 @@
 
 use dialog_capability::Principal;
 use dialog_credentials::Ed25519Signer;
-use dialog_remote_s3::{Address, S3Credentials};
+use dialog_remote_s3::{Address, S3Authorization, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
-use dialog_ucan::promise::Promised;
-use dialog_ucan::subject::Subject as DelegatedSubject;
-use dialog_ucan::{DelegationBuilder, InvocationBuilder, InvocationChain};
+use dialog_ucan_core::promise::Promised;
+use dialog_ucan_core::subject::Subject as DelegatedSubject;
+use dialog_ucan_core::{DelegationBuilder, InvocationBuilder, InvocationChain};
+use dialog_varsig::eddsa::Ed25519Signature;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
@@ -19,13 +20,14 @@ async fn signer(seed: u8) -> Ed25519Signer {
 }
 
 fn authorizer() -> UcanAuthorizer {
-    let address = Address::new(
-        "https://s3.us-east-1.amazonaws.com",
-        "us-east-1",
-        "test-bucket",
-    )
-    .with_credentials(S3Credentials::new("test-access-key", "test-secret-key"));
-    UcanAuthorizer::new(address)
+    let address = Address::builder("https://s3.us-east-1.amazonaws.com")
+        .region("us-east-1")
+        .bucket("test-bucket")
+        .build()
+        .unwrap();
+    let authorization =
+        S3Authorization::from(S3Credential::new("test-access-key", "test-secret-key"));
+    UcanAuthorizer::new(address, authorization)
 }
 
 /// SHA-256 multihash: [0x12, 0x20, ...32 zero bytes]
@@ -43,7 +45,7 @@ async fn build_container(
 ) -> Vec<u8> {
     let subject_did = subject.did();
 
-    let delegation = DelegationBuilder::new()
+    let delegation = DelegationBuilder::<Ed25519Signature>::new()
         .issuer(subject.clone())
         .audience(operator)
         .subject(DelegatedSubject::Specific(subject_did.clone()))
@@ -54,7 +56,7 @@ async fn build_container(
 
     let delegation_cid = delegation.to_cid();
 
-    let invocation = InvocationBuilder::new()
+    let invocation = InvocationBuilder::<Ed25519Signature>::new()
         .issuer(operator.clone())
         .audience(&subject_did)
         .subject(&subject_did)
@@ -71,54 +73,6 @@ async fn build_container(
     InvocationChain::new(invocation, delegations)
         .to_bytes()
         .unwrap()
-}
-
-// ---------------------------------------------------------------------------
-// Storage
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn storage_get() {
-    let subject = signer(42).await;
-    let operator = signer(1).await;
-
-    let mut args = BTreeMap::new();
-    args.insert("store".into(), Promised::String("index".into()));
-    args.insert("key".into(), Promised::Bytes(b"test-key".to_vec()));
-
-    let container = build_container(
-        &subject,
-        &operator,
-        vec!["storage".into(), "get".into()],
-        args,
-    )
-    .await;
-
-    let permit = authorizer().authorize(&container).await.unwrap();
-    assert_eq!(permit.method, "GET");
-    assert!(permit.url.as_str().contains("test-bucket"));
-}
-
-#[tokio::test]
-async fn storage_set() {
-    let subject = signer(42).await;
-    let operator = signer(1).await;
-
-    let mut args = BTreeMap::new();
-    args.insert("store".into(), Promised::String("index".into()));
-    args.insert("key".into(), Promised::Bytes(b"test-key".to_vec()));
-    args.insert("checksum".into(), Promised::Bytes(dummy_checksum()));
-
-    let container = build_container(
-        &subject,
-        &operator,
-        vec!["storage".into(), "set".into()],
-        args,
-    )
-    .await;
-
-    let permit = authorizer().authorize(&container).await.unwrap();
-    assert_eq!(permit.method, "PUT");
 }
 
 // ---------------------------------------------------------------------------
@@ -224,10 +178,10 @@ async fn self_invocation() {
     let s = signer(42).await;
 
     let mut args = BTreeMap::new();
-    args.insert("store".into(), Promised::String("index".into()));
-    args.insert("key".into(), Promised::Bytes(b"self-key".to_vec()));
+    args.insert("catalog".into(), Promised::String("blobs".into()));
+    args.insert("digest".into(), Promised::Bytes([0u8; 32].to_vec()));
 
-    let container = build_container(&s, &s, vec!["storage".into(), "get".into()], args).await;
+    let container = build_container(&s, &s, vec!["archive".into(), "get".into()], args).await;
 
     authorizer().authorize(&container).await.unwrap();
 }

@@ -6,7 +6,7 @@
 //! 3. Returning the serialized AuthorizedRequest as CBOR
 
 use crate::error::{ErrorCode, ServiceError};
-use dialog_remote_s3::{AccessError, Address, S3Credentials};
+use dialog_remote_s3::{Address, S3Authorization, s3::S3Credential};
 use dialog_remote_ucan_s3::UcanAuthorizer;
 use worker::*;
 
@@ -119,33 +119,41 @@ fn create_authorizer(ctx: &RouteContext<()>) -> std::result::Result<UcanAuthoriz
     // Build R2 endpoint URL
     let endpoint = format!("https://{}.r2.cloudflarestorage.com", account_id);
 
-    // Create address with credentials
-    let address = Address::new(&endpoint, "auto", &bucket)
-        .with_credentials(S3Credentials::new(access_key_id, secret_access_key));
+    let address = Address::builder(&endpoint)
+        .region("auto")
+        .bucket(&bucket)
+        .build()
+        .map_err(|e| {
+            ServiceError::new(
+                ErrorCode::InternalError,
+                format!("Failed to create address: {}", e),
+            )
+        })?;
 
-    Ok(UcanAuthorizer::new(address))
+    let credential = S3Credential::new(access_key_id, secret_access_key);
+    let authorization = S3Authorization::from(credential);
+
+    Ok(UcanAuthorizer::new(address, authorization))
 }
 
-/// Map AccessError to ServiceError with appropriate error codes.
-fn map_access_error(err: AccessError) -> ServiceError {
-    match err {
-        AccessError::NoDelegation(msg) => ServiceError::new(ErrorCode::ChainInvalid, msg),
-        AccessError::Invocation(msg) => {
-            if msg.contains("expired") {
-                ServiceError::new(ErrorCode::InvocationExpired, msg)
-            } else if msg.contains("signature") {
-                ServiceError::new(ErrorCode::SignatureInvalid, msg)
-            } else if msg.contains("audience") {
-                ServiceError::new(ErrorCode::AudienceMismatch, msg)
-            } else if msg.contains("subject") {
-                ServiceError::new(ErrorCode::SubjectNotAllowed, msg)
-            } else if msg.contains("command") || msg.contains("Command") {
-                ServiceError::new(ErrorCode::CommandMismatch, msg)
-            } else {
-                ServiceError::new(ErrorCode::InvalidArgument, msg)
-            }
-        }
-        AccessError::Service(msg) => ServiceError::new(ErrorCode::InternalError, msg),
-        AccessError::Configuration(msg) => ServiceError::new(ErrorCode::InternalError, msg),
+/// Map an S3Error from the authorizer to a ServiceError with an appropriate
+/// error code. The authorizer collapses distinct failure modes into a single
+/// `S3Error::Authorization` string, so we pattern-match on the message.
+fn map_access_error(err: dialog_remote_s3::S3Error) -> ServiceError {
+    let msg = err.to_string();
+    if msg.contains("expired") {
+        ServiceError::new(ErrorCode::InvocationExpired, msg)
+    } else if msg.contains("signature") {
+        ServiceError::new(ErrorCode::SignatureInvalid, msg)
+    } else if msg.contains("audience") {
+        ServiceError::new(ErrorCode::AudienceMismatch, msg)
+    } else if msg.contains("subject") {
+        ServiceError::new(ErrorCode::SubjectNotAllowed, msg)
+    } else if msg.contains("command") || msg.contains("Command") {
+        ServiceError::new(ErrorCode::CommandMismatch, msg)
+    } else if msg.contains("delegation") || msg.contains("chain") {
+        ServiceError::new(ErrorCode::ChainInvalid, msg)
+    } else {
+        ServiceError::new(ErrorCode::InvalidArgument, msg)
     }
 }

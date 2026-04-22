@@ -18,6 +18,7 @@ use crate::site::Site;
 use anyhow::{Context, Result};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
+use dialog_ucan::UcanDelegation;
 use std::path::Path;
 
 /// Execute `carry join [<invite-url>] [--repo <REPO>]`.
@@ -77,7 +78,7 @@ pub async fn execute(
     };
 
     site.profile
-        .save(chain)
+        .save(UcanDelegation::new(chain))
         .perform(&site.operator)
         .await
         .context("Failed to save delegation chain")?;
@@ -105,7 +106,7 @@ pub async fn execute(
             .context("Failed to open remote branch")?;
 
         site.branch
-            .set_upstream(remote_branch)
+            .set_upstream(&remote_branch)
             .perform(&site.operator)
             .await
             .context("Failed to set upstream")?;

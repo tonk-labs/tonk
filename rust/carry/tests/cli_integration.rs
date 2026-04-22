@@ -8,8 +8,20 @@ mod common;
 
 use std::f64::consts::PI;
 
+use carry::identity_cmd::ProfileLocation;
+use carry::site::RepoLocation;
 use carry::target::{Field, FirstArg, Target};
 use common::TestEnv;
+use dialog_effects::storage::Directory;
+use dialog_repository::helpers::unique_name;
+
+fn test_profile_location(prefix: &str) -> ProfileLocation {
+    ProfileLocation::new(Directory::Temp, unique_name(prefix))
+}
+
+fn test_repo_location(prefix: &str) -> RepoLocation {
+    RepoLocation::new(Directory::Temp, unique_name(prefix))
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Site & Init
@@ -26,8 +38,8 @@ async fn test_init_creates_site() {
 #[tokio::test]
 async fn test_init_with_name() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loc = dialog_repository::helpers::unique_location("carry-test");
-    let repo_loc = dialog_repository::helpers::unique_location("carry-test-repo");
+    let loc = test_profile_location("carry-test");
+    let repo_loc = test_repo_location("carry-test-repo");
     carry::init::execute(
         Some("my-project".to_string()),
         vec![],
@@ -48,8 +60,8 @@ async fn test_init_with_name() {
 #[tokio::test]
 async fn test_init_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loc = dialog_repository::helpers::unique_location("carry-test");
-    let repo_loc = dialog_repository::helpers::unique_location("carry-test-repo");
+    let loc = test_profile_location("carry-test");
+    let repo_loc = test_repo_location("carry-test-repo");
     carry::init::execute(
         None,
         vec![],
@@ -2436,7 +2448,7 @@ async fn test_invite_execute_succeeds() {
     let site = env.site();
 
     // execute() prints to stdout
-    carry::invite_cmd::execute(site, Some(&site.profile.did().to_string()), None)
+    carry::invite_cmd::execute(site, Some(site.profile.did().as_ref()), None)
         .await
         .unwrap();
 }
@@ -2484,8 +2496,8 @@ async fn test_invite_urls_are_unique() {
 #[tokio::test]
 async fn test_site_reopen_preserves_dids() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let loc = dialog_repository::helpers::unique_location("carry-test");
-    let repo_loc = dialog_repository::helpers::unique_location("carry-test-repo");
+    let loc = test_profile_location("carry-test");
+    let repo_loc = test_repo_location("carry-test-repo");
     carry::init::execute(
         None,
         vec![],
@@ -2541,7 +2553,7 @@ async fn test_join_site_can_write_and_read_data() {
     .unwrap();
 
     // Open the joined site and bootstrap builtins on it
-    let join_repo_loc = dialog_repository::helpers::unique_location("carry-test-join-repo");
+    let join_repo_loc = test_repo_location("carry-test-join-repo");
     let joined = carry::site::Site::open(
         join_dir.path(),
         Some(env.profile_location.clone()),

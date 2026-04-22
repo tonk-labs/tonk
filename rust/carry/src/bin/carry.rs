@@ -252,12 +252,9 @@ async fn main() -> anyhow::Result<()> {
     // but fall back silently if no profile exists yet.
     let telemetry_handle = {
         use dialog_repository::profile::Profile;
-        use dialog_repository::storage::Storage;
-        let storage = Storage::new();
-        if let Ok(profile) = Profile::load(Storage::profile("carry"))
-            .perform(&storage)
-            .await
-        {
+        use dialog_storage::provider::storage::{NativeSpace, Storage};
+        let storage = Storage::<NativeSpace>::default();
+        if let Ok(profile) = Profile::load("carry").perform(&storage).await {
             carry::telemetry::ping(profile.did().as_ref(), command_name)
         } else {
             None

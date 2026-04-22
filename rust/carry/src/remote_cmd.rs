@@ -20,7 +20,7 @@
 use crate::site::Site;
 use anyhow::{Context, Result, anyhow, bail};
 use dialog_capability::Did;
-use dialog_remote_s3::{Address as S3Address, S3Credentials};
+use dialog_remote_s3::Address as S3Address;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{SiteAddress, UpstreamState};
 
@@ -47,12 +47,6 @@ pub struct RemoteAddOptions {
 /// Execute `carry remote add`.
 pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
     let site_address = build_site_address(&opts)?;
-
-    if let SiteAddress::S3(ref addr) = site_address
-        && addr.credentials().is_some()
-    {
-        print_s3_credentials_warning();
-    }
 
     // Create the remote. By default the subject is this repo's own DID;
     // override with `--subject` when pointing at somebody else's repo.
@@ -109,7 +103,7 @@ fn list_remote_names(site: &Site) -> Result<Vec<String>> {
 /// Format a [`SiteAddress`] as a human-readable URL string.
 fn format_site_address(addr: &SiteAddress) -> String {
     match addr {
-        SiteAddress::S3(s3) => format!("s3://{}/{}", s3.endpoint(), s3.bucket()),
+        SiteAddress::S3(s3) => format!("s3://{}/{}", s3.endpoint().as_str(), s3.bucket()),
         SiteAddress::Ucan(ucan) => ucan.endpoint().to_string(),
     }
 }
@@ -295,12 +289,17 @@ pub fn build_site_address(opts: &RemoteAddOptions) -> Result<SiteAddress> {
             .as_deref()
             .ok_or_else(|| anyhow!("s3:// remote requires --bucket <BUCKET>"))?;
 
-        let mut addr = S3Address::new(endpoint, region, bucket);
+        let addr = S3Address::builder(endpoint)
+            .region(region)
+            .bucket(bucket)
+            .build()
+            .with_context(|| format!("invalid s3:// address for {}", endpoint))?;
 
         match (&opts.s3_access_key, &opts.s3_secret_key) {
-            (Some(key), Some(secret)) => {
-                addr = addr.with_credentials(S3Credentials::new(key, secret));
-            }
+            (Some(_), Some(_)) => bail!(
+                "direct s3:// remotes with --access-key/--secret-key are not yet \
+                 supported; use a https:// UCAN-S3 access service URL instead"
+            ),
             (None, None) => {}
             _ => bail!("--access-key and --secret-key must be supplied together"),
         }
@@ -312,17 +311,4 @@ pub fn build_site_address(opts: &RemoteAddOptions) -> Result<SiteAddress> {
         "unrecognised remote URL '{}': expected https:// (UCAN-S3, recommended) or s3://",
         url
     )
-}
-
-/// Loud warning printed whenever raw S3 credentials are persisted into
-/// `.carry/`.
-pub fn print_s3_credentials_warning() {
-    eprintln!();
-    eprintln!("warning: this remote stores raw S3 credentials in plaintext inside .carry/");
-    eprintln!("         anyone with read access to this directory can read and write the bucket.");
-    eprintln!("         do NOT upload, commit, or share .carry/ with any public or untrusted");
-    eprintln!("         destination (git, cloud drives, attachments, chat, etc.).");
-    eprintln!("         prefer a UCAN-S3 access service (https:// URL) so credentials stay");
-    eprintln!("         on the server.");
-    eprintln!();
 }

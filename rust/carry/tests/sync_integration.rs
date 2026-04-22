@@ -7,16 +7,19 @@
 use anyhow::{Context, Result};
 use carry::identity_cmd::ProfileLocation;
 use carry::site::{RepoLocation, Site};
+use dialog_effects::storage::Directory;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
-use dialog_repository::helpers::unique_location;
+use dialog_repository::helpers::unique_name;
+use dialog_ucan::UcanDelegation;
 use futures_util::TryStreamExt;
 
 /// Create an isolated Site with unique profile + repo storage.
 async fn isolated_site(label: &str) -> Result<Site> {
     let temp_dir = tempfile::TempDir::new()?;
-    let profile_location: ProfileLocation = unique_location(&format!("{}-profile", label));
-    let repo_location: RepoLocation = unique_location(&format!("{}-repo", label));
+    let profile_location =
+        ProfileLocation::new(Directory::Temp, unique_name(&format!("{}-profile", label)));
+    let repo_location = RepoLocation::new(Directory::Temp, unique_name(&format!("{}-repo", label)));
     let site = Site::init(temp_dir.path(), Some(profile_location), Some(repo_location)).await?;
     std::mem::forget(temp_dir);
     Ok(site)
@@ -128,7 +131,7 @@ async fn alice_invites_bob_who_pulls() -> Result<()> {
         .expect("URL should include remote endpoint");
 
     bob.profile
-        .save(decoded.chain)
+        .save(UcanDelegation::new(decoded.chain))
         .perform(&bob.operator)
         .await?;
 
@@ -176,7 +179,7 @@ async fn bidirectional_sync() -> Result<()> {
         .expect("URL should include remote endpoint");
 
     bob.profile
-        .save(decoded.chain)
+        .save(UcanDelegation::new(decoded.chain))
         .perform(&bob.operator)
         .await?;
 

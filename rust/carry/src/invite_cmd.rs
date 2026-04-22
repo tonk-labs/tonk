@@ -6,7 +6,7 @@ use crate::invite;
 use crate::site::Site;
 use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
-use dialog_ucan::DelegationChain;
+use dialog_ucan_core::DelegationChain;
 use dialog_varsig::{Did, Principal};
 
 // Re-export for callers that import from invite_cmd.
@@ -66,7 +66,7 @@ pub async fn create_invite(
         }
     };
 
-    let chain = site
+    let delegation = site
         .profile
         .access()
         .claim(&site.repo)
@@ -74,6 +74,8 @@ pub async fn create_invite(
         .perform(&site.operator)
         .await
         .context("Failed to create delegation")?;
+
+    let chain: DelegationChain = delegation.into_chain();
 
     let remote_url = resolve_access_url(site).await;
 
