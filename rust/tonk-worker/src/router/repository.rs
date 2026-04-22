@@ -21,6 +21,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 
 use super::AppState;
+use super::home;
 use crate::TonkWorkerError;
 
 /// Configuration for a single remote.
@@ -321,7 +322,12 @@ pub async fn put_repository(
         }
     }
 
-    // 6. Respond with the current state of the repository.
+    // 6. Register the new repo in home (the profile's meta-index).
+    // Self-registration of home works because by this point home
+    // exists locally — we just created it.
+    home::register_repo(&tonk, &name).await?;
+
+    // 7. Respond with the current state of the repository.
     let info = build_repository_info(&tonk, &name, &repository).await;
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -359,7 +365,7 @@ pub async fn get_repository(
 /// points at a remote, loads that remote and includes its address
 /// in the `remote` map. Other branches / other remotes are *not*
 /// surfaced today — those need the meta-branch schema to enumerate.
-async fn build_repository_info<R>(
+pub(super) async fn build_repository_info<R>(
     tonk: &crate::worker::TonkState,
     name: &str,
     repository: &dialog_repository::Repository<R>,

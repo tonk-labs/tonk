@@ -10,8 +10,16 @@ use crate::worker::TonkState;
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
+mod claim_invite;
+pub use claim_invite::ClaimRequest;
+
+mod home;
+
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
+
+mod repositories;
+pub use repositories::ListRepositoriesResponse;
 
 mod repository;
 pub use repository::{
@@ -41,6 +49,10 @@ pub fn api_router(state: TonkState) -> Router {
     Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        // Invite claim (redeem an invite URL)
+        .route("/api/claim", post(claim_invite::claim_invite))
+        // Repository list (drives the sidebar)
+        .route("/api/repositories", get(repositories::list_repositories))
         // Repository lifecycle
         .route(
             "/api/repository/{repo}",

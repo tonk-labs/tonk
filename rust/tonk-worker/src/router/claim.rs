@@ -89,10 +89,10 @@ pub struct QueryResponse {
 ///
 /// This implements `Statement` by forwarding to `Update::associate`/`dissociate`,
 /// allowing us to use runtime-determined attribute names and `Value` directly.
-struct RawClaim {
-    the: Attribute,
-    of: Entity,
-    is: Value,
+pub(super) struct RawClaim {
+    pub(super) the: Attribute,
+    pub(super) of: Entity,
+    pub(super) is: Value,
 }
 
 impl Statement for RawClaim {
