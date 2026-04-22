@@ -78,20 +78,21 @@ mod integration_tests {
         let driver = test_environment.driver().await?;
 
         // Wait for the shell's `PUT /api/repository/home` to complete
-        // and the redirect to land on `/space/home`; `.repository`
+        // and the redirect to land on `/space/home`; `section.repository`
         // appears when the fetch succeeds.
-        let repository = driver.query(By::Css("pre.repository")).first().await?;
+        let repository = driver.query(By::Css("section.repository")).first().await?;
 
-        // The server returns the repo's DID under `"subject"`, so
-        // the rendered JSON should at least mention it.
+        // The rendered summary includes the subject DID in a `<code>`
+        // under the identifiers list; a `did:key:` substring is
+        // enough evidence that a real response came back.
         let text = repository.text().await?;
         assert!(
-            text.contains("\"subject\""),
-            "expected repository JSON to include a subject field, got: {text}",
+            text.contains("Subject"),
+            "expected repository summary to include a Subject row, got: {text}",
         );
         assert!(
             text.contains("did:key:"),
-            "expected repository JSON to include a did:key value, got: {text}",
+            "expected repository summary to include a did:key value, got: {text}",
         );
 
         driver.quit().await?;
@@ -155,7 +156,7 @@ mod integration_tests {
             if let Ok(url) = driver.current_url().await {
                 last_url = url.to_string();
             }
-            if let Ok(elem) = driver.find(By::Css("pre.repository")).await {
+            if let Ok(elem) = driver.find(By::Css("section.repository")).await {
                 last_text = elem.text().await.unwrap_or_default();
                 if last_text.contains(&subject_str) {
                     ok = true;
@@ -177,7 +178,7 @@ mod integration_tests {
             panic!(
                 "claim did not land on /space/repo-<...> within timeout.\n\
                  last URL: {last_url}\n\
-                 last pre.repository text: {last_text}\n\
+                 last section.repository text: {last_text}\n\
                  last .auth .status text: {status_text}\n\
                  expected subject DID: {subject_str}"
             );

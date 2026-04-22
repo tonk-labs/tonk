@@ -27,8 +27,6 @@ pub struct SyncPath {
 pub struct SyncResponse {
     /// Whether the sync operation succeeded.
     pub success: bool,
-    /// Whether any changes were synced.
-    pub changed: bool,
     /// Error message if sync failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -74,7 +72,6 @@ pub async fn pull(
             log!("Pull succeeded");
             Ok(Json(SyncResponse {
                 success: true,
-                changed: true,
                 error: None,
             }))
         }
@@ -82,7 +79,6 @@ pub async fn pull(
             log!("Pull failed: {:?}", e);
             Ok(Json(SyncResponse {
                 success: false,
-                changed: false,
                 error: Some(e.to_string()),
             }))
         }
@@ -129,7 +125,6 @@ pub async fn push(
             log!("Push succeeded");
             Ok(Json(SyncResponse {
                 success: true,
-                changed: true,
                 error: None,
             }))
         }
@@ -137,7 +132,6 @@ pub async fn push(
             log!("Push failed: {:?}", e);
             Ok(Json(SyncResponse {
                 success: false,
-                changed: false,
                 error: Some(e.to_string()),
             }))
         }
@@ -180,40 +174,27 @@ pub async fn sync(
         })?;
 
     // First pull
-    let pull_changed = match branch.pull().perform(&tonk_state.operator).await {
-        Ok(_) => {
-            log!("Pull succeeded");
-            true
-        }
-        Err(e) => {
-            log!("Pull failed: {:?}", e);
-            return Ok(Json(SyncResponse {
-                success: false,
-                changed: false,
-                error: Some(format!("Pull failed: {}", e)),
-            }));
-        }
-    };
+    if let Err(e) = branch.pull().perform(&tonk_state.operator).await {
+        log!("Pull failed: {:?}", e);
+        return Ok(Json(SyncResponse {
+            success: false,
+            error: Some(format!("Pull failed: {}", e)),
+        }));
+    }
+    log!("Pull succeeded");
 
     // Then push
-    let push_changed = match branch.push().perform(&tonk_state.operator).await {
-        Ok(_) => {
-            log!("Push succeeded");
-            true
-        }
-        Err(e) => {
-            log!("Push failed: {:?}", e);
-            return Ok(Json(SyncResponse {
-                success: false,
-                changed: pull_changed,
-                error: Some(format!("Push failed: {}", e)),
-            }));
-        }
-    };
+    if let Err(e) = branch.push().perform(&tonk_state.operator).await {
+        log!("Push failed: {:?}", e);
+        return Ok(Json(SyncResponse {
+            success: false,
+            error: Some(format!("Push failed: {}", e)),
+        }));
+    }
+    log!("Push succeeded");
 
     Ok(Json(SyncResponse {
         success: true,
-        changed: pull_changed || push_changed,
         error: None,
     }))
 }

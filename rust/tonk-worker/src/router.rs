@@ -157,13 +157,12 @@ pub mod tests {
         TonkState { profile, operator }
     }
 
-    /// Creates a test repository via `PUT /api/repository/{name}`.
+    /// Issues `PUT /api/repository/{name}` and asserts 201 or 412.
     ///
-    /// Each test calls this with its own repo name so runs are
-    /// independent. Tolerates `412 Precondition Failed` in case the
-    /// same name was used by a prior run within the same browser
-    /// session (IndexedDB state survives).
-    async fn put_repo(app: &Router, name: &str) {
+    /// Tolerates `412 Precondition Failed` in case the same name was
+    /// used by a prior run within the same browser session
+    /// (IndexedDB state survives).
+    async fn put_repo_raw(app: &Router, name: &str) {
         let response = app
             .clone()
             .oneshot(
@@ -184,6 +183,27 @@ pub mod tests {
             name,
             status,
         );
+    }
+
+    /// Bootstraps the `home` meta-index before any user-facing PUT.
+    ///
+    /// `put_repository` registers every created repo in `home` via
+    /// `home::register_repo`, which loads the home space. Tests that
+    /// skip the bootstrap hit a 500 ("home repo not opened") on
+    /// every non-home PUT, so all non-home test helpers call this
+    /// first. In production this happens implicitly via
+    /// `TonkShell::init`.
+    async fn ensure_home(app: &Router) {
+        put_repo_raw(app, "home").await;
+    }
+
+    /// Creates a test repository via `PUT /api/repository/{name}`,
+    /// bootstrapping `home` first if needed.
+    async fn put_repo(app: &Router, name: &str) {
+        if name != "home" {
+            ensure_home(app).await;
+        }
+        put_repo_raw(app, name).await;
     }
 
     #[dialog_common::test]
@@ -238,6 +258,10 @@ pub mod tests {
         let state = test_state().await;
         let app = api_router(state);
         let repo = "test-create";
+
+        // `put_repository` registers into `home` on success, so home
+        // must be bootstrapped first.
+        ensure_home(&app).await;
 
         let response = app
             .clone()

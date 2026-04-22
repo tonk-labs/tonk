@@ -1,7 +1,8 @@
 input[type="text"],
 input[type="password"] {
-    border: 1px solid var(--text-input-border-color, #E4E4E7);
-    background-color: var(--text-input-background-color, #F4F4F580);
+    border: 1px solid var(--text-input-border-color, #D4D4D8);
+    background-color: var(--text-input-background-color, #FFFFFF);
+    color: var(--text-input-color, var(--color-night-900));
     border-radius: 6px;
 
     display: block;
@@ -10,6 +11,11 @@ input[type="password"] {
     line-height: 22px;
     appearance: none;
     outline: none;
+}
+
+input[type="text"]:hover,
+input[type="password"]:hover {
+    border-color: var(--text-input-hover-border-color, #A1A1AA);
 }
 
 input[type="text"][disabled],

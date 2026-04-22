@@ -29,10 +29,9 @@
 //! [`Subject::Any`]: dialog_ucan_core::subject::Subject::Any
 
 use anyhow::{Context, Result};
-use dialog_capability::access::{Authorization, Proof};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::{Scope, UcanProof};
-use dialog_ucan_core::DelegationChain;
+use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
 use dialog_varsig::Did;
 use url::Url;
 
@@ -250,20 +249,34 @@ impl Invite {
     ///
     /// - **Audience-open** (fragment was present on the source URL):
     ///   redelegates from the embedded ephemeral key to `audience`,
-    ///   extending the chain by one hop. Flows through
-    ///   [`UcanProof::claim`] and [`UcanAuthorization::delegate`] rather
-    ///   than reimplementing the redelegation inline.
+    ///   extending the chain by one hop.
     /// - **Audience-scoped** (no fragment): verifies the chain's existing
     ///   audience matches `audience` and returns it as-is.
     ///
     /// Persistence of the returned chain, and configuration of any
     /// `remote_url` for sync, are the caller's responsibility.
     ///
+    /// Implementation note: redelegation goes through
+    /// [`DelegationBuilder`] + [`DelegationChain::push`] directly,
+    /// rather than through [`UcanProof::claim`] /
+    /// [`UcanAuthorization::delegate`]. The latter rebuilds the chain
+    /// by iterating `DelegationChain`'s internal `HashMap` values,
+    /// which is unordered — for multi-hop chains that path can fail
+    /// intermittently with a principal-alignment error depending on
+    /// the process's `RandomState`. Going direct to the chain's own
+    /// `push` keeps the documented root-to-leaf ordering.
+    ///
+    /// TODO: revert this workaround once the fix for
+    /// `UcanProof::from_chain` lands in dialog-db and the workspace
+    /// pin bumps past it
+    ///
     /// # Errors
     ///
     /// Returns an error if an open invite fails to extend, or if a scoped
     /// invite's recorded audience does not match `audience`.
     ///
+    /// [`DelegationBuilder`]: dialog_ucan_core::DelegationBuilder
+    /// [`DelegationChain::push`]: dialog_ucan_core::DelegationChain::push
     /// [`UcanProof::claim`]: dialog_ucan::UcanProof
     /// [`UcanAuthorization::delegate`]: dialog_ucan::UcanAuthorization
     pub async fn claim(self, audience: &Did) -> Result<ClaimedInvite> {
@@ -272,15 +285,23 @@ impl Invite {
 
         let chain = match signer {
             Some(ephemeral) => {
-                let proof = UcanProof::from(self);
-                let auth = proof
-                    .claim(ephemeral)
-                    .map_err(|e| anyhow::anyhow!("failed to build authorization: {e}"))?;
-                let delegation = auth
-                    .delegate(audience.clone())
+                let subject = self
+                    .chain
+                    .subject()
+                    .cloned()
+                    .map(UcanSubject::Specific)
+                    .unwrap_or(UcanSubject::Any);
+                let delegation = DelegationBuilder::new()
+                    .issuer(ephemeral)
+                    .audience(audience)
+                    .subject(subject)
+                    .command(vec![])
+                    .try_build()
                     .await
-                    .map_err(|e| anyhow::anyhow!("failed to redelegate invite: {e}"))?;
-                delegation.into_chain()
+                    .map_err(|e| anyhow::anyhow!("failed to build redelegation: {e}"))?;
+                self.chain
+                    .push(delegation)
+                    .map_err(|e| anyhow::anyhow!("failed to extend delegation chain: {e}"))?
             }
             None => {
                 let chain_audience = self.chain.audience();
@@ -377,6 +398,30 @@ mod tests {
             .await
             .unwrap();
         DelegationChain::new(delegation)
+    }
+
+    /// Extend `chain` by one hop, delegated from `issuer` to
+    /// `audience`. The existing chain's leaf audience must equal the
+    /// issuer's DID, otherwise `push` will reject.
+    async fn extend_chain(
+        chain: DelegationChain,
+        issuer: Ed25519Signer,
+        audience: &Did,
+    ) -> DelegationChain {
+        let subject = chain
+            .subject()
+            .cloned()
+            .map(UcanSubject::Specific)
+            .unwrap_or(UcanSubject::Any);
+        let delegation = DelegationBuilder::new()
+            .issuer(issuer)
+            .audience(audience)
+            .subject(subject)
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        chain.push(delegation).unwrap()
     }
 
     async fn signer(seed: &[u8; 32]) -> Ed25519Signer {
@@ -478,6 +523,41 @@ mod tests {
         let claimed = invite.claim(&audience).await.unwrap();
         assert_eq!(*claimed.subject(), subject);
         assert_eq!(*claimed.chain.audience(), audience);
+    }
+
+    /// Multi-hop open-invite claim: an issuer delegates to a mid key,
+    /// which delegates to an ephemeral key embedded in the invite;
+    /// the redeemer claims by redelegating one more hop. The
+    /// resulting chain should have three proofs and terminate at the
+    /// redeemer.
+    #[dialog_common::test]
+    async fn it_extends_multi_hop_chain_to_redeemer_when_claiming_open_invite() {
+        const MID_SEED: [u8; 32] = [5u8; 32];
+        const ROOT_SEED: [u8; 32] = [6u8; 32];
+
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let mid_did = signer(&MID_SEED).await.did();
+        let ephemeral_did = signer(&EPHEMERAL_SEED).await.did();
+        let redeemer = signer(&AUDIENCE_SEED).await.did();
+
+        let first_hop = make_chain(&ROOT_SEED, &mid_did, &subject).await;
+        let mid_signer = signer(&MID_SEED).await;
+        let two_hop = extend_chain(first_hop, mid_signer, &ephemeral_did).await;
+        assert_eq!(two_hop.proof_cids().len(), 2);
+
+        let invite = Invite::new(
+            two_hop,
+            InviteAudience::Open {
+                seed: EPHEMERAL_SEED,
+            },
+            None,
+        )
+        .unwrap();
+
+        let claimed = invite.claim(&redeemer).await.unwrap();
+        assert_eq!(claimed.chain.proof_cids().len(), 3);
+        assert_eq!(*claimed.chain.audience(), redeemer);
+        assert_eq!(*claimed.subject(), subject);
     }
 
     #[dialog_common::test]

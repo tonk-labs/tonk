@@ -1,9 +1,11 @@
+use leptos::task::spawn_local;
 use leptos::{either::Either, prelude::*};
 use leptos_router::{
     hooks::use_params,
     location::{BrowserUrl, LocationProvider},
     params::Params,
 };
+use tonk_worker::{RemoteConfiguration, RepositoryInfo};
 
 use crate::api;
 
@@ -14,12 +16,46 @@ pub struct TonkSpaceParams {
 
 const DEFAULT_BRANCH: &str = "main";
 
+/// Which sync operation is/was in flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncOp {
+    Pull,
+    Push,
+}
+
+impl SyncOp {
+    fn running(self) -> &'static str {
+        match self {
+            SyncOp::Pull => "Pulling",
+            SyncOp::Push => "Pushing",
+        }
+    }
+
+    fn past(self) -> &'static str {
+        match self {
+            SyncOp::Pull => "Pulled",
+            SyncOp::Push => "Pushed",
+        }
+    }
+}
+
+/// Sync status for the current space. Tracks both pull and push so
+/// whichever button was last clicked dictates what the status line
+/// shows.
+#[derive(Clone, Debug)]
+enum SyncState {
+    Idle,
+    Running(SyncOp),
+    Done(SyncOp),
+    Failed { op: SyncOp, message: String },
+}
+
 /// Main workspace area for displaying a repository.
 ///
-/// Fetches the repository record at `/api/repository/{space}`, then
-/// kicks off a pull of `main` from upstream so the local state
-/// reflects what's on the access service. Below that, an ad-hoc
-/// query form drives `/claim/select` for exploration.
+/// Fetches the repository record at `/api/repository/{space}` and
+/// renders a structured summary (identifiers, branches, remotes).
+/// Pull and claim query are explicit user actions; nothing syncs
+/// automatically on mount.
 ///
 /// If `:space` is missing, redirects to `/space/{DEFAULT_REPO}`.
 #[component]
@@ -48,24 +84,45 @@ pub fn TonkSpace() -> impl IntoView {
         }
     });
 
-    // Auto-pull main when the space changes. Tracks `space_name` so
-    // navigating to a different repo reruns the pull for that one.
-    let pull_trigger = RwSignal::new(0u32);
-    let pull = LocalResource::new(move || {
-        let name = space_name.get();
-        // Read pull_trigger so manual re-pulls refetch the resource.
-        let _ = pull_trigger.get();
-        async move {
-            let Some(name) = name else {
-                return Ok::<_, String>(None);
-            };
-            api::pull(&name, DEFAULT_BRANCH)
-                .await
-                .map(Some)
-                .map_err(|e| format!("{e}"))
+    // Sync is strictly user-triggered — no auto-sync on mount. After
+    // a successful op we refetch `repository` so the rendered branch
+    // revision tracks the new state.
+    let sync_state = RwSignal::new(SyncState::Idle);
+    let trigger_sync = move |op: SyncOp| {
+        let Some(name) = space_name.get() else {
+            return;
+        };
+        if matches!(sync_state.get_untracked(), SyncState::Running(_)) {
+            return;
         }
-    });
-    let repull = move |_| pull_trigger.update(|n| *n = n.wrapping_add(1));
+        sync_state.set(SyncState::Running(op));
+        spawn_local(async move {
+            let result = match op {
+                SyncOp::Pull => api::pull(&name, DEFAULT_BRANCH).await,
+                SyncOp::Push => api::push(&name, DEFAULT_BRANCH).await,
+            };
+            match result {
+                Ok(resp) if resp.success => {
+                    sync_state.set(SyncState::Done(op));
+                    repository.refetch();
+                }
+                Ok(resp) => {
+                    sync_state.set(SyncState::Failed {
+                        op,
+                        message: resp
+                            .error
+                            .unwrap_or_else(|| format!("{} failed", op.past().to_lowercase())),
+                    });
+                }
+                Err(e) => sync_state.set(SyncState::Failed {
+                    op,
+                    message: format!("{e}"),
+                }),
+            }
+        });
+    };
+    let pull_click = move |_| trigger_sync(SyncOp::Pull);
+    let push_click = move |_| trigger_sync(SyncOp::Push);
 
     // Query form: two inputs + a submit signal. The claims resource
     // fires only when the submitted query is non-empty.
@@ -101,7 +158,7 @@ pub fn TonkSpace() -> impl IntoView {
         )));
     };
 
-    // Reset query state when navigating to a different space.
+    // Reset per-space state when navigating to a different space.
     Effect::new(move |prev: Option<Option<String>>| {
         let current = space_name.get();
         if let Some(p) = prev
@@ -110,6 +167,7 @@ pub fn TonkSpace() -> impl IntoView {
             the_input.set(String::new());
             of_input.set(String::new());
             submitted.set(None);
+            sync_state.set(SyncState::Idle);
         }
         current
     });
@@ -123,11 +181,7 @@ pub fn TonkSpace() -> impl IntoView {
                     </section>
                 }>
                     { move || repository.get().map(|result| result.map(|repo| match repo {
-                        Some(status) => Either::Left(view! {
-                            <pre class="repository">
-                                { serde_json::to_string_pretty(&status).unwrap_or_default() }
-                            </pre>
-                        }),
+                        Some(info) => Either::Left(render_repository(info)),
                         None => Either::Right(view! {
                             <section class="not-found">
                                 { move || format!(
@@ -142,21 +196,21 @@ pub fn TonkSpace() -> impl IntoView {
 
             <section class="sync">
                 <h2>"Upstream"</h2>
-                <p class="status">
-                    {move || match pull.get() {
-                        None => "pulling…".to_string(),
-                        Some(Err(e)) => format!("error: {e}"),
-                        Some(Ok(None)) => String::new(),
-                        Some(Ok(Some(resp))) => {
-                            if resp.success {
-                                "pulled".to_string()
-                            } else {
-                                resp.error.unwrap_or_else(|| "pull failed".into())
-                            }
-                        }
-                    }}
-                </p>
-                <button on:click=repull>"Pull again"</button>
+                {move || render_sync_state(sync_state.get())}
+                <div class="actions">
+                    <button
+                        on:click=pull_click
+                        prop:disabled=move || matches!(sync_state.get(), SyncState::Running(_))
+                    >
+                        "Pull main"
+                    </button>
+                    <button
+                        on:click=push_click
+                        prop:disabled=move || matches!(sync_state.get(), SyncState::Running(_))
+                    >
+                        "Push main"
+                    </button>
+                </div>
             </section>
 
             <section class="claims">
@@ -201,5 +255,114 @@ pub fn TonkSpace() -> impl IntoView {
                 }}
             </section>
         </section>
+    }
+}
+
+/// Render a loaded [`RepositoryInfo`] as a structured summary.
+fn render_repository(info: RepositoryInfo) -> impl IntoView {
+    // Deterministic display order for hash-map-backed fields.
+    let mut branches: Vec<_> = info.branch.into_iter().collect();
+    branches.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut remotes: Vec<_> = info.remote.into_iter().collect();
+    remotes.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    view! {
+        <section class="repository">
+            <h1 class="name">{info.name}</h1>
+
+            <dl class="dids">
+                <dt>"Subject"</dt>
+                <dd><code>{info.subject.to_string()}</code></dd>
+                <dt>"Operator"</dt>
+                <dd><code>{info.operator.to_string()}</code></dd>
+                <dt>"Profile"</dt>
+                <dd><code>{info.profile.to_string()}</code></dd>
+            </dl>
+
+            <h2>"Branches"</h2>
+            {if branches.is_empty() {
+                view! { <p class="hint">"No branches yet."</p> }.into_any()
+            } else {
+                view! {
+                    <ul class="branches">
+                        {branches.into_iter().map(|(name, cfg)| {
+                            let upstream = cfg
+                                .upstream
+                                .map(|u| format!("{}/{}", u.remote, u.branch))
+                                .unwrap_or_else(|| "(none)".into());
+                            let has_revision = cfg.revision.is_some();
+                            view! {
+                                <li>
+                                    <span class="branch-name">{name}</span>
+                                    <span class="branch-upstream">
+                                        "upstream "
+                                        <code>{upstream}</code>
+                                    </span>
+                                    <span class="branch-revision">
+                                        {if has_revision { "has commits" } else { "empty" }}
+                                    </span>
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ul>
+                }.into_any()
+            }}
+
+            <h2>"Remotes"</h2>
+            {if remotes.is_empty() {
+                view! { <p class="hint">"No remotes configured."</p> }.into_any()
+            } else {
+                view! {
+                    <ul class="remotes">
+                        {remotes.into_iter().map(|(name, cfg)| {
+                            view! {
+                                <li>
+                                    <span class="remote-name">{name}</span>
+                                    <span class="remote-endpoint">
+                                        <code>{render_address(&cfg)}</code>
+                                    </span>
+                                    {cfg.subject.map(|s| view! {
+                                        <span class="remote-subject">
+                                            "subject "
+                                            <code>{s.to_string()}</code>
+                                        </span>
+                                    })}
+                                </li>
+                            }
+                        }).collect_view()}
+                    </ul>
+                }.into_any()
+            }}
+        </section>
+    }
+}
+
+/// Render a remote address as a short human-readable string.
+/// `SiteAddress` has many variants; serializing to JSON is the
+/// simplest way to show whatever fields it carries without
+/// pulling in the full dialog-repository surface here.
+fn render_address(cfg: &RemoteConfiguration) -> String {
+    serde_json::to_string(&cfg.address).unwrap_or_else(|_| "(unrenderable)".into())
+}
+
+/// Render the upstream sync status line.
+fn render_sync_state(state: SyncState) -> impl IntoView {
+    match state {
+        SyncState::Idle => view! {
+            <p class="status">"Not synced this session."</p>
+        }
+        .into_any(),
+        SyncState::Running(op) => view! {
+            <p class="status">{format!("{}…", op.running())}</p>
+        }
+        .into_any(),
+        SyncState::Done(op) => view! {
+            <p class="status ok">{format!("{}.", op.past())}</p>
+        }
+        .into_any(),
+        SyncState::Failed { op, message } => view! {
+            <p class="status error">{format!("{} failed: {message}", op.past().to_lowercase())}</p>
+        }
+        .into_any(),
     }
 }

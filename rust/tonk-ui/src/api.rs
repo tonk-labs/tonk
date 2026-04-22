@@ -197,13 +197,23 @@ pub async fn list_repositories() -> Result<Vec<String>, TonkUiError> {
 /// sync route.
 pub async fn pull(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
     log!("Pulling {}/{}...", repo, branch);
+    post_sync(repo, branch, "pull").await
+}
 
+/// Push local `{repo}/{branch}` state to the upstream remote.
+pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
+    log!("Pushing {}/{}...", repo, branch);
+    post_sync(repo, branch, "push").await
+}
+
+async fn post_sync(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
     let response = reqwest::Client::new()
         .post(format!(
-            "{}/api/repository/{}/branch/{}/sync/pull",
+            "{}/api/repository/{}/branch/{}/sync/{}",
             origin(),
             repo,
-            branch
+            branch,
+            op
         ))
         .send()
         .await
@@ -214,8 +224,8 @@ pub async fn pull(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError>
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/sync/pull returned {}: {}",
-                repo, branch, status, text
+                "POST /api/repository/{}/branch/{}/sync/{} returned {}: {}",
+                repo, branch, op, status, text
             )))
         }
     }
