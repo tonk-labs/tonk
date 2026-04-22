@@ -53,9 +53,12 @@ wasm-bindgen-test = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 anyhow = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
 thirtyfour = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
+tonk-invite = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }

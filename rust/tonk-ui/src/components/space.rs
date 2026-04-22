@@ -78,15 +78,12 @@ pub fn TonkSpace() -> impl IntoView {
         let query = submitted.get();
         async move {
             match (name, query) {
-                (Some(name), Some((the, of))) => api::select_claims(
-                    &name,
-                    DEFAULT_BRANCH,
-                    the.as_deref(),
-                    of.as_deref(),
-                )
-                .await
-                .map(|r| Some(r.claims))
-                .map_err(|e| format!("{e}")),
+                (Some(name), Some((the, of))) => {
+                    api::select_claims(&name, DEFAULT_BRANCH, the.as_deref(), of.as_deref())
+                        .await
+                        .map(|r| Some(r.claims))
+                        .map_err(|e| format!("{e}"))
+                }
                 _ => Ok(None),
             }
         }

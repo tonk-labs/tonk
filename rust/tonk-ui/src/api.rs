@@ -2,8 +2,8 @@ use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
-    BranchConfiguration, ClaimRequest, IdentifyResponse, ListRepositoriesResponse,
-    QueryResponse, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo, SyncResponse,
+    BranchConfiguration, ClaimRequest, IdentifyResponse, ListRepositoriesResponse, QueryResponse,
+    RemoteConfiguration, RepositoryConfiguration, RepositoryInfo, SyncResponse,
 };
 
 use crate::error::TonkUiError;
@@ -180,8 +180,7 @@ pub async fn list_repositories() -> Result<Vec<String>, TonkUiError> {
 
     match response.status() {
         StatusCode::OK => {
-            let body: ListRepositoriesResponse =
-                response.json().await.map_err(into_api_error)?;
+            let body: ListRepositoriesResponse = response.json().await.map_err(into_api_error)?;
             Ok(body.repositories)
         }
         status => {

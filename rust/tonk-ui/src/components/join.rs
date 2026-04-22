@@ -14,7 +14,7 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
 use crate::api;
-use crate::components::RepoListResource;
+use crate::components::{RepoListResource, Status};
 
 /// Status of the in-progress claim.
 #[derive(Clone, Debug)]
@@ -31,17 +31,27 @@ fn current_url() -> Option<String> {
     window().location().href().ok()
 }
 
-/// `/join` route component. Runs the claim on mount; on success,
-/// navigates to `/space/<local_name>`.
+/// `/join` route component. Runs the claim once init has completed;
+/// on success, navigates to `/space/<local_name>`.
 #[component]
 pub fn TonkJoin() -> impl IntoView {
     let repos = use_context::<RepoListResource>().map(|ctx| ctx.0);
+    let app_status =
+        use_context::<Signal<Status, LocalStorage>>().expect("Status context required");
 
     let status = RwSignal::new(ClaimStatus::Pending);
 
-    Effect::new(move |seen_once: Option<bool>| {
-        if seen_once.is_some() {
+    // Wait for TonkShell's init to finish before POSTing — the claim
+    // handler writes into home, which doesn't exist until init has
+    // PUT it. Tracks `app_status`: on each transition the Effect
+    // re-runs, and we gate the claim behind `Ready` + a once-only
+    // latch so subsequent status events don't retry the claim.
+    Effect::new(move |kicked: Option<bool>| {
+        if kicked.unwrap_or(false) {
             return true;
+        }
+        if !matches!(app_status.get(), Status::Ready) {
+            return false;
         }
         let Some(url) = current_url() else {
             status.set(ClaimStatus::Err("could not read current URL".into()));
