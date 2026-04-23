@@ -25,6 +25,9 @@ pub use sync::SyncResponse;
 mod identify;
 pub use identify::IdentifyResponse;
 
+mod host;
+pub use host::{ClientId, GuestBinding, GuestBindings};
+
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -35,9 +38,18 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 
 /// Creates the API router with all configured routes.
 ///
-/// Sets up the routing tree with the TonkState as shared state.
-pub fn api_router(state: TonkState) -> Router {
+/// Sets up the routing tree with the TonkState as shared state,
+/// and returns the router alongside a cloneable handle to the
+/// state itself. The worker keeps that handle so it can inspect
+/// shared state (e.g. the guest-binding map) before deciding
+/// whether to dispatch into the router at all.
+pub fn api_router(state: TonkState) -> (Router, AppState) {
     let state: AppState = Arc::new(RwLock::new(state));
+    let router = build_router(state.clone());
+    (router, state)
+}
+
+fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
@@ -93,6 +105,19 @@ pub fn api_router(state: TonkState) -> Router {
             "/api/inspect/repository/{repo}/remote/{remote}/archive/index/{hash}",
             get(inspect::archive::inspect_remote_archive_block),
         )
+        // Host/guest iframe bridge. The wildcard matches both the
+        // iframe's initial navigation (where `rest` is empty) and
+        // any subresource fetched under the same prefix. The
+        // handler looks at `rest` to decide which behaviour to
+        // apply.
+        .route(
+            "/api/host/{host_id}/guest/{repo}/{*rest}",
+            get(host::guest),
+        )
+        .route(
+            "/api/host/{host_id}/guest/{repo}/",
+            get(host::guest_empty_rest),
+        )
         .with_state(state)
 }
 
@@ -142,7 +167,11 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
-        TonkState { profile, operator }
+        TonkState {
+            profile,
+            operator,
+            guests: Default::default(),
+        }
     }
 
     /// Creates a test repository via `PUT /api/repository/{name}`.

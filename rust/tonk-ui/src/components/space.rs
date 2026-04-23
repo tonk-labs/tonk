@@ -5,7 +5,7 @@ use leptos_router::{
     params::Params,
 };
 
-use crate::api;
+use crate::{api, components::HostId};
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkSpaceParams {
@@ -20,6 +20,13 @@ pub struct TonkSpaceParams {
 /// for genuine failures (network errors, 5xx). A 404 is *not* an
 /// error — it's surfaced as `Ok(None)` from the API so it can flow
 /// through the normal value path and render a dedicated view.
+///
+/// Once the repository record is fetched, the space is presented
+/// inside a sandboxed guest iframe pointed at
+/// `/api/host/{host_id}/guest/{space}/`. The SW serves a
+/// pretty-printed JSON view of the repository as the iframe's
+/// content; the guest iframe reaches back into the SW to pull
+/// that info itself.
 ///
 /// If the `:space` segment is missing, redirects to
 /// `/space/{DEFAULT_REPO}`.
@@ -36,9 +43,15 @@ pub fn TonkSpace() -> impl IntoView {
             .filter(|s| !s.is_empty())
     });
 
+    let host_id = use_context::<Signal<Option<HostId>, LocalStorage>>();
+
     let repository = LocalResource::new(move || {
         let name = space_name.get();
+        let ready = host_id.and_then(|s| s.get()).is_some();
         async move {
+            if !ready {
+                return Ok(None);
+            }
             match name {
                 None => {
                     BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
@@ -60,11 +73,27 @@ pub fn TonkSpace() -> impl IntoView {
                     </section>
                 }>
                     { move || repository.get().map(|result| result.map(|repo| match repo {
-                        Some(status) => Either::Left(view! {
-                            <pre class="repository">
-                                { serde_json::to_string_pretty(&status).unwrap_or_default() }
-                            </pre>
-                        }),
+                        Some(_info) => {
+                            let space = space_name.get().unwrap_or_default();
+                            let host = host_id.and_then(|s| s.get()).map(|h| h.0);
+                            Either::Left(match host {
+                                Some(host) => Either::Left(view! {
+                                    <iframe
+                                        class="guest"
+                                        sandbox="allow-scripts allow-same-origin"
+                                        src=format!(
+                                            "/api/host/{}/guest/{}/",
+                                            host, space,
+                                        )
+                                    />
+                                }),
+                                None => Either::Right(view! {
+                                    <span class="loading">
+                                        "Waiting for service worker…"
+                                    </span>
+                                }),
+                            })
+                        }
                         None => Either::Right(view! {
                             <section class="not-found">
                                 { move || format!(

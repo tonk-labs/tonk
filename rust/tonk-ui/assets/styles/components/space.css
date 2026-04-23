@@ -1,0 +1,18 @@
+.space {
+    /* Sits in the `space` grid area of `.launcher` — see
+       components/launcher.css. Fill it and make the guest
+       iframe stretch edge-to-edge with no browser default
+       inset. */
+    grid-area: space;
+    display: block;
+    inline-size: 100%;
+    block-size: 100%;
+    overflow: hidden;
+}
+
+.space > .guest {
+    display: block;
+    inline-size: 100%;
+    block-size: 100%;
+    border: 0;
+}

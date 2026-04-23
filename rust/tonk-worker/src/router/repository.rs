@@ -186,27 +186,40 @@ pub async fn put_repository(
     let tonk = state.write().await;
 
     // 1. Check if the repo already exists before attempting to
-    // create. `.load()` returns Ok when the space is present; in
-    // that case the PUT is rejected with 412 (if the caller sent
-    // `If-None-Match: *`) or 409 (otherwise). Relying on
-    // `.create()`'s own error signalling isn't enough because
-    // it's possible for the space to exist while being
-    // inconsistent enough that `.create()` would either succeed
-    // (overwriting) or fail in a way we can't classify cleanly.
-    if tonk
+    // create. `.load()` returning Ok means the space is present,
+    // which drives one of three outcomes:
+    //   - `If-None-Match: *`: respond `412 Precondition Failed`
+    //     but still include the existing repository's info so
+    //     callers can hydrate from a single request.
+    //   - no precondition header: respond `409 Conflict`.
+    // Relying on `.create()`'s own error signalling isn't enough:
+    // an inconsistent space might either let `.create()` succeed
+    // (overwriting) or fail in a way we can't classify cleanly,
+    // so we probe with `.load()` first.
+    if let Ok(existing) = tonk
         .profile
         .repository(&name)
         .load()
         .perform(&tonk.operator)
         .await
-        .is_ok()
     {
-        let message = format!("Repository '{}' already exists", name);
-        return Err(if if_none_match_star {
-            TonkWorkerError::PreconditionFailed(message)
-        } else {
-            TonkWorkerError::Conflict(message)
-        });
+        if if_none_match_star {
+            // Repo exists: treat `If-None-Match: *` as "give me
+            // the current info" and respond with 200 + the same
+            // `RepositoryInfo` body as a fresh create. 412 would
+            // be the strictly HTTP-correct code, but reqwest's
+            // wasm client aborts 412 responses (ERR_ABORTED)
+            // even when the response body is valid, so callers
+            // can't read the body reliably. Since the payload
+            // fully describes the current state either way, 200
+            // is observationally equivalent for our UI.
+            let info = build_repository_info(&tonk, &name, &existing).await;
+            return Ok((StatusCode::OK, Json(info)));
+        }
+        return Err(TonkWorkerError::Conflict(format!(
+            "Repository '{}' already exists",
+            name
+        )));
     }
 
     // 2. Create the repository. Any failure here is genuinely

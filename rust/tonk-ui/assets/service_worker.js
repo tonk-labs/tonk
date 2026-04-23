@@ -24,29 +24,15 @@ self.onactivate = event => {
     log("Activated");
 };
 
+// Hand *every* fetch to the Rust side. The Rust worker decides
+// whether to route through its own handlers or pass the request
+// through to the network (which it does itself via `self.fetch`).
+// SPA-style 404 → index.html fallback and /api/* routing all
+// live in Rust now, so this shim is pure forwarding.
 self.onfetch = event => {
-    let request = event.request;
-    let url = new URL(request.url);
-
-    if (url.pathname.match(/^\/api/)) {
-        log(request.method, url.pathname);
-        event.respondWith(
-            (async () => {
-                return (await activateWorker()).onfetch(request);
-            })(),
-        );
-    // NOTE: Only intercept navigate as candidates for serving
-    // the index.html (in order to provide SPA-style routing)
-    } else if (request.mode === 'navigate') {
-        event.respondWith(
-            fetch(request).then(response => {
-                if (response.status === 404) {
-                    return fetch("/index.html");
-                }
-                return response;
-            }),
-        );
-    }
+    event.respondWith(
+        (async () => (await activateWorker()).onfetch(event))(),
+    );
 };
 
 // Background Sync API event handler

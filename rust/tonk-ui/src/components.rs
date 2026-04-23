@@ -38,6 +38,14 @@ pub enum Status {
     Ready,
 }
 
+/// The hosting document's service-worker Client ID, learned from
+/// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
+/// response. Provided as a Leptos context so descendant
+/// components (notably [`TonkSpace`]) can embed it in iframe
+/// URLs for the host/guest bridge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostId(pub String);
+
 /// The root UI component for the Tonk application.
 ///
 /// This component serves as the main entry point for the Tonk user interface,
@@ -54,14 +62,17 @@ pub fn TonkShell() -> impl IntoView {
     // The worker no longer auto-creates anything at startup — we
     // `PUT` here with `If-None-Match: *`, which covers both
     // "didn't exist, created" (201) and "already existed" (412) as
-    // success. Redirect only fires when the current path is `/`
+    // success. The `PUT` response carries the hosting document's
+    // Client ID in `X-Tonk-Client-Id`, which we stash in context
+    // for descendant components to use when addressing guest
+    // iframes. Redirect only fires when the current path is `/`
     // so deep links like `/space/home/branch/main` are respected.
     let init_resource = LocalResource::new(|| async {
         log!("Waiting for SW to activate...");
         service_worker_activates().await;
         log!("SW is activated, ensuring default repository...");
 
-        api::init().await?;
+        let host_id = api::init().await?;
 
         let pathname = window()
             .location()
@@ -72,13 +83,13 @@ pub fn TonkShell() -> impl IntoView {
             BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
         }
 
-        Ok::<_, crate::error::TonkUiError>(())
+        Ok::<_, crate::error::TonkUiError>(host_id)
     });
 
-    // Derive the application status from init resource
+    // Derive the application status from init resource.
     let status = Signal::derive_local(move || {
         match init_resource.get() {
-            Some(Ok(())) => Status::Ready,
+            Some(Ok(_)) => Status::Ready,
             Some(Err(e)) => {
                 log!("Initialization error: {:?}", e);
                 // Still show as loading on error - could add an Error state later
@@ -88,7 +99,18 @@ pub fn TonkShell() -> impl IntoView {
         }
     });
 
+    // Publish the host id as a reactive context so descendant
+    // components can subscribe to it: `None` while init is in
+    // flight or errored, `Some(host_id)` once the PUT succeeds.
+    let host_id = Signal::derive_local(move || {
+        init_resource
+            .get()
+            .and_then(|r| r.ok())
+            .map(HostId)
+    });
+
     provide_context(status);
+    provide_context(host_id);
 
     view! {
         <TonkLauncher></TonkLauncher>
