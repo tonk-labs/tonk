@@ -1,0 +1,172 @@
+/* Repository detail view inside `.space`. The outer `.space`
+   owns scrolling (see launcher.css); this file just styles the
+   contents. */
+
+.repository {
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+    padding: 2rem 2.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+    font-family: var(--tonk-font-family, inherit);
+}
+
+.repository > header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    padding-bottom: 1.25rem;
+}
+
+.repository > header > .eyebrow {
+    font-size: 0.75rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(0, 0, 0, 0.5);
+}
+
+.repository > header > h1 {
+    margin: 0;
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.1;
+}
+
+.repository > section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.repository > section > h2 {
+    margin: 0;
+    font-size: 0.875rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: rgba(0, 0, 0, 0.6);
+}
+
+.repository .empty {
+    color: rgba(0, 0, 0, 0.45);
+    font-style: italic;
+    padding: 0.75rem 0;
+}
+
+/* Generic key-value grid used for identity info and for each
+   branch / remote card. */
+.repository .fields {
+    display: grid;
+    grid-template-columns: minmax(7rem, max-content) 1fr;
+    gap: 0.5rem 1.25rem;
+    align-items: baseline;
+}
+
+.repository .fields > dt {
+    font-size: 0.8125rem;
+    color: rgba(0, 0, 0, 0.55);
+    font-weight: 500;
+}
+
+.repository .fields > dd {
+    margin: 0;
+    min-width: 0;
+    word-break: break-all;
+}
+
+/* Monospace identifiers (DIDs, entity refs, tree refs). */
+.repository code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono",
+        Menlo, Consolas, monospace;
+    font-size: 0.8125rem;
+    background: rgba(0, 0, 0, 0.04);
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.25rem;
+    word-break: break-all;
+}
+
+.repository .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+    gap: 1rem;
+}
+
+.repository .card {
+    background: rgba(0, 0, 0, 0.03);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.repository .card-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.repository .card-header > .card-name {
+    font-weight: 600;
+    font-size: 1rem;
+}
+
+.repository .card-header > .card-kind {
+    font-size: 0.6875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(0, 0, 0, 0.45);
+}
+
+/* A row that holds an identifier plus a status badge. Keeps
+   the badge glued to the end of the line without blowing up
+   wrapping when the identifier is long. */
+.repository .subject-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.repository .badge {
+    font-size: 0.6875rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    line-height: 1.4;
+    white-space: nowrap;
+    flex: none;
+}
+
+/* `same` — the remote points back at our own repository
+   subject. Green-ish to read as "aligned". */
+.repository .badge-same {
+    background: rgba(45, 160, 100, 0.14);
+    color: #207a4c;
+}
+
+/* `other` — the remote points at a different subject. A
+   neutral amber so it reads as "heads up" without implying an
+   error. */
+.repository .badge-other {
+    background: rgba(200, 130, 40, 0.14);
+    color: #7a4e12;
+}
+
+/* Loading / error / not-found states */
+.space > .loading,
+.space > .error,
+.space > .not-found {
+    display: block;
+    padding: 2rem 2.5rem;
+    color: rgba(0, 0, 0, 0.55);
+}
+
+.space > .error {
+    color: #9e2a2a;
+}

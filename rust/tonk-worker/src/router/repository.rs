@@ -14,15 +14,16 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::SignerCredential;
+use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
-    RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
+    RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress,
 };
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{Remote, Replica};
+use tonk_schema::{Branch as MetaBranch, Remote, Replica, TrackingBranch};
 
 use super::AppState;
 use crate::{RepositoryError, TonkWorkerError, worker::TonkState};
@@ -424,10 +425,16 @@ pub async fn create_repository(
             );
 
             // Mirror the upstream wiring on the meta side.
-            transaction = transaction.assert(
+            // Both halves of the link need to land on the meta
+            // branch: the remote-side `Branch` concept
+            // (otherwise the upstream pointer has no target to
+            // resolve to on read) and the `TrackingBranch` that
+            // connects them.
+            let tracked = concept.branch(upstream.branch.as_str());
+            transaction = transaction.assert(tracked.clone()).assert(
                 replica
                     .branch(branch_name.as_str())
-                    .set_upstream(&concept.branch(upstream.branch.as_str())),
+                    .set_upstream(&tracked),
             );
         }
     }
@@ -477,67 +484,239 @@ pub async fn get_repository(
     Ok(Json(info))
 }
 
-/// Construct [`RepositoryInfo`] for an open repository.
+/// Construct [`RepositoryInfo`] for an open repository by
+/// reading the schema concepts off its `meta` branch.
 ///
-/// Probes `main` for its upstream and revision. If `main.upstream`
-/// points at a remote, loads that remote and includes its address
-/// in the `remote` map. Other branches / other remotes are *not*
-/// surfaced today — those need the meta-branch schema to enumerate.
+/// The meta branch is the source of truth for which branches and
+/// remotes belong to the repository. Opening the repository's
+/// meta branch, running three queries, and joining the results
+/// gives the full picture without having to probe individual
+/// dialog-repository objects.
+///
+/// What each query finds:
+///
+/// - **Branches (all)** — every `Branch` concept on the meta
+///   branch, local *and* remote-side. Grouped by `origin`:
+///   origin == replica means local; origin == remote means
+///   remote-side (used later to resolve upstream references to
+///   a `(remote_name, branch_name)` pair).
+/// - **Remotes (on replica)** — `Remote` concepts scoped to
+///   this replica.
+/// - **Tracking branches (on replica)** — `TrackingBranch`
+///   concepts that link local branches to their upstream remote
+///   branches.
+///
+/// Revisions still come from the dialog layer: for each local
+/// branch, we open it and read `.revision()`. That's a handful
+/// of sequential I/O calls but they're quick and the data
+/// doesn't live in meta.
+///
+/// Repositories that predate the meta-branch writes show up as
+/// empty here (no branches or remotes). That's fine — the
+/// `subject` / `operator` / `profile` fields still surface, and
+/// the UI can tell the repo is unpopulated.
 async fn build_repository_info<R>(
     tonk: &crate::worker::TonkState,
     name: &str,
-    repository: &dialog_repository::Repository<R>,
+    repository: &Repository<R>,
 ) -> RepositoryInfo
 where
     R: dialog_varsig::Principal + Clone,
 {
-    let mut branches = HashMap::new();
-    let mut remotes = HashMap::new();
-
-    if let Ok(main) = repository
-        .branch("main")
+    let meta = match repository
+        .branch(META_BRANCH)
         .open()
         .perform(&tonk.operator)
         .await
     {
-        // Only remote upstreams can be represented as
-        // `UpstreamConfiguration` today (it always names a remote).
-        // Local upstreams are reported as "no upstream" here; they
-        // need a richer response shape if/when we start using them.
-        let upstream = match main.upstream() {
-            Some(Upstream::Remote { remote, branch, .. }) => {
-                Some(UpstreamConfiguration::new(remote, branch))
+        Ok(meta) => meta,
+        Err(e) => {
+            log!("No meta branch for repository '{}': {}", name, e);
+            return RepositoryInfo {
+                name: name.to_string(),
+                subject: repository.did(),
+                operator: tonk.operator.did(),
+                profile: tonk.profile.did(),
+                branch: HashMap::new(),
+                remote: HashMap::new(),
+            };
+        }
+    };
+
+    // Derive the replica entity the way `create_repository`
+    // did — `(profile, subject)` hashed into an entity. We
+    // don't query for `Replica` itself; nothing we return
+    // depends on its name or attributes, and filtering
+    // branches/remotes by `origin == replica.this()` is all we
+    // need.
+    let replica = Replica::new(
+        tonk.profile.did(),
+        repository.did(),
+        name,
+    );
+    let replica_entity = replica.this().clone();
+
+    // Pull every branch on the meta branch, local and remote.
+    // Keyed by entity so the upstream-resolution step can look
+    // up any branch by its hash.
+    let all_branches: Vec<MetaBranch> = match meta
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("Branch query on meta failed for '{}': {:?}", name, e);
+            Vec::new()
+        }
+    };
+    let branches_by_entity: HashMap<_, _> = all_branches
+        .iter()
+        .map(|b| (b.this.clone(), b.clone()))
+        .collect();
+
+    // Pull remotes on this replica. Keyed by entity for the
+    // same reason as branches — a tracking branch's upstream
+    // points at a remote-side `Branch`, whose `origin` is a
+    // `Remote.this`, and we want to go from that entity back to
+    // the remote's name.
+    let remote_concepts: Vec<Remote> = match meta
+        .query()
+        .select(Query::<Remote> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(replica_entity.clone()),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("Remote query on meta failed for '{}': {:?}", name, e);
+            Vec::new()
+        }
+    };
+    let remotes_by_entity: HashMap<_, _> = remote_concepts
+        .iter()
+        .map(|r| (r.this.clone(), r.clone()))
+        .collect();
+
+    // Pull every tracking link on this replica. Keyed by the
+    // local branch's entity so the branch-assembly step below
+    // can find "does this branch track something?" in O(1).
+    let tracking: Vec<TrackingBranch> = match meta
+        .query()
+        .select(Query::<TrackingBranch> {
+            this: Term::var("this"),
+            upstream: Term::var("upstream"),
+            origin: Term::from(replica_entity.clone()),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("Tracking-branch query on meta failed for '{}': {:?}", name, e);
+            Vec::new()
+        }
+    };
+    let tracking_by_local: HashMap<_, _> = tracking
+        .into_iter()
+        .map(|t| (t.this.clone(), t.upstream))
+        .collect();
+
+    // Assemble the branch map. Iterate local branches only
+    // (those whose origin is the replica), skipping any entity
+    // that is also a `Remote` — `Query<Branch>` matches on the
+    // `origin` + `name` attribute pair, which `Remote` shares
+    // (`Remote` has the same pair plus `subject` + `address`),
+    // so remote entities turn up as spurious branch hits. For
+    // each real local branch, resolve its upstream (if any) by
+    // looking up the tracked `Branch` entity, then the remote
+    // that branch belongs to.
+    let mut branches = HashMap::new();
+    for branch in &all_branches {
+        if branch.origin.0 != replica_entity {
+            continue;
+        }
+        if remotes_by_entity.contains_key(&branch.this) {
+            continue;
+        }
+        let upstream = tracking_by_local.get(&branch.this).and_then(|upstream| {
+            let tracked_branch = branches_by_entity.get(&upstream.0)?;
+            let remote = remotes_by_entity.get(&tracked_branch.origin.0)?;
+            Some(UpstreamConfiguration::new(
+                remote.name.0.clone(),
+                tracked_branch.name.0.clone(),
+            ))
+        });
+
+        let revision = match repository
+            .branch(branch.name.0.as_str())
+            .open()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(opened) => opened.revision(),
+            Err(e) => {
+                log!(
+                    "Failed to open branch '{}' of '{}' for revision: {}",
+                    branch.name.0,
+                    name,
+                    e
+                );
+                None
             }
-            _ => None,
         };
 
-        // If main's upstream is remote, populate the remote map.
-        if let Some(Upstream::Remote { remote, .. }) = main.upstream()
-            && let Ok(remote_repo) = repository
-                .remote(remote.as_str())
-                .load()
-                .perform(&tonk.operator)
-                .await
-        {
-            let remote_addr = remote_repo.address();
-            let repo_did_str = repository.did().to_string();
-            let remote_subject = remote_addr.subject().clone();
-            let subject = (remote_subject.as_str() != repo_did_str).then_some(remote_subject);
-            remotes.insert(
-                remote.to_string(),
-                RemoteConfiguration {
-                    address: remote_addr.site().clone(),
-                    subject,
-                },
-            );
-        }
-
         branches.insert(
-            "main".to_string(),
-            BranchConfiguration {
-                upstream,
-                revision: main.revision(),
-            },
+            branch.name.0.clone(),
+            BranchConfiguration { upstream, revision },
+        );
+    }
+
+    // Assemble the remote map. Every remote concept scoped to
+    // this replica becomes a `RemoteConfiguration`. The address
+    // field comes back decoded from its dag-cbor bytes. The
+    // `subject` field stays `None` when no subject override was
+    // recorded — see `RemoteConfiguration.subject`'s "`None`
+    // means same as local repo" convention.
+    let mut remotes = HashMap::new();
+    for remote in &remote_concepts {
+        let address = match remote.address.decode() {
+            Ok(address) => address,
+            Err(e) => {
+                log!(
+                    "Failed to decode address for remote '{}' of '{}': {:?}",
+                    remote.name.0,
+                    name,
+                    e
+                );
+                continue;
+            }
+        };
+        // Emit `subject` only when it differs from the local
+        // repo's own DID; matches the write-side convention
+        // (see `RemoteConfiguration.subject`). If the stored
+        // value isn't a parseable `Did` for some reason we
+        // drop the field rather than fail the whole response.
+        let subject = match remote.subject.0.to_string().parse::<Did>() {
+            Ok(did) if did != repository.did() => Some(did),
+            _ => None,
+        };
+        remotes.insert(
+            remote.name.0.clone(),
+            RemoteConfiguration { address, subject },
         );
     }
 

@@ -101,4 +101,17 @@ impl Address {
             .expect("SiteAddress is serde-serializable and dag-cbor-compatible");
         Self(bytes)
     }
+
+    /// Decode the stored dag-cbor bytes back into a
+    /// [`SiteAddress`].
+    ///
+    /// Inverse of [`Address::encode`]. Produces an error when the
+    /// stored bytes aren't a valid dag-cbor encoding of a
+    /// `SiteAddress` — which today can only happen if the data
+    /// was written by a different version of the format.
+    pub fn decode(
+        &self,
+    ) -> Result<SiteAddress, serde_ipld_dagcbor::DecodeError<std::convert::Infallible>> {
+        serde_ipld_dagcbor::from_slice(&self.0)
+    }
 }

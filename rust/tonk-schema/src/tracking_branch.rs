@@ -9,16 +9,18 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::{Branch, Upstream};
+use crate::{Branch, Origin, Upstream};
 
 /// A local branch's tracking relationship with a remote branch.
 ///
 /// A `TrackingBranch` is an *attribute on the local branch entity*
 /// that names the remote branch it tracks. `this` is reused from
 /// the local branch itself (no hash); `upstream` points at the
-/// remote branch. Asserting a `TrackingBranch` fact says: "the
-/// branch whose entity is `this` is tracking the branch whose
-/// entity is `upstream`."
+/// remote branch, and `origin` points at the local replica that
+/// owns the tracking relationship. Asserting a `TrackingBranch`
+/// fact says: "the branch whose entity is `this` is tracking the
+/// branch whose entity is `upstream`, as recorded by the replica
+/// whose entity is `origin`."
 ///
 /// # Why a separate concept
 ///
@@ -34,12 +36,14 @@ use crate::{Branch, Upstream};
 ///
 /// # Why `Upstream` instead of reusing `Origin`
 ///
-/// [`Branch`] already has an `origin: Origin` attribute pointing at
-/// its replica or remote. Using `Origin` again here for the
-/// tracked-branch relation would conflate "I belong to X" with "I
-/// track X" across the schema, making queries ambiguous. A
-/// dedicated [`Upstream`] attribute keeps the two relations
-/// distinct.
+/// `Upstream` is the direction-explicit "I track this" relation.
+/// `Origin` is the ownership "I belong to this" relation. The
+/// local branch already has its own `Origin` pointing at the
+/// replica; this concept carries both — `upstream` for the
+/// relation it represents, and `origin` (reused from the local
+/// branch's own origin) so queries can filter tracking links by
+/// the replica they belong to without joining through the local
+/// branch concept.
 ///
 /// # Constructing
 ///
@@ -70,18 +74,26 @@ pub struct TrackingBranch {
     pub this: Entity,
     /// The upstream (remote) branch this one is tracking.
     pub upstream: Upstream,
+    /// The replica that owns this tracking relationship —
+    /// mirrors `local.origin`, which is always the replica for a
+    /// local branch. Stored so tracking-branch queries can scope
+    /// to a single replica in one shot.
+    pub origin: Origin,
 }
 
 impl TrackingBranch {
     /// Build a tracking-branch link.
     ///
     /// `this` is set to `local`'s entity (no hash — this concept
-    /// attaches a relationship attribute to an existing branch) and
-    /// `upstream` points at the `upstream` branch being tracked.
+    /// attaches a relationship attribute to an existing branch),
+    /// `upstream` points at the `upstream` branch being tracked,
+    /// and `origin` is reused from `local.origin` (which, for a
+    /// local branch, is the replica).
     pub fn new(local: &Branch, upstream: &Branch) -> Self {
         Self {
             this: local.this.clone(),
             upstream: Upstream::from(upstream.this.clone()),
+            origin: local.origin.clone(),
         }
     }
 }
@@ -134,5 +146,12 @@ mod tests {
         let via_method = local.set_upstream(&upstream);
         let via_new = TrackingBranch::new(&local, &upstream);
         assert_eq!(via_method, via_new);
+    }
+
+    #[test]
+    fn origin_mirrors_local_branch_origin() {
+        let (local, upstream) = setup();
+        let link = TrackingBranch::new(&local, &upstream);
+        assert_eq!(link.origin, local.origin);
     }
 }

@@ -194,7 +194,24 @@ mod tests {
         let r = replica();
         let branch = Branch::new(&r, Name("shared".into()));
         let remote = Remote::new(&r, did!("test:repo"), addr(b"h"), Name("shared".into()));
-        assert_ne!(branch.this, remote.this);
+        assert_ne!(branch.this, remote.this, "branch and remote collided on entity");
+    }
+
+    #[test]
+    fn remote_and_replica_branch_with_same_name_differ() {
+        // Regression: a remote named "origin" on a replica and
+        // a branch named "origin" on the same replica must
+        // produce distinct entities. If they didn't, querying
+        // `Branch` would also return the remote (every entity
+        // has the same `origin` + `name` attribute shape).
+        use crate::Branch;
+        let r = replica();
+        let remote_origin = Remote::new(&r, did!("test:repo"), addr(b"h"), Name("origin".into()));
+        let branch_origin = Branch::new(&r, Name("origin".into()));
+        assert_ne!(
+            remote_origin.this, branch_origin.this,
+            "a replica's remote 'origin' and branch 'origin' collided on entity"
+        );
     }
 
     #[test]

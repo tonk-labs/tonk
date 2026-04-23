@@ -4,6 +4,7 @@ use leptos_router::{
     location::{BrowserUrl, LocationProvider},
     params::Params,
 };
+use tonk_worker::{BranchConfiguration, RemoteConfiguration, RepositoryInfo};
 
 use crate::{api, components::Status};
 
@@ -74,11 +75,7 @@ pub fn TonkSpace() -> impl IntoView {
                     </section>
                 }>
                     { move || repository.get().map(|result| result.map(|repo| match repo {
-                        Some(status) => Either::Left(view! {
-                            <pre class="repository">
-                                { serde_json::to_string_pretty(&status).unwrap_or_default() }
-                            </pre>
-                        }),
+                        Some(info) => Either::Left(repository_view(info)),
                         None => Either::Right(view! {
                             <section class="not-found">
                                 { move || format!(
@@ -91,5 +88,158 @@ pub fn TonkSpace() -> impl IntoView {
                 </ErrorBoundary>
             </Suspense>
         </section>
+    }
+}
+
+/// Render a [`RepositoryInfo`] as a structured detail view.
+///
+/// Layout: a header with the repo name and DID, an identity
+/// block showing profile/operator, and two card grids for
+/// branches and remotes. A `None` upstream or empty map is
+/// rendered as an "empty" placeholder so the reader doesn't
+/// have to guess whether the absence is data or a UI bug.
+fn repository_view(info: RepositoryInfo) -> impl IntoView {
+    // Sort branches / remotes by name so the view is stable
+    // across renders — `HashMap` iteration order is otherwise
+    // nondeterministic.
+    let mut branches: Vec<(String, BranchConfiguration)> = info.branch.into_iter().collect();
+    branches.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut remotes: Vec<(String, RemoteConfiguration)> = info.remote.into_iter().collect();
+    remotes.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    let subject = info.subject.to_string();
+    let operator = info.operator.to_string();
+    let profile = info.profile.to_string();
+
+    let branch_cards = branches
+        .into_iter()
+        .map(|(name, config)| {
+            let upstream = config.upstream.map(|up| format!("{}/{}", up.remote, up.branch));
+            let revision = config.revision.map(|rev| {
+                // Split the revision into two human-readable
+                // parts: a compact version string and the tree
+                // hash. `TreeReference`'s `Display` renders as
+                // `#<base58>` — short and already identifies the
+                // prolly-tree root without needing to see its
+                // debug form.
+                let version = format!("{}.{}", rev.period, rev.moment);
+                let tree = rev.tree.to_string();
+                (version, tree)
+            });
+            view! {
+                <article class="card">
+                    <div class="card-header">
+                        <span class="card-name">{ name.clone() }</span>
+                        <span class="card-kind">"branch"</span>
+                    </div>
+                    <dl class="fields">
+                        <dt>"upstream"</dt>
+                        <dd>{
+                            match upstream {
+                                Some(u) => Either::Left(view! { <code>{ u }</code> }),
+                                None => Either::Right(view! { <span class="empty">"none"</span> }),
+                            }
+                        }</dd>
+                        <dt>"version"</dt>
+                        <dd>{
+                            match revision.as_ref().map(|(v, _)| v.clone()) {
+                                Some(v) => Either::Left(view! { <code>{ v }</code> }),
+                                None => Either::Right(view! { <span class="empty">"no commits"</span> }),
+                            }
+                        }</dd>
+                        <dt>"tree"</dt>
+                        <dd>{
+                            match revision.as_ref().map(|(_, t)| t.clone()) {
+                                Some(t) => Either::Left(view! { <code>{ t }</code> }),
+                                None => Either::Right(view! { <span class="empty">"—"</span> }),
+                            }
+                        }</dd>
+                    </dl>
+                </article>
+            }
+        })
+        .collect::<Vec<_>>();
+
+    // Local repository subject, used to decide whether a
+    // remote's subject DID matches our own. Always shown on
+    // every remote card — `None` on the wire means "same as
+    // local," but the UI still displays the concrete DID plus
+    // a badge that indicates whether it matches.
+    let local_subject = info.subject.to_string();
+
+    let remote_cards = remotes
+        .into_iter()
+        .map(|(name, config)| {
+            let address = serde_json::to_string_pretty(&config.address).unwrap_or_default();
+            let remote_subject = match &config.subject {
+                Some(did) => did.to_string(),
+                None => local_subject.clone(),
+            };
+            let is_same = config.subject.is_none();
+            let badge_class = if is_same { "badge badge-same" } else { "badge badge-other" };
+            let badge_text = if is_same { "same" } else { "other" };
+            view! {
+                <article class="card">
+                    <div class="card-header">
+                        <span class="card-name">{ name.clone() }</span>
+                        <span class="card-kind">"remote"</span>
+                    </div>
+                    <dl class="fields">
+                        <dt>"subject"</dt>
+                        <dd class="subject-row">
+                            <code>{ remote_subject }</code>
+                            <span class=badge_class>{ badge_text }</span>
+                        </dd>
+                        <dt>"address"</dt>
+                        <dd><code>{ address }</code></dd>
+                    </dl>
+                </article>
+            }
+        })
+        .collect::<Vec<_>>();
+
+    view! {
+        <article class="repository">
+            <header>
+                <span class="eyebrow">"repository"</span>
+                <h1>{ info.name.clone() }</h1>
+                <dl class="fields">
+                    <dt>"subject"</dt>
+                    <dd><code>{ subject }</code></dd>
+                </dl>
+            </header>
+
+            <section>
+                <h2>"Identity"</h2>
+                <dl class="fields">
+                    <dt>"profile"</dt>
+                    <dd><code>{ profile }</code></dd>
+                    <dt>"operator"</dt>
+                    <dd><code>{ operator }</code></dd>
+                </dl>
+            </section>
+
+            <section>
+                <h2>{ format!("Branches ({})", branch_cards.len()) }</h2>
+                {
+                    if branch_cards.is_empty() {
+                        Either::Left(view! { <div class="empty">"no branches recorded"</div> })
+                    } else {
+                        Either::Right(view! { <div class="cards">{ branch_cards }</div> })
+                    }
+                }
+            </section>
+
+            <section>
+                <h2>{ format!("Remotes ({})", remote_cards.len()) }</h2>
+                {
+                    if remote_cards.is_empty() {
+                        Either::Left(view! { <div class="empty">"no remotes recorded"</div> })
+                    } else {
+                        Either::Right(view! { <div class="cards">{ remote_cards }</div> })
+                    }
+                }
+            </section>
+        </article>
     }
 }
