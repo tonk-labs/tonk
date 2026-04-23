@@ -4,9 +4,14 @@ use leptos_router::{
     location::{BrowserUrl, LocationProvider},
     params::Params,
 };
+use dialog_repository::SiteAddress;
 use tonk_worker::{BranchConfiguration, RemoteConfiguration, RepositoryInfo};
 
-use crate::{api, components::Status};
+use crate::{
+    api,
+    components::{ActiveSubject, Status},
+    did,
+};
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkSpaceParams {
@@ -66,6 +71,21 @@ pub fn TonkSpace() -> impl IntoView {
         }
     });
 
+    // Publish the current space's subject DID so the sidebar
+    // toolbar can render a matching sigil. Cleared back to `None`
+    // on load failure / 404, so the sidebar falls back to its
+    // empty state.
+    let active_subject = use_context::<ActiveSubject>()
+        .expect("ActiveSubject context provided by TonkShell");
+    Effect::new(move |_| {
+        let subject = repository
+            .get()
+            .and_then(|result| result.ok())
+            .flatten()
+            .map(|info| info.subject.to_string());
+        active_subject.set(subject);
+    });
+
     view! {
         <section class="space">
             <Suspense fallback=|| view! { <span class="loading">"Loading…"</span> }>
@@ -98,6 +118,17 @@ pub fn TonkSpace() -> impl IntoView {
 /// branches and remotes. A `None` upstream or empty map is
 /// rendered as an "empty" placeholder so the reader doesn't
 /// have to guess whether the absence is data or a UI bug.
+/// Renders a sigil derived from a `did:key` identifier. The sigil
+/// uses the underlying public-key bytes — not the DID string — so
+/// two encodings of the same key produce the same sigil. Falls back
+/// to an empty element if the DID isn't a parseable `did:key`.
+fn did_sigil_value(did: &str) -> Option<String> {
+    did::did_key_prefix(did).map(|bytes| {
+        let n = u32::from_be_bytes(bytes);
+        format!("0x{n:08x}")
+    })
+}
+
 fn repository_view(info: RepositoryInfo) -> impl IntoView {
     // Sort branches / remotes by name so the view is stable
     // across renders — `HashMap` iteration order is otherwise
@@ -119,12 +150,13 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
                 // Split the revision into two human-readable
                 // parts: a compact version string and the tree
                 // hash. `TreeReference`'s `Display` renders as
-                // `#<base58>` — short and already identifies the
-                // prolly-tree root without needing to see its
-                // debug form.
+                // `#<base58>`; abbreviate the base58 portion to
+                // the first 8 chars (Github-style) for display,
+                // keeping the full value for the `title` hover.
                 let version = format!("{}.{}", rev.period, rev.moment);
-                let tree = rev.tree.to_string();
-                (version, tree)
+                let tree_full = rev.tree.to_string();
+                let tree_short = abbreviate_tree(&tree_full);
+                (version, tree_full, tree_short)
             });
             view! {
                 <article class="card">
@@ -142,15 +174,15 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
                         }</dd>
                         <dt>"version"</dt>
                         <dd>{
-                            match revision.as_ref().map(|(v, _)| v.clone()) {
+                            match revision.as_ref().map(|(v, _, _)| v.clone()) {
                                 Some(v) => Either::Left(view! { <code>{ v }</code> }),
                                 None => Either::Right(view! { <span class="empty">"no commits"</span> }),
                             }
                         }</dd>
                         <dt>"tree"</dt>
                         <dd>{
-                            match revision.as_ref().map(|(_, t)| t.clone()) {
-                                Some(t) => Either::Left(view! { <code>{ t }</code> }),
+                            match revision.as_ref().map(|(_, full, short)| (full.clone(), short.clone())) {
+                                Some((full, short)) => Either::Left(view! { <code title=full>{ short }</code> }),
                                 None => Either::Right(view! { <span class="empty">"—"</span> }),
                             }
                         }</dd>
@@ -160,64 +192,55 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
         })
         .collect::<Vec<_>>();
 
-    // Local repository subject, used to decide whether a
-    // remote's subject DID matches our own. Always shown on
-    // every remote card — `None` on the wire means "same as
-    // local," but the UI still displays the concrete DID plus
-    // a badge that indicates whether it matches.
+    // Remote's subject defaults to the local repository's subject
+    // when omitted on the wire. The rendered sigil is keyed on
+    // whichever it ends up being, so same-peer remotes visually
+    // match the sidebar.
     let local_subject = info.subject.to_string();
 
-    let remote_cards = remotes
+    let remote_tiles = remotes
         .into_iter()
         .map(|(name, config)| {
-            let address = serde_json::to_string_pretty(&config.address).unwrap_or_default();
+            let summary = summarize_address(&config.address);
             let remote_subject = match &config.subject {
                 Some(did) => did.to_string(),
                 None => local_subject.clone(),
             };
-            let is_same = config.subject.is_none();
-            let badge_class = if is_same { "badge badge-same" } else { "badge badge-other" };
-            let badge_text = if is_same { "same" } else { "other" };
+            let sigil_value = did_sigil_value(&remote_subject);
+            let subject_title = remote_subject.clone();
             view! {
-                <article class="card">
-                    <div class="card-header">
-                        <span class="card-name">{ name.clone() }</span>
-                        <span class="card-kind">"remote"</span>
+                <article class="remote-tile">
+                    <div class="remote-tile-sigil">
+                        <tonk-sigil class="did-sigil" value=sigil_value></tonk-sigil>
                     </div>
-                    <dl class="fields">
-                        <dt>"subject"</dt>
-                        <dd class="subject-row">
+                    <div class="remote-tile-body">
+                        <div class="remote-tile-name">{ name.clone() }</div>
+                        <div class="remote-tile-did" title=subject_title>
                             <code>{ remote_subject }</code>
-                            <span class=badge_class>{ badge_text }</span>
-                        </dd>
-                        <dt>"address"</dt>
-                        <dd><code>{ address }</code></dd>
-                    </dl>
+                        </div>
+                        <div class="remote-tile-url">
+                            <code>{ summary.url }</code>
+                        </div>
+                        { summary.details.map(|detail| view! {
+                            <div class="remote-tile-detail">{ detail }</div>
+                        }) }
+                    </div>
                 </article>
             }
         })
         .collect::<Vec<_>>();
 
+    // Silence unused warnings for the identity fields that were
+    // displayed in an earlier iteration of this view. They're
+    // intentionally removed from the UI; keeping the bindings
+    // available in case a debug/inspector view wants them later.
+    let _ = (subject, profile, operator);
+
     view! {
         <article class="repository">
-            <header>
-                <span class="eyebrow">"repository"</span>
+            <header class="repo-banner">
                 <h1>{ info.name.clone() }</h1>
-                <dl class="fields">
-                    <dt>"subject"</dt>
-                    <dd><code>{ subject }</code></dd>
-                </dl>
             </header>
-
-            <section>
-                <h2>"Identity"</h2>
-                <dl class="fields">
-                    <dt>"profile"</dt>
-                    <dd><code>{ profile }</code></dd>
-                    <dt>"operator"</dt>
-                    <dd><code>{ operator }</code></dd>
-                </dl>
-            </section>
 
             <section>
                 <h2>{ format!("Branches ({})", branch_cards.len()) }</h2>
@@ -231,15 +254,46 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
             </section>
 
             <section>
-                <h2>{ format!("Remotes ({})", remote_cards.len()) }</h2>
+                <h2>{ format!("Remotes ({})", remote_tiles.len()) }</h2>
                 {
-                    if remote_cards.is_empty() {
+                    if remote_tiles.is_empty() {
                         Either::Left(view! { <div class="empty">"no remotes recorded"</div> })
                     } else {
-                        Either::Right(view! { <div class="cards">{ remote_cards }</div> })
+                        Either::Right(view! { <div class="remote-tiles">{ remote_tiles }</div> })
                     }
                 }
             </section>
         </article>
+    }
+}
+
+/// Github-style short form of a tree reference. `TreeReference`'s
+/// `Display` produces `#<base58>`; this drops the `#` marker and
+/// truncates the base58 body to 8 chars. Callers should expose the
+/// full value via a `title` attribute for hover disclosure.
+fn abbreviate_tree(tree: &str) -> String {
+    const SHORT_LEN: usize = 8;
+    let body = tree.strip_prefix('#').unwrap_or(tree);
+    body.chars().take(SHORT_LEN).collect()
+}
+
+/// A remote's address distilled to the minimum a human needs at a glance.
+/// UCAN: just the service endpoint URL. S3: the endpoint plus a
+/// secondary line with bucket and region.
+struct RemoteAddressSummary {
+    url: String,
+    details: Option<String>,
+}
+
+fn summarize_address(address: &SiteAddress) -> RemoteAddressSummary {
+    match address {
+        SiteAddress::Ucan(addr) => RemoteAddressSummary {
+            url: addr.endpoint().to_string(),
+            details: None,
+        },
+        SiteAddress::S3(addr) => RemoteAddressSummary {
+            url: addr.endpoint().to_string(),
+            details: Some(format!("{} · {}", addr.bucket(), addr.region())),
+        },
     }
 }

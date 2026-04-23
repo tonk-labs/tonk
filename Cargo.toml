@@ -4,6 +4,7 @@ members = [
     "rust/tonk-access-service",
     "rust/tonk-common",
     "rust/tonk-schema",
+    "rust/tonk-sigil",
     "rust/tonk-ui",
     "rust/tonk-worker",
 ]
@@ -19,6 +20,7 @@ edition = "2024"
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-schema = { path = "./rust/tonk-schema" }
+tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
 
@@ -37,6 +39,7 @@ chrono = { version = "0.4", default-features = false, features = [
 ] }
 clap = { version = "4", features = ["derive"] }
 console_error_panic_hook = "0.1"
+custom-elements = "0.2"
 crypto-common = "=0.2.0-rc.5"
 dialoguer = "0.11"
 digest = "=0.11.0-rc.4"

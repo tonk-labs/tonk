@@ -38,6 +38,12 @@ pub enum Status {
     Ready,
 }
 
+/// The subject DID of the currently viewed space. `None` when no
+/// space is loaded (or still loading). Updated by [`TonkSpace`]
+/// when its [`RepositoryInfo`] resolves; consumed by the sidebar
+/// toolbar to render a matching sigil.
+pub type ActiveSubject = RwSignal<Option<String>, LocalStorage>;
+
 /// The root UI component for the Tonk application.
 ///
 /// This component serves as the main entry point for the Tonk user interface,
@@ -89,6 +95,9 @@ pub fn TonkShell() -> impl IntoView {
     });
 
     provide_context(status);
+
+    let active_subject: ActiveSubject = RwSignal::new_local(None);
+    provide_context(active_subject);
 
     view! {
         <TonkLauncher></TonkLauncher>
