@@ -170,20 +170,6 @@
     background: transparent;
 }
 
-.repository .remote-tile-sigil .did-sigil {
-    display: block;
-    width: 100%;
-    height: 100%;
-    font-size: 0;
-    line-height: 0;
-}
-
-.repository .remote-tile-sigil .did-sigil > [data-sigil] {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
-
 .repository .remote-tile-body {
     display: flex;
     flex-direction: column;

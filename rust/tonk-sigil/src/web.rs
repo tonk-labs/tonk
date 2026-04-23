@@ -173,11 +173,17 @@ impl Sigil {
 
 /// Injects a one-time `<style>` into `<head>` to give the custom
 /// element sensible defaults. Custom elements are inline-level by
-/// default in the browser's UA stylesheet, so explicit `width` /
-/// `height` on the host are otherwise ignored. Making the element
-/// `inline-block` lets callers size it with CSS and lets slot
-/// containers (like `wa-card`'s media slot) size us with
-/// `inline-size: 100%; block-size: 100%`.
+/// default in the browser's UA stylesheet; `inline-block` lets
+/// callers size the host with CSS and lets slot containers (like
+/// `wa-card`'s media slot) size us with `inline-size: 100%;
+/// block-size: 100%` via `::slotted()`. The inner `[data-sigil]`
+/// wrapper is forced to fill the host so the SVG's `100%` sizing
+/// resolves against the full host box rather than collapsing.
+///
+/// Deliberately *not* setting `width:100%; height:100%` on the
+/// host — that would over-size the element in containers that
+/// have no explicit size (e.g. a narrow sidebar), stretching the
+/// square sigil into a ribbon. Each consumer sizes the element.
 fn inject_baseline_style() {
     const ID: &str = "tonk-sigil-baseline";
     let Some(window) = web_sys::window() else { return };
@@ -188,7 +194,8 @@ fn inject_baseline_style() {
     let Ok(style) = document.create_element("style") else { return };
     let _ = style.set_attribute("id", ID);
     style.set_text_content(Some(
-        "tonk-sigil{display:inline-block;width:100%;height:100%;line-height:0}",
+        "tonk-sigil{display:inline-block;line-height:0}\
+         tonk-sigil>[data-sigil]{display:block;width:100%;height:100%}",
     ));
     if let Some(head) = document.head() {
         let _ = head.append_child(&style);
