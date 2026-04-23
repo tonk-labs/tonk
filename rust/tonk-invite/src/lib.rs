@@ -286,7 +286,7 @@ impl Invite {
                 let chain_audience = self.chain.audience();
                 anyhow::ensure!(
                     *chain_audience == *audience,
-                    "this scoped invite was issued to {}, but the redeemer is {}; \
+                    "this invite is for {} and cannot be redeemed by {}; \
                      ask the inviter to issue a new invite for your DID, \
                      or switch to the identity the invite was issued to",
                     chain_audience,
@@ -312,7 +312,16 @@ impl From<Invite> for UcanProof {
 }
 
 /// Outcome of [`Invite::claim`]: a delegation chain ready to be persisted
-/// by the caller, plus metadata carried over from the invite.
+/// by the caller, paired with the invite's sync remote.
+///
+/// We return this wrapper rather than a bare [`DelegationChain`] so that
+/// the `Subject::Specific` invariant validated at [`Invite`] construction
+/// carries through to [`ClaimedInvite::subject`] without re-checking, and
+/// so `remote_url` threads through to callers that want to persist sync
+/// config alongside the chain.
+///
+/// `#[non_exhaustive]` reserves room to grow additional carry-over fields
+/// (e.g. capability metadata) without a breaking change.
 #[derive(Debug)]
 #[non_exhaustive]
 pub struct ClaimedInvite {
@@ -341,7 +350,7 @@ mod tests {
     use dialog_varsig::principal::Principal;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     wasm_bindgen_test_configure!(run_in_browser);
@@ -374,33 +383,26 @@ mod tests {
         Ed25519Signer::import(seed).await.unwrap()
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    fn parse_rejects_non_url_input() {
+    #[dialog_common::test]
+    fn it_rejects_non_url_input() {
         let err = Invite::parse_url("not a url").unwrap_err();
         assert!(err.to_string().contains("not a valid URL"), "{err}");
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    fn parse_rejects_missing_access_parameter() {
+    #[dialog_common::test]
+    fn it_rejects_missing_access_parameter() {
         let err = Invite::parse_url("https://tonk.xyz/join").unwrap_err();
         assert!(err.to_string().contains("`access`"), "{err}");
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    fn parse_rejects_invalid_base58_in_access() {
+    #[dialog_common::test]
+    fn it_rejects_invalid_base58_in_access() {
         let err = Invite::parse_url("https://tonk.xyz/join?access=!!!not-b58!!!").unwrap_err();
         assert!(err.to_string().contains("valid base58"), "{err}");
     }
 
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        tokio::test(flavor = "current_thread")
-    )]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    async fn parse_rejects_wrong_length_fragment() {
+    #[dialog_common::test]
+    async fn it_rejects_wrong_length_fragment() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let audience = signer(&AUDIENCE_SEED).await.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
@@ -419,12 +421,8 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        tokio::test(flavor = "current_thread")
-    )]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    async fn build_and_parse_round_trip() {
+    #[dialog_common::test]
+    async fn it_round_trips_through_url() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let audience = signer(&AUDIENCE_SEED).await.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
@@ -458,12 +456,8 @@ mod tests {
         assert!(decoded.remote_url.is_none());
     }
 
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        tokio::test(flavor = "current_thread")
-    )]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    async fn claim_scoped_rejects_wrong_audience() {
+    #[dialog_common::test]
+    async fn it_rejects_scoped_claim_by_wrong_audience() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let issued_to = signer(&AUDIENCE_SEED).await.did();
         let wrong_redeemer = signer(&EPHEMERAL_SEED).await.did();
@@ -471,15 +465,11 @@ mod tests {
         let invite = Invite::new(chain, InviteAudience::Scoped, None).unwrap();
 
         let err = invite.claim(&wrong_redeemer).await.unwrap_err();
-        assert!(err.to_string().contains("scoped invite"), "{err}");
+        assert!(err.to_string().contains("cannot be redeemed"), "{err}");
     }
 
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        tokio::test(flavor = "current_thread")
-    )]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    async fn claim_scoped_accepts_matching_audience() {
+    #[dialog_common::test]
+    async fn it_accepts_scoped_claim_by_matching_audience() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let audience = signer(&AUDIENCE_SEED).await.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
@@ -490,12 +480,8 @@ mod tests {
         assert_eq!(*claimed.chain.audience(), audience);
     }
 
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        tokio::test(flavor = "current_thread")
-    )]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    async fn claim_open_invite_extends_chain_to_redeemer() {
+    #[dialog_common::test]
+    async fn it_extends_chain_to_redeemer_when_claiming_open_invite() {
         // Setup: a chain `issuer -> ephemeral_key`, scoped to a specific repo.
         // The invite carries the ephemeral seed; anyone can claim it.
         let subject = signer(&SUBJECT_SEED).await.did();
@@ -531,12 +517,8 @@ mod tests {
         );
     }
 
-    #[cfg_attr(
-        not(all(target_arch = "wasm32", target_os = "unknown")),
-        tokio::test(flavor = "current_thread")
-    )]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    async fn claim_from_url_round_trip() {
+    #[dialog_common::test]
+    async fn it_claims_invite_parsed_from_url() {
         // End-to-end: an open invite minted by one client, serialized to a
         // URL, and claimed by another via parse_url + claim.
         let subject = signer(&SUBJECT_SEED).await.did();

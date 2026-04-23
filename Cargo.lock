@@ -4593,6 +4593,7 @@ dependencies = [
  "anyhow",
  "bs58",
  "dialog-capability",
+ "dialog-common",
  "dialog-credentials",
  "dialog-ucan",
  "dialog-ucan-core",
