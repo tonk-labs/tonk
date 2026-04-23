@@ -1,0 +1,29 @@
+[package]
+name = "tonk-invite"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tonk invite URL format and claim orchestration, shared by CLI and web clients."
+
+[dependencies]
+anyhow = { workspace = true }
+bs58 = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
