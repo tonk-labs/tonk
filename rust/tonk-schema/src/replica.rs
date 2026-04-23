@@ -84,8 +84,10 @@ impl Replica {
     ///
     /// Derives `this` from `(profile, subject)` and fills in the
     /// `subject` and `profile` attributes from the same DIDs so
-    /// every field is consistent with the entity hash.
-    pub fn new(profile: Did, subject: Did, name: Name) -> Self {
+    /// every field is consistent with the entity hash. `name`
+    /// takes anything convertible into [`Name`] — e.g. a `&str`
+    /// — so callers don't have to wrap string literals.
+    pub fn new(profile: Did, subject: Did, name: impl Into<Name>) -> Self {
         Self {
             this: Entity::of(&This::Replica {
                 subject: &subject,
@@ -93,7 +95,7 @@ impl Replica {
             }),
             subject: Subject(subject.this()),
             profile: Profile(profile.this()),
-            name,
+            name: name.into(),
         }
     }
 
@@ -103,13 +105,27 @@ impl Replica {
     }
 
     /// Create a [`Branch`] concept on this replica.
-    pub fn branch(&self, name: &str) -> Branch {
-        Branch::new(self, Name::from(name))
+    ///
+    /// `name` is anything convertible into [`Name`], matching
+    /// the [`Branch::new`] signature.
+    pub fn branch(&self, name: impl Into<Name>) -> Branch {
+        Branch::new(self, name)
     }
 
     /// Create a [`Remote`] concept on this replica.
-    pub fn remote(&self, name: &str, subject: Did, address: &SiteAddress) -> Remote {
-        Remote::new(self, subject, Address::encode(address), Name::from(name))
+    ///
+    /// `name` accepts anything convertible into [`Name`]; the
+    /// [`SiteAddress`] is encoded into an [`Address`] internally
+    /// (we can't surface that as a `From` impl without clashing
+    /// with the blanket one the `Attribute` derive emits — see
+    /// [`Address::encode`]).
+    pub fn remote(
+        &self,
+        name: impl Into<Name>,
+        subject: Did,
+        address: &SiteAddress,
+    ) -> Remote {
+        Remote::new(self, subject, Address::encode(address), name)
     }
 }
 

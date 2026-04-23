@@ -13,15 +13,24 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_repository::{RepositoryExt as _, Revision, SiteAddress, Upstream};
+use dialog_credentials::SignerCredential;
+use dialog_repository::{
+    RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
+};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::{Remote, Replica};
 
 use super::AppState;
-use crate::TonkWorkerError;
+use crate::{RepositoryError, TonkWorkerError, worker::TonkState};
+
+/// Name of the meta branch every repository has alongside its
+/// content branches. The meta branch stores schema concepts
+/// describing the repository itself (see [`tonk_schema`]).
+const META_BRANCH: &str = "meta";
 
 /// Configuration for a single remote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -209,26 +218,74 @@ pub async fn put_repository(
         });
     }
 
-    // 2. Create the repository. Any failure here is genuinely
-    // internal — we already confirmed it doesn't exist.
+    // 2. Create the repository and everything that comes with
+    // it — delegation, remotes, branches, upstreams, meta facts.
+    // The helper doesn't know about HTTP; its errors are mapped
+    // to the right status via `RepositoryError::into`.
+    let repository = create_repository(&tonk, &name, &configuration).await?;
+
+    // 3. Respond with the current state of the repository.
+    let info = build_repository_info(&tonk, &name, &repository).await;
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// Build out a repository from a [`RepositoryConfiguration`].
+///
+/// Runs the full create-side pipeline in a single pass:
+///
+/// 1. `profile.repository(name).create()` — allocate a new
+///    signer-owned repository in dialog-db.
+/// 2. Delegate repository access to the profile and save the
+///    delegation, so future operations authenticated by the
+///    profile can reach the repo.
+/// 3. Open the `meta` branch and start a transaction, seeded
+///    with the [`Replica`] concept and a [`TonkBranch`] for the
+///    meta branch itself.
+/// 4. For each configured remote: create it at the dialog layer
+///    *and* assert the corresponding [`TonkRemote`] concept on
+///    the transaction. Concepts are kept keyed by remote name
+///    so the upstream-linking step can find them.
+/// 5. For each configured branch: open it at the dialog layer
+///    and assert a [`TonkBranch`]. If the config names an
+///    upstream, wire it at the dialog layer and assert the
+///    corresponding [`TrackingBranch`].
+/// 6. Commit the meta transaction — one commit containing
+///    every concept, so the metadata lands atomically.
+///
+/// Interleaving dialog mutations with meta assertions keeps
+/// both sides in lockstep and means we never have to
+/// "reconstruct what we just built" as a second pass.
+///
+/// Returns the opened [`Repository<SignerCredential>`] so the
+/// caller can still introspect it (e.g. to build a response
+/// body) without a separate load. The caller is responsible
+/// for existence-checking before calling — this function
+/// assumes the name is free.
+pub async fn create_repository(
+    tonk: &TonkState,
+    name: &str,
+    configuration: &RepositoryConfiguration,
+) -> Result<Repository<SignerCredential>, RepositoryError> {
+    // 1. Create the repository. Any failure here is genuinely
+    // internal — we assume the caller has already confirmed the
+    // name is free.
     let repository = tonk
         .profile
-        .repository(&name)
+        .repository(name)
         .create()
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to create repository '{}': {}", name, e))
+            RepositoryError::Internal(format!("Failed to create repository '{}': {}", name, e))
         })?;
     log!("Repository created. DID: {}", repository.did());
 
-    // 3. Delegate repo access to the profile. A freshly created
-    // repository always has a signer credential, so `.access()` is
-    // available directly. This used to live in
-    // `TonkServiceWorker::new`; it belongs with creation, and if
-    // either half of it fails we fail the whole request — a repo
-    // without a working delegation chain is half-initialised and
-    // the caller needs to know.
+    // 2. Delegate repo access to the profile. A freshly created
+    // repository always has a signer credential, so `.access()`
+    // is available directly. Splitting this delegation from
+    // creation would leave the repo half-initialised if the save
+    // fails; commit it immediately so the caller sees a clean
+    // success or a clean failure.
     let delegation = repository
         .access()
         .claim(&repository)
@@ -236,7 +293,7 @@ pub async fn put_repository(
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to delegate repo access to profile: {}", e))
+            RepositoryError::Internal(format!("Failed to delegate repo access to profile: {}", e))
         })?;
 
     tonk.profile
@@ -244,51 +301,98 @@ pub async fn put_repository(
         .save(delegation)
         .perform(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("Failed to save repo delegation: {}", e)))?;
+        .map_err(|e| RepositoryError::Internal(format!("Failed to save repo delegation: {}", e)))?;
 
-    // 4. Create any remotes listed in the body.
-    for (name, remote) in &configuration.remote {
+    // 3. Open the meta branch and start the single transaction
+    // that will carry every concept describing the repository.
+    // Seed it with the replica record and the meta branch's own
+    // `Branch` fact — the meta branch is a real branch of this
+    // replica, so it belongs in the enumeration like any other.
+
+    let meta = repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
+
+    // Local replica of this repository
+    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+
+    let mut transaction = meta
+        .transaction()
+        .assert(replica.clone())
+        .assert(replica.branch(META_BRANCH));
+
+    // 4. Create remotes at the dialog layer and assert their
+    // concepts on the same transaction. Stash each created
+    // `RemoteRepository` alongside its `Remote` concept so the
+    // branch loop below can resolve upstream references without
+    // a second `.load()` round-trip against dialog — we just
+    // created these remotes, so the data we'd load is still in
+    // hand.
+    let mut remotes: HashMap<String, (RemoteRepository, Remote)> =
+        HashMap::with_capacity(configuration.remote.len());
+
+    for (remote_name, remote_config) in &configuration.remote {
+        // Subject defaults to the local repo's DID — that's the
+        // existing `RemoteConfiguration` convention (remote
+        // repository subject == local subject unless explicitly
+        // overridden).
+        let subject = remote_config
+            .subject
+            .clone()
+            .unwrap_or_else(|| repository.did());
+
         let mut create = repository
-            .remote(name.as_str())
-            .create(remote.address.clone());
+            .remote(remote_name.as_str())
+            .create(remote_config.address.clone());
 
-        // If subject is specified, it means remote repository subject is
-        // different from the local one so we need to set it explicitly.
-        if let Some(subject) = remote.subject.clone() {
-            create = create.subject(subject);
+        if remote_config.subject.is_some() {
+            create = create.subject(subject.clone());
         }
-
-        create.perform(&tonk.operator).await.map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to create remote '{}': {}", name, e))
+        let remote = create.perform(&tonk.operator).await.map_err(|e| {
+            RepositoryError::Internal(format!("Failed to create remote '{}': {}", remote_name, e))
         })?;
-        log!("Remote '{}' created", name);
+
+        log!("Remote '{}' created", remote_name);
+
+        let concept = replica.remote(remote_name.as_str(), subject, &remote_config.address);
+        transaction = transaction.assert(concept.clone());
+        remotes.insert(remote_name.clone(), (remote, concept));
     }
 
-    // 5. Open each branch listed in the body (opens-or-creates) and
-    // optionally wire its upstream. Missing from the body = don't
-    // create; present with `{}` = create without upstream.
-    for (name, settings) in &configuration.branch {
+    // 5. Open each branch at the dialog layer and assert its
+    // `TonkBranch` concept. If the branch names an upstream,
+    // wire it through dialog and assert a `TrackingBranch` link
+    // on the same transaction. An upstream that references an
+    // unknown remote is a user-facing configuration error —
+    // surface it as `InvalidConfiguration` (400), not Internal.
+    for (branch_name, settings) in &configuration.branch {
         let branch = repository
-            .branch(name.as_str())
+            .branch(branch_name.as_str())
             .open()
             .perform(&tonk.operator)
             .await
             .map_err(|e| {
-                TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", name, e))
+                RepositoryError::Internal(format!("Failed to open branch '{}': {}", branch_name, e))
             })?;
 
+        transaction = transaction.assert(replica.branch(branch_name.as_str()));
+
         if let Some(upstream) = &settings.upstream {
-            let remote = repository
-                .remote(upstream.remote.as_str())
-                .load()
-                .perform(&tonk.operator)
-                .await
-                .map_err(|e| {
-                    TonkWorkerError::Router(format!(
-                        "Upstream references unknown remote '{}': {}",
-                        upstream.remote, e
-                    ))
-                })?;
+            // Look up the remote we just created in step 4
+            // instead of doing another `.load()` round-trip
+            // against dialog. If the upstream names a remote
+            // that wasn't in the configuration, that's a
+            // user-facing configuration error (400), not an
+            // internal failure.
+            let (remote, concept) = remotes.get(&upstream.remote).ok_or_else(|| {
+                RepositoryError::InvalidConfiguration(format!(
+                    "Upstream for branch '{}' references unknown remote '{}'",
+                    branch_name, upstream.remote
+                ))
+            })?;
 
             let target = remote
                 .branch(upstream.branch.as_str())
@@ -296,7 +400,7 @@ pub async fn put_repository(
                 .perform(&tonk.operator)
                 .await
                 .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
+                    RepositoryError::Internal(format!(
                         "Failed to open remote branch '{}/{}': {}",
                         upstream.remote, upstream.branch, e
                     ))
@@ -307,23 +411,43 @@ pub async fn put_repository(
                 .perform(&tonk.operator)
                 .await
                 .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
+                    RepositoryError::Internal(format!(
                         "Failed to set upstream for branch '{}': {}",
-                        name, e
+                        branch_name, e
                     ))
                 })?;
             log!(
                 "Upstream for branch '{}' set to {}/{}",
-                name,
+                branch_name,
                 upstream.remote,
                 upstream.branch
+            );
+
+            // Mirror the upstream wiring on the meta side.
+            transaction = transaction.assert(
+                replica
+                    .branch(branch_name.as_str())
+                    .set_upstream(&concept.branch(upstream.branch.as_str())),
             );
         }
     }
 
-    // 6. Respond with the current state of the repository.
-    let info = build_repository_info(&tonk, &name, &repository).await;
-    Ok((StatusCode::CREATED, Json(info)))
+    // 6. Commit the meta transaction. Everything above has
+    // already happened at the dialog layer; committing here
+    // makes the schema view of it land atomically.
+    transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!(
+                "Failed to commit meta for repository '{}': {}",
+                name, e
+            ))
+        })?;
+    log!("Wrote meta facts for repository '{}'", name);
+
+    Ok(repository)
 }
 
 /// Load a repository by name and return its [`RepositoryInfo`].
@@ -419,11 +543,7 @@ where
 
     RepositoryInfo {
         name: name.to_string(),
-        subject: repository
-            .did()
-            .to_string()
-            .parse()
-            .expect("repository DID is always a valid Did"),
+        subject: repository.did(),
         operator: tonk.operator.did(),
         profile: tonk.profile.did(),
         branch: branches,

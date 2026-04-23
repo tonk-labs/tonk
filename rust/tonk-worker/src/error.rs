@@ -30,6 +30,39 @@ pub enum TonkWorkerError {
     PreconditionFailed(String),
 }
 
+/// Failure mode when assembling a repository from a
+/// [`RepositoryConfiguration`][crate::router::RepositoryConfiguration].
+///
+/// Separate from [`TonkWorkerError`] so the core "create this
+/// repository" helper doesn't have to know about HTTP. The
+/// `From` impl below maps each variant to the HTTP status the
+/// handler wants: invalid configuration → 400, internal → 500.
+#[derive(Error, Debug)]
+pub enum RepositoryError {
+    /// The request body refers to something that doesn't exist
+    /// — currently only "branch upstream references a remote
+    /// that wasn't in the `remote` map." User-supplied and thus
+    /// a 4xx upstream.
+    #[error("Invalid configuration: {0}")]
+    InvalidConfiguration(String),
+
+    /// Any other failure during construction: a dialog-db
+    /// operation failed (create / open / commit), the meta
+    /// branch couldn't be written, delegation couldn't be
+    /// saved, etc.
+    #[error("Internal repository error: {0}")]
+    Internal(String),
+}
+
+impl From<RepositoryError> for TonkWorkerError {
+    fn from(error: RepositoryError) -> Self {
+        match error {
+            RepositoryError::InvalidConfiguration(m) => TonkWorkerError::Router(m),
+            RepositoryError::Internal(m) => TonkWorkerError::Internal(m),
+        }
+    }
+}
+
 impl TonkWorkerError {
     fn kind(&self) -> &'static str {
         match self {

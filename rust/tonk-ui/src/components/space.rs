@@ -5,7 +5,7 @@ use leptos_router::{
     params::Params,
 };
 
-use crate::api;
+use crate::{api, components::Status};
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkSpaceParams {
@@ -36,9 +36,23 @@ pub fn TonkSpace() -> impl IntoView {
             .filter(|s| !s.is_empty())
     });
 
+    // Wait for the shell to finish init (service worker active
+    // AND default repository PUT completed) before firing any
+    // request. Deep-link loads like `/space/home` mount this
+    // component on the very first render, when the service
+    // worker is still installing — firing now would race the
+    // SW handover, which the browser handles by cancelling the
+    // in-flight fetch ("Fetch failed loading"). Reading the
+    // `Status` signal here makes the resource re-fire the
+    // moment init flips to `Ready`.
+    let status = use_context::<Signal<Status, LocalStorage>>();
     let repository = LocalResource::new(move || {
         let name = space_name.get();
+        let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(true);
         async move {
+            if !ready {
+                return Ok(None);
+            }
             match name {
                 None => {
                     BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));

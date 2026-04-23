@@ -89,13 +89,16 @@ impl Branch {
     /// The `origin` argument can be anything that views as an
     /// [`Entity`] — a [`Replica`] (for a local branch) or a
     /// [`Remote`] (for a remote-side branch) both work via their
-    /// `AsRef<Entity>` impls. Derives `this` from `(origin, name)`
+    /// `AsRef<Entity>` impls. `name` takes anything convertible
+    /// into [`Name`] — e.g. a `&str` — so callers don't have to
+    /// wrap string literals. Derives `this` from `(origin, name)`
     /// and stores `origin` as an attribute so every field is
     /// consistent with the entity hash.
     ///
     /// [`Remote`]: crate::Remote
-    pub fn new(origin: impl AsRef<Entity>, name: Name) -> Self {
+    pub fn new(origin: impl AsRef<Entity>, name: impl Into<Name>) -> Self {
         let origin = origin.as_ref();
+        let name = name.into();
         Self {
             this: Entity::of(&This::Branch {
                 origin,

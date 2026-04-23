@@ -34,6 +34,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-common = { workspace = true }
+tonk-schema = { workspace = true }
 tower-service = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }

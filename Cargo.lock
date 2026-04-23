@@ -4554,6 +4554,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-schema"
+version = "0.1.0"
+dependencies = [
+ "base58",
+ "dialog-artifacts",
+ "dialog-common",
+ "dialog-query",
+ "dialog-repository",
+ "dialog-varsig",
+ "serde",
+ "serde_ipld_dagcbor",
+]
+
+[[package]]
 name = "tonk-ui"
 version = "0.1.0"
 dependencies = [
@@ -4619,6 +4633,7 @@ dependencies = [
  "tokio",
  "tonk-access-service",
  "tonk-common",
+ "tonk-schema",
  "tower",
  "tower-service",
  "url",

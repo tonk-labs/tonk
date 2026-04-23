@@ -86,6 +86,16 @@ pub struct Address(pub Vec<u8>);
 
 impl Address {
     /// Encode a [`SiteAddress`] as dag-cbor bytes.
+    ///
+    /// Note: we can't expose this as `From<SiteAddress>` or
+    /// `From<&SiteAddress>`. `#[derive(Attribute)]` emits a
+    /// blanket `impl<T: Into<Vec<u8>>> From<T> for Address`
+    /// and Rust's coherence rules reject any further `From`
+    /// impl whose argument type could ever implement
+    /// `Into<Vec<u8>>`. `Address::encode` stays the canonical
+    /// entry point; convenience methods like
+    /// [`Replica::remote`][crate::Replica::remote] take a
+    /// `SiteAddress` directly and call `encode` internally.
     pub fn encode(address: &SiteAddress) -> Self {
         let bytes = serde_ipld_dagcbor::to_vec(address)
             .expect("SiteAddress is serde-serializable and dag-cbor-compatible");

@@ -91,8 +91,16 @@ impl Remote {
     ///
     /// Derives `this` from `(replica.this, name)` and fills in the
     /// `origin`, `subject`, and `address` attributes so every field
-    /// is consistent with the entity hash.
-    pub fn new(replica: &Replica, subject: Did, address: Address, name: Name) -> Self {
+    /// is consistent with the entity hash. `name` takes anything
+    /// convertible into [`Name`] — e.g. a `&str` — so callers
+    /// don't have to wrap string literals.
+    pub fn new(
+        replica: &Replica,
+        subject: Did,
+        address: Address,
+        name: impl Into<Name>,
+    ) -> Self {
+        let name = name.into();
         Self {
             this: Entity::of(&This::Remote {
                 origin: replica.this(),
@@ -106,8 +114,11 @@ impl Remote {
     }
 
     /// Create a [`Branch`] concept on this remote.
-    pub fn branch(&self, name: &str) -> Branch {
-        Branch::new(self, Name::from(name))
+    ///
+    /// `name` accepts anything convertible into [`Name`],
+    /// matching the [`Branch::new`] signature.
+    pub fn branch(&self, name: impl Into<Name>) -> Branch {
+        Branch::new(self, name)
     }
 }
 
