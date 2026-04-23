@@ -2,4 +2,8 @@
 @import "tailwindcss" layer(base);
 @import "./assets/styles/common.css" layer(base);
 /* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
-@variant dark (&:where(.dark, .dark *));
+/* Use Web Awesome's `.wa-dark` class as the single source of truth
+   for dark mode. The root script in index.html sets it from
+   `prefers-color-scheme`, so tailwind's `dark:` variant now mirrors
+   the OS preference automatically. */
+@variant dark (&:where(.wa-dark, .wa-dark *));

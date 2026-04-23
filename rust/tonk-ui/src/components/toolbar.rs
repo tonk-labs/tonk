@@ -32,11 +32,17 @@ pub fn TonkToolbar() -> impl IntoView {
             class:visible=move || status.get() == Status::Ready
         >
             <tonk-sigil class="toolbar-sigil" value=move || sigil_value.get()></tonk-sigil>
-            <button class="toolbar-add" aria-label="Add space">"+"</button>
+            <wa-button class="toolbar-add" appearance="plain" variant="neutral" aria-label="Add space">
+                <wa-icon name="plus" variant="regular"></wa-icon>
+            </wa-button>
             <div class="spacer"></div>
-            <img src="/images/question-mark-circle.svg" width="30"/>
-            <img src="/images/moon.svg" width="30"/>
-            <img src="/images/dummy-avatar.png" width="40"/>
+            <wa-button class="toolbar-icon" appearance="plain" variant="neutral" aria-label="Help">
+                <wa-icon name="circle-question" variant="regular"></wa-icon>
+            </wa-button>
+            <wa-button class="toolbar-icon" appearance="plain" variant="neutral" aria-label="Theme">
+                <wa-icon name="moon" variant="regular"></wa-icon>
+            </wa-button>
+            <wa-avatar class="toolbar-avatar" label="User"></wa-avatar>
         </section>
     }
 }

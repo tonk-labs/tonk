@@ -67,6 +67,16 @@ fn render(this: &HtmlElement) {
         None => {
             let el = document.create_element("span").unwrap_throw();
             el.set_attribute("data-sigil", "").unwrap_throw();
+            // `<span>` defaults to `display: inline`, which makes its
+            // content-sized box collapse around the SVG rather than
+            // filling the host element. Force it to be a block box
+            // that fills the host so the inner SVG's `width: 100%`
+            // and `height: 100%` resolve against the full host size.
+            el.set_attribute(
+                "style",
+                "display:block;width:100%;height:100%",
+            )
+            .unwrap_throw();
             // Insert the wrapper *before* any existing children so CSS
             // layout ordering (sigil first, text after) works without
             // depending on DOM insertion order.
@@ -156,7 +166,32 @@ impl Sigil {
         if already_registered() {
             return;
         }
+        inject_baseline_style();
         SigilElement::define("tonk-sigil");
+    }
+}
+
+/// Injects a one-time `<style>` into `<head>` to give the custom
+/// element sensible defaults. Custom elements are inline-level by
+/// default in the browser's UA stylesheet, so explicit `width` /
+/// `height` on the host are otherwise ignored. Making the element
+/// `inline-block` lets callers size it with CSS and lets slot
+/// containers (like `wa-card`'s media slot) size us with
+/// `inline-size: 100%; block-size: 100%`.
+fn inject_baseline_style() {
+    const ID: &str = "tonk-sigil-baseline";
+    let Some(window) = web_sys::window() else { return };
+    let Some(document) = window.document() else { return };
+    if document.get_element_by_id(ID).is_some() {
+        return;
+    }
+    let Ok(style) = document.create_element("style") else { return };
+    let _ = style.set_attribute("id", ID);
+    style.set_text_content(Some(
+        "tonk-sigil{display:inline-block;width:100%;height:100%;line-height:0}",
+    ));
+    if let Some(head) = document.head() {
+        let _ = head.append_child(&style);
     }
 }
 

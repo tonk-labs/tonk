@@ -65,7 +65,7 @@ impl fmt::Display for Sigil {
         // which use `var(--sigil-fg, currentColor)` as the fallback.
         write!(
             f,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" preserveAspectRatio=\"xMidYMid meet\" style=\"display:block;width:100%;height:100%"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" preserveAspectRatio=\"xMidYMin meet\" style=\"display:block;width:100%;height:100%"
         )?;
         if let Some(fill) = &self.fill {
             write!(f, ";--sigil-fg:{fill}")?;

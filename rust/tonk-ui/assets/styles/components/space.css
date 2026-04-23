@@ -1,6 +1,10 @@
 /* Repository detail view inside `.space`. The outer `.space`
    owns scrolling (see launcher.css); this file just styles the
-   contents. */
+   contents.
+
+   Colors are driven by Web Awesome's theme tokens so the whole
+   view flips automatically with the `.wa-light` / `.wa-dark`
+   class on <html> (which tracks `prefers-color-scheme`). */
 
 .repository {
     display: flex;
@@ -11,7 +15,9 @@
 
 /* Sticky banner at the top of the scrolling `.space`. Pins to
    `top: 0` of the scroll container; the rest of the repository
-   content scrolls beneath it. */
+   content scrolls beneath it. Using `--wa-color-surface-lowered`
+   gives us a slightly different shade than the page body in both
+   light and dark modes, visibly delineating the banner. */
 .repo-banner {
     position: sticky;
     top: 0;
@@ -20,17 +26,18 @@
     flex-direction: column;
     justify-content: center;
     gap: 0.25rem;
-    background: #1f2d28;
-    color: #fff;
+    background: var(--wa-color-surface-lowered);
+    color: var(--wa-color-text-loud, var(--wa-color-text-normal));
     padding: 2rem 2.5rem;
     min-height: 9rem;
+    border-bottom: 1px solid var(--wa-color-surface-border);
 }
 
 .repo-banner > .eyebrow {
     font-size: 0.75rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.6);
+    color: var(--wa-color-text-quiet);
 }
 
 .repo-banner > h1 {
@@ -67,11 +74,11 @@
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: rgba(0, 0, 0, 0.6);
+    color: var(--wa-color-text-quiet);
 }
 
 .repository .empty {
-    color: rgba(0, 0, 0, 0.45);
+    color: var(--wa-color-text-quiet);
     font-style: italic;
     padding: 0.75rem 0;
 }
@@ -87,7 +94,7 @@
 
 .repository .fields > dt {
     font-size: 0.8125rem;
-    color: rgba(0, 0, 0, 0.55);
+    color: var(--wa-color-text-quiet);
     font-weight: 500;
 }
 
@@ -97,36 +104,70 @@
     word-break: break-all;
 }
 
-/* Remote tiles — vertical stack of wide horizontal rows. One
-   tile per row; the tile itself is a 2-column grid with a
-   square sigil on the left and text body on the right. */
+/* Remote tiles — vertical stack of wide horizontal `<wa-card>`s.
+   The card provides its own background, border, and rounding; we
+   just stack them and style the media-slot sigil. */
 .repository .remote-tiles {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    /* Tiles carry their own top+bottom borders and collapse
+       with each other, so no inter-tile gap is needed. */
 }
 
 .repository .remote-tile {
-    display: grid;
-    grid-template-columns: 6rem 1fr;
-    background: #fff;
-    border: 1px solid rgba(0, 0, 0, 0.15);
+    /* Zero out wa-card's internal spacing so the sigil extends
+       to the card edges. Body padding is reapplied explicitly
+       on `.remote-tile-body` below. Drop the shadow — going flat.
+
+       Horizontal row divider: top and bottom borders only. The
+       card's own full-box border is suppressed via
+       `--wa-panel-border-width: 0`, and we draw our own so the
+       sigil reaches the very top and bottom of the tile (rather
+       than stopping at the card's inner border edge).
+
+       Lock the tile height to the sigil column's square so both
+       columns always match. Body content that doesn't fit is
+       clipped (the name stays visible; DID/URL truncate via
+       ellipsis already; an optional detail line may fall off). */
+    --spacing: 0;
+    --wa-panel-border-width: 0;
+    box-shadow: none;
+    width: 100%;
+    height: 5rem;
+    border-top: 1px solid var(--wa-color-surface-border);
+    border-bottom: 1px solid var(--wa-color-surface-border);
     overflow: hidden;
-    /* `min-width: 0` on the text column (see body rule below)
-       is what lets long DIDs truncate instead of blowing out
-       the tile width. */
 }
 
-/* Match the tile's base background so the sigil reads as part
-   of the same surface as the text body. A single right border
-   provides visual separation between the sigil column and the
-   body column. No inner padding so the glyph reaches the edges. */
-.repository .remote-tile-sigil {
-    background: #fff;
-    color: #1f2d28;
-    padding: 0;
+/* Collapse adjacent tiles' borders so consecutive rows share a
+   single hairline rather than doubling up. */
+.repository .remote-tile + .remote-tile {
+    border-top: 0;
+    margin-top: -1px;
+}
+
+/* Size the card's media *slot wrapper* (shadow-DOM part), not
+   the slotted element. Aspect-ratio square — matches the
+   sigil's 128×128 viewBox so `preserveAspectRatio="meet"`
+   fills edge-to-edge without empty bands, independent of the
+   tile's exact pixel height (which varies with borders).
+   No border between sigil and body: the glyphs (circles, arcs)
+   naturally have transparent corners; letting that transparency
+   flow into the body side of the tile avoids a visible 2px
+   inset band where a vertical separator would otherwise sit. */
+.repository .remote-tile::part(media) {
+    width: 5rem;
     aspect-ratio: 1 / 1;
-    border-right: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.repository .remote-tile-sigil {
+    color: var(--wa-color-text-normal);
+    /* Transparent background: the glyph shapes have intentionally
+       transparent corners (many are circles or quarter-arcs). With
+       a transparent sigil background, those corners blend into the
+       card body so there's no visible "gap" — just the glyph
+       painted on the tile's surface. */
+    background: transparent;
 }
 
 .repository .remote-tile-sigil .did-sigil {
@@ -147,19 +188,24 @@
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 0.25rem;
-    padding: 0.75rem 1rem;
-    /* Essential — without this the grid column takes whatever
+    gap: 0.125rem;
+    padding: 0.5rem 1rem;
+    /* Essential — without this the flex child takes whatever
        width its contents want, and long DIDs force the tile
        wider than its parent. */
     min-width: 0;
+    /* Fill the tile's locked height; anything that overflows
+       is clipped by the `.remote-tile` container's `overflow:
+       hidden`. */
+    flex: 1;
+    min-height: 0;
 }
 
 .repository .remote-tile-name {
     font-weight: 600;
     font-size: 1.25rem;
     line-height: 1.2;
-    color: rgba(0, 0, 0, 0.9);
+    color: var(--wa-color-text-normal);
 }
 
 .repository .remote-tile-did code {
@@ -169,7 +215,7 @@
        surfaces the full value on hover. */
     display: block;
     font-size: 0.75rem;
-    color: rgba(0, 0, 0, 0.6);
+    color: var(--wa-color-text-quiet);
     background: transparent;
     padding: 0;
     white-space: nowrap;
@@ -189,7 +235,7 @@
 
 .repository .remote-tile-detail {
     font-size: 0.75rem;
-    color: rgba(0, 0, 0, 0.55);
+    color: var(--wa-color-text-quiet);
 }
 
 /* Monospace identifiers (DIDs, entity refs, tree refs). */
@@ -197,7 +243,7 @@
     font-family: ui-monospace, SFMono-Regular, "SF Mono",
         Menlo, Consolas, monospace;
     font-size: 0.8125rem;
-    background: rgba(0, 0, 0, 0.04);
+    background: var(--wa-color-surface-lowered);
     padding: 0.1rem 0.35rem;
     word-break: break-all;
 }
@@ -208,78 +254,21 @@
     gap: 1rem;
 }
 
-.repository .card {
-    background: #fff;
-    border: 1px solid rgba(0, 0, 0, 0.15);
-    padding: 1rem 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-}
-
-.repository .card-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.5rem;
-}
-
-.repository .card-header > .card-name {
-    font-weight: 600;
+/* Branch cards use `<wa-card>`'s header slot for the branch name.
+   The card itself provides surface + border + padding; we only
+   need to shape the header heading. */
+.repository .branch-card h3 {
+    margin: 0;
     font-size: 1rem;
+    font-weight: 600;
 }
 
-.repository .card-header > .card-kind {
-    font-size: 0.6875rem;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgba(0, 0, 0, 0.45);
-}
-
-/* A row that holds an identifier plus a status badge. Keeps
-   the badge glued to the end of the line without blowing up
-   wrapping when the identifier is long. */
-.repository .subject-row {
+/* Loading / error / not-found states — centered in the scroll
+   area, not glued to the top edge. */
+.space > .space-state {
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-}
-
-.repository .badge {
-    font-size: 0.6875rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 0.1rem 0.45rem;
-    line-height: 1.4;
-    white-space: nowrap;
-    flex: none;
-}
-
-/* `same` — the remote points back at our own repository
-   subject. Green-ish to read as "aligned". */
-.repository .badge-same {
-    background: rgba(45, 160, 100, 0.14);
-    color: #207a4c;
-}
-
-/* `other` — the remote points at a different subject. A
-   neutral amber so it reads as "heads up" without implying an
-   error. */
-.repository .badge-other {
-    background: rgba(200, 130, 40, 0.14);
-    color: #7a4e12;
-}
-
-/* Loading / error / not-found states */
-.space > .loading,
-.space > .error,
-.space > .not-found {
-    display: block;
-    padding: 2rem 2.5rem;
-    color: rgba(0, 0, 0, 0.55);
-}
-
-.space > .error {
-    color: #9e2a2a;
+    align-items: center;
+    gap: 0.75rem;
+    margin: 2rem 2.5rem;
+    max-width: 32rem;
 }

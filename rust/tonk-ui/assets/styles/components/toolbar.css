@@ -4,7 +4,8 @@
     align-items: center;
     gap: 0.75rem;
     padding: 0.5rem;
-    background-color: var(--tonk-toolbar-background-color, #F0F0F0);
+    background-color: var(--wa-color-surface-lowered);
+    border-right: 1px solid var(--wa-color-surface-border);
     transition: transform 0.3s 0.3s;
     transform: translateX(-100%);
 
@@ -19,13 +20,13 @@
 
 /* Sigil fills the sidebar width, leaving only the toolbar's own
    padding as breathing room. The glyph is single-color now (real
-   cutouts via SVG mask), so only `color` needs to be set. */
+   cutouts via SVG mask), so `color` alone themes it. */
 .toolbar-sigil {
     display: block;
     width: 100%;
     aspect-ratio: 1 / 1;
     flex: none;
-    color: #1f2d28;
+    color: var(--wa-color-text-normal);
     /* Seed text is a child node so the element can re-derive the
        hash on re-render; hide it visually without removing it. */
     font-size: 0;
@@ -38,22 +39,34 @@
     height: 100%;
 }
 
-/* Plain text "+" — no border, no rounding, no shadow. Big glyph,
-   hover/press states are the only affordance. */
-.toolbar-add {
-    appearance: none;
-    background: transparent;
-    border: 0;
-    padding: 0;
+/* Toolbar buttons — `<wa-button appearance="plain">`. Scale them
+   up and make them fill the sidebar column. The icon inside picks
+   up the button's color. */
+.toolbar-add,
+.toolbar-icon {
     width: 100%;
     aspect-ratio: 1 / 1;
-    font-size: 2rem;
-    line-height: 1;
-    font-weight: 300;
-    color: rgba(0, 0, 0, 0.6);
-    cursor: pointer;
 }
 
-.toolbar-add:hover {
-    color: rgba(0, 0, 0, 0.9);
+.toolbar-add::part(base),
+.toolbar-icon::part(base) {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    font-size: 1.5rem;
+}
+
+.toolbar-add wa-icon,
+.toolbar-icon wa-icon {
+    font-size: 1.25rem;
+}
+
+/* The add button gets a slightly bigger icon because it's a
+   primary affordance ("start a new space"). */
+.toolbar-add wa-icon {
+    font-size: 1.5rem;
+}
+
+.toolbar-avatar {
+    --size: 40px;
 }

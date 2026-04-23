@@ -44,13 +44,25 @@
         color-scheme: dark;
     }
 
+    :root {
+        /* Going for a lo-fi look — square everything. The scale
+           multiplies every `--wa-border-radius-*` token, so one
+           knob flattens buttons, cards, callouts, inputs, etc.
+           `pill` and `circle` tokens are absolute values and stay
+           (they're semantic: a pill is a pill, not a little-rounded
+           rectangle). */
+        --wa-border-radius-scale: 0;
+    }
+
     body {
         @apply m-0 flex items-center justify-center min-w-[320px] min-h-screen place-items-center;
-        @apply bg-white text-gray-900;
-        @apply dark:bg-[#242424] dark:text-white/87;
 
         font-family: var(--font-gestalt);
-        background: var(--body-background-color, #fafafa);
+        /* Track the theme surface so the page flips with the OS
+           light/dark preference. `--wa-color-surface-default` is
+           `white` in light mode and a dark neutral in dark mode. */
+        background: var(--wa-color-surface-default);
+        color: var(--wa-color-text-normal);
     }
 
     #root {

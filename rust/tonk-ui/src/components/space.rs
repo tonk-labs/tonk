@@ -88,21 +88,28 @@ pub fn TonkSpace() -> impl IntoView {
 
     view! {
         <section class="space">
-            <Suspense fallback=|| view! { <span class="loading">"Loading…"</span> }>
+            <Suspense fallback=|| view! {
+                <div class="space-state">
+                    <wa-spinner style="font-size: 1.5rem"></wa-spinner>
+                    <span>"Loading…"</span>
+                </div>
+            }>
                 <ErrorBoundary fallback=|errors| view! {
-                    <section class="error">
+                    <wa-callout variant="danger" class="space-state">
+                        <wa-icon slot="icon" name="circle-exclamation" variant="regular"></wa-icon>
                         { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
-                    </section>
+                    </wa-callout>
                 }>
                     { move || repository.get().map(|result| result.map(|repo| match repo {
                         Some(info) => Either::Left(repository_view(info)),
                         None => Either::Right(view! {
-                            <section class="not-found">
+                            <wa-callout variant="neutral" class="space-state">
+                                <wa-icon slot="icon" name="circle-info" variant="regular"></wa-icon>
                                 { move || format!(
                                     "Repository '{}' not found",
                                     space_name.get().unwrap_or_default(),
                                 ) }
-                            </section>
+                            </wa-callout>
                         }),
                     })) }
                 </ErrorBoundary>
@@ -159,11 +166,8 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
                 (version, tree_full, tree_short)
             });
             view! {
-                <article class="card">
-                    <div class="card-header">
-                        <span class="card-name">{ name.clone() }</span>
-                        <span class="card-kind">"branch"</span>
-                    </div>
+                <wa-card class="branch-card">
+                    <h3 slot="header">{ name.clone() }</h3>
                     <dl class="fields">
                         <dt>"upstream"</dt>
                         <dd>{
@@ -187,7 +191,7 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
                             }
                         }</dd>
                     </dl>
-                </article>
+                </wa-card>
             }
         })
         .collect::<Vec<_>>();
@@ -209,10 +213,8 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
             let sigil_value = did_sigil_value(&remote_subject);
             let subject_title = remote_subject.clone();
             view! {
-                <article class="remote-tile">
-                    <div class="remote-tile-sigil">
-                        <tonk-sigil class="did-sigil" value=sigil_value></tonk-sigil>
-                    </div>
+                <wa-card orientation="horizontal" class="remote-tile">
+                    <tonk-sigil slot="media" class="remote-tile-sigil" value=sigil_value></tonk-sigil>
                     <div class="remote-tile-body">
                         <div class="remote-tile-name">{ name.clone() }</div>
                         <div class="remote-tile-did" title=subject_title>
@@ -225,7 +227,7 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
                             <div class="remote-tile-detail">{ detail }</div>
                         }) }
                     </div>
-                </article>
+                </wa-card>
             }
         })
         .collect::<Vec<_>>();
