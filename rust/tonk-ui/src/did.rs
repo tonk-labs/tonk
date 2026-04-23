@@ -87,6 +87,9 @@ mod tests {
     fn varint_two_bytes() {
         // 0x01ed in varint LE: 0xed 0x03 (0xed has high bit set, 0x03 doesn't)
         // But ed25519 multicodec is 0xed 0x01 — let's just check it consumes 2
-        assert_eq!(read_varint(&[0xed, 0x01, 0xff, 0xff]).map(|(_, n)| n), Some(2));
+        assert_eq!(
+            read_varint(&[0xed, 0x01, 0xff, 0xff]).map(|(_, n)| n),
+            Some(2)
+        );
     }
 }

@@ -18,16 +18,14 @@
 }
 
 /* Sigil fills the sidebar width, leaving only the toolbar's own
-   padding as breathing room. Background matches the toolbar chrome
-   so there's no visible "tile" — the sigil glyph sits directly on
-   the sidebar surface. */
+   padding as breathing room. The glyph is single-color now (real
+   cutouts via SVG mask), so only `color` needs to be set. */
 .toolbar-sigil {
     display: block;
     width: 100%;
     aspect-ratio: 1 / 1;
     flex: none;
     color: #1f2d28;
-    --sigil-bg: var(--tonk-toolbar-background-color, #F0F0F0);
     /* Seed text is a child node so the element can re-derive the
        hash on re-render; hide it visually without removing it. */
     font-size: 0;

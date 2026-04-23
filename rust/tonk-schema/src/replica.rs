@@ -119,12 +119,7 @@ impl Replica {
     /// (we can't surface that as a `From` impl without clashing
     /// with the blanket one the `Attribute` derive emits — see
     /// [`Address::encode`]).
-    pub fn remote(
-        &self,
-        name: impl Into<Name>,
-        subject: Did,
-        address: &SiteAddress,
-    ) -> Remote {
+    pub fn remote(&self, name: impl Into<Name>, subject: Did, address: &SiteAddress) -> Remote {
         Remote::new(self, subject, Address::encode(address), name)
     }
 }

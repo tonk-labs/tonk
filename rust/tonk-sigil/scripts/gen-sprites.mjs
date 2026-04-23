@@ -97,21 +97,36 @@ if (keyCount !== 512) {
   console.error(`note: default.ts has ${keyCount} entries (expected ~512)`);
 }
 
-// Build the sprite sheet. We emit one <symbol> per byte value for each of the
-// two tables (prefix / suffix) so that a rendered sigil can pick the right
-// glyph based on position. Since prefix[i] and suffix[i] are different 3-letter
-// strings, they map to different symbol entries in sigil-js's index. We emit
-// IDs as `pfx-XX` and `sfx-XX` (hex byte value).
+// Build the sprite sheet. Each symbol is rendered as a **mask** that
+// discriminates visible (@FG) from transparent (@BG) pixels, composited
+// against a single filled rectangle. The result: holes and contrast
+// linework become real transparency, not just a painted background.
+//
+// Substitutions inside the mask:
+//   @FG -> white   (mask: visible -> rect shows through -> currentColor)
+//   @BG -> black   (mask: invisible -> transparent in the output)
+//   @SW -> stroke-width (preserved literally, works inside the mask)
+//
+// The outer symbol body is one <rect> filled with var(--sigil-fg,
+// currentColor), masked by the composite. Single-color sigil.
 
-const substitute = (fragment) =>
+const maskSubstitute = (fragment) =>
   fragment
-    // Drop the wrapping <g transform='@TR'>...</g> so the symbol body sits
-    // at the viewBox origin; the <use> element applies positioning.
+    // Drop the wrapping <g transform='@TR'>...</g>; positioning happens
+    // on the <use> element.
     .replace(/^<g transform='@TR'>/, "")
     .replace(/<\/g>$/, "")
-    .replaceAll("@FG", "var(--sigil-fg, currentColor)")
-    .replaceAll("@BG", "var(--sigil-bg, transparent)")
-    .replaceAll("@SW", "var(--sigil-sw, 4)");
+    .replaceAll("@FG", "white")
+    .replaceAll("@BG", "black")
+    .replaceAll("@SW", "4");
+
+const buildSymbol = (id, fragment) =>
+  `<symbol id="${id}" viewBox="0 0 128 128">` +
+  `<mask id="m-${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">` +
+  maskSubstitute(fragment) +
+  `</mask>` +
+  `<rect width="128" height="128" fill="var(--sigil-fg, currentColor)" mask="url(#m-${id})"/>` +
+  `</symbol>`;
 
 const symbols = [];
 for (let i = 0; i < 256; i += 1) {
@@ -122,12 +137,8 @@ for (let i = 0; i < 256; i += 1) {
   if (!pfx) throw new Error(`missing symbol for prefix ${pfxKey} (byte ${i})`);
   if (!sfx) throw new Error(`missing symbol for suffix ${sfxKey} (byte ${i})`);
   const hex = i.toString(16).padStart(2, "0");
-  symbols.push(
-    `<symbol id="pfx-${hex}" viewBox="0 0 128 128">${substitute(pfx)}</symbol>`,
-  );
-  symbols.push(
-    `<symbol id="sfx-${hex}" viewBox="0 0 128 128">${substitute(sfx)}</symbol>`,
-  );
+  symbols.push(buildSymbol(`pfx-${hex}`, pfx));
+  symbols.push(buildSymbol(`sfx-${hex}`, sfx));
 }
 
 const svg =

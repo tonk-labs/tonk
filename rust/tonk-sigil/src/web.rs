@@ -12,7 +12,7 @@ impl CustomElement for SigilElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["value", "fill", "stroke", "sprite"]
+        &["value", "fill", "sprite"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -44,9 +44,6 @@ fn render(this: &HtmlElement) {
     if let Some(fill) = this.get_attribute("fill") {
         sigil = sigil.fill(fill);
     }
-    if let Some(stroke) = this.get_attribute("stroke") {
-        sigil = sigil.stroke(stroke);
-    }
     if let Some(sprite) = this.get_attribute("sprite") {
         sigil = sigil.sprite_href(sprite);
     }
@@ -68,9 +65,7 @@ fn render(this: &HtmlElement) {
     let wrapper: Element = match existing {
         Some(el) => el,
         None => {
-            let el = document
-                .create_element("span")
-                .unwrap_throw();
+            let el = document.create_element("span").unwrap_throw();
             el.set_attribute("data-sigil", "").unwrap_throw();
             // Insert the wrapper *before* any existing children so CSS
             // layout ordering (sigil first, text after) works without
@@ -122,7 +117,9 @@ fn collect_text(this: &HtmlElement) -> String {
     let children = this.child_nodes();
     let len = children.length();
     for i in 0..len {
-        let Some(node) = children.get(i) else { continue };
+        let Some(node) = children.get(i) else {
+            continue;
+        };
         // Node.TEXT_NODE = 3
         if node.node_type() == 3
             && let Some(text) = node.text_content()

@@ -39,17 +39,18 @@ fn viewbox_is_fixed_at_128() {
 }
 
 #[test]
-fn default_colors_emit_css_vars() {
+fn default_omits_inline_color_vars() {
+    // Leaves `--sigil-fg` unset on the SVG so ancestor CSS
+    // cascades through to the sprite paths, which use
+    // `var(--sigil-fg, currentColor)` as the fallback.
     let svg = Sigil::from(0u32).render();
-    assert!(svg.contains("--sigil-fg:currentColor"));
-    assert!(svg.contains("--sigil-bg:transparent"));
+    assert!(!svg.contains("--sigil-fg"));
 }
 
 #[test]
-fn custom_colors_override_defaults() {
-    let svg = Sigil::from(0u32).fill("black").stroke("white").render();
-    assert!(svg.contains("--sigil-fg:black"));
-    assert!(svg.contains("--sigil-bg:white"));
+fn fill_override_sets_inline_var() {
+    let svg = Sigil::from(0u32).fill("purple").render();
+    assert!(svg.contains("--sigil-fg:purple"));
 }
 
 #[test]

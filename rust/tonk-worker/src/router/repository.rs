@@ -15,9 +15,7 @@ use ::axum::{
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::SignerCredential;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{
-    RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress,
-};
+use dialog_repository::{RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress};
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -431,11 +429,9 @@ pub async fn create_repository(
             // resolve to on read) and the `TrackingBranch` that
             // connects them.
             let tracked = concept.branch(upstream.branch.as_str());
-            transaction = transaction.assert(tracked.clone()).assert(
-                replica
-                    .branch(branch_name.as_str())
-                    .set_upstream(&tracked),
-            );
+            transaction = transaction
+                .assert(tracked.clone())
+                .assert(replica.branch(branch_name.as_str()).set_upstream(&tracked));
         }
     }
 
@@ -549,11 +545,7 @@ where
     // depends on its name or attributes, and filtering
     // branches/remotes by `origin == replica.this()` is all we
     // need.
-    let replica = Replica::new(
-        tonk.profile.did(),
-        repository.did(),
-        name,
-    );
+    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
     let replica_entity = replica.this().clone();
 
     // Pull every branch on the meta branch, local and remote.
@@ -626,7 +618,11 @@ where
     {
         Ok(rows) => rows,
         Err(e) => {
-            log!("Tracking-branch query on meta failed for '{}': {:?}", name, e);
+            log!(
+                "Tracking-branch query on meta failed for '{}': {:?}",
+                name,
+                e
+            );
             Vec::new()
         }
     };

@@ -41,14 +41,15 @@ whatever identifier you already have."
 
 ```rust
 Sigil::from(0xdeadbeef_u32)
-    .fill("black")               // primary shape color, default `currentColor`
-    .stroke("white")             // contrast linework color, default `transparent`
+    .fill("black")                     // glyph color, default `currentColor`
     .sprite_href("/assets/sigils.svg") // where to find the sprite sheet
     .render();
 ```
 
-All colors accept any CSS color value (`"black"`, `"#fff"`, `"rgb(1,2,3)"`,
-`"var(--my-color)"`, …).
+`fill` accepts any CSS color value (`"black"`, `"#fff"`, `"rgb(1,2,3)"`,
+`"var(--my-color)"`, …). Sigils are single-color — interior holes and
+contrast lines are true SVG cutouts via a `<mask>`, so the glyph is
+transparent wherever it isn't the fill color.
 
 The rendered SVG has no intrinsic pixel size — it scales to fill its
 parent container. Size the element from CSS:
@@ -57,22 +58,16 @@ parent container. Size the element from CSS:
 tonk-sigil { width: 2rem; height: 2rem; display: inline-block; }
 ```
 
-### Theming with CSS variables
+### Theming with CSS
 
-The rendered SVG sets `--sigil-fg`, `--sigil-bg`, and `--sigil-sw` on the
-root `<svg>`. These cascade into the sprite's internal paths. You can also
-set them higher in the tree to theme every sigil on the page at once:
+The sprite's fill references `var(--sigil-fg, currentColor)`. Either set
+`--sigil-fg` on any ancestor, or just use `color:` directly — the default
+`currentColor` fallback means sigils inherit surrounding text color:
 
 ```css
-:root {
-    --sigil-fg: black;
-    --sigil-bg: white;
-}
+.sidebar { color: white; }      /* all sigils in sidebar render white */
+:root    { --sigil-fg: black; } /* or override via the variable */
 ```
-
-Note: `currentColor` is the default fill, so sigils inherit the surrounding
-CSS `color` property for free. Set `color: purple` on an ancestor and all
-sigils inside render in purple, same as text.
 
 ## Web component
 
@@ -100,7 +95,7 @@ Now anywhere in the DOM:
 <tonk-sigil>alice@example.com</tonk-sigil>
 
 <!-- Styling attributes -->
-<tonk-sigil value="0xdeadbeef" fill="purple" stroke="white"></tonk-sigil>
+<tonk-sigil value="0xdeadbeef" fill="purple"></tonk-sigil>
 
 <!-- Override the sprite sheet location -->
 <tonk-sigil value="0xdeadbeef" sprite="/static/sigils.svg"></tonk-sigil>
@@ -115,8 +110,8 @@ Resolution rules, in order:
    4 bytes.
 3. Empty element with no `value` renders as if the input were zero.
 
-The element observes `value`, `fill`, `stroke`, and `sprite` and
-re-renders on change. Text content is preserved across re-renders — the
+The element observes `value`, `fill`, and `sprite` and re-renders on
+change. Text content is preserved across re-renders — the
 sigil is inserted as a child `<span data-sigil>` rather than replacing
 the element's contents.
 
@@ -156,9 +151,16 @@ repo; you do not need to run it during normal builds.
 - **Sprite sheet instead of inline SVG.** The 275KB of glyph path data
   lives in a separate file that browsers can cache. The crate itself is
   tiny; the rendered SVG is short.
-- **CSS variables for theming.** Colors and stroke width are set via CSS
-  custom properties that cascade from the containing document.
-- **No background rectangle.** The SVG is transparent by default. If you
-  want a filled tile, wrap the element in a styled container.
+- **Real transparency, not painted holes.** Sigil-js renders interior
+  "holes" by painting them in the background color; our sprites use
+  an SVG `<mask>` so cutouts are truly transparent and the glyph
+  composites cleanly over any surface.
+- **Single-color API.** Sigil-js took a foreground and a background
+  color (the latter being both the tile background *and* the "hole"
+  paint); we take only a fill.
+- **CSS-first theming.** Glyph color inherits from `color:` via
+  `currentColor`, or overridable through `--sigil-fg`.
+- **No background rectangle.** The SVG is transparent by default. If
+  you want a filled tile, wrap the element in a styled container.
 - **No planet/star/galaxy distinction.** All sigils are 2×2 tiles of 32
   bits. Narrower inputs are not supported.

@@ -94,12 +94,7 @@ impl Remote {
     /// is consistent with the entity hash. `name` takes anything
     /// convertible into [`Name`] — e.g. a `&str` — so callers
     /// don't have to wrap string literals.
-    pub fn new(
-        replica: &Replica,
-        subject: Did,
-        address: Address,
-        name: impl Into<Name>,
-    ) -> Self {
+    pub fn new(replica: &Replica, subject: Did, address: Address, name: impl Into<Name>) -> Self {
         let name = name.into();
         Self {
             this: Entity::of(&This::Remote {
@@ -194,7 +189,10 @@ mod tests {
         let r = replica();
         let branch = Branch::new(&r, Name("shared".into()));
         let remote = Remote::new(&r, did!("test:repo"), addr(b"h"), Name("shared".into()));
-        assert_ne!(branch.this, remote.this, "branch and remote collided on entity");
+        assert_ne!(
+            branch.this, remote.this,
+            "branch and remote collided on entity"
+        );
     }
 
     #[test]

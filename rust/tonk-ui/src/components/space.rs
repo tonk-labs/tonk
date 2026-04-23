@@ -1,10 +1,10 @@
+use dialog_repository::SiteAddress;
 use leptos::{either::Either, prelude::*};
 use leptos_router::{
     hooks::use_params,
     location::{BrowserUrl, LocationProvider},
     params::Params,
 };
-use dialog_repository::SiteAddress;
 use tonk_worker::{BranchConfiguration, RemoteConfiguration, RepositoryInfo};
 
 use crate::{
@@ -75,8 +75,8 @@ pub fn TonkSpace() -> impl IntoView {
     // toolbar can render a matching sigil. Cleared back to `None`
     // on load failure / 404, so the sidebar falls back to its
     // empty state.
-    let active_subject = use_context::<ActiveSubject>()
-        .expect("ActiveSubject context provided by TonkShell");
+    let active_subject =
+        use_context::<ActiveSubject>().expect("ActiveSubject context provided by TonkShell");
     Effect::new(move |_| {
         let subject = repository
             .get()
