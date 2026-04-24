@@ -123,12 +123,13 @@ wa-page::part(menu) {
        tile goes full-bleed so inactive tiles read as "tucked
        under" the open view. */
     margin-inline: auto 0;
-    margin-block: var(--wa-space-2xs);
+    margin-block: 0;
     transition: width var(--wa-transition-normal) var(--wa-transition-easing),
                 margin var(--wa-transition-normal) var(--wa-transition-easing);
 }
 
-.sidebar-space.is-active {
+.sidebar-space.is-active,
+.sidebar-space--full {
     width: 100%;
     margin: 0;
 }
@@ -156,17 +157,10 @@ wa-page::part(menu) {
     background: var(--wa-color-surface-default);
 }
 
-/* wa-button's plain-variant hover lands on `neutral-fill-quiet`,
-   which matches our sidebar background and hides the hover
-   affordance. Bump non-space sidebar buttons to `-normal` so
-   hover actually shows. */
-.sidebar-section > wa-button:not(.sidebar-space)::part(base):hover,
-.sidebar-section > wa-button:not(.sidebar-space)::part(base):focus-visible {
-    background: var(--wa-color-neutral-fill-normal);
-}
-
 .sidebar-space::part(label) {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 100%;
     height: 100%;
     padding: 0;
@@ -205,7 +199,7 @@ wa-page::part(menu) {
 }
 .sidebar-add-cross {
     stroke: var(--wa-color-neutral-fill-quiet);
-    stroke-width: 12;
+    stroke-width: 4;
     stroke-linecap: square;
     fill: none;
 }
@@ -217,9 +211,28 @@ wa-page::part(menu) {
     stroke: var(--wa-color-text-normal);
 }
 
-/* Match the avatar to the icon-button footprint (~2.75rem square)
-   so it sits alongside the help/theme buttons cleanly. `--size` is
-   the WA-documented token for avatar size. */
-.sidebar-avatar {
-    --size: 2.75rem;
+/* Profile tile: dark square background with a light circular
+   avatar centered inside (~70% of the tile), inverting on
+   hover to match the other glyph tiles. */
+.sidebar-space--profile::part(base) {
+    background: var(--wa-color-text-normal);
 }
+.sidebar-space--profile:is(:hover, :focus-within)::part(base) {
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.sidebar-avatar {
+    /* Concrete length so wa-avatar's internal
+       `font-size: calc(var(--size) * 0.6)` for the user-icon
+       resolves against a real value rather than a percentage,
+       which wa-avatar's internals don't cope with. */
+    --size: 3rem;
+    display: block;
+    margin: auto;
+    background-color: var(--wa-color-neutral-fill-quiet);
+    color: var(--wa-color-text-normal);
+}
+.sidebar-space--profile:is(:hover, :focus-within) .sidebar-avatar {
+    background-color: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+}
+

@@ -70,34 +70,17 @@ pub fn TonkToolbar() -> impl IntoView {
                     aria-hidden="true"
                 >
                     <circle cx="64" cy="64" r="56" class="sidebar-add-disc" />
-                    <path d="M64 36 V92 M36 64 H92" class="sidebar-add-cross" />
+                    <path d="M64 24 V104 M24 64 H104" class="sidebar-add-cross" />
                 </svg>
             </wa-button>
         </div>
-        <div slot="navigation-footer" class="sidebar-section">
+        <div slot="navigation-footer" class="sidebar-section sidebar-section--flush">
             <wa-button
-                href="/help"
-                appearance="plain"
-                variant="neutral"
-                aria-label="Help"
-            >
-                <wa-icon name="circle-question"></wa-icon>
-            </wa-button>
-            <wa-button
-                appearance="plain"
-                variant="neutral"
-                aria-label="Toggle theme"
-            >
-                <wa-icon name="moon"></wa-icon>
-            </wa-button>
-            <wa-button
-                class="sidebar-profile"
+                class="sidebar-space sidebar-space--full sidebar-space--profile"
                 href="/profile"
-                appearance="plain"
-                variant="neutral"
                 aria-label="Profile"
             >
-                <wa-avatar label="User" class="sidebar-avatar"></wa-avatar>
+                <wa-avatar class="sidebar-avatar" label="User"></wa-avatar>
             </wa-button>
         </div>
     }
