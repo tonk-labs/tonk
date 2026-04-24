@@ -138,7 +138,8 @@ mod integration_tests {
                 seed: EPHEMERAL_SEED,
             },
             Some(remote_url),
-        )?;
+        )
+        .await?;
         let join_base = format!("{}join", test_environment.tonk_web);
         let invite_url = invite.to_url(&join_base)?;
 
@@ -234,45 +235,66 @@ mod integration_tests {
             .await?;
 
         let minted: CreateInviteResponse = serde_json::from_value(mint_result.json().clone())?;
+        let minted_url = match minted {
+            CreateInviteResponse::Open { url } => url,
+            CreateInviteResponse::Scoped { .. } => {
+                panic!("the UI mints audience-open invites; got Scoped");
+            }
+        };
+        // `starts_with` (not `contains`): a silent fallback to
+        // DEFAULT_BASE_URL (tonk.xyz) would still contain `/join?access=`.
+        let expected_prefix = format!("{}join?access=", test_environment.tonk_web);
         assert!(
-            minted.url.contains("/join?access="),
-            "expected invite URL to hit the /join route with access param, got {}",
-            minted.url,
+            minted_url.as_str().starts_with(&expected_prefix),
+            "expected invite URL to start with {expected_prefix}, got {minted_url}",
+        );
+        assert!(
+            minted_url.fragment().is_some(),
+            "expected open invite URL to carry an ephemeral-seed fragment, got {minted_url}",
         );
 
         inviter.quit().await?;
 
-        // 2. Invitee: fresh driver = fresh profile/IndexedDB. Navigate
-        // directly to the invite URL and wait for the redirect to
-        // `/space/repo-<...>` that the claim path emits.
+        // Fresh driver = fresh IndexedDB; claim succeeds iff the URL
+        // lands on `/space/repo-<...>` and the repo summary renders.
         let invitee = test_environment.driver().await?;
-        invitee.goto(&minted.url).await?;
+        invitee.goto(minted_url.as_str()).await?;
 
+        wait_for_space_landing(&invitee).await?;
+        invitee.query(By::Css("section.repository")).first().await?;
+
+        invitee.quit().await?;
+        Ok(())
+    }
+
+    /// Poll until the driver lands on `/space/repo-<...>` or time out.
+    /// On timeout, includes the last URL and the rendered repository /
+    /// auth-status text in the bail message.
+    #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
+    async fn wait_for_space_landing(driver: &WebDriver) -> Result<String> {
         let mut last_url = String::new();
-        let mut landed = false;
         for _ in 0..100 {
-            if let Ok(u) = invitee.current_url().await {
+            if let Ok(u) = driver.current_url().await {
                 last_url = u.to_string();
                 if u.path().starts_with("/space/repo-") {
-                    landed = true;
-                    break;
+                    return Ok(last_url);
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        assert!(
-            landed,
-            "claim did not redirect to /space/repo-<...> within timeout. last URL: {last_url}",
-        );
-
-        let repository = invitee.query(By::Css("section.repository")).first().await?;
-        let text = repository.text().await?;
-        assert!(
-            text.contains(&minted.audience.to_string()) || text.contains("did:key:"),
-            "expected repository summary to include a did:key value, got: {text}",
-        );
-
-        invitee.quit().await?;
-        Ok(())
+        let repository_text = match driver.find(By::Css("section.repository")).await {
+            Ok(elem) => elem.text().await.unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        let status_text = match driver.find(By::Css(".auth .status")).await {
+            Ok(elem) => elem.text().await.unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        anyhow::bail!(
+            "claim did not land on /space/repo-<...> within timeout.\n\
+             last URL: {last_url}\n\
+             section.repository: {repository_text}\n\
+             .auth .status: {status_text}",
+        )
     }
 }

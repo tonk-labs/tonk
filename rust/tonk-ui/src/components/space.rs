@@ -137,9 +137,9 @@ pub fn TonkSpace() -> impl IntoView {
     let pull_click = move |_| trigger_sync(SyncOp::Pull);
     let push_click = move |_| trigger_sync(SyncOp::Push);
 
-    // Invite minting: a single user-triggered action per click. Open
-    // invites (no audience) are the default — the ephemeral seed is
-    // embedded in the URL fragment so anyone with the link can claim.
+    // The in-flight mint captures its target space name; on completion
+    // it bails if the user has since navigated away, so stale Ok/Failed
+    // states don't land on the wrong space's panel.
     let invite_state = RwSignal::new(InviteState::Idle);
     let mint_invite = move |_| {
         let Some(name) = space_name.get() else {
@@ -150,8 +150,12 @@ pub fn TonkSpace() -> impl IntoView {
         }
         invite_state.set(InviteState::Minting);
         spawn_local(async move {
-            match api::create_invite(&name, None).await {
-                Ok(resp) => invite_state.set(InviteState::Ok(resp.url)),
+            let result = api::create_invite(&name, None).await;
+            if space_name.get_untracked().as_deref() != Some(name.as_str()) {
+                return;
+            }
+            match result {
+                Ok(resp) => invite_state.set(InviteState::Ok(resp.url().to_string())),
                 Err(e) => invite_state.set(InviteState::Failed(format!("{e}"))),
             }
         });
