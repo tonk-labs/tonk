@@ -54,6 +54,14 @@ fn render(this: &HtmlElement) {
         None => return,
     };
 
+    // Sweep any direct children that aren't our own wrappers into a
+    // hidden seed container. The seed text is load-bearing for
+    // hashing (see `collect_text`) and for assistive tech, but it
+    // must not paint — CSS `color:transparent` on the host also
+    // hides the SVG glyphs because they fall back to currentColor.
+    // Hiding the seed at the DOM level sidesteps that coupling.
+    sequester_seed(&document, this);
+
     // Find or create the wrapper that holds the rendered SVG.
     // Matches the selector used on insertion so re-renders update
     // the same wrapper instead of appending another one.
@@ -72,9 +80,15 @@ fn render(this: &HtmlElement) {
             // filling the host element. Force it to be a block box
             // that fills the host so the inner SVG's `width: 100%`
             // and `height: 100%` resolve against the full host size.
+            // Use absolute positioning so the wrapper fills the host
+            // regardless of the host's display mode. Without this, a
+            // host under `display: flex` (e.g. when slotted into a
+            // wa-page navigation region whose `::slotted(*)` makes it
+            // flex) would treat the wrapper as a zero-basis flex item
+            // and collapse it.
             el.set_attribute(
                 "style",
-                "display:block;width:100%;height:100%",
+                "position:absolute;inset:0;display:block",
             )
             .unwrap_throw();
             // Insert the wrapper *before* any existing children so CSS
@@ -122,6 +136,8 @@ fn resolve_bits(this: &HtmlElement) -> [u8; 4] {
 /// cannot use `textContent` because that includes the SVG wrapper's
 /// inner text (empty for our sprite refs, but still a pollution
 /// concern). Iterate children once and concatenate raw text nodes.
+/// The seed wrapper (`<span data-sigil-seed>`) is treated as
+/// transparent — its text content is what callers originally slotted.
 fn collect_text(this: &HtmlElement) -> String {
     let mut out = String::new();
     let children = this.child_nodes();
@@ -139,14 +155,59 @@ fn collect_text(this: &HtmlElement) -> String {
             && element.tag_name().eq_ignore_ascii_case("span")
             && element.has_attribute("data-sigil")
         {
-            // Skip our own wrapper; include other children's text so
-            // markup like `<tonk-sigil><strong>foo</strong></tonk-sigil>`
-            // still hashes `foo`.
+            // Skip our own sigil wrapper.
         } else if let Some(text) = node.text_content() {
             out.push_str(&text);
         }
     }
     out.trim().to_string()
+}
+
+/// Move any direct children that aren't our own wrappers into a
+/// hidden `<span data-sigil-seed>` container. Idempotent: if the
+/// seed container already exists, leftover stray children get
+/// appended to it. Hashing has already happened by the time this
+/// is called, so reshaping the DOM is safe.
+fn sequester_seed(document: &web_sys::Document, this: &HtmlElement) {
+    let seed: Element = match this
+        .query_selector(":scope > span[data-sigil-seed]")
+        .ok()
+        .flatten()
+    {
+        Some(el) => el,
+        None => {
+            let el = document.create_element("span").unwrap_throw();
+            el.set_attribute("data-sigil-seed", "").unwrap_throw();
+            // Belt-and-suspenders: the baseline stylesheet also
+            // hides this, but an inline style keeps the seed out
+            // of view even if the baseline failed to inject.
+            el.set_attribute("style", "display:none").unwrap_throw();
+            this.append_child(&el).unwrap_throw();
+            el
+        }
+    };
+
+    // Pull every direct child that isn't the sigil wrapper or the
+    // seed itself into the seed container. Collect first, move
+    // second — mutating during iteration skips siblings.
+    let children = this.child_nodes();
+    let len = children.length();
+    let mut to_move = Vec::new();
+    for i in 0..len {
+        let Some(node) = children.get(i) else { continue };
+        if let Some(element) = node.dyn_ref::<Element>() {
+            if element.tag_name().eq_ignore_ascii_case("span")
+                && (element.has_attribute("data-sigil")
+                    || element.has_attribute("data-sigil-seed"))
+            {
+                continue;
+            }
+        }
+        to_move.push(node);
+    }
+    for node in to_move {
+        let _ = seed.append_child(&node);
+    }
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
@@ -163,10 +224,13 @@ impl Sigil {
     /// at app startup. Subsequent calls are no-ops if the element is already
     /// defined.
     pub fn install() {
+        // Always refresh the baseline stylesheet so code changes
+        // land on hot reload; only register the custom element
+        // itself once per page (the browser rejects re-definition).
+        inject_baseline_style();
         if already_registered() {
             return;
         }
-        inject_baseline_style();
         SigilElement::define("tonk-sigil");
     }
 }
@@ -188,14 +252,24 @@ fn inject_baseline_style() {
     const ID: &str = "tonk-sigil-baseline";
     let Some(window) = web_sys::window() else { return };
     let Some(document) = window.document() else { return };
-    if document.get_element_by_id(ID).is_some() {
-        return;
+    // Remove any previous baseline so hot-reloaded changes to the
+    // stylesheet actually land — otherwise the original rules stay
+    // in the DOM because the first install() stamped them in.
+    if let Some(existing) = document.get_element_by_id(ID) {
+        existing.remove();
     }
     let Ok(style) = document.create_element("style") else { return };
     let _ = style.set_attribute("id", ID);
+    // The host is a positioning context for the inner absolutely
+    // positioned wrapper, and a square by default so aspect is
+    // preserved when callers set only one dimension. Size is the
+    // consumer's responsibility — set `width` and/or `height` on the
+    // host, or use `aspect-ratio` with a single dimension.
     style.set_text_content(Some(
-        "tonk-sigil{display:inline-block;line-height:0}\
-         tonk-sigil>[data-sigil]{display:block;width:100%;height:100%}",
+        "tonk-sigil{display:inline-block;line-height:0;\
+         aspect-ratio:1/1;position:relative}\
+         tonk-sigil>[data-sigil]{position:absolute;inset:0;display:block}\
+         tonk-sigil>[data-sigil-seed]{display:none}",
     ));
     if let Some(head) = document.head() {
         let _ = head.append_child(&style);
