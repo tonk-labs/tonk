@@ -29,6 +29,7 @@ leptos_router = { workspace = true }
 leptos-use = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
+send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -66,7 +67,7 @@ getrandom_0_3 = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
-features = ["Window"]
+features = ["BroadcastChannel", "MessageEvent", "Window"]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.

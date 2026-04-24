@@ -5,10 +5,10 @@
 
 use leptos::{logging::log, prelude::*};
 use leptos_router::location::{BrowserUrl, LocationProvider};
-use tonk_worker::ProfileInfo;
+use tonk_worker::{Notification, ProfileInfo};
 use wasm_bindgen::prelude::*;
 
-use crate::{api, error::TonkUiError};
+use crate::{api, error::TonkUiError, watch::watch};
 
 mod launcher;
 use launcher::*;
@@ -52,11 +52,11 @@ pub enum Status {
 pub type ActiveSubject = RwSignal<Option<String>, LocalStorage>;
 
 /// Shared [`LocalResource`] holding the latest `GET /api/profile`
-/// response. Provided by [`TonkShell`] so the sidebar toolbar
-/// *and* the create-space flow can read from (and refetch) the
-/// same source of truth — after creating a new space, the
-/// dialog calls `.refetch()` and the sidebar re-renders with the
-/// new tile.
+/// response. Provided by [`TonkShell`] so every consumer (today:
+/// the sidebar toolbar and profile view) reads from one source of
+/// truth. The shell refetches the resource automatically whenever
+/// the worker broadcasts on `/api/profile`, so writes from any
+/// source (this tab, another tab, external fetch) flow through.
 ///
 /// `Ok(None)` is used to model "not yet ready" (shell still
 /// initialising); `Ok(Some(info))` is a successful fetch.
@@ -140,6 +140,21 @@ pub fn TonkShell() -> impl IntoView {
         }
     });
     provide_context(profile_resource);
+
+    // The worker posts on `/api/profile` whenever the profile
+    // repo's meta branch commits (replica added/removed, remote
+    // edited, etc.). Refetching on any message keeps the sidebar
+    // in sync with writes from anywhere — this tab, another tab,
+    // or a direct fetch that bypasses the dialog. The payload
+    // carries the new revision; we ignore it today (refetch is
+    // cheap and the endpoint is the source of truth) but the
+    // shape is available for future dedup.
+    let profile_update = watch::<Notification>("/api/profile");
+    Effect::new(move |_| {
+        if profile_update.get().is_some() {
+            profile_resource.refetch();
+        }
+    });
 
     // Shared open-state for the create-space dialog. The `+`
     // tile in the sidebar flips this to `true`; the dialog

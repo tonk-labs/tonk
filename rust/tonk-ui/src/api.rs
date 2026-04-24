@@ -131,13 +131,12 @@ impl From<TonkUiError> for CreateSpaceError {
 
 /// Creates a new repository with the given name.
 ///
-/// Sends `PUT /api/repository/{name}` with `If-None-Match: *`
-/// and a body that defines a single `main` branch with no
-/// upstream and no remotes. On success the worker registers a
-/// replica for this repository in the profile repo, which means
-/// the next `GET /api/profile` will include it in the space
-/// list — callers should refetch the shared `ProfileResource` so
-/// the sidebar picks up the new tile.
+/// Sends `PUT /api/repository/{name}` with `If-None-Match: *` and
+/// a body that defines a single `main` branch with no upstream and
+/// no remotes. On success the worker registers a replica for this
+/// repository in the profile repo and broadcasts on `/api/profile`,
+/// so anything subscribed to that channel (notably the shell's
+/// `ProfileResource`) can refresh.
 pub async fn create_space(name: &str) -> Result<RepositoryInfo, CreateSpaceError> {
     log!("Creating space '{}'...", name);
 

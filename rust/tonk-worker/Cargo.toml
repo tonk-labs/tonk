@@ -41,6 +41,7 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
+    "BroadcastChannel",
     "CryptoKey",
     "FetchEvent",
     "Headers",

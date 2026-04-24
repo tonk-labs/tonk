@@ -29,8 +29,9 @@ fn did_to_sigil(did: &str) -> Option<String> {
 #[component]
 pub fn TonkToolbar() -> impl IntoView {
     // Profile data lives on the shell as a shared resource —
-    // the create-space flow refetches it so the sidebar picks
-    // up new tiles without any explicit notification here.
+    // the shell refetches it in response to `/api/profile`
+    // broadcasts, so the sidebar picks up new tiles as soon as
+    // any write lands.
     let profile_resource =
         use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
     let create_space_open =

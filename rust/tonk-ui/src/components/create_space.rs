@@ -9,7 +9,7 @@ use wasm_bindgen::JsCast;
 
 use crate::{
     api::{self, CreateSpaceError},
-    components::{CreateSpaceOpen, ProfileResource},
+    components::CreateSpaceOpen,
 };
 
 /// Modal dialog for creating a new space.
@@ -17,14 +17,12 @@ use crate::{
 /// Rendered once at the launcher level. Visibility is driven by
 /// the shared [`CreateSpaceOpen`] signal — the sidebar's `+` tile
 /// flips it to `true`, the dialog flips it back to `false` after
-/// a successful create or on Cancel. A successful create refetches
-/// the shared [`ProfileResource`] so the sidebar immediately shows
-/// the new tile, then navigates to `/space/{name}`.
+/// a successful create or on Cancel. After a successful create the
+/// dialog just navigates to `/space/{name}` — the sidebar refreshes
+/// on its own when the worker broadcasts on `/api/profile`.
 #[component]
 pub fn TonkCreateSpace() -> impl IntoView {
     let open = use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
-    let profile_resource =
-        use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
     // `use_navigate` must be called during component setup — its
     // returned closure can be invoked later, including from async
     // blocks, but calling the hook itself from inside a handler
@@ -60,10 +58,6 @@ pub fn TonkCreateSpace() -> impl IntoView {
         spawn_local(async move {
             match api::create_space(&requested).await {
                 Ok(_) => {
-                    // Refetch so the sidebar (and any other
-                    // consumer of `ProfileResource`) picks up the
-                    // new replica.
-                    profile_resource.refetch();
                     open.set(false);
                     name.set(String::new());
                     submitting.set(false);

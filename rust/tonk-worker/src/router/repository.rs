@@ -16,7 +16,7 @@ use axum_wasm_macros::wasm_compat;
 use dialog_credentials::SignerCredential;
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress};
-use dialog_varsig::Did;
+use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -24,7 +24,7 @@ use tonk_common::log;
 use tonk_schema::{Branch as MetaBranch, Remote, Replica, TrackingBranch};
 
 use super::AppState;
-use crate::{RepositoryError, TonkWorkerError, worker::TonkState};
+use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
 
 /// Name of the meta branch every repository has alongside its
 /// content branches. The meta branch stores schema concepts
@@ -438,7 +438,7 @@ pub async fn create_repository(
     // 6. Commit the meta transaction. Everything above has
     // already happened at the dialog layer; committing here
     // makes the schema view of it land atomically.
-    transaction
+    let revision = transaction
         .commit()
         .perform(&tonk.operator)
         .await
@@ -449,6 +449,19 @@ pub async fn create_repository(
             ))
         })?;
     log!("Wrote meta facts for repository '{}'", name);
+
+    // Notify listeners of `/api/repository/{name}` that the repo's
+    // representation changed. The broadcast mirrors the endpoint
+    // the data is served from; UIs subscribed on that path pick up
+    // the change without a reload. Fires after the commit so
+    // listeners only see durable state.
+    broadcast(
+        &format!("/api/repository/{name}"),
+        &Notification {
+            branch: META_BRANCH.to_string(),
+            revision,
+        },
+    );
 
     // 7. Record this replica in the profile repository's meta
     // branch so the profile keeps an index of every replica it
@@ -485,7 +498,7 @@ async fn record_replica_in_profile(
 
     let replica = Replica::new(tonk.profile.did(), subject.clone(), name);
 
-    profile_meta
+    let revision = profile_meta
         .transaction()
         .assert(replica)
         .commit()
@@ -498,6 +511,17 @@ async fn record_replica_in_profile(
             ))
         })?;
     log!("Recorded replica '{}' in profile meta", name);
+
+    // The profile repo's representation — what `GET /api/profile`
+    // returns — now includes this replica, so tell listeners of
+    // `/api/profile`.
+    broadcast(
+        "/api/profile",
+        &Notification {
+            branch: META_BRANCH.to_string(),
+            revision,
+        },
+    );
 
     Ok(())
 }
@@ -605,12 +629,12 @@ pub async fn get_repository(
 /// `subject` / `operator` / `profile` fields still surface, and
 /// the UI can tell the repo is unpopulated.
 pub(super) async fn build_repository_info<R>(
-    tonk: &crate::worker::TonkState,
+    tonk: &TonkState,
     name: &str,
     repository: &Repository<R>,
 ) -> RepositoryInfo
 where
-    R: dialog_varsig::Principal + Clone,
+    R: Principal + Clone,
 {
     let meta = match repository
         .branch(META_BRANCH)

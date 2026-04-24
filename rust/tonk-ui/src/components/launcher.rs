@@ -225,4 +225,123 @@ mod integration_tests {
         driver.quit().await?;
         Ok(())
     }
+
+    /// A repository created out-of-band (direct fetch, not via the
+    /// dialog) should show up in the sidebar without a reload:
+    /// the worker broadcasts on `/api/profile` after recording the
+    /// replica, and the shell's listener refetches the profile in
+    /// response. Clicking the freshly appeared tile should navigate
+    /// to `/space/{name}` like any other sidebar tile.
+    #[dialog_common::test]
+    async fn it_surfaces_externally_created_space_in_sidebar(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for the home space so we know the shell is live and
+        // the broadcast subscription is in place.
+        let home_banner = driver.query(By::Css(".space-banner-title")).first().await?;
+        assert_eq!(home_banner.text().await?, "home");
+        let home_did = home_banner.attr("title").await?.unwrap_or_default();
+        assert!(
+            home_did.starts_with("did:key:"),
+            "expected home banner title to be a did:key, got: {home_did}",
+        );
+
+        // Sanity check: no `pictures` tile exists yet.
+        assert!(
+            !driver
+                .query(By::Css(r#"wa-button[aria-label="Open pictures space"]"#))
+                .nowait()
+                .exists()
+                .await?,
+            "expected no `pictures` tile before creating one",
+        );
+
+        // Create the repo via a direct fetch — this is the path a
+        // non-dialog caller (another tab, a CLI wrapper, a future
+        // flow) would hit. The dialog's explicit refetch is gone,
+        // so if the sidebar updates it's only because the worker's
+        // broadcast reached the shell's listener.
+        let create_result = driver
+            .execute(
+                r#"
+                const response = await fetch('/api/repository/pictures', {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'If-None-Match': '*',
+                    },
+                    body: JSON.stringify({ branch: { main: {} } }),
+                });
+                return { status: response.status };
+                "#,
+                vec![],
+            )
+            .await?;
+        let status = create_result.json()["status"].as_u64().unwrap_or(0);
+        assert_eq!(
+            status, 201,
+            "expected PUT /api/repository/pictures to create (201), got {status}",
+        );
+
+        // Wait for the new tile to appear. `query` polls by default,
+        // so this doubles as our proof that the broadcast round-trip
+        // (worker → /api/profile channel → shell listener →
+        // refetch → sidebar re-render) actually completed.
+        let pictures_tile = driver
+            .query(By::Css(r#"wa-button[aria-label="Open pictures space"]"#))
+            .first()
+            .await?;
+        assert!(
+            !pictures_tile
+                .class_name()
+                .await?
+                .unwrap_or_default()
+                .contains("is-active"),
+            "new tile should not be active before we navigate to it",
+        );
+
+        // Click through the tile (shadow-root anchor, so dispatch
+        // via JS — see `it_navigates_to_the_profile_via_sidebar`).
+        driver
+            .execute(
+                "document.querySelector('wa-button[aria-label=\"Open pictures space\"]').click();",
+                vec![],
+            )
+            .await?;
+
+        // Wait for the banner to swap to the new space. Polling
+        // on title inequality handles the transition race.
+        let home_did_for_filter = home_did.clone();
+        let pictures_banner = driver
+            .query(By::Css(".space-banner-title"))
+            .with_filter(move |element: WebElement| {
+                let home_did = home_did_for_filter.clone();
+                async move {
+                    let current = element.attr("title").await?.unwrap_or_default();
+                    Ok(current.starts_with("did:key:") && current != home_did)
+                }
+            })
+            .first()
+            .await?;
+
+        let url = driver.current_url().await?;
+        assert_eq!(
+            url.path(),
+            "/space/pictures",
+            "expected URL to be /space/pictures after clicking the tile, got: {url}",
+        );
+        assert_eq!(pictures_banner.text().await?, "pictures");
+        let pictures_did = pictures_banner.attr("title").await?.unwrap_or_default();
+        assert!(
+            pictures_did.starts_with("did:key:"),
+            "expected pictures banner title to be a did:key, got: {pictures_did}",
+        );
+        assert_ne!(
+            pictures_did, home_did,
+            "expected pictures DID to differ from home DID",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
 }
