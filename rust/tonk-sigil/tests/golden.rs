@@ -85,9 +85,10 @@ fn distinct_inputs_produce_distinct_output() {
 #[test]
 fn svg_is_responsive() {
     let svg = Sigil::from(0u32).render();
-    // No pixel-valued width/height — only 100% for CSS-driven sizing
-    assert!(svg.contains("width:100%"));
-    assert!(svg.contains("height:100%"));
+    // No pixel-valued width/height — only 100% so the SVG scales
+    // to its CSS box.
+    assert!(svg.contains("width=\"100%\""));
+    assert!(svg.contains("height=\"100%\""));
     assert!(!svg.contains("width=\"128\""));
     assert!(!svg.contains("height=\"128\""));
 }
