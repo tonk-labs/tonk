@@ -37,8 +37,15 @@
 
   <!-- Web Awesome: custom-element UI library (see .claude/skills/webawesome). The loader
        auto-registers any <wa-*> elements used in the DOM; `data-webawesome` tells it
-       where its bundled assets (icons, etc.) live. -->
+       where its bundled assets (icons, etc.) live.
+
+       We use the "shoelace" theme + palette — a quieter look with a
+       warmer neutral palette than the default theme. Activated by
+       `wa-theme-shoelace` and `wa-palette-shoelace` on <html>, set
+       below together with the light/dark class. -->
   <link rel="stylesheet" href="/webawesome/styles/webawesome.css">
+  <link rel="stylesheet" href="/webawesome/styles/themes/shoelace.css">
+  <link rel="stylesheet" href="/webawesome/styles/color/palettes/shoelace.css">
   <script type="module" src="/webawesome/webawesome.loader.js" data-webawesome="/webawesome"></script>
 
   <!-- Inherit the OS light/dark preference. Web Awesome picks up its
@@ -47,6 +54,10 @@
        `prefers-color-scheme` changes. -->
   <script>
     (() => {
+      // Activate the shoelace theme + palette once. Light/dark is
+      // toggled reactively on `prefers-color-scheme` changes.
+      document.documentElement.classList.add('wa-theme-shoelace', 'wa-palette-shoelace');
+
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
       const apply = (isDark) => {
         const cls = document.documentElement.classList;
@@ -102,7 +113,7 @@
   <link data-trunk rel="copy-dir" href="./assets/webawesome" />
   <link data-trunk rel="copy-file" href="../tonk-sigil/assets/sigils.svg" />
 
-  <link data-trunk rel="tailwind-css" href="./styles.css" />
+  <link data-trunk rel="css" href="./styles.css" />
 </head>
 
 <body>

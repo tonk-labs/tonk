@@ -5,17 +5,19 @@ use leptos_router::{
     path,
 };
 
-/// Main launcher view that combines the toolbar and workspace.
+/// Main launcher view. `<wa-page>` provides the adaptive shell:
+/// navigation sits in its own column on desktop and collapses into a
+/// drawer (with a hamburger toggle) below the mobile breakpoint.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
     view! {
         <Router>
-            <section class="launcher">
+            <wa-page>
                 <TonkToolbar />
-                <Routes fallback=move || view!{ <section class="404">"Nothing here ¯\\_(ツ)_/¯"</section> }>
+                <Routes fallback=move || view!{ <section>"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     <Route path=path!("space/:space?") view=TonkSpace />
                 </Routes>
-            </section>
+            </wa-page>
         </Router>
     }
 }

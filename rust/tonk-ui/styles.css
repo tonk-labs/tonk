@@ -1,9 +1,157 @@
-@layer base, application;
-@import "tailwindcss" layer(base);
-@import "./assets/styles/common.css" layer(base);
-/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
-/* Use Web Awesome's `.wa-dark` class as the single source of truth
-   for dark mode. The root script in index.html sets it from
-   `prefers-color-scheme`, so tailwind's `dark:` variant now mirrors
-   the OS preference automatically. */
-@variant dark (&:where(.wa-dark, .wa-dark *));
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-extralight.otf") format("opentype");
+    font-weight: 200;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-light.otf") format("opentype");
+    font-weight: 300;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-regular.otf") format("opentype");
+    font-weight: 400;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-book.otf") format("opentype");
+    font-weight: 450;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-medium.otf") format("opentype");
+    font-weight: 500;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-bold.otf") format("opentype");
+    font-weight: 700;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-heavy.otf") format("opentype");
+    font-weight: 800;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-black.otf") format("opentype");
+    font-weight: 900;
+    font-style: normal;
+}
+
+html, body {
+    height: 100%;
+    padding: 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+body {
+    font-family: var(--wa-font-body);
+    background: var(--wa-color-surface-default);
+    color: var(--wa-color-text-normal);
+}
+
+/* Pin the page to the viewport so the sidebar and header stay put
+   while only the main content scrolls. Without this, wa-page grows
+   to fit its content and the whole layout scrolls with the page. */
+wa-page {
+    height: 100vh;
+    overflow: hidden;
+}
+
+wa-page::part(main) {
+    overflow: auto;
+}
+
+/* Give the navigation column a fixed width and a panel-like surface
+   so it reads as a contained sidebar rather than icons in the page
+   margin. `::part(menu)` is wa-page's documented hook for this. */
+wa-page {
+    --menu-width: 4rem;
+}
+
+wa-page::part(menu) {
+    background: var(--wa-color-neutral-fill-normal);
+    border-inline-end: 1px solid var(--wa-color-surface-border);
+}
+
+/* Each navigation slot receives a single `.sidebar-section`
+   wrapper. The wrapper lays out its children as a centered column
+   so buttons, sigil, and avatar all align regardless of their
+   intrinsic width. Transparent bg lets the menu's raised surface
+   show through. */
+.sidebar-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--wa-space-s);
+    background: transparent;
+}
+
+/* Flush variant: drop wa-page's default slot padding so the space
+   switcher can reach the column edges. */
+.sidebar-section--flush {
+    padding: 0;
+    gap: 0;
+}
+
+/* Space switcher: full-width, square, edge-to-edge. The button
+   becomes the clickable frame; the sigil fills it. */
+.sidebar-space {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
+}
+
+.sidebar-space::part(base) {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border-radius: 0;
+    border: 0;
+    background: var(--wa-color-surface-default);
+    color: var(--wa-color-text-normal);
+}
+
+.sidebar-space::part(base):hover,
+.sidebar-space::part(base):focus-visible {
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-surface-default);
+}
+
+.sidebar-space::part(label) {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    margin: 0;
+}
+
+.sidebar-sigil {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* Match the avatar to the icon-button footprint (~2.75rem square)
+   so it sits alongside the help/theme buttons cleanly. `--size` is
+   the WA-documented token for avatar size. */
+.sidebar-avatar {
+    --size: 2.75rem;
+}

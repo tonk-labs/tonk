@@ -87,48 +87,33 @@ pub fn TonkSpace() -> impl IntoView {
     });
 
     view! {
-        <section class="space">
-            <Suspense fallback=|| view! {
-                <div class="space-state">
-                    <wa-spinner style="font-size: 1.5rem"></wa-spinner>
-                    <span>"Loading…"</span>
-                </div>
+        <Suspense fallback=|| view! {
+            <wa-spinner></wa-spinner>
+        }>
+            <ErrorBoundary fallback=|errors| view! {
+                <wa-callout variant="danger">
+                    <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                    { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
+                </wa-callout>
             }>
-                <ErrorBoundary fallback=|errors| view! {
-                    <wa-callout variant="danger" class="space-state">
-                        <wa-icon slot="icon" name="circle-exclamation" variant="regular"></wa-icon>
-                        { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
-                    </wa-callout>
-                }>
-                    { move || repository.get().map(|result| result.map(|repo| match repo {
-                        Some(info) => Either::Left(repository_view(info)),
-                        None => Either::Right(view! {
-                            <wa-callout variant="neutral" class="space-state">
-                                <wa-icon slot="icon" name="circle-info" variant="regular"></wa-icon>
-                                { move || format!(
-                                    "Repository '{}' not found",
-                                    space_name.get().unwrap_or_default(),
-                                ) }
-                            </wa-callout>
-                        }),
-                    })) }
-                </ErrorBoundary>
-            </Suspense>
-        </section>
+                { move || repository.get().map(|result| result.map(|repo| match repo {
+                    Some(info) => Either::Left(repository_view(info)),
+                    None => Either::Right(view! {
+                        <wa-callout variant="neutral">
+                            <wa-icon slot="icon" name="circle-info"></wa-icon>
+                            { move || format!(
+                                "Repository '{}' not found",
+                                space_name.get().unwrap_or_default(),
+                            ) }
+                        </wa-callout>
+                    }),
+                })) }
+            </ErrorBoundary>
+        </Suspense>
     }
 }
 
 /// Render a [`RepositoryInfo`] as a structured detail view.
-///
-/// Layout: a header with the repo name and DID, an identity
-/// block showing profile/operator, and two card grids for
-/// branches and remotes. A `None` upstream or empty map is
-/// rendered as an "empty" placeholder so the reader doesn't
-/// have to guess whether the absence is data or a UI bug.
-/// Renders a sigil derived from a `did:key` identifier. The sigil
-/// uses the underlying public-key bytes — not the DID string — so
-/// two encodings of the same key produce the same sigil. Falls back
-/// to an empty element if the DID isn't a parseable `did:key`.
 fn did_sigil_value(did: &str) -> Option<String> {
     did::did_key_prefix(did).map(|bytes| {
         let n = u32::from_be_bytes(bytes);
@@ -145,52 +130,42 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
     let mut remotes: Vec<(String, RemoteConfiguration)> = info.remote.into_iter().collect();
     remotes.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-    let subject = info.subject.to_string();
-    let operator = info.operator.to_string();
-    let profile = info.profile.to_string();
-
     let branch_cards = branches
         .into_iter()
         .map(|(name, config)| {
             let upstream = config.upstream.map(|up| format!("{}/{}", up.remote, up.branch));
             let revision = config.revision.map(|rev| {
-                // Split the revision into two human-readable
-                // parts: a compact version string and the tree
-                // hash. `TreeReference`'s `Display` renders as
-                // `#<base58>`; abbreviate the base58 portion to
-                // the first 8 chars (Github-style) for display,
-                // keeping the full value for the `title` hover.
                 let version = format!("{}.{}", rev.period, rev.moment);
                 let tree_full = rev.tree.to_string();
                 let tree_short = abbreviate_tree(&tree_full);
                 (version, tree_full, tree_short)
             });
             view! {
-                <wa-card class="branch-card">
+                <wa-card>
                     <h3 slot="header">{ name.clone() }</h3>
-                    <dl class="fields">
-                        <dt>"upstream"</dt>
-                        <dd>{
-                            match upstream {
-                                Some(u) => Either::Left(view! { <code>{ u }</code> }),
-                                None => Either::Right(view! { <span class="empty">"none"</span> }),
-                            }
-                        }</dd>
-                        <dt>"version"</dt>
-                        <dd>{
-                            match revision.as_ref().map(|(v, _, _)| v.clone()) {
-                                Some(v) => Either::Left(view! { <code>{ v }</code> }),
-                                None => Either::Right(view! { <span class="empty">"no commits"</span> }),
-                            }
-                        }</dd>
-                        <dt>"tree"</dt>
-                        <dd>{
-                            match revision.as_ref().map(|(_, full, short)| (full.clone(), short.clone())) {
-                                Some((full, short)) => Either::Left(view! { <code title=full>{ short }</code> }),
-                                None => Either::Right(view! { <span class="empty">"—"</span> }),
-                            }
-                        }</dd>
-                    </dl>
+                    <p>
+                        "upstream: "
+                        { match upstream {
+                            Some(u) => Either::Left(view! { <wa-tag variant="neutral">{ u }</wa-tag> }),
+                            None => Either::Right(view! { <span>"none"</span> }),
+                        } }
+                    </p>
+                    <p>
+                        "version: "
+                        { match revision.as_ref().map(|(v, _, _)| v.clone()) {
+                            Some(v) => Either::Left(view! { <wa-tag variant="neutral">{ v }</wa-tag> }),
+                            None => Either::Right(view! { <span>"no commits"</span> }),
+                        } }
+                    </p>
+                    <p>
+                        "tree: "
+                        { match revision.as_ref().map(|(_, full, short)| (full.clone(), short.clone())) {
+                            Some((full, short)) => Either::Left(view! {
+                                <wa-tag variant="neutral" title=full>{ short }</wa-tag>
+                            }),
+                            None => Either::Right(view! { <span>"—"</span> }),
+                        } }
+                    </p>
                 </wa-card>
             }
         })
@@ -213,59 +188,36 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
             let sigil_value = did_sigil_value(&remote_subject);
             let subject_title = remote_subject.clone();
             view! {
-                <wa-card orientation="horizontal" class="remote-tile">
-                    <tonk-sigil slot="media" class="remote-tile-sigil" value=sigil_value></tonk-sigil>
-                    <div class="remote-tile-body">
-                        <div class="remote-tile-name">{ name.clone() }</div>
-                        <div class="remote-tile-did" title=subject_title>
-                            <code>{ remote_subject }</code>
-                        </div>
-                        <div class="remote-tile-url">
-                            <code>{ summary.url }</code>
-                        </div>
-                        { summary.details.map(|detail| view! {
-                            <div class="remote-tile-detail">{ detail }</div>
-                        }) }
-                    </div>
+                <wa-card orientation="horizontal">
+                    <tonk-sigil slot="media" value=sigil_value></tonk-sigil>
+                    <h3 slot="header">{ name.clone() }</h3>
+                    <p title=subject_title><code>{ remote_subject }</code></p>
+                    <p><code>{ summary.url }</code></p>
+                    { summary.details.map(|detail| view! { <p>{ detail }</p> }) }
                 </wa-card>
             }
         })
         .collect::<Vec<_>>();
 
-    // Silence unused warnings for the identity fields that were
-    // displayed in an earlier iteration of this view. They're
-    // intentionally removed from the UI; keeping the bindings
-    // available in case a debug/inspector view wants them later.
-    let _ = (subject, profile, operator);
-
     view! {
-        <article class="repository">
-            <header class="repo-banner">
-                <h1>{ info.name.clone() }</h1>
-            </header>
+        <header slot="main-header">
+            <h1>{ info.name.clone() }</h1>
+        </header>
+        <main>
+            <h2>{ format!("Branches ({})", branch_cards.len()) }</h2>
+            { if branch_cards.is_empty() {
+                Either::Left(view! { <p>"no branches recorded"</p> })
+            } else {
+                Either::Right(view! { <>{ branch_cards }</> })
+            } }
 
-            <section>
-                <h2>{ format!("Branches ({})", branch_cards.len()) }</h2>
-                {
-                    if branch_cards.is_empty() {
-                        Either::Left(view! { <div class="empty">"no branches recorded"</div> })
-                    } else {
-                        Either::Right(view! { <div class="cards">{ branch_cards }</div> })
-                    }
-                }
-            </section>
-
-            <section>
-                <h2>{ format!("Remotes ({})", remote_tiles.len()) }</h2>
-                {
-                    if remote_tiles.is_empty() {
-                        Either::Left(view! { <div class="empty">"no remotes recorded"</div> })
-                    } else {
-                        Either::Right(view! { <div class="remote-tiles">{ remote_tiles }</div> })
-                    }
-                }
-            </section>
-        </article>
+            <h2>{ format!("Remotes ({})", remote_tiles.len()) }</h2>
+            { if remote_tiles.is_empty() {
+                Either::Left(view! { <p>"no remotes recorded"</p> })
+            } else {
+                Either::Right(view! { <>{ remote_tiles }</> })
+            } }
+        </main>
     }
 }
 
