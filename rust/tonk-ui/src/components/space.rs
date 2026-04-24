@@ -121,7 +121,7 @@ fn did_sigil_value(did: &str) -> Option<String> {
     })
 }
 
-fn repository_view(info: RepositoryInfo) -> impl IntoView {
+pub(crate) fn repository_view(info: RepositoryInfo) -> impl IntoView {
     // Sort branches / remotes by name so the view is stable
     // across renders — `HashMap` iteration order is otherwise
     // nondeterministic.

@@ -18,6 +18,9 @@ use toolbar::*;
 mod space;
 use space::*;
 
+mod profile;
+use profile::*;
+
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = window, js_name = serviceWorkerActivates)]

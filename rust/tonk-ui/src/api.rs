@@ -2,8 +2,8 @@ use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
-    BranchConfiguration, IdentifyResponse, RemoteConfiguration, RepositoryConfiguration,
-    RepositoryInfo,
+    BranchConfiguration, IdentifyResponse, ProfileInfo, RemoteConfiguration,
+    RepositoryConfiguration, RepositoryInfo,
 };
 
 use crate::error::TonkUiError;
@@ -106,6 +106,33 @@ pub async fn init() -> Result<(), TonkUiError> {
             )))
         }
     }
+}
+
+/// Fetches the profile record at `GET /api/profile`.
+///
+/// Returns the profile's `RepositoryInfo` and a `{ name -> subject }`
+/// map of every space this profile owns. The sidebar uses this to
+/// render a tile per space without fetching each repository
+/// individually.
+pub async fn profile() -> Result<ProfileInfo, TonkUiError> {
+    log!("Fetching profile...");
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/profile", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "GET /api/profile returned {}: {}",
+            status, text
+        )));
+    }
+
+    response.json().await.map_err(into_api_error)
 }
 
 /// Fetches the current user's identity (DID) from the service worker.

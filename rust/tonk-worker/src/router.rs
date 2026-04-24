@@ -16,7 +16,7 @@ pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatus
 mod repository;
 pub use repository::{
     BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
-    UpstreamConfiguration,
+    UpstreamConfiguration, bootstrap_profile_meta,
 };
 
 mod sync;
@@ -24,6 +24,9 @@ pub use sync::SyncResponse;
 
 mod identify;
 pub use identify::IdentifyResponse;
+
+mod profile;
+pub use profile::ProfileInfo;
 
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
@@ -41,6 +44,7 @@ pub fn api_router(state: TonkState) -> Router {
     Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
+        .route("/api/profile", get(profile::get_profile))
         // Repository lifecycle
         .route(
             "/api/repository/{repo}",
@@ -142,7 +146,11 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
-        TonkState { profile, operator }
+        TonkState {
+            profile,
+            operator,
+            profile_name: "test-tonk".to_string(),
+        }
     }
 
     /// Creates a test repository via `PUT /api/repository/{name}`.

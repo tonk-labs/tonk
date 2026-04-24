@@ -1,4 +1,4 @@
-use crate::components::{TonkSpace, TonkToolbar};
+use crate::components::{TonkProfile, TonkSpace, TonkToolbar};
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
@@ -16,6 +16,7 @@ pub fn TonkLauncher() -> impl IntoView {
                 <TonkToolbar />
                 <Routes fallback=move || view!{ <section>"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     <Route path=path!("space/:space?") view=TonkSpace />
+                    <Route path=path!("profile") view=TonkProfile />
                 </Routes>
             </wa-page>
         </Router>

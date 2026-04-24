@@ -450,7 +450,100 @@ pub async fn create_repository(
         })?;
     log!("Wrote meta facts for repository '{}'", name);
 
+    // 7. Record this replica in the profile repository's meta
+    // branch so the profile keeps an index of every replica it
+    // owns. Separate transaction — cross-repo atomicity isn't
+    // available. The per-repo meta is already durable; a failure
+    // here leaves the repo working but missing from the index,
+    // which is recoverable.
+    record_replica_in_profile(tonk, name, &repository.did()).await?;
+
     Ok(repository)
+}
+
+/// Assert a [`Replica`] concept for a newly created repository in
+/// the profile repository's meta branch.
+///
+/// The profile repository serves as an index of every replica the
+/// profile owns; this function adds one entry to that index.
+/// Idempotent at the concept layer — re-asserting the same
+/// `(profile, subject)` replica is a no-op.
+async fn record_replica_in_profile(
+    tonk: &TonkState,
+    name: &str,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    let profile_repository = Repository::from(&tonk.profile);
+    let profile_meta = profile_repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to open profile meta branch: {}", e))
+        })?;
+
+    let replica = Replica::new(tonk.profile.did(), subject.clone(), name);
+
+    profile_meta
+        .transaction()
+        .assert(replica)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!(
+                "Failed to record replica '{}' in profile meta: {}",
+                name, e
+            ))
+        })?;
+    log!("Recorded replica '{}' in profile meta", name);
+
+    Ok(())
+}
+
+/// Bootstrap the profile repository's meta branch.
+///
+/// Called on every worker startup. Asserts the profile's "self"
+/// replica record (profile DID == subject DID, labeled with the
+/// profile's name) and a [`MetaBranch`] concept for the meta
+/// branch itself.
+///
+/// A no-op when the profile has already been bootstrapped — both
+/// assertions are content-addressed (entity hashes depend only on
+/// `(profile, subject)` / `(replica, name)`), so re-asserting the
+/// same facts produces the same entities and attribute values and
+/// the dialog layer deduplicates.
+pub async fn bootstrap_profile_meta(
+    tonk: &TonkState,
+    profile_name: &str,
+) -> Result<(), RepositoryError> {
+    let profile_repository = Repository::from(&tonk.profile);
+    let profile_meta = profile_repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to open profile meta branch: {}", e))
+        })?;
+
+    let profile_did = tonk.profile.did();
+    let replica = Replica::new(profile_did.clone(), profile_did, profile_name);
+
+    profile_meta
+        .transaction()
+        .assert(replica.clone())
+        .assert(replica.branch(META_BRANCH))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to bootstrap profile meta: {}", e))
+        })?;
+    log!("Profile meta bootstrapped");
+
+    Ok(())
 }
 
 /// Load a repository by name and return its [`RepositoryInfo`].
@@ -511,7 +604,7 @@ pub async fn get_repository(
 /// empty here (no branches or remotes). That's fine — the
 /// `subject` / `operator` / `profile` fields still surface, and
 /// the UI can tell the repo is unpopulated.
-async fn build_repository_info<R>(
+pub(super) async fn build_repository_info<R>(
     tonk: &crate::worker::TonkState,
     name: &str,
     repository: &Repository<R>,
