@@ -72,6 +72,8 @@ mod integration_tests {
     use thirtyfour::prelude::*;
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use tonk_invite::{Invite, InviteAudience};
+    #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
+    use tonk_worker::CreateInviteResponse;
 
     #[dialog_common::test]
     async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
@@ -191,6 +193,86 @@ mod integration_tests {
         );
 
         driver.quit().await?;
+        Ok(())
+    }
+
+    /// End-to-end mint-then-claim: one browser mints an invite for its
+    /// `home` repo via `POST /api/repository/home/invite`, a second
+    /// browser (fresh profile) claims that URL via `/join`.
+    ///
+    /// Validates that the invite minted by the UI/worker path is
+    /// wire-compatible with the existing `/join` claim handler — i.e.
+    /// that both ends of the shared `tonk_invite` primitive are wired
+    /// up consistently. Landing on `/space/repo-<...>` on browser B
+    /// is the same deterministic signal the hand-crafted open-invite
+    /// test uses.
+    #[dialog_common::test]
+    async fn it_mints_invite_then_claims_it_in_second_browser(
+        test_environment: TestEnvironment,
+    ) -> Result<()> {
+        // 1. Inviter: wait for init, then mint an invite for home.
+        let inviter = test_environment.driver().await?;
+        assert!(inviter.query(By::Css(".toolbar.visible")).exists().await?);
+
+        let mint_result = inviter
+            .execute(
+                r#"
+                const response = await fetch('/api/repository/home/invite', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                        base_url: window.location.origin + '/join',
+                    }),
+                });
+                if (!response.ok) {
+                    throw new Error(`mint failed: ${response.status} ${await response.text()}`);
+                }
+                return await response.json();
+                "#,
+                vec![],
+            )
+            .await?;
+
+        let minted: CreateInviteResponse = serde_json::from_value(mint_result.json().clone())?;
+        assert!(
+            minted.url.contains("/join?access="),
+            "expected invite URL to hit the /join route with access param, got {}",
+            minted.url,
+        );
+
+        inviter.quit().await?;
+
+        // 2. Invitee: fresh driver = fresh profile/IndexedDB. Navigate
+        // directly to the invite URL and wait for the redirect to
+        // `/space/repo-<...>` that the claim path emits.
+        let invitee = test_environment.driver().await?;
+        invitee.goto(&minted.url).await?;
+
+        let mut last_url = String::new();
+        let mut landed = false;
+        for _ in 0..100 {
+            if let Ok(u) = invitee.current_url().await {
+                last_url = u.to_string();
+                if u.path().starts_with("/space/repo-") {
+                    landed = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(
+            landed,
+            "claim did not redirect to /space/repo-<...> within timeout. last URL: {last_url}",
+        );
+
+        let repository = invitee.query(By::Css("section.repository")).first().await?;
+        let text = repository.text().await?;
+        assert!(
+            text.contains(&minted.audience.to_string()) || text.contains("did:key:"),
+            "expected repository summary to include a did:key value, got: {text}",
+        );
+
+        invitee.quit().await?;
         Ok(())
     }
 }

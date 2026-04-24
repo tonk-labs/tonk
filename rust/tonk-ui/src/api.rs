@@ -2,8 +2,9 @@ use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
-    BranchConfiguration, ClaimRequest, IdentifyResponse, ListRepositoriesResponse, QueryResponse,
-    RemoteConfiguration, RepositoryConfiguration, RepositoryInfo, SyncResponse,
+    BranchConfiguration, ClaimRequest, CreateInviteRequest, CreateInviteResponse, IdentifyResponse,
+    ListRepositoriesResponse, QueryResponse, RemoteConfiguration, RepositoryConfiguration,
+    RepositoryInfo, SyncResponse,
 };
 
 use crate::error::TonkUiError;
@@ -165,6 +166,47 @@ pub async fn claim(url: &str) -> Result<RepositoryInfo, TonkUiError> {
             Err(TonkUiError::ApiError(format!(
                 "POST /api/claim returned {}: {}",
                 status, text
+            )))
+        }
+    }
+}
+
+/// Mint an invite URL for `repo` via
+/// `POST /api/repository/{repo}/invite`.
+///
+/// Always embeds `<window.origin>/join` as the invite's base URL so
+/// links open against the minting deployment; passing `None` for
+/// `audience` mints an audience-open invite (the default), while
+/// passing `Some(did)` scopes the invite to that recipient.
+pub async fn create_invite(
+    repo: &str,
+    audience: Option<&str>,
+) -> Result<CreateInviteResponse, TonkUiError> {
+    log!("Minting invite for '{}' (audience={:?})...", repo, audience);
+
+    let base_url = format!("{}/join", origin());
+    let body = CreateInviteRequest {
+        base_url: Some(base_url),
+        audience: audience
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|e| TonkUiError::ApiError(format!("invalid audience DID: {e}")))?,
+    };
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/repository/{}/invite", origin(), repo))
+        .json(&body)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => response.json().await.map_err(into_api_error),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/invite returned {}: {}",
+                repo, status, text
             )))
         }
     }

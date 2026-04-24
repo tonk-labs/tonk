@@ -16,6 +16,19 @@ pub struct TonkSpaceParams {
 
 const DEFAULT_BRANCH: &str = "main";
 
+/// Status of the invite-mint request.
+#[derive(Clone, Debug)]
+enum InviteState {
+    /// Nothing in flight; panel shows only the "Create invite" button.
+    Idle,
+    /// POST in flight.
+    Minting,
+    /// Successful mint — display the URL for the user to copy.
+    Ok(String),
+    /// Mint failed.
+    Failed(String),
+}
+
 /// Which sync operation is/was in flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SyncOp {
@@ -124,6 +137,26 @@ pub fn TonkSpace() -> impl IntoView {
     let pull_click = move |_| trigger_sync(SyncOp::Pull);
     let push_click = move |_| trigger_sync(SyncOp::Push);
 
+    // Invite minting: a single user-triggered action per click. Open
+    // invites (no audience) are the default — the ephemeral seed is
+    // embedded in the URL fragment so anyone with the link can claim.
+    let invite_state = RwSignal::new(InviteState::Idle);
+    let mint_invite = move |_| {
+        let Some(name) = space_name.get() else {
+            return;
+        };
+        if matches!(invite_state.get_untracked(), InviteState::Minting) {
+            return;
+        }
+        invite_state.set(InviteState::Minting);
+        spawn_local(async move {
+            match api::create_invite(&name, None).await {
+                Ok(resp) => invite_state.set(InviteState::Ok(resp.url)),
+                Err(e) => invite_state.set(InviteState::Failed(format!("{e}"))),
+            }
+        });
+    };
+
     // Query form: two inputs + a submit signal. The claims resource
     // fires only when the submitted query is non-empty.
     let the_input = RwSignal::new(String::new());
@@ -168,6 +201,7 @@ pub fn TonkSpace() -> impl IntoView {
             of_input.set(String::new());
             submitted.set(None);
             sync_state.set(SyncState::Idle);
+            invite_state.set(InviteState::Idle);
         }
         current
     });
@@ -209,6 +243,19 @@ pub fn TonkSpace() -> impl IntoView {
                         prop:disabled=move || matches!(sync_state.get(), SyncState::Running(_))
                     >
                         "Push main"
+                    </button>
+                </div>
+            </section>
+
+            <section class="invite">
+                <h2>"Invite"</h2>
+                {move || render_invite_state(invite_state.get())}
+                <div class="actions">
+                    <button
+                        on:click=mint_invite
+                        prop:disabled=move || matches!(invite_state.get(), InviteState::Minting)
+                    >
+                        "Create invite"
                     </button>
                 </div>
             </section>
@@ -343,6 +390,33 @@ fn render_repository(info: RepositoryInfo) -> impl IntoView {
 /// pulling in the full dialog-repository surface here.
 fn render_address(cfg: &RemoteConfiguration) -> String {
     serde_json::to_string(&cfg.address).unwrap_or_else(|_| "(unrenderable)".into())
+}
+
+/// Render the invite panel body based on the current mint state.
+///
+/// `InviteState::Ok` shows the URL in a read-only text input so the
+/// user can select + copy it without a separate clipboard API call,
+/// which would need extra browser permission handling.
+fn render_invite_state(state: InviteState) -> impl IntoView {
+    match state {
+        InviteState::Idle => view! {
+            <p class="status">"No invite yet. Click to mint one."</p>
+        }
+        .into_any(),
+        InviteState::Minting => view! {
+            <p class="status">"Minting…"</p>
+        }
+        .into_any(),
+        InviteState::Ok(url) => view! {
+            <p class="status ok">"Invite ready. Share this link:"</p>
+            <input class="invite-url" type="text" prop:value=url readonly />
+        }
+        .into_any(),
+        InviteState::Failed(message) => view! {
+            <p class="status error">{format!("Mint failed: {message}")}</p>
+        }
+        .into_any(),
+    }
 }
 
 /// Render the upstream sync status line.

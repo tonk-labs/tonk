@@ -13,6 +13,9 @@ pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResp
 mod claim_invite;
 pub use claim_invite::ClaimRequest;
 
+mod create_invite;
+pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
+
 mod home;
 
 pub mod inspect;
@@ -51,6 +54,11 @@ pub fn api_router(state: TonkState) -> Router {
         .route("/api/identify", get(identify::identify))
         // Invite claim (redeem an invite URL)
         .route("/api/claim", post(claim_invite::claim_invite))
+        // Invite mint (issue a new invite URL for a repo)
+        .route(
+            "/api/repository/{repo}/invite",
+            post(create_invite::create_invite),
+        )
         // Repository list (drives the sidebar)
         .route("/api/repositories", get(repositories::list_repositories))
         // Repository lifecycle
