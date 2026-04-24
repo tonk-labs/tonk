@@ -68,14 +68,28 @@ body {
 
 /* We stay on the default WA theme but borrow two things from the
    brutalist theme: its font stack (Space Grotesk / IBM Plex Sans
-   Condensed / Space Mono) and a zero border-radius. The fonts
-   themselves are loaded via the `@import` in index.html. */
+   Condensed / Space Mono) and a zero border-radius. Drop-shadows
+   are also zeroed out so cards and panels read as flat blocks of
+   color. Fonts themselves are loaded via a `<link>` in index.html. */
 :where(.wa-theme-default) {
     --wa-font-family-body: 'Space Grotesk', sans-serif;
     --wa-font-family-heading: 'IBM Plex Sans Condensed', sans-serif;
     --wa-font-family-code: 'Space Mono', monospace;
 
     --wa-border-radius-scale: 0;
+
+    --wa-shadow-offset-x-scale: 0;
+    --wa-shadow-offset-y-scale: 0;
+    --wa-shadow-blur-scale: 0;
+    --wa-shadow-spread-scale: 0;
+}
+
+/* Boxes read as horizontal strips: strip the left/right edges from
+   cards and callouts. `appearance="plain"` opts out entirely so
+   cards that want zero chrome stay borderless. */
+wa-card:not([appearance="plain"]),
+wa-callout:not([appearance="plain"]) {
+    border-inline: 0;
 }
 
 /* Banner header: the space name as a large display title, sized
@@ -89,7 +103,6 @@ body {
     align-items: center;
     height: 8rem;
     padding-inline: var(--wa-space-xl);
-    border-block-end: 1px solid var(--wa-color-surface-border);
 }
 .space-banner h1 {
     margin: 0;
