@@ -214,6 +214,28 @@ pub mod tests {
         put_repo_raw(app, name).await;
     }
 
+    /// POSTs `body` to `/api/repository/{repo}/invite` and returns the
+    /// response status plus raw body bytes.
+    async fn post_invite(app: &Router, repo: &str, body: Body) -> (StatusCode, Vec<u8>) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/invite", repo))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, bytes.to_vec())
+    }
+
     #[dialog_common::test]
     async fn it_responds_to_root_api_request() {
         let state = test_state().await;
@@ -463,6 +485,114 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_an_open_invite_via_create_invite_endpoint() {
+        use url::Url;
+
+        let state = test_state().await;
+        let app = api_router(state);
+        let repo = "test-invite-open";
+
+        put_repo(&app, repo).await;
+
+        let (status, body) = post_invite(&app, repo, Body::from("{}")).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let resp: super::CreateInviteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            matches!(resp, super::CreateInviteResponse::Open { .. }),
+            "empty body should mint Open, got {resp:?}"
+        );
+        let url = resp.url();
+        assert!(
+            url.fragment().is_some(),
+            "open invite URL must have a fragment, got {url}"
+        );
+        let default = Url::parse(tonk_invite::DEFAULT_BASE_URL).unwrap();
+        assert_eq!(url.host_str(), default.host_str());
+        assert_eq!(url.path(), default.path());
+    }
+
+    #[dialog_common::test]
+    async fn it_mints_a_scoped_invite_and_omits_fragment() {
+        use dialog_credentials::Ed25519Signer;
+        use dialog_varsig::Principal;
+
+        const AUDIENCE_SEED: [u8; 32] = [42u8; 32];
+
+        let state = test_state().await;
+        let app = api_router(state);
+        let repo = "test-invite-scoped";
+
+        put_repo(&app, repo).await;
+
+        let audience_did = Ed25519Signer::import(&AUDIENCE_SEED).await.unwrap().did();
+        let body = serde_json::json!({ "audience": audience_did.to_string() });
+        let (status, body) =
+            post_invite(&app, repo, Body::from(serde_json::to_vec(&body).unwrap())).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let resp: super::CreateInviteResponse = serde_json::from_slice(&body).unwrap();
+        match resp {
+            super::CreateInviteResponse::Scoped { url, audience } => {
+                assert_eq!(audience, audience_did);
+                assert!(
+                    url.fragment().is_none(),
+                    "scoped invite URL must not carry a fragment, got {url}"
+                );
+            }
+            super::CreateInviteResponse::Open { .. } => {
+                panic!("explicit audience should produce Scoped, got Open")
+            }
+        }
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_404_when_minting_for_unknown_repo() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        ensure_home(&app).await;
+
+        let (status, _) = post_invite(&app, "does-not-exist", Body::from("{}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_400_for_malformed_invite_body() {
+        let state = test_state().await;
+        let app = api_router(state);
+        let repo = "test-invite-bad-body";
+
+        put_repo(&app, repo).await;
+
+        let (status, _) = post_invite(&app, repo, Body::from("{not json")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[dialog_common::test]
+    async fn it_echoes_base_url_into_minted_url() {
+        let state = test_state().await;
+        let app = api_router(state);
+        let repo = "test-invite-base-url";
+
+        put_repo(&app, repo).await;
+
+        let body = serde_json::json!({ "base_url": "https://example.test/custom" });
+        let (status, body) =
+            post_invite(&app, repo, Body::from(serde_json::to_vec(&body).unwrap())).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let resp: super::CreateInviteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            resp.url()
+                .as_str()
+                .starts_with("https://example.test/custom?access="),
+            "expected minted URL to start with the provided base_url, got {}",
+            resp.url(),
+        );
     }
 
     #[dialog_common::test]

@@ -1,24 +1,16 @@
 //! `POST /api/repository/:repo/invite`: mint an invite URL for a repo.
 //!
-//! Mirrors the native `carry invite` command at
-//! `tonk-carry/rust/carry/src/invite_cmd.rs`: issues a fresh delegation
-//! from the caller's profile, reads the repo's `origin` remote to fold
-//! the access-service URL into the invite, and serializes via the
-//! shared [`tonk_invite::Invite`] primitive so invites minted here are
-//! redeemable by any tonk-compatible client.
-//!
 //! Two modes, distinguished by whether the request body names an
 //! `audience` DID:
 //!
-//! - **audience-scoped** — body `{ "audience": "did:key:..." }`: chain's
-//!   final audience is that DID; only that identity can claim.
+//! - **audience-scoped** — body `{ "audience": "did:key:..." }`: only
+//!   that identity can claim. Response tagged `"scoped"`, echoes the DID.
 //! - **audience-open** (default) — body absent or `{}`: generates an
 //!   ephemeral Ed25519 key, embeds its seed in the URL fragment. Any
 //!   redeemer can claim by redelegating from the ephemeral key.
 //!
-//! The `base_url` field in the body controls the URL's scheme+host+path
-//! prefix — typically `<window.origin>/join` from the UI so that
-//! invites minted on a local dev deployment open against that same
+//! `base_url` controls the minted URL's prefix — typically
+//! `<window.origin>/join` from the UI so links open against the minting
 //! deployment rather than production.
 
 use ::axum::{
@@ -44,38 +36,49 @@ use crate::TonkWorkerError;
 /// Body of `POST /api/repository/:repo/invite`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CreateInviteRequest {
-    /// Base URL to embed in the invite link (e.g. `https://tonk.xyz/join`
-    /// or `<window.origin>/join`). Falls back to
-    /// [`tonk_invite::DEFAULT_BASE_URL`] when absent — but UI callers
-    /// should always pass this so that links open against the minting
-    /// deployment rather than the canonical `tonk.xyz` host.
+    /// Base URL to embed in the invite link. Falls back to
+    /// [`tonk_invite::DEFAULT_BASE_URL`] when absent. Typed as [`Url`]
+    /// so malformed values reject at deserialize time with a 400.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
+    pub base_url: Option<Url>,
 
-    /// Recipient DID for an audience-scoped invite. Absent → open
-    /// invite with an ephemeral key embedded in the URL fragment.
+    /// Recipient DID for an audience-scoped invite. Absent → open invite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<Did>,
 }
 
 /// Response body of `POST /api/repository/:repo/invite`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct CreateInviteResponse {
-    /// The invite URL to share.
-    pub url: String,
-    /// The DID the delegation chain terminates at — the recipient's DID
-    /// for audience-scoped invites, or the ephemeral key's DID for
-    /// audience-open invites.
-    pub audience: Did,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CreateInviteResponse {
+    /// Only `audience` can claim.
+    Scoped {
+        /// Minted invite URL.
+        url: Url,
+        /// Echo of the requested recipient DID.
+        audience: Did,
+    },
+    /// Anyone with the URL can claim.
+    Open {
+        /// Minted invite URL, with the ephemeral seed in the fragment.
+        url: Url,
+    },
+}
+
+impl CreateInviteResponse {
+    /// The minted invite URL, uniformly for both variants.
+    pub fn url(&self) -> &Url {
+        match self {
+            Self::Scoped { url, .. } | Self::Open { url } => url,
+        }
+    }
 }
 
 /// Generate an ephemeral Ed25519 signer with an extractable seed.
 ///
-/// On wasm the default `Ed25519Signer::generate()` produces a
-/// non-extractable WebCrypto key whose seed can't be read, which can't
-/// be embedded in the invite URL. The [`ExtractableKey`] variant opts
-/// in to extractable generation. On native, the regular `generate` is
-/// already extractable.
+/// Wasm's default `Ed25519Signer::generate` produces a non-extractable
+/// WebCrypto key whose seed can't be embedded in the invite URL; the
+/// [`ExtractableKey`] variant opts in to extractable generation.
 ///
 /// [`ExtractableKey`]: dialog_credentials::key::ExtractableKey
 async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
@@ -106,12 +109,11 @@ async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerErr
             ))
         })?,
         #[allow(unreachable_patterns)]
-        _ => {
-            return Err(TonkWorkerError::Internal(
-                "ephemeral key was generated non-extractable; \
-                 cannot embed seed in invite URL"
-                    .into(),
-            ));
+        other => {
+            return Err(TonkWorkerError::Internal(format!(
+                "ephemeral key export returned an unexpected variant ({other:?}); \
+                 expected KeyExport::Extractable so the seed can be embedded in the invite URL"
+            )));
         }
     };
 
@@ -127,10 +129,8 @@ pub async fn create_invite(
 ) -> Result<Json<CreateInviteResponse>, TonkWorkerError> {
     log!("POST /api/repository/{}/invite", repo_name);
 
-    // Empty body = defaults (open invite, canonical base URL).
-    // Non-empty body is parsed here so JSON errors come back as the
-    // structured `Router` variant rather than axum's default
-    // plain-text `JsonRejection`. Matches `put_repository`.
+    // Parse inline so JSON errors become structured `Router` (400) rather
+    // than axum's default plain-text `JsonRejection`.
     let request: CreateInviteRequest = if body_bytes.is_empty() {
         CreateInviteRequest::default()
     } else {
@@ -140,13 +140,12 @@ pub async fn create_invite(
 
     let base_url = request
         .base_url
-        .as_deref()
+        .as_ref()
+        .map(Url::as_str)
         .unwrap_or(tonk_invite::DEFAULT_BASE_URL);
 
     let tonk = state.read().await;
 
-    // 1. Load the repo. 404 on miss — creating the invite only makes
-    // sense against an existing repo.
     let repository = tonk
         .profile
         .repository(&repo_name)
@@ -157,18 +156,14 @@ pub async fn create_invite(
             TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", repo_name, e))
         })?;
 
-    // 2. Resolve the audience DID. `None` → generate an ephemeral
-    // signer and remember the seed so we can embed it below.
-    let (audience_did, ephemeral_seed) = match request.audience {
-        Some(did) => (did, None),
+    let (audience_did, audience) = match request.audience {
+        Some(did) => (did, InviteAudience::Scoped),
         None => {
             let (signer, seed) = generate_ephemeral().await?;
-            (signer.did(), Some(seed))
+            (signer.did(), InviteAudience::Open { seed })
         }
     };
 
-    // 3. Issue a delegation from the profile (which already holds a
-    // chain granting access to this repo) to the audience.
     let delegation: UcanDelegation = tonk
         .profile
         .access()
@@ -178,26 +173,20 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
 
-    let chain = delegation.into_chain();
+    let remote_url = resolve_remote_url(&tonk, &repository).await?;
 
-    // 4. Look up the repo's origin remote URL, if any, so redeemers
-    // can sync immediately. Mirrors carry's `resolve_access_url` but
-    // uses the worker's `Upstream` type rather than `UpstreamState`.
-    let remote_url = resolve_remote_url(&tonk, &repository).await;
-
-    // 5. Assemble + serialize via the shared primitive so the URL
-    // format stays in lockstep with the claim path.
-    let audience = match ephemeral_seed {
-        Some(seed) => InviteAudience::Open { seed },
-        None => InviteAudience::Scoped,
-    };
-
-    let invite = Invite::new(chain, audience, remote_url)
+    let invite = Invite::new(delegation.into_chain(), audience, remote_url)
+        .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
-    let url = invite
+    let url_str = invite
         .to_url(base_url)
         .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
+    let url = Url::parse(&url_str).map_err(|e| {
+        TonkWorkerError::Internal(format!(
+            "invite URL serializer produced an unparseable value: {e}"
+        ))
+    })?;
 
     log!(
         "Minted invite for repo '{}' audience {}",
@@ -205,21 +194,35 @@ pub async fn create_invite(
         audience_did,
     );
 
-    Ok(Json(CreateInviteResponse {
-        url,
-        audience: audience_did,
-    }))
+    let response = match invite.audience {
+        InviteAudience::Open { .. } => CreateInviteResponse::Open { url },
+        InviteAudience::Scoped => CreateInviteResponse::Scoped {
+            url,
+            audience: audience_did,
+        },
+    };
+    Ok(Json(response))
 }
 
-/// Probe `main.upstream` and, when it points at a remote, pull the
-/// UCAN access-service URL off the remote's site address. Anything
-/// else (no upstream, non-UCAN address, load failures) resolves to
-/// `None` — invites without a remote become local-only, which the
-/// claim side already tolerates.
+/// Probe `main`'s upstream and, when it points at a remote, pull the
+/// UCAN access-service URL off the remote's site address.
+///
+/// - `Ok(None)` — legitimate "this repo has no remote to advertise"
+///   (branch has no upstream, non-remote upstream, or non-UCAN site).
+///   The claim side tolerates invites without a remote.
+/// - `Err(...)` — branch/remote load failed or the stored UCAN endpoint
+///   won't parse. Failing the whole mint is the right move: silently
+///   demoting to local-only would mask config drift the inviter can't
+///   see (redeemers would hit a downstream sync error with no link to
+///   the root cause).
+///
+/// `main` is hardcoded; see `project_main_branch_implicit_creation`
+/// memory note on why `.open()` is used here despite not being
+/// strictly read-only.
 async fn resolve_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,
-) -> Option<Url>
+) -> Result<Option<Url>, TonkWorkerError>
 where
     R: Principal + Clone,
 {
@@ -228,11 +231,15 @@ where
         .open()
         .perform(&tonk.operator)
         .await
-        .ok()?;
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "failed to probe branch 'main' while resolving remote URL: {e}"
+            ))
+        })?;
 
-    let remote_name = match main.upstream()? {
-        Upstream::Remote { remote, .. } => remote,
-        _ => return None,
+    let remote_name = match main.upstream() {
+        Some(Upstream::Remote { remote, .. }) => remote,
+        Some(_) | None => return Ok(None),
     };
 
     let remote = repository
@@ -240,10 +247,19 @@ where
         .load()
         .perform(&tonk.operator)
         .await
-        .ok()?;
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "branch 'main' upstream names remote '{remote_name}' but it failed to load: {e}"
+            ))
+        })?;
 
     match remote.address().site() {
-        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).ok(),
-        _ => None,
+        SiteAddress::Ucan(ucan) => Url::parse(ucan.endpoint()).map(Some).map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "remote '{remote_name}' has unparseable UCAN endpoint '{}': {e}",
+                ucan.endpoint()
+            ))
+        }),
+        _ => Ok(None),
     }
 }
