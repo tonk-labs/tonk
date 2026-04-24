@@ -58,15 +58,20 @@ pub fn TonkToolbar() -> impl IntoView {
             >
                 <tonk-sigil class="sidebar-sigil">"scratch"</tonk-sigil>
             </wa-button>
-        </div>
-        <div slot="navigation" class="sidebar-section">
             <wa-button
+                class="sidebar-space sidebar-space--add"
                 href="/space/new"
-                appearance="plain"
-                variant="neutral"
                 aria-label="Add space"
             >
-                <wa-icon name="plus"></wa-icon>
+                <svg
+                    class="sidebar-add-glyph"
+                    viewBox="0 0 128 128"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                >
+                    <circle cx="64" cy="64" r="56" class="sidebar-add-disc" />
+                    <path d="M64 36 V92 M36 64 H92" class="sidebar-add-cross" />
+                </svg>
             </wa-button>
         </div>
         <div slot="navigation-footer" class="sidebar-section">

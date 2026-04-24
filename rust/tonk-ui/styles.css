@@ -179,6 +179,44 @@ wa-page::part(menu) {
     height: 100%;
 }
 
+/* `+` tile: same footprint as the inactive sigil tiles but
+   pinned to the left edge so it reads as a companion action,
+   not another space. No top gap — sits flush against the last
+   sigil above it. */
+.sidebar-space--add {
+    margin-inline: 0 auto;
+    margin-block-start: 0;
+}
+
+.sidebar-add-glyph {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* `+` tile: at rest, a dark square with a light `+`. On hover,
+   a light disc blooms behind the `+` and the `+` flips dark,
+   reading as "the new slot opens". */
+.sidebar-space--add::part(base) {
+    background: var(--wa-color-text-normal);
+}
+.sidebar-add-disc {
+    fill: transparent;
+}
+.sidebar-add-cross {
+    stroke: var(--wa-color-neutral-fill-quiet);
+    stroke-width: 12;
+    stroke-linecap: square;
+    fill: none;
+}
+
+.sidebar-space--add:is(:hover, :focus-within) .sidebar-add-disc {
+    fill: var(--wa-color-neutral-fill-quiet);
+}
+.sidebar-space--add:is(:hover, :focus-within) .sidebar-add-cross {
+    stroke: var(--wa-color-text-normal);
+}
+
 /* Match the avatar to the icon-button footprint (~2.75rem square)
    so it sits alongside the help/theme buttons cleanly. `--size` is
    the WA-documented token for avatar size. */
