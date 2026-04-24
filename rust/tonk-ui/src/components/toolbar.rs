@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos_router::hooks::use_location;
 
 use crate::{components::ActiveSubject, did};
 
@@ -18,10 +19,29 @@ pub fn TonkToolbar() -> impl IntoView {
         })
     });
 
+    // Current path drives the active-space indicator. Reading
+    // `pathname` here keeps the toolbar reactive to route changes
+    // without needing a dedicated context.
+    let location = use_location();
+    let active_space = Signal::derive(move || {
+        location
+            .pathname
+            .get()
+            .strip_prefix("/space/")
+            .map(str::to_string)
+    });
+    let is_active = move |name: &'static str| {
+        let active = active_space;
+        Signal::derive(move || active.get().as_deref() == Some(name))
+    };
+    let home_active = is_active("home");
+    let scratch_active = is_active("scratch");
+
     view! {
         <div slot="navigation-header" class="sidebar-section sidebar-section--flush">
             <wa-button
                 class="sidebar-space"
+                class:is-active=move || home_active.get()
                 href="/space/home"
                 aria-label="Open home space"
             >
@@ -32,6 +52,7 @@ pub fn TonkToolbar() -> impl IntoView {
             </wa-button>
             <wa-button
                 class="sidebar-space"
+                class:is-active=move || scratch_active.get()
                 href="/space/scratch"
                 aria-label="Open scratch space"
             >

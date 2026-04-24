@@ -87,7 +87,7 @@ wa-page {
 }
 
 wa-page::part(menu) {
-    background: var(--wa-color-neutral-fill-normal);
+    background: var(--wa-color-neutral-fill-quiet);
     border-inline-end: 1px solid var(--wa-color-surface-border);
 }
 
@@ -104,19 +104,33 @@ wa-page::part(menu) {
     background: transparent;
 }
 
-/* Flush variant: drop wa-page's default slot padding so the space
-   switcher can reach the column edges. */
+/* Flush variant: drop wa-page's default slot padding so tiles
+   control their own spacing. */
 .sidebar-section--flush {
     padding: 0;
     gap: 0;
 }
 
-/* Space switcher: full-width, square, edge-to-edge. The button
-   becomes the clickable frame; the sigil fills it. */
+/* Space switcher: square tile. Inactive tiles inset to 75% of
+   the column so the sidebar gutter shows around them; the
+   active tile expands to full width, breaking the inset to read
+   as "open". */
 .sidebar-space {
     display: block;
-    width: 100%;
+    width: 50%;
     aspect-ratio: 1;
+    /* Inactive tiles hug the right edge of the column; active
+       tile goes full-bleed so inactive tiles read as "tucked
+       under" the open view. */
+    margin-inline: auto 0;
+    margin-block: var(--wa-space-2xs);
+    transition: width var(--wa-transition-normal) var(--wa-transition-easing),
+                margin var(--wa-transition-normal) var(--wa-transition-easing);
+}
+
+.sidebar-space.is-active {
+    width: 100%;
+    margin: 0;
 }
 
 .sidebar-space::part(base) {
@@ -125,14 +139,30 @@ wa-page::part(menu) {
     padding: 0;
     border-radius: 0;
     border: 0;
-    background: var(--wa-color-surface-default);
+    background: transparent;
     color: var(--wa-color-text-normal);
 }
 
-.sidebar-space::part(base):hover,
-.sidebar-space::part(base):focus-visible {
+.sidebar-space:not(.is-active)::part(base):hover,
+.sidebar-space:not(.is-active)::part(base):focus-visible {
     background: var(--wa-color-text-normal);
-    color: var(--wa-color-surface-default);
+    color: var(--wa-color-surface-raised);
+}
+
+/* Active space: full-bleed tile (width handled above) with the
+   page surface as its background, reading as continuous with the
+   main view. */
+.sidebar-space.is-active::part(base) {
+    background: var(--wa-color-surface-default);
+}
+
+/* wa-button's plain-variant hover lands on `neutral-fill-quiet`,
+   which matches our sidebar background and hides the hover
+   affordance. Bump non-space sidebar buttons to `-normal` so
+   hover actually shows. */
+.sidebar-section > wa-button:not(.sidebar-space)::part(base):hover,
+.sidebar-section > wa-button:not(.sidebar-space)::part(base):focus-visible {
+    background: var(--wa-color-neutral-fill-normal);
 }
 
 .sidebar-space::part(label) {
