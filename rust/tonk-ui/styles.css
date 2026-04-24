@@ -197,10 +197,19 @@ wa-callout:not([appearance="plain"]) {
    so it reads as a contained sidebar rather than icons in the page
    margin. `::part(menu)` is wa-page's documented hook for this.
    wa-page paints its own opaque surface on both the host and its
-   `body` part; clear both so the body-level dot-grid shows through. */
+   `body` part; clear both so the body-level dot-grid shows through.
+   `direction: rtl` on the host flips wa-page's grid so the menu
+   column lands on the right; every descendant resets to `ltr` so
+   text and the tile layout read normally. */
 wa-page {
     --menu-width: 4rem;
     background: transparent;
+    direction: rtl;
+}
+
+wa-page > *,
+wa-page [slot] {
+    direction: ltr;
 }
 
 wa-page::part(base),
@@ -251,10 +260,11 @@ wa-page::part(menu) {
     display: block;
     width: 50%;
     aspect-ratio: 1;
-    /* Inactive tiles hug the right edge of the column; active
-       tile goes full-bleed so inactive tiles read as "tucked
-       under" the open view. */
-    margin-inline: auto 0;
+    /* Inactive tiles hug the left edge of the column (farthest from
+       the page-edge border); active tile goes full-bleed. Since the
+       column now lives on the right via RTL, "hug left" = margin
+       on the inline-end side. */
+    margin-inline: 0 auto;
     margin-block: 0;
     transition: width var(--wa-transition-normal) var(--wa-transition-easing),
                 margin var(--wa-transition-normal) var(--wa-transition-easing);
@@ -318,11 +328,11 @@ wa-page::part(menu) {
 }
 
 /* `+` tile: same footprint as the inactive sigil tiles but
-   pinned to the left edge so it reads as a companion action,
-   not another space. No top gap — sits flush against the last
-   sigil above it. */
+   pinned to the opposite edge (the page-edge side) so it reads as
+   a companion action, not another space. No top gap — sits flush
+   against the last sigil above it. */
 .sidebar-space--add {
-    margin-inline: 0 auto;
+    margin-inline: auto 0;
     margin-block-start: 0;
 }
 
