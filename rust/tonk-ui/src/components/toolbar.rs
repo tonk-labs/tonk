@@ -1,7 +1,10 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 
-use crate::{api, components::Status, did};
+use crate::{
+    components::{CreateSpaceOpen, ProfileResource},
+    did,
+};
 
 /// Render a DID as the 8-hex-digit sigil value consumed by
 /// `<tonk-sigil value=...>`. Returns `None` when the DID isn't a
@@ -25,19 +28,14 @@ fn did_to_sigil(did: &str) -> Option<String> {
 /// before the fetch lands.
 #[component]
 pub fn TonkToolbar() -> impl IntoView {
-    // Fetch the profile + space list once the shell reports
-    // `Status::Ready`. The same race that affects `TonkSpace` on
-    // deep-link first loads would clobber this fetch otherwise.
-    let status = use_context::<Signal<Status, LocalStorage>>();
-    let profile_resource = LocalResource::new(move || {
-        let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(true);
-        async move {
-            if !ready {
-                return Ok(None);
-            }
-            api::profile().await.map(Some)
-        }
-    });
+    // Profile data lives on the shell as a shared resource —
+    // the create-space flow refetches it so the sidebar picks
+    // up new tiles without any explicit notification here.
+    let profile_resource =
+        use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
+    let create_space_open =
+        use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
+    let open_create_space = move |_| create_space_open.set(true);
 
     // Current path drives the active-space indicator. Reading
     // `pathname` here keeps the toolbar reactive to route changes
@@ -110,8 +108,8 @@ pub fn TonkToolbar() -> impl IntoView {
             }) }
             <wa-button
                 class="sidebar-space sidebar-space--add"
-                href="/space/new"
                 aria-label="Add space"
+                on:click=open_create_space
             >
                 <svg
                     class="sidebar-add-glyph"

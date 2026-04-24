@@ -5,9 +5,10 @@
 
 use leptos::{logging::log, prelude::*};
 use leptos_router::location::{BrowserUrl, LocationProvider};
+use tonk_worker::ProfileInfo;
 use wasm_bindgen::prelude::*;
 
-use crate::api;
+use crate::{api, error::TonkUiError};
 
 mod launcher;
 use launcher::*;
@@ -20,6 +21,9 @@ use space::*;
 
 mod profile;
 use profile::*;
+
+mod create_space;
+use create_space::*;
 
 #[wasm_bindgen]
 extern "C" {
@@ -46,6 +50,23 @@ pub enum Status {
 /// when its [`RepositoryInfo`] resolves; consumed by the sidebar
 /// toolbar to render a matching sigil.
 pub type ActiveSubject = RwSignal<Option<String>, LocalStorage>;
+
+/// Shared [`LocalResource`] holding the latest `GET /api/profile`
+/// response. Provided by [`TonkShell`] so the sidebar toolbar
+/// *and* the create-space flow can read from (and refetch) the
+/// same source of truth — after creating a new space, the
+/// dialog calls `.refetch()` and the sidebar re-renders with the
+/// new tile.
+///
+/// `Ok(None)` is used to model "not yet ready" (shell still
+/// initialising); `Ok(Some(info))` is a successful fetch.
+pub type ProfileResource = LocalResource<Result<Option<ProfileInfo>, TonkUiError>>;
+
+/// Shared open-state for the create-space dialog. Flipped to
+/// `true` by the sidebar's `+` tile; flipped back to `false` by
+/// the dialog itself on cancel, successful create, or when the
+/// user dismisses via Esc / click-outside.
+pub type CreateSpaceOpen = RwSignal<bool>;
 
 /// The root UI component for the Tonk application.
 ///
@@ -101,6 +122,30 @@ pub fn TonkShell() -> impl IntoView {
 
     let active_subject: ActiveSubject = RwSignal::new_local(None);
     provide_context(active_subject);
+
+    // Fire the profile fetch as soon as the shell reports
+    // `Status::Ready`. Gating on `Ready` avoids the same
+    // deep-link / service-worker race that affects `TonkSpace`.
+    // Sharing the resource via context means a single fetch
+    // feeds the sidebar and the create-space flow — the latter
+    // calls `.refetch()` after a successful PUT so the sidebar
+    // picks up the new tile without us plumbing a second signal.
+    let profile_resource: ProfileResource = LocalResource::new(move || {
+        let ready = status.get() == Status::Ready;
+        async move {
+            if !ready {
+                return Ok(None);
+            }
+            api::profile().await.map(Some)
+        }
+    });
+    provide_context(profile_resource);
+
+    // Shared open-state for the create-space dialog. The `+`
+    // tile in the sidebar flips this to `true`; the dialog
+    // itself resets it on close.
+    let create_space_open: CreateSpaceOpen = RwSignal::new(false);
+    provide_context(create_space_open);
 
     view! {
         <TonkLauncher></TonkLauncher>

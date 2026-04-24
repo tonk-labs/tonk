@@ -1,4 +1,4 @@
-use crate::components::{TonkProfile, TonkSpace, TonkToolbar};
+use crate::components::{TonkCreateSpace, TonkProfile, TonkSpace, TonkToolbar};
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
@@ -8,6 +8,12 @@ use leptos_router::{
 /// Main launcher view. `<wa-page>` provides the adaptive shell:
 /// navigation sits in its own column on desktop and collapses into a
 /// drawer (with a hamburger toggle) below the mobile breakpoint.
+///
+/// The create-space dialog is mounted here once (outside the
+/// `<Routes>`) so it survives navigation and can be triggered from
+/// any screen via the shared [`CreateSpaceOpen`] signal.
+///
+/// [`CreateSpaceOpen`]: super::CreateSpaceOpen
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
     view! {
@@ -19,6 +25,7 @@ pub fn TonkLauncher() -> impl IntoView {
                     <Route path=path!("profile") view=TonkProfile />
                 </Routes>
             </wa-page>
+            <TonkCreateSpace />
         </Router>
     }
 }

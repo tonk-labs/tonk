@@ -67,8 +67,7 @@ pub async fn get_profile(
     // Full info for the profile-as-repository. This handles the
     // branches/remotes surfacing — the profile's meta branch is a
     // real meta branch with the same schema as any other.
-    let profile =
-        build_repository_info(&tonk, &tonk.profile_name, &profile_repository).await;
+    let profile = build_repository_info(&tonk, &tonk.profile_name, &profile_repository).await;
 
     // Space list lives on the same meta branch but is specific
     // to the profile route (regular repositories don't have a
