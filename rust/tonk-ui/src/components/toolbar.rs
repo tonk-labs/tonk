@@ -36,6 +36,7 @@ pub fn TonkToolbar() -> impl IntoView {
     };
     let home_active = is_active("home");
     let scratch_active = is_active("scratch");
+    let profile_active = Signal::derive(move || location.pathname.get() == "/profile");
 
     view! {
         <div slot="navigation-header" class="sidebar-section sidebar-section--flush">
@@ -76,11 +77,12 @@ pub fn TonkToolbar() -> impl IntoView {
         </div>
         <div slot="navigation-footer" class="sidebar-section sidebar-section--flush">
             <wa-button
-                class="sidebar-space sidebar-space--full sidebar-space--profile"
+                class="sidebar-space"
+                class:is-active=move || profile_active.get()
                 href="/profile"
                 aria-label="Profile"
             >
-                <wa-avatar class="sidebar-avatar" label="User"></wa-avatar>
+                <tonk-sigil class="sidebar-sigil">"profile"</tonk-sigil>
             </wa-button>
         </div>
     }

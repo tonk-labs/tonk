@@ -63,7 +63,7 @@ html, body {
 
 body {
     font-family: var(--wa-font-body);
-    background: var(--wa-color-surface-default);
+    background: var(--wa-color-neutral-fill-quiet);
     color: var(--wa-color-text-normal);
 }
 
@@ -88,7 +88,7 @@ wa-page {
 
 wa-page::part(menu) {
     background: var(--wa-color-neutral-fill-quiet);
-    border-inline-end: 1px solid var(--wa-color-surface-border);
+    border-inline-end: none;
 }
 
 /* Each navigation slot receives a single `.sidebar-section`
@@ -109,6 +109,12 @@ wa-page::part(menu) {
 .sidebar-section--flush {
     padding: 0;
     gap: 0;
+}
+
+/* Footer breathing room — lift the profile tile off the edge
+   so it doesn't hug the column's bottom corner. */
+.sidebar-section--flush[slot="navigation-footer"] {
+    padding-block-end: var(--wa-space-m);
 }
 
 /* Space switcher: square tile. Inactive tiles inset to 75% of
@@ -143,18 +149,30 @@ wa-page::part(menu) {
     background: transparent;
     color: var(--wa-color-text-normal);
 }
+/* Sigils live in an externally-referenced SVG, where
+   `currentColor` resolves against that SVG's own color
+   context rather than the host's. Propagate the tile's
+   color into the sigil via `--sigil-fg` so hover inversion
+   actually re-tints the glyphs. */
+.sidebar-sigil {
+    --sigil-fg: var(--wa-color-text-normal);
+}
+.sidebar-space:not(.is-active):hover .sidebar-sigil,
+.sidebar-space:not(.is-active):focus-within .sidebar-sigil {
+    --sigil-fg: var(--wa-color-neutral-fill-quiet);
+}
 
 .sidebar-space:not(.is-active)::part(base):hover,
 .sidebar-space:not(.is-active)::part(base):focus-visible {
     background: var(--wa-color-text-normal);
-    color: var(--wa-color-surface-raised);
+    color: var(--wa-color-neutral-fill-quiet);
 }
 
-/* Active space: full-bleed tile (width handled above) with the
-   page surface as its background, reading as continuous with the
-   main view. */
+/* Active space: full-bleed tile (width handled above). The
+   panel color stays continuous across the whole tile so the
+   palette remains strictly two-color (panel + contrast). */
 .sidebar-space.is-active::part(base) {
-    background: var(--wa-color-surface-default);
+    background: var(--wa-color-neutral-fill-quiet);
 }
 
 .sidebar-space::part(label) {
@@ -209,30 +227,5 @@ wa-page::part(menu) {
 }
 .sidebar-space--add:is(:hover, :focus-within) .sidebar-add-cross {
     stroke: var(--wa-color-text-normal);
-}
-
-/* Profile tile: dark square background with a light circular
-   avatar centered inside (~70% of the tile), inverting on
-   hover to match the other glyph tiles. */
-.sidebar-space--profile::part(base) {
-    background: var(--wa-color-text-normal);
-}
-.sidebar-space--profile:is(:hover, :focus-within)::part(base) {
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.sidebar-avatar {
-    /* Concrete length so wa-avatar's internal
-       `font-size: calc(var(--size) * 0.6)` for the user-icon
-       resolves against a real value rather than a percentage,
-       which wa-avatar's internals don't cope with. */
-    --size: 3rem;
-    display: block;
-    margin: auto;
-    background-color: var(--wa-color-neutral-fill-quiet);
-    color: var(--wa-color-text-normal);
-}
-.sidebar-space--profile:is(:hover, :focus-within) .sidebar-avatar {
-    background-color: var(--wa-color-text-normal);
-    color: var(--wa-color-neutral-fill-quiet);
 }
 
