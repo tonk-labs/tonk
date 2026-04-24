@@ -97,6 +97,23 @@ body {
     --wa-shadow-offset-y-scale: 0;
     --wa-shadow-blur-scale: 0;
     --wa-shadow-spread-scale: 0;
+
+    /* tldraw's 11-color palette (minus black and white), solid
+       values from the editor's light-mode `DEFAULT_THEME`. Named
+       with `--tl-*` so they're easy to reference; swap any of them
+       into `--wa-color-text-normal` / `--wa-color-neutral-fill-quiet`
+       to re-tint the UI. */
+    --tl-blue: #4465e9;
+    --tl-green: #099268;
+    --tl-grey: #9fa8b2;
+    --tl-light-blue: #4ba1f1;
+    --tl-light-green: #4cb05e;
+    --tl-light-red: #f87777;
+    --tl-light-violet: #e085f4;
+    --tl-orange: #e16919;
+    --tl-red: #e03131;
+    --tl-violet: #ae3ec9;
+    --tl-yellow: #f1ac4b;
 }
 
 /* Boxes read as horizontal strips: strip the left/right edges from

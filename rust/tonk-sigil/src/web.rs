@@ -86,11 +86,8 @@ fn render(this: &HtmlElement) {
             // wa-page navigation region whose `::slotted(*)` makes it
             // flex) would treat the wrapper as a zero-basis flex item
             // and collapse it.
-            el.set_attribute(
-                "style",
-                "position:absolute;inset:0;display:block",
-            )
-            .unwrap_throw();
+            el.set_attribute("style", "position:absolute;inset:0;display:block")
+                .unwrap_throw();
             // Insert the wrapper *before* any existing children so CSS
             // layout ordering (sigil first, text after) works without
             // depending on DOM insertion order.
@@ -194,11 +191,12 @@ fn sequester_seed(document: &web_sys::Document, this: &HtmlElement) {
     let len = children.length();
     let mut to_move = Vec::new();
     for i in 0..len {
-        let Some(node) = children.get(i) else { continue };
+        let Some(node) = children.get(i) else {
+            continue;
+        };
         if let Some(element) = node.dyn_ref::<Element>() {
             if element.tag_name().eq_ignore_ascii_case("span")
-                && (element.has_attribute("data-sigil")
-                    || element.has_attribute("data-sigil-seed"))
+                && (element.has_attribute("data-sigil") || element.has_attribute("data-sigil-seed"))
             {
                 continue;
             }
@@ -250,15 +248,21 @@ impl Sigil {
 /// square sigil into a ribbon. Each consumer sizes the element.
 fn inject_baseline_style() {
     const ID: &str = "tonk-sigil-baseline";
-    let Some(window) = web_sys::window() else { return };
-    let Some(document) = window.document() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
     // Remove any previous baseline so hot-reloaded changes to the
     // stylesheet actually land — otherwise the original rules stay
     // in the DOM because the first install() stamped them in.
     if let Some(existing) = document.get_element_by_id(ID) {
         existing.remove();
     }
-    let Ok(style) = document.create_element("style") else { return };
+    let Ok(style) = document.create_element("style") else {
+        return;
+    };
     let _ = style.set_attribute("id", ID);
     // The host is a positioning context for the inner absolutely
     // positioned wrapper, and a square by default so aspect is
