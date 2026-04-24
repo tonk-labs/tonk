@@ -165,12 +165,16 @@ mod tests {
     async fn it_falls_back_to_index_for_unhandled_routes(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // 1. Landing on `/` redirects into `/space/home` and renders
-        //    the repository JSON once the worker is up.
-        let repository = driver.query(By::Css("pre.repository")).first().await?;
+        // 1. Landing on `/` redirects into `/space/home`. The
+        //    banner title renders once `repository_view` resolves,
+        //    so it doubles as a "shell is ready" signal. Its
+        //    `title` attribute carries the subject DID.
+        let title = driver.query(By::Css(".space-banner-title")).first().await?;
+        assert_eq!(title.text().await?, "home");
+        let subject = title.attr("title").await?.unwrap_or_default();
         assert!(
-            repository.text().await?.contains("did:key:"),
-            "expected repository JSON to include a did:key value",
+            subject.starts_with("did:key:"),
+            "expected banner title attribute to be a did:key, got: {subject}",
         );
 
         // 2. Navigate to an unmatched route. The SPA router's
@@ -181,13 +185,7 @@ mod tests {
             .goto(&format!("{}/unhandled/route", env.tonk_web))
             .await?;
 
-        // The fallback's class is `404`, which isn't a legal CSS
-        // identifier on its own — use an attribute selector
-        // instead.
-        let fallback = driver
-            .query(By::Css(r#"section[class="404"]"#))
-            .first()
-            .await?;
+        let fallback = driver.query(By::Css("section.not-found")).first().await?;
         assert!(
             fallback.text().await?.contains("Nothing here"),
             "expected 404 fallback to render for unknown paths",
@@ -203,8 +201,12 @@ mod tests {
     async fn it_configures_upstream(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for toolbar to become visible (indicates UI is ready and authorized)
-        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+        // Wait for the home space banner title to render. This only
+        // appears after the service worker is active, `PUT
+        // /api/repository/home` completed, and the repository
+        // fetch resolved — a strict superset of the old
+        // `.toolbar.visible` readiness signal.
+        driver.query(By::Css(".space-banner-title")).first().await?;
 
         // Verify the default branch has an upstream after auto-authorization.
         let info_result = driver
@@ -233,8 +235,12 @@ mod tests {
     async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for toolbar to become visible (indicates UI is ready and authorized)
-        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+        // Wait for the home space banner title to render. This only
+        // appears after the service worker is active, `PUT
+        // /api/repository/home` completed, and the repository
+        // fetch resolved — a strict superset of the old
+        // `.toolbar.visible` readiness signal.
+        driver.query(By::Css(".space-banner-title")).first().await?;
 
         // Perform sync
         let sync_result = driver
@@ -261,8 +267,12 @@ mod tests {
     async fn it_syncs_via_background_sync_api(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for toolbar to become visible (indicates UI is ready and authorized)
-        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+        // Wait for the home space banner title to render. This only
+        // appears after the service worker is active, `PUT
+        // /api/repository/home` completed, and the repository
+        // fetch resolved — a strict superset of the old
+        // `.toolbar.visible` readiness signal.
+        driver.query(By::Css(".space-banner-title")).first().await?;
 
         let inspect_script = r#"
             const response = await fetch('/api/inspect/repository/home/remote/origin/branch/main');

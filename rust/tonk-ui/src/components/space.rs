@@ -210,7 +210,9 @@ pub(crate) fn repository_view(info: RepositoryInfo) -> impl IntoView {
 
     view! {
         <header slot="main-header" class="space-banner">
-            <h1>{ info.name.clone() }</h1>
+            <h1 class="space-banner-title" title=local_subject.clone()>
+                { info.name.clone() }
+            </h1>
         </header>
         <main class="wa-stack space-view">
             <section class="wa-stack">

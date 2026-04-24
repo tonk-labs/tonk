@@ -20,7 +20,7 @@ pub fn TonkLauncher() -> impl IntoView {
         <Router>
             <wa-page>
                 <TonkToolbar />
-                <Routes fallback=move || view!{ <section>"Nothing here ¯\\_(ツ)_/¯"</section> }>
+                <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     <Route path=path!("space/:space?") view=TonkSpace />
                     <Route path=path!("profile") view=TonkProfile />
                 </Routes>
@@ -49,20 +49,43 @@ mod integration_tests {
         let driver = test_environment.driver().await?;
 
         // Wait for the shell's `PUT /api/repository/home` to complete
-        // and the redirect to land on `/space/home`; `.repository`
-        // appears when the fetch succeeds.
-        let repository = driver.query(By::Css("pre.repository")).first().await?;
-
-        // The server returns the repo's DID under `"subject"`, so
-        // the rendered JSON should at least mention it.
-        let text = repository.text().await?;
+        // and the redirect to land on `/space/home`. `.space-banner-title`
+        // is only rendered after `repository_view` resolves, so it
+        // doubles as the "page is ready" signal. Its `title`
+        // attribute carries the repository's subject DID.
+        let title = driver.query(By::Css(".space-banner-title")).first().await?;
+        assert_eq!(title.text().await?, "home");
+        let subject = title.attr("title").await?.unwrap_or_default();
         assert!(
-            text.contains("\"subject\""),
-            "expected repository JSON to include a subject field, got: {text}",
+            subject.starts_with("did:key:"),
+            "expected banner title attribute to be a did:key, got: {subject}",
+        );
+
+        // The meta branch is bootstrapped by the worker on create
+        // and the `main` branch is declared by `api::init`, so both
+        // should appear as cards.
+        let name_elements = driver
+            .query(By::Css(".branch-card .branch-card-name"))
+            .all_from_selector()
+            .await?;
+        let mut branch_names = Vec::with_capacity(name_elements.len());
+        for element in name_elements {
+            branch_names.push(element.text().await?);
+        }
+        assert!(
+            branch_names.iter().any(|n| n == "main"),
+            "expected a `main` branch card, got: {branch_names:?}",
         );
         assert!(
-            text.contains("did:key:"),
-            "expected repository JSON to include a did:key value, got: {text}",
+            branch_names.iter().any(|n| n == "meta"),
+            "expected a `meta` branch card, got: {branch_names:?}",
+        );
+
+        // `api::init` wires up an `origin` remote; at least one
+        // remote tile should render.
+        assert!(
+            driver.query(By::Css(".remote-card")).exists().await?,
+            "expected at least one remote card to render",
         );
 
         driver.quit().await?;
