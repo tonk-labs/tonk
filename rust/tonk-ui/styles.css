@@ -55,10 +55,9 @@
 }
 
 html, body {
-    height: 100%;
     padding: 0;
     margin: 0;
-    overflow: hidden;
+    overscroll-behavior: none;
 }
 
 body {
@@ -67,17 +66,85 @@ body {
     color: var(--wa-color-text-normal);
 }
 
-/* Pin the page to the viewport so the sidebar and header stay put
-   while only the main content scrolls. Without this, wa-page grows
-   to fit its content and the whole layout scrolls with the page. */
-wa-page {
-    height: 100vh;
-    overflow: hidden;
+/* We stay on the default WA theme but borrow two things from the
+   brutalist theme: its font stack (Space Grotesk / IBM Plex Sans
+   Condensed / Space Mono) and a zero border-radius. The fonts
+   themselves are loaded via the `@import` in index.html. */
+:where(.wa-theme-default) {
+    --wa-font-family-body: 'Space Grotesk', sans-serif;
+    --wa-font-family-heading: 'IBM Plex Sans Condensed', sans-serif;
+    --wa-font-family-code: 'Space Mono', monospace;
+
+    --wa-border-radius-scale: 0;
 }
 
-wa-page::part(main) {
-    overflow: auto;
+/* Banner header: the space name as a large display title, sized
+   to match the sidebar column. Transparent background so the banner
+   and the main body read as one continuous surface — the name
+   alone carries the weight. */
+.space-banner {
+    background: transparent;
+    color: var(--wa-color-text-normal);
+    display: flex;
+    align-items: center;
+    height: 8rem;
+    padding-inline: var(--wa-space-xl);
+    border-block-end: 1px solid var(--wa-color-surface-border);
 }
+.space-banner h1 {
+    margin: 0;
+    font-weight: 600;
+    font-size: var(--wa-font-size-3xl);
+    line-height: 1;
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+    padding: var(--wa-space-xs) var(--wa-space-m);
+}
+
+/* Space view padding; WA's `wa-stack` handles vertical gaps
+   and `wa-grid` handles the card layout. A couple of local
+   tweaks: uppercase tiny section labels, and a two-column
+   floor for the branch grid via `--min-column-size`. */
+.space-view {
+    padding: var(--wa-space-m) var(--wa-space-xl);
+    padding-block-end: var(--wa-space-2xl);
+    gap: var(--wa-space-l);
+}
+.space-section-title {
+    margin: 0;
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.7;
+}
+
+.branch-card {
+    --spacing: var(--wa-space-m);
+}
+.branch-card-name {
+    font-size: var(--wa-font-size-l);
+}
+
+/* Remote card: fixed-width square sigil on the left; card
+   height follows the content on the right. Sigil fills the
+   full card height so media and body line up. */
+.remote-card {
+    --spacing: var(--wa-space-s);
+}
+.remote-card tonk-sigil[slot="media"] {
+    width: 6rem;
+    align-self: stretch;
+    flex: none;
+    /* Override the sigil baseline's aspect-ratio:1 so the host
+       stretches to the card's height rather than forcing a
+       square 6rem box that leaves blank space below. */
+    aspect-ratio: auto;
+}
+.remote-card-subject {
+    word-break: break-all;
+}
+
 
 /* Give the navigation column a fixed width and a panel-like surface
    so it reads as a contained sidebar rather than icons in the page

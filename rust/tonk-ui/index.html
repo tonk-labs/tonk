@@ -39,13 +39,18 @@
        auto-registers any <wa-*> elements used in the DOM; `data-webawesome` tells it
        where its bundled assets (icons, etc.) live.
 
-       We use the "shoelace" theme + palette — a quieter look with a
-       warmer neutral palette than the default theme. Activated by
-       `wa-theme-shoelace` and `wa-palette-shoelace` on <html>, set
-       below together with the light/dark class. -->
+       We use the default theme with the shoelace palette. Two
+       local overrides layer on top (see styles.css): brutalist's
+       fonts (Space Grotesk / IBM Plex Sans Condensed / Space Mono)
+       and a zero border radius so nothing is rounded. -->
   <link rel="stylesheet" href="/webawesome/styles/webawesome.css">
-  <link rel="stylesheet" href="/webawesome/styles/themes/shoelace.css">
+  <link rel="stylesheet" href="/webawesome/styles/themes/default.css">
   <link rel="stylesheet" href="/webawesome/styles/color/palettes/shoelace.css">
+  <!-- Fonts borrowed from the brutalist theme: Space Grotesk (body),
+       IBM Plex Sans Condensed (headings), Space Mono (code). -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link rel="stylesheet"
+    href="https://fonts.bunny.net/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=Space+Grotesk:wght@300..700&family=Space+Mono:wght@400;700&display=swap">
   <script type="module" src="/webawesome/webawesome.loader.js" data-webawesome="/webawesome"></script>
 
   <!-- Inherit the OS light/dark preference. Web Awesome picks up its
@@ -54,9 +59,9 @@
        `prefers-color-scheme` changes. -->
   <script>
     (() => {
-      // Activate the shoelace theme + palette once. Light/dark is
-      // toggled reactively on `prefers-color-scheme` changes.
-      document.documentElement.classList.add('wa-theme-shoelace', 'wa-palette-shoelace');
+      // Activate the default theme with the shoelace palette. Light/dark
+      // is toggled reactively on `prefers-color-scheme` changes.
+      document.documentElement.classList.add('wa-theme-default', 'wa-palette-shoelace');
 
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
       const apply = (isDark) => {

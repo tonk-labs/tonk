@@ -141,31 +141,33 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
                 (version, tree_full, tree_short)
             });
             view! {
-                <wa-card>
-                    <h3 slot="header">{ name.clone() }</h3>
-                    <p>
-                        "upstream: "
-                        { match upstream {
-                            Some(u) => Either::Left(view! { <wa-tag variant="neutral">{ u }</wa-tag> }),
-                            None => Either::Right(view! { <span>"none"</span> }),
-                        } }
-                    </p>
-                    <p>
-                        "version: "
-                        { match revision.as_ref().map(|(v, _, _)| v.clone()) {
-                            Some(v) => Either::Left(view! { <wa-tag variant="neutral">{ v }</wa-tag> }),
-                            None => Either::Right(view! { <span>"no commits"</span> }),
-                        } }
-                    </p>
-                    <p>
-                        "tree: "
-                        { match revision.as_ref().map(|(_, full, short)| (full.clone(), short.clone())) {
-                            Some((full, short)) => Either::Left(view! {
-                                <wa-tag variant="neutral" title=full>{ short }</wa-tag>
-                            }),
-                            None => Either::Right(view! { <span>"—"</span> }),
-                        } }
-                    </p>
+                <wa-card class="branch-card">
+                    <div class="wa-stack wa-gap-2xs">
+                        <strong class="branch-card-name">{ name.clone() }</strong>
+                        <div>
+                            "upstream: "
+                            { match upstream {
+                                Some(u) => Either::Left(view! { <wa-tag variant="neutral">{ u }</wa-tag> }),
+                                None => Either::Right(view! { <span>"none"</span> }),
+                            } }
+                        </div>
+                        <div>
+                            "version: "
+                            { match revision.as_ref().map(|(v, _, _)| v.clone()) {
+                                Some(v) => Either::Left(view! { <wa-tag variant="neutral">{ v }</wa-tag> }),
+                                None => Either::Right(view! { <span>"no commits"</span> }),
+                            } }
+                        </div>
+                        <div>
+                            "tree: "
+                            { match revision.as_ref().map(|(_, full, short)| (full.clone(), short.clone())) {
+                                Some((full, short)) => Either::Left(view! {
+                                    <wa-tag variant="neutral" title=full>{ short }</wa-tag>
+                                }),
+                                None => Either::Right(view! { <span>"—"</span> }),
+                            } }
+                        </div>
+                    </div>
                 </wa-card>
             }
         })
@@ -188,35 +190,49 @@ fn repository_view(info: RepositoryInfo) -> impl IntoView {
             let sigil_value = did_sigil_value(&remote_subject);
             let subject_title = remote_subject.clone();
             view! {
-                <wa-card orientation="horizontal">
+                <wa-card appearance="plain" orientation="horizontal" class="remote-card">
                     <tonk-sigil slot="media" value=sigil_value></tonk-sigil>
-                    <h3 slot="header">{ name.clone() }</h3>
-                    <p title=subject_title><code>{ remote_subject }</code></p>
-                    <p><code>{ summary.url }</code></p>
-                    { summary.details.map(|detail| view! { <p>{ detail }</p> }) }
+                    <div class="wa-stack wa-gap-2xs">
+                        <strong>{ name.clone() }</strong>
+                        <code class="remote-card-subject" title=subject_title>
+                            { remote_subject }
+                        </code>
+                        <code>{ summary.url }</code>
+                        { summary.details.map(|detail| view! { <small>{ detail }</small> }) }
+                    </div>
                 </wa-card>
             }
         })
         .collect::<Vec<_>>();
 
+    let branch_count = branch_cards.len();
+    let remote_count = remote_tiles.len();
+
     view! {
-        <header slot="main-header">
+        <header slot="main-header" class="space-banner">
             <h1>{ info.name.clone() }</h1>
         </header>
-        <main>
-            <h2>{ format!("Branches ({})", branch_cards.len()) }</h2>
-            { if branch_cards.is_empty() {
-                Either::Left(view! { <p>"no branches recorded"</p> })
-            } else {
-                Either::Right(view! { <>{ branch_cards }</> })
-            } }
-
-            <h2>{ format!("Remotes ({})", remote_tiles.len()) }</h2>
-            { if remote_tiles.is_empty() {
-                Either::Left(view! { <p>"no remotes recorded"</p> })
-            } else {
-                Either::Right(view! { <>{ remote_tiles }</> })
-            } }
+        <main class="wa-stack space-view">
+            <section class="wa-stack">
+                <h2 class="space-section-title">{ format!("Branches ({branch_count})") }</h2>
+                { if branch_cards.is_empty() {
+                    Either::Left(view! {
+                        <wa-callout variant="neutral">"no branches recorded"</wa-callout>
+                    })
+                } else {
+                    Either::Right(view! { <div class="wa-grid">{ branch_cards }</div> })
+                } }
+            </section>
+            <section class="wa-stack">
+                <h2 class="space-section-title">{ format!("Remotes ({remote_count})") }</h2>
+                { if remote_tiles.is_empty() {
+                    Either::Left(view! {
+                        <wa-callout variant="neutral">"no remotes recorded"</wa-callout>
+                    })
+                } else {
+                    Either::Right(view! { <div class="wa-stack">{ remote_tiles }</div> })
+                } }
+            </section>
         </main>
     }
 }
