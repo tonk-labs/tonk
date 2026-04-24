@@ -44,6 +44,16 @@ mod integration_tests {
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use thirtyfour::prelude::*;
 
+    /// Selector for the profile footer tile. Keyed by its
+    /// `aria-label` so the test doesn't depend on the footer's
+    /// internal structure.
+    #[cfg_attr(not(feature = "integration-tests"), allow(dead_code))]
+    const PROFILE_TILE: &str = r#"wa-button[aria-label="Profile"]"#;
+
+    /// Selector for the default-space tile in the sidebar.
+    #[cfg_attr(not(feature = "integration-tests"), allow(dead_code))]
+    const HOME_TILE: &str = r#"wa-button[aria-label="Open home space"]"#;
+
     #[dialog_common::test]
     async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
         let driver = test_environment.driver().await?;
@@ -90,6 +100,129 @@ mod integration_tests {
 
         driver.quit().await?;
 
+        Ok(())
+    }
+
+    /// Clicking the profile tile in the sidebar footer should
+    /// switch the route to `/profile` and swap the banner from
+    /// the home space's view to the profile's. We identify the
+    /// swap by the `title` attribute on `.space-banner-title`:
+    /// `repository_view` writes the subject DID there, and the
+    /// profile repo's DID differs from any space's.
+    #[dialog_common::test]
+    async fn it_navigates_to_the_profile_via_sidebar(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for the home space to finish loading and capture
+        // its DID so we can tell when the banner swaps.
+        let home_banner = driver.query(By::Css(".space-banner-title")).first().await?;
+        assert_eq!(home_banner.text().await?, "home");
+        let home_did = home_banner.attr("title").await?.unwrap_or_default();
+        assert!(
+            home_did.starts_with("did:key:"),
+            "expected home banner title to be a did:key, got: {home_did}",
+        );
+
+        // Sanity-check the active-state wiring: the home tile
+        // should be marked active while we're on `/space/home`,
+        // the profile tile shouldn't.
+        let home_tile = driver.query(By::Css(HOME_TILE)).first().await?;
+        assert!(
+            home_tile
+                .class_name()
+                .await?
+                .unwrap_or_default()
+                .contains("is-active"),
+            "expected home tile to carry `is-active` while on /space/home",
+        );
+        let profile_tile = driver.query(By::Css(PROFILE_TILE)).first().await?;
+        assert!(
+            !profile_tile
+                .class_name()
+                .await?
+                .unwrap_or_default()
+                .contains("is-active"),
+            "expected profile tile to not be active on /space/home",
+        );
+
+        // `wa-button` with `href` renders an anchor inside its
+        // shadow root. WebDriver's `click()` targets the host
+        // element, which Chrome reports as "not interactable"
+        // because the event target lives inside the shadow
+        // boundary. Dispatching the click from JS hits the host
+        // directly and bubbles normally, which is what a real
+        // user's click does after the browser resolves the
+        // composed path.
+        driver
+            .execute(
+                &format!("document.querySelector({PROFILE_TILE:?}).click();"),
+                vec![],
+            )
+            .await?;
+
+        // Wait for the banner to swap. The profile's `title`
+        // attribute differs from the home space's, so polling on
+        // inequality is a race-free signal that the route
+        // transition completed.
+        let home_did_for_filter = home_did.clone();
+        let profile_banner = driver
+            .query(By::Css(".space-banner-title"))
+            .with_filter(move |element: WebElement| {
+                let home_did = home_did_for_filter.clone();
+                async move {
+                    let current = element.attr("title").await?.unwrap_or_default();
+                    Ok(current.starts_with("did:key:") && current != home_did)
+                }
+            })
+            .first()
+            .await?;
+
+        // URL reflects the navigation.
+        let url = driver.current_url().await?;
+        assert_eq!(
+            url.path(),
+            "/profile",
+            "expected URL to be /profile after clicking profile tile, got: {url}",
+        );
+
+        // Banner shows a non-empty name and a distinct did:key.
+        let profile_name = profile_banner.text().await?;
+        assert!(
+            !profile_name.trim().is_empty(),
+            "expected profile banner to have non-empty text",
+        );
+        let profile_did = profile_banner.attr("title").await?.unwrap_or_default();
+        assert!(
+            profile_did.starts_with("did:key:"),
+            "expected profile banner title attribute to be a did:key, got: {profile_did}",
+        );
+        assert_ne!(
+            profile_did, home_did,
+            "expected profile DID to differ from home DID",
+        );
+
+        // Active-state flipped: profile tile is now active, home
+        // tile is not.
+        let profile_tile = driver.query(By::Css(PROFILE_TILE)).first().await?;
+        assert!(
+            profile_tile
+                .class_name()
+                .await?
+                .unwrap_or_default()
+                .contains("is-active"),
+            "expected profile tile to carry `is-active` on /profile",
+        );
+        let home_tile = driver.query(By::Css(HOME_TILE)).first().await?;
+        assert!(
+            !home_tile
+                .class_name()
+                .await?
+                .unwrap_or_default()
+                .contains("is-active"),
+            "expected home tile to drop `is-active` on /profile",
+        );
+
+        driver.quit().await?;
         Ok(())
     }
 }
