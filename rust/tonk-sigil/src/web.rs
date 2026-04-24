@@ -194,12 +194,11 @@ fn sequester_seed(document: &web_sys::Document, this: &HtmlElement) {
         let Some(node) = children.get(i) else {
             continue;
         };
-        if let Some(element) = node.dyn_ref::<Element>() {
-            if element.tag_name().eq_ignore_ascii_case("span")
-                && (element.has_attribute("data-sigil") || element.has_attribute("data-sigil-seed"))
-            {
-                continue;
-            }
+        if let Some(element) = node.dyn_ref::<Element>()
+            && element.tag_name().eq_ignore_ascii_case("span")
+            && (element.has_attribute("data-sigil") || element.has_attribute("data-sigil-seed"))
+        {
+            continue;
         }
         to_move.push(node);
     }

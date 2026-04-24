@@ -71,7 +71,7 @@ pub fn TonkToolbar() -> impl IntoView {
     // back to its empty state.
     let profile_sigil = Signal::derive_local(move || {
         let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
-        did_to_sigil(&info.profile.subject.to_string())
+        did_to_sigil(info.profile.subject.as_ref())
     });
 
     view! {

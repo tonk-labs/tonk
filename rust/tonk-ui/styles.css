@@ -246,6 +246,12 @@ wa-page::part(menu) {
     gap: 0;
 }
 
+/* Header breathing room — lift the first sigil tile off the top
+   edge so the column has a symmetric gutter to the footer. */
+.sidebar-section--flush[slot="navigation-header"] {
+    padding-block-start: var(--wa-space-m);
+}
+
 /* Footer breathing room — lift the profile tile off the edge
    so it doesn't hug the column's bottom corner. */
 .sidebar-section--flush[slot="navigation-footer"] {
@@ -329,11 +335,11 @@ wa-page::part(menu) {
 
 /* `+` tile: same footprint as the inactive sigil tiles but
    pinned to the opposite edge (the page-edge side) so it reads as
-   a companion action, not another space. No top gap — sits flush
-   against the last sigil above it. */
+   a companion action, not another space. A small top gap breaks
+   it away from the last sigil so it's clearly a separate control. */
 .sidebar-space--add {
     margin-inline: auto 0;
-    margin-block-start: 0;
+    margin-block-start: var(--wa-space-m);
 }
 
 .sidebar-add-glyph {
