@@ -65,6 +65,7 @@ pub async fn claim_invite(
     let audience = tonk.profile.did();
 
     let claimed = tonk_invite::Invite::parse_url(&body.url)
+        .await
         .map_err(|e| TonkWorkerError::Router(format!("invalid invite: {e}")))?
         .claim(&audience)
         .await

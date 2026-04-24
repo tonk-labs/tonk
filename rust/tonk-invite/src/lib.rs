@@ -32,7 +32,7 @@ use anyhow::{Context, Result};
 use dialog_credentials::Ed25519Signer;
 use dialog_ucan::{Scope, UcanProof};
 use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
-use dialog_varsig::Did;
+use dialog_varsig::{Did, Principal};
 use url::Url;
 
 /// Canonical base URL for tonk invite links. Callers serializing an
@@ -86,12 +86,20 @@ pub struct Invite {
 impl Invite {
     /// Assemble an invite from its parts.
     ///
+    /// For [`InviteAudience::Open`], the embedded seed must derive the
+    /// chain's tail audience DID — otherwise the resulting URL would
+    /// advertise a redelegation path that the `claim` step can't follow
+    /// (principal alignment would fail at `DelegationChain::push` time
+    /// with a cryptic error). Validating here turns that into an
+    /// up-front mismatch error at construction and parse time.
+    ///
     /// # Errors
     ///
     /// Returns an error if the chain's subject is not
-    /// [`Subject::Specific`][dialog_ucan_core::subject::Subject::Specific]
-    /// — tonk invites must always target a specific repo.
-    pub fn new(
+    /// [`Subject::Specific`][dialog_ucan_core::subject::Subject::Specific],
+    /// or if `audience` is [`InviteAudience::Open`] and the seed does
+    /// not derive the chain's tail audience DID.
+    pub async fn new(
         chain: DelegationChain,
         audience: InviteAudience,
         remote_url: Option<Url>,
@@ -101,6 +109,20 @@ impl Invite {
             "invite delegation chain must target a specific repo subject; \
              chains with Subject::Any are not valid invites"
         );
+        if let InviteAudience::Open { seed } = &audience {
+            let signer = Ed25519Signer::import(seed)
+                .await
+                .context("failed to import ephemeral signer from seed")?;
+            let derived = signer.did();
+            let chain_audience = chain.audience();
+            anyhow::ensure!(
+                derived == *chain_audience,
+                "open-invite seed derives {} but chain's tail audience is {}; \
+                 an invite constructed with a mismatched seed would fail at claim time",
+                derived,
+                chain_audience,
+            );
+        }
         Ok(Self {
             chain,
             audience,
@@ -129,9 +151,10 @@ impl Invite {
     /// chain fails to parse or has no specific subject
     /// ([`Subject::Any`][dialog_ucan_core::subject::Subject::Any] is
     /// rejected), if the `remote` parameter is present but not a valid
-    /// URL, or if the fragment is present but does not decode to exactly
-    /// 32 bytes of base58.
-    pub fn parse_url(url: &str) -> Result<Self> {
+    /// URL, if the fragment is present but does not decode to exactly
+    /// 32 bytes of base58, or if the fragment seed does not derive the
+    /// chain's tail audience DID (enforced by [`Invite::new`]).
+    pub async fn parse_url(url: &str) -> Result<Self> {
         let parsed = Url::parse(url).context("invite URL is not a valid URL")?;
 
         let mut access: Option<String> = None;
@@ -177,7 +200,7 @@ impl Invite {
             None => InviteAudience::Scoped,
         };
 
-        Self::new(chain, audience, remote_url)
+        Self::new(chain, audience, remote_url).await
     }
 
     /// Serialize the invite as a URL rooted at `base_url`.
@@ -429,20 +452,24 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_rejects_non_url_input() {
-        let err = Invite::parse_url("not a url").unwrap_err();
+    async fn it_rejects_non_url_input() {
+        let err = Invite::parse_url("not a url").await.unwrap_err();
         assert!(err.to_string().contains("not a valid URL"), "{err}");
     }
 
     #[dialog_common::test]
-    fn it_rejects_missing_access_parameter() {
-        let err = Invite::parse_url("https://tonk.xyz/join").unwrap_err();
+    async fn it_rejects_missing_access_parameter() {
+        let err = Invite::parse_url("https://tonk.xyz/join")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("`access`"), "{err}");
     }
 
     #[dialog_common::test]
-    fn it_rejects_invalid_base58_in_access() {
-        let err = Invite::parse_url("https://tonk.xyz/join?access=!!!not-b58!!!").unwrap_err();
+    async fn it_rejects_invalid_base58_in_access() {
+        let err = Invite::parse_url("https://tonk.xyz/join?access=!!!not-b58!!!")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("valid base58"), "{err}");
     }
 
@@ -453,12 +480,14 @@ mod tests {
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
         // Valid, round-trippable URL — but we overwrite the fragment with a
         // 3-byte payload (base58 of [9,9,9]) to probe the length check.
-        let invite = Invite::new(chain, InviteAudience::Scoped, None).unwrap();
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
         let mut url = invite.to_url(DEFAULT_BASE_URL).unwrap();
         url.push('#');
         url.push_str(&bs58::encode([9u8, 9, 9]).into_string());
 
-        let err = Invite::parse_url(&url).unwrap_err();
+        let err = Invite::parse_url(&url).await.unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("exactly 32 bytes") || msg.contains("got 3"),
@@ -469,30 +498,36 @@ mod tests {
     #[dialog_common::test]
     async fn it_round_trips_through_url() {
         let subject = signer(&SUBJECT_SEED).await.did();
-        let audience = signer(&AUDIENCE_SEED).await.did();
+        let audience_signer = signer(&AUDIENCE_SEED).await;
+        let audience = audience_signer.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
         let remote = Url::parse("https://access.tonk.xyz/ucan").unwrap();
 
         // Scoped, with remote
-        let invite =
-            Invite::new(chain.clone(), InviteAudience::Scoped, Some(remote.clone())).unwrap();
+        let invite = Invite::new(chain.clone(), InviteAudience::Scoped, Some(remote.clone()))
+            .await
+            .unwrap();
         let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
-        let decoded = Invite::parse_url(&url).unwrap();
+        let decoded = Invite::parse_url(&url).await.unwrap();
         assert_eq!(*decoded.subject(), subject);
         assert!(matches!(decoded.audience, InviteAudience::Scoped));
         assert_eq!(decoded.remote_url.as_ref(), Some(&remote));
 
-        // Open, no remote
+        // Open, no remote. The chain's tail audience must be the
+        // ephemeral key's DID for Invite::new to accept it.
+        let ephemeral_did = signer(&EPHEMERAL_SEED).await.did();
+        let open_chain = make_chain(&ISSUER_SEED, &ephemeral_did, &subject).await;
         let invite = Invite::new(
-            chain,
+            open_chain,
             InviteAudience::Open {
                 seed: EPHEMERAL_SEED,
             },
             None,
         )
+        .await
         .unwrap();
         let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
-        let decoded = Invite::parse_url(&url).unwrap();
+        let decoded = Invite::parse_url(&url).await.unwrap();
         assert_eq!(*decoded.subject(), subject);
         match decoded.audience {
             InviteAudience::Open { seed } => assert_eq!(seed, EPHEMERAL_SEED),
@@ -507,7 +542,9 @@ mod tests {
         let issued_to = signer(&AUDIENCE_SEED).await.did();
         let wrong_redeemer = signer(&EPHEMERAL_SEED).await.did();
         let chain = make_chain(&ISSUER_SEED, &issued_to, &subject).await;
-        let invite = Invite::new(chain, InviteAudience::Scoped, None).unwrap();
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
 
         let err = invite.claim(&wrong_redeemer).await.unwrap_err();
         assert!(err.to_string().contains("cannot be redeemed"), "{err}");
@@ -518,11 +555,34 @@ mod tests {
         let subject = signer(&SUBJECT_SEED).await.did();
         let audience = signer(&AUDIENCE_SEED).await.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
-        let invite = Invite::new(chain, InviteAudience::Scoped, None).unwrap();
+        let invite = Invite::new(chain, InviteAudience::Scoped, None)
+            .await
+            .unwrap();
 
         let claimed = invite.claim(&audience).await.unwrap();
         assert_eq!(*claimed.subject(), subject);
         assert_eq!(*claimed.chain.audience(), audience);
+    }
+
+    /// Invite::new must reject an Open variant whose seed does not
+    /// derive the chain's tail audience DID. This is the construction
+    /// guard that matches the existing parse_url guard.
+    #[dialog_common::test]
+    async fn it_rejects_open_invite_with_mismatched_seed() {
+        const OTHER_SEED: [u8; 32] = [7u8; 32];
+        let subject = signer(&SUBJECT_SEED).await.did();
+        let ephemeral_did = signer(&EPHEMERAL_SEED).await.did();
+        // Chain is delegated to the ephemeral DID, but we'll claim the
+        // invite is open with a seed that derives a different DID.
+        let chain = make_chain(&ISSUER_SEED, &ephemeral_did, &subject).await;
+        let err = Invite::new(chain, InviteAudience::Open { seed: OTHER_SEED }, None)
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("derives") && msg.contains("tail audience"),
+            "{msg}"
+        );
     }
 
     /// Multi-hop open-invite claim: an issuer delegates to a mid key,
@@ -552,6 +612,7 @@ mod tests {
             },
             None,
         )
+        .await
         .unwrap();
 
         let claimed = invite.claim(&redeemer).await.unwrap();
@@ -576,6 +637,7 @@ mod tests {
             },
             None,
         )
+        .await
         .unwrap();
 
         let claimed = invite.claim(&redeemer).await.unwrap();
@@ -612,10 +674,12 @@ mod tests {
             },
             None,
         )
+        .await
         .unwrap();
         let url = invite.to_url(DEFAULT_BASE_URL).unwrap();
 
         let claimed = Invite::parse_url(&url)
+            .await
             .unwrap()
             .claim(&redeemer)
             .await
