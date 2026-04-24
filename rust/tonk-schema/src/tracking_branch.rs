@@ -68,7 +68,6 @@ use crate::{Branch, Origin, Upstream};
 ///
 /// [`Branch::set_upstream`]: crate::Branch::set_upstream
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(missing_docs)]
 pub struct TrackingBranch {
     /// The local branch's entity.
     pub this: Entity,

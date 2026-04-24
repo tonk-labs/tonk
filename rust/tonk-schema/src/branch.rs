@@ -67,7 +67,6 @@ enum This<'a> {
 /// let main = Branch::new(&replica, Name("main".into()));
 /// ```
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(missing_docs)]
 pub struct Branch {
     /// The branch's entity. Derived from `(replica, name)`.
     pub this: Entity,

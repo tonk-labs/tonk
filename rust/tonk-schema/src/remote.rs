@@ -71,7 +71,6 @@ enum This<'a> {
 /// );
 /// ```
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(missing_docs)]
 pub struct Remote {
     /// The remote's entity. Derived from `(replica, name)`.
     pub this: Entity,
