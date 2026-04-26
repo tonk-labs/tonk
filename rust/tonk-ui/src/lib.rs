@@ -5,8 +5,19 @@
 
 /// API client for interacting with the Tonk service worker.
 pub mod api;
+
+/// Subscribing to `BroadcastChannel` notifications emitted by the
+/// service worker.
+pub mod broadcast;
+
 /// UI components for the Tonk application.
 pub mod components;
+/// Leptos bridge over [`broadcast`] — exposes a channel's latest
+/// message as a reactive signal.
+pub mod watch;
+
+/// DID parsing helpers.
+pub mod did;
 
 /// Error types for the Tonk UI.
 pub mod error;

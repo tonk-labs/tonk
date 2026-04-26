@@ -13,10 +13,10 @@ use crate::TonkWorkerError;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct IdentifyResponse {
     /// The user's decentralized identifier (DID).
-    pub user_did: String,
+    pub did: String,
 }
 
-/// Returns the current user's DID.
+/// Returns the current user's profile DID.
 ///
 /// This endpoint allows the UI to retrieve the user's persistent identity.
 /// The DID is generated on first use and persists across sessions.
@@ -27,6 +27,6 @@ pub async fn identify(
     let tonk_state = state.read().await;
 
     Ok(Json(IdentifyResponse {
-        user_did: tonk_state.identity.did().to_string(),
+        did: tonk_state.profile.did().to_string(),
     }))
 }

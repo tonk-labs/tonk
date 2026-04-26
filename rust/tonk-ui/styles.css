@@ -1,5 +1,704 @@
-@layer base, application;
-@import "tailwindcss" layer(base);
-@import "./assets/styles/common.css" layer(base);
-/* biome-ignore lint/suspicious/noUnknownAtRules: Tailwind v4 syntax */
-@variant dark (&:where(.dark, .dark *));
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-extralight.otf") format("opentype");
+    font-weight: 200;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-light.otf") format("opentype");
+    font-weight: 300;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-regular.otf") format("opentype");
+    font-weight: 400;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-book.otf") format("opentype");
+    font-weight: 450;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-medium.otf") format("opentype");
+    font-weight: 500;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-bold.otf") format("opentype");
+    font-weight: 700;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-heavy.otf") format("opentype");
+    font-weight: 800;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: "Gestalte";
+    src: url("/fonts/gestalte-black.otf") format("opentype");
+    font-weight: 900;
+    font-style: normal;
+}
+
+html,
+body {
+    padding: 0;
+    margin: 0;
+    overscroll-behavior: none;
+}
+
+body {
+    font-family: var(--wa-font-body);
+    background-color: var(--wa-color-neutral-fill-quiet);
+    color: var(--wa-color-text-normal);
+
+    /* Graph-paper dot grid behind the whole page — two overlaid
+       layers. The base layer is a dim dot every `--dot-gap`; the
+       accent layer is a brighter dot every 4 × `--dot-gap`,
+       producing visible "major" intersections on a 4×4 sub-grid
+       (like engineering graph paper). The accent layer goes
+       *first* in the stack so it paints on top of the base.
+
+       Each `radial-gradient` paints at the *center* of its tile.
+       To make accent dots land *on* dim-grid intersections, shift
+       the bright layer's origin by `--dot-gap / 2` in each
+       direction so its 64×64 center (32,32) becomes (40,40) —
+       a multiple of 16 plus the dim layer's own 8px center
+       offset, putting it exactly atop a dim dot. */
+    --dot-gap: 16px;
+    --dot-size-dim: 0.5px;
+    --dot-size-bright: 0.5px;
+    --dot-color-dim: color-mix(
+        in oklab,
+        var(--wa-color-text-normal) 16%,
+        transparent
+    );
+    --dot-color-bright: color-mix(
+        in oklab,
+        var(--wa-color-text-normal) 25%,
+        transparent
+    );
+    background-image:
+        radial-gradient(
+            circle,
+            var(--dot-color-bright) var(--dot-size-bright),
+            transparent calc(var(--dot-size-bright) + 0.5px)
+        ),
+        radial-gradient(
+            circle,
+            var(--dot-color-dim) var(--dot-size-dim),
+            transparent calc(var(--dot-size-dim) + 0.5px)
+        );
+    background-size:
+        calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
+        var(--dot-gap) var(--dot-gap);
+    /* Both layers shifted by half their respective tile so the
+       first dot of each lands at (0,0). The dim layer's tile is
+       16×16 (center at 8) so it shifts -8px. The bright layer's
+       tile is 64×64 (center at 32) so it shifts -32px (which is
+       `--dot-gap * 2`, i.e. half of `--dot-gap * 4`). After both
+       shifts every bright dot still sits exactly on a dim dot
+       because 32px is a multiple of 16px. */
+    background-position:
+        calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
+        calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
+}
+
+/* We stay on the default WA theme but borrow two things from the
+   brutalist theme: its font stack (Space Grotesk / IBM Plex Sans
+   Condensed / Space Mono) and a zero border-radius. Drop-shadows
+   are also zeroed out so cards and panels read as flat blocks of
+   color. Fonts themselves are loaded via a `<link>` in index.html. */
+:where(.wa-theme-default) {
+    --wa-font-family-body: "Space Grotesk", sans-serif;
+    --wa-font-family-heading: "IBM Plex Sans Condensed", sans-serif;
+    --wa-font-family-code: "Space Mono", monospace;
+
+    --wa-border-radius-scale: 0;
+
+    /* tldraw's 11-color palette (minus black and white), solid
+       values from the editor's light-mode `DEFAULT_THEME`. Named
+       with `--tl-*` so they're easy to reference; swap any of them
+       into `--wa-color-text-normal` / `--wa-color-neutral-fill-quiet`
+       to re-tint the UI. */
+    --tl-blue: #4465e9;
+    --tl-green: #099268;
+    --tl-grey: #9fa8b2;
+    --tl-light-blue: #4ba1f1;
+    --tl-light-green: #4cb05e;
+    --tl-light-red: #f87777;
+    --tl-light-violet: #e085f4;
+    --tl-orange: #e16919;
+    --tl-red: #e03131;
+    --tl-violet: #ae3ec9;
+    --tl-yellow: #f1ac4b;
+}
+
+/* Cards and callouts: transparent fill so the dot-grid shows
+   through, no shadow so they read as flat outlined boxes. The
+   default top/bottom *and* left/right borders are kept so cards
+   look like proper containers. `appearance="plain"` opts out
+   entirely. */
+wa-card:not([appearance="plain"]),
+wa-callout:not([appearance="plain"]) {
+    background: transparent;
+    box-shadow: none;
+}
+
+/* Banner header: the space name as a large display title, sized
+   to match the sidebar column. Transparent background so the banner
+   and the main body read as one continuous surface — the name
+   alone carries the weight. The share affordance sits to the right;
+   `gap` separates it from the title so they don't collide. */
+.space-banner {
+    background: transparent;
+    color: var(--wa-color-text-normal);
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-m);
+    height: 8rem;
+    padding-inline: var(--wa-space-xl);
+}
+/* Headline-cover treatment after Tachyons'
+   `title-highlight-header-cover` example: the dark fill wraps
+   the *text* (an inner `<span>`) rather than the heading box.
+   That way the box hugs each line of text when it wraps, and
+   any padding affects only the highlighted span — not the
+   heading's outer rhythm. `box-decoration-break: clone` makes
+   each wrapped line its own complete box (with consistent
+   padding on both sides) instead of leaving an unpainted
+   sliver at line breaks. */
+/* Tachyons' headline-cover treatment, baked in as the default
+   look for headings: a dark filled box hugging the text. The
+   heading goes `display: inline-block` so the box shrinks to
+   the text width instead of stretching across its container,
+   `line-height: 1.5` provides the vertical breathing room
+   that keeps the text from looking cramped at the box edges,
+   and `box-decoration-break: clone` makes every wrapped line
+   render as a complete padded box (rather than a sliced one).
+   System-font stack matches Tachyons; tracking is tightened
+   per the original example. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    display: inline-block;
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+    font-family:
+        -apple-system, BlinkMacSystemFont, "avenir next", avenir, helvetica,
+        "helvetica neue", ubuntu, roboto, noto, "segoe ui", arial, sans-serif;
+    font-weight: 600;
+    line-height: 1.5;
+    letter-spacing: -0.05em;
+    padding: var(--wa-space-2xs) var(--wa-space-xs);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+
+.space-banner h1 {
+    margin: 0;
+    font-size: var(--wa-font-size-3xl);
+}
+
+/* Space view padding; WA's `wa-stack` handles vertical gaps
+   and `wa-grid` handles the card layout. A couple of local
+   tweaks: uppercase tiny section labels, and a two-column
+   floor for the branch grid via `--min-column-size`. */
+.space-view {
+    padding: var(--wa-space-m) var(--wa-space-xl);
+    padding-block-end: var(--wa-space-2xl);
+    gap: var(--wa-space-l);
+}
+.space-section-title {
+    margin: 0;
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.7;
+}
+
+/* Branches as collapsible rows. Each row's `<wa-details>`
+   summary is a single horizontal line: icon + name + version +
+   sync icon-buttons + status chip, all packed tight via gap.
+   Body opens to a stack of upstream/tree details and the
+   per-branch claim-query form. */
+.branch-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-2xs);
+}
+.branch-row {
+    /* WA's <wa-details> default is a filled card on neutral
+       background. We want a list row that blends with the page;
+       drop the background and keep just a light bottom hairline
+       to separate adjacent rows. */
+    --wa-color-surface-default: transparent;
+    --wa-color-surface-raised: transparent;
+    background: transparent;
+    border-block-end: 1px solid var(--wa-color-surface-border);
+}
+.branch-row::part(base) {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+}
+.branch-row::part(summary) {
+    /* WA's <wa-details> default-pads the summary heavily; tighten
+       so the row reads as a list item rather than a card. */
+    padding-block: var(--wa-space-2xs);
+    padding-inline: var(--wa-space-s);
+}
+.branch-row::part(content) {
+    background: transparent;
+    border-block-start: 1px dashed var(--wa-color-surface-border);
+}
+.branch-summary {
+    /* Slotted into `<wa-details>`'s shadow, where the
+       `*` border-box reset wa-page applies in light DOM
+       doesn't reach. Without this, descendants inherit
+       `content-box` (the CSS spec default) and `<wa-button>`
+       widths blow out past their declared `width: 38px`
+       because their padding+border get added on top. */
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-s);
+    width: 100%;
+}
+.branch-summary > * {
+    box-sizing: border-box;
+}
+/* Branch label + revision badges sit side-by-side touching;
+   the wrapper inline-flexes them with zero gap so their
+   borders meet directly. WA badges size relative to their
+   font-size, so the wrapper sets that for both at once.
+   Both badges carry identifier-shaped text (branch name,
+   short tree hash), so they share the monospace font that
+   `<code>` blocks use elsewhere. Icons aren't affected — they
+   live in the icon font via `<wa-icon>`. */
+.branch-summary-pair {
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--wa-font-size-l);
+    font-family: var(--wa-font-family-code);
+}
+.branch-summary-pair > wa-badge:first-of-type {
+    font-weight: 700;
+}
+
+/* Push the action buttons (and the trailing sync chip) to the
+   far right of the summary line. The first `<wa-button>` in
+   the row gets the auto-margin; everything after it follows
+   it across the gap. Targeting the button rather than a
+   wrapper keeps the markup flat (we removed
+   `.branch-summary-actions` earlier when wa-button-group was
+   dropped). */
+.branch-summary > wa-button:first-of-type {
+    margin-inline-start: auto;
+}
+.branch-summary-empty {
+    color: var(--wa-color-text-quiet);
+    font-size: var(--wa-font-size-s);
+}
+.branch-body {
+    padding: var(--wa-space-s);
+}
+.branch-detail {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    column-gap: var(--wa-space-s);
+    row-gap: var(--wa-space-3xs);
+    margin: 0;
+}
+.branch-detail dt {
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-text-quiet);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+.branch-detail dd {
+    margin: 0;
+}
+.branch-claims {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-s);
+}
+
+/* Compact remote tiles. Sigil + name only; full address /
+   subject DID surface via the `title` attribute today and
+   will graduate to a click-to-edit panel later. The grid
+   floor keeps tiles from stretching to absurd widths on
+   wide viewports. */
+.remote-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+    gap: var(--wa-space-s);
+}
+.remote-tile {
+    --spacing: var(--wa-space-2xs);
+}
+.remote-tile tonk-sigil[slot="media"] {
+    width: 2.5rem;
+    height: 2.5rem;
+    flex: none;
+}
+.remote-tile-name {
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+}
+
+/* Sidebar uses wa-page's standard `navigation` slot. wa-page
+   handles everything: rail-style column on desktop, drawer +
+   built-in hamburger toggle on mobile (`mobile-breakpoint`,
+   default 768px). `navigation-placement="end"` on the host
+   places the *mobile drawer* on the inline-end side; the
+   desktop column placement is governed by wa-page's body
+   grid (default `'menu main aside'`), which we override below
+   so the rail and the drawer agree on which side they live. */
+wa-page {
+    --menu-width: 4rem;
+    /* Let the `<body>`'s dot-grid show through. wa-page's host
+       and inner parts default to `var(--wa-color-surface-default)`
+       (an opaque surface) which would cover the grid otherwise. */
+    background: transparent;
+}
+wa-page::part(base),
+wa-page::part(body),
+wa-page::part(main),
+wa-page::part(main-content) {
+    background: transparent;
+}
+
+/* Swap the body grid so the menu column lives at the inline-end
+   side. Track widths follow column order, so we also reorder
+   `grid-template-columns` to keep `--main-width` (1fr) in the
+   middle slot and `--menu-width` (4rem) on the end. */
+wa-page::part(body) {
+    grid-template-areas: "main menu aside";
+    grid-template-columns:
+        minmax(0, var(--main-width))
+        minmax(0, var(--menu-width))
+        minmax(0, var(--aside-width));
+}
+
+/* Mobile drawer width. wa-page renders the navigation as a
+   `<wa-drawer>` below the breakpoint; its default `--size`
+   is 25rem (a full nav-panel width), but our content is an
+   icon rail — match the desktop column width so the drawer
+   reads as the same rail sliding in. `--spacing: 0` zeroes
+   the drawer body's default 24px inset so the rail's tiles
+   sit flush against the panel edges (otherwise the body's
+   padding eats most of a 4rem panel and leaves dead space
+   on the inline-end). */
+wa-page::part(drawer) {
+    --size: 4rem;
+    --spacing: 0;
+}
+
+/* Hide the drawer's built-in close button. The hamburger
+   toggle and backdrop light-dismiss already cover closing —
+   a redundant X eats space in a 4rem-wide panel. */
+wa-page::part(drawer__close-button) {
+    display: none;
+}
+
+/* The drawer panel ships with `box-shadow: var(--wa-shadow-l)`
+   to lift it off the page. We're going for a flat brutalist
+   treatment — drop it. */
+wa-page::part(drawer__dialog) {
+    box-shadow: none;
+}
+
+/* Paint the rail background on every part the navigation
+   content lives inside — desktop is one `<nav part="navigation">`,
+   mobile splits across the drawer's header/body/footer parts
+   (label/body/footer of `<wa-drawer>`). Painting all of them
+   with the same color avoids visible seams between sections. */
+wa-page::part(navigation),
+wa-page::part(drawer__body),
+wa-page::part(drawer__header),
+wa-page::part(drawer__footer) {
+    background: var(--wa-color-neutral-fill-quiet);
+}
+wa-page::part(navigation),
+wa-page::part(drawer) {
+    border-inline-start: 1px solid var(--wa-color-neutral-border-quiet);
+}
+
+/* Wrapper that holds the rail tiles in `slot="navigation"`.
+   wa-page's `::slotted([slot*='navigation'])` rule gives this
+   `display: flex; flex-direction: column; gap; padding`. Zero
+   the padding so tiles span the full column width — the column
+   is only 4rem, and `.sidebar-space`'s 50% inset already
+   provides the inner gutter. */
+.sidebar-rail {
+    padding: 0;
+    /* Zero the gap wa-page's slotted styles add so tiles stack
+       flush against each other. */
+    gap: 0;
+    background: transparent;
+}
+
+/* Space switcher: square tile inset to 50% of the rail so the
+   yellow gutter shows around it. Active tile breaks out to
+   100% to read as "open". Tiles hug the inline-start (page-
+   facing) side so the gutter sits between them and the page
+   edge — `margin-inline: 0 auto` consumes the trailing space. */
+.sidebar-space {
+    display: block;
+    width: 50%;
+    aspect-ratio: 1;
+    margin: 0 auto 0 0;
+    /* Zero wa-page's `::slotted([slot*='navigation'])` default
+       padding (16px) — its design assumes nav items are large
+       text rows, but our tiles are square sigils that need to
+       sit flush in the rail. */
+    padding: 0;
+    /* wa-page's generic `slot[name]::slotted(*)` rule paints
+       every slotted item with `background: var(--wa-color-surface-default)`
+       (white). For our tiles we want the rail's color to show
+       through — the active-state hover/sigil contrast handles
+       the visual signal, no per-tile bg needed. */
+    background: transparent;
+    transition:
+        width var(--wa-transition-normal) var(--wa-transition-easing),
+        margin var(--wa-transition-normal) var(--wa-transition-easing);
+}
+
+.sidebar-space.is-active,
+.sidebar-space--full {
+    width: 100%;
+    margin: 0;
+}
+
+/* Tighten every `--wa-space-*` token in one shot on narrow
+   viewports. WA defines all of them as `calc(var(--wa-space-scale)
+   * Nrem)`, so scaling the knob globally pulls in every
+   padding/gap/margin that uses the tokens — no need to
+   override rules one by one. 0.65 lands `--wa-space-m` at
+   ~10px (down from 16px). */
+@media screen and (width < 768px) {
+    :root {
+        --wa-space-scale: 0.65;
+    }
+
+    /* Reclaim the remaining inline padding — even after the
+       global scale-down, `.space-view` still keeps a gutter
+       that's wasted on a tight viewport. */
+    .space-view {
+        padding-inline: 0;
+    }
+
+    /* Below the breakpoint wa-page moves the navigation into
+       a `<wa-drawer>` overlay, but the body grid still reserves
+       `--menu-width` for the (now-empty) menu column — leaving
+       a strip of dead space on the inline-end. Collapse the
+       column to 0 so the main content fills the viewport. The
+       drawer is positioned over the page, not inside the grid,
+       so it's unaffected by this. */
+    wa-page {
+        --menu-width: 0;
+    }
+
+    /* wa-page renders the hamburger inside `[part~='header']`,
+       a sticky grid row at the top. With no other header
+       content, the row is mostly empty padding above the body —
+       wasted at narrow widths. Float the toggle button itself
+       so it overlays the page corner instead of forcing the
+       header row open. The `header` grid row collapses to its
+       intrinsic min-height (which is 0 once empty), reclaiming
+       the strip for content. */
+    wa-page::part(navigation-toggle) {
+        position: fixed;
+        inset-block-start: var(--wa-space-xs);
+        inset-inline-end: var(--wa-space-xs);
+        z-index: 6;
+    }
+}
+
+.sidebar-space::part(base) {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    border-radius: 0;
+    border: 0;
+    background: transparent;
+    color: var(--wa-color-text-normal);
+}
+/* Sigils live in an externally-referenced SVG, where
+   `currentColor` resolves against that SVG's own color
+   context rather than the host's. Propagate the tile's
+   color into the sigil via `--sigil-fg` so hover inversion
+   actually re-tints the glyphs. */
+.sidebar-sigil {
+    --sigil-fg: var(--wa-color-text-normal);
+}
+
+/* Hover/focus on inactive tiles: rotate the sigil. Color stays
+   the same — only the glyph orientation changes, which is
+   enough of a signal without recoloring the tile. */
+.sidebar-sigil {
+    transition: transform var(--wa-transition-normal)
+        var(--wa-transition-easing);
+}
+.sidebar-space:is(:hover, :focus-within) .sidebar-sigil {
+    transform: rotate(90deg);
+}
+
+/* Active space: full-bleed tile (width handled above). The
+   tile background stays transparent so the body's dot-grid
+   shows through — without that, even though the panel color
+   matches the body bg in light mode, the active tile reads as
+   a solid block instead of as a continuous part of the page. */
+.sidebar-space.is-active::part(base) {
+    background: transparent;
+}
+
+.sidebar-space::part(label) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    margin: 0;
+}
+
+.sidebar-sigil {
+    display: block;
+    /* Width-only sizing so `aspect-ratio: 1/1` from the
+       baseline derives the height. Setting both `width` and
+       `height` to 100% caused a FOUC ribbon: before
+       `<wa-page>` finished laying out its navigation slot,
+       the parent had no width *or* height yet, so the sigil
+       had no constraint and stretched into the page flow.
+       Width-only collapses gracefully — it stays 0 until
+       the parent has a width, then snaps to a square. */
+    width: 100%;
+}
+
+/* `+` tile: same footprint as the sigil tiles but flipped to
+   the opposite edge (page-edge side) so it reads as a companion
+   action distinct from the spaces. */
+.sidebar-space--add {
+    margin-inline: auto 0;
+}
+
+/* Profile tile sits in `slot="navigation-footer"` directly;
+   add a bottom margin so it doesn't kiss the rail's bottom
+   edge. Matches the top breathing room above the `+` tile. */
+.sidebar-space--profile {
+    margin-block-end: var(--wa-space-m);
+}
+
+.sidebar-add-glyph {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* `+` tile: at rest, a dark square with a light `+`. On hover,
+   a light disc blooms behind the `+` and the `+` flips dark,
+   reading as "the new slot opens". */
+.sidebar-space--add::part(base) {
+    background: var(--wa-color-text-normal);
+}
+.sidebar-add-disc {
+    fill: transparent;
+}
+.sidebar-add-cross {
+    stroke: var(--wa-color-neutral-fill-quiet);
+    stroke-width: 4;
+    stroke-linecap: square;
+    fill: none;
+}
+.sidebar-space--add:is(:hover, :focus-within) .sidebar-add-disc {
+    fill: var(--wa-color-neutral-fill-quiet);
+}
+.sidebar-space--add:is(:hover, :focus-within) .sidebar-add-cross {
+    stroke: var(--wa-color-text-normal);
+}
+
+/* Join page — used by the `/join` route. The hero block sits at
+   the top of the card and visualizes the space the recipient is
+   considering: a sigil derived from the subject DID alongside
+   any explanatory copy. The sigil baseline (see tonk-sigil/web.rs)
+   defaults to `inline-block` with no explicit dimensions, so we
+   give it an explicit size here — same pattern as `.remote-card
+   tonk-sigil[slot="media"]` does in the space view. */
+.join-target tonk-sigil {
+    width: 6rem;
+    height: 6rem;
+    flex: none;
+}
+
+.join-subject {
+    /* Long DIDs would otherwise blow out the card. Show the
+       full value via the `title` attribute on hover. */
+    word-break: break-all;
+    font-size: 0.85rem;
+}
+
+/* Invite dialog's link row: read-only URL field on the left
+   (grows to fill), copy button on the right (shrinks to its
+   natural square). Without explicit flex sizing, WA components
+   each render `display: block` and end up half-and-half — we
+   force the input to grow and the button to stay compact. */
+/* Invite dialog body: hero sigil on the left, prose + link
+   row stacked on the right. The sigil identifies the space
+   the link targets so the user has a visual confirmation of
+   which space they're sharing. */
+.invite-body {
+    display: flex;
+    align-items: stretch;
+    gap: var(--wa-space-l);
+}
+.invite-body-sigil {
+    flex: 0 0 auto;
+    width: 8rem;
+    align-self: stretch;
+    /* Override the sigil baseline's `aspect-ratio: 1/1` so the
+       hero stretches to the body's height instead of forcing a
+       fixed square that leaves blank space below. */
+    aspect-ratio: auto;
+}
+.invite-body-stack {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* Invite link row inside the dialog body. Read-only URL field
+   on the left (grows), copy button on the right (natural size).
+   Without explicit flex sizing, WA components each render
+   `display: block` and end up half-and-half. */
+.invite-link {
+    display: flex;
+    align-items: end;
+    gap: var(--wa-space-xs);
+}
+.invite-link-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.invite-link-copy {
+    flex: 0 0 auto;
+}

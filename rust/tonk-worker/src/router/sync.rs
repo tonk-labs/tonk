@@ -1,9 +1,12 @@
 //! Sync routes for push/pull operations with upstream.
 //!
-//! These endpoints allow synchronizing the local space with the upstream remote.
+//! These endpoints allow synchronizing a branch with its upstream remote.
+//! Each response carries the local branch revision before and after the
+//! operation so the UI can render a diff (or detect "nothing changed").
 
-use ::axum::{Json, extract::State};
+use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
+use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -12,13 +15,29 @@ use tonk_common::log;
 use super::AppState;
 use crate::TonkWorkerError;
 
+/// Path parameters for sync endpoints.
+#[derive(Debug, Deserialize)]
+pub struct SyncPath {
+    /// The repository name.
+    pub repo: String,
+    /// The branch name.
+    pub branch: String,
+}
+
 /// Response for sync operations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SyncResponse {
     /// Whether the sync operation succeeded.
     pub success: bool,
-    /// Whether any changes were synced.
-    pub changed: bool,
+    /// Local branch revision *before* the sync ran. `None` when
+    /// the branch had no commits at the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Revision>,
+    /// Local branch revision *after* the sync. `None` when the
+    /// branch still has no commits, or when the operation failed
+    /// before producing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Revision>,
     /// Error message if sync failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -28,25 +47,46 @@ pub struct SyncResponse {
 ///
 /// Fetches changes from the remote and merges them into the local branch.
 #[wasm_compat]
-pub async fn pull(State(state): State<AppState>) -> Result<Json<SyncResponse>, TonkWorkerError> {
-    log!("Pulling from upstream...");
+pub async fn pull(
+    State(state): State<AppState>,
+    Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    log!(
+        "Pulling from upstream: repo={}, branch={}",
+        params.repo,
+        params.branch
+    );
 
-    let mut tonk_state = state.write().await;
+    let tonk_state = state.write().await;
 
-    match tonk_state.session.space_mut().pull().await {
-        Ok(Some(_old_revision)) => {
-            log!("Pull succeeded, changes applied");
+    let repo = tonk_state
+        .profile
+        .repository(&params.repo)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
+        })?;
+
+    let branch = repo
+        .branch(params.branch.as_str())
+        .open()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
+        })?;
+
+    let before = branch.revision();
+
+    match branch.pull().perform(&tonk_state.operator).await {
+        Ok(after) => {
+            log!("Pull succeeded");
             Ok(Json(SyncResponse {
                 success: true,
-                changed: true,
-                error: None,
-            }))
-        }
-        Ok(None) => {
-            log!("Pull succeeded, already in sync");
-            Ok(Json(SyncResponse {
-                success: true,
-                changed: false,
+                before,
+                after,
                 error: None,
             }))
         }
@@ -54,7 +94,8 @@ pub async fn pull(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
             log!("Pull failed: {:?}", e);
             Ok(Json(SyncResponse {
                 success: false,
-                changed: false,
+                before: before.clone(),
+                after: before,
                 error: Some(e.to_string()),
             }))
         }
@@ -65,25 +106,46 @@ pub async fn pull(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
 ///
 /// Sends local changes to the remote.
 #[wasm_compat]
-pub async fn push(State(state): State<AppState>) -> Result<Json<SyncResponse>, TonkWorkerError> {
-    log!("Pushing to upstream...");
+pub async fn push(
+    State(state): State<AppState>,
+    Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    log!(
+        "Pushing to upstream: repo={}, branch={}",
+        params.repo,
+        params.branch
+    );
 
-    let mut tonk_state = state.write().await;
+    let tonk_state = state.write().await;
 
-    match tonk_state.session.space_mut().push().await {
-        Ok(Some(_old_revision)) => {
-            log!("Push succeeded, changes sent");
+    let repo = tonk_state
+        .profile
+        .repository(&params.repo)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
+        })?;
+
+    let branch = repo
+        .branch(params.branch.as_str())
+        .open()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
+        })?;
+
+    let before = branch.revision();
+
+    match branch.push().perform(&tonk_state.operator).await {
+        Ok(_) => {
+            log!("Push succeeded");
             Ok(Json(SyncResponse {
                 success: true,
-                changed: true,
-                error: None,
-            }))
-        }
-        Ok(None) => {
-            log!("Push succeeded, already in sync");
-            Ok(Json(SyncResponse {
-                success: true,
-                changed: false,
+                before: before.clone(),
+                after: branch.revision(),
                 error: None,
             }))
         }
@@ -91,7 +153,8 @@ pub async fn push(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
             log!("Push failed: {:?}", e);
             Ok(Json(SyncResponse {
                 success: false,
-                changed: false,
+                before: before.clone(),
+                after: before,
                 error: Some(e.to_string()),
             }))
         }
@@ -102,54 +165,75 @@ pub async fn push(State(state): State<AppState>) -> Result<Json<SyncResponse>, T
 ///
 /// First pulls changes from upstream, then pushes local changes.
 #[wasm_compat]
-pub async fn sync(State(state): State<AppState>) -> Result<Json<SyncResponse>, TonkWorkerError> {
-    log!("Syncing with upstream (pull + push)...");
+pub async fn sync(
+    State(state): State<AppState>,
+    Path(params): Path<SyncPath>,
+) -> Result<Json<SyncResponse>, TonkWorkerError> {
+    log!(
+        "Syncing with upstream: repo={}, branch={}",
+        params.repo,
+        params.branch
+    );
 
-    let mut tonk_state = state.write().await;
+    let tonk_state = state.write().await;
+
+    let repo = tonk_state
+        .profile
+        .repository(&params.repo)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
+        })?;
+
+    let branch = repo
+        .branch(params.branch.as_str())
+        .open()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
+        })?;
+
+    let before = branch.revision();
 
     // First pull
-    let pull_changed = match tonk_state.session.space_mut().pull().await {
-        Ok(Some(_)) => {
-            log!("Pull succeeded, changes applied");
-            true
-        }
-        Ok(None) => {
-            log!("Pull succeeded, already in sync");
-            false
+    let after_pull = match branch.pull().perform(&tonk_state.operator).await {
+        Ok(after) => {
+            log!("Pull succeeded");
+            after
         }
         Err(e) => {
             log!("Pull failed: {:?}", e);
             return Ok(Json(SyncResponse {
                 success: false,
-                changed: false,
+                before: before.clone(),
+                after: before,
                 error: Some(format!("Pull failed: {}", e)),
             }));
         }
     };
 
     // Then push
-    let push_changed = match tonk_state.session.space_mut().push().await {
-        Ok(Some(_)) => {
-            log!("Push succeeded, changes sent");
-            true
-        }
-        Ok(None) => {
-            log!("Push succeeded, already in sync");
-            false
+    match branch.push().perform(&tonk_state.operator).await {
+        Ok(_) => {
+            log!("Push succeeded");
+            Ok(Json(SyncResponse {
+                success: true,
+                before,
+                after: branch.revision(),
+                error: None,
+            }))
         }
         Err(e) => {
             log!("Push failed: {:?}", e);
-            return Ok(Json(SyncResponse {
+            Ok(Json(SyncResponse {
                 success: false,
-                changed: pull_changed,
+                before,
+                after: after_pull,
                 error: Some(format!("Push failed: {}", e)),
-            }));
+            }))
         }
-    };
-
-    Ok(Json(SyncResponse {
-        success: true,
-        changed: pull_changed || push_changed,
-        error: None,
-    }))
+    }
 }

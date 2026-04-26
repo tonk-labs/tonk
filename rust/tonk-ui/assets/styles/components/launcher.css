@@ -1,8 +1,0 @@
-.launcher {
-    display: grid;
-    width: 100vw;
-    height: 100vh;
-    grid-template-columns: 80px auto;
-    grid-template-rows: 100%;
-    grid-template-areas: "toolbar" "space";
-}

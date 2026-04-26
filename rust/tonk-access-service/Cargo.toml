@@ -24,6 +24,8 @@ helpers = [
     "dep:http-body-util",
     "dialog-storage/helpers",
     "dialog-common/helpers",
+    "dialog-remote-s3/helpers",
+    "dialog-remote-ucan-s3/helpers",
 ]
 
 [dependencies]
@@ -32,12 +34,16 @@ worker = { workspace = true }
 worker-macros = { workspace = true }
 
 # S3 presigning with UCAN support
-dialog-s3-credentials = { workspace = true, features = ["ucan"] }
+dialog-remote-s3 = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
 
-# UCAN
+# UCAN / identity
 dialog-ucan = { workspace = true }
+dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dialog-credentials = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-effects = { workspace = true }
 
 # Cryptography
 ed25519-dalek = { workspace = true }
@@ -60,16 +66,22 @@ tokio = { workspace = true, optional = true }
 async-trait = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }
-dialog-storage = { workspace = true, features = ["s3", "ucan"], optional = true }
+dialog-storage = { workspace = true, optional = true }
 dialog-common = { workspace = true, optional = true }
 
 [dev-dependencies]
-# Testing with dialog_common::test macro
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
-dialog-storage = { workspace = true, features = ["s3", "ucan", "helpers"] }
-dialog-s3-credentials = { workspace = true, features = ["ucan", "helpers"] }
-dialog-ucan = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-query = { workspace = true }
+dialog-remote-s3 = { workspace = true, features = ["helpers"] }
+dialog-remote-ucan-s3 = { workspace = true, features = ["helpers"] }
+dialog-repository = { workspace = true, features = ["helpers"] }
+dialog-storage = { workspace = true, features = ["helpers"] }
+dialog-ucan-core = { workspace = true }
 anyhow = { workspace = true }
+futures-util = { workspace = true }
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.

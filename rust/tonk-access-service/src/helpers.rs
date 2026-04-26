@@ -33,7 +33,6 @@ pub mod server;
 #[cfg(not(target_arch = "wasm32"))]
 pub use server::*;
 
-// Re-export Ed25519Signer from dialog-storage for convenience in tests
-// (previously called Operator in older dialog-storage versions)
+// Re-export SignerCredential for convenience in tests
 #[cfg(not(target_arch = "wasm32"))]
-pub use dialog_storage::s3::helpers::Ed25519Signer as Operator;
+pub use dialog_credentials::SignerCredential;

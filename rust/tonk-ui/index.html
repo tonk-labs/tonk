@@ -4,6 +4,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Tell the browser to render native chrome (scrollbars, form
+       controls, etc.) in either mode — the actual mode is selected
+       reactively by the script below based on the OS preference. -->
+  <meta name="color-scheme" content="light dark">
   <meta name="title" content="Tonk">
   <meta name="description"
     content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now.">
@@ -31,17 +35,64 @@
   <link rel="shortcut icon" href="/images/mark-white.svg">
   <link rel="apple-touch-icon" href="/images/mark-white.svg">
 
-  <!-- We need to include this before the snippet that loads the UI so that
-         the `serviceWorkerActivates` function is available when the Wasm blob
-         initializes; the promise is resolved later on. -->
-  <script type="module">
-    const serviceWorkerActivatesPromise = new Promise((resolve, reject) => {
-      self.resolveServiceWorkerActivates = resolve;
-      self.rejectServiceWorkerActivates = reject;
-    });
+  <!-- Web Awesome: custom-element UI library (see .claude/skills/webawesome). The loader
+       auto-registers any <wa-*> elements used in the DOM; `data-webawesome` tells it
+       where its bundled assets (icons, etc.) live.
 
-    self.serviceWorkerActivates = () => {
-      return serviceWorkerActivatesPromise;
+       We use the default theme with the shoelace palette. Two
+       local overrides layer on top (see styles.css): brutalist's
+       fonts (Space Grotesk / IBM Plex Sans Condensed / Space Mono)
+       and a zero border radius so nothing is rounded. -->
+  <link rel="stylesheet" href="/webawesome/styles/webawesome.css">
+  <link rel="stylesheet" href="/webawesome/styles/themes/default.css">
+  <link rel="stylesheet" href="/webawesome/styles/color/palettes/shoelace.css">
+  <!-- Fonts borrowed from the brutalist theme: Space Grotesk (body),
+       IBM Plex Sans Condensed (headings), Space Mono (code). -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link rel="stylesheet"
+    href="https://fonts.bunny.net/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=Space+Grotesk:wght@300..700&family=Space+Mono:wght@400;700&display=swap">
+  <script type="module" src="/webawesome/webawesome.loader.js" data-webawesome="/webawesome"></script>
+
+  <!-- Inherit the OS light/dark preference. Web Awesome picks up its
+       theme from `.wa-light` / `.wa-dark` on the root element; toggle
+       the class immediately (before paint) and keep it in sync with
+       `prefers-color-scheme` changes. -->
+  <script>
+    (() => {
+      // Activate the default theme with the shoelace palette. Light/dark
+      // is toggled reactively on `prefers-color-scheme` changes.
+      document.documentElement.classList.add('wa-theme-default', 'wa-palette-shoelace');
+
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const apply = (isDark) => {
+        const cls = document.documentElement.classList;
+        cls.toggle('wa-dark', isDark);
+        cls.toggle('wa-light', !isDark);
+      };
+      apply(mq.matches);
+      mq.addEventListener('change', (e) => apply(e.matches));
+    })();
+  </script>
+
+  <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
+         the shell awaits it before issuing any /api/* fetch. -->
+  <script type="module">
+    // Resolve when the service worker is *controlling* this page.
+    //
+    // `state === 'activated'` is not a reliable signal on first
+    // navigation — the SW may activate after the page has already
+    // loaded, so the page has no `controller` until the SW calls
+    // `clients.claim()`. `controller` being non-null is the
+    // precise moment when /api/* fetches start routing through
+    // the worker.
+    self.serviceWorkerActivates = async () => {
+      if (!('serviceWorker' in navigator)) {
+        throw new Error('Service workers not supported; Tonk will not work!');
+      }
+      if (navigator.serviceWorker.controller) return;
+      await new Promise(resolve => {
+        navigator.serviceWorker.addEventListener('controllerchange', resolve, { once: true });
+      });
     };
 
     // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
@@ -72,44 +123,18 @@
 
   <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
   <link data-trunk rel="copy-dir" href="./assets/images" />
+  <link data-trunk rel="copy-dir" href="./assets/webawesome" />
+  <link data-trunk rel="copy-file" href="../tonk-sigil/assets/sigils.svg" />
 
-  <link data-trunk rel="tailwind-css" href="./styles.css" />
+  <link data-trunk rel="css" href="./styles.css" />
 </head>
 
 <body>
   <script type="module">
-    const resolveWhenActive = worker => {
-      const onStateChange = () => {
-        if (worker.state === 'activated') {
-          resolveServiceWorkerActivates();
-          worker.removeEventListener('statechange', onStateChange);
-        }
-      };
-
-      worker.addEventListener('statechange', onStateChange);
-      onStateChange();
-    };
-
     if ("serviceWorker" in navigator) {
-      const registration = await navigator.serviceWorker.register("/service_worker.js", {type: "module"});
-      const worker = registration.installing || registration.waiting || registration.active;
-
-      if (worker != null) {
-        resolveWhenActive(worker);
-      } else {
-        registration.addEventListener('updatefound', () => {
-          const worker = registration.installing;
-
-          if (worker != null) {
-            resolveWhenActive(worker);
-          } else {
-            rejectServiceWorkerActivates();
-          }
-        }, {once: true})
-      }
+      await navigator.serviceWorker.register("/service_worker.js", { type: "module" });
     } else {
       console.error("Service workers not supported; Tonk will not work!");
-      rejectServiceWorkerActivates();
     }
   </script>
 </body>

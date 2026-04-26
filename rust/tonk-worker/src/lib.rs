@@ -24,6 +24,39 @@
 //! installs and activates. Refer to the `service_worker.js` implementation in
 //! `tonk-ui` for an example of how to implement a suitable shim.
 
+/// Patch IDBDatabase.prototype.onversionchange to use a JS-native handler
+/// instead of wasm-bindgen's Closure::once. The `idb` crate registers a
+/// Closure::once for onversionchange that panics if the wasm instance is
+/// replaced (e.g., service worker update) but the native IDBDatabase still
+/// receives the event. This patch intercepts the setter so every database
+/// gets a JS handler that simply closes the connection.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[wasm_bindgen::prelude::wasm_bindgen(inline_js = r#"
+export function patch_idb_versionchange() {
+    const desc = Object.getOwnPropertyDescriptor(
+        IDBDatabase.prototype, 'onversionchange'
+    );
+    if (!desc || !desc.set) return;
+    const origSet = desc.set;
+    Object.defineProperty(IDBDatabase.prototype, 'onversionchange', {
+        set(handler) {
+            origSet.call(this, function() { this.close(); });
+        },
+        get: desc.get,
+        configurable: true,
+    });
+}
+"#)]
+extern "C" {
+    /// Apply the IDB versionchange workaround. Must be called before any
+    /// IDB operations. Called automatically by `TonkServiceWorker::new()`
+    /// and should be called at the start of wasm tests.
+    pub fn patch_idb_versionchange();
+}
+
+mod broadcast;
+pub use broadcast::*;
+
 mod axum;
 pub use axum::*;
 
@@ -35,24 +68,6 @@ pub use error::*;
 
 mod worker;
 pub use worker::*;
-
-mod storage;
-pub use storage::*;
-
-mod account;
-pub use account::*;
-
-mod key_store;
-pub use key_store::*;
-
-mod identity;
-pub use identity::*;
-
-mod session;
-pub use session::*;
-
-// Note: WebCryptoIssuer removed as part of Plan A (extractable keys).
-// Non-extractable WebCrypto support will be re-introduced in Plan B.
 
 mod r#async;
 pub use r#async::*;
