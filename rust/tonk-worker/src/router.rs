@@ -10,28 +10,30 @@ use crate::worker::TonkState;
 mod claim;
 pub use claim::{AssertPath, AssertResponse, ClaimQuery, ClaimResponse, QueryResponse};
 
-mod claim_invite;
-pub use claim_invite::ClaimRequest;
+mod join;
+pub use join::{JoinRequest, JoinResponse};
 
-mod home;
+mod create_invite;
+pub use create_invite::{CreateInviteRequest, CreateInviteResponse};
 
 pub mod inspect;
 pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatusResponse};
 
-mod repositories;
-pub use repositories::ListRepositoriesResponse;
-
 mod repository;
 pub use repository::{
     BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
-    UpstreamConfiguration,
+    UpstreamConfiguration, bootstrap_profile_meta,
 };
 
 mod sync;
+pub use dialog_repository::Revision;
 pub use sync::SyncResponse;
 
 mod identify;
 pub use identify::IdentifyResponse;
+
+mod profile;
+pub use profile::ProfileInfo;
 
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
@@ -49,14 +51,21 @@ pub fn api_router(state: TonkState) -> Router {
     Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
-        // Invite claim (redeem an invite URL)
-        .route("/api/claim", post(claim_invite::claim_invite))
-        // Repository list (drives the sidebar)
-        .route("/api/repositories", get(repositories::list_repositories))
+        .route("/api/profile", get(profile::get_profile))
+        // Join an invite — creates a fresh replica or refreshes
+        // access on an existing one. See `router/join.rs`.
+        .route("/api/profile/join", post(join::join))
         // Repository lifecycle
         .route(
             "/api/repository/{repo}",
             put(repository::put_repository).get(repository::get_repository),
+        )
+        // Invite minting — see `router/create_invite.rs`. Two modes
+        // (audience-open and audience-scoped) keyed off the request
+        // body shape.
+        .route(
+            "/api/repository/{repo}/invite",
+            post(create_invite::create_invite),
         )
         // Sync operations
         .route(
@@ -121,8 +130,12 @@ pub mod tests {
     use crate::worker::TonkState;
 
     use dialog_capability::Subject;
+    use dialog_credentials::Ed25519Signer;
     use dialog_operator::Profile;
     use dialog_storage::provider::storage::Storage;
+    use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
+    use dialog_varsig::Principal as _;
+    use tonk_invite::{Invite, InviteAudience};
 
     use crate::worker::DefaultSpace;
 
@@ -154,15 +167,20 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
-        TonkState { profile, operator }
+        TonkState {
+            profile,
+            operator,
+            profile_name: "test-tonk".to_string(),
+        }
     }
 
-    /// Issues `PUT /api/repository/{name}` and asserts 201 or 412.
+    /// Creates a test repository via `PUT /api/repository/{name}`.
     ///
-    /// Tolerates `412 Precondition Failed` in case the same name was
-    /// used by a prior run within the same browser session
-    /// (IndexedDB state survives).
-    async fn put_repo_raw(app: &Router, name: &str) {
+    /// Each test calls this with its own repo name so runs are
+    /// independent. Tolerates `412 Precondition Failed` in case the
+    /// same name was used by a prior run within the same browser
+    /// session (IndexedDB state survives).
+    async fn put_repo(app: &Router, name: &str) {
         let response = app
             .clone()
             .oneshot(
@@ -183,27 +201,6 @@ pub mod tests {
             name,
             status,
         );
-    }
-
-    /// Bootstraps the `home` meta-index before any user-facing PUT.
-    ///
-    /// `put_repository` registers every created repo in `home` via
-    /// `home::register_repo`, which loads the home space. Tests that
-    /// skip the bootstrap hit a 500 ("home repo not opened") on
-    /// every non-home PUT, so all non-home test helpers call this
-    /// first. In production this happens implicitly via
-    /// `TonkShell::init`.
-    async fn ensure_home(app: &Router) {
-        put_repo_raw(app, "home").await;
-    }
-
-    /// Creates a test repository via `PUT /api/repository/{name}`,
-    /// bootstrapping `home` first if needed.
-    async fn put_repo(app: &Router, name: &str) {
-        if name != "home" {
-            ensure_home(app).await;
-        }
-        put_repo_raw(app, name).await;
     }
 
     #[dialog_common::test]
@@ -258,10 +255,6 @@ pub mod tests {
         let state = test_state().await;
         let app = api_router(state);
         let repo = "test-create";
-
-        // `put_repository` registers into `home` on success, so home
-        // must be bootstrapped first.
-        ensure_home(&app).await;
 
         let response = app
             .clone()
@@ -338,6 +331,190 @@ pub mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    #[dialog_common::test]
+    async fn it_routes_invite_minting() {
+        let state = test_state().await;
+        let app = api_router(state);
+        let repo = "test-invite-route";
+
+        // Create the repo first so the invite handler can load it.
+        put_repo(&app, repo).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/invite", repo))
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Whatever the handler decides to do, we want a 2xx — proving
+        // the route is reachable. A 404 here would mean the route
+        // failed to match, which is the exact regression we're
+        // guarding against.
+        let status = response.status();
+        assert!(
+            status.is_success(),
+            "expected 2xx from POST /api/repository/{}/invite, got {}",
+            repo,
+            status,
+        );
+    }
+
+    /// Synthesize an audience-open invite for a fresh subject the
+    /// caller's profile has never seen. Returns the URL plus the
+    /// subject DID so tests can assert against it.
+    ///
+    /// Builds the invite directly in test code (no endpoint round
+    /// trip): generate a random subject keypair and a random
+    /// ephemeral keypair, build a one-hop chain `subject ->
+    /// ephemeral` scoped to the subject, and serialize as an
+    /// audience-open invite. Recipient extends the chain by one
+    /// hop in [`super::join::join`].
+    async fn synthesize_open_invite() -> (String, dialog_varsig::Did) {
+        let subject_signer = Ed25519Signer::generate().await.unwrap();
+        let subject_did = subject_signer.did();
+
+        let ephemeral_seed: [u8; 32] = rand::random();
+        let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
+        let ephemeral_did = ephemeral.did();
+
+        let delegation = DelegationBuilder::new()
+            .issuer(subject_signer)
+            .audience(&ephemeral_did)
+            .subject(UcanSubject::Specific(subject_did.clone()))
+            .command(vec![])
+            .try_build()
+            .await
+            .unwrap();
+        let chain = DelegationChain::new(delegation);
+
+        let invite = Invite::new(
+            chain,
+            InviteAudience::Open {
+                seed: ephemeral_seed,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let url = invite.to_url(tonk_invite::DEFAULT_BASE_URL).unwrap();
+        (url, subject_did)
+    }
+
+    /// Issue `POST /api/profile/join` and return status + parsed
+    /// JSON body (or raw bytes when JSON parsing fails).
+    async fn post_join(app: &Router, url: &str, name: &str) -> (StatusCode, serde_json::Value) {
+        let body = serde_json::json!({ "url": url, "name": name }).to_string();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile/join")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[dialog_common::test]
+    async fn it_joins_a_fresh_invite_with_joined_outcome() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let (invite_url, subject_did) = synthesize_open_invite().await;
+        let (status, body) = post_join(&app, &invite_url, "fresh-join").await;
+
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "expected 201 Created on first join, got {status}: {body}",
+        );
+        assert_eq!(body["outcome"], "joined", "expected joined outcome: {body}");
+        assert_eq!(body["repository"]["name"], "fresh-join");
+        assert_eq!(body["repository"]["subject"], subject_did.to_string());
+    }
+
+    #[dialog_common::test]
+    async fn it_renews_when_subject_already_mounted() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let (invite_url, _subject_did) = synthesize_open_invite().await;
+
+        // First join creates the replica under "renew-original".
+        let (first_status, first_body) = post_join(&app, &invite_url, "renew-original").await;
+        assert_eq!(
+            first_status,
+            StatusCode::CREATED,
+            "first join: {first_body}"
+        );
+
+        // Second join of the *same invite URL* — same subject, the
+        // recipient already has it mounted. Worker should respond
+        // with a `renewed` outcome and return the existing replica
+        // ("renew-original"), regardless of the requested name.
+        let (second_status, second_body) = post_join(&app, &invite_url, "different-name").await;
+        assert_eq!(
+            second_status,
+            StatusCode::OK,
+            "expected 200 OK on second join: {second_body}",
+        );
+        assert_eq!(
+            second_body["outcome"], "renewed",
+            "expected renewed outcome: {second_body}",
+        );
+        assert_eq!(
+            second_body["repository"]["name"], "renew-original",
+            "renewed should return the existing replica name, not the requested one",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_unrelated_name_collision_on_join() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        // Pre-existing space named "claimed-name" — created via
+        // a regular PUT, with a different subject than the invite
+        // we'll try to redeem.
+        put_repo(&app, "claimed-name").await;
+
+        let (invite_url, _subject_did) = synthesize_open_invite().await;
+        let (status, body) = post_join(&app, &invite_url, "claimed-name").await;
+
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "expected 409 Conflict for name collision, got {status}: {body}",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_malformed_invite_url() {
+        let state = test_state().await;
+        let app = api_router(state);
+
+        let (status, _body) = post_join(&app, "not-a-url", "doesnt-matter").await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "expected 400 Bad Request for malformed invite",
+        );
     }
 
     #[dialog_common::test]

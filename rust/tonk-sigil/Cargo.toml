@@ -1,0 +1,30 @@
+[package]
+name = "tonk-sigil"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+web = [
+    "dep:blake3",
+    "dep:custom-elements",
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
+
+[dependencies]
+blake3 = { workspace = true, optional = true }
+custom-elements = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "CustomElementRegistry",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Node",
+    "NodeList",
+    "Window",
+] }

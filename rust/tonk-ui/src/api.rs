@@ -2,8 +2,9 @@ use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
-    BranchConfiguration, ClaimRequest, IdentifyResponse, ListRepositoriesResponse, QueryResponse,
-    RemoteConfiguration, RepositoryConfiguration, RepositoryInfo, SyncResponse,
+    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, IdentifyResponse, JoinRequest,
+    JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration, RepositoryConfiguration,
+    RepositoryInfo, SyncResponse,
 };
 
 use crate::error::TonkUiError;
@@ -76,7 +77,17 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
 pub async fn init() -> Result<(), TonkUiError> {
     log!("Ensuring repository '{}' exists...", DEFAULT_REPO);
 
-    let configuration = default_configuration();
+    let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
+    // `RemoteConfiguration::new` accepts anything that converts
+    // into `SiteAddress`, and `UcanAddress` does via `NetworkAddress`.
+    let address = UcanAddress::new(&service_url);
+
+    let configuration = RepositoryConfiguration::default()
+        .remote("origin", RemoteConfiguration::new(address))
+        .branch(
+            DEFAULT_BRANCH,
+            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
+        );
 
     let response = reqwest::Client::new()
         .put(format!("{}/api/repository/{}", origin(), DEFAULT_REPO))
@@ -98,143 +109,101 @@ pub async fn init() -> Result<(), TonkUiError> {
     }
 }
 
-/// Build the default [`RepositoryConfiguration`] the UI uses when
-/// creating a new self-owned repo: `origin` remote at `/ucan/`, and
-/// `main` tracking `origin/main`. Shared by [`init`] and [`create`].
-fn default_configuration() -> RepositoryConfiguration {
-    let address = UcanAddress::new(format!("{}{}", origin(), ACCESS_SERVICE_PATH));
-    RepositoryConfiguration::default()
-        .remote("origin", RemoteConfiguration::new(address))
-        .branch(
-            DEFAULT_BRANCH,
-            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
-        )
+/// Outcome of [`create_space`].
+///
+/// Distinguishes "name already taken" from other failures so the
+/// dialog can surface a field-specific message instead of a
+/// generic error. 409/412 both mean "already exists" — the 412
+/// case just signals that the caller used `If-None-Match: *`,
+/// which we always do here.
+#[derive(Debug)]
+pub enum CreateSpaceError {
+    /// A repository with this name is already registered.
+    AlreadyExists,
+    /// Any other failure — network, 5xx, serialization, etc.
+    Other(TonkUiError),
 }
 
-/// Create a new self-owned repo at `name` via `PUT /api/repository/{name}`.
+impl From<TonkUiError> for CreateSpaceError {
+    fn from(error: TonkUiError) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// Creates a new repository with the given name.
 ///
-/// Uses the same default configuration as [`init`] — `origin` pointed
-/// at the UCAN access service with `main` tracking `origin/main`.
-/// Returns the created [`RepositoryInfo`] on success. A 409 / 412
-/// (already exists) surfaces as an error — callers should pick a new
-/// name and retry.
-pub async fn create(name: &str) -> Result<RepositoryInfo, TonkUiError> {
-    log!("Creating repository '{}'...", name);
+/// Sends `PUT /api/repository/{name}` with `If-None-Match: *` and
+/// a body that defines a single `main` branch with no upstream and
+/// no remotes. On success the worker registers a replica for this
+/// repository in the profile repo and broadcasts on `/api/profile`,
+/// so anything subscribed to that channel (notably the shell's
+/// `ProfileResource`) can refresh.
+pub async fn create_space(name: &str) -> Result<RepositoryInfo, CreateSpaceError> {
+    log!("Creating space '{}'...", name);
+
+    let configuration =
+        RepositoryConfiguration::default().branch(DEFAULT_BRANCH, BranchConfiguration::default());
 
     let response = reqwest::Client::new()
         .put(format!("{}/api/repository/{}", origin(), name))
-        .json(&default_configuration())
+        .header("If-None-Match", "*")
+        .json(&configuration)
         .send()
         .await
         .map_err(into_api_error)?;
 
     match response.status() {
-        StatusCode::CREATED => response.json().await.map_err(into_api_error),
+        StatusCode::CREATED => response
+            .json::<RepositoryInfo>()
+            .await
+            .map_err(into_api_error)
+            .map_err(CreateSpaceError::Other),
+        StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT => {
+            Err(CreateSpaceError::AlreadyExists)
+        }
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
                 "PUT /api/repository/{} returned {}: {}",
                 name, status, text
-            )))
+            ))
+            .into())
         }
     }
 }
 
-/// Redeem an invite URL via `POST /api/claim`.
+/// Fetches the profile record at `GET /api/profile`.
 ///
-/// Pass the complete `window.location.href` — audience-open invites
-/// carry the ephemeral seed in the URL fragment, and browsers never
-/// send fragments on normal fetches, so the UI is responsible for
-/// forwarding the full string.
-pub async fn claim(url: &str) -> Result<RepositoryInfo, TonkUiError> {
-    log!("Claiming invite...");
+/// Returns the profile's `RepositoryInfo` and a `{ name -> subject }`
+/// map of every space this profile owns. The sidebar uses this to
+/// render a tile per space without fetching each repository
+/// individually.
+pub async fn profile() -> Result<ProfileInfo, TonkUiError> {
+    log!("Fetching profile...");
 
     let response = reqwest::Client::new()
-        .post(format!("{}/api/claim", origin()))
-        .json(&ClaimRequest {
-            url: url.to_string(),
-        })
+        .get(format!("{}/api/profile", origin()))
         .send()
         .await
         .map_err(into_api_error)?;
 
-    match response.status() {
-        StatusCode::OK => response.json().await.map_err(into_api_error),
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "POST /api/claim returned {}: {}",
-                status, text
-            )))
-        }
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "GET /api/profile returned {}: {}",
+            status, text
+        )));
     }
+
+    response.json().await.map_err(into_api_error)
 }
 
-/// List every repo registered in the profile's home meta-index.
-pub async fn list_repositories() -> Result<Vec<String>, TonkUiError> {
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/repositories", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    match response.status() {
-        StatusCode::OK => {
-            let body: ListRepositoriesResponse = response.json().await.map_err(into_api_error)?;
-            Ok(body.repositories)
-        }
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "GET /api/repositories returned {}: {}",
-                status, text
-            )))
-        }
-    }
-}
-
-/// Pull remote state into `{repo}/{branch}` via the worker's
-/// sync route.
-pub async fn pull(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
-    log!("Pulling {}/{}...", repo, branch);
-    post_sync(repo, branch, "pull").await
-}
-
-/// Push local `{repo}/{branch}` state to the upstream remote.
-pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
-    log!("Pushing {}/{}...", repo, branch);
-    post_sync(repo, branch, "push").await
-}
-
-async fn post_sync(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/repository/{}/branch/{}/sync/{}",
-            origin(),
-            repo,
-            branch,
-            op
-        ))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    match response.status() {
-        StatusCode::OK => response.json().await.map_err(into_api_error),
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/sync/{} returned {}: {}",
-                repo, branch, op, status, text
-            )))
-        }
-    }
-}
-
-/// Query claims from `{repo}/{branch}` via the worker's select endpoint.
+/// Query claims on a branch via `GET /api/repository/{repo}/branch/{branch}/claim/select`.
 ///
-/// At least one of `the` (attribute, `namespace/name`) or `of` (entity)
-/// must be non-empty — this mirrors the worker-side validation.
+/// At least one of `the` (attribute, namespace/name form) or `of`
+/// (entity ID) must be supplied; the worker rejects unconstrained
+/// queries.
 pub async fn select_claims(
     repo: &str,
     branch: &str,
@@ -272,6 +241,172 @@ pub async fn select_claims(
                 "GET /api/repository/{}/branch/{}/claim/select returned {}: {}",
                 repo, branch, status, text
             )))
+        }
+    }
+}
+
+/// Mint an invite URL for a locally-owned space.
+///
+/// `POST /api/repository/{repo}/invite` with a JSON body —
+/// `base_url` defaults the recipient's `/join` to the inviter's
+/// own origin (so dev/localhost links open against dev), and
+/// `audience` (when present) constrains the invite to a specific
+/// recipient DID. Returns a tagged [`CreateInviteResponse`] so
+/// the caller can branch on `Open` vs `Scoped` without re-parsing
+/// the URL.
+pub async fn create_invite(
+    repo: &str,
+    audience: Option<&str>,
+) -> Result<CreateInviteResponse, TonkUiError> {
+    log!("Minting invite for '{}' (audience={:?})...", repo, audience);
+
+    let base_url = url::Url::parse(&format!("{}/join", origin()))
+        .map_err(|e| TonkUiError::ApiError(format!("invalid window.origin: {e}")))?;
+    let body = CreateInviteRequest {
+        base_url: Some(base_url),
+        audience: audience
+            .map(|s| s.parse())
+            .transpose()
+            .map_err(|e| TonkUiError::ApiError(format!("invalid audience DID: {e}")))?,
+    };
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/repository/{}/invite", origin(), repo))
+        .json(&body)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        // Tag decode failures separately so schema drift between
+        // worker and UI surfaces distinctly from network errors.
+        StatusCode::OK => response.json::<CreateInviteResponse>().await.map_err(|e| {
+            TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/invite: failed to decode response body: {e}",
+                repo
+            ))
+        }),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/invite returned {}: {}",
+                repo, status, text
+            )))
+        }
+    }
+}
+
+/// Pull changes from upstream into a local branch.
+///
+/// `POST /api/repository/{repo}/branch/{branch}/sync/pull`. The
+/// response carries the local revision before and after the pull,
+/// which the UI uses to render a diff chip.
+pub async fn pull(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
+    sync_op(repo, branch, "pull").await
+}
+
+/// Push local changes on a branch to upstream.
+///
+/// `POST /api/repository/{repo}/branch/{branch}/sync/push`.
+pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
+    sync_op(repo, branch, "push").await
+}
+
+async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
+    log!("Sync ({}) repo='{}' branch='{}'", op, repo, branch);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/repository/{}/branch/{}/sync/{}",
+            origin(),
+            repo,
+            branch,
+            op,
+        ))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "POST /api/repository/{}/branch/{}/sync/{} returned {}: {}",
+            repo, branch, op, status, text
+        )));
+    }
+    response
+        .json::<SyncResponse>()
+        .await
+        .map_err(into_api_error)
+}
+
+/// Outcome of [`join`] — invite redemption.
+///
+/// Distinguishes "name already taken" from other failures so the
+/// `/join` form can keep the user on the page with a rename
+/// prompt rather than a generic error. Note that "you already have
+/// this space" is *not* an error here: the worker treats that
+/// branch as success ([`JoinResponse::Renewed`]).
+#[derive(Debug)]
+pub enum JoinError {
+    /// The chosen name is taken by an unrelated space. Recipient
+    /// should retry with a different name.
+    NameTaken,
+    /// Any other failure — network, malformed invite, 5xx, etc.
+    Other(TonkUiError),
+}
+
+impl From<TonkUiError> for JoinError {
+    fn from(error: TonkUiError) -> Self {
+        Self::Other(error)
+    }
+}
+
+/// Redeems an invite URL via `POST /api/profile/join`.
+///
+/// `url` must be the full invite URL including any `#fragment` (the
+/// fragment carries the ephemeral seed for audience-open invites and
+/// browsers don't transmit it with `fetch`, so the caller must read
+/// `window.location.href` and pass the whole string). `name` is the
+/// local label the recipient picked, used only when a fresh replica
+/// is created — if the recipient already has this space, the
+/// existing name is returned and `name` is ignored.
+///
+/// On success the worker registers (or reuses) the replica in the
+/// profile meta branch and broadcasts on `/api/profile`, so the
+/// shared [`ProfileResource`] picks up any new tile without an
+/// explicit refetch.
+///
+/// [`ProfileResource`]: crate::components::ProfileResource
+pub async fn join(url: &str, name: &str) -> Result<JoinResponse, JoinError> {
+    log!("Joining invite as '{}'...", name);
+
+    let body = JoinRequest {
+        url: url.to_string(),
+        name: name.to_string(),
+    };
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/api/profile/join", origin()))
+        .json(&body)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK | StatusCode::CREATED => response
+            .json::<JoinResponse>()
+            .await
+            .map_err(into_api_error)
+            .map_err(JoinError::Other),
+        StatusCode::CONFLICT => Err(JoinError::NameTaken),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/profile/join returned {}: {}",
+                status, text
+            ))
+            .into())
         }
     }
 }

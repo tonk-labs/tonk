@@ -27,21 +27,25 @@ dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
+dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
 js-sys = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonk-common = { workspace = true }
 tonk-invite = { workspace = true }
+tonk-schema = { workspace = true }
 tower-service = { workspace = true }
 url = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
+    "BroadcastChannel",
     "CryptoKey",
     "FetchEvent",
     "Headers",
@@ -63,6 +67,7 @@ getrandom_0_3 = { workspace = true }
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
+rand = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
 tower = { workspace = true }
 wasm-bindgen-test = { workspace = true }

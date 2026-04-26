@@ -14,6 +14,8 @@ async fn main() {
 
     console_error_panic_hook::set_once();
 
+    tonk_sigil::Sigil::install();
+
     leptos::mount::mount_to_body(TonkShell);
 }
 

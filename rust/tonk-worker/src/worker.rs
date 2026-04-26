@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::{
     api_router,
     axum::{RequestConversion, ResponseConversion},
+    bootstrap_profile_meta,
 };
 use axum::{Router, body::Body};
 use dialog_capability::Subject;
@@ -31,12 +32,21 @@ pub type DefaultSpace = dialog_storage::provider::storage::NativeSpace;
 /// Concrete operator type for the default storage backend.
 pub type DefaultOperator = Operator<DefaultSpace>;
 
+/// Name of the profile this worker opens on startup. Also used as
+/// the label for the profile's self-replica record in its meta
+/// branch.
+const PROFILE_NAME: &str = "tonk";
+
 /// Application state containing the profile and operator.
 pub struct TonkState {
     /// The user's persistent profile.
     pub profile: Profile,
     /// The operator derived from the profile.
     pub operator: DefaultOperator,
+    /// Display name the profile was opened under. `Profile` does
+    /// not retain this internally, so we carry it here for routes
+    /// that report it back to the UI (e.g. `GET /api/profile`).
+    pub profile_name: String,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -81,7 +91,7 @@ impl TonkServiceWorker {
         let storage = Storage::<DefaultSpace>::default();
 
         // 2. Open or create profile
-        let profile = Profile::open("tonk")
+        let profile = Profile::open(PROFILE_NAME)
             .perform(&storage)
             .await
             .map_err(|e| JsError::new(&format!("Failed to open profile: {}", e)))?;
@@ -95,8 +105,18 @@ impl TonkServiceWorker {
             .await
             .map_err(|e| JsError::new(&format!("Failed to build operator: {}", e)))?;
 
-        // 4. Build state and router
-        let state = TonkState { profile, operator };
+        // 4. Build state and bootstrap the profile repo's meta
+        // branch. Idempotent — safe to run on every worker boot.
+        let state = TonkState {
+            profile,
+            operator,
+            profile_name: PROFILE_NAME.to_string(),
+        };
+        bootstrap_profile_meta(&state, PROFILE_NAME)
+            .await
+            .map_err(|e| JsError::new(&format!("Failed to bootstrap profile meta: {}", e)))?;
+
+        // 5. Wrap state in the router.
         let router = Arc::new(Mutex::new(api_router(state)));
 
         Ok(Self { router })

@@ -54,6 +54,9 @@ extern "C" {
     pub fn patch_idb_versionchange();
 }
 
+mod broadcast;
+pub use broadcast::*;
+
 mod axum;
 pub use axum::*;
 

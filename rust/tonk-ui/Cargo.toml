@@ -29,6 +29,7 @@ leptos_router = { workspace = true }
 leptos-use = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
+send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -36,9 +37,14 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
+bs58 = { workspace = true }
+tonk-invite = { workspace = true }
+tonk-sigil = { workspace = true, features = ["web"] }
 tonk-worker = { workspace = true }
 url = { workspace = true }
+dialog-repository = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
+dialog-varsig = { workspace = true }
 dialog-common = { workspace = true, optional = true }
 port_check = { workspace = true, optional = true }
 thirtyfour = { workspace = true, optional = true }
@@ -58,7 +64,6 @@ dialog-ucan-core = { workspace = true }
 port_check = { workspace = true }
 thirtyfour = { workspace = true }
 tonk-access-service = { workspace = true, features = ["helpers"] }
-tonk-invite = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
@@ -66,7 +71,7 @@ getrandom_0_3 = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
-features = ["Window"]
+features = ["BroadcastChannel", "MessageEvent", "Window"]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.

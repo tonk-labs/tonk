@@ -1,10 +1,12 @@
 //! Sync routes for push/pull operations with upstream.
 //!
 //! These endpoints allow synchronizing a branch with its upstream remote.
+//! Each response carries the local branch revision before and after the
+//! operation so the UI can render a diff (or detect "nothing changed").
 
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_repository::RepositoryExt as _;
+use dialog_repository::{RepositoryExt as _, Revision};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -27,6 +29,15 @@ pub struct SyncPath {
 pub struct SyncResponse {
     /// Whether the sync operation succeeded.
     pub success: bool,
+    /// Local branch revision *before* the sync ran. `None` when
+    /// the branch had no commits at the start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Revision>,
+    /// Local branch revision *after* the sync. `None` when the
+    /// branch still has no commits, or when the operation failed
+    /// before producing one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Revision>,
     /// Error message if sync failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -67,11 +78,15 @@ pub async fn pull(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
+    let before = branch.revision();
+
     match branch.pull().perform(&tonk_state.operator).await {
-        Ok(_) => {
+        Ok(after) => {
             log!("Pull succeeded");
             Ok(Json(SyncResponse {
                 success: true,
+                before,
+                after,
                 error: None,
             }))
         }
@@ -79,6 +94,8 @@ pub async fn pull(
             log!("Pull failed: {:?}", e);
             Ok(Json(SyncResponse {
                 success: false,
+                before: before.clone(),
+                after: before,
                 error: Some(e.to_string()),
             }))
         }
@@ -120,11 +137,15 @@ pub async fn push(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
+    let before = branch.revision();
+
     match branch.push().perform(&tonk_state.operator).await {
         Ok(_) => {
             log!("Push succeeded");
             Ok(Json(SyncResponse {
                 success: true,
+                before: before.clone(),
+                after: branch.revision(),
                 error: None,
             }))
         }
@@ -132,6 +153,8 @@ pub async fn push(
             log!("Push failed: {:?}", e);
             Ok(Json(SyncResponse {
                 success: false,
+                before: before.clone(),
+                after: before,
                 error: Some(e.to_string()),
             }))
         }
@@ -173,28 +196,44 @@ pub async fn sync(
             TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
         })?;
 
+    let before = branch.revision();
+
     // First pull
-    if let Err(e) = branch.pull().perform(&tonk_state.operator).await {
-        log!("Pull failed: {:?}", e);
-        return Ok(Json(SyncResponse {
-            success: false,
-            error: Some(format!("Pull failed: {}", e)),
-        }));
-    }
-    log!("Pull succeeded");
+    let after_pull = match branch.pull().perform(&tonk_state.operator).await {
+        Ok(after) => {
+            log!("Pull succeeded");
+            after
+        }
+        Err(e) => {
+            log!("Pull failed: {:?}", e);
+            return Ok(Json(SyncResponse {
+                success: false,
+                before: before.clone(),
+                after: before,
+                error: Some(format!("Pull failed: {}", e)),
+            }));
+        }
+    };
 
     // Then push
-    if let Err(e) = branch.push().perform(&tonk_state.operator).await {
-        log!("Push failed: {:?}", e);
-        return Ok(Json(SyncResponse {
-            success: false,
-            error: Some(format!("Push failed: {}", e)),
-        }));
+    match branch.push().perform(&tonk_state.operator).await {
+        Ok(_) => {
+            log!("Push succeeded");
+            Ok(Json(SyncResponse {
+                success: true,
+                before,
+                after: branch.revision(),
+                error: None,
+            }))
+        }
+        Err(e) => {
+            log!("Push failed: {:?}", e);
+            Ok(Json(SyncResponse {
+                success: false,
+                before,
+                after: after_pull,
+                error: Some(format!("Push failed: {}", e)),
+            }))
+        }
     }
-    log!("Push succeeded");
-
-    Ok(Json(SyncResponse {
-        success: true,
-        error: None,
-    }))
 }

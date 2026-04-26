@@ -5,34 +5,31 @@
 
 use leptos::{logging::log, prelude::*};
 use leptos_router::location::{BrowserUrl, LocationProvider};
+use tonk_worker::{Notification, ProfileInfo};
 use wasm_bindgen::prelude::*;
 
-use crate::api;
+use crate::{api, error::TonkUiError, watch::watch};
 
-mod join;
 mod launcher;
-mod new_repo;
-mod space;
-mod toolbar;
-
-use join::*;
 use launcher::*;
-use new_repo::*;
-use space::*;
+
+mod toolbar;
 use toolbar::*;
 
-/// Context handle for the shared list of repos registered in home.
-///
-/// Owned by [`TonkLauncher`]; consumed by [`TonkToolbar`] (renders
-/// rows) and by create/claim flows (call `.refetch()` after success).
-#[derive(Clone, Copy)]
-pub struct RepoListResource(pub LocalResource<Result<Vec<String>, String>>);
+mod space;
+use space::*;
 
-/// Context handle that controls visibility of the new-repo overlay.
-///
-/// Written by the toolbar's `+` click handler; read by [`TonkNewRepo`].
-#[derive(Clone, Copy)]
-pub struct NewRepoVisible(pub RwSignal<bool>);
+mod profile;
+use profile::*;
+
+mod create_space;
+use create_space::*;
+
+mod join;
+use join::*;
+
+mod invite;
+use invite::*;
 
 #[wasm_bindgen]
 extern "C" {
@@ -53,6 +50,43 @@ pub enum Status {
     /// Service worker is ready and upstream remote is configured.
     Ready,
 }
+
+/// The subject DID of the currently viewed space. `None` when no
+/// space is loaded (or still loading). Updated by [`TonkSpace`]
+/// when its [`RepositoryInfo`] resolves; consumed by the sidebar
+/// toolbar to render a matching sigil.
+pub type ActiveSubject = RwSignal<Option<String>, LocalStorage>;
+
+/// Shared [`LocalResource`] holding the latest `GET /api/profile`
+/// response. Provided by [`TonkShell`] so every consumer (today:
+/// the sidebar toolbar and profile view) reads from one source of
+/// truth. The shell refetches the resource automatically whenever
+/// the worker broadcasts on `/api/profile`, so writes from any
+/// source (this tab, another tab, external fetch) flow through.
+///
+/// `Ok(None)` is used to model "not yet ready" (shell still
+/// initialising); `Ok(Some(info))` is a successful fetch.
+pub type ProfileResource = LocalResource<Result<Option<ProfileInfo>, TonkUiError>>;
+
+/// Shared open-state for the create-space dialog. Flipped to
+/// `true` by the sidebar's `+` tile; flipped back to `false` by
+/// the dialog itself on cancel, successful create, or when the
+/// user dismisses via Esc / click-outside.
+pub type CreateSpaceOpen = RwSignal<bool>;
+
+/// Shared open-state for the invite dialog. `Some(name)` opens
+/// the dialog and triggers a fresh invite mint for that space;
+/// `None` closes it. Set by the `Invite` button in [`TonkSpace`].
+pub type InviteSpace = RwSignal<Option<String>>;
+
+/// Outcome of the most recent invite redemption, if any. Written
+/// by [`TonkJoin`] when a join completes; rendered as a
+/// `data-last-join-outcome` attribute on the launcher's root
+/// element so tests and any future banner / toast UI can react
+/// to which path ran without parsing an HTTP response.
+///
+/// `None` when no join has happened yet this session.
+pub type LastJoinOutcome = RwSignal<Option<&'static str>>;
 
 /// The root UI component for the Tonk application.
 ///
@@ -106,6 +140,62 @@ pub fn TonkShell() -> impl IntoView {
 
     provide_context(status);
 
+    let active_subject: ActiveSubject = RwSignal::new_local(None);
+    provide_context(active_subject);
+
+    // Fire the profile fetch as soon as the shell reports
+    // `Status::Ready`. Gating on `Ready` avoids the same
+    // deep-link / service-worker race that affects `TonkSpace`.
+    // Sharing the resource via context means a single fetch
+    // feeds the sidebar and the create-space flow — the latter
+    // calls `.refetch()` after a successful PUT so the sidebar
+    // picks up the new tile without us plumbing a second signal.
+    let profile_resource: ProfileResource = LocalResource::new(move || {
+        let ready = status.get() == Status::Ready;
+        async move {
+            if !ready {
+                return Ok(None);
+            }
+            api::profile().await.map(Some)
+        }
+    });
+    provide_context(profile_resource);
+
+    // The worker posts on `/api/profile` whenever the profile
+    // repo's meta branch commits (replica added/removed, remote
+    // edited, etc.). Refetching on any message keeps the sidebar
+    // in sync with writes from anywhere — this tab, another tab,
+    // or a direct fetch that bypasses the dialog. The payload
+    // carries the new revision; we ignore it today (refetch is
+    // cheap and the endpoint is the source of truth) but the
+    // shape is available for future dedup.
+    let profile_update = watch::<Notification>("/api/profile");
+    Effect::new(move |_| {
+        if profile_update.get().is_some() {
+            profile_resource.refetch();
+        }
+    });
+
+    // Shared open-state for the create-space dialog. The `+`
+    // tile in the sidebar flips this to `true`; the dialog
+    // itself resets it on close.
+    let create_space_open: CreateSpaceOpen = RwSignal::new(false);
+    provide_context(create_space_open);
+
+    // Shared open-state for the invite dialog. The space view's
+    // "Invite" button writes a `Some(name)` here; the dialog
+    // resets it back to `None` on close.
+    let invite_space: InviteSpace = RwSignal::new(None);
+    provide_context(invite_space);
+
+    // The last join outcome lives in a shared signal so the view
+    // tree (specifically `TonkLauncher`) can render it as a
+    // `data-last-join-outcome` attribute through the regular
+    // reactive path — no manual DOM mutation from inside a
+    // component.
+    let last_join_outcome: LastJoinOutcome = RwSignal::new(None);
+    provide_context(last_join_outcome);
+
     view! {
         <TonkLauncher></TonkLauncher>
     }
@@ -124,12 +214,16 @@ mod tests {
     async fn it_falls_back_to_index_for_unhandled_routes(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // 1. Landing on `/` redirects into `/space/home` and renders
-        //    the repository JSON once the worker is up.
-        let repository = driver.query(By::Css("pre.repository")).first().await?;
+        // 1. Landing on `/` redirects into `/space/home`. The
+        //    banner title renders once `repository_view` resolves,
+        //    so it doubles as a "shell is ready" signal. Its
+        //    `title` attribute carries the subject DID.
+        let title = driver.query(By::Css(".space-banner-title")).first().await?;
+        assert_eq!(title.text().await?, "home");
+        let subject = title.attr("title").await?.unwrap_or_default();
         assert!(
-            repository.text().await?.contains("did:key:"),
-            "expected repository JSON to include a did:key value",
+            subject.starts_with("did:key:"),
+            "expected banner title attribute to be a did:key, got: {subject}",
         );
 
         // 2. Navigate to an unmatched route. The SPA router's
@@ -140,13 +234,7 @@ mod tests {
             .goto(&format!("{}/unhandled/route", env.tonk_web))
             .await?;
 
-        // The fallback's class is `404`, which isn't a legal CSS
-        // identifier on its own — use an attribute selector
-        // instead.
-        let fallback = driver
-            .query(By::Css(r#"section[class="404"]"#))
-            .first()
-            .await?;
+        let fallback = driver.query(By::Css("section.not-found")).first().await?;
         assert!(
             fallback.text().await?.contains("Nothing here"),
             "expected 404 fallback to render for unknown paths",
@@ -162,8 +250,12 @@ mod tests {
     async fn it_configures_upstream(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for toolbar to become visible (indicates UI is ready and authorized)
-        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+        // Wait for the home space banner title to render. This only
+        // appears after the service worker is active, `PUT
+        // /api/repository/home` completed, and the repository
+        // fetch resolved — a strict superset of the old
+        // `.toolbar.visible` readiness signal.
+        driver.query(By::Css(".space-banner-title")).first().await?;
 
         // Verify the default branch has an upstream after auto-authorization.
         let info_result = driver
@@ -192,8 +284,12 @@ mod tests {
     async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for toolbar to become visible (indicates UI is ready and authorized)
-        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+        // Wait for the home space banner title to render. This only
+        // appears after the service worker is active, `PUT
+        // /api/repository/home` completed, and the repository
+        // fetch resolved — a strict superset of the old
+        // `.toolbar.visible` readiness signal.
+        driver.query(By::Css(".space-banner-title")).first().await?;
 
         // Perform sync
         let sync_result = driver
@@ -220,8 +316,12 @@ mod tests {
     async fn it_syncs_via_background_sync_api(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for toolbar to become visible (indicates UI is ready and authorized)
-        assert!(driver.query(By::Css(".toolbar.visible")).exists().await?);
+        // Wait for the home space banner title to render. This only
+        // appears after the service worker is active, `PUT
+        // /api/repository/home` completed, and the repository
+        // fetch resolved — a strict superset of the old
+        // `.toolbar.visible` readiness signal.
+        driver.query(By::Css(".space-banner-title")).first().await?;
 
         let inspect_script = r#"
             const response = await fetch('/api/inspect/repository/home/remote/origin/branch/main');
