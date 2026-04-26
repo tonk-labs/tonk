@@ -481,7 +481,8 @@ wa-page::part(drawer) {
     background: transparent;
     transition:
         width var(--wa-transition-normal) var(--wa-transition-easing),
-        margin var(--wa-transition-normal) var(--wa-transition-easing);
+        margin var(--wa-transition-normal) var(--wa-transition-easing),
+        transform var(--wa-transition-normal) var(--wa-transition-easing);
 }
 
 .sidebar-space.is-active,
@@ -556,11 +557,11 @@ wa-page::part(drawer) {
 /* Hover/focus on inactive tiles: rotate the sigil. Color stays
    the same — only the glyph orientation changes, which is
    enough of a signal without recoloring the tile. */
-.sidebar-sigil {
-    transition: transform var(--wa-transition-normal)
-        var(--wa-transition-easing);
-}
-.sidebar-space:is(:hover, :focus-within) .sidebar-sigil {
+/* Rotate the whole tile on hover. Rotating the host element
+   (rather than the inner `.sidebar-sigil`) keeps the effect
+   reliable in Safari, where `:hover` propagation into custom-
+   element light-DOM children is inconsistent. */
+.sidebar-space:is(:hover, :focus-within) {
     transform: rotate(90deg);
 }
 

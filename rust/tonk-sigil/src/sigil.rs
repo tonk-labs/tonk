@@ -16,7 +16,9 @@ impl Sigil {
         self
     }
 
-    /// Override the URL where the sprite sheet is served.
+    /// Override the URL where the sprite sheet is served. The
+    /// renderer composes `{href}#{prefix}-{byte:02x}` for each
+    /// cell's `mask-image`. Default: `/sigils.svg`.
     pub fn sprite_href(mut self, href: impl Into<Cow<'static, str>>) -> Self {
         self.sprite_href = href.into();
         self
@@ -57,18 +59,24 @@ impl From<[u8; 4]> for Sigil {
 
 impl fmt::Display for Sigil {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // 128-unit viewBox with no intrinsic pixel size — the SVG
-        // scales to fill its CSS box.
+        // 2×2 CSS grid of `<div>` cells, each painted with
+        // `currentColor` and clipped to a glyph via `mask-image`
+        // referencing a fragment of the external sprite. Cross-
+        // document fragment-addressable `mask-image` is supported
+        // in modern Safari/Chrome/Firefox; using SVG `<use>` against
+        // an external sprite was problematic in WebKit because
+        // internal `mask="url(#m-id)"` references resolved against
+        // the consuming document.
         //
-        // `--sigil-fg` is emitted inline only when the caller set it;
-        // otherwise ancestor CSS cascades through to the sprite paths,
-        // which use `var(--sigil-fg, currentColor)` as the fallback.
+        // The wrapper is itself a `display:grid` block sized to its
+        // CSS box (consumers set the box dimensions). `aspect-ratio`
+        // keeps the sigil square when only one dimension is set.
         write!(
             f,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" width=\"100%\" height=\"100%\" preserveAspectRatio=\"xMidYMid meet\" style=\"display:block"
+            "<div style=\"display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;width:100%;height:100%;aspect-ratio:1/1"
         )?;
         if let Some(fill) = &self.fill {
-            write!(f, ";--sigil-fg:{fill}")?;
+            write!(f, ";--sigil-fg:{fill};color:var(--sigil-fg)")?;
         }
         write!(f, "\">")?;
 
@@ -77,8 +85,6 @@ impl fmt::Display for Sigil {
         // (1, 3) from the prefix table. The sprite sheet exposes both as
         // `sfx-XX` and `pfx-XX` IDs keyed by byte value.
         for (index, byte) in self.bits.iter().enumerate() {
-            let x = (index as u32 % 2) * 64;
-            let y = (index as u32 / 2) * 64;
             let prefix = if index.is_multiple_of(2) {
                 "sfx"
             } else {
@@ -86,11 +92,11 @@ impl fmt::Display for Sigil {
             };
             write!(
                 f,
-                "<use href=\"{href}#{prefix}-{byte:02x}\" transform=\"translate({x} {y}) scale(0.5)\"/>",
+                "<div style=\"background:currentColor;mask-image:url({href}#{prefix}-{byte:02x});mask-size:100% 100%;mask-repeat:no-repeat;mask-mode:luminance;-webkit-mask-image:url({href}#{prefix}-{byte:02x});-webkit-mask-size:100% 100%;-webkit-mask-repeat:no-repeat;-webkit-mask-source-type:luminance\"></div>",
                 href = self.sprite_href,
             )?;
         }
 
-        write!(f, "</svg>")
+        write!(f, "</div>")
     }
 }
