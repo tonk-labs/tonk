@@ -2,70 +2,70 @@ use tonk_sigil::Sigil;
 
 #[test]
 fn zero_renders_all_zeros() {
-    let svg = Sigil::from(0u32).render();
-    assert!(svg.contains("sfx-00"));
-    assert!(svg.contains("pfx-00"));
-    // 4 uses total, two of each prefix class
-    assert_eq!(svg.matches("<use ").count(), 4);
-    assert_eq!(svg.matches("#sfx-00").count(), 2);
-    assert_eq!(svg.matches("#pfx-00").count(), 2);
+    let html = Sigil::from(0u32).render();
+    assert!(html.contains("sfx-00"));
+    assert!(html.contains("pfx-00"));
+    // 4 cells: two sfx (positions 0,2) + two pfx (positions 1,3)
+    assert_eq!(html.matches("sfx-00").count(), 4); // 2 cells × 2 mask refs (mask-image + -webkit-mask-image)
+    assert_eq!(html.matches("pfx-00").count(), 4);
 }
 
 #[test]
 fn default_big_endian_byte_order() {
-    let svg = Sigil::from(0xdeadbeefu32).render();
+    let html = Sigil::from(0xdeadbeefu32).render();
     // Bytes in BE: de, ad, be, ef
     // Positions: 0=sfx, 1=pfx, 2=sfx, 3=pfx
-    assert!(svg.contains("#sfx-de"));
-    assert!(svg.contains("#pfx-ad"));
-    assert!(svg.contains("#sfx-be"));
-    assert!(svg.contains("#pfx-ef"));
+    assert!(html.contains("sfx-de"));
+    assert!(html.contains("pfx-ad"));
+    assert!(html.contains("sfx-be"));
+    assert!(html.contains("pfx-ef"));
 }
 
 #[test]
-fn grid_positions_translate_correctly() {
-    let svg = Sigil::from(0u32).render();
-    // 2x2 grid in 128-unit viewBox: cells at (0,0), (64,0), (0,64), (64,64)
-    assert!(svg.contains("translate(0 0)"));
-    assert!(svg.contains("translate(64 0)"));
-    assert!(svg.contains("translate(0 64)"));
-    assert!(svg.contains("translate(64 64)"));
+fn renders_a_2x2_grid() {
+    let html = Sigil::from(0u32).render();
+    // Wrapper div + 4 cell divs = 5 `<div`
+    assert_eq!(html.matches("<div").count(), 5);
+    assert!(html.contains("grid-template-columns:1fr 1fr"));
+    assert!(html.contains("grid-template-rows:1fr 1fr"));
 }
 
 #[test]
-fn viewbox_is_fixed_at_128() {
-    let svg = Sigil::from(0u32).render();
-    assert!(svg.contains("viewBox=\"0 0 128 128\""));
+fn cells_use_mask_image() {
+    let html = Sigil::from(0u32).render();
+    assert!(html.contains("mask-image:url("));
+    assert!(html.contains("-webkit-mask-image:url("));
+    assert!(html.contains("mask-mode:luminance"));
 }
 
 #[test]
 fn default_omits_inline_color_vars() {
-    // Leaves `--sigil-fg` unset on the SVG so ancestor CSS
-    // cascades through to the sprite paths, which use
-    // `var(--sigil-fg, currentColor)` as the fallback.
-    let svg = Sigil::from(0u32).render();
-    assert!(!svg.contains("--sigil-fg"));
+    // Leaves `--sigil-fg` unset on the wrapper so ancestor CSS
+    // cascades through to each cell's `currentColor`.
+    let html = Sigil::from(0u32).render();
+    assert!(!html.contains("--sigil-fg"));
 }
 
 #[test]
 fn fill_override_sets_inline_var() {
-    let svg = Sigil::from(0u32).fill("purple").render();
-    assert!(svg.contains("--sigil-fg:purple"));
+    let html = Sigil::from(0u32).fill("purple").render();
+    assert!(html.contains("--sigil-fg:purple"));
+    assert!(html.contains("color:var(--sigil-fg)"));
 }
 
 #[test]
 fn default_sprite_href_is_assets_relative() {
-    let svg = Sigil::from(0u32).render();
-    assert!(svg.contains("href=\"/sigils.svg#"));
+    let html = Sigil::from(0u32).render();
+    assert!(html.contains("/sigils.svg#"));
 }
 
 #[test]
 fn sprite_href_builder_overrides() {
-    let svg = Sigil::from(0u32)
+    let html = Sigil::from(0u32)
         .sprite_href("/assets/tonk-sigils.svg")
         .render();
-    assert!(svg.contains("href=\"/assets/tonk-sigils.svg#"));
-    assert!(!svg.contains("href=\"/sigils.svg#"));
+    assert!(html.contains("/assets/tonk-sigils.svg#"));
+    assert!(!html.contains("/sigils.svg#"));
 }
 
 #[test]
@@ -83,14 +83,11 @@ fn distinct_inputs_produce_distinct_output() {
 }
 
 #[test]
-fn svg_is_responsive() {
-    let svg = Sigil::from(0u32).render();
-    // No pixel-valued width/height — only 100% so the SVG scales
-    // to its CSS box.
-    assert!(svg.contains("width=\"100%\""));
-    assert!(svg.contains("height=\"100%\""));
-    assert!(!svg.contains("width=\"128\""));
-    assert!(!svg.contains("height=\"128\""));
+fn rendering_is_responsive() {
+    let html = Sigil::from(0u32).render();
+    // Wrapper fills its CSS box.
+    assert!(html.contains("width:100%"));
+    assert!(html.contains("height:100%"));
 }
 
 #[test]
@@ -100,17 +97,15 @@ fn display_matches_render() {
 }
 
 #[test]
-fn svg_is_well_formed_root() {
-    let svg = Sigil::from(0u32).render();
-    assert!(svg.starts_with("<svg"));
-    assert!(svg.ends_with("</svg>"));
+fn output_is_well_formed_root() {
+    let html = Sigil::from(0u32).render();
+    assert!(html.starts_with("<div"));
+    assert!(html.ends_with("</div>"));
 }
 
 #[test]
 fn max_u32_renders_ff_symbols() {
-    let svg = Sigil::from(u32::MAX).render();
-    assert!(svg.contains("#sfx-ff"));
-    assert!(svg.contains("#pfx-ff"));
-    assert_eq!(svg.matches("#sfx-ff").count(), 2);
-    assert_eq!(svg.matches("#pfx-ff").count(), 2);
+    let html = Sigil::from(u32::MAX).render();
+    assert!(html.contains("sfx-ff"));
+    assert!(html.contains("pfx-ff"));
 }

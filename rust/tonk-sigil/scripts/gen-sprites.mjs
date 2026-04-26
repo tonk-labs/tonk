@@ -97,38 +97,63 @@ if (keyCount !== 512) {
   console.error(`note: default.ts has ${keyCount} entries (expected ~512)`);
 }
 
-// Build the sprite sheet. Each symbol is rendered as a **mask** that
-// discriminates visible (@FG) from transparent (@BG) pixels, composited
-// against a single filled rectangle. The result: holes and contrast
-// linework become real transparency, not just a painted background.
+// Build the sprite sheet. Each `<symbol>` body is the literal
+// foreground/background shape, with `@FG → white` and `@BG → black`.
+// The symbols are designed to be consumed as **luminance masks** via
+// CSS `mask-image: url(sigils.svg#sfx-XX)`: white pixels let the
+// underlying paint through, black pixels block it. There are *no*
+// internal `<mask>` or `<rect mask=...>` references — that scheme
+// breaks under Safari/WebKit when used cross-document, because the
+// engine resolves the internal `mask="url(#…)"` against the
+// consuming page's IDs (not the sprite's). Flat shapes work.
 //
-// Substitutions inside the mask:
-//   @FG -> white   (mask: visible -> rect shows through -> currentColor)
-//   @BG -> black   (mask: invisible -> transparent in the output)
-//   @SW -> stroke-width (preserved literally, works inside the mask)
+// The consumer paints a `<div>` (or any box) with
+// `background-color: currentColor` and `mask-image: url(sigils.svg#sfx-XX)`,
+// and the rendered glyph picks up the consumer's color via the box.
 //
-// The outer symbol body is one <rect> filled with var(--sigil-fg,
-// currentColor), masked by the composite. Single-color sigil.
+// Substitutions inside each fragment:
+//   @FG -> white  (mask: paint through -> consumer color shows)
+//   @BG -> black  (mask: blocks paint  -> transparent)
+//   @SW -> stroke-width (literal `4`)
 
-const maskSubstitute = (fragment) =>
+const fragmentSubstitute = (fragment) =>
   fragment
-    // Drop the wrapping <g transform='@TR'>...</g>; positioning happens
-    // on the <use> element.
     .replace(/^<g transform='@TR'>/, "")
     .replace(/<\/g>$/, "")
     .replaceAll("@FG", "white")
     .replaceAll("@BG", "black")
     .replaceAll("@SW", "4");
 
+// Each glyph is a `<symbol>` defining the foreground shapes
+// against a black background (luminance-mask convention).
+// Symbols themselves don't paint; we instantiate each one via a
+// `<use>` placed at a tile position in the sprite's master
+// canvas, and pair it with a `<view id="...">` that addresses
+// just that tile via viewBox.
+//
+// Why `<view>`: per SVG spec, `file.svg#fragmentId` is only
+// reliably interpreted as a viewport-redirect when fragmentId
+// is a `<view>` element. CSS `mask-image: url(file.svg#sfx-XX)`
+// then renders the entire sprite with the view's viewBox
+// active, naturally cropping to the addressed tile. Naked
+// element IDs (e.g. nested `<svg id>` or `<symbol id>`) work
+// inconsistently across browsers, especially when masked.
 const buildSymbol = (id, fragment) =>
   `<symbol id="${id}" viewBox="0 0 128 128">` +
-  `<mask id="m-${id}" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">` +
-  maskSubstitute(fragment) +
-  `</mask>` +
-  `<rect width="128" height="128" fill="var(--sigil-fg, currentColor)" mask="url(#m-${id})"/>` +
+  `<rect width="128" height="128" fill="black"/>` +
+  fragmentSubstitute(fragment) +
   `</symbol>`;
 
+// Layout: 32 columns × 16 rows of 128×128 tiles. Two glyphs per
+// byte (sfx + pfx) × 256 bytes = 512 tiles. We tile in raster
+// order: index 0 = sfx-00 at (0,0), index 1 = pfx-00 at (128,0),
+// index 2 = sfx-01 at (256,0), etc.
+const COLS = 32;
+const TILE = 128;
 const symbols = [];
+const uses = [];
+const views = [];
+let tileIndex = 0;
 for (let i = 0; i < 256; i += 1) {
   const pfxKey = PREFIXES[i];
   const sfxKey = SUFFIXES[i];
@@ -137,14 +162,40 @@ for (let i = 0; i < 256; i += 1) {
   if (!pfx) throw new Error(`missing symbol for prefix ${pfxKey} (byte ${i})`);
   if (!sfx) throw new Error(`missing symbol for suffix ${sfxKey} (byte ${i})`);
   const hex = i.toString(16).padStart(2, "0");
-  symbols.push(buildSymbol(`pfx-${hex}`, pfx));
-  symbols.push(buildSymbol(`sfx-${hex}`, sfx));
+  for (const [prefix, body] of [["sfx", sfx], ["pfx", pfx]]) {
+    // The fragment ID consumers reference (`file.svg#sfx-XX`) is
+    // the `<view>`. Symbols carry an internal `_sym-` prefix to
+    // avoid colliding with the view's id.
+    const viewId = `${prefix}-${hex}`;
+    const symId = `_sym-${viewId}`;
+    const x = (tileIndex % COLS) * TILE;
+    const y = Math.floor(tileIndex / COLS) * TILE;
+    symbols.push(buildSymbol(symId, body));
+    uses.push(`<use href="#${symId}" x="${x}" y="${y}"/>`);
+    // The view's viewBox crops the master canvas to just this
+    // tile, so a CSS `mask-image: url(file.svg#sfx-XX)` reference
+    // ends up showing only the tile.
+    views.push(`<view id="${viewId}" viewBox="${x} ${y} ${TILE} ${TILE}"/>`);
+    tileIndex += 1;
+  }
 }
 
+const ROWS = Math.ceil(tileIndex / COLS);
+const canvasWidth = COLS * TILE;
+const canvasHeight = ROWS * TILE;
+
+// Root SVG. The viewBox spans the *whole* tiled canvas so
+// `<view>` elements can address sub-rectangles via fragment IDs.
+// `<symbol>` definitions don't paint by themselves; the
+// `<use>` instances are what render into the canvas.
 const svg =
   `<?xml version="1.0" encoding="UTF-8"?>\n` +
-  `<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">\n` +
-  symbols.join("\n") +
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${canvasWidth} ${canvasHeight}" aria-hidden="true">\n` +
+  symbols.join("") +
+  `\n` +
+  uses.join("") +
+  `\n` +
+  views.join("") +
   `\n</svg>\n`;
 
 const outPath = resolve(__dirname, "..", "assets", "sigils.svg");
