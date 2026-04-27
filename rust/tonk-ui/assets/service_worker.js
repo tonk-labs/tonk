@@ -13,9 +13,18 @@ async function activateWorker() {
     return tonkServiceWorkerResolves;
 }
 
-self.skipWaiting();
-
-self.oninstall = _event => {
+self.oninstall = event => {
+    // Promote this worker straight from `installing` to `activating`
+    // without parking in `waiting`. The previous version of this
+    // file called `skipWaiting()` at the top of the script, which
+    // is a no-op: the call is only honored while the worker is in
+    // the *waiting* state, and at top-level evaluation time the
+    // lifecycle hasn't yet reached `install`. Moving the call into
+    // the install handler matches the browser's contract — the new
+    // worker takes over as soon as it finishes installing, so a
+    // simple page reload after `cargo build` actually picks up the
+    // new wasm rather than serving the previous version forever.
+    event.waitUntil(self.skipWaiting());
     log("Installed");
 };
 
