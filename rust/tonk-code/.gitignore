@@ -1,0 +1,6 @@
+node_modules/
+# Source maps regenerate on every bundle; keeping them out of git
+# avoids 1MB+ diffs every time esbuild re-hashes a chunk. Ship the
+# minified `.js` artifacts; debuggers fall back to the bundled
+# source when no map is present.
+assets/*.map
