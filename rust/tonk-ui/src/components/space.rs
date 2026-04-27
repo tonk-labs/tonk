@@ -512,11 +512,12 @@ pub(super) fn BranchRow(
                 // this surface is the iteration target for a
                 // GraphiQL-style editor + result pane.
                 <div class="branch-yaml-query wa-stack wa-gap-xs">
-                    <label class="hint">"Query (YAML, draft)"</label>
+                    <label class="hint">"Query (dialog-yaml, draft)"</label>
                     <tonk-code
-                        mode="yaml"
-                        language-server="carry-asserted"
-                        placeholder="the: namespace/name"
+                        language="dialog-yaml"
+                        language-server
+                        active-line
+                        placeholder="entity:\n  context:\n    field: value"
                     ></tonk-code>
                 </div>
                 <form class="branch-claims" on:submit=submit_query>

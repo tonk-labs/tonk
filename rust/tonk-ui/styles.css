@@ -731,7 +731,11 @@ tonk-code {
        resting and focused borders both go transparent; focus
        state is signalled by the cursor alone. */
     --tonk-code-border: transparent;
-    --tonk-code-active-line: var(--wa-color-neutral-fill-quiet);
+    /* Active-line stripe — visible but quiet. The wa neutral
+       fill is too saturated against the form-control background;
+       a low-alpha tint of the foreground reads as a subtle band
+       on both light and dark themes. */
+    --tonk-code-active-line: color-mix(in srgb, var(--wa-color-text-normal) 2%, transparent);
     --tonk-code-gutter-bg: var(--wa-color-neutral-fill-quiet);
     --tonk-code-cursor: var(--wa-color-brand-fill-loud);
     --tonk-code-selection: var(--wa-color-brand-fill-quiet);
