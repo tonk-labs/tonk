@@ -912,6 +912,13 @@ const SHADOW_STYLESHEET = `
     --tonk-code-punctuation: #1f2328;    /* foreground */
     --tonk-code-error: #cf222e;          /* error red */
 
+    /* Dialect decorations (used by dialog-yaml and similar
+       dialect packs). Defaults reuse adjacent slot colors so the
+       dialect tokens always read in-palette without the consumer
+       setting them explicitly. */
+    --tonk-code-variable: var(--tonk-code-fg-muted);
+    --tonk-code-entity: var(--tonk-code-fg-muted);
+
     display: block;
     position: relative;
     box-sizing: border-box;

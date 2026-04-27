@@ -736,10 +736,17 @@ tonk-code {
        a low-alpha tint of the foreground reads as a subtle band
        on both light and dark themes. */
     --tonk-code-active-line: color-mix(in srgb, var(--wa-color-text-normal) 2%, transparent);
-    --tonk-code-gutter-bg: var(--wa-color-neutral-fill-quiet);
+    --tonk-code-gutter-bg: color-mix(in srgb, var(--wa-color-text-normal) 4%, transparent);
     --tonk-code-cursor: var(--wa-color-brand-fill-loud);
-    --tonk-code-selection: var(--wa-color-brand-fill-quiet);
-    --tonk-code-bracket-match-bg: var(--wa-color-brand-fill-quiet);
+    /* Selection / bracket match — color-mixed alpha tints rather
+       than raw `--wa-color-brand-fill-quiet`, because wa-details
+       overrides several `--wa-color-*-fill-*` tokens to
+       `transparent` in its body slot. The brand-fill-loud token
+       (a brand color, not a surface) is unaffected, so we mix
+       against it for predictable visibility regardless of
+       ancestor wa-component scoping. */
+    --tonk-code-selection: color-mix(in srgb, var(--wa-color-brand-fill-loud) 25%, transparent);
+    --tonk-code-bracket-match-bg: color-mix(in srgb, var(--wa-color-brand-fill-loud) 18%, transparent);
     --tonk-code-bracket-match-border: var(--wa-color-brand-border-loud);
     /* Suppress the element's default focus halo. wa-input doesn't
        paint one either, and rendering it inside a wa-details body
@@ -748,12 +755,16 @@ tonk-code {
        already signals focus. */
     --tonk-code-focus-ring: transparent;
 
-    /* Lint / hover tooltip surfaces. Use a raised neutral so the
-       tooltip floats above the editor body and stays distinct
-       from both light and dark backgrounds. */
-    --tonk-code-tooltip-bg: var(--wa-color-surface-raised);
+    /* Lint / hover tooltip surfaces. We deliberately avoid
+       `--wa-color-surface-raised` here: `wa-details` (and a few
+       other wa components) override it to `transparent` inside
+       their slot scopes, which would make our tooltips
+       see-through. A color-mix against the page foreground gives
+       a solid, raised-looking surface that survives any wa
+       ancestor scoping. */
+    --tonk-code-tooltip-bg: color-mix(in srgb, var(--wa-color-text-normal) 12%, var(--wa-form-control-background-color));
     --tonk-code-tooltip-fg: var(--wa-color-text-normal);
-    --tonk-code-tooltip-border: var(--wa-color-surface-border);
+    --tonk-code-tooltip-border: color-mix(in srgb, var(--wa-color-text-normal) 18%, transparent);
 
     /* Syntax — muted Bauhaus palette.
        Kandinsky's triad (red→square, yellow→triangle, blue→circle)
@@ -773,6 +784,19 @@ tonk-code {
     --tonk-code-comment: #7a7268;      /* warm neutral grey */
     --tonk-code-punctuation: var(--wa-color-text-normal);
     --tonk-code-error: #a8302a;        /* hotter than the string red */
+
+    /* Dialect decorations (dialog-yaml). Variables reuse the
+       Bauhaus blue (same hue as numbers): `?foo` and bare `_` are
+       abstract placeholders — runtime holes — which fits the
+       blue/circle/abstract pole of Kandinsky's triad. Italic
+       (set by the element's theme) keeps them distinct from
+       literal numbers when they share a line. Entities
+       (colon-bearing tokens) get an underline in the muted text
+       color so the underline reads as "identifier reference"
+       without competing with the surrounding token's palette
+       color. */
+    --tonk-code-variable: #3d6da8;
+    --tonk-code-entity: var(--wa-color-text-quiet);
 
     /* Typography */
     --tonk-code-font: var(--wa-font-family-code);
