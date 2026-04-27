@@ -268,7 +268,7 @@ mod tests {
                     "uri": "tonk-buffer:///test",
                     "languageId": "carry-asserted",
                     "version": 1,
-                    "text": "a: 1\nb: 2\n"
+                    "text": "did:key:zAlice:\n  profile:\n    name: Alice\n"
                 }
             }
         });
