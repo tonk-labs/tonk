@@ -68,6 +68,7 @@ leptos = "0.8"
 leptos-use = "0.17"
 leptos_router = "0.8"
 lsp-types = "0.97"
+saphyr = "0.0.6"
 port_check = "0.3"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }

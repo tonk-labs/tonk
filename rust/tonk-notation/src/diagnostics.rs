@@ -34,10 +34,25 @@ pub struct ServerInfo {
 /// Run all validators against the document text and return a merged
 /// diagnostic list.
 ///
-/// Phase 0 surfaces only YAML parse errors. Later phases append the
-/// three-level shape check, reserved-domain check, concept-schema
-/// validation, and so on.
+/// Composes:
+/// 1. **Phase 0** — YAML well-formedness ([`crate::parse`]). When
+///    parsing fails the documents vec is empty and the parse error
+///    is the only thing surfaced; later passes are skipped because
+///    they have nothing structural to walk.
+/// 2. **Phase 1** — Three-level shape check ([`crate::shape`]).
+///    Verifies entity → context → fields and the reserved-domain
+///    rule against the parsed tree.
+///
+/// Concept-schema and semantic checks compose here in later phases
+/// without changing this entry point.
 pub fn document_diagnostics(text: &str) -> Vec<Diagnostic> {
-    let parse::Parsed { diagnostics, .. } = parse::parse(text);
+    let parsed = parse::parse(text);
+    let mut diagnostics = parsed.diagnostics;
+    if diagnostics.is_empty() {
+        // Only run the shape pass when parsing produced a tree.
+        // Walking after a parse error would just add noise on top
+        // of the real issue.
+        diagnostics.extend(crate::shape::validate(&parsed.documents));
+    }
     diagnostics
 }

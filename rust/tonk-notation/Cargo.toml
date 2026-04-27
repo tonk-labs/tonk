@@ -10,6 +10,6 @@ crate-type = ["rlib"]
 
 [dependencies]
 lsp-types = { workspace = true }
+saphyr = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_yaml = { workspace = true }
 thiserror = { workspace = true }
