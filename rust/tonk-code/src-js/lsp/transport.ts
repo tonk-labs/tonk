@@ -100,12 +100,33 @@ async function runEventStream(
   let backoffMs = 250;
   const maxBackoffMs = 30_000;
 
+  // Subscribe once to `controllerchange`. When a new service
+  // worker takes control mid-session — typical during dev when
+  // trunk rebuilds the wasm and the new worker calls
+  // `skipWaiting()` from its install handler — we abort the
+  // current SSE fetch so the loop reconnects against the new
+  // worker. Without this the long-lived fetch keeps the *old*
+  // worker alive serving diagnostics from stale wasm, even
+  // though new POSTs already route through the new worker.
+  let activeAbort: AbortController | null = null;
+  const onControllerChange = () => {
+    activeAbort?.abort();
+  };
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener(
+      "controllerchange",
+      onControllerChange,
+    );
+  }
+
   for (;;) {
+    activeAbort = new AbortController();
     try {
       const response = await fetch(LSP_EVENTS_ENDPOINT, {
         // Defensive: some browsers honor this on SSE, helps
         // with intermediate proxies that might buffer.
         headers: { accept: "text/event-stream" },
+        signal: activeAbort.signal,
       });
       if (!response.ok || !response.body) {
         throw new Error(`SSE response status ${response.status}`);
