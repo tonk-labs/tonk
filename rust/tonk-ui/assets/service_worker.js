@@ -15,15 +15,10 @@ async function activateWorker() {
 
 self.oninstall = event => {
     // Promote this worker straight from `installing` to `activating`
-    // without parking in `waiting`. The previous version of this
-    // file called `skipWaiting()` at the top of the script, which
-    // is a no-op: the call is only honored while the worker is in
-    // the *waiting* state, and at top-level evaluation time the
-    // lifecycle hasn't yet reached `install`. Moving the call into
-    // the install handler matches the browser's contract — the new
-    // worker takes over as soon as it finishes installing, so a
-    // simple page reload after `cargo build` actually picks up the
-    // new wasm rather than serving the previous version forever.
+    // without parking in `waiting`. Earlier this call sat at the top
+    // of the script, where it's a no-op — the browser only honors
+    // `skipWaiting()` while the worker is in `waiting`, and at
+    // top-level eval time the lifecycle hasn't reached install yet.
     event.waitUntil(self.skipWaiting());
     log("Installed");
 };
@@ -32,6 +27,29 @@ self.onactivate = event => {
     event.waitUntil(self.clients.claim());
     log("Activated");
 };
+
+// When a *newer* version of this worker enters the `installing`
+// state, this script (the currently active worker) is on the way
+// out. Forward the lifecycle event to the Rust side so it can
+// release every long-lived response we're serving — chiefly the
+// `/api/lsp/events` SSE stream. With those streams hung up the
+// in-flight fetch events settle, the spec releases this worker,
+// and the new one activates.
+//
+// `worker.onupdatefound()` is exported by `tonk_worker::worker`
+// and drops the LSP push channel's sender. Receivers see EOF,
+// browser side resumes via the existing reconnect loop against
+// the new worker.
+self.registration.addEventListener?.("updatefound", async () => {
+    log("Update found — forwarding to wasm worker");
+    try {
+      const worker = await activateWorker();
+      // let worker know there is an update
+      await worker.onupdatefound?.();
+    } catch (err) {
+        log("Failed to forward updatefound:", err);
+    }
+});
 
 self.onfetch = event => {
     let request = event.request;

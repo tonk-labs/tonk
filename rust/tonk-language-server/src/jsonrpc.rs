@@ -30,9 +30,17 @@ pub enum Incoming {
     /// `method` present, no `id` → notification.
     Notification(Notification),
     /// `id` and `result`/`error` → response. Server-initiated requests
-    /// are not used in phase 0; this variant is here so a stray
+    /// are not used in phase 0, but the variant exists so a stray
     /// response doesn't deserialize as a malformed request.
-    Response(Response),
+    ///
+    /// The `id` field is the discriminator that prevents
+    /// `serde(untagged)` from matching arbitrary objects against
+    /// this variant — without it, the unit-shape arm would catch
+    /// every JSON object and break classification.
+    Response {
+        #[serde(rename = "id")]
+        _id: RequestId,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -111,20 +119,11 @@ pub struct ResponseError {
 }
 
 impl ResponseError {
-    /// JSON-RPC 2.0 reserved error codes we may emit.
-    pub const PARSE_ERROR: i64 = -32700;
-    pub const INVALID_REQUEST: i64 = -32600;
+    /// JSON-RPC 2.0 reserved error codes we currently emit.
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
 
-    pub fn parse_error(msg: impl Into<String>) -> Self {
-        Self {
-            code: Self::PARSE_ERROR,
-            message: msg.into(),
-            data: None,
-        }
-    }
     pub fn invalid_params(msg: impl Into<String>) -> Self {
         Self {
             code: Self::INVALID_PARAMS,

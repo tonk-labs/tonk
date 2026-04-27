@@ -21,5 +21,5 @@ pub mod diagnostics;
 pub mod parse;
 pub mod shape;
 
-pub use diagnostics::{document_diagnostics, ServerInfo, NOTATION_LANGUAGE_ID, SERVER_INFO};
-pub use parse::{parse, Parsed};
+pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
+pub use parse::{Parsed, parse};

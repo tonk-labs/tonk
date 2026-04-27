@@ -146,10 +146,7 @@ fn validate_context(key: &MarkedYaml<'_>, value: &MarkedYaml<'_>, out: &mut Vec<
 /// noisy false positives.
 fn validate_field(key: &MarkedYaml<'_>, _value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) {
     if string_of(key).is_none() {
-        out.push(error(
-            range_of(key),
-            "Field name must be a string.",
-        ));
+        out.push(error(range_of(key), "Field name must be a string."));
     }
 }
 

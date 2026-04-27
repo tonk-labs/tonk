@@ -11,11 +11,11 @@
 use std::collections::HashMap;
 
 use lsp_types::{
-    notification::{Notification as LspNotificationTrait, PublishDiagnostics},
-    request::{Initialize, Request as LspRequestTrait},
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
     ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    notification::{Notification as LspNotificationTrait, PublishDiagnostics},
+    request::{Initialize, Request as LspRequestTrait},
 };
 use serde_json::Value;
 
@@ -90,7 +90,7 @@ impl Server {
                 self.handle_notification(&note.method, note.params);
                 None
             }
-            Incoming::Response(_) => {
+            Incoming::Response { .. } => {
                 // Server-initiated requests are not used in phase 0;
                 // any incoming response is a protocol misuse we
                 // silently drop.
@@ -101,10 +101,7 @@ impl Server {
 
     fn handle_request(&mut self, id: Value, method: &str, params: Value) -> Response {
         if self.shutting_down && method != "exit" {
-            return Response::error(
-                id,
-                ResponseError::internal("server is shutting down"),
-            );
+            return Response::error(id, ResponseError::internal("server is shutting down"));
         }
 
         match method {
