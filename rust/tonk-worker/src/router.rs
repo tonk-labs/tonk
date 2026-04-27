@@ -32,6 +32,8 @@ pub use sync::SyncResponse;
 mod identify;
 pub use identify::IdentifyResponse;
 
+mod lsp;
+
 mod profile;
 pub use profile::ProfileInfo;
 
@@ -115,6 +117,11 @@ pub fn api_router(state: TonkState) -> Router {
             get(inspect::archive::inspect_remote_archive_block),
         )
         .with_state(state)
+        // LSP routes carry their own state (`Extension<LspHub>`) so
+        // they don't need to know about `AppState`. Merging keeps
+        // the language-server lifetime tied to the worker, since
+        // its hub lives inside `lsp_router`'s `Extension` layer.
+        .merge(lsp::lsp_router())
 }
 
 /// Test utilities for router tests.

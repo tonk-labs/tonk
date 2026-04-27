@@ -125,6 +125,14 @@
   <link data-trunk rel="copy-dir" href="./assets/images" />
   <link data-trunk rel="copy-dir" href="./assets/webawesome" />
   <link data-trunk rel="copy-file" href="../tonk-sigil/assets/sigils.svg" />
+  <!-- `<tonk-code>` web component bundle. The crate's `install()`
+       injects `<script type="module" src="/tonk-code/tonk-code.js">`
+       at startup; chunked language packs (e.g.
+       `tonk-code-lang-yaml.js`) are loaded on demand by the element
+       via relative imports, so all chunks must sit next to the
+       main bundle in the same directory. The trunk copy below
+       preserves that layout. -->
+  <link data-trunk rel="copy-dir" href="../tonk-code/assets" data-target-path="tonk-code" />
 
   <link data-trunk rel="css" href="./styles.css" />
 </head>

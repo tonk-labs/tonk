@@ -2,8 +2,11 @@
 
 members = [
     "rust/tonk-access-service",
+    "rust/tonk-code",
     "rust/tonk-common",
     "rust/tonk-invite",
+    "rust/tonk-language-server",
+    "rust/tonk-notation",
     "rust/tonk-schema",
     "rust/tonk-sigil",
     "rust/tonk-ui",
@@ -19,8 +22,11 @@ edition = "2024"
 
 [workspace.dependencies]
 tonk-access-service = { path = "./rust/tonk-access-service" }
+tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-invite = { path = "./rust/tonk-invite" }
+tonk-language-server = { path = "./rust/tonk-language-server" }
+tonk-notation = { path = "./rust/tonk-notation" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }
@@ -61,6 +67,7 @@ keyring = "3.6"
 leptos = "0.8"
 leptos-use = "0.17"
 leptos_router = "0.8"
+lsp-types = "0.97"
 port_check = "0.3"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }

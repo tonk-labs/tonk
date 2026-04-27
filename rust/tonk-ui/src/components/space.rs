@@ -506,6 +506,19 @@ pub(super) fn BranchRow(
                         None => Either::Right(view! { <span>"none"</span> }),
                     } }</dd>
                 </dl>
+                // YAML query editor — first cut. Lives alongside
+                // the existing two-input form rather than replacing
+                // it; the form still drives the live query while
+                // this surface is the iteration target for a
+                // GraphiQL-style editor + result pane.
+                <div class="branch-yaml-query wa-stack wa-gap-xs">
+                    <label class="hint">"Query (YAML, draft)"</label>
+                    <tonk-code
+                        mode="yaml"
+                        language-server="carry-asserted"
+                        placeholder="the: namespace/name"
+                    ></tonk-code>
+                </div>
                 <form class="branch-claims" on:submit=submit_query>
                     <div class="wa-grid wa-gap-s">
                         <wa-input

@@ -30,14 +30,17 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
+http-body-util = { workspace = true }
 js-sys = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
 tonk-common = { workspace = true }
 tonk-invite = { workspace = true }
+tonk-language-server = { workspace = true }
 tonk-schema = { workspace = true }
 tower-service = { workspace = true }
 url = { workspace = true }
