@@ -30,11 +30,15 @@ const outdir = resolve(root, "assets");
 mkdirSync(outdir, { recursive: true });
 
 // Languages to ship as separate chunks. Add to this list when
-// extending mode coverage; the element resolves a `mode` attribute
-// to `./tonk-code-lang-<mode>.js`, so the keys here are the public
-// `mode` attribute values.
+// extending coverage; the element resolves the `language`
+// attribute to `./tonk-code-lang-<language>.js`, so the keys here
+// are the public `language` attribute values.
 const languages = [
   { id: "yaml", entry: "src-js/lang/yaml.ts" },
+  // Dialog notation. Today re-exports the YAML grammar; ships as
+  // its own chunk so the public language id is stable when we
+  // later layer dialect-specific decorations on top.
+  { id: "dialog-yaml", entry: "src-js/lang/dialog-yaml.ts" },
 ];
 
 const entryPoints = {

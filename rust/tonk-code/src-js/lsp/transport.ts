@@ -1,65 +1,96 @@
-// Transport adapter for `@codemirror/lsp-client` over the
-// in-process LSP server hosted in our service worker.
+// HTTP transport for `@codemirror/lsp-client`.
 //
-// `Transport` is just a string pipe — three methods: `send`,
-// `subscribe`, `unsubscribe`. We split that pipe in two:
+// `Transport` is an LSP-shaped string pipe with three methods —
+// `send`, `subscribe`, `unsubscribe` — and we implement it over
+// plain HTTP:
 //
-// - **Outbound** (`send`): `POST /api/lsp` with the message body.
-//   Server replies (responses to client requests) come back in
-//   the response body and are immediately fed to subscribers as
-//   if they had arrived over the inbound channel — that's how
-//   `@codemirror/lsp-client` expects responses regardless of
-//   whether the transport is bidirectional or split.
+// - **Outbound** (`send`): `POST` the message body to the
+//   configured endpoint. The response body, if non-empty, is
+//   the JSON-RPC reply for the original request and gets fed
+//   back through the dispatch path so the LSP client's request
+//   bookkeeping resolves the matching promise.
 //
-// - **Inbound** (`subscribe`): `GET /api/lsp/events` returning
-//   `text/event-stream`. Server-initiated notifications
-//   (especially `textDocument/publishDiagnostics`) arrive here.
+// - **Inbound** (`subscribe`): `GET` the same endpoint with
+//   `Accept: text/event-stream`. Server-pushed JSON-RPC
+//   notifications arrive as SSE `data:` lines.
 //
-// If either channel fails the adapter retries with exponential
-// backoff bounded at 30s, since service worker restarts are
-// frequent during development and we want diagnostics to recover
-// without a page reload.
+// The transport is *single-shot*: one connect on construction,
+// one inbound stream. When the SSE body ends — for any reason —
+// the transport calls its `onClose` callback and goes idle. It
+// does **not** auto-reconnect; the consumer (the `<tonk-code>`
+// element) is responsible for tearing down the LSP client and
+// building a fresh one. That keeps every LSP session in a
+// known-good state — `initialize` re-runs against whichever
+// server is on the other side, document state is re-synced —
+// rather than papering over silent server resets with stale
+// in-memory bookkeeping.
 
 import type { Transport } from "@codemirror/lsp-client";
 
-const LSP_ENDPOINT = "/api/lsp";
-const LSP_EVENTS_ENDPOINT = "/api/lsp/events";
+export type Handler = (message: string) => void;
 
-type Handler = (message: string) => void;
+export interface HttpTransportOptions {
+  /** Endpoint URL. Both `POST` (outbound) and `GET` (SSE) hit
+   *  the same URL; method + `Accept` header distinguish the two
+   *  operations. */
+  url: string;
+  /** Called once when the inbound SSE channel ends. Indicates
+   *  that the LSP session this transport was carrying is over
+   *  and the consumer should rebuild from scratch. Idempotent —
+   *  fired at most once per transport. */
+  onClose: () => void;
+}
 
-/** Construct a Transport that talks to the SW-hosted LSP server.
- *  The returned transport is connected on construction; the SSE
- *  reader reconnects on failure. */
-export function serviceWorkerTransport(): Transport {
+/** Construct an LSP transport over plain HTTP. */
+export function httpTransport(opts: HttpTransportOptions): Transport {
   const handlers = new Set<Handler>();
+  let closed = false;
 
-  /** Fan out a server message to every subscriber. We catch
-   *  per-handler errors so one broken subscriber doesn't take
-   *  down the others — the LSPClient assumes its handler is
-   *  isolated from any other code that might also subscribe. */
+  /** Fan out a server message to every subscriber. Per-handler
+   *  errors are isolated: one broken subscriber doesn't take
+   *  down the others — the LSPClient assumes its handler runs
+   *  in isolation from any other code that might have
+   *  subscribed for its own reasons. */
   function dispatch(message: string): void {
-    for (const h of handlers) {
+    for (const handler of handlers) {
       try {
-        h(message);
+        handler(message);
       } catch (err) {
         console.error("[tonk-code/lsp] subscriber threw", err);
       }
     }
   }
 
-  // Long-lived SSE reader. Auto-reconnects with backoff.
-  void runEventStream(dispatch);
+  function close(): void {
+    if (closed) return;
+    closed = true;
+    handlers.clear();
+    try {
+      opts.onClose();
+    } catch (err) {
+      console.error("[tonk-code/lsp] onClose threw", err);
+    }
+  }
+
+  // Kick off the inbound stream. When it ends we close the whole
+  // transport; the LSP client's reads on `subscribe` simply stop
+  // receiving messages, and the consumer (notified via `onClose`)
+  // builds a fresh transport.
+  void readEvents(opts.url, dispatch).finally(close);
 
   return {
     send(message: string): void {
-      // Fire and forget — the response (if any) is dispatched
-      // back through the same `handlers` set, so the LSPClient's
-      // bookkeeping of in-flight request IDs matches what it
-      // expects from a bidirectional transport.
-      void postMessage(message, dispatch);
+      if (closed) return;
+      void postMessage(opts.url, message, dispatch).catch((err) => {
+        console.warn("[tonk-code/lsp] POST failed:", err);
+        // A failed POST is a sign the channel is gone (worker
+        // restart, network blip). Tear down so the consumer can
+        // rebuild.
+        close();
+      });
     },
     subscribe(handler: Handler): void {
-      handlers.add(handler);
+      if (!closed) handlers.add(handler);
     },
     unsubscribe(handler: Handler): void {
       handlers.delete(handler);
@@ -68,94 +99,33 @@ export function serviceWorkerTransport(): Transport {
 }
 
 async function postMessage(
+  url: string,
   message: string,
-  dispatch: (message: string) => void
+  dispatch: Handler,
 ): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(LSP_ENDPOINT, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: message,
-    });
-  } catch (err) {
-    console.warn("[tonk-code/lsp] POST failed:", err);
-    return;
-  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: message,
+  });
   if (!response.ok) {
-    console.warn("[tonk-code/lsp] POST status", response.status);
-    return;
+    throw new Error(`POST ${url} -> ${response.status}`);
   }
   // Empty body == notification echo (server has nothing to say
   // back). For requests, the server's reply lives in the body.
   const text = await response.text();
-  if (text.length > 0) {
-    dispatch(text);
-  }
+  if (text.length > 0) dispatch(text);
 }
 
-async function runEventStream(
-  dispatch: (message: string) => void
-): Promise<void> {
-  let backoffMs = 250;
-  const maxBackoffMs = 30_000;
-
-  // Subscribe once to `controllerchange`. When a new service
-  // worker takes control mid-session — typical during dev when
-  // trunk rebuilds the wasm and the new worker calls
-  // `skipWaiting()` from its install handler — we abort the
-  // current SSE fetch so the loop reconnects against the new
-  // worker. Without this the long-lived fetch keeps the *old*
-  // worker alive serving diagnostics from stale wasm, even
-  // though new POSTs already route through the new worker.
-  let activeAbort: AbortController | null = null;
-  const onControllerChange = () => {
-    activeAbort?.abort();
-  };
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.addEventListener(
-      "controllerchange",
-      onControllerChange,
-    );
+/** Open the inbound SSE stream and dispatch each `data:` event. */
+async function readEvents(url: string, dispatch: Handler): Promise<void> {
+  const response = await fetch(url, {
+    headers: { accept: "text/event-stream" },
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`GET ${url} -> ${response.status}`);
   }
-
-  for (;;) {
-    activeAbort = new AbortController();
-    try {
-      const response = await fetch(LSP_EVENTS_ENDPOINT, {
-        // Defensive: some browsers honor this on SSE, helps
-        // with intermediate proxies that might buffer.
-        headers: { accept: "text/event-stream" },
-        signal: activeAbort.signal,
-      });
-      if (!response.ok || !response.body) {
-        throw new Error(`SSE response status ${response.status}`);
-      }
-      // Successful connect resets the backoff for the next loop.
-      backoffMs = 250;
-      await readEventStream(response.body, dispatch);
-      // Stream ended cleanly (server closed broadcast). Reconnect
-      // immediately — the channel is intended to be long-lived,
-      // a clean close is a worker restart.
-    } catch (err) {
-      console.warn("[tonk-code/lsp] events stream lost:", err);
-    }
-    await sleep(backoffMs);
-    backoffMs = Math.min(backoffMs * 2, maxBackoffMs);
-  }
-}
-
-/** Parse an SSE response body and dispatch each `data:` event.
- *
- *  We don't use the browser's `EventSource` API because the SW
- *  intercepts `fetch` but not `EventSource` — the latter wouldn't
- *  reach our handler. Reading the response body manually keeps
- *  the request inside the fetch-routed pipeline. */
-async function readEventStream(
-  body: ReadableStream<Uint8Array>,
-  dispatch: (message: string) => void
-): Promise<void> {
-  const reader = body.getReader();
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
   for (;;) {
@@ -177,13 +147,7 @@ async function readEventStream(
         if (line.startsWith("data: ")) dataLines.push(line.slice(6));
         else if (line.startsWith("data:")) dataLines.push(line.slice(5));
       }
-      if (dataLines.length > 0) {
-        dispatch(dataLines.join("\n"));
-      }
+      if (dataLines.length > 0) dispatch(dataLines.join("\n"));
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

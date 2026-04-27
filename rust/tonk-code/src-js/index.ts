@@ -1,15 +1,37 @@
 // `<tonk-code>` — CodeMirror 6 packaged as a custom element.
 //
 // Attributes (all reflected on the host element):
-//   value     — initial document text. Reactive: writes after
-//               connect replace the editor buffer in-place.
-//   mode      — language id (e.g. "yaml"). Loaded lazily as a
-//               separate ESM chunk; missing chunks fail soft and
-//               leave the editor in plain-text mode.
-//   readonly  — boolean attribute. Presence locks the editor.
+//   value       — initial document text. Reactive: writes after
+//                 connect replace the editor buffer in-place.
+//   language    — language identifier (e.g. "yaml", "dialog-yaml").
+//                 Drives both syntax highlighting (loads
+//                 `tonk-code-lang-<language>.js` lazily) and the
+//                 LSP `languageId` reported to the server in
+//                 `didOpen`. When omitted the editor renders
+//                 without highlighting and reports `plaintext` to
+//                 the LSP server.
+//   language-server — opt-in to a language server. Boolean
+//                 (presence alone connects to the default
+//                 endpoint `/api/language-server`); a value
+//                 (`language-server="/some/path"` or
+//                 `language-server="https://host/path"`) is the
+//                 server URL, resolved against `document.baseURI`
+//                 the same way an `<a href>` would.
+//   readonly    — boolean attribute. Presence locks the editor.
 //   placeholder — ghost text shown while the document is empty.
+//   line-numbers— boolean attribute. Presence shows the gutter.
+//   active-line — boolean attribute. Presence highlights the row
+//                 the cursor sits on. Off by default — short
+//                 embedded fields don't need the visual cue.
 //
-// Properties (richer than the attribute surface):
+// Dialects (e.g. `dialog-yaml`) ship as their own language packs.
+// A dialect chunk typically re-exports the parent grammar plus
+// dialect-specific decorations (DID tinting, variable
+// highlighting, etc.) so dialect-aware highlighting lives next
+// to the dialect's grammar rather than as an after-the-fact
+// layer.
+//
+// Properties:
 //   .value : string                — round-trips with the buffer.
 //                                    Setting moves the cursor to
 //                                    end-of-document.
@@ -20,13 +42,9 @@
 //              `doc` is the live `Text` instance for callers that
 //              want incremental access without re-stringifying.
 //   ready    — fires once when the editor view has been mounted.
-//              Useful for callers that want to call imperative
-//              methods immediately after insertion.
 //
-// Theming: the element's host renders with the surrounding page
-// font and color tokens. CodeMirror's syntax classes are styled
-// by a tiny inline theme so the editor inherits the page's color
-// scheme rather than baking in a CM theme.
+// Theming runs through `--tonk-code-*` CSS custom properties so
+// the element stays decoupled from any consumer's design system.
 
 import { EditorState, Compartment, type Extension } from "@codemirror/state";
 import {
@@ -50,7 +68,9 @@ import {
   HighlightStyle,
 } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
-import { getClient as getLspClient } from "./lsp/client";
+import type { LSPClient } from "@codemirror/lsp-client";
+import { connectLsp } from "./lsp/client";
+import { httpTransport } from "./lsp/transport";
 
 /** Detail object dispatched on the `change` event. */
 export type ChangeDetail = {
@@ -71,39 +91,61 @@ export type ReadyDetail = {
 
 const OBSERVED = [
   "value",
-  "mode",
+  "language",
   "readonly",
   "placeholder",
   "line-numbers",
+  "active-line",
   "language-server",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
-/** Cache of in-flight / resolved language module loads, keyed by
- *  the `mode` attribute string. Shared across instances so two
- *  `<tonk-code mode="yaml">` elements don't fetch the chunk twice. */
+/** Default endpoint used when the `language-server` attribute is
+ *  present with no value. Same-origin and relative — so the
+ *  request goes through whatever fetch handler intercepts it
+ *  (a service worker, a real backend, etc.). */
+const DEFAULT_LANGUAGE_SERVER_URL = "/api/language-server";
+
+/** Default LSP `languageId` reported when no `language`
+ *  attribute is set. The LSP convention is `plaintext`; a server
+ *  is free to refuse `didOpen` for it. */
+const DEFAULT_LANGUAGE_ID = "plaintext";
+
+/** How long to wait before rebuilding the LSP client after the
+ *  current session ends. The transport is single-shot — when its
+ *  inbound stream closes the element rebuilds rather than
+ *  papering over the disconnect. We start with a polite 5s delay
+ *  to give the underlying server (typically a service worker
+ *  being upgraded) time to come back up before reconnecting,
+ *  then exponentially back off if the rebuild keeps failing. */
+const LSP_RECONNECT_INITIAL_MS = 5_000;
+const LSP_RECONNECT_MAX_MS = 30_000;
+
+/** Cache of in-flight / resolved language-pack module loads.
+ *  Shared across instances so two `<tonk-code language="yaml">`
+ *  elements don't fetch the chunk twice. */
 const languageCache = new Map<string, Promise<Extension>>();
 
 /** Resolve the URL of a sibling chunk relative to this module.
  *  `import.meta.url` is the URL `tonk-code.js` was loaded from,
  *  so language chunks live next to it regardless of where the
  *  consumer mounted the bundle (root, /assets/, CDN, …). */
-function languageUrl(mode: string): string {
-  return new URL(`./tonk-code-lang-${mode}.js`, import.meta.url).href;
+function languageUrl(language: string): string {
+  return new URL(`./tonk-code-lang-${language}.js`, import.meta.url).href;
 }
 
-async function loadLanguage(mode: string): Promise<Extension> {
-  let pending = languageCache.get(mode);
+async function loadLanguage(language: string): Promise<Extension> {
+  let pending = languageCache.get(language);
   if (!pending) {
-    pending = import(/* @vite-ignore */ languageUrl(mode))
+    pending = import(/* @vite-ignore */ languageUrl(language))
       .then((mod) => mod.default as Extension)
       .catch((err) => {
         // Don't poison the cache on failure — a follow-up attempt
         // (e.g. after a network hiccup) deserves a fresh import.
-        languageCache.delete(mode);
+        languageCache.delete(language);
         throw err;
       });
-    languageCache.set(mode, pending);
+    languageCache.set(language, pending);
   }
   return pending;
 }
@@ -162,6 +204,12 @@ const baseTheme = EditorView.theme({
   ".cm-placeholder": {
     color: "var(--tonk-code-fg-muted)",
     fontStyle: "italic",
+    // Preserve newlines so multi-line ghost text (e.g. a small
+    // example showing the document shape) renders as multiple
+    // visual lines. CodeMirror's placeholder extension just sets
+    // the string as `textContent` of one `<span>` — without this
+    // the browser collapses every newline to a single space.
+    whiteSpace: "pre-wrap",
   },
   ".cm-matchingBracket, .cm-nonmatchingBracket": {
     backgroundColor: "var(--tonk-code-bracket-match-bg)",
@@ -276,15 +324,12 @@ const highlightStyle = HighlightStyle.define([
   },
 ]);
 
-/** Stable extensions present in every editor regardless of mode.
- *
- *  Anything *toggleable* (language pack, read-only, placeholder,
- *  line-numbers gutter) lives in a `Compartment` instead — see the
- *  per-instance setup in `connectedCallback`. */
+/** Stable extensions present in every editor regardless of
+ *  language. Anything *toggleable* (language pack, read-only,
+ *  placeholder, gutter, active-line) lives in a `Compartment`
+ *  instead — see the per-instance setup in `connectedCallback`. */
 function baseExtensions(): Extension[] {
   return [
-    highlightActiveLine(),
-    highlightActiveLineGutter(),
     history(),
     bracketMatching(),
     indentOnInput(),
@@ -294,12 +339,16 @@ function baseExtensions(): Extension[] {
   ];
 }
 
-/** The gutter package: line numbers + the matching active-line
- *  highlighter inside the gutter. They go together — toggling line
- *  numbers off but leaving the active-line gutter on would be a
- *  vestigial column. */
+/** Line-number gutter. */
 function gutterExtensions(): Extension[] {
   return [lineNumbers()];
+}
+
+/** Active-line highlight (both the line and its gutter row). The
+ *  two are paired so the row decoration is consistent across the
+ *  text and the gutter when both are enabled. */
+function activeLineExtensions(): Extension[] {
+  return [highlightActiveLine(), highlightActiveLineGutter()];
 }
 
 class TonkCodeElement extends HTMLElement {
@@ -343,14 +392,32 @@ class TonkCodeElement extends HTMLElement {
   }
 
   /** Compartments let us swap a single extension (language pack,
-   *  read-only flag, placeholder, gutter, language-server) at
-   *  runtime without rebuilding the entire state. One per
-   *  swappable concern. */
+   *  read-only flag, placeholder, gutter, active-line, lsp
+   *  plugin) at runtime without rebuilding the entire state. One
+   *  per swappable concern. */
   readonly #language = new Compartment();
   readonly #readOnly = new Compartment();
   readonly #placeholder = new Compartment();
   readonly #gutter = new Compartment();
+  readonly #activeLine = new Compartment();
   readonly #lsp = new Compartment();
+
+  /** Active LSP client, when one exists. The element manages its
+   *  full lifecycle: build on `lsp` attribute set, destroy on
+   *  attribute removal or transport drop, rebuild after the
+   *  reconnect delay. */
+  #lspClient: LSPClient | null = null;
+
+  /** Pending reconnect timer, if any. Cleared on
+   *  disconnect/destroy so a teardown doesn't leave a ghost
+   *  rebuild scheduled. */
+  #lspReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Current reconnect backoff in milliseconds. Resets to
+   *  `LSP_RECONNECT_INITIAL_MS` on every successful connect;
+   *  doubles, capped at `LSP_RECONNECT_MAX_MS`, on each failed
+   *  rebuild attempt. */
+  #lspReconnectDelay = LSP_RECONNECT_INITIAL_MS;
 
   /** Each editor instance gets a stable, unique LSP document URI.
    *  The server uses this to track the document's text across
@@ -363,18 +430,33 @@ class TonkCodeElement extends HTMLElement {
    *  writes so consumers don't see their own writes echoed back. */
   #suppressChange = false;
 
-  /** Most-recently-requested mode — used to ignore stale resolves
-   *  when the attribute changes again before a load completes. */
-  #pendingMode: string | null = null;
+  /** Most-recently-requested language — used to ignore stale
+   *  resolves when the attribute changes again before a load
+   *  completes. */
+  #pendingLanguage: string | null = null;
+
+  /** Pending teardown scheduled by `disconnectedCallback`. The
+   *  reactive frameworks we run under (Leptos, mostly) routinely
+   *  detach and re-attach DOM nodes during rerenders. The custom-
+   *  element spec fires `disconnectedCallback` immediately on
+   *  detach — if we tore the editor down right then, every parent
+   *  rerender would destroy and rebuild the view, drop the LSP
+   *  session, and reset the document. We defer the teardown to
+   *  the next microtask; if a `connectedCallback` runs first, we
+   *  cancel. */
+  #teardownScheduled = false;
 
   connectedCallback(): void {
+    // If we were about to tear down (Leptos move), cancel — the
+    // re-attach happened first.
+    this.#teardownScheduled = false;
     if (this.#view) return;
 
     const initialDoc = this.getAttribute("value") ?? "";
     const isReadOnly = this.hasAttribute("readonly");
     const placeholderText = this.getAttribute("placeholder") ?? "";
     const showLineNumbers = this.hasAttribute("line-numbers");
-    const languageServer = this.getAttribute("language-server");
+    const showActiveLine = this.hasAttribute("active-line");
 
     const state = EditorState.create({
       doc: initialDoc,
@@ -386,7 +468,8 @@ class TonkCodeElement extends HTMLElement {
           placeholderText ? placeholderExt(placeholderText) : []
         ),
         this.#gutter.of(showLineNumbers ? gutterExtensions() : []),
-        this.#lsp.of(languageServer ? this.#buildLspExtension(languageServer) : []),
+        this.#activeLine.of(showActiveLine ? activeLineExtensions() : []),
+        this.#lsp.of([]),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
           if (this.#suppressChange) return;
@@ -404,13 +487,28 @@ class TonkCodeElement extends HTMLElement {
       ],
     });
 
-    this.#view = new EditorView({ state, root: this.#shadow, parent: this.#shadow });
+    this.#view = new EditorView({
+      state,
+      root: this.#shadow,
+      parent: this.#shadow,
+    });
 
-    // Apply mode after construction so the failure path (chunk
-    // missing) doesn't block element insertion.
-    const mode = this.getAttribute("mode");
-    if (mode) {
-      void this.#applyMode(mode);
+    // Apply language pack after construction so the failure path
+    // (chunk missing, network blip) doesn't block element insertion.
+    const language = this.getAttribute("language");
+    if (language) {
+      void this.#applyLanguage(language);
+    }
+
+    // Connect to the LSP server lazily — only on first user
+    // interaction. Editors that the user never focuses (collapsed
+    // sections, hidden tabs, etc.) don't open an SSE channel,
+    // don't burn a `didOpen`, don't show up in the server's open-
+    // documents map. The first focus is the moment the user
+    // actually cares about diagnostics; before that they're
+    // wasted bytes.
+    if (this.hasAttribute("language-server")) {
+      this.#armLazyLspConnect();
     }
 
     this.dispatchEvent(
@@ -423,8 +521,23 @@ class TonkCodeElement extends HTMLElement {
   }
 
   disconnectedCallback(): void {
-    this.#view?.destroy();
-    this.#view = null;
+    // Defer the actual destruction to the next macrotask (not
+    // microtask — Leptos's re-insert can happen synchronously
+    // *or* across a microtask boundary). If the host gets
+    // re-attached first, `connectedCallback` flips
+    // `#teardownScheduled` off and the work is skipped.
+    if (this.#teardownScheduled) return;
+    this.#teardownScheduled = true;
+    setTimeout(() => {
+      if (!this.#teardownScheduled) return;
+      this.#teardownScheduled = false;
+      // Only tear down if we're still detached. `isConnected`
+      // flips back to `true` if Leptos re-inserted us.
+      if (this.isConnected) return;
+      this.#tearDownLsp();
+      this.#view?.destroy();
+      this.#view = null;
+    }, 0);
   }
 
   attributeChangedCallback(
@@ -442,8 +555,12 @@ class TonkCodeElement extends HTMLElement {
           this.value = next ?? "";
         }
         break;
-      case "mode":
-        void this.#applyMode(next);
+      case "language":
+        // Apply the language pack (highlighting). LSP `languageId`
+        // is also keyed off this attribute; if an LSP session is
+        // open we rebuild it so the server sees the right id.
+        void this.#applyLanguage(next);
+        if (this.#lspClient) this.#rebuildLspNow();
         break;
       case "readonly":
         this.#view.dispatch({
@@ -469,42 +586,208 @@ class TonkCodeElement extends HTMLElement {
           ),
         });
         break;
-      case "language-server":
-        // Reconfigure with a fresh LSP plugin for the new
-        // languageId, or empty extension to detach. Note: the
-        // document URI is sticky across changes — a single
-        // `<tonk-code>` always represents one document, even if
-        // the consumer hot-swaps language servers. The previous
-        // server's `didClose` is the LSPClient's responsibility
-        // when its plugin is removed from the editor state.
+      case "active-line":
         this.#view.dispatch({
-          effects: this.#lsp.reconfigure(
-            next ? this.#buildLspExtension(next) : []
+          effects: this.#activeLine.reconfigure(
+            next !== null ? activeLineExtensions() : []
           ),
         });
+        break;
+      case "language-server":
+        // Presence enables, absence disables. When *enabling*
+        // for the first time, defer to first focus (same lazy
+        // policy as the initial mount). When *changing* a URL on
+        // an already-connected session, reconnect eagerly so the
+        // swap takes effect.
+        if (next !== null) {
+          if (this.#lspClient) {
+            this.#connectLsp(); // URL swap mid-session
+          } else {
+            this.#armLazyLspConnect();
+          }
+        } else {
+          this.#tearDownLsp();
+        }
         break;
     }
   }
 
-  /** Build the CodeMirror extension that wires this editor into
-   *  the page-wide LSP client.
+  /** LSP languageId reported to the server in `didOpen`. Derived
+   *  from the `language` attribute; falls back to `plaintext`. */
+  #lspLanguageId(): string {
+    return this.getAttribute("language") ?? DEFAULT_LANGUAGE_ID;
+  }
+
+  /** Generation counter for the LSP session. Each
+   *  `#connectLsp()` increments it; transport callbacks capture
+   *  the generation that owned them and ignore events after the
+   *  generation has moved on. This prevents a torn-down
+   *  transport's `onClose` from racing a fresh `#connectLsp` and
+   *  scheduling a rebuild that fights the new session. */
+  #lspGeneration = 0;
+
+  /** URL + language id of the currently connected LSP session,
+   *  if any. Used to short-circuit `#connectLsp()` when the
+   *  desired session matches what's already running — keeps
+   *  Leptos remounts from churning the connection. */
+  #lspConnectedUrl: string | null = null;
+  #lspConnectedLanguageId: string | null = null;
+
+  /** First-focus listener for lazy LSP connect. Held so we can
+   *  remove it after firing or when teardown happens before
+   *  first focus. */
+  #lazyLspListener: (() => void) | null = null;
+
+  /** Arm a one-shot focus listener that connects the LSP on
+   *  first user interaction. Editors the user never focuses
+   *  don't open an SSE channel.
    *
-   *  Each editor instance owns one synthetic `tonk-buffer://`
-   *  document URI minted on first call; the LSP server uses it as
-   *  the key for tracking the document's text. The `languageId`
-   *  comes from the `language-server` attribute and is what the
-   *  server keys validators on (e.g. `"carry-asserted"` →
-   *  asserted-notation validator). */
-  #buildLspExtension(languageId: string): Extension {
+   *  If `attributeChangedCallback` ends up calling `#connectLsp`
+   *  directly (e.g. the consumer flips the `language-server`
+   *  value at runtime, signalling explicit intent), the
+   *  connect runs immediately and the focus listener is
+   *  cancelled by `#tearDownLsp` → `#disarmLazyLspConnect`.  */
+  #armLazyLspConnect(): void {
+    if (this.#lazyLspListener) return; // already armed
+    const fire = () => {
+      this.#disarmLazyLspConnect();
+      this.#connectLsp();
+    };
+    this.#lazyLspListener = fire;
+    // `focus` with `delegatesFocus: true` on
+    // the shadow root, the host receives the `focus` event when
+    // focus delegates into the inner contenteditable. `focusin`
+    // bubbles independently but the host listener path goes
+    // through `focus` here. `once: true` removes the listener
+    // after firing.
+    this.addEventListener("focus", fire, { once: true });
+  }
+
+  #disarmLazyLspConnect(): void {
+    if (!this.#lazyLspListener) return;
+    this.removeEventListener("focus", this.#lazyLspListener);
+    this.#lazyLspListener = null;
+  }
+
+  /** Build (or rebuild) the LSP client + transport pair and wire
+   *  them into the editor. Idempotent: tears down any existing
+   *  client before connecting. Safe to call from
+   *  `attributeChangedCallback`. */
+  #connectLsp(): void {
+    if (!this.#view) return;
+    // Short-circuit if we're already connected to the same
+    // session. Belt-and-suspenders with the deferred teardown:
+    // even if the deferred teardown ran (e.g. element was truly
+    // removed and re-added later), this also catches duplicate
+    // connect calls from any other path.
+    if (this.#lspClient) {
+      const desiredUrl = new URL(
+        this.getAttribute("language-server") || DEFAULT_LANGUAGE_SERVER_URL,
+        document.baseURI,
+      ).href;
+      if (
+        desiredUrl === this.#lspConnectedUrl &&
+        this.#lspLanguageId() === this.#lspConnectedLanguageId
+      ) {
+        return;
+      }
+    }
+    this.#tearDownLsp();
+
     if (!this.#lspUri) {
       // Crypto-random URI so multiple editors on the same page
       // don't collide. The path doesn't carry meaning beyond
       // identity — the server only stores text under it.
-      const id = crypto.randomUUID();
-      this.#lspUri = `tonk-buffer:///${id}`;
+      this.#lspUri = `tonk-buffer:///${crypto.randomUUID()}`;
     }
-    const client = getLspClient();
-    return client.plugin(this.#lspUri, languageId);
+
+    // Resolve the URL the same way the browser would resolve an
+    // `<a href>` — relative paths bind against `document.baseURI`,
+    // absolute URLs (any scheme) pass through. The boolean form
+    // (attribute present, empty value) maps to the default path.
+    const raw =
+      this.getAttribute("language-server") || DEFAULT_LANGUAGE_SERVER_URL;
+    const url = new URL(raw, document.baseURI).href;
+
+    const generation = ++this.#lspGeneration;
+    const transport = httpTransport({
+      url,
+      onClose: () => {
+        // Ignore the close event if a newer session has taken
+        // over. Without this guard, intentional teardowns
+        // (`#tearDownLsp`) cascade into a rebuild because the
+        // disconnect hits the transport's `onClose` after the
+        // new session has already started.
+        if (this.#lspGeneration !== generation) return;
+        this.#tearDownLsp();
+        // The transport is single-shot; closing means the LSP
+        // session is over. Schedule a rebuild — the server may
+        // be a service worker that briefly disappeared during
+        // an upgrade, so a polite delay before reconnecting
+        // gives it time to come back.
+        this.#scheduleLspReconnect();
+      },
+    });
+
+    const client = connectLsp(transport);
+    this.#lspClient = client;
+    this.#lspReconnectDelay = LSP_RECONNECT_INITIAL_MS;
+    this.#lspConnectedUrl = url;
+    this.#lspConnectedLanguageId = this.#lspLanguageId();
+
+    this.#view.dispatch({
+      effects: this.#lsp.reconfigure(
+        client.plugin(this.#lspUri, this.#lspConnectedLanguageId),
+      ),
+    });
+  }
+
+  /** Detach the LSP plugin from the editor, destroy the client,
+   *  cancel any pending rebuild.
+   *
+   *  Bumps the generation so any `onClose` from the disconnect
+   *  recognizes itself as stale and skips the reconnect path. */
+  #tearDownLsp(): void {
+    this.#lspGeneration++;
+    this.#disarmLazyLspConnect();
+    if (this.#lspReconnectTimer !== null) {
+      clearTimeout(this.#lspReconnectTimer);
+      this.#lspReconnectTimer = null;
+    }
+    if (this.#view) {
+      this.#view.dispatch({
+        effects: this.#lsp.reconfigure([]),
+      });
+    }
+    if (this.#lspClient) {
+      this.#lspClient.disconnect();
+      this.#lspClient = null;
+    }
+    this.#lspConnectedUrl = null;
+    this.#lspConnectedLanguageId = null;
+  }
+
+  /** Schedule a rebuild of the LSP client after the current
+   *  reconnect delay, then double the delay (capped) for the
+   *  next failure. The delay is reset on each successful
+   *  rebuild via `#connectLsp`. */
+  #scheduleLspReconnect(): void {
+    if (!this.hasAttribute("language-server")) return; // attr removed; respect that
+    if (this.#lspReconnectTimer !== null) return; // already pending
+
+    const delay = this.#lspReconnectDelay;
+    this.#lspReconnectDelay = Math.min(delay * 2, LSP_RECONNECT_MAX_MS);
+    this.#lspReconnectTimer = setTimeout(() => {
+      this.#lspReconnectTimer = null;
+      this.#connectLsp();
+    }, delay);
+  }
+
+  /** Force an immediate rebuild — used when an attribute change
+   *  invalidates the current session (e.g. the `language` value
+   *  changed and the server needs to see a new `languageId`). */
+  #rebuildLspNow(): void {
+    this.#connectLsp();
   }
 
   /** Current document text. */
@@ -536,27 +819,30 @@ class TonkCodeElement extends HTMLElement {
     }
   }
 
-  async #applyMode(mode: string | null): Promise<void> {
-    this.#pendingMode = mode;
-    if (!mode) {
+  async #applyLanguage(language: string | null): Promise<void> {
+    this.#pendingLanguage = language;
+    if (!language) {
       this.#view?.dispatch({
         effects: this.#language.reconfigure([]),
       });
       return;
     }
     try {
-      const extension = await loadLanguage(mode);
-      // Bail if the consumer flipped to a different mode while we
-      // were loading; the second `applyMode` call will install
-      // the right pack.
-      if (this.#pendingMode !== mode) return;
+      const extension = await loadLanguage(language);
+      // Bail if the consumer flipped to a different language while
+      // we were loading; the second `applyLanguage` call will
+      // install the right pack.
+      if (this.#pendingLanguage !== language) return;
       this.#view?.dispatch({
         effects: this.#language.reconfigure(extension),
       });
     } catch (err) {
       // Surface but don't throw — a missing language chunk shouldn't
-      // crash the host. Editor stays in plain-text mode.
-      console.warn(`[tonk-code] failed to load language "${mode}":`, err);
+      // crash the host. Editor stays without highlighting.
+      console.warn(
+        `[tonk-code] failed to load language "${language}":`,
+        err,
+      );
     }
   }
 }
@@ -592,7 +878,11 @@ const SHADOW_STYLESHEET = `
                       "Liberation Mono", monospace;
     --tonk-code-font-size: 0.875rem;
     --tonk-code-radius: 6px;
-    --tonk-code-min-height: 6.5rem;
+    /* 'auto' lets the host size to the editor's content. The
+       editor's own min-height comes from CodeMirror's line layout
+       (one line plus content padding). Consumers that want a
+       fixed-size field can set min-height on the host directly. */
+    --tonk-code-min-height: auto;
 
     /* Surfaces & text — GitHub light defaults */
     --tonk-code-bg: #ffffff;
