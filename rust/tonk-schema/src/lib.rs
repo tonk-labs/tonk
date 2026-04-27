@@ -39,6 +39,12 @@ pub mod prelude;
 pub mod domain;
 pub use domain::*;
 
+pub mod meta;
+
+pub mod concept;
+
+pub mod rule;
+
 pub mod replica;
 pub use replica::*;
 
