@@ -38,6 +38,9 @@ pub use lsp::LspHub;
 mod profile;
 pub use profile::ProfileInfo;
 
+mod transact;
+pub use transact::{TransactPath, TransactResponse};
+
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -99,6 +102,13 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/claim/select",
             get(claim::select_claims),
+        )
+        // Transaction route — accepts a tonk-schema transaction
+        // document (JSON or YAML) and commits all derived facts in
+        // a single transaction.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/transact",
+            post(transact::transact),
         )
         // Inspect operations
         .route(
@@ -684,5 +694,127 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[dialog_common::test]
+    async fn it_transacts_concept_definitions() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact";
+
+        put_repo(&app, repo).await;
+
+        // Define two attributes and a concept that references them
+        // by bookmark, all in one transaction.
+        let body = r#"{
+            "person-name": {
+                "attribute": {
+                    "description": "The person's name",
+                    "the": "io.gozala.person/name",
+                    "as": "Text",
+                    "cardinality": "one"
+                }
+            },
+            "person-age": {
+                "attribute": {
+                    "the": "io.gozala.person/age",
+                    "as": "UnsignedInteger",
+                    "cardinality": "one"
+                }
+            },
+            "person": {
+                "concept": {
+                    "description": "A person",
+                    "with": {
+                        "name": "person-name",
+                        "age":  "person-age"
+                    }
+                }
+            }
+        }"#;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Each of the three subjects should appear in the bookmarks
+        // map and resolve to a URI in the expected canonical scheme.
+        assert!(resp.claims > 0);
+        assert!(resp.bookmarks["person-name"].starts_with("the:"));
+        assert!(resp.bookmarks["person-age"].starts_with("the:"));
+        assert!(resp.bookmarks["person"].starts_with("concept:"));
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_yaml_transactions() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-yaml";
+
+        put_repo(&app, repo).await;
+
+        let body = "\
+person-name:
+  attribute:
+    the: io.gozala.person/name
+    as: Text
+    cardinality: one
+";
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.bookmarks["person-name"].starts_with("the:"));
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_400_on_malformed_transaction() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-malformed";
+
+        put_repo(&app, repo).await;
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"x": "not an object"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -43,7 +43,9 @@ const MAYBE_DOMAIN: &str = "dialog.concept.maybe";
 /// [`ArtifactsAttribute`] only enforces a `domain/name` shape and a
 /// length cap, so any field name a YAML or JSON schema accepts is
 /// accepted here.
-pub fn with(field_name: &str) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
+pub fn with(
+    field_name: &str,
+) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
     format!("{WITH_DOMAIN}/{field_name}").parse()
 }
 
@@ -56,7 +58,9 @@ pub fn with(field_name: &str) -> Result<ArtifactsAttribute, dialog_artifacts::Di
 /// [`ConceptDescriptor::maybe`]) — but the namespace is reserved
 /// here so concept definitions written today carry their optional
 /// fields in the form the engine will eventually understand.
-pub fn maybe(field_name: &str) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
+pub fn maybe(
+    field_name: &str,
+) -> Result<ArtifactsAttribute, dialog_artifacts::DialogArtifactsError> {
     format!("{MAYBE_DOMAIN}/{field_name}").parse()
 }
 

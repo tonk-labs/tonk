@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 base58 = { workspace = true }
+bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-common = { workspace = true }
 dialog-query = { workspace = true }
@@ -15,6 +16,9 @@ dialog-repository = { workspace = true }
 dialog-varsig = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagcbor = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }

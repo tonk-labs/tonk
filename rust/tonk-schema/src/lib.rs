@@ -45,6 +45,8 @@ pub mod concept;
 
 pub mod rule;
 
+pub mod transact;
+
 pub mod replica;
 pub use replica::*;
 
