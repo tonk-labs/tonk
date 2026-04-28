@@ -6,7 +6,19 @@ authors.workspace = true
 license.workspace = true
 edition.workspace = true
 
+[features]
+integration-tests = []
+web-integration-tests = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
+
 [dependencies]
+async-trait = { workspace = true }
 base58 = { workspace = true }
 bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }
@@ -19,6 +31,10 @@ serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+tonk-notation = { workspace = true }
 
 [dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }

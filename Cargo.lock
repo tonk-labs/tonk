@@ -4710,6 +4710,7 @@ dependencies = [
  "lsp-types",
  "saphyr",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "wasm-bindgen-test",
@@ -4719,6 +4720,7 @@ dependencies = [
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base58",
  "bs58",
  "dialog-artifacts",
@@ -4731,6 +4733,9 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.18",
+ "tokio",
+ "tonk-notation",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -4826,6 +4831,7 @@ dependencies = [
  "tonk-common",
  "tonk-invite",
  "tonk-language-server",
+ "tonk-notation",
  "tonk-schema",
  "tower",
  "tower-service",

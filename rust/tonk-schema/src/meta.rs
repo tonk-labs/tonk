@@ -12,7 +12,8 @@
 // comments; suppress the crate-level `missing_docs` lint here.
 #![allow(missing_docs)]
 
-use dialog_query::Attribute;
+use dialog_artifacts::Entity;
+use dialog_query::{Attribute, Concept};
 
 /// Human-readable name for any entity.
 ///
@@ -35,3 +36,83 @@ pub struct Name(pub String);
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[domain("dialog.meta")]
 pub struct Description(pub String);
+
+/// Newtypes for the `dialog.attribute` namespace.
+///
+/// Submodule so each newtype's *struct name* ends up
+/// kebab-cased into the right relation slot (`Id` →
+/// `dialog.attribute/id`, etc.) without colliding with the
+/// `Attribute` derive trait re-imported by anyone using
+/// `tonk_schema::meta::*`.
+pub mod attribute {
+    use super::Attribute;
+
+    /// The selector value of an attribute entity —
+    /// `dialog.attribute/id`. Carries the human-readable
+    /// `domain/name` form (e.g. `io.gozala.person/name`); one
+    /// claim per attribute entity, cardinality `one`. Written by
+    /// the interpreter so "find the attribute entity for
+    /// selector `xyz/foo`" runs as a normal EAV match.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("dialog.attribute")]
+    pub struct Id(pub String);
+
+    /// The dialog `Type` discriminant of an attribute entity —
+    /// `dialog.attribute/type`. The string form (e.g. `"Text"`,
+    /// `"UnsignedInteger"`) is what
+    /// `dialog_query::AttributeDescriptor` round-trips through
+    /// serde, not the underlying `ValueDataType` variant name.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("dialog.attribute")]
+    pub struct Type(pub String);
+
+    /// The cardinality of an attribute entity —
+    /// `dialog.attribute/cardinality`. Takes `"one"` or
+    /// `"many"`; the textual form matches what
+    /// `dialog_query::Cardinality` serialises to.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("dialog.attribute")]
+    pub struct Cardinality(pub String);
+}
+
+/// A typed view over an entity that carries a name.
+///
+/// `Named` exists so callers can query "find me the entity with
+/// `dialog.meta/name = X`" through dialog's typed concept-query
+/// API instead of dropping into raw `ArtifactSelector` calls.
+/// Two-field concept on purpose: anything more would be carry-
+/// flavoured policy that doesn't belong here.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Named {
+    /// The named entity.
+    pub this: Entity,
+    /// The name attached as `dialog.meta/name`.
+    pub name: Name,
+}
+
+/// A typed view over an attribute entity carrying its full
+/// indexable fact set.
+///
+/// `AttributeFacts` is what the interpreter queries when a
+/// concept's `with` / `maybe` field references a bookmark that
+/// wasn't defined in the same document. The four fact fields
+/// suffice to reconstruct a `dialog_query::AttributeDescriptor`
+/// and thus the canonical concept hash.
+///
+/// Description is required — concepts that don't yet have one
+/// receive an empty string at write time, so the schema-level
+/// invariant "every named attribute has a description claim"
+/// holds for everything written through the transact route.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AttributeFacts {
+    /// The attribute entity (a `the:…` URI).
+    pub this: Entity,
+    /// Selector — `domain/name` form.
+    pub id: attribute::Id,
+    /// Value-type descriptor name.
+    pub r#type: attribute::Type,
+    /// `"one"` or `"many"`.
+    pub cardinality: attribute::Cardinality,
+    /// Human-readable description.
+    pub description: Description,
+}

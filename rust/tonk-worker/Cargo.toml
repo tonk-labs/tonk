@@ -41,6 +41,7 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tonk-common = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }
+tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
 tower-service = { workspace = true }
 url = { workspace = true }

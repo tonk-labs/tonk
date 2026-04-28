@@ -12,7 +12,11 @@
 
 pub mod diagnostics;
 pub mod parse;
-pub mod shape;
+pub mod syntax;
 
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
-pub use parse::{Parsed, parse};
+pub use parse::{Parsed, parse, parse_json};
+pub use syntax::{
+    AttributeNode, ConceptField, ConceptNode, Context, DomainContext, DomainField, DomainValue,
+    Reference, Scalar, Spanned, Statement, Subject, SubjectKind, Syntax, UserConceptNode,
+};

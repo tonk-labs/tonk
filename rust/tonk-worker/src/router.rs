@@ -817,4 +817,155 @@ person-name:
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
+
+    /// Reproduces a real bug: a concept's `with` block can
+    /// reference an attribute bookmark that was defined in a
+    /// *prior* transaction, not the current document. The
+    /// branch-backed resolver should look up the previously-
+    /// asserted attribute by `dialog.meta/name`, reconstruct
+    /// its descriptor, and let the concept hash correctly.
+    #[dialog_common::test]
+    async fn it_resolves_bookmarks_across_transactions() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-cross";
+
+        put_repo(&app, repo).await;
+
+        // First transaction: define `person-name` only.
+        let first = r#"
+person-name:
+  attribute:
+    description: The person's name
+    the:         io.gozala.person/name
+    as:          Text
+    cardinality: one
+"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(first))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Second transaction: define `person-age` and a concept
+        // `person` whose `with.name` references the *previously*
+        // declared `person-name`.
+        let second = r#"
+person-age:
+  attribute:
+    description: The person's age
+    the:         io.gozala.person/age
+    as:          UnsignedInteger
+    cardinality: one
+
+person:
+  concept:
+    description: A person
+    with:
+      name: person-name
+      age:  person-age
+"#;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(second))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::TransactResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.bookmarks["person-age"].starts_with("the:"));
+        assert!(resp.bookmarks["person"].starts_with("concept:"));
+    }
+
+    /// A concept's `with` block can address an attribute by its
+    /// `the:…` URI directly (no bookmark name needed). The
+    /// branch resolver looks up the descriptor by entity, the
+    /// concept hash uses it, and commit succeeds.
+    #[dialog_common::test]
+    async fn it_resolves_concept_field_by_uri() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-by-uri";
+
+        put_repo(&app, repo).await;
+
+        // First transaction defines the attribute and gives us
+        // back its `the:…` URI in `bookmarks["person-name"]`.
+        let first = r#"
+person-name:
+  attribute:
+    description: The person's name
+    the:         io.gozala.person/name
+    as:          Text
+    cardinality: one
+"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(first))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::TransactResponse = serde_json::from_slice(&body).unwrap();
+        let attr_uri = resp.bookmarks.get("person-name").unwrap().clone();
+        assert!(attr_uri.starts_with("the:"));
+
+        // Second transaction references the attribute by URI
+        // directly. The bookmark name `person-name` is *not* in
+        // this document, so the only way the resolver can supply
+        // a descriptor is via `resolve_attribute_by_entity`.
+        let second = format!(
+            r#"
+person:
+  concept:
+    description: A person
+    with:
+      name: {attr_uri}
+"#
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(second))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::TransactResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.bookmarks["person"].starts_with("concept:"));
+    }
 }
