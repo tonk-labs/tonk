@@ -223,6 +223,10 @@ fn server_capabilities() -> ServerCapabilities {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     fn run(server: &mut Server, msg: &Value) -> Option<Value> {
         let bytes = serde_json::to_vec(msg).unwrap();

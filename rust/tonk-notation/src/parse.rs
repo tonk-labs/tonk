@@ -119,6 +119,10 @@ pub(crate) fn range_of(node: &MarkedYaml<'_>) -> Range {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     #[dialog_common::test]
     fn empty_document_is_clean() {

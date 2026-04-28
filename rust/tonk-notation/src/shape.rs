@@ -197,6 +197,10 @@ fn _silence_position_at(m: &saphyr::Marker) {
 mod tests {
     use super::*;
     use crate::parse;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     fn diagnose(text: &str) -> Vec<Diagnostic> {
         let parsed = parse::parse(text);
