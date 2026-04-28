@@ -15,9 +15,12 @@ path = "src/bin/carry.rs"
 [dev-dependencies]
 anyhow = { workspace = true }
 carry-telemetry-service = { workspace = true, features = ["helpers"] }
+dialog-common = { workspace = true }
+dialog-remote-s3 = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tonk-access-service = { workspace = true, features = ["helpers"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # CLI
@@ -31,6 +34,8 @@ dialog-credentials = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
+dialog-remote-s3 = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
