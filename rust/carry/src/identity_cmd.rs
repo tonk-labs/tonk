@@ -4,15 +4,19 @@
 //! the profile lives in the platform data directory (`Directory::Profile`);
 //! tests pass an explicit `Directory` for isolation.
 //!
-//! Passkey-derived identity (cross-device account recovery) layers on top
-//! of this and lives in `passkey.rs`.
+//! On first use in production, the profile is bootstrapped from a passkey
+//! WebAuthn ceremony (see [`crate::passkey`]). The PRF output deterministically
+//! derives the profile key, so the same passkey on a new device produces the
+//! same profile DID. The derived account DID is recorded next to the profile
+//! for future cross-device recovery (account → profile delegation).
 
+use crate::passkey;
 use anyhow::{Context, Result};
 use dialog_capability::Subject;
 use dialog_effects::storage::Directory;
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
-use dialog_varsig::Did;
+use dialog_varsig::{Did, Principal};
 
 /// Profile name used for `carry`'s identity within dialog storage.
 const PROFILE_NAME: &str = "carry";
@@ -35,20 +39,28 @@ pub struct Identity {
 /// Ensure a local identity exists. Opens (or creates) the carry profile in
 /// dialog storage and derives an operator scoped to a `.carry/` directory.
 ///
-/// - `profile_location`: where the profile lives. `None` -> `Directory::Profile`.
-/// - `repo_base`: base directory for repository data. `None` -> `Directory::Current`.
+/// First-run in production triggers the passkey browser ceremony and records
+/// the account DID alongside the profile. Tests pass an explicit
+/// `profile_location` and skip the passkey path entirely.
 pub async fn ensure_identity(
     profile_location: Option<ProfileLocation>,
     repo_base: Option<Directory>,
 ) -> Result<Identity> {
     let storage = Storage::<NativeSpace>::default();
+    let use_passkey = profile_location.is_none();
     let directory = profile_location.unwrap_or(Directory::Profile);
 
     let profile = Profile::open(PROFILE_NAME)
-        .at(directory)
+        .at(directory.clone())
         .perform(&storage)
         .await
         .context("Failed to open carry profile")?;
+
+    let account_did = if use_passkey {
+        load_or_provision_account_did().await?
+    } else {
+        None
+    };
 
     let operator = profile
         .derive(b"carry-cli")
@@ -61,8 +73,42 @@ pub async fn ensure_identity(
     Ok(Identity {
         profile,
         operator,
-        account_did: None,
+        account_did,
     })
+}
+
+/// Run the passkey ceremony if we don't have an account DID on disk yet.
+///
+/// The PRF output drives [`passkey::derive_identity`] to produce account +
+/// profile signers. The account DID is what's used for cross-device
+/// recovery via account → profile delegation; that delegation flow is a
+/// follow-up — for now we just persist the account DID alongside the
+/// passkey credential id.
+async fn load_or_provision_account_did() -> Result<Option<Did>> {
+    let Some(profile_dir) = profile_data_dir() else {
+        return Ok(None);
+    };
+
+    if let Some(s) = passkey::load_account_did(&profile_dir)
+        && let Ok(did) = s.parse::<Did>()
+    {
+        return Ok(Some(did));
+    }
+
+    let credential_id = passkey::load_credential_id(&profile_dir);
+    let result = passkey::authenticate(credential_id.as_deref()).await?;
+    let derived = passkey::derive_identity(&result.prf_output).await?;
+
+    std::fs::create_dir_all(&profile_dir)
+        .with_context(|| format!("Failed to create {}", profile_dir.display()))?;
+    passkey::save_credential_id(&profile_dir, &result.credential_id)?;
+    let account_did = derived.account_signer.did();
+    passkey::save_account_did(&profile_dir, account_did.as_ref())?;
+
+    eprintln!("Identity created from passkey.");
+    eprintln!("  account: {}", account_did);
+
+    Ok(Some(account_did))
 }
 
 /// Execute `carry identity [--reset]`.
@@ -78,9 +124,9 @@ pub async fn execute(reset: bool) -> Result<()> {
     let id = ensure_identity(None, None).await?;
 
     if let Some(account_did) = &id.account_did {
-        println!("account:  {}", account_did);
+        println!("account: {}", account_did);
     }
-    println!("profile:  {}", id.profile.did());
+    println!("profile: {}", id.profile.did());
 
     Ok(())
 }

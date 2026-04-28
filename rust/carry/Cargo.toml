@@ -51,10 +51,21 @@ url = { workspace = true }
 futures-util = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 
+base64 = { workspace = true }
 blake3 = { workspace = true }
 bs58 = { workspace = true }
+bytes = { workspace = true }
 # Crypto
 ed25519-dalek = { workspace = true }
+getrandom = { workspace = true }
+hex = { workspace = true }
+hkdf = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["http1", "server"] }
+hyper-util = { workspace = true, features = ["tokio"] }
+open = { workspace = true }
+rand_0_8 = { workspace = true }
+sha2_0_10 = { workspace = true }
 
 reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

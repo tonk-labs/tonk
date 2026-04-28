@@ -14,6 +14,8 @@ pub mod invite_cmd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_cmd;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod passkey;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pull_cmd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod push_cmd;
