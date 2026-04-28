@@ -4679,21 +4679,27 @@ dependencies = [
 name = "tonk-language-server"
 version = "0.1.0"
 dependencies = [
+ "dialog-common",
  "lsp-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "tonk-notation",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
 name = "tonk-notation"
 version = "0.1.0"
 dependencies = [
+ "dialog-common",
  "lsp-types",
  "saphyr",
  "serde",
  "thiserror 2.0.18",
+ "tokio",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

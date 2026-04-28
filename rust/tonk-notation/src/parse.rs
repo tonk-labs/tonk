@@ -120,20 +120,20 @@ pub(crate) fn range_of(node: &MarkedYaml<'_>) -> Range {
 mod tests {
     use super::*;
 
-    #[test]
+    #[dialog_common::test]
     fn empty_document_is_clean() {
         let parsed = parse("");
         assert!(parsed.diagnostics.is_empty());
     }
 
-    #[test]
+    #[dialog_common::test]
     fn well_formed_document_returns_a_tree() {
         let parsed = parse("a: 1\nb: two\n");
         assert!(parsed.diagnostics.is_empty());
         assert_eq!(parsed.documents.len(), 1);
     }
 
-    #[test]
+    #[dialog_common::test]
     fn parse_error_surfaces_with_real_position() {
         let parsed = parse("a:\n  b: 1\n c: 2\n");
         assert!(parsed.documents.is_empty());

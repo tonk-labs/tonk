@@ -203,7 +203,7 @@ mod tests {
         validate(&parsed.documents)
     }
 
-    #[test]
+    #[dialog_common::test]
     fn well_formed_document_passes() {
         let diags = diagnose(
             "did:key:zAlice:\n\
@@ -214,7 +214,7 @@ mod tests {
         assert!(diags.is_empty(), "unexpected diags: {diags:#?}");
     }
 
-    #[test]
+    #[dialog_common::test]
     fn anonymous_entity_passes() {
         let diags = diagnose(
             "_:\n\
@@ -224,7 +224,7 @@ mod tests {
         assert!(diags.is_empty(), "unexpected diags: {diags:#?}");
     }
 
-    #[test]
+    #[dialog_common::test]
     fn variable_entity_passes() {
         let diags = diagnose(
             "?meal:\n\
@@ -234,7 +234,7 @@ mod tests {
         assert!(diags.is_empty(), "unexpected diags: {diags:#?}");
     }
 
-    #[test]
+    #[dialog_common::test]
     fn bookmark_concept_passes() {
         let diags = diagnose(
             "person:\n\
@@ -244,21 +244,21 @@ mod tests {
         assert!(diags.is_empty(), "unexpected diags: {diags:#?}");
     }
 
-    #[test]
+    #[dialog_common::test]
     fn root_scalar_is_an_error() {
         let diags = diagnose("just a string\n");
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("mapping at the document root"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn entity_with_scalar_value_is_an_error() {
         let diags = diagnose("did:key:zAlice: hello\n");
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("mapping of context"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn dialog_prefix_is_reserved() {
         let diags = diagnose(
             "did:key:zAlice:\n\
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(diags[0].range.start.line, 1);
     }
 
-    #[test]
+    #[dialog_common::test]
     fn context_with_scalar_value_is_an_error() {
         let diags = diagnose(
             "did:key:zAlice:\n\

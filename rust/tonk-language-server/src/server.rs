@@ -231,7 +231,7 @@ mod tests {
             .map(|reply| serde_json::from_slice(&reply).unwrap())
     }
 
-    #[test]
+    #[dialog_common::test]
     fn initialize_returns_capabilities() {
         let mut server = Server::new();
         let req = json!({
@@ -249,7 +249,7 @@ mod tests {
         assert!(reply["result"]["capabilities"].is_object());
     }
 
-    #[test]
+    #[dialog_common::test]
     fn did_open_clean_yaml_publishes_empty_diagnostics() {
         let mut server = Server::new();
         let _ = run(
@@ -281,7 +281,7 @@ mod tests {
         assert!(diags.is_empty());
     }
 
-    #[test]
+    #[dialog_common::test]
     fn did_open_broken_yaml_publishes_one_diagnostic() {
         let mut server = Server::new();
         let _ = run(
