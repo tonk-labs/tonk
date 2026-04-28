@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use dialog_repository::SiteAddress;
 use leptos::{either::Either, prelude::*, task::spawn_local, web_sys};
 use leptos_router::{
@@ -420,6 +422,52 @@ pub(super) fn BranchRow(
         of_input.set(read_wa_input_value(&ev));
     };
 
+    // Per-branch transaction state. The buffer lives in the
+    // editor's DOM property — we only mirror it on `change` so
+    // we can submit it without reaching into the element on every
+    // keystroke. `transact_state` drives the status surface below
+    // the editor.
+    let transact_buffer = RwSignal::new(String::new());
+    let transact_state = RwSignal::new(TransactState::Idle);
+
+    let on_transact_change = move |ev: leptos::ev::Event| {
+        transact_buffer.set(read_tonk_code_value(&ev));
+    };
+
+    let submit_transact = {
+        let branch_name = branch_name.clone();
+        move |ev: leptos::ev::SubmitEvent| {
+            ev.prevent_default();
+            let body = transact_buffer.get_untracked();
+            if body.trim().is_empty() {
+                return;
+            }
+            let Some(repo) = space_name.get_untracked() else {
+                transact_state.set(TransactState::Failed("no repository in scope".to_owned()));
+                return;
+            };
+            if matches!(transact_state.get_untracked(), TransactState::Running) {
+                return;
+            }
+            transact_state.set(TransactState::Running);
+            let branch = branch_name.clone();
+            spawn_local(async move {
+                let result = api::transact(&repo, &branch, body, "application/yaml").await;
+                match result {
+                    Ok(response) => {
+                        transact_state.set(TransactState::Done {
+                            claims: response.claims,
+                            bookmarks: response.bookmarks,
+                        });
+                    }
+                    Err(err) => {
+                        transact_state.set(TransactState::Failed(format!("{err}")));
+                    }
+                }
+            });
+        }
+    };
+
     view! {
         <wa-details class="branch-row" prop:open=is_default>
             <div slot="summary" class="branch-summary">
@@ -506,20 +554,33 @@ pub(super) fn BranchRow(
                         None => Either::Right(view! { <span>"none"</span> }),
                     } }</dd>
                 </dl>
-                // YAML query editor — first cut. Lives alongside
-                // the existing two-input form rather than replacing
-                // it; the form still drives the live query while
-                // this surface is the iteration target for a
-                // GraphiQL-style editor + result pane.
-                <div class="branch-yaml-query wa-stack wa-gap-xs">
-                    <label class="hint">"Query (dialog-yaml, draft)"</label>
+                // YAML transaction editor. Submit posts the buffer
+                // to `/api/repository/{repo}/branch/{branch}/transact`
+                // as `application/yaml`; the worker parses the
+                // three-level subject/context/fields document and
+                // commits all derived facts atomically.
+                <form
+                    class="branch-yaml-query wa-stack wa-gap-xs"
+                    on:submit=submit_transact
+                >
+                    <label class="hint">"Transaction (dialog-yaml)"</label>
                     <tonk-code
                         language="dialog-yaml"
                         language-server
                         active-line
-                        placeholder="entity:\n  context:\n    field: value"
+                        placeholder="bookmark:\n  attribute:\n    the: domain/name\n    as: Text\n    cardinality: one"
+                        on:change=on_transact_change
                     ></tonk-code>
-                </div>
+                    <wa-button
+                        type="submit"
+                        size="small"
+                        variant="neutral"
+                        appearance="filled"
+                        prop:loading=move ||
+                            matches!(transact_state.get(), TransactState::Running)
+                    >"Transact"</wa-button>
+                    { move || render_transact_state(transact_state.get()) }
+                </form>
                 <form class="branch-claims" on:submit=submit_query>
                     <div class="wa-grid wa-gap-s">
                         <wa-input
@@ -597,6 +658,85 @@ fn read_wa_input_value(event: &leptos::ev::Event) -> String {
                 .and_then(|v| v.as_string())
         })
         .unwrap_or_default()
+}
+
+/// State machine for the per-branch transaction editor.
+///
+/// Mirrors the shape of [`SyncState`]: idle until the user
+/// submits, `Running` while the request is in flight, then
+/// either `Done` (the worker accepted the document and committed
+/// the derived facts) or `Failed` (parse error, network error,
+/// or non-200 from the worker — surfaced as the message verbatim).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TransactState {
+    Idle,
+    Running,
+    Done {
+        claims: usize,
+        bookmarks: BTreeMap<String, String>,
+    },
+    Failed(String),
+}
+
+/// Read the `value` property off a `<tonk-code>` element from one
+/// of its `change` events. The element exposes the buffer through
+/// the standard custom-element property (see
+/// `rust/tonk-code/src-js/index.ts:794`); we walk through the
+/// event target and pull it reflectively, mirroring
+/// [`read_wa_input_value`] but for the editor's contract.
+fn read_tonk_code_value(event: &leptos::ev::Event) -> String {
+    event
+        .target()
+        .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+        .and_then(|el| {
+            js_sys::Reflect::get(&el, &wasm_bindgen::JsValue::from_str("value"))
+                .ok()
+                .and_then(|v| v.as_string())
+        })
+        .unwrap_or_default()
+}
+
+/// Render the transaction status surface below the editor.
+///
+/// `Idle` and `Running` render nothing (the button itself shows
+/// the loading spinner via `prop:loading`). `Done` shows the
+/// committed claim count plus the resolved bookmark map so the
+/// user can copy the URIs they just minted; `Failed` shows the
+/// worker's error text in a danger callout.
+fn render_transact_state(state: TransactState) -> impl IntoView {
+    use leptos::either::EitherOf4;
+    match state {
+        TransactState::Idle | TransactState::Running => EitherOf4::A(()),
+        TransactState::Failed(message) => EitherOf4::B(view! {
+            <wa-callout variant="danger">
+                <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                { message }
+            </wa-callout>
+        }),
+        TransactState::Done { claims, bookmarks } if bookmarks.is_empty() => EitherOf4::C(view! {
+            <wa-callout variant="success">
+                <wa-icon slot="icon" name="circle-check"></wa-icon>
+                { format!("Committed {claims} claim(s).") }
+            </wa-callout>
+        }),
+        TransactState::Done { claims, bookmarks } => EitherOf4::D(view! {
+            <wa-callout variant="success">
+                <wa-icon slot="icon" name="circle-check"></wa-icon>
+                <div class="wa-stack wa-gap-2xs">
+                    <span>{ format!("Committed {claims} claim(s).") }</span>
+                    <ul class="bookmarks-list">
+                        { bookmarks.into_iter().map(|(name, uri)| view! {
+                            <li>
+                                <code class="bookmark">{ name }</code>
+                                " → "
+                                <code class="entity">{ uri }</code>
+                            </li>
+                        }).collect_view() }
+                    </ul>
+                </div>
+            </wa-callout>
+        }),
+    }
 }
 
 /// Render the claim-query result for a branch's expanded body.

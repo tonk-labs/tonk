@@ -4,7 +4,7 @@ use reqwest::StatusCode;
 use tonk_worker::{
     BranchConfiguration, CreateInviteRequest, CreateInviteResponse, IdentifyResponse, JoinRequest,
     JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration, RepositoryConfiguration,
-    RepositoryInfo, SyncResponse,
+    RepositoryInfo, SyncResponse, TransactResponse,
 };
 
 use crate::error::TonkUiError;
@@ -239,6 +239,50 @@ pub async fn select_claims(
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
                 "GET /api/repository/{}/branch/{}/claim/select returned {}: {}",
+                repo, branch, status, text
+            )))
+        }
+    }
+}
+
+/// Submit a transaction document to a branch via
+/// `POST /api/repository/{repo}/branch/{branch}/transact`.
+///
+/// The body is sent verbatim with the supplied `content_type`
+/// (typically `application/yaml` from the dialog-yaml editor, or
+/// `application/json`). On success, returns the resolved entity
+/// URI for every named subject in the document so the caller can
+/// reference them later.
+pub async fn transact(
+    repo: &str,
+    branch: &str,
+    body: String,
+    content_type: &str,
+) -> Result<TransactResponse, TonkUiError> {
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/repository/{}/branch/{}/transact",
+            origin(),
+            repo,
+            branch
+        ))
+        .header("content-type", content_type)
+        .body(body)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => response.json::<TransactResponse>().await.map_err(|e| {
+            TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/branch/{}/transact: failed to decode response body: {e}",
+                repo, branch
+            ))
+        }),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/branch/{}/transact returned {}: {}",
                 repo, branch, status, text
             )))
         }
