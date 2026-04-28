@@ -1,0 +1,13 @@
+name = "carry-telemetry-service"
+account_id = "5f20ca8a0de0a5ac52a14fa8bf9c90db"
+main = "./result-telemetry/worker/shim.mjs"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[build]
+command = "nix build --accept-flake-config .#carry-telemetry-service && chmod -R u+w result-telemetry 2>/dev/null; rm -rf result-telemetry && cp -rL result result-telemetry && rm -f result && chmod -R u+w result-telemetry"
+
+# Analytics Engine dataset binding
+[[analytics_engine_datasets]]
+binding = "TELEMETRY"
+dataset = "carry_telemetry"

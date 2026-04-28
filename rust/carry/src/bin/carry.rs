@@ -150,6 +150,30 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let repo_path = cli.repo.as_deref().map(std::path::Path::new);
 
+    let command_name = match &cli.command {
+        Commands::Init { .. } => "init",
+        Commands::Query { .. } => "query",
+        Commands::Assert { .. } => "assert",
+        Commands::Retract { .. } => "retract",
+        Commands::Status { .. } => "status",
+        Commands::Identity { .. } => "identity",
+        Commands::Invite { .. } => "invite",
+        Commands::Join { .. } => "join",
+    };
+
+    // Best-effort telemetry: load existing identity for the blinded ID,
+    // but fall back silently if no profile exists yet.
+    let telemetry_handle = {
+        use dialog_operator::Profile;
+        use dialog_storage::provider::storage::{NativeSpace, Storage};
+        let storage = Storage::<NativeSpace>::default();
+        if let Ok(profile) = Profile::load("carry").perform(&storage).await {
+            carry::telemetry::ping(profile.did().as_ref(), command_name)
+        } else {
+            None
+        }
+    };
+
     match cli.command {
         Commands::Init { name, admins } => {
             carry::init::execute(name, admins, repo_path, None, None).await?;
@@ -212,6 +236,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Join { invite_url } => {
             carry::join_cmd::execute(invite_url.as_deref(), repo_path, None).await?;
         }
+    }
+
+    // Wait for the telemetry ping to finish (up to its 500ms timeout)
+    // so tokio doesn't cancel the spawned task on shutdown.
+    if let Some(handle) = telemetry_handle {
+        let _ = handle.await;
     }
 
     Ok(())

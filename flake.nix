@@ -195,12 +195,12 @@
         packages = rec {
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-access-service";
+            args = "--workspace --exclude tonk-access-service --exclude carry-telemetry-service";
           };
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--workspace --exclude tonk-access-service --release";
+            args = "--workspace --exclude tonk-access-service --exclude carry-telemetry-service --release";
           };
 
           tests-web-debug = buildTestArchive {
@@ -322,6 +322,20 @@
               echo "Test server live at http://127.0.0.1:$PORT"
               ${caddy}/bin/caddy run --config "$CONFIG_FILE" --adapter caddyfile
             '';
+
+          carry-telemetry-service = buildWasmCrate {
+            pname = "carry-telemetry-service";
+
+            buildPhase = ''
+              cd rust/carry-telemetry-service
+              worker-build --release
+            '';
+
+            installPhase = ''
+              mkdir -p $out
+              cp -r ./build/* $out/
+            '';
+          };
         };
       }
     );

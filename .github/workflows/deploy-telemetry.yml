@@ -1,0 +1,48 @@
+name: Deploy Telemetry
+
+on:
+  pull_request:
+  push:
+    branches: [stable]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: write
+    name: Deploy Telemetry Service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wimpysworld/nothing-but-nix@main
+      - uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v16
+        with:
+          name: tonk-test-cache
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+
+      - name: Deploy preview
+        if: github.event_name == 'pull_request'
+        id: deploy-preview
+        run: |
+          echo 'Telemetry service wrangler output:' > "$RUNNER_TEMP/telemetry-pr-comment.md"
+          echo '' >> "$RUNNER_TEMP/telemetry-pr-comment.md"
+          nix --accept-flake-config develop .#ci --command wrangler versions upload -c wrangler-telemetry.toml --preview-alias pr-${{ github.event.pull_request.number }} 2>&1 | tail -30 >> "$RUNNER_TEMP/telemetry-pr-comment.md"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Deploy production
+        if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
+        run: nix --accept-flake-config develop .#ci --command wrangler deploy -c wrangler-telemetry.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - uses: mshick/add-pr-comment@v2
+        if: github.event_name == 'pull_request'
+        with:
+          message-path: ${{ runner.temp }}/telemetry-pr-comment.md

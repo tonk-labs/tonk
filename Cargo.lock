@@ -474,6 +474,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "bs58",
+ "carry-telemetry-service",
  "clap",
  "clap_complete",
  "dialog-artifacts",
@@ -490,6 +491,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "futures-util",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -497,6 +499,23 @@ dependencies = [
  "tokio",
  "tonk-invite",
  "url",
+]
+
+[[package]]
+name = "carry-telemetry-service"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "worker",
+ "worker-macros",
 ]
 
 [[package]]
