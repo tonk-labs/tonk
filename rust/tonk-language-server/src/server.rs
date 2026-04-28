@@ -30,7 +30,7 @@ use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 /// freely.
 #[derive(Default)]
 pub struct Server {
-    /// Open documents, keyed by their LSP `Uri`. Phase-0 sync model
+    /// Open documents, keyed by their LSP `Uri`. The sync model
     /// is "full" — every `didChange` carries the new text, so we
     /// just replace the value.
     documents: HashMap<Uri, String>,
@@ -91,8 +91,8 @@ impl Server {
                 None
             }
             Incoming::Response { .. } => {
-                // Server-initiated requests are not used in phase 0;
-                // any incoming response is a protocol misuse we
+                // Server-initiated requests aren't used yet, so any
+                // incoming response is a protocol misuse we
                 // silently drop.
                 None
             }
@@ -150,9 +150,10 @@ impl Server {
             }
             "textDocument/didChange" => {
                 if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(params) {
-                    // Phase-0 sync is "full" — the spec says exactly one
-                    // change with no `range`; treat any change shape as
-                    // full text by taking the last entry. Tighten when
+                    // Sync model is "full" — the spec says exactly
+                    // one change with no `range`; treat any change
+                    // shape as full text by taking the last entry.
+                    // Tighten when
                     // we move to incremental sync.
                     let Some(last) = p.content_changes.into_iter().last() else {
                         return;
@@ -198,7 +199,7 @@ impl Server {
 /// constant rather than scattering capability flags across handlers.
 fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
-        // Phase-0 transport is "full text on every change." Cheap for
+        // Transport is "full text on every change." Cheap for
         // small carry documents; we'll move to incremental when
         // documents grow.
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),

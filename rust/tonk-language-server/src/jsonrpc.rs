@@ -29,8 +29,8 @@ pub enum Incoming {
     Request(Request),
     /// `method` present, no `id` → notification.
     Notification(Notification),
-    /// `id` and `result`/`error` → response. Server-initiated requests
-    /// are not used in phase 0, but the variant exists so a stray
+    /// `id` and `result`/`error` → response. Server-initiated
+    /// requests aren't used yet, but the variant exists so a stray
     /// response doesn't deserialize as a malformed request.
     ///
     /// The `id` field is the discriminator that prevents

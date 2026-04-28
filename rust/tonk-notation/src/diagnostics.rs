@@ -1,10 +1,10 @@
 //! Top-level diagnostic entry point and language-server metadata.
 //!
-//! Today this is a thin wrapper around [`crate::parse::parse`]. The
-//! function exists so future phases can compose multiple validation
-//! passes (well-formedness + three-level shape + concept-schema +
-//! semantic checks) behind one stable entry point — callers won't have
-//! to thread new passes into their dispatch code.
+//! Today this is a thin wrapper around [`crate::parse::parse`].
+//! The function exists so additional validation passes
+//! (well-formedness, three-level shape, concept-schema, semantic
+//! checks) can compose behind one stable entry point — callers
+//! won't have to thread new passes into their dispatch code.
 
 use lsp_types::Diagnostic;
 
@@ -35,16 +35,16 @@ pub struct ServerInfo {
 /// diagnostic list.
 ///
 /// Composes:
-/// 1. **Phase 0** — YAML well-formedness ([`crate::parse`]). When
-///    parsing fails the documents vec is empty and the parse error
-///    is the only thing surfaced; later passes are skipped because
-///    they have nothing structural to walk.
-/// 2. **Phase 1** — Three-level shape check ([`crate::shape`]).
-///    Verifies entity → context → fields and the reserved-domain
-///    rule against the parsed tree.
+/// 1. YAML well-formedness ([`crate::parse`]). When parsing fails
+///    the documents vec is empty and the parse error is the only
+///    thing surfaced; the structural check is skipped because it
+///    has nothing to walk.
+/// 2. Three-level shape check ([`crate::shape`]). Verifies
+///    entity → context → fields and the reserved-domain rule
+///    against the parsed tree.
 ///
-/// Concept-schema and semantic checks compose here in later phases
-/// without changing this entry point.
+/// Concept-schema and semantic checks compose here without
+/// changing this entry point.
 pub fn document_diagnostics(text: &str) -> Vec<Diagnostic> {
     let parsed = parse::parse(text);
     let mut diagnostics = parsed.diagnostics;

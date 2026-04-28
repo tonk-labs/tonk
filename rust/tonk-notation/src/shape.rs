@@ -5,7 +5,7 @@
 //! RFC (`rfc/carry.md`, "Asserted Notation"). The check is purely
 //! structural — concept-schema validation (does an `attribute`
 //! block carry a valid `as:` value, do `?vars` unify, etc.) lives
-//! in later phases on top of this one.
+//! on top of this one.
 //!
 //! ## Rules
 //!
@@ -30,7 +30,7 @@
 //! 5. **Level 2 values** must be mappings.
 //! 6. **Level 3** values are scalars or mappings. Sequences are
 //!    legal under specific concept fields (`when:`, `unless:`)
-//!    but flagging them generally would over-reach; phase 1
+//!    but flagging them generally would over-reach; this pass
 //!    accepts them silently.
 //!
 //! Each violation becomes one [`Diagnostic`] with a precise range.
@@ -47,8 +47,8 @@ const RESERVED_DOMAIN_PREFIX: &str = "dialog.";
 /// Run the full shape pass over a parsed document stream.
 ///
 /// `documents` is the slice from [`crate::parse::Parsed::documents`].
-/// Phase 0's well-formedness check has already run by this point;
-/// if parsing failed `documents` will be empty and this function
+/// The well-formedness check has already run by this point; if
+/// parsing failed `documents` will be empty and this function
 /// produces no diagnostics (the parse error already explains the
 /// problem).
 pub fn validate(documents: &[MarkedYaml<'_>]) -> Vec<Diagnostic> {
@@ -86,8 +86,8 @@ fn validate_entity(key: &MarkedYaml<'_>, value: &MarkedYaml<'_>, out: &mut Vec<D
     };
     // No further check beyond "is a string" — DID/bookmark/`_`/`?var`
     // all parse as plain YAML strings, and distinguishing them
-    // semantically (e.g. flagging unbound bookmark names) needs the
-    // schema work that lands in phase 2.
+    // semantically (e.g. flagging unbound bookmark names) needs
+    // schema work that lives on top of this pass.
     let _ = name;
 
     let YamlData::Mapping(contexts) = &value.data else {

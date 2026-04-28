@@ -30,9 +30,9 @@ pub struct Parsed<'a> {
     /// One entry per `---`-separated YAML document. Empty when
     /// parsing failed; the diagnostic explains why.
     pub documents: Vec<MarkedYaml<'a>>,
-    /// Diagnostics produced while scanning. Phase 0 emits at most
-    /// one (saphyr stops at the first scan error); later phases
-    /// may layer additional diagnostics here.
+    /// Diagnostics produced while scanning. The well-formedness
+    /// pass emits at most one (saphyr stops at the first scan
+    /// error); other passes may layer additional diagnostics in.
     pub diagnostics: Vec<Diagnostic>,
 }
 

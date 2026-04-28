@@ -25,16 +25,17 @@
 //! and serializes the reply; the CLI mode (future) wraps the same
 //! method behind a stdio framing loop.
 //!
-//! # Phase 0 scope
+//! # Currently supported
 //!
 //! - `initialize`, `initialized`, `shutdown`, `exit`
 //! - `textDocument/didOpen`, `textDocument/didChange`, `textDocument/didClose`
 //! - On every change: validate via [`tonk_notation::document_diagnostics`]
 //!   and queue a `textDocument/publishDiagnostics` notification.
 //!
-//! Completion, hover, signature help, and code actions land in later
-//! phases without touching the dispatch layer — each grows a new
-//! `handle_*` method and an entry in the capability advertisement.
+//! Completion, hover, signature help, and code actions are
+//! orthogonal additions on top — each grows a new `handle_*`
+//! method and an entry in the capability advertisement, without
+//! touching the dispatch layer.
 
 mod jsonrpc;
 mod server;
