@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use crate::{
-    api_router,
+    LspHub, api_router,
     axum::{RequestConversion, ResponseConversion},
     bootstrap_profile_meta,
 };
@@ -65,6 +65,11 @@ unsafe impl Sync for TonkState {}
 #[wasm_bindgen]
 pub struct TonkServiceWorker {
     router: Arc<Mutex<Router>>,
+    /// Handle to the language-server hub. Used by [`Self::onupdatefound`]
+    /// to release in-flight SSE responses when a newer worker
+    /// version begins installing — without this the active worker
+    /// can't be replaced because long-lived fetches keep it alive.
+    lsp: Arc<LspHub>,
 }
 
 #[wasm_bindgen]
@@ -116,10 +121,36 @@ impl TonkServiceWorker {
             .await
             .map_err(|e| JsError::new(&format!("Failed to bootstrap profile meta: {}", e)))?;
 
-        // 5. Wrap state in the router.
-        let router = Arc::new(Mutex::new(api_router(state)));
+        // 5. Wrap state in the router. `api_router` returns the LSP
+        // hub alongside it so the worker can address it directly
+        // (independent of the request-handling path) when the SW
+        // lifecycle requires releasing in-flight streams.
+        let (router, lsp) = api_router(state);
+        let router = Arc::new(Mutex::new(router));
 
-        Ok(Self { router })
+        Ok(Self { router, lsp })
+    }
+
+    /// Hook the SW's `updatefound` event from JavaScript.
+    ///
+    /// When the registration sees a newer worker entering the
+    /// `installing` state, this active worker is on its way out.
+    /// We use the moment to close every long-lived stream we're
+    /// serving — chiefly `/api/lsp/events` SSE — so the in-flight
+    /// fetch events settle and the new worker can activate.
+    ///
+    /// Without this the SW spec keeps the active worker alive
+    /// while any of its fetches are open, so a freshly-installed
+    /// worker would sit in `waiting` until every browsing context
+    /// hosting the page closed.
+    #[wasm_bindgen(js_name = "onupdatefound")]
+    pub fn on_update_found(&self) -> Promise {
+        log!("Update found — releasing in-flight streams");
+        let lsp = self.lsp.clone();
+        future_to_promise(async move {
+            lsp.shutdown().await;
+            Ok(JsValue::UNDEFINED)
+        })
     }
 
     /// Handles incoming fetch events from the browser.

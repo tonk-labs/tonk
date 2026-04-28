@@ -74,6 +74,6 @@ mod wasm {
         if let Err(err) = bc.post_message(&JsValue::from_str(&payload)) {
             log!("Failed to post broadcast on '{channel}': {err:?}");
         }
-        let _ = bc.close();
+        bc.close();
     }
 }

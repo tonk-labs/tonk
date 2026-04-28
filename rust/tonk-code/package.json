@@ -1,0 +1,23 @@
+{
+  "name": "tonk-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeMirror 6 web component bundle for the <tonk-code> custom element.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.6.0",
+    "@codemirror/lang-yaml": "^6.1.1",
+    "@codemirror/language": "^6.10.2",
+    "@codemirror/lsp-client": "6.2.3",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.28.0"
+  }
+}

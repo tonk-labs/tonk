@@ -357,4 +357,140 @@ mod tests {
         driver.quit().await?;
         Ok(())
     }
+
+    /// Test the `<tonk-code>` editor mounts inside the default
+    /// branch row and exercises its public contract end-to-end:
+    /// `value` round-trip, `change` event firing on user input,
+    /// and inline lint markers from a real LSP round-trip.
+    ///
+    /// Drives the actual built bundle (via Trunk-served
+    /// `assets/tonk-code/*`) through chromedriver, so this test
+    /// catches both the Rust-side install path and any drift in
+    /// the JS contract.
+    #[dialog_common::test]
+    async fn it_renders_tonk_code_editor(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // The default chromedriver script-timeout is 30s; our
+        // polling loops cap at 10s each but bump the budget so
+        // the cumulative chain doesn't trip an outer timeout.
+        driver
+            .set_script_timeout(std::time::Duration::from_secs(30))
+            .await?;
+
+        // Wait for the home space to render. The `main` branch
+        // row is force-expanded for solo branches (and `main` is
+        // the default-open name regardless), so the editor
+        // mounts on its own without us toggling anything.
+        driver.query(By::Css(".space-banner-title")).first().await?;
+
+        // Wait for the editor to mount. CodeMirror lives inside
+        // the element's shadow root (open mode), so we poll
+        // `el.shadowRoot.querySelector(".cm-content")` instead
+        // of a light-DOM selector. Also poll for `el` itself
+        // first — Leptos may not have inserted the element when
+        // the banner-title query above resolved.
+        driver
+            .execute(
+                r#"
+                const start = performance.now();
+                while (performance.now() - start < 10000) {
+                    const el = document.querySelector("tonk-code");
+                    if (el && el.shadowRoot && el.shadowRoot.querySelector(".cm-content")) {
+                        return null;
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, 50));
+                }
+                throw new Error("tonk-code .cm-content never appeared");
+                "#,
+                vec![],
+            )
+            .await?;
+
+        // (a) Value round-trip — set via property, read back.
+        let value_back = driver
+            .execute(
+                r#"
+                const el = document.querySelector("tonk-code");
+                el.value = "person-name:\n  attribute:\n    the: io.gozala.person/name\n";
+                return el.value;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            value_back.json().as_str().unwrap_or(""),
+            "person-name:\n  attribute:\n    the: io.gozala.person/name\n",
+            "value getter should round-trip the setter",
+        );
+
+        // (b) Change event — programmatic `.value` writes don't
+        // refire `change`, so we dispatch into CodeMirror's
+        // contentEditable surface inside the shadow root via
+        // `execCommand("insertText")`, which the editor handles
+        // exactly like a keystroke.
+        let captured = driver
+            .execute(
+                r#"
+                const el = document.querySelector("tonk-code");
+                const target = el.shadowRoot.querySelector(".cm-content");
+                target.focus();
+                let captured = null;
+                const listener = (ev) => { captured = ev.detail.value; };
+                el.addEventListener("change", listener);
+                document.execCommand("insertText", false, "X");
+                // Give CodeMirror a frame to flush the change event.
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                el.removeEventListener("change", listener);
+                return captured;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert!(
+            captured.json().is_string(),
+            "change event should fire with a string value (got {:?})",
+            captured.json()
+        );
+
+        // (c) Diagnostics — write deliberately invalid YAML and
+        // wait for the LSP round-trip to materialize a
+        // CodeMirror lint marker. This exercises the full
+        // pipeline: editor → LSP transport →
+        // tonk-language-server → tonk-notation diagnostics →
+        // push back → CodeMirror lint.
+        //
+        // The editor's LSP connection is lazy — `language-server`
+        // attribute arms it but the SSE channel doesn't open
+        // until first focus. The change-event step above already
+        // focused the editor; if it hadn't, this would silently
+        // never produce diagnostics.
+        let diag_count = driver
+            .execute(
+                r#"
+                const el = document.querySelector("tonk-code");
+                el.value = "not-valid-yaml: : :\n  bad: stuff: here\n";
+                // Lint markers live inside the shadow root.
+                const start = performance.now();
+                while (performance.now() - start < 10000) {
+                    const markers = el.shadowRoot.querySelectorAll(
+                        ".cm-lintRange-error, .cm-lintRange-warning"
+                    );
+                    if (markers.length > 0) return markers.length;
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                }
+                return 0;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert!(
+            diag_count.json().as_u64().unwrap_or(0) > 0,
+            "expected at least one inline lint marker after a bad YAML edit (got {:?})",
+            diag_count.json()
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
 }

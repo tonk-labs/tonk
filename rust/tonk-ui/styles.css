@@ -703,3 +703,112 @@ wa-page::part(drawer) {
 .invite-link-copy {
     flex: 0 0 auto;
 }
+
+/* Map our Web Awesome theme into the `<tonk-code>` element's
+   public CSS variables. The element ships GitHub-flavored defaults
+   that work standalone in light/dark; this block plugs it into our
+   own design system so the editor surface picks up the same
+   surface, border, brand, and typography tokens as the rest of
+   the UI. The element doesn't depend on Web Awesome directly —
+   the variables below are the contract.
+
+   Web Awesome already toggles `wa-light` / `wa-dark` classes
+   based on `prefers-color-scheme`, and its semantic tokens
+   redefine themselves under each mode, so a single mapping is
+   sufficient — no per-mode override needed here. */
+tonk-code {
+    /* Match `wa-input` so the editor reads as a form field rather
+       than a panel. The form-control tokens are the right
+       semantic — they describe "what an input surface looks like"
+       and stay aligned with the rest of the form theme if Web
+       Awesome ever retunes them. */
+    --tonk-code-bg: var(--wa-form-control-background-color);
+    --tonk-code-fg: var(--wa-color-text-normal);
+    --tonk-code-fg-muted: var(--wa-color-text-quiet);
+    /* No frame in this embedding — the editor sits inside a
+       `<wa-details>` body that already provides the visual
+       grouping, so a second border doubles up. The element's
+       resting and focused borders both go transparent; focus
+       state is signalled by the cursor alone. */
+    --tonk-code-border: transparent;
+    /* Active-line stripe — visible but quiet. The wa neutral
+       fill is too saturated against the form-control background;
+       a low-alpha tint of the foreground reads as a subtle band
+       on both light and dark themes. */
+    --tonk-code-active-line: color-mix(in srgb, var(--wa-color-text-normal) 2%, transparent);
+    --tonk-code-gutter-bg: color-mix(in srgb, var(--wa-color-text-normal) 4%, transparent);
+    --tonk-code-cursor: var(--wa-color-brand-fill-loud);
+    /* Selection / bracket match — color-mixed alpha tints rather
+       than raw `--wa-color-brand-fill-quiet`, because wa-details
+       overrides several `--wa-color-*-fill-*` tokens to
+       `transparent` in its body slot. The brand-fill-loud token
+       (a brand color, not a surface) is unaffected, so we mix
+       against it for predictable visibility regardless of
+       ancestor wa-component scoping. */
+    --tonk-code-selection: color-mix(in srgb, var(--wa-color-brand-fill-loud) 25%, transparent);
+    --tonk-code-bracket-match-bg: color-mix(in srgb, var(--wa-color-brand-fill-loud) 18%, transparent);
+    --tonk-code-bracket-match-border: var(--wa-color-brand-border-loud);
+    /* Suppress the element's default focus halo. wa-input doesn't
+       paint one either, and rendering it inside a wa-details body
+       made the editor look like it was demanding attention even
+       when the user wasn't focused on it. The cursor itself
+       already signals focus. */
+    --tonk-code-focus-ring: transparent;
+
+    /* Lint / hover tooltip surfaces. We deliberately avoid
+       `--wa-color-surface-raised` here: `wa-details` (and a few
+       other wa components) override it to `transparent` inside
+       their slot scopes, which would make our tooltips
+       see-through. A color-mix against the page foreground gives
+       a solid, raised-looking surface that survives any wa
+       ancestor scoping. */
+    --tonk-code-tooltip-bg: color-mix(in srgb, var(--wa-color-text-normal) 12%, var(--wa-form-control-background-color));
+    --tonk-code-tooltip-fg: var(--wa-color-text-normal);
+    --tonk-code-tooltip-border: color-mix(in srgb, var(--wa-color-text-normal) 18%, transparent);
+
+    /* Syntax — muted Bauhaus palette.
+       Kandinsky's triad (red→square, yellow→triangle, blue→circle)
+       reduced to mid-chroma, mid-lightness values that hold up
+       against both `#ffffff` and `#101113` surfaces. Picked
+       deliberately so each color clears WCAG AA for body text on
+       both extremes; saturated Bauhaus pigments don't.
+
+       The role mapping follows the same logic the school used for
+       the primaries themselves:
+         - yellow / triangle → keys (loud, structural, eye-catching)
+         - red    / square   → strings (grounded, the literal substance)
+         - blue   / circle   → numbers (abstract, receding) */
+    --tonk-code-key: #c89a2b;          /* muted ochre */
+    --tonk-code-string: #b94a3d;       /* muted brick */
+    --tonk-code-number: #3d6da8;       /* muted slate-blue */
+    --tonk-code-comment: #7a7268;      /* warm neutral grey */
+    --tonk-code-punctuation: var(--wa-color-text-normal);
+    --tonk-code-error: #a8302a;        /* hotter than the string red */
+
+    /* Dialect decorations (dialog-yaml). Variables reuse the
+       Bauhaus blue (same hue as numbers): `?foo` and bare `_` are
+       abstract placeholders — runtime holes — which fits the
+       blue/circle/abstract pole of Kandinsky's triad. Italic
+       (set by the element's theme) keeps them distinct from
+       literal numbers when they share a line. Entities
+       (colon-bearing tokens) get an underline in the muted text
+       color so the underline reads as "identifier reference"
+       without competing with the surrounding token's palette
+       color. */
+    --tonk-code-variable: #3d6da8;
+    --tonk-code-entity: var(--wa-color-text-quiet);
+
+    /* Typography */
+    --tonk-code-font: var(--wa-font-family-code);
+    --tonk-code-font-size: var(--wa-font-size-s);
+    --tonk-code-radius: 0; /* match the brutalist palette's square corners */
+}
+/* The element's baseline repaints the host border on
+   `:focus-within` (border-color → `--tonk-code-cursor`). Since
+   we've zeroed the resting border, the focus-state repaint would
+   suddenly draw a blue frame on focus that isn't there at rest —
+   visually jarring. Pin it transparent at both states. The text
+   cursor itself still uses `--tonk-code-cursor` for its color. */
+tonk-code:focus-within {
+    border-color: transparent;
+}

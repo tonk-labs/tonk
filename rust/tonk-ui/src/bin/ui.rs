@@ -15,6 +15,10 @@ async fn main() {
     console_error_panic_hook::set_once();
 
     tonk_sigil::Sigil::install();
+    // Inject the `<tonk-code>` element's JS bundle. The path
+    // matches the `copy-dir` target in `index.html` — both must
+    // change together if the deployment layout shifts.
+    tonk_code::install("/tonk-code/tonk-code.js");
 
     leptos::mount::mount_to_body(TonkShell);
 }

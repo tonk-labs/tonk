@@ -402,7 +402,8 @@ mod integration_tests {
                 seed: EPHEMERAL_SEED,
             },
             Some(remote_url),
-        )?;
+        )
+        .await?;
         let join_base = format!("{}join", test_environment.tonk_web);
         let mut invite_url = invite.to_url(&join_base)?;
         // Inviter's suggested name; the recipient's `/join` form
@@ -417,10 +418,10 @@ mod integration_tests {
         // *before* the `#` because `to_url` reorders during
         // round-trip. Sanity: re-parse to put the params/fragment
         // back in the right slots.
-        let invite_url = url::Url::parse(&invite_url)?.into();
+        let invite_url = url::Url::parse(&invite_url)?.to_string();
 
         let driver = test_environment.driver().await?;
-        driver.goto::<&str>(&invite_url).await?;
+        driver.goto(&invite_url).await?;
 
         // Click "Join" once the form is interactive.
         // `wa-button` renders an internal anchor/button inside its

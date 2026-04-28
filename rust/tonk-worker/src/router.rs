@@ -32,6 +32,9 @@ pub use sync::SyncResponse;
 mod identify;
 pub use identify::IdentifyResponse;
 
+pub mod lsp;
+pub use lsp::LspHub;
+
 mod profile;
 pub use profile::ProfileInfo;
 
@@ -46,9 +49,13 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// Creates the API router with all configured routes.
 ///
 /// Sets up the routing tree with the TonkState as shared state.
-pub fn api_router(state: TonkState) -> Router {
+/// Returns the assembled router along with the [`LspHub`] handle so
+/// the SW entry point can call [`LspHub::shutdown`] when a newer
+/// worker version begins installing.
+pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
     let state: AppState = Arc::new(RwLock::new(state));
-    Router::new()
+    let (lsp_routes, lsp_hub) = lsp::lsp_router();
+    let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
         .route("/api/profile", get(profile::get_profile))
@@ -115,6 +122,11 @@ pub fn api_router(state: TonkState) -> Router {
             get(inspect::archive::inspect_remote_archive_block),
         )
         .with_state(state)
+        // LSP routes carry their own state (`Extension<LspHub>`) so
+        // they don't need to know about `AppState`. Merging keeps
+        // the language-server lifetime tied to the worker.
+        .merge(lsp_routes);
+    (router, lsp_hub)
 }
 
 /// Test utilities for router tests.
@@ -206,7 +218,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_responds_to_root_api_request() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
 
         let request = Request::builder()
             .uri("/api")
@@ -230,7 +242,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_returns_identify() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
 
         let response = app
             .oneshot(
@@ -253,7 +265,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_creates_repository() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-create";
 
         let response = app
@@ -289,7 +301,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_returns_precondition_failed_when_repo_exists() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-precondition";
 
         put_repo(&app, repo).await;
@@ -313,7 +325,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_returns_conflict_when_repo_exists_without_precondition() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-conflict";
 
         put_repo(&app, repo).await;
@@ -336,7 +348,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_routes_invite_minting() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-invite-route";
 
         // Create the repo first so the invite handler can load it.
@@ -434,7 +446,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_joins_a_fresh_invite_with_joined_outcome() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
 
         let (invite_url, subject_did) = synthesize_open_invite().await;
         let (status, body) = post_join(&app, &invite_url, "fresh-join").await;
@@ -452,7 +464,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_renews_when_subject_already_mounted() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
 
         let (invite_url, _subject_did) = synthesize_open_invite().await;
 
@@ -487,7 +499,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_rejects_unrelated_name_collision_on_join() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
 
         // Pre-existing space named "claimed-name" — created via
         // a regular PUT, with a different subject than the invite
@@ -507,7 +519,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_rejects_malformed_invite_url() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
 
         let (status, _body) = post_join(&app, "not-a-url", "doesnt-matter").await;
         assert_eq!(
@@ -520,7 +532,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_returns_repository_info() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-info";
 
         put_repo(&app, repo).await;
@@ -547,7 +559,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_asserts_and_selects_claims() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-claims";
 
         put_repo(&app, repo).await;
@@ -596,7 +608,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_syncs_after_commit() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-sync";
 
         put_repo(&app, repo).await;
@@ -637,7 +649,7 @@ pub mod tests {
     #[dialog_common::test]
     async fn it_inspects_branch_after_commit() {
         let state = test_state().await;
-        let app = api_router(state);
+        let (app, _lsp) = api_router(state);
         let repo = "test-inspect";
 
         put_repo(&app, repo).await;
