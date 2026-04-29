@@ -14,9 +14,13 @@ path = "src/bin/carry.rs"
 
 [dev-dependencies]
 anyhow = { workspace = true }
+carry-telemetry-service = { workspace = true, features = ["helpers"] }
+dialog-common = { workspace = true, features = ["helpers"] }
+dialog-remote-s3 = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tonk-access-service = { workspace = true, features = ["helpers"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # CLI
@@ -30,6 +34,8 @@ dialog-credentials = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
+dialog-remote-s3 = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
@@ -50,6 +56,7 @@ bs58 = { workspace = true }
 # Crypto
 ed25519-dalek = { workspace = true }
 
+reqwest = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 # Serialization
 serde_json = { workspace = true }
@@ -61,3 +68,12 @@ dirs = { workspace = true }
 
 [features]
 default = []
+integration-tests = ["dialog-common/integration-tests"]
+web-integration-tests = ["dialog-common/web-integration-tests"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

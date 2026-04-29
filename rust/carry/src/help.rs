@@ -41,6 +41,10 @@ META-SCHEMA:
   Domains starting with 'dialog.' are reserved for Dialog DB internals.
   Pre-registered concepts: attribute, concept, bookmark.";
 
+pub const TELEMETRY_NOTICE: &str = "\
+Anonymous usage telemetry is enabled to help improve carry. No IP addresses \
+or personal data are collected. Set DO_NOT_TRACK=1 to disable.";
+
 pub const MAIN_AFTER_HELP: &str = "\
 QUICK START:
   # Initialize a new repository
@@ -84,6 +88,11 @@ COMMON WORKFLOWS:
 
   # Pipe default YAML output (asserted notation also accepted)
   carry query com.app.person name age | carry assert -
+
+TELEMETRY:
+  Anonymous usage statistics are collected to help improve carry.
+  No IP addresses or personal data are collected.
+  Opt out: export DO_NOT_TRACK=1
 
 For detailed help on any command: carry help <command>";
 

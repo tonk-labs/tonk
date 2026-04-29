@@ -65,6 +65,8 @@ pub async fn execute(
         println!("Initialized repository in {}", dir_display);
     }
     eprintln!("Identity: {}", site.did());
+    eprintln!();
+    eprintln!("{}", crate::help::TELEMETRY_NOTICE);
 
     Ok(())
 }

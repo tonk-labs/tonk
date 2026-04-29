@@ -130,6 +130,95 @@ mod inner {
             #[arg(value_name = "INVITE-URL")]
             invite_url: Option<String>,
         },
+
+        /// Manage sync remotes for this repository
+        Remote {
+            #[command(subcommand)]
+            command: RemoteCommands,
+        },
+
+        /// Push local changes to the configured remote
+        Push {},
+
+        /// Pull and merge changes from the configured remote
+        Pull {},
+    }
+
+    #[derive(Subcommand)]
+    pub enum RemoteCommands {
+        /// Register a sync destination for this repository
+        Add {
+            /// Name of the remote (e.g. "origin")
+            #[arg(value_name = "NAME")]
+            name: String,
+
+            /// Remote URL. https:// for a UCAN-S3 access service
+            /// (recommended), or s3:// for direct S3 (see --endpoint /
+            /// --region / --bucket).
+            #[arg(value_name = "URL")]
+            url: String,
+
+            /// Repository subject DID at the remote. Defaults to this
+            /// repo's own DID (the common case); set this only when
+            /// pointing at somebody else's repository.
+            #[arg(long, value_name = "DID")]
+            subject: Option<String>,
+
+            /// S3 endpoint URL (only for s3:// remotes)
+            #[arg(long, value_name = "URL")]
+            endpoint: Option<String>,
+
+            /// S3 region (only for s3:// remotes)
+            #[arg(long, value_name = "REGION")]
+            region: Option<String>,
+
+            /// S3 bucket (only for s3:// remotes)
+            #[arg(long, value_name = "BUCKET")]
+            bucket: Option<String>,
+
+            /// S3 access key ID (only for private s3:// remotes).
+            /// WARNING: persisted in plaintext inside .carry/.
+            #[arg(long = "access-key", value_name = "KEY")]
+            access_key: Option<String>,
+
+            /// S3 secret access key (only for private s3:// remotes).
+            /// WARNING: persisted in plaintext inside .carry/.
+            #[arg(long = "secret-key", value_name = "SECRET")]
+            secret_key: Option<String>,
+
+            /// Also wire this remote up as the sync target for push/pull
+            /// (mirrors `git remote add -u`). Without this flag the
+            /// remote is registered but no upstream is set.
+            #[arg(long = "set-upstream", short = 'u')]
+            set_upstream: bool,
+        },
+
+        /// List configured remotes
+        #[command(alias = "ls")]
+        List {},
+
+        /// Show details of a specific remote
+        Show {
+            /// Name of the remote to inspect
+            #[arg(value_name = "NAME")]
+            name: String,
+        },
+
+        /// Set a remote as the sync target for push/pull
+        #[command(name = "set-upstream")]
+        SetUpstream {
+            /// Name of the remote to use as upstream
+            #[arg(value_name = "NAME")]
+            name: String,
+        },
+
+        /// Remove a remote and clear its upstream link
+        #[command(alias = "rm")]
+        Remove {
+            /// Name of the remote to remove
+            #[arg(value_name = "NAME")]
+            name: String,
+        },
     }
 }
 
@@ -149,6 +238,33 @@ async fn main() -> anyhow::Result<()> {
     CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
     let repo_path = cli.repo.as_deref().map(std::path::Path::new);
+
+    let command_name = match &cli.command {
+        Commands::Init { .. } => "init",
+        Commands::Query { .. } => "query",
+        Commands::Assert { .. } => "assert",
+        Commands::Retract { .. } => "retract",
+        Commands::Status { .. } => "status",
+        Commands::Identity { .. } => "identity",
+        Commands::Invite { .. } => "invite",
+        Commands::Join { .. } => "join",
+        Commands::Remote { .. } => "remote",
+        Commands::Push { .. } => "push",
+        Commands::Pull { .. } => "pull",
+    };
+
+    // Best-effort telemetry: load existing identity for the blinded ID,
+    // but fall back silently if no profile exists yet.
+    let telemetry_handle = {
+        use dialog_operator::Profile;
+        use dialog_storage::provider::storage::{NativeSpace, Storage};
+        let storage = Storage::<NativeSpace>::default();
+        if let Ok(profile) = Profile::load("carry").perform(&storage).await {
+            carry::telemetry::ping(profile.did().as_ref(), command_name)
+        } else {
+            None
+        }
+    };
 
     match cli.command {
         Commands::Init { name, admins } => {
@@ -212,6 +328,66 @@ async fn main() -> anyhow::Result<()> {
         Commands::Join { invite_url } => {
             carry::join_cmd::execute(invite_url.as_deref(), repo_path, None).await?;
         }
+        Commands::Remote { command } => match command {
+            RemoteCommands::Add {
+                name,
+                url,
+                subject,
+                endpoint,
+                region,
+                bucket,
+                access_key,
+                secret_key,
+                set_upstream,
+            } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute(
+                    &site,
+                    carry::remote_cmd::RemoteAddOptions {
+                        name,
+                        url,
+                        subject,
+                        s3_endpoint: endpoint,
+                        s3_region: region,
+                        s3_bucket: bucket,
+                        s3_access_key: access_key,
+                        s3_secret_key: secret_key,
+                        set_upstream,
+                    },
+                )
+                .await?;
+            }
+            RemoteCommands::List {} => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_list(&site).await?;
+            }
+            RemoteCommands::Show { name } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_show(&site, &name).await?;
+            }
+            RemoteCommands::SetUpstream { name } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_set_upstream(&site, &name).await?;
+            }
+            RemoteCommands::Remove { name } => {
+                let site = carry::site::Site::resolve(repo_path, None).await?;
+                carry::remote_cmd::execute_remove(&site, &name).await?;
+            }
+        },
+        Commands::Push {} => {
+            let site = carry::site::Site::resolve(repo_path, None).await?;
+            carry::push_cmd::execute(&site).await?;
+        }
+        Commands::Pull {} => {
+            let site = carry::site::Site::resolve(repo_path, None).await?;
+            carry::pull_cmd::execute(&site).await?;
+        }
+    }
+
+    // Wait for the telemetry ping to finish (up to its 500ms timeout)
+    // so tokio doesn't cancel the spawned task on shutdown.
+    if let Some(handle) = telemetry_handle {
+        let _ = handle.await;
     }
 
     Ok(())

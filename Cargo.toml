@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "rust/carry",
+    "rust/carry-telemetry-service",
     "rust/tonk-access-service",
     "rust/tonk-code",
     "rust/tonk-assess",
@@ -23,6 +24,7 @@ license = "MIT"
 
 [workspace.dependencies]
 carry = { path = "./rust/carry" }
+carry-telemetry-service = { path = "./rust/carry-telemetry-service" }
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-code = { path = "./rust/tonk-code" }
 tonk-assess = { path = "./rust/tonk-assess" }
