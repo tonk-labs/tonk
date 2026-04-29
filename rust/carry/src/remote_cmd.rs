@@ -131,9 +131,13 @@ fn list_remote_names(site: &Site) -> Result<Vec<String>> {
 }
 
 /// Format a [`SiteAddress`] as a human-readable URL string.
+///
+/// Uses the standard `s3://<bucket>` scheme for S3 sites — the endpoint
+/// and region are connection details, not part of the URI, and surface
+/// separately (e.g. in `carry remote show`).
 fn format_site_address(addr: &SiteAddress) -> String {
     match addr {
-        SiteAddress::S3(s3) => format!("s3://{}/{}", s3.endpoint(), s3.bucket()),
+        SiteAddress::S3(s3) => format!("s3://{}", s3.bucket()),
         SiteAddress::Ucan(ucan) => ucan.endpoint().to_string(),
     }
 }
@@ -193,6 +197,10 @@ pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
     println!("name:     {}", name);
     println!("url:      {}", url);
     println!("type:     {}", kind);
+    if let SiteAddress::S3(s3) = addr.site() {
+        println!("endpoint: {}", s3.endpoint());
+        println!("region:   {}", s3.region());
+    }
     println!("subject:  {}", addr.subject());
     if is_upstream {
         println!("upstream: yes (sync target for this branch)");
