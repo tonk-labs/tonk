@@ -185,6 +185,12 @@ mod inner {
             /// WARNING: persisted in plaintext inside .carry/.
             #[arg(long = "secret-key", value_name = "SECRET")]
             secret_key: Option<String>,
+
+            /// Also wire this remote up as the sync target for push/pull
+            /// (mirrors `git remote add -u`). Without this flag the
+            /// remote is registered but no upstream is set.
+            #[arg(long = "set-upstream", short = 'u')]
+            set_upstream: bool,
         },
 
         /// List configured remotes
@@ -332,6 +338,7 @@ async fn main() -> anyhow::Result<()> {
                 bucket,
                 access_key,
                 secret_key,
+                set_upstream,
             } => {
                 let site = carry::site::Site::resolve(repo_path, None).await?;
                 carry::remote_cmd::execute(
@@ -345,6 +352,7 @@ async fn main() -> anyhow::Result<()> {
                         s3_bucket: bucket,
                         s3_access_key: access_key,
                         s3_secret_key: secret_key,
+                        set_upstream,
                     },
                 )
                 .await?;

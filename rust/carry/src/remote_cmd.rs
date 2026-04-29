@@ -2,8 +2,10 @@
 //!
 //! A remote is a named `(site_address, subject_did)` pair stored inside
 //! the repo's memory cells via `dialog_repository`'s
-//! `repo.remote(name).create(...)` command. Once registered, `carry push`
-//! and `carry pull` can talk to it.
+//! `repo.remote(name).create(...)` command. Registering a remote does
+//! not by itself wire it up as the push/pull target; pass
+//! `--set-upstream` to `carry remote add`, or run
+//! `carry remote set-upstream <NAME>` afterwards.
 //!
 //! URL conventions:
 //!
@@ -42,6 +44,9 @@ pub struct RemoteAddOptions {
     pub s3_bucket: Option<String>,
     pub s3_access_key: Option<String>,
     pub s3_secret_key: Option<String>,
+    /// If true, also wire this remote up as the upstream for push/pull.
+    /// Mirrors `git remote add -u`.
+    pub set_upstream: bool,
 }
 
 /// Execute `carry remote add`.
@@ -69,12 +74,19 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
         .await
         .with_context(|| format!("failed to register remote '{}'", opts.name))?;
 
-    set_upstream(site, &opts.name).await?;
-
-    eprintln!(
-        "Added remote '{}' and set it as the sync target.",
-        opts.name
-    );
+    if opts.set_upstream {
+        set_upstream(site, &opts.name).await?;
+        eprintln!(
+            "Added remote '{}' and set it as the sync target.",
+            opts.name
+        );
+    } else {
+        eprintln!(
+            "Added remote '{}'. Run `carry remote set-upstream {}` (or re-run \
+             `carry remote add` with --set-upstream) to use it for push/pull.",
+            opts.name, opts.name
+        );
+    }
     Ok(())
 }
 
