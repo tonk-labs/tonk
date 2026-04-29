@@ -1,16 +1,22 @@
 //! Integration tests for the UCAN-S3 sync path.
 //!
-//! Spins up a local UCAN access service (backed by an in-memory S3 server)
-//! and exercises the full carry invite/join/push/pull flow between two
-//! isolated sites.
+//! Each test receives an [`AccessServiceAddress`] provisioned by
+//! `#[dialog_common::test]`, which spins up a local UCAN access service
+//! (backed by an in-memory S3 server) for the duration of the test and
+//! tears it down on exit.
+//!
+//! Run with: `cargo test -p carry --features integration-tests`
 
-use anyhow::{Context, Result};
+#![cfg(any(feature = "integration-tests", feature = "web-integration-tests"))]
+
+use anyhow::Result;
 use carry::site::Site;
 use dialog_effects::storage::Directory;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
 use dialog_repository::helpers::unique_name;
 use futures_util::TryStreamExt;
+use tonk_access_service::helpers::AccessServiceAddress;
 
 /// Create an isolated Site with unique profile + repo storage.
 async fn isolated_site(label: &str) -> Result<Site> {
@@ -30,21 +36,6 @@ async fn isolated_site(label: &str) -> Result<Site> {
     let site = Site::init(temp_dir.path(), Some(profile_location), Some(repo_location)).await?;
     std::mem::forget(temp_dir);
     Ok(site)
-}
-
-/// Start a local UCAN access service backed by an in-memory S3 server.
-///
-/// Returns a [`Service`] handle whose lifetime owns the running server;
-/// keep it in scope for the duration of the test.
-async fn start_access_service() -> Result<
-    dialog_common::helpers::Service<
-        tonk_access_service::helpers::AccessServiceAddress,
-        tonk_access_service::helpers::AccessServer,
-    >,
-> {
-    tonk_access_service::helpers::access_service(Default::default())
-        .await
-        .context("Failed to start local UCAN access service")
 }
 
 /// Commit a single claim.
@@ -106,11 +97,9 @@ async fn setup_owner(label: &str, access_url: &str) -> Result<Site> {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn basic_ucan_push_pull() -> Result<()> {
-    let _service = start_access_service().await?;
-    let access_addr = &_service.address;
-    let site = setup_owner("basic", &access_addr.access_service_url).await?;
+#[dialog_common::test]
+async fn basic_ucan_push_pull(addr: AccessServiceAddress) -> Result<()> {
+    let site = setup_owner("basic", &addr.access_service_url).await?;
 
     assert_claim(&site, "com.test/title", "note:1", "hello").await?;
     let push = site.branch.push().perform(&site.operator).await?;
@@ -119,11 +108,9 @@ async fn basic_ucan_push_pull() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn alice_invites_bob_who_pulls() -> Result<()> {
-    let _service = start_access_service().await?;
-    let access_addr = &_service.address;
-    let alice = setup_owner("alice", &access_addr.access_service_url).await?;
+#[dialog_common::test]
+async fn alice_invites_bob_who_pulls(addr: AccessServiceAddress) -> Result<()> {
+    let alice = setup_owner("alice", &addr.access_service_url).await?;
 
     // Alice writes and pushes
     assert_claim(&alice, "com.test/title", "note:1", "hello from alice").await?;
@@ -176,11 +163,9 @@ async fn alice_invites_bob_who_pulls() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn bidirectional_sync() -> Result<()> {
-    let _service = start_access_service().await?;
-    let access_addr = &_service.address;
-    let alice = setup_owner("bidir-alice", &access_addr.access_service_url).await?;
+#[dialog_common::test]
+async fn bidirectional_sync(addr: AccessServiceAddress) -> Result<()> {
+    let alice = setup_owner("bidir-alice", &addr.access_service_url).await?;
 
     assert_claim(&alice, "com.test/title", "note:alice", "alice's note").await?;
     alice.branch.push().perform(&alice.operator).await?;

@@ -15,7 +15,7 @@ path = "src/bin/carry.rs"
 [dev-dependencies]
 anyhow = { workspace = true }
 carry-telemetry-service = { workspace = true, features = ["helpers"] }
-dialog-common = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
 dialog-remote-s3 = { workspace = true, features = ["helpers"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -68,3 +68,12 @@ dirs = { workspace = true }
 
 [features]
 default = []
+integration-tests = ["dialog-common/integration-tests"]
+web-integration-tests = ["dialog-common/web-integration-tests"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
