@@ -19,12 +19,26 @@
 //!   they are persisted in plaintext inside `.carry/`; we print a loud
 //!   warning about the threat model in that case.
 
-use crate::site::Site;
+use crate::site::{REPO_NAME, Site};
 use anyhow::{Context, Result, anyhow, bail};
 use dialog_capability::Did;
 use dialog_remote_s3::Address as S3Address;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{SiteAddress, Upstream};
+use std::path::PathBuf;
+
+/// Path to the directory dialog uses to persist remotes for this repo.
+///
+/// FIXME: this scrapes dialog's on-disk storage layout, which is brittle
+/// and a layering violation. dialog-repository does not expose a way to
+/// enumerate remotes (only `repo.remote(name)` for a known name), so
+/// `remote list`/`remote remove` reach into the storage directory
+/// directly. Once dialog grows a `remotes()` listing API (or carry
+/// mirrors remotes onto a meta-branch fact) replace these callers and
+/// drop this helper.
+fn remote_storage_dir(site: &Site) -> PathBuf {
+    site.root().join(REPO_NAME).join("memory").join("remote")
+}
 
 /// The hidden branch name. Carry v1 does not expose branches.
 pub(crate) const HIDDEN_BRANCH: &str = "main";
@@ -90,11 +104,11 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
     Ok(())
 }
 
-/// Discover remote names by scanning the `.carry/{repo_did}/memory/` directory
-/// for `remote/*/address` entries. Returns sorted names.
+/// Discover remote names by scanning dialog's on-disk storage for
+/// `remote/*/address` entries. Returns sorted names. See
+/// [`remote_storage_dir`] for the layering caveat.
 fn list_remote_names(site: &Site) -> Result<Vec<String>> {
-    let memory_dir = site.root().join(site.repo_did()).join("memory");
-    let remote_dir = memory_dir.join("remote");
+    let remote_dir = remote_storage_dir(site);
     if !remote_dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -246,12 +260,7 @@ pub async fn execute_remove(site: &Site, name: &str) -> Result<()> {
         // exposes one.
     }
 
-    let remote_dir = site
-        .root()
-        .join(site.repo_did())
-        .join("memory")
-        .join("remote")
-        .join(name);
+    let remote_dir = remote_storage_dir(site).join(name);
 
     if remote_dir.exists() {
         std::fs::remove_dir_all(&remote_dir)

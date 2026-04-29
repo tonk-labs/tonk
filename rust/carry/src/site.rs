@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Carry stores its data in a single named repository per `.carry/`,
 /// matching the original "one .carry/ per project" UX.
-const REPO_NAME: &str = "main";
+pub(crate) const REPO_NAME: &str = "main";
 
 /// For tests that need to override where the repository data lives.
 /// Production passes `None` and the data goes under the discovered `.carry/`.
