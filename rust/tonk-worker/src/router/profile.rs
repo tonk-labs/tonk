@@ -5,14 +5,13 @@ use std::collections::HashMap;
 
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_query::{Output as _, Query, Term};
 use dialog_repository::Repository;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{Profile as ProfileEntity, Replica, prelude::DidExt as _};
+use tonk_schema::{MetaStore, prelude::DidExt as _};
 
 use super::{AppState, RepositoryInfo, repository::build_repository_info};
 use crate::TonkWorkerError;
@@ -82,16 +81,9 @@ pub async fn get_profile(
             TonkWorkerError::Internal(format!("Failed to open profile meta branch: {}", e))
         })?;
 
-    let rows: Vec<Replica> = meta
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            subject: Term::var("subject"),
-            profile: Term::from(ProfileEntity(profile_did.this())),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
+    let store = MetaStore::new(&meta, &tonk.operator);
+    let rows = store
+        .list_replicas_for_profile(&profile_did)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("Replica query on profile meta failed: {:?}", e))

@@ -30,7 +30,6 @@ use axum_wasm_macros::wasm_compat;
 use dialog_capability::Subject;
 use dialog_credentials::{Credential, Ed25519Verifier};
 use dialog_effects::space::{Space, SpaceExt as _};
-use dialog_query::{Output as _, Query, Term};
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::{Repository, RepositoryExt as _, SiteAddress};
 use dialog_ucan::UcanDelegation;
@@ -40,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::Invite;
-use tonk_schema::{Replica, prelude::DidExt as _};
+use tonk_schema::MetaStore;
 
 use super::AppState;
 use super::repository::{
@@ -261,20 +260,13 @@ async fn find_replica_name_for_subject(
             TonkWorkerError::Internal(format!("failed to open profile meta branch: {e}"))
         })?;
 
-    let rows: Vec<Replica> = profile_meta
-        .query()
-        .select(Query::<Replica> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            subject: Term::from(tonk_schema::Subject(subject.this())),
-            profile: Term::from(tonk_schema::Profile(tonk.profile.did().this())),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
+    let store = MetaStore::new(&profile_meta, &tonk.operator);
+    let replica = store
+        .find_replica_for_subject(&tonk.profile.did(), subject)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("replica query on profile meta failed: {e:?}"))
         })?;
 
-    Ok(rows.into_iter().next().map(|replica| replica.name.0))
+    Ok(replica.map(|r| r.name.0))
 }

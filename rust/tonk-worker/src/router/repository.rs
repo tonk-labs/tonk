@@ -14,14 +14,13 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::SignerCredential;
-use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{Branch as MetaBranch, Remote, Replica, TrackingBranch};
+use tonk_schema::{MetaStore, Remote as RemoteConcept};
 
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -346,13 +345,17 @@ where
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
 
-    // Local replica of this repository
-    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+    // Local replica of this repository, plus the meta branch's
+    // own `Branch` concept — the meta branch is a real branch of
+    // this replica and belongs in the enumeration like any other.
+    let store = MetaStore::new(&meta, &tonk.operator);
+    let (replica, meta_branch_concept) =
+        store.claim_replica(tonk.profile.did(), repository.did(), name);
 
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH));
+        .assert(meta_branch_concept);
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -361,7 +364,7 @@ where
     // a second `.load()` round-trip against dialog — we just
     // created these remotes, so the data we'd load is still in
     // hand.
-    let mut remotes: HashMap<String, (RemoteRepository, Remote)> =
+    let mut remotes: HashMap<String, (RemoteRepository, RemoteConcept)> =
         HashMap::with_capacity(configuration.remote.len());
 
     for (remote_name, remote_config) in &configuration.remote {
@@ -387,7 +390,12 @@ where
 
         log!("Remote '{}' created", remote_name);
 
-        let concept = replica.remote(remote_name.as_str(), subject, &remote_config.address);
+        let concept = store.remote(
+            &replica,
+            remote_name.as_str(),
+            subject,
+            &remote_config.address,
+        );
         transaction = transaction.assert(concept.clone());
         remotes.insert(remote_name.clone(), (remote, concept));
     }
@@ -408,7 +416,8 @@ where
                 RepositoryError::Internal(format!("Failed to open branch '{}': {}", branch_name, e))
             })?;
 
-        transaction = transaction.assert(replica.branch(branch_name.as_str()));
+        let local_concept = store.branch_of(&replica, branch_name.as_str());
+        transaction = transaction.assert(local_concept.clone());
 
         if let Some(upstream) = &settings.upstream {
             // Look up the remote we just created in step 4
@@ -459,10 +468,9 @@ where
             // (otherwise the upstream pointer has no target to
             // resolve to on read) and the `TrackingBranch` that
             // connects them.
-            let tracked = concept.branch(upstream.branch.as_str());
-            transaction = transaction
-                .assert(tracked.clone())
-                .assert(replica.branch(branch_name.as_str()).set_upstream(&tracked));
+            let tracked = store.branch_of(concept, upstream.branch.as_str());
+            let tracking = store.tracking(&local_concept, &tracked);
+            transaction = transaction.assert(tracked).assert(tracking);
         }
     }
 
@@ -527,7 +535,8 @@ async fn record_replica_in_profile(
             RepositoryError::Internal(format!("Failed to open profile meta branch: {}", e))
         })?;
 
-    let replica = Replica::new(tonk.profile.did(), subject.clone(), name);
+    let store = MetaStore::new(&profile_meta, &tonk.operator);
+    let replica = store.replica(tonk.profile.did(), subject.clone(), name);
 
     let revision = profile_meta
         .transaction()
@@ -583,13 +592,15 @@ pub async fn bootstrap_profile_meta(
             RepositoryError::Internal(format!("Failed to open profile meta branch: {}", e))
         })?;
 
+    let store = MetaStore::new(&profile_meta, &tonk.operator);
     let profile_did = tonk.profile.did();
-    let replica = Replica::new(profile_did.clone(), profile_did, profile_name);
+    let (replica, meta_branch_concept) =
+        store.claim_replica(profile_did.clone(), profile_did, profile_name);
 
     profile_meta
         .transaction()
-        .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
+        .assert(replica)
+        .assert(meta_branch_concept)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -693,23 +704,17 @@ where
     // depends on its name or attributes, and filtering
     // branches/remotes by `origin == replica.this()` is all we
     // need.
-    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+    let store = MetaStore::new(&meta, &tonk.operator);
+    let replica = store.replica(tonk.profile.did(), repository.did(), name);
     let replica_entity = replica.this().clone();
 
     // Pull every branch on the meta branch, local and remote.
     // Keyed by entity so the upstream-resolution step can look
-    // up any branch by its hash.
-    let all_branches: Vec<MetaBranch> = match meta
-        .query()
-        .select(Query::<MetaBranch> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            origin: Term::var("origin"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
+    // up any branch by its hash. `list_all_branches` returns
+    // remote entities too (they share the `(name, origin)`
+    // attribute pair) — that's filtered out below by
+    // cross-checking against `remotes_by_entity`.
+    let all_branches = match store.list_all_branches().await {
         Ok(rows) => rows,
         Err(e) => {
             log!("Branch query on meta failed for '{}': {:?}", name, e);
@@ -726,19 +731,7 @@ where
     // points at a remote-side `Branch`, whose `origin` is a
     // `Remote.this`, and we want to go from that entity back to
     // the remote's name.
-    let remote_concepts: Vec<Remote> = match meta
-        .query()
-        .select(Query::<Remote> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            origin: Term::from(replica_entity.clone()),
-            subject: Term::var("subject"),
-            address: Term::var("address"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
+    let remote_concepts = match store.list_remotes(&replica).await {
         Ok(rows) => rows,
         Err(e) => {
             log!("Remote query on meta failed for '{}': {:?}", name, e);
@@ -753,31 +746,20 @@ where
     // Pull every tracking link on this replica. Keyed by the
     // local branch's entity so the branch-assembly step below
     // can find "does this branch track something?" in O(1).
-    let tracking: Vec<TrackingBranch> = match meta
-        .query()
-        .select(Query::<TrackingBranch> {
-            this: Term::var("this"),
-            upstream: Term::var("upstream"),
-            origin: Term::from(replica_entity.clone()),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
+    let tracking_by_local: HashMap<_, _> = match store.list_tracking_for_replica(&replica).await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|t| (t.this.clone(), t.upstream))
+            .collect(),
         Err(e) => {
             log!(
                 "Tracking-branch query on meta failed for '{}': {:?}",
                 name,
                 e
             );
-            Vec::new()
+            HashMap::new()
         }
     };
-    let tracking_by_local: HashMap<_, _> = tracking
-        .into_iter()
-        .map(|t| (t.this.clone(), t.upstream))
-        .collect();
 
     // Assemble the branch map. Iterate local branches only
     // (those whose origin is the replica), skipping any entity
