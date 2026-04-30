@@ -22,7 +22,9 @@ async-trait = { workspace = true }
 base58 = { workspace = true }
 bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
+dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-varsig = { workspace = true }
@@ -35,6 +37,7 @@ tonk-notation = { workspace = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
+lsp-types = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

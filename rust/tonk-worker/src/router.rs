@@ -41,6 +41,9 @@ pub use profile::ProfileInfo;
 mod transact;
 pub use transact::{TransactPath, TransactResponse};
 
+mod query;
+pub use query::{QueryPath, QueryResult, QueryResultEnvelope};
+
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -109,6 +112,12 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/transact",
             post(transact::transact),
+        )
+        // Query route — accepts an asserted-notation query
+        // document and returns matching entities.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/query",
+            post(query::query),
         )
         // Inspect operations
         .route(

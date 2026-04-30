@@ -1,169 +1,239 @@
 //! Typed syntax tree for asserted notation.
 //!
-//! `parse::parse` produces a [`Syntax`] tree from a YAML or JSON
-//! document. The tree is purely structural — it captures the
-//! three-level subject/context/fields shape and classifies each
-//! level-1 / level-2 key, but it does *not* resolve bookmark
-//! references, derive entity URIs, or know anything about the
-//! dialog meta-schema. Those concerns live in
-//! [`tonk-schema`'s interpreter][interpret].
+//! [`parse::parse`][crate::parse::parse] produces a [`Syntax`] tree
+//! from a YAML document. The tree captures the surface shape — what
+//! the user typed — without resolving names against a branch or
+//! deriving entity URIs. Resolution happens in
+//! [`tonk-schema`'s analyzer][analyze].
 //!
-//! Every node carries an [`lsp_types::Range`] so downstream
-//! consumers (the language server, the interpreter) can attach
-//! diagnostics to the source token they came from.
+//! Every node carries an [`lsp_types::Range`] so consumers can
+//! attach diagnostics to the source token they came from.
 //!
-//! [interpret]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
+//! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
 use lsp_types::Range;
 
-/// A whole asserted-notation document, as a list of statements.
+/// A whole asserted-notation document: a list of expressions.
 ///
-/// Each statement is one top-level entry: a *subject* paired
-/// with one or more *contexts* describing facts about that
-/// subject. Statements appear in source order.
+/// Each expression is one top-level entry: a [`Head`] (concept or
+/// claim name, optional `!` effect marker, optional binding) paired
+/// with a [`Body`] (fields, or a single `_` discard).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Syntax {
-    /// The statements in document order.
-    pub statements: Vec<Statement>,
-    /// The span covering the whole document. Exposed so
-    /// document-level diagnostics ("root must be a mapping")
-    /// have something to point at.
+    /// Expressions in document order.
+    pub expressions: Vec<Expression>,
+    /// Span covering the whole document. Exposed so document-level
+    /// diagnostics ("root must be a mapping") have something to
+    /// point at.
     pub range: Range,
 }
 
-/// One subject-headed entry in a document.
+/// One top-level entry. Three flavours, distinguished by the head's
+/// effect marker (`!`) and body shape:
 ///
-/// ```yaml
-/// person-name:                  # subject
-///   attribute:                  # context (with fields)
-///     the: io.gozala.person/name
-///     as:  Text
-/// ```
+/// | Head     | Body         | Variant       |
+/// |----------|--------------|---------------|
+/// | `name`   | fields       | `Query`       |
+/// | `name!`  | fields       | `Assertion`   |
+/// | `name!`  | `_`          | `Retraction`  |
+///
+/// `name` (no `!`) with `_` body is rejected by the parser — a
+/// query body always introduces or constrains; an empty query has
+/// no useful meaning.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Statement {
-    /// What the level-1 key names — bookmark, URI, anonymous, or
-    /// variable. The original textual form is in
-    /// [`Subject::source`] for diagnostic round-tripping.
-    pub subject: Subject,
-    /// One or more contexts on this subject. The same subject can
-    /// be described under multiple contexts in one document
-    /// (e.g. attribute facts under one domain plus relations
-    /// under another), in which case all the resulting facts land
-    /// on the same entity.
-    pub contexts: Vec<Context>,
-    /// The span of the entire `<subject>: { <contexts> }` block.
+pub enum Expression {
+    /// `head:` (no `!`) — read facts matching the body's pattern.
+    Query(Query),
+    /// `head!:` — assert each field as a fact about the head's
+    /// entity.
+    Assertion(Assertion),
+    /// `head! …: _` — retract every fact for this head's
+    /// entity-and-concept (or, for claims, every fact under the
+    /// claim's domain on this entity).
+    Retraction(Retraction),
+}
+
+impl Expression {
+    /// Source range of the whole expression.
+    pub fn range(&self) -> Range {
+        match self {
+            Expression::Query(q) => q.range,
+            Expression::Assertion(a) => a.range,
+            Expression::Retraction(r) => r.range,
+        }
+    }
+}
+
+/// `head:` — a query expression.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Query {
+    /// What the entity is named by — concept or claim, plus
+    /// binding.
+    pub head: Head,
+    /// Field constraints under the head. Empty body (`head:`) is
+    /// allowed and means "any entity matching the head's concept".
+    pub fields: Vec<Field>,
+    /// Span of the whole `head: …` block.
     pub range: Range,
 }
 
-/// Classified level-1 key.
+/// `head!:` with a fields body — an assertion expression.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Subject {
-    /// The classification.
-    pub kind: SubjectKind,
-    /// The original key text (without quoting). Useful when the
-    /// interpreter needs to feed the bookmark name into a
-    /// `dialog.meta/name` claim, or when an error wants to quote
-    /// the literal source token.
-    pub source: String,
-    /// The span of the level-1 key.
+pub struct Assertion {
+    /// What the entity is named by — concept or claim, plus
+    /// binding.
+    pub head: Head,
+    /// Fields to assert. Each field's value is substituted in by
+    /// the analyzer (literals stay literal, `?var` resolves to its
+    /// binding from a query expression).
+    pub fields: Vec<Field>,
+    /// Span of the whole `head!: …` block.
     pub range: Range,
 }
 
-/// What flavour of identifier the subject is.
+/// `head! …: _` — retract this head's facts.
+///
+/// Body shape rules:
+///
+/// - **Concept retraction** (`person! ?nick: _`) drops the entire
+///   concept-projection for the entity. Equivalent to retracting
+///   each `with`/`maybe` field of the concept.
+/// - **Claim retraction** (`xyz.tonk! did:key:zJack: _`) lists
+///   every fact on the entity whose attribute URI starts with the
+///   claim's domain, then retracts each.
+/// - **Field-level retraction** (`person! ?nick: { name: _ }`) is
+///   represented as an [`Assertion`] with a [`FieldValue::Blank`]
+///   value — the analyzer recognises blanks in `!` mode as
+///   per-field retractions.
 #[derive(Clone, Debug, PartialEq)]
-pub enum SubjectKind {
-    /// A bare identifier — interpreted by the interpreter as a
-    /// bookmark name. Resolves document-then-branch.
-    Bookmark,
-    /// A URI literal (the source contains `:`). Interpreter uses
-    /// it as the entity directly.
-    Uri,
-    /// `_` — an anonymous fresh entity. Acceptance / rejection
-    /// is the interpreter's call; the parser only tags it.
+pub struct Retraction {
+    /// What the entity is named by.
+    pub head: Head,
+    /// Span of the whole `head!: _` block.
+    pub range: Range,
+}
+
+/// Classified head: name + effect + binding.
+///
+/// Parsed by splitting the YAML key on whitespace: the first token
+/// (with optional trailing `!`) is the [`HeadName`], any remaining
+/// tokens form the [`Binding`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct Head {
+    /// What kind of entity this head names — concept (bare
+    /// identifier) or claim (reverse-dotted domain).
+    pub name: HeadName,
+    /// Span of the head name (without binding).
+    pub name_range: Range,
+    /// Original text of the name, without trailing `!`. Useful for
+    /// diagnostic round-tripping and for builtin-concept dispatch
+    /// in the analyzer (matching `"attribute"` / `"concept"`).
+    pub name_source: String,
+    /// `true` if the head ended in `!`, marking the expression as
+    /// having an effect (assertion or retraction).
+    pub effect: bool,
+    /// What identifies the entity this head refers to.
+    pub binding: Binding,
+    /// Span of the binding token. For [`Binding::Anonymous`] this
+    /// collapses to the end of the name range (zero-width widened
+    /// per the parser's span policy).
+    pub binding_range: Range,
+}
+
+/// Concept vs claim, distinguished lexically by the presence of
+/// `.` in the name (claim) versus a bare identifier (concept).
+#[derive(Clone, Debug, PartialEq)]
+pub enum HeadName {
+    /// A concept name (bare identifier). The analyzer resolves it
+    /// through its `Resolver` — built-in concepts like `attribute`
+    /// and `concept` have hard-coded descriptors; user-defined
+    /// names hit the branch.
+    Concept(String),
+    /// A reverse-dotted domain (`xyz.tonk`, `io.gozala.person`).
+    /// Each field name combines with the domain to form an
+    /// attribute URI (`xyz.tonk/role`).
+    Claim(String),
+}
+
+/// What the entity is identified by.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Binding {
+    /// `head:` — no binding. For queries this matches any entity;
+    /// for assertions a fresh entity is derived (concept-content
+    /// for built-ins; nameless for claims).
     Anonymous,
-    /// `?<name>` — a logic variable. Reserved for future query /
-    /// rule contexts; today the interpreter rejects it.
-    Variable,
+    /// `head ?var:` — binds the entity as a variable named `var`.
+    /// Shared variables across expressions in the same document
+    /// join.
+    Variable(String),
+    /// `head bookmark:` — assertion only typically. Derives an
+    /// entity from the bookmark name and asserts a name-binding
+    /// claim. Already-defined bookmarks resolve to their existing
+    /// entity.
+    Bookmark(String),
+    /// `head did:key:zX:` — explicit entity URI.
+    Uri(String),
 }
 
-/// One level-2 entry on a subject: a context plus the level-3
-/// fields under it.
+/// One field under a head's body.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Context {
-    /// A bare-domain context — level-2 key contains `.`. Each
-    /// level-3 field expands to a raw `<domain>/<field>` claim
-    /// against the subject's entity.
-    Domain(DomainContext),
-    /// A built-in `attribute` context — declares an attribute
-    /// (the / as / cardinality / description).
-    Attribute(AttributeNode),
-    /// A built-in `concept` context — composes attributes into a
-    /// shape via `with` / `maybe`.
-    Concept(ConceptNode),
-    /// A user-defined concept name (level-2 key with no `.` and
-    /// not a built-in). The interpreter resolves these via
-    /// branch lookup.
-    UserConcept(UserConceptNode),
-}
-
-/// Raw EAV writes under a `<domain>:` context.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DomainContext {
-    /// The domain string (level-2 key).
-    pub domain: String,
-    /// Span of the level-2 key.
-    pub key_range: Range,
-    /// The fields inside the context. Order is preserved from
-    /// the source so deterministic emit order is the same as
-    /// authored order.
-    pub fields: Vec<DomainField>,
-    /// Span of the whole `domain: { … }` block.
-    pub range: Range,
-}
-
-/// One field under a domain context.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DomainField {
-    /// The field name (level-3 key).
+pub struct Field {
+    /// Field name (the level-3 key).
     pub name: String,
     /// Span of the field name.
     pub name_range: Range,
-    /// The value at this field. Sequences are folded into a
-    /// `Many` value so cardinality-many writes are representable
-    /// without a separate node kind.
-    pub value: DomainValue,
-    /// Span covering the value (keeps zero-width sequences
-    /// pointing at the right place for diagnostics).
+    /// Field value — literal, variable, blank, reference, or a
+    /// nested map (e.g. `concept!`'s `with:` map, or an inline
+    /// `attribute!` definition).
+    pub value: FieldValue,
+    /// Span of the value side of the entry.
     pub value_range: Range,
 }
 
-/// Domain-context field value. Maps and sequences are
-/// represented structurally so the interpreter can decide what
-/// to do with each shape (nested entity, multi-value claim,
-/// rejection).
+/// What sits on the right of a `field:` entry.
 #[derive(Clone, Debug, PartialEq)]
-pub enum DomainValue {
-    /// A YAML scalar — primitive value as written.
-    Scalar(Scalar),
-    /// A YAML sequence — many values for the same field.
-    Sequence(Vec<DomainValue>),
-    /// A YAML mapping — nested entity, today unsupported by the
-    /// interpreter but represented so the diagnostic can be
-    /// raised at interpret time.
-    Mapping(Vec<DomainField>),
+pub enum FieldValue {
+    /// A primitive literal — string, number, bool, null.
+    Literal(Scalar),
+    /// `?var` — a logic variable. In a query, binds whatever
+    /// matches; in an assertion, must be bound by some earlier
+    /// query expression.
+    Variable(String),
+    /// `_` — anonymous. In a query, matches any value (not
+    /// surfaced as a join key). In an assertion, retracts that
+    /// field for the head's entity.
+    Blank,
+    /// A reference to another entity by name — bookmark or URI.
+    /// This is what concept-field references look like
+    /// (`with: { name: person-name }` resolves `person-name` as a
+    /// bookmark).
+    Reference(Reference),
+    /// A nested mapping. The analyzer interprets it based on
+    /// context — `concept!.with`, an inline `attribute!`
+    /// definition, etc.
+    Nested(Vec<Field>),
 }
 
-/// A primitive value carried by a domain field. Mirrors the
-/// shapes saphyr produces for scalar leaves.
+/// Where a referenced entity comes from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reference {
+    /// A bookmark name.
+    Bookmark(String),
+    /// A URI literal.
+    Uri(String),
+}
+
+/// A primitive value. Mirrors the shapes saphyr produces for
+/// scalar leaves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Scalar {
     /// A textual scalar.
     String(String),
-    /// An integer literal (saphyr-classified or raw representation).
+    /// An integer literal.
     Integer(i128),
     /// An unsigned-integer literal too large for `i128`'s
-    /// negative half — preserved as a string so we don't lose
-    /// precision before the interpreter coerces.
+    /// negative half — preserved so we don't lose precision before
+    /// the analyzer coerces.
     UnsignedInteger(u128),
     /// A floating-point literal.
     Float(f64),
@@ -173,103 +243,14 @@ pub enum Scalar {
     Null,
 }
 
-/// `attribute:` context body.
-///
-/// Maps to `dialog_query::AttributeDescriptor` once the
-/// interpreter resolves and validates each field. We mirror the
-/// descriptor's optional fields verbatim so the JSON / YAML
-/// shape round-trips through serde-deriving on the interpreter
-/// side.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AttributeNode {
-    /// The required `the` field — `domain/name` form.
-    pub the: Option<Spanned<String>>,
-    /// Optional value-type descriptor (e.g. `Text`,
-    /// `UnsignedInteger`). Stored as the source string and
-    /// validated by the interpreter.
-    pub as_type: Option<Spanned<String>>,
-    /// Optional cardinality (`one` / `many`).
-    pub cardinality: Option<Spanned<String>>,
-    /// Optional description.
-    pub description: Option<Spanned<String>>,
-    /// Span of the level-2 key.
-    pub key_range: Range,
-    /// Span of the entire `attribute: { … }` block.
-    pub range: Range,
-}
-
-/// `concept:` context body.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ConceptNode {
-    /// Optional description.
-    pub description: Option<Spanned<String>>,
-    /// Required-field references.
-    pub with: Vec<ConceptField>,
-    /// Optional-field references.
-    pub maybe: Vec<ConceptField>,
-    /// Span of the level-2 key.
-    pub key_range: Range,
-    /// Span of the entire `concept: { … }` block.
-    pub range: Range,
-}
-
-/// One field of a concept's `with` or `maybe` block.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ConceptField {
-    /// The user-chosen field name (the key in `with`).
-    pub name: String,
-    /// Span of the field name.
-    pub name_range: Range,
-    /// What the field references — bookmark, URI, or inline
-    /// attribute definition.
-    pub value: Reference,
-    /// Span of the value side of the entry.
-    pub value_range: Range,
-}
-
-/// Reference to an attribute from inside a concept's `with` /
-/// `maybe` block.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Reference {
-    /// A bookmark name. Resolves document-then-branch.
-    Bookmark(Spanned<String>),
-    /// A URI literal (`the:…` / `did:key:…`).
-    Uri(Spanned<String>),
-    /// An inline attribute descriptor — same shape as a
-    /// top-level `attribute:` body. Asserted recursively.
-    Inline(Box<AttributeNode>),
-}
-
-/// User-defined concept context. The interpreter resolves the
-/// concept by name on the branch and validates the fields
-/// against its descriptor's `with` / `maybe`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct UserConceptNode {
-    /// The concept name (level-2 key).
-    pub name: String,
-    /// Span of the level-2 key.
-    pub key_range: Range,
-    /// The fields written under this concept. Each one is a
-    /// reference to an attribute value — same flavour as a
-    /// `with` field — though the *interpretation* differs
-    /// (these populate concept *instances*, not concept
-    /// definitions).
-    pub fields: Vec<DomainField>,
-    /// Span of the entire `<concept>: { … }` block.
-    pub range: Range,
-}
-
-/// A value plus the source range it came from.
-///
-/// Used for the optional fields of an [`AttributeNode`] /
-/// [`ConceptNode`] where we want both the parsed value and the
-/// span (for type-error diagnostics).
+/// A value plus the source range it came from. Used wherever a
+/// downstream pass needs both the parsed value and the span (e.g.
+/// to attach a type-error diagnostic to the right token).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spanned<T> {
     /// The value.
     pub value: T,
-    /// The source range of the value (or, where the value side
-    /// was missing, the key it was attached to).
+    /// Source range.
     pub range: Range,
 }
 

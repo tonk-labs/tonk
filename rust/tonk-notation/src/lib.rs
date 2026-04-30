@@ -1,22 +1,25 @@
-//! Asserted-notation parser and validator.
+//! Asserted-notation parser.
 //!
-//! This crate is the language model for the carry CLI's three-level YAML
-//! notation (entity → context → field). It is intentionally:
+//! Pure parser for tonk's three-level notation. The crate
+//! produces a typed [`Syntax`] tree from YAML input plus
+//! [`lsp_types::Diagnostic`] values for any structural problems;
+//! callers route the diagnostics to whichever editor / CLI
+//! surface they use.
 //!
-//! - **Pure**. No editor, service-worker, or transport dependencies. The
-//!   crate produces [`lsp_types::Diagnostic`] values; callers route them
-//!   to whichever editor / CLI surface they use.
-//! - **Reusable**. The same code that powers the in-browser language
-//!   server (under `tonk-worker`) is intended to back a future `carry`
-//!   CLI's lint mode without modification.
+//! Resolution against a branch (looking up concepts and
+//! attributes by name, deriving entity URIs, building queries
+//! and transactions) lives in
+//! [`tonk-schema`](https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema).
+//! See [`guide.md`](https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-notation/guide.md)
+//! for the user-facing notation reference.
 
 pub mod diagnostics;
 pub mod parse;
 pub mod syntax;
 
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
-pub use parse::{Parsed, parse, parse_json};
+pub use parse::{Parsed, parse};
 pub use syntax::{
-    AttributeNode, ConceptField, ConceptNode, Context, DomainContext, DomainField, DomainValue,
-    Reference, Scalar, Spanned, Statement, Subject, SubjectKind, Syntax, UserConceptNode,
+    Assertion, Binding, Expression, Field, FieldValue, Head, HeadName, Query, Reference,
+    Retraction, Scalar, Spanned, Syntax,
 };

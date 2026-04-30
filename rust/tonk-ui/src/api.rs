@@ -3,8 +3,8 @@ use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
     BranchConfiguration, CreateInviteRequest, CreateInviteResponse, IdentifyResponse, JoinRequest,
-    JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration, RepositoryConfiguration,
-    RepositoryInfo, SyncResponse, TransactResponse,
+    JoinResponse, ProfileInfo, QueryResponse, QueryResultEnvelope, RemoteConfiguration,
+    RepositoryConfiguration, RepositoryInfo, SyncResponse, TransactResponse,
 };
 
 use crate::error::TonkUiError;
@@ -283,6 +283,46 @@ pub async fn transact(
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
                 "POST /api/repository/{}/branch/{}/transact returned {}: {}",
+                repo, branch, status, text
+            )))
+        }
+    }
+}
+
+/// Submit a query document to a branch via
+/// `POST /api/repository/{repo}/branch/{branch}/query`.
+///
+/// Body is asserted-notation (YAML). Returns the matching
+/// entities and their bound field values.
+pub async fn query(
+    repo: &str,
+    branch: &str,
+    body: String,
+) -> Result<QueryResultEnvelope, TonkUiError> {
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/repository/{}/branch/{}/query",
+            origin(),
+            repo,
+            branch
+        ))
+        .header("content-type", "application/yaml")
+        .body(body)
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => response.json::<QueryResultEnvelope>().await.map_err(|e| {
+            TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/branch/{}/query: failed to decode response body: {e}",
+                repo, branch
+            ))
+        }),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "POST /api/repository/{}/branch/{}/query returned {}: {}",
                 repo, branch, status, text
             )))
         }

@@ -1,107 +1,96 @@
 # tonk-notation — design notes
 
-Pure parser for asserted notation. Owns the typed AST (`Syntax`)
-plus YAML and JSON entry points; emits diagnostics anchored to
-source spans.
+Pure parser for the tonk asserted-notation DSL. See
+[`guide.md`](guide.md) for the user-facing reference.
 
-## What's in here
+## Crate layout
 
-- **`syntax.rs`** — typed AST: `Syntax → Statement → Subject + Vec<Context>`,
-  with `Context = Domain | Attribute | Concept | UserConcept`.
-  Concept fields use `Reference = Bookmark | Uri | Inline`. Every
-  node carries an `lsp_types::Range` so consumers can attach
-  diagnostics to the source token they came from.
-- **`parse.rs`** — two entry points, both produce `Parsed { syntax: Option<Syntax>, diagnostics }`:
-  - `parse(text)` — saphyr-backed YAML walker with **partial-parse**
-    semantics: a malformed statement gets a diagnostic, the rest
-    of the document still produces a `Syntax`. Lets the language
-    server underline several problems at once.
-  - `parse_json(text)` — serde_json plus
-    `Syntax::try_from(&serde_json::Value)`. JSON's strict syntax
-    means structural errors abort the whole parse: `syntax: None`
-    whenever any diagnostic was raised.
+- **`syntax.rs`** — typed AST: `Syntax → Vec<Expression>`, with
+  `Expression = Query | Assertion | Retraction`. Each expression
+  carries a `Head` (name + effect + binding) and either a body of
+  `Vec<Field>` or, for retractions, just the head. Every node
+  carries an `lsp_types::Range` so consumers can attach
+  diagnostics to the source token.
+- **`parse.rs`** — saphyr-backed YAML walker producing
+  `Parsed { syntax: Option<Syntax>, diagnostics: Vec<Diagnostic> }`.
+  Partial-parse semantics: a malformed expression yields a
+  diagnostic and the rest of the document still produces a
+  `Syntax`.
 - **`diagnostics.rs`** — `document_diagnostics(text) = parse(text).diagnostics`,
-  the entry point the language server already uses.
-
-## Notation
-
-Three-level subject/context/fields. Same shape carry's CLI uses.
-
-```yaml
-person-name:                 # subject (level 1)
-  attribute:                 # context (level 2)
-    the:         io.gozala.person/name
-    as:          Text
-    cardinality: one
-```
-
-- **Subject** is classified into `Bookmark` / `Uri` / `Anonymous` /
-  `Variable` by lexical inspection (`:` → URI, `_` → Anonymous,
-  `?…` → Variable, otherwise Bookmark). The parser does not
-  resolve or reject any of them — that's the interpreter's call.
-- **Context** is a `Domain` if its key contains `.`, the
-  built-in `attribute` / `concept` if it's one of those, or a
-  `UserConcept` otherwise. Acceptance is again deferred.
-- **Fields** under a domain context are raw scalars or sequences
-  (or maps for nested entities — currently unsupported by the
-  interpreter, captured in the AST anyway). Fields under
-  `concept:` are `Reference`s.
+  the entry point the language server uses.
 
 ## Why diagnostics, not errors
 
 The parser never returns `Result`. Even a hard structural failure
 (non-mapping root) produces a `Parsed` with `syntax: None` and a
-diagnostic. Two reasons:
-
-1. The language server wants to display *all* problems, not just
-   the first one. A document with three malformed statements
-   shouldn't show one error and hide the others.
-2. Surface-level differences between YAML and JSON shouldn't
-   leak into the API. Both call sites get `Parsed`, both walk
-   `diagnostics`, both treat `syntax: None` the same way.
+diagnostic. The language server displays *all* problems, not just
+the first.
 
 ## Why the AST owns its strings
 
 Saphyr borrows from the input buffer (`MarkedYaml<'input>`); we
 don't. The parser allocates owned `String`s into the AST so
 callers can keep a `Syntax` around past the input's lifetime —
-worker route handlers, in particular, drop the request body
-before commit.
+worker route handlers in particular drop the request body before
+commit.
 
 ## Span policy
 
-YAML path: real saphyr spans, converted to `lsp_types::Range`
-via `position_at` / `range_of`. Zero-width spans get widened by
-one column so editors render visible squiggles.
+Real saphyr spans, converted to `lsp_types::Range` via
+`position_at` / `range_of`. Zero-width spans get widened by one
+column so editors render visible squiggles. Within the head
+string (which encodes name + binding), sub-spans are not
+extracted today — both the name and binding ranges point at the
+whole key. Editors still highlight the right line.
 
-JSON path: serde_json values have no position info. Every range
-is `Range::default()`, which renders as a document-level
-annotation in LSP clients. Document this; don't fake it.
+## Head parsing
 
-## Reserved-prefix rule
+The level-1 YAML key is split on the first ASCII whitespace:
 
-Earlier revisions of `shape.rs` flagged `dialog.*` domains as
-errors per a draft RFC reservation. That was wrong — both carry
-and our transact route legitimately write under `dialog.meta`,
-`dialog.attribute`, `dialog.concept.*`. The rule is gone and
-the test that asserted it (`dialog_prefix_is_no_longer_an_error`)
-verifies it stays gone.
+- Token before whitespace = name (with optional trailing `!` for
+  effect mode).
+- Everything after = binding text. Empty → `Anonymous`. Starts
+  with `?` → `Variable`. Contains `:` → `Uri`. Else → `Bookmark`.
+
+This lets URI bindings (`person! did:key:zX:`) work without a
+sigil and avoids ambiguity around the trailing `:` that ends every
+YAML key.
+
+## Field-value classification
+
+A string scalar becomes one of:
+
+- `Blank` if exactly `_`
+- `Variable(name)` if `?name`
+- `Reference(Bookmark(name))` if `.name`
+- `Reference(Uri(s))` if it contains `:`
+- `Literal(String(s))` otherwise
+
+The `.` sigil disambiguates bookmark references from literal
+strings. Numeric / boolean / null saphyr scalars become
+`Literal(Integer | Float | Boolean | Null)` directly.
+
+Sequences are rejected with a diagnostic — the notation has no
+representation for cardinality-many writes (use repeated
+assertions).
 
 ## What's intentionally not here
 
-- **Resolution.** Bookmark refs, URI refs, user-concept lookups
-  all stay as references in the AST. The interpreter does the
-  resolving against whatever store it has access to.
+- **Resolution.** Bookmark refs, URI refs, concept lookups all
+  stay as references in the AST. The analyzer in `tonk-schema`
+  does the resolving against whatever store it has access to.
 - **Identity derivation.** No entity-URI computation. The AST
   only knows what the user wrote.
 - **Dialog types.** This crate has no dialog-* dependencies.
   Everything that mentions `Entity`, `AttributeDescriptor`, etc.
   lives in `tonk-schema`.
 
-## Consumer
+## Consumers
 
-Currently just `tonk-language-server` (via `document_diagnostics`)
-and `tonk-schema::interpret` (via `parse` / `parse_json` →
-`Syntax`). The split is what lets a future LSP completion
-backend run its own resolver against the same AST without
-re-parsing.
+- `tonk-language-server` — via `document_diagnostics` for editor
+  squiggles.
+- `tonk-schema::analyze` — consumes `Syntax` to produce an
+  `Analysis` (queries + planned transactions).
+
+The split is what lets a future LSP completion backend run its
+own resolver against the same AST without re-parsing.

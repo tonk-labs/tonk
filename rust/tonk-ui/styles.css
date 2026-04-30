@@ -773,30 +773,41 @@ tonk-code {
        deliberately so each color clears WCAG AA for body text on
        both extremes; saturated Bauhaus pigments don't.
 
-       The role mapping follows the same logic the school used for
-       the primaries themselves:
-         - yellow / triangle → keys (loud, structural, eye-catching)
-         - red    / square   → strings (grounded, the literal substance)
-         - blue   / circle   → numbers (abstract, receding) */
-    --tonk-code-key: #c89a2b;          /* muted ochre */
-    --tonk-code-string: #b94a3d;       /* muted brick */
-    --tonk-code-number: #3d6da8;       /* muted slate-blue */
-    --tonk-code-comment: #7a7268;      /* warm neutral grey */
-    --tonk-code-punctuation: var(--wa-color-text-normal);
-    --tonk-code-error: #a8302a;        /* hotter than the string red */
+       The named slots below are the *palette* — pure color, no
+       semantics. The code-role and dialect-role assignments
+       further down map roles onto the palette so reassigning a
+       role (e.g. point variables at red instead of blue) is a
+       one-line change. */
+    --tonk-bauhaus-yellow: #c89a2b;    /* muted ochre */
+    --tonk-bauhaus-red:    #b94a3d;    /* muted brick */
+    --tonk-bauhaus-blue:   #3d6da8;    /* muted slate-blue */
+    --tonk-bauhaus-grey:   #7a7268;    /* warm neutral */
+    --tonk-bauhaus-alarm:  #a8302a;    /* hotter than the brick red */
 
-    /* Dialect decorations (dialog-yaml). Variables reuse the
-       Bauhaus blue (same hue as numbers): `?foo` and bare `_` are
-       abstract placeholders — runtime holes — which fits the
-       blue/circle/abstract pole of Kandinsky's triad. Italic
-       (set by the element's theme) keeps them distinct from
-       literal numbers when they share a line. Entities
-       (colon-bearing tokens) get an underline in the muted text
-       color so the underline reads as "identifier reference"
-       without competing with the surrounding token's palette
-       color. */
-    --tonk-code-variable: #3d6da8;
-    --tonk-code-entity: var(--wa-color-text-quiet);
+    /* Code-role assignments. The Bauhaus school's own logic for
+       the primaries:
+         - yellow / triangle → keys (loud, structural, eye-catching)
+         - red    / square   → strings (grounded, literal substance)
+         - blue   / circle   → numbers (abstract, receding) */
+    --tonk-code-key:         var(--tonk-bauhaus-yellow);
+    --tonk-code-string:      var(--tonk-bauhaus-red);
+    --tonk-code-number:      var(--tonk-bauhaus-blue);
+    --tonk-code-comment:     var(--tonk-bauhaus-grey);
+    --tonk-code-punctuation: var(--wa-color-text-normal);
+    --tonk-code-error:       var(--tonk-bauhaus-alarm);
+
+    /* Dialect decorations (dialog-yaml). Choices follow the
+       Kandinsky logic: variables (abstract holes) → blue;
+       bookmark names (structural references to a defined thing)
+       → yellow, same as keys; effect marker (consequential, "this
+       will change state") → alarm red. Entity URIs and the `.`
+       sigil ride a quiet text color to read as "reference" without
+       competing with the role color of the surrounding token. */
+    --tonk-code-variable:   var(--tonk-bauhaus-blue);
+    --tonk-code-entity:     var(--wa-color-text-quiet);
+    --tonk-code-name:       var(--tonk-bauhaus-yellow);
+    --tonk-code-name-sigil: var(--wa-color-text-quiet);
+    --tonk-code-effect:     var(--tonk-bauhaus-alarm);
 
     /* Typography */
     --tonk-code-font: var(--wa-font-family-code);

@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use dialog_repository::SiteAddress;
 use leptos::{either::Either, prelude::*, task::spawn_local, web_sys};
 use leptos_router::{
@@ -8,7 +6,8 @@ use leptos_router::{
     params::Params,
 };
 use tonk_worker::{
-    BranchConfiguration, ClaimResponse, RemoteConfiguration, RepositoryInfo, Revision,
+    BranchConfiguration, ClaimResponse, QueryResultEnvelope, RemoteConfiguration, RepositoryInfo,
+    Revision, TransactResponse,
 };
 use wasm_bindgen::JsCast;
 
@@ -452,13 +451,39 @@ pub(super) fn BranchRow(
             transact_state.set(TransactState::Running);
             let branch = branch_name.clone();
             spawn_local(async move {
-                let result = api::transact(&repo, &branch, body, "application/yaml").await;
+                // Pre-classify locally so we hit the right
+                // endpoint. Asserted-notation distinguishes
+                // queries (`head:`) from assertions (`head!:`)
+                // by the trailing `!`; the parser surfaces this
+                // through `Expression::{Query,Assertion,Retraction}`.
+                // We only need the first expression to decide —
+                // documents with mixed kinds aren't supported in
+                // v1, the worker analyzer will reject them.
+                let dispatch = classify_for_dispatch(&body);
+                let result = match dispatch {
+                    DocDispatch::Query => api::query(&repo, &branch, body)
+                        .await
+                        .map(DispatchResult::Query),
+                    DocDispatch::Transact => {
+                        api::transact(&repo, &branch, body, "application/yaml")
+                            .await
+                            .map(DispatchResult::Transact)
+                    }
+                    DocDispatch::Empty => {
+                        transact_state.set(TransactState::Idle);
+                        return;
+                    }
+                    DocDispatch::ParseError(messages) => {
+                        transact_state.set(TransactState::Failed(messages));
+                        return;
+                    }
+                };
                 match result {
-                    Ok(response) => {
-                        transact_state.set(TransactState::Done {
-                            claims: response.claims,
-                            bookmarks: response.bookmarks,
-                        });
+                    Ok(DispatchResult::Query(envelope)) => {
+                        transact_state.set(TransactState::DoneQuery(envelope));
+                    }
+                    Ok(DispatchResult::Transact(response)) => {
+                        transact_state.set(TransactState::DoneTransact(response));
                     }
                     Err(err) => {
                         transact_state.set(TransactState::Failed(format!("{err}")));
@@ -554,21 +579,19 @@ pub(super) fn BranchRow(
                         None => Either::Right(view! { <span>"none"</span> }),
                     } }</dd>
                 </dl>
-                // YAML transaction editor. Submit posts the buffer
-                // to `/api/repository/{repo}/branch/{branch}/transact`
-                // as `application/yaml`; the worker parses the
-                // three-level subject/context/fields document and
-                // commits all derived facts atomically.
+                // Asserted-notation editor. The submit handler
+                // pre-classifies the document (query vs assertion)
+                // and posts to `/query` or `/transact` accordingly.
                 <form
                     class="branch-yaml-query wa-stack wa-gap-xs"
                     on:submit=submit_transact
                 >
-                    <label class="hint">"Transaction (dialog-yaml)"</label>
+                    <label class="hint">"Asserted-notation (query or transaction)"</label>
                     <tonk-code
                         language="dialog-yaml"
                         language-server
                         active-line
-                        placeholder="bookmark:\n  attribute:\n    the: domain/name\n    as: Text\n    cardinality: one"
+                        placeholder="person ?alice:\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!:\n#   name: \"Alice\""
                         on:change=on_transact_change
                     ></tonk-code>
                     <wa-button
@@ -578,7 +601,7 @@ pub(super) fn BranchRow(
                         appearance="filled"
                         prop:loading=move ||
                             matches!(transact_state.get(), TransactState::Running)
-                    >"Transact"</wa-button>
+                    >"Run"</wa-button>
                     { move || render_transact_state(transact_state.get()) }
                 </form>
                 <form class="branch-claims" on:submit=submit_query>
@@ -664,18 +687,69 @@ fn read_wa_input_value(event: &leptos::ev::Event) -> String {
 ///
 /// Mirrors the shape of [`SyncState`]: idle until the user
 /// submits, `Running` while the request is in flight, then
-/// either `Done` (the worker accepted the document and committed
-/// the derived facts) or `Failed` (parse error, network error,
-/// or non-200 from the worker — surfaced as the message verbatim).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// either a `Done…` variant (the worker accepted the document
+/// and either returned matches or committed) or `Failed` (parse
+/// error, network error, non-200 from the worker — surfaced as
+/// the message verbatim).
+///
+/// The editor pre-classifies the document by parsing it locally
+/// (via `tonk_notation`) and routing to `/query` (read) or
+/// `/transact` (write). The two `Done` variants reflect which
+/// route ran.
+#[derive(Clone, Debug, PartialEq)]
 enum TransactState {
     Idle,
     Running,
-    Done {
-        claims: usize,
-        bookmarks: BTreeMap<String, String>,
-    },
+    DoneQuery(QueryResultEnvelope),
+    DoneTransact(TransactResponse),
     Failed(String),
+}
+
+/// Outcome of pre-classifying the editor buffer before sending
+/// it. Drives endpoint selection in the submit handler.
+enum DocDispatch {
+    /// The first expression is a query.
+    Query,
+    /// The first expression is an assertion or retraction.
+    Transact,
+    /// Empty / whitespace-only document — nothing to send.
+    Empty,
+    /// Parser raised diagnostics; surface them verbatim instead
+    /// of round-tripping to the worker.
+    ParseError(String),
+}
+
+/// One success outcome from the dispatched route.
+enum DispatchResult {
+    Query(QueryResultEnvelope),
+    Transact(TransactResponse),
+}
+
+/// Inspect the document's first expression to decide which
+/// endpoint to call. Mirrors what the worker analyzer does, but
+/// done locally so we hit the right route on the first try.
+fn classify_for_dispatch(body: &str) -> DocDispatch {
+    use tonk_notation::Expression;
+    let parsed = tonk_notation::parse(body);
+    if !parsed.diagnostics.is_empty() {
+        let messages = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return DocDispatch::ParseError(messages);
+    }
+    let Some(syntax) = parsed.syntax else {
+        return DocDispatch::Empty;
+    };
+    let Some(first) = syntax.expressions.first() else {
+        return DocDispatch::Empty;
+    };
+    match first {
+        Expression::Query(_) => DocDispatch::Query,
+        Expression::Assertion(_) | Expression::Retraction(_) => DocDispatch::Transact,
+    }
 }
 
 /// Read the `value` property off a `<tonk-code>` element from one
@@ -696,38 +770,72 @@ fn read_tonk_code_value(event: &leptos::ev::Event) -> String {
         .unwrap_or_default()
 }
 
-/// Render the transaction status surface below the editor.
+/// Render the status surface below the editor.
 ///
 /// `Idle` and `Running` render nothing (the button itself shows
-/// the loading spinner via `prop:loading`). `Done` shows the
-/// committed claim count plus the resolved bookmark map so the
-/// user can copy the URIs they just minted; `Failed` shows the
+/// the loading spinner via `prop:loading`). The `Done…` variants
+/// show kind-specific success callouts; `Failed` shows the
 /// worker's error text in a danger callout.
 fn render_transact_state(state: TransactState) -> impl IntoView {
-    use leptos::either::EitherOf4;
+    use leptos::either::EitherOf6;
     match state {
-        TransactState::Idle | TransactState::Running => EitherOf4::A(()),
-        TransactState::Failed(message) => EitherOf4::B(view! {
+        TransactState::Idle | TransactState::Running => EitherOf6::A(()),
+        TransactState::Failed(message) => EitherOf6::B(view! {
             <wa-callout variant="danger">
                 <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
                 { message }
             </wa-callout>
         }),
-        TransactState::Done { claims, bookmarks } if bookmarks.is_empty() => EitherOf4::C(view! {
-            <wa-callout variant="success">
-                <wa-icon slot="icon" name="circle-check"></wa-icon>
-                { format!("Committed {claims} claim(s).") }
+        TransactState::DoneQuery(envelope) if envelope.results.is_empty() => EitherOf6::C(view! {
+            <wa-callout variant="neutral">
+                <wa-icon slot="icon" name="circle-info"></wa-icon>
+                "No matches."
             </wa-callout>
         }),
-        TransactState::Done { claims, bookmarks } => EitherOf4::D(view! {
+        TransactState::DoneQuery(envelope) => EitherOf6::D(view! {
             <wa-callout variant="success">
                 <wa-icon slot="icon" name="circle-check"></wa-icon>
                 <div class="wa-stack wa-gap-2xs">
-                    <span>{ format!("Committed {claims} claim(s).") }</span>
-                    <ul class="bookmarks-list">
-                        { bookmarks.into_iter().map(|(name, uri)| view! {
+                    <span>{ format!("{} match(es).", envelope.count) }</span>
+                    <ul class="query-results">
+                        { envelope.results.into_iter().map(|result| view! {
                             <li>
-                                <code class="bookmark">{ name }</code>
+                                <code class="entity">{ result.this }</code>
+                                <ul class="query-fields">
+                                    { result.fields.into_iter().map(|(name, value)| view! {
+                                        <li>
+                                            <code class="field-name">{ name }</code>
+                                            ": "
+                                            <code class="field-value">{
+                                                serde_json::to_string(&value)
+                                                    .unwrap_or_else(|_| "<?>".to_string())
+                                            }</code>
+                                        </li>
+                                    }).collect_view() }
+                                </ul>
+                            </li>
+                        }).collect_view() }
+                    </ul>
+                </div>
+            </wa-callout>
+        }),
+        TransactState::DoneTransact(response) if response.entities.is_empty() => {
+            EitherOf6::E(view! {
+                <wa-callout variant="success">
+                    <wa-icon slot="icon" name="circle-check"></wa-icon>
+                    { format!("Committed {} claim(s).", response.claims) }
+                </wa-callout>
+            })
+        }
+        TransactState::DoneTransact(response) => EitherOf6::F(view! {
+            <wa-callout variant="success">
+                <wa-icon slot="icon" name="circle-check"></wa-icon>
+                <div class="wa-stack wa-gap-2xs">
+                    <span>{ format!("Committed {} claim(s).", response.claims) }</span>
+                    <ul class="entities-list">
+                        { response.entities.into_iter().map(|(label, uri)| view! {
+                            <li>
+                                <code class="head-label">{ label }</code>
                                 " → "
                                 <code class="entity">{ uri }</code>
                             </li>
