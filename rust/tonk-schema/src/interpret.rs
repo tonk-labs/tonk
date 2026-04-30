@@ -140,15 +140,14 @@ pub enum ParameterValue {
 /// Errors raised while analyzing a [`Syntax`] tree.
 #[derive(Debug, Error)]
 pub enum AnalyzeError {
-    /// Document has more than one expression — v0 only supports
-    /// single-statement queries.
-    #[error(
-        "v0 supports exactly one expression per document; got {count}. \
-         Multi-statement joins land in v1."
-    )]
-    MultipleExpressions {
-        /// How many expressions were in the document.
-        count: usize,
+    /// Document mixes queries with transactions (or contains
+    /// other unsupported expression combinations) — current
+    /// scope is "single query" or "one or more assertions",
+    /// nothing else.
+    #[error("{reason}")]
+    MixedExpressions {
+        /// Human-readable description of what was mixed.
+        reason: String,
     },
     /// Document has zero expressions.
     #[error("document is empty — nothing to analyze")]
@@ -366,29 +365,319 @@ impl Resolver for NoopResolver {
     }
 }
 
+/// In-document overlay resolver. Lets later expressions see
+/// `attribute!` definitions made earlier in the same document
+/// without re-querying the branch (the writes haven't committed
+/// yet, so the branch wouldn't have them anyway).
+///
+/// Lookups consult the in-memory index first; misses fall
+/// through to the wrapped resolver. Concept lookups always
+/// fall through — concept-by-name resolution from in-document
+/// `concept!` definitions isn't useful in v1 (no expression
+/// references a previously-defined concept by name).
+/// Storage for the in-document attribute index.
+///
+/// On native we use a `Mutex` so the async-trait-generated
+/// future stays `Send` (axum needs `Send` route handlers); on
+/// wasm the runtime is single-threaded and the trait is
+/// `?Send`, so a `RefCell` is fine and matches the rest of the
+/// wasm-side machinery (which carries `!Sync` types like
+/// `Rc<RefCell<…>>`).
+#[cfg(not(target_arch = "wasm32"))]
+type AttributeIndex = std::sync::Mutex<BTreeMap<String, ResolvedAttribute>>;
+#[cfg(target_arch = "wasm32")]
+type AttributeIndex = std::cell::RefCell<BTreeMap<String, ResolvedAttribute>>;
+
+struct DocumentResolver<'a, R: Resolver> {
+    inner: &'a R,
+    attributes: AttributeIndex,
+}
+
+impl<'a, R: Resolver> DocumentResolver<'a, R> {
+    fn new(inner: &'a R) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let attributes = std::sync::Mutex::new(BTreeMap::new());
+        #[cfg(target_arch = "wasm32")]
+        let attributes = std::cell::RefCell::new(BTreeMap::new());
+        Self { inner, attributes }
+    }
+
+    fn register_attribute(&self, name: String, attribute: ResolvedAttribute) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.attributes
+                .lock()
+                .expect("DocumentResolver mutex is never poisoned")
+                .insert(name, attribute);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.attributes.borrow_mut().insert(name, attribute);
+        }
+    }
+
+    fn get_attribute(&self, name: &str) -> Option<ResolvedAttribute> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.attributes
+                .lock()
+                .expect("DocumentResolver mutex is never poisoned")
+                .get(name)
+                .cloned()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.attributes.borrow().get(name).cloned()
+        }
+    }
+
+    fn find_attribute_by_entity(&self, entity: &Entity) -> Option<ResolvedAttribute> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.attributes
+                .lock()
+                .expect("DocumentResolver mutex is never poisoned")
+                .values()
+                .find(|r| &r.entity == entity)
+                .cloned()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.attributes
+                .borrow()
+                .values()
+                .find(|r| &r.entity == entity)
+                .cloned()
+        }
+    }
+}
+
+// On native the impl needs `R: Sync` so the underlying
+// resolver's calls produce `Send` futures (axum requires that
+// for handlers); on wasm the trait is `?Send` and there's no
+// Sync requirement.
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
+    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        self.inner.resolve_concept(name).await
+    }
+
+    async fn resolve_attribute(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        if let Some(found) = self.get_attribute(name) {
+            return Ok(Some(found));
+        }
+        self.inner.resolve_attribute(name).await
+    }
+
+    async fn resolve_attribute_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        if let Some(found) = self.find_attribute_by_entity(entity) {
+            return Ok(Some(found));
+        }
+        self.inner.resolve_attribute_by_entity(entity).await
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[async_trait(?Send)]
+impl<'a, R: Resolver> Resolver for DocumentResolver<'a, R> {
+    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        self.inner.resolve_concept(name).await
+    }
+
+    async fn resolve_attribute(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        if let Some(found) = self.get_attribute(name) {
+            return Ok(Some(found));
+        }
+        self.inner.resolve_attribute(name).await
+    }
+
+    async fn resolve_attribute_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        if let Some(found) = self.find_attribute_by_entity(entity) {
+            return Ok(Some(found));
+        }
+        self.inner.resolve_attribute_by_entity(entity).await
+    }
+}
+
+/// Pull the bookmark name out of an `attribute!` plan's emitted
+/// `dialog.meta/name` claim, if present. Returns `None` when the
+/// head was anonymous (no bookmark binding).
+fn bookmark_from_assertions(assertions: &[ClaimAssertion]) -> Option<String> {
+    for claim in assertions {
+        if claim.field_name == "name"
+            && let Value::String(s) = &claim.is
+        {
+            return Some(s.clone());
+        }
+    }
+    None
+}
+
+/// Reconstruct an [`AttributeDescriptor`] from the index facts
+/// an `attribute!` plan emits — the inverse of the helper that
+/// builds those facts. Used by the document-resolver path so
+/// later concept definitions can hash a concept whose fields
+/// were defined in this same document.
+fn attribute_descriptor_from_assertions(
+    assertions: &[ClaimAssertion],
+) -> Result<AttributeDescriptor, AnalyzeError> {
+    let mut shape = serde_json::Map::new();
+    for claim in assertions {
+        let Value::String(s) = &claim.is else {
+            continue;
+        };
+        match claim.field_name.as_str() {
+            "id" => {
+                shape.insert("the".into(), serde_json::Value::String(s.clone()));
+            }
+            "type" => {
+                shape.insert("as".into(), serde_json::Value::String(s.clone()));
+            }
+            "cardinality" => {
+                shape.insert("cardinality".into(), serde_json::Value::String(s.clone()));
+            }
+            "description" => {
+                shape.insert("description".into(), serde_json::Value::String(s.clone()));
+            }
+            _ => {}
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(shape)).map_err(|e| {
+        AnalyzeError::InvalidAttributeBody {
+            reason: format!(
+                "could not reconstruct AttributeDescriptor from \
+                 in-document attribute!: {e}"
+            ),
+        }
+    })
+}
+
 /// Analyze a [`Syntax`] tree into an [`Analysis`].
 ///
-/// v0 supports exactly one query expression per document.
-/// Assertions, retractions, and multi-statement joins return
-/// errors.
+/// Single-query documents produce an [`Analysis::Query`].
+/// Documents containing one or more assertions (no queries) are
+/// fused into a single [`Analysis::Transaction`] — earlier
+/// `attribute!` definitions are visible to later `concept!`
+/// definitions through an in-document index, so a complete
+/// schema can be defined in one shot. Mixing queries with
+/// transactions in the same document is rejected for now;
+/// retractions are also not yet implemented.
+/// `R: Resolver` is the public bound; on native we additionally
+/// need `R: Sync` so the [`DocumentResolver`]'s async methods
+/// produce `Send` futures (axum requires `Send` route handlers).
+/// On wasm the trait is `?Send` and there's no extra bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn analyze<R: Resolver + Sync>(
+    syntax: &Syntax,
+    resolver: &R,
+) -> Result<Analysis, AnalyzeError> {
+    analyze_impl(syntax, resolver).await
+}
+
+/// wasm-side variant of [`analyze`] — same shape minus the
+/// `Sync` bound (the wasm runtime is single-threaded and the
+/// trait is `?Send`).
+#[cfg(target_arch = "wasm32")]
 pub async fn analyze<R: Resolver>(syntax: &Syntax, resolver: &R) -> Result<Analysis, AnalyzeError> {
+    analyze_impl(syntax, resolver).await
+}
+
+// `analyze_impl` is generic over `R: Resolver` only; the
+// per-target `analyze` wrappers add `Sync` on native to satisfy
+// the `DocumentResolver` impl bound. This indirection lets us
+// keep the public surface free of target-specific bounds.
+async fn analyze_impl<R>(syntax: &Syntax, resolver: &R) -> Result<Analysis, AnalyzeError>
+where
+    R: Resolver,
+    for<'a> DocumentResolver<'a, R>: Resolver,
+{
     if syntax.expressions.is_empty() {
         return Err(AnalyzeError::EmptyDocument);
     }
-    if syntax.expressions.len() > 1 {
-        return Err(AnalyzeError::MultipleExpressions {
-            count: syntax.expressions.len(),
-        });
+
+    // A single query expression follows the read path verbatim.
+    if syntax.expressions.len() == 1 {
+        return match &syntax.expressions[0] {
+            Expression::Query(q) => Ok(Analysis::Query(analyze_query(q, resolver).await?)),
+            Expression::Assertion(a) => {
+                let scoped = DocumentResolver::new(resolver);
+                let plan = analyze_assertion(a, &scoped).await?;
+                Ok(Analysis::Transaction(plan))
+            }
+            Expression::Retraction(_) => Err(AnalyzeError::RetractionNotYetImplemented),
+        };
     }
 
-    let expression = &syntax.expressions[0];
-    match expression {
-        Expression::Query(q) => Ok(Analysis::Query(analyze_query(q, resolver).await?)),
-        Expression::Assertion(a) => {
-            Ok(Analysis::Transaction(analyze_assertion(a, resolver).await?))
+    // Multi-expression documents must be transactions only —
+    // queries and retractions need a different multi-statement
+    // story (variable scope, query-then-retract roundtrip)
+    // we haven't built yet.
+    let scoped = DocumentResolver::new(resolver);
+    let mut combined = TransactionPlan {
+        assertions: Vec::new(),
+        head_label: String::new(),
+        head_entity: Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
+            context: "minting placeholder entity".into(),
+            reason: e.to_string(),
+        })?,
+    };
+    let mut last_head = String::new();
+    let mut last_entity: Option<Entity> = None;
+
+    for expression in &syntax.expressions {
+        match expression {
+            Expression::Assertion(a) => {
+                let plan = analyze_assertion(a, &scoped).await?;
+                last_head = plan.head_label.clone();
+                last_entity = Some(plan.head_entity.clone());
+                // Index attribute definitions so later
+                // expressions can resolve `.bookmark` references
+                // against them without hitting the branch.
+                if plan.head_label == "attribute"
+                    && let Some(name) = bookmark_from_assertions(&plan.assertions)
+                {
+                    let descriptor = attribute_descriptor_from_assertions(&plan.assertions)?;
+                    scoped.register_attribute(
+                        name,
+                        ResolvedAttribute {
+                            entity: plan.head_entity.clone(),
+                            descriptor,
+                        },
+                    );
+                }
+                combined.assertions.extend(plan.assertions);
+            }
+            Expression::Query(_) => {
+                return Err(AnalyzeError::MixedExpressions {
+                    reason: "this document mixes a query with one or more \
+                             transactions; submit them separately"
+                        .into(),
+                });
+            }
+            Expression::Retraction(_) => {
+                return Err(AnalyzeError::RetractionNotYetImplemented);
+            }
         }
-        Expression::Retraction(_) => Err(AnalyzeError::RetractionNotYetImplemented),
     }
+
+    if let Some(entity) = last_entity {
+        combined.head_entity = entity;
+    }
+    combined.head_label = last_head;
+    Ok(Analysis::Transaction(combined))
 }
 
 async fn analyze_query<R: Resolver>(
@@ -1456,13 +1745,61 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn multiple_expressions_errors() {
-        // Two heads with different names so the YAML mapping
-        // doesn't deduplicate them.
-        let syntax = parse("person:\n  name: \"A\"\nplace:\n  name: \"B\"\n")
-            .syntax
-            .unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::MultipleExpressions { .. }));
+    async fn mixed_query_and_assertion_is_an_error() {
+        let syntax = parse(
+            "person:\n  name: \"A\"\n\
+             person!:\n  name: \"B\"\n",
+        )
+        .syntax
+        .unwrap();
+        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(err, AnalyzeError::MixedExpressions { .. }));
+    }
+
+    #[dialog_common::test]
+    async fn multi_assertion_document_resolves_in_document_attributes() {
+        // attribute! definitions should be visible to a later
+        // concept! definition in the same document — without
+        // the in-doc resolver, the concept's `with: { name: .person-name }`
+        // would fail because the branch hasn't seen
+        // `person-name` yet.
+        let syntax = parse(
+            "attribute! person-name:\n\
+             \x20 the:         io.gozala.person/name\n\
+             \x20 as:          Text\n\
+             \x20 cardinality: one\n\
+             attribute! person-age:\n\
+             \x20 the:         io.gozala.person/age\n\
+             \x20 as:          UnsignedInteger\n\
+             \x20 cardinality: one\n\
+             concept! person:\n\
+             \x20 with:\n\
+             \x20   name: person-name\n\
+             \x20   age:  person-age\n",
+        )
+        .syntax
+        .unwrap();
+        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
+        // Two attribute! definitions emit id+cardinality+name (no
+        // type, since saphyr coerces Text/UnsignedInteger to
+        // strings — actually they emit type too) per attribute,
+        // plus a concept! definition emits with/{name,age} + name.
+        // Expect at least the concept's two with/* claims plus
+        // its name claim.
+        let with_claims: Vec<&str> = plan
+            .assertions
+            .iter()
+            .filter(|c| c.field_name == "name" || c.field_name == "age")
+            .map(|c| c.field_name.as_str())
+            .collect();
+        // "name" appears for: attribute1's bookmark name,
+        // attribute2's bookmark name? no, that's "person-age".
+        // concept's bookmark name "person", and concept's
+        // dialog.concept.with/name. plus an "age" for
+        // dialog.concept.with/age. So the filter catches at
+        // least one "age" entry.
+        assert!(with_claims.contains(&"age"));
+        assert_eq!(plan.head_label, "concept");
     }
 }
