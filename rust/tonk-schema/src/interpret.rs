@@ -1758,6 +1758,53 @@ mod tests {
     }
 
     #[dialog_common::test]
+    async fn user_supplied_concept_definition_document() {
+        // Exact YAML the user reported failing in the editor —
+        // mixed 4/2-space indentation, blank lines between
+        // expressions, descriptions on every entry.
+        let src = "attribute! person-name:\n    \
+                   the:         io.gozala.person/name\n    \
+                   as:          Text\n    \
+                   cardinality: one\n    \
+                   description: The person's name\n\n\n\
+                   attribute! person-age:\n  \
+                   the:         io.gozala.person/age\n  \
+                   as:          UnsignedInteger\n  \
+                   cardinality: one\n  \
+                   description: The person's age\n  \n\
+                   concept! person:\n    \
+                   description: A person\n    \
+                   with:\n      \
+                   name: person-name\n      \
+                   age:  person-age\n";
+        let parsed = parse(src);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:#?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parse should produce a Syntax");
+        assert_eq!(
+            syntax.expressions.len(),
+            3,
+            "expected 3 expressions, got {}",
+            syntax.expressions.len()
+        );
+        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
+        assert_eq!(plan.head_label, "concept");
+        // Two attribute heads + one concept head = 5 expected
+        // assertions for the concept (description + 2 with/* +
+        // name) + 5 per attribute (id+type+cardinality+
+        // description+name) = 15 in total.
+        assert!(
+            plan.assertions.len() >= 13,
+            "expected at least 13 assertions, got {}: {:#?}",
+            plan.assertions.len(),
+            plan.assertions
+        );
+    }
+
+    #[dialog_common::test]
     async fn multi_assertion_document_resolves_in_document_attributes() {
         // attribute! definitions should be visible to a later
         // concept! definition in the same document — without

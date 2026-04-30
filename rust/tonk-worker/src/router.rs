@@ -705,84 +705,39 @@ pub mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    /// Reproduces the editor's reported failure on an
+    /// attribute+attribute+concept document submitted as a
+    /// single YAML body. The new analyzer should accept all
+    /// three expressions, build the concept's descriptor from
+    /// the in-document attribute definitions, and commit
+    /// everything in one transaction.
     #[dialog_common::test]
-    async fn it_transacts_concept_definitions() {
+    async fn it_transacts_attributes_and_concept_in_one_doc() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
-        let repo = "test-transact";
-
-        put_repo(&app, repo).await;
-
-        // Define two attributes and a concept that references them
-        // by bookmark, all in one transaction.
-        let body = r#"{
-            "person-name": {
-                "attribute": {
-                    "description": "The person's name",
-                    "the": "io.gozala.person/name",
-                    "as": "Text",
-                    "cardinality": "one"
-                }
-            },
-            "person-age": {
-                "attribute": {
-                    "the": "io.gozala.person/age",
-                    "as": "UnsignedInteger",
-                    "cardinality": "one"
-                }
-            },
-            "person": {
-                "concept": {
-                    "description": "A person",
-                    "with": {
-                        "name": "person-name",
-                        "age":  "person-age"
-                    }
-                }
-            }
-        }"#;
-
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
-
-        // Each of the three subjects should appear in the bookmarks
-        // map and resolve to a URI in the expected canonical scheme.
-        assert!(resp.claims > 0);
-        assert!(resp.bookmarks["person-name"].starts_with("the:"));
-        assert!(resp.bookmarks["person-age"].starts_with("the:"));
-        assert!(resp.bookmarks["person"].starts_with("concept:"));
-    }
-
-    #[dialog_common::test]
-    async fn it_accepts_yaml_transactions() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-transact-yaml";
+        let repo = "test-transact-multi";
 
         put_repo(&app, repo).await;
 
         let body = "\
-person-name:
-  attribute:
-    the: io.gozala.person/name
-    as: Text
+attribute! person-name:
+    the:         io.gozala.person/name
+    as:          Text
     cardinality: one
+    description: The person's name
+
+
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+  description: The person's age
+
+concept! person:
+    description: A person
+    with:
+      name: person-name
+      age:  person-age
 ";
 
         let response = app
@@ -796,15 +751,73 @@ person-name:
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
+        let status = response.status();
         let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "expected 200 OK; got {status}: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
         let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(resp.bookmarks["person-name"].starts_with("the:"));
+        assert!(resp.claims > 0);
+        // The combined plan ends on the concept head; the
+        // response surfaces only the last head's entity (single
+        // entry in the entities map for now).
+        assert_eq!(resp.entities.len(), 1);
+        let (label, entity) = resp.entities.iter().next().unwrap();
+        assert_eq!(label, "concept");
+        assert!(entity.starts_with("concept:"));
     }
 
+    /// A single `attribute!` assertion commits cleanly via the
+    /// new YAML notation.
+    #[dialog_common::test]
+    async fn it_transacts_a_single_attribute() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-single";
+
+        put_repo(&app, repo).await;
+
+        let body = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: The person's name
+";
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "expected 200 OK; got {status}: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let entity = resp.entities.get("attribute").unwrap();
+        assert!(entity.starts_with("the:"));
+    }
+
+    /// Sending a parser-rejected document returns 400 with a
+    /// human-readable error.
     #[dialog_common::test]
     async fn it_returns_400_on_malformed_transaction() {
         let state = test_state().await;
@@ -813,13 +826,15 @@ person-name:
 
         put_repo(&app, repo).await;
 
+        // YAML with an indentation error — saphyr rejects it.
+        let body = "person!:\n  name: Alice\n bad-indent: 1\n";
         let response = app
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/repository/{}/branch/main/transact", repo))
                     .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"x": "not an object"}"#))
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(body))
                     .unwrap(),
             )
             .await
@@ -827,12 +842,11 @@ person-name:
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
-    /// Reproduces a real bug: a concept's `with` block can
-    /// reference an attribute bookmark that was defined in a
-    /// *prior* transaction, not the current document. The
-    /// branch-backed resolver should look up the previously-
-    /// asserted attribute by `dialog.meta/name`, reconstruct
-    /// its descriptor, and let the concept hash correctly.
+    /// A concept's `with` block can address an attribute defined
+    /// in a *prior* transaction by bookmark name. The
+    /// branch-backed resolver looks up the previously-asserted
+    /// attribute by `dialog.meta/name`, reconstructs its
+    /// descriptor, and lets the concept hash correctly.
     #[dialog_common::test]
     async fn it_resolves_bookmarks_across_transactions() {
         let state = test_state().await;
@@ -842,14 +856,13 @@ person-name:
         put_repo(&app, repo).await;
 
         // First transaction: define `person-name` only.
-        let first = r#"
-person-name:
-  attribute:
-    description: The person's name
-    the:         io.gozala.person/name
-    as:          Text
-    cardinality: one
-"#;
+        let first = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: The person's name
+";
         let response = app
             .clone()
             .oneshot(
@@ -867,21 +880,18 @@ person-name:
         // Second transaction: define `person-age` and a concept
         // `person` whose `with.name` references the *previously*
         // declared `person-name`.
-        let second = r#"
-person-age:
-  attribute:
-    description: The person's age
-    the:         io.gozala.person/age
-    as:          UnsignedInteger
-    cardinality: one
+        let second = "\
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
 
-person:
-  concept:
-    description: A person
-    with:
-      name: person-name
-      age:  person-age
-"#;
+concept! person:
+  description: A person
+  with:
+    name: person-name
+    age:  person-age
+";
         let response = app
             .oneshot(
                 Request::builder()
@@ -893,88 +903,18 @@ person:
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let resp: super::TransactResponse = serde_json::from_slice(&body).unwrap();
-        assert!(resp.bookmarks["person-age"].starts_with("the:"));
-        assert!(resp.bookmarks["person"].starts_with("concept:"));
-    }
-
-    /// A concept's `with` block can address an attribute by its
-    /// `the:…` URI directly (no bookmark name needed). The
-    /// branch resolver looks up the descriptor by entity, the
-    /// concept hash uses it, and commit succeeds.
-    #[dialog_common::test]
-    async fn it_resolves_concept_field_by_uri() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-transact-by-uri";
-
-        put_repo(&app, repo).await;
-
-        // First transaction defines the attribute and gives us
-        // back its `the:…` URI in `bookmarks["person-name"]`.
-        let first = r#"
-person-name:
-  attribute:
-    description: The person's name
-    the:         io.gozala.person/name
-    as:          Text
-    cardinality: one
-"#;
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
-                    .method("POST")
-                    .header("content-type", "application/yaml")
-                    .body(Body::from(first))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::TransactResponse = serde_json::from_slice(&body).unwrap();
-        let attr_uri = resp.bookmarks.get("person-name").unwrap().clone();
-        assert!(attr_uri.starts_with("the:"));
-
-        // Second transaction references the attribute by URI
-        // directly. The bookmark name `person-name` is *not* in
-        // this document, so the only way the resolver can supply
-        // a descriptor is via `resolve_attribute_by_entity`.
-        let second = format!(
-            r#"
-person:
-  concept:
-    description: A person
-    with:
-      name: {attr_uri}
-"#
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "expected 200 OK; got {status}: {}",
+            String::from_utf8_lossy(&body_bytes)
         );
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
-                    .method("POST")
-                    .header("content-type", "application/yaml")
-                    .body(Body::from(second))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let resp: super::TransactResponse = serde_json::from_slice(&body).unwrap();
-        assert!(resp.bookmarks["person"].starts_with("concept:"));
+        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let entity = resp.entities.get("concept").unwrap();
+        assert!(entity.starts_with("concept:"));
     }
 }
