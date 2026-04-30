@@ -17,12 +17,20 @@ use dialog_operator::{Operator, Profile};
 use dialog_repository::{Branch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::NativeSpace;
 use std::path::{Path, PathBuf};
+use tonk_schema::{Name, Replica};
 
 /// Repository name within the operator's base directory.
 ///
 /// Carry stores its data in a single named repository per `.carry/`,
 /// matching the original "one .carry/ per project" UX.
 pub(crate) const REPO_NAME: &str = "main";
+
+/// Name of the meta branch every repository carries alongside its
+/// content branch. Schema concepts describing the repository itself
+/// — replicas, remotes, branches, tracking links — live here rather
+/// than scraping dialog's on-disk layout. Mirrors tonk-worker's
+/// `META_BRANCH`.
+pub(crate) const META_BRANCH: &str = "meta";
 
 /// For tests that need to override where the repository data lives.
 /// Production passes `None` and the data goes under the discovered `.carry/`.
@@ -44,6 +52,15 @@ pub struct Site {
     pub repo: Repository<Credential>,
     /// The main branch for data operations.
     pub branch: Branch,
+    /// The meta branch carrying schema facts about this repository
+    /// (remotes, branches, tracking links). Read and written via the
+    /// `tonk_schema` concepts.
+    pub meta: Branch,
+    /// Local replica concept anchor for facts on the meta branch.
+    /// Derived from `(profile.did, repo.did, REPO_NAME)`; every
+    /// remote / branch / tracking-branch fact this repo asserts has
+    /// `origin == replica.this`.
+    pub replica: Replica,
     /// Profile storage location (kept for re-opening with the same identity).
     profile_location: Option<ProfileLocation>,
 }
@@ -107,17 +124,22 @@ impl Site {
         repo_location.unwrap_or_else(|| Directory::At(carry_dir.to_string_lossy().into_owned()))
     }
 
-    /// Open or create the carry repository and its main branch.
+    /// Open or create the carry repository and both its branches.
     ///
     /// On first call, creates the repository and immediately delegates access
     /// to the profile -- without that delegation, follow-up calls like
     /// `profile.access().claim(&repo).delegate(...)` (used by `carry invite`)
     /// would fail with "no delegation chain found". On subsequent calls the
     /// repository is loaded as-is.
-    async fn open_repo_and_branch(
+    ///
+    /// Both the content branch (`main`) and the meta branch are opened
+    /// here. The meta branch may be empty on freshly created repos and on
+    /// repos that predate the meta-fact writes — that's fine, `open()`
+    /// creates it if missing and queries against it return zero rows.
+    async fn open_repo_and_branches(
         operator: &Operator<NativeSpace>,
         profile: &Profile,
-    ) -> Result<(Repository<Credential>, Branch)> {
+    ) -> Result<(Repository<Credential>, Branch, Branch)> {
         let repo: Repository<Credential> =
             match profile.repository(REPO_NAME).load().perform(operator).await {
                 Ok(repo) => repo,
@@ -154,7 +176,13 @@ impl Site {
             .perform(operator)
             .await
             .context("Failed to open main branch")?;
-        Ok((repo, branch))
+        let meta = repo
+            .branch(META_BRANCH)
+            .open()
+            .perform(operator)
+            .await
+            .context("Failed to open meta branch")?;
+        Ok((repo, branch, meta))
     }
 
     /// Resolve a site from an optional `--repo` flag. Opens identity + repo.
@@ -165,13 +193,16 @@ impl Site {
         let root = Self::locate(site_flag)?;
         let repo_dir = Self::repo_directory(&root, None);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
-        let (repo, branch) = Self::open_repo_and_branch(&id.operator, &id.profile).await?;
+        let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
+        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
         Ok(Self {
             root,
             profile: id.profile,
             operator: id.operator,
             repo,
             branch,
+            meta,
+            replica,
             profile_location,
         })
     }
@@ -188,7 +219,8 @@ impl Site {
 
         let repo_dir = Self::repo_directory(&carry_dir, repo_location);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
-        let (repo, branch) = Self::open_repo_and_branch(&id.operator, &id.profile).await?;
+        let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
+        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
 
         Ok(Self {
             root: carry_dir,
@@ -196,6 +228,8 @@ impl Site {
             operator: id.operator,
             repo,
             branch,
+            meta,
+            replica,
             profile_location,
         })
     }
@@ -216,13 +250,16 @@ impl Site {
         }
         let repo_dir = Self::repo_directory(&carry_dir, repo_location);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
-        let (repo, branch) = Self::open_repo_and_branch(&id.operator, &id.profile).await?;
+        let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
+        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
             operator: id.operator,
             repo,
             branch,
+            meta,
+            replica,
             profile_location,
         })
     }

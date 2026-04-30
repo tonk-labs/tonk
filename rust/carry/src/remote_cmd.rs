@@ -1,11 +1,16 @@
 //! `carry remote add` — register a sync destination for this repository.
 //!
-//! A remote is a named `(site_address, subject_did)` pair stored inside
-//! the repo's memory cells via `dialog_repository`'s
-//! `repo.remote(name).create(...)` command. Registering a remote does
-//! not by itself wire it up as the push/pull target; pass
-//! `--set-upstream` to `carry remote add`, or run
-//! `carry remote set-upstream <NAME>` afterwards.
+//! A remote is a named `(site_address, subject_did)` pair stored both
+//! on dialog's side (via `repo.remote(name).create(...)`, which is
+//! what `push`/`pull` actually use to connect) and on the meta branch
+//! as a `tonk_schema::Remote` concept (which is what `remote list` /
+//! `remote show` query). The two halves are kept in sync inside a
+//! single command — every code path that mutates a remote here also
+//! mutates the matching meta-branch fact.
+//!
+//! Registering a remote does not by itself wire it up as the
+//! push/pull target; pass `--set-upstream` to `carry remote add`, or
+//! run `carry remote set-upstream <NAME>` afterwards.
 //!
 //! URL conventions:
 //!
@@ -19,26 +24,14 @@
 //!   they are persisted in plaintext inside `.carry/`; we print a loud
 //!   warning about the threat model in that case.
 
-use crate::site::{REPO_NAME, Site};
+use crate::site::Site;
 use anyhow::{Context, Result, anyhow, bail};
 use dialog_capability::Did;
+use dialog_query::{Output as _, Query, Term};
 use dialog_remote_s3::Address as S3Address;
 use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::{SiteAddress, Upstream};
-use std::path::PathBuf;
-
-/// Path to the directory dialog uses to persist remotes for this repo.
-///
-/// FIXME: this scrapes dialog's on-disk storage layout, which is brittle
-/// and a layering violation. dialog-repository does not expose a way to
-/// enumerate remotes (only `repo.remote(name)` for a known name), so
-/// `remote list`/`remote remove` reach into the storage directory
-/// directly. Once dialog grows a `remotes()` listing API (or carry
-/// mirrors remotes onto a meta-branch fact) replace these callers and
-/// drop this helper.
-fn remote_storage_dir(site: &Site) -> PathBuf {
-    site.root().join(REPO_NAME).join("memory").join("remote")
-}
+use dialog_repository::SiteAddress;
+use tonk_schema::{Branch as MetaBranch, Remote as RemoteConcept, TrackingBranch};
 
 /// The hidden branch name. Carry v1 does not expose branches.
 pub(crate) const HIDDEN_BRANCH: &str = "main";
@@ -71,22 +64,44 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
         print_s3_credentials_warning();
     }
 
-    // Create the remote. By default the subject is this repo's own DID;
-    // override with `--subject` when pointing at somebody else's repo.
-    let create = site.repo.remote(opts.name.as_str()).create(site_address);
-    let create = match opts.subject.as_deref() {
-        Some(raw) => {
-            let did: Did = raw
-                .parse()
-                .with_context(|| format!("invalid --subject DID: {}", raw))?;
-            create.subject(did)
-        }
-        None => create,
+    // Subject defaults to this repo's own DID — the common case is
+    // syncing your own repo to your own bucket. `--subject` overrides
+    // for cross-repo pulls.
+    let subject: Did = match opts.subject.as_deref() {
+        Some(raw) => raw
+            .parse()
+            .with_context(|| format!("invalid --subject DID: {}", raw))?,
+        None => site.repo.did(),
     };
+
+    // Create the remote on the dialog side (this is what push/pull
+    // actually uses).
+    let mut create = site
+        .repo
+        .remote(opts.name.as_str())
+        .create(site_address.clone());
+    if opts.subject.is_some() {
+        create = create.subject(subject.clone());
+    }
     create
         .perform(&site.operator)
         .await
         .with_context(|| format!("failed to register remote '{}'", opts.name))?;
+
+    // Mirror the registration on the meta branch. The dialog side is
+    // already durable; if this fails the remote works but won't show
+    // up in `remote list`. Surface the failure so the caller can
+    // retry rather than silently leaving the state split.
+    site.meta
+        .transaction()
+        .assert(
+            site.replica
+                .remote(opts.name.as_str(), subject, &site_address),
+        )
+        .commit()
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("failed to record remote '{}' on meta branch", opts.name))?;
 
     if opts.set_upstream {
         set_upstream(site, &opts.name).await?;
@@ -104,30 +119,31 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
     Ok(())
 }
 
-/// Discover remote names by scanning dialog's on-disk storage for
-/// `remote/*/address` entries. Returns sorted names. See
-/// [`remote_storage_dir`] for the layering caveat.
-fn list_remote_names(site: &Site) -> Result<Vec<String>> {
-    let remote_dir = remote_storage_dir(site);
-    if !remote_dir.is_dir() {
-        return Ok(Vec::new());
-    }
-    let mut names = Vec::new();
-    for entry in std::fs::read_dir(&remote_dir)
-        .with_context(|| format!("failed to read {}", remote_dir.display()))?
-    {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let address_file = entry.path().join("address");
-            if address_file.exists()
-                && let Some(name) = entry.file_name().to_str()
-            {
-                names.push(name.to_string());
-            }
-        }
-    }
-    names.sort();
-    Ok(names)
+/// Query every `Remote` concept on this replica. Sorted by name so
+/// output is stable.
+async fn load_remotes(site: &Site) -> Result<Vec<RemoteConcept>> {
+    let mut rows: Vec<RemoteConcept> = site
+        .meta
+        .query()
+        .select(Query::<RemoteConcept> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+            origin: Term::from(site.replica.this().clone()),
+            subject: Term::var("subject"),
+            address: Term::var("address"),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .context("failed to query remotes on meta branch")?;
+    rows.sort_by(|a, b| a.name.0.cmp(&b.name.0));
+    Ok(rows)
+}
+
+/// Look up a single `Remote` by name, returning `None` if absent.
+async fn find_remote(site: &Site, name: &str) -> Result<Option<RemoteConcept>> {
+    let rows = load_remotes(site).await?;
+    Ok(rows.into_iter().find(|r| r.name.0 == name))
 }
 
 /// Format a [`SiteAddress`] as a human-readable URL string.
@@ -144,26 +160,15 @@ fn format_site_address(addr: &SiteAddress) -> String {
 
 /// Execute `carry remote list`.
 pub async fn execute_list(site: &Site) -> Result<()> {
-    let names = list_remote_names(site)?;
-    if names.is_empty() {
+    let remotes = load_remotes(site).await?;
+    if remotes.is_empty() {
         eprintln!("No remotes configured. Use `carry remote add` to register one.");
         return Ok(());
     }
-    for name in &names {
-        match site
-            .repo
-            .remote(name.as_str())
-            .load()
-            .perform(&site.operator)
-            .await
-        {
-            Ok(remote) => {
-                let url = format_site_address(remote.address().site());
-                println!("{}\t{}", name, url);
-            }
-            Err(_) => {
-                println!("{}\t<failed to load>", name);
-            }
+    for remote in &remotes {
+        match remote.address.decode() {
+            Ok(addr) => println!("{}\t{}", remote.name.0, format_site_address(&addr)),
+            Err(_) => println!("{}\t<unreadable address>", remote.name.0),
         }
     }
     Ok(())
@@ -171,41 +176,76 @@ pub async fn execute_list(site: &Site) -> Result<()> {
 
 /// Execute `carry remote show <name>`.
 pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
-    let remote = site
-        .repo
-        .remote(name)
-        .load()
-        .perform(&site.operator)
-        .await
-        .with_context(|| format!("remote '{}' not found", name))?;
+    let remote = find_remote(site, name)
+        .await?
+        .ok_or_else(|| anyhow!("remote '{}' not found", name))?;
 
-    let addr = remote.address();
-    let url = format_site_address(addr.site());
-    let kind = match addr.site() {
+    let addr = remote
+        .address
+        .decode()
+        .with_context(|| format!("failed to decode address for remote '{}'", name))?;
+    let url = format_site_address(&addr);
+    let kind = match &addr {
         SiteAddress::S3(_) => "s3 (direct)",
         SiteAddress::Ucan(_) => "ucan-s3 (access service)",
     };
 
-    let is_upstream = match site.branch.upstream() {
-        Some(Upstream::Remote {
-            remote: ref upstream_name,
-            ..
-        }) => upstream_name == name,
-        _ => false,
-    };
+    let is_upstream = upstream_remote_entity(site)
+        .await?
+        .is_some_and(|entity| entity == remote.this);
 
     println!("name:     {}", name);
     println!("url:      {}", url);
     println!("type:     {}", kind);
-    if let SiteAddress::S3(s3) = addr.site() {
+    if let SiteAddress::S3(s3) = &addr {
         println!("endpoint: {}", s3.endpoint());
         println!("region:   {}", s3.region());
     }
-    println!("subject:  {}", addr.subject());
+    println!("subject:  {}", remote.subject.0);
     if is_upstream {
         println!("upstream: yes (sync target for this branch)");
     }
     Ok(())
+}
+
+/// Look up which remote (if any) the local main branch tracks, by
+/// reading the meta branch.
+///
+/// Returns the entity of the tracked remote (matching `Remote.this`),
+/// or `None` if no tracking link is recorded.
+async fn upstream_remote_entity(site: &Site) -> Result<Option<dialog_artifacts::Entity>> {
+    let local = site.replica.branch(HIDDEN_BRANCH);
+    let tracking: Vec<TrackingBranch> = site
+        .meta
+        .query()
+        .select(Query::<TrackingBranch> {
+            this: Term::from(local.this.clone()),
+            upstream: Term::var("upstream"),
+            origin: Term::from(site.replica.this().clone()),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .context("failed to query tracking branches on meta branch")?;
+    let Some(track) = tracking.into_iter().next() else {
+        return Ok(None);
+    };
+    // The tracked entity is a remote-side `Branch`; its origin is the
+    // remote's entity. Look up that branch on the meta branch to
+    // recover the remote entity.
+    let upstream_branches: Vec<MetaBranch> = site
+        .meta
+        .query()
+        .select(Query::<MetaBranch> {
+            this: Term::from(track.upstream.0.clone()),
+            name: Term::var("name"),
+            origin: Term::var("origin"),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .context("failed to resolve tracked branch on meta branch")?;
+    Ok(upstream_branches.into_iter().next().map(|b| b.origin.0))
 }
 
 /// Execute `carry remote set-upstream <name>`.
@@ -216,6 +256,16 @@ pub async fn execute_set_upstream(site: &Site, name: &str) -> Result<()> {
 }
 
 /// Load a named remote and wire it up as the upstream for `push`/`pull`.
+///
+/// Updates both halves of the upstream wiring in the same call:
+///
+/// - Dialog side: opens the remote branch and calls
+///   `local_branch.set_upstream(remote_branch)` so `push`/`pull` know
+///   where to sync.
+/// - Meta side: asserts the local `Branch`, the remote-side `Branch`,
+///   and a `TrackingBranch` linking them so `remote show` (and any
+///   other meta-branch reader) can answer "what's the upstream of
+///   `main`?" without consulting dialog's storage.
 async fn set_upstream(site: &Site, name: &str) -> Result<()> {
     let remote = site
         .repo
@@ -238,44 +288,88 @@ async fn set_upstream(site: &Site, name: &str) -> Result<()> {
         .await
         .with_context(|| format!("failed to set upstream to '{}'", name))?;
 
+    // Mirror the upstream wiring on the meta branch. Recompute the
+    // schema concept from the loaded remote so we don't depend on the
+    // caller having the original `--url` / subject in hand. Drop any
+    // stale `TrackingBranch` for `main` first — set-upstream replaces
+    // an existing upstream, it doesn't accumulate.
+    let addr = remote.address();
+    let remote_concept = site
+        .replica
+        .remote(name, addr.subject().clone(), addr.site());
+    let local = site.replica.branch(HIDDEN_BRANCH);
+    let tracked = remote_concept.branch(HIDDEN_BRANCH);
+
+    let mut tx = site.meta.transaction();
+    for stale in load_tracking_for_local(site, &local.this).await? {
+        tx = tx.retract(stale);
+    }
+    tx.assert(local.clone())
+        .assert(tracked.clone())
+        .assert(local.set_upstream(&tracked))
+        .commit()
+        .perform(&site.operator)
+        .await
+        .with_context(|| format!("failed to record upstream for '{}' on meta branch", name))?;
+
     Ok(())
+}
+
+/// Pull every `TrackingBranch` whose `this` equals the given local
+/// branch entity. Used to retract stale upstream links before
+/// asserting a new one.
+async fn load_tracking_for_local(
+    site: &Site,
+    local_entity: &dialog_artifacts::Entity,
+) -> Result<Vec<TrackingBranch>> {
+    site.meta
+        .query()
+        .select(Query::<TrackingBranch> {
+            this: Term::from(local_entity.clone()),
+            upstream: Term::var("upstream"),
+            origin: Term::from(site.replica.this().clone()),
+        })
+        .perform(&site.operator)
+        .try_vec()
+        .await
+        .context("failed to query tracking branches on meta branch")
 }
 
 /// Execute `carry remote remove <name>`.
 pub async fn execute_remove(site: &Site, name: &str) -> Result<()> {
-    site.repo
-        .remote(name)
-        .load()
+    let remote_concept = find_remote(site, name)
+        .await?
+        .ok_or_else(|| anyhow!("remote '{}' not found", name))?;
+
+    // If this remote was the upstream, the matching `TrackingBranch`
+    // fact has to come down with it; otherwise `remote show` would
+    // report a stale link to a remote that no longer exists.
+    let local = site.replica.branch(HIDDEN_BRANCH);
+    let tracked_branch = remote_concept.branch(HIDDEN_BRANCH);
+    let was_upstream = upstream_remote_entity(site)
+        .await?
+        .is_some_and(|entity| entity == remote_concept.this);
+
+    let mut tx = site.meta.transaction();
+    tx = tx.retract(remote_concept.clone()).retract(tracked_branch);
+    if was_upstream {
+        tx = tx.retract(
+            local
+                .clone()
+                .set_upstream(&remote_concept.branch(HIDDEN_BRANCH)),
+        );
+    }
+    tx.commit()
         .perform(&site.operator)
         .await
-        .with_context(|| format!("remote '{}' not found", name))?;
-
-    let was_upstream = matches!(
-        site.branch.upstream(),
-        Some(Upstream::Remote {
-            remote: ref upstream_name,
-            ..
-        }) if upstream_name == name
-    );
+        .with_context(|| format!("failed to remove remote '{}' from meta branch", name))?;
 
     if was_upstream {
         // dialog-repository's set_upstream now requires a concrete
         // Branch/RemoteBranch; there's no public "clear upstream"
-        // operation. Removing the on-disk remote directory below
-        // breaks the upstream link in practice -- the next sync
-        // attempt will fail to load the remote and surface a clear
-        // error. Reintroduce an explicit clear step once dialog
-        // exposes one.
-    }
-
-    let remote_dir = remote_storage_dir(site).join(name);
-
-    if remote_dir.exists() {
-        std::fs::remove_dir_all(&remote_dir)
-            .with_context(|| format!("failed to remove {}", remote_dir.display()))?;
-    }
-
-    if was_upstream {
+        // operation. The next sync attempt will fail to resolve the
+        // upstream and surface a clear error. Reintroduce an
+        // explicit clear step once dialog exposes one.
         eprintln!("Removed remote '{}' and cleared the sync target.", name);
     } else {
         eprintln!("Removed remote '{}'.", name);
