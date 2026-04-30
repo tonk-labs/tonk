@@ -8,6 +8,10 @@
 //! single command — every code path that mutates a remote here also
 //! mutates the matching meta-branch fact.
 //!
+//! Meta-branch reads and writes go through [`tonk_schema::MetaStore`]
+//! so the carry CLI and the tonk-worker (browser) share one
+//! implementation of "operate on the meta branch."
+//!
 //! Registering a remote does not by itself wire it up as the
 //! push/pull target; pass `--set-upstream` to `carry remote add`, or
 //! run `carry remote set-upstream <NAME>` afterwards.
@@ -27,11 +31,10 @@
 use crate::site::Site;
 use anyhow::{Context, Result, anyhow, bail};
 use dialog_capability::Did;
-use dialog_query::{Output as _, Query, Term};
 use dialog_remote_s3::Address as S3Address;
 use dialog_remote_ucan_s3::UcanAddress;
 use dialog_repository::SiteAddress;
-use tonk_schema::{Branch as MetaBranch, Remote as RemoteConcept, TrackingBranch};
+use tonk_schema::MetaStore;
 
 /// The hidden branch name. Carry v1 does not expose branches.
 pub(crate) const HIDDEN_BRANCH: &str = "main";
@@ -92,12 +95,10 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
     // already durable; if this fails the remote works but won't show
     // up in `remote list`. Surface the failure so the caller can
     // retry rather than silently leaving the state split.
+    let store = MetaStore::new(&site.meta, &site.operator);
     site.meta
         .transaction()
-        .assert(
-            site.replica
-                .remote(opts.name.as_str(), subject, &site_address),
-        )
+        .assert(store.remote(&site.replica, opts.name.as_str(), subject, &site_address))
         .commit()
         .perform(&site.operator)
         .await
@@ -119,33 +120,6 @@ pub async fn execute(site: &Site, opts: RemoteAddOptions) -> Result<()> {
     Ok(())
 }
 
-/// Query every `Remote` concept on this replica. Sorted by name so
-/// output is stable.
-async fn load_remotes(site: &Site) -> Result<Vec<RemoteConcept>> {
-    let mut rows: Vec<RemoteConcept> = site
-        .meta
-        .query()
-        .select(Query::<RemoteConcept> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-            origin: Term::from(site.replica.this().clone()),
-            subject: Term::var("subject"),
-            address: Term::var("address"),
-        })
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .context("failed to query remotes on meta branch")?;
-    rows.sort_by(|a, b| a.name.0.cmp(&b.name.0));
-    Ok(rows)
-}
-
-/// Look up a single `Remote` by name, returning `None` if absent.
-async fn find_remote(site: &Site, name: &str) -> Result<Option<RemoteConcept>> {
-    let rows = load_remotes(site).await?;
-    Ok(rows.into_iter().find(|r| r.name.0 == name))
-}
-
 /// Format a [`SiteAddress`] as a human-readable URL string.
 ///
 /// Uses the standard `s3://<bucket>` scheme for S3 sites — the endpoint
@@ -160,7 +134,11 @@ fn format_site_address(addr: &SiteAddress) -> String {
 
 /// Execute `carry remote list`.
 pub async fn execute_list(site: &Site) -> Result<()> {
-    let remotes = load_remotes(site).await?;
+    let store = MetaStore::new(&site.meta, &site.operator);
+    let remotes = store
+        .list_remotes(&site.replica)
+        .await
+        .context("failed to query remotes on meta branch")?;
     if remotes.is_empty() {
         eprintln!("No remotes configured. Use `carry remote add` to register one.");
         return Ok(());
@@ -176,7 +154,9 @@ pub async fn execute_list(site: &Site) -> Result<()> {
 
 /// Execute `carry remote show <name>`.
 pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
-    let remote = find_remote(site, name)
+    let store = MetaStore::new(&site.meta, &site.operator);
+    let remote = store
+        .find_remote(&site.replica, name)
         .await?
         .ok_or_else(|| anyhow!("remote '{}' not found", name))?;
 
@@ -190,7 +170,9 @@ pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
         SiteAddress::Ucan(_) => "ucan-s3 (access service)",
     };
 
-    let is_upstream = upstream_remote_entity(site)
+    let local = store.branch_of(&site.replica, HIDDEN_BRANCH);
+    let is_upstream = store
+        .resolve_upstream_remote(&local)
         .await?
         .is_some_and(|entity| entity == remote.this);
 
@@ -206,46 +188,6 @@ pub async fn execute_show(site: &Site, name: &str) -> Result<()> {
         println!("upstream: yes (sync target for this branch)");
     }
     Ok(())
-}
-
-/// Look up which remote (if any) the local main branch tracks, by
-/// reading the meta branch.
-///
-/// Returns the entity of the tracked remote (matching `Remote.this`),
-/// or `None` if no tracking link is recorded.
-async fn upstream_remote_entity(site: &Site) -> Result<Option<dialog_artifacts::Entity>> {
-    let local = site.replica.branch(HIDDEN_BRANCH);
-    let tracking: Vec<TrackingBranch> = site
-        .meta
-        .query()
-        .select(Query::<TrackingBranch> {
-            this: Term::from(local.this.clone()),
-            upstream: Term::var("upstream"),
-            origin: Term::from(site.replica.this().clone()),
-        })
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .context("failed to query tracking branches on meta branch")?;
-    let Some(track) = tracking.into_iter().next() else {
-        return Ok(None);
-    };
-    // The tracked entity is a remote-side `Branch`; its origin is the
-    // remote's entity. Look up that branch on the meta branch to
-    // recover the remote entity.
-    let upstream_branches: Vec<MetaBranch> = site
-        .meta
-        .query()
-        .select(Query::<MetaBranch> {
-            this: Term::from(track.upstream.0.clone()),
-            name: Term::var("name"),
-            origin: Term::var("origin"),
-        })
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .context("failed to resolve tracked branch on meta branch")?;
-    Ok(upstream_branches.into_iter().next().map(|b| b.origin.0))
 }
 
 /// Execute `carry remote set-upstream <name>`.
@@ -293,20 +235,20 @@ async fn set_upstream(site: &Site, name: &str) -> Result<()> {
     // caller having the original `--url` / subject in hand. Drop any
     // stale `TrackingBranch` for `main` first — set-upstream replaces
     // an existing upstream, it doesn't accumulate.
+    let store = MetaStore::new(&site.meta, &site.operator);
     let addr = remote.address();
-    let remote_concept = site
-        .replica
-        .remote(name, addr.subject().clone(), addr.site());
-    let local = site.replica.branch(HIDDEN_BRANCH);
-    let tracked = remote_concept.branch(HIDDEN_BRANCH);
+    let remote_concept = store.remote(&site.replica, name, addr.subject().clone(), addr.site());
+    let local = store.branch_of(&site.replica, HIDDEN_BRANCH);
+    let tracked = store.branch_of(&remote_concept, HIDDEN_BRANCH);
+    let tracking = store.tracking(&local, &tracked);
 
     let mut tx = site.meta.transaction();
-    for stale in load_tracking_for_local(site, &local.this).await? {
+    for stale in store.stale_tracking_for(&local).await? {
         tx = tx.retract(stale);
     }
-    tx.assert(local.clone())
-        .assert(tracked.clone())
-        .assert(local.set_upstream(&tracked))
+    tx.assert(local)
+        .assert(tracked)
+        .assert(tracking)
         .commit()
         .perform(&site.operator)
         .await
@@ -315,49 +257,27 @@ async fn set_upstream(site: &Site, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Pull every `TrackingBranch` whose `this` equals the given local
-/// branch entity. Used to retract stale upstream links before
-/// asserting a new one.
-async fn load_tracking_for_local(
-    site: &Site,
-    local_entity: &dialog_artifacts::Entity,
-) -> Result<Vec<TrackingBranch>> {
-    site.meta
-        .query()
-        .select(Query::<TrackingBranch> {
-            this: Term::from(local_entity.clone()),
-            upstream: Term::var("upstream"),
-            origin: Term::from(site.replica.this().clone()),
-        })
-        .perform(&site.operator)
-        .try_vec()
-        .await
-        .context("failed to query tracking branches on meta branch")
-}
-
 /// Execute `carry remote remove <name>`.
 pub async fn execute_remove(site: &Site, name: &str) -> Result<()> {
-    let remote_concept = find_remote(site, name)
+    let store = MetaStore::new(&site.meta, &site.operator);
+    let remote_concept = store
+        .find_remote(&site.replica, name)
         .await?
         .ok_or_else(|| anyhow!("remote '{}' not found", name))?;
 
-    // If this remote was the upstream, the matching `TrackingBranch`
-    // fact has to come down with it; otherwise `remote show` would
-    // report a stale link to a remote that no longer exists.
-    let local = site.replica.branch(HIDDEN_BRANCH);
-    let tracked_branch = remote_concept.branch(HIDDEN_BRANCH);
-    let was_upstream = upstream_remote_entity(site)
-        .await?
-        .is_some_and(|entity| entity == remote_concept.this);
+    // Pull every fact that depends on this remote — its remote-side
+    // `Branch` concepts and any local `TrackingBranch` pointing at
+    // them — so the meta branch doesn't end up with dangling
+    // references after the remote is gone.
+    let deps = store.dependents_of_remote(&remote_concept).await?;
+    let was_upstream = !deps.tracking_links.is_empty();
 
-    let mut tx = site.meta.transaction();
-    tx = tx.retract(remote_concept.clone()).retract(tracked_branch);
-    if was_upstream {
-        tx = tx.retract(
-            local
-                .clone()
-                .set_upstream(&remote_concept.branch(HIDDEN_BRANCH)),
-        );
+    let mut tx = site.meta.transaction().retract(remote_concept);
+    for branch in deps.branches {
+        tx = tx.retract(branch);
+    }
+    for link in deps.tracking_links {
+        tx = tx.retract(link);
     }
     tx.commit()
         .perform(&site.operator)

@@ -15,7 +15,12 @@ use dialog_storage::provider::storage::{NativeSpace, Storage};
 use dialog_varsig::Did;
 
 /// Profile name used for `carry`'s identity within dialog storage.
-const PROFILE_NAME: &str = "carry";
+///
+/// Doubles as the human-readable label for the profile's
+/// self-replica on profile-meta (`Replica::new(profile, profile,
+/// PROFILE_NAME)`), so the dialog-side profile name and the
+/// schema-side replica name don't drift apart.
+pub(crate) const PROFILE_NAME: &str = "carry";
 
 /// Where the profile lives on disk. `Directory::Profile` (the default for
 /// production) resolves to the platform data directory under dialog's

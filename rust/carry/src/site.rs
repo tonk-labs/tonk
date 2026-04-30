@@ -9,7 +9,7 @@
 //! `OperatorBuilder::base(Directory::At(carry_dir))` roots the operator's
 //! spaces there.
 
-use crate::identity_cmd::{self, ProfileLocation};
+use crate::identity_cmd::{self, PROFILE_NAME, ProfileLocation};
 use anyhow::{Context, Result};
 use dialog_credentials::Credential;
 use dialog_effects::storage::Directory;
@@ -17,7 +17,7 @@ use dialog_operator::{Operator, Profile};
 use dialog_repository::{Branch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::NativeSpace;
 use std::path::{Path, PathBuf};
-use tonk_schema::{Name, Replica};
+use tonk_schema::{MetaStore, Name, Replica};
 
 /// Repository name within the operator's base directory.
 ///
@@ -61,6 +61,15 @@ pub struct Site {
     /// remote / branch / tracking-branch fact this repo asserts has
     /// `origin == replica.this`.
     pub replica: Replica,
+    /// The profile's meta branch — indexes every replica this
+    /// profile owns across all `.carry/` directories. Mirrors
+    /// tonk-worker's profile-meta model so the two clients write
+    /// the same shape of data.
+    pub profile_meta: Branch,
+    /// The profile's self-replica on `profile_meta`. Identity
+    /// `(profile, profile)`; serves as the anchor for the rest of
+    /// the profile-meta concepts.
+    pub profile_replica: Replica,
     /// Profile storage location (kept for re-opening with the same identity).
     profile_location: Option<ProfileLocation>,
 }
@@ -185,6 +194,53 @@ impl Site {
         Ok((repo, branch, meta))
     }
 
+    /// Open the profile's meta branch, bootstrap the self-replica
+    /// and meta-branch concept, and record this carry repo's
+    /// local replica there.
+    ///
+    /// All three assertions are content-addressed (`Replica.this`
+    /// is `hash(profile, subject)`, `Branch.this` is `hash(replica,
+    /// name)`), so re-running this helper on every site open
+    /// produces the same entities and dialog deduplicates. That
+    /// keeps the call site simple — every command path opens a
+    /// `Site` and ends up with profile-meta in lockstep with the
+    /// local repo, no separate "bootstrapped?" flag to maintain.
+    ///
+    /// Mirrors tonk-worker's `bootstrap_profile_meta` +
+    /// `record_replica_in_profile` in one pass; the worker splits
+    /// them because it bootstraps once at startup and records
+    /// per-create, but for a CLI every invocation is a startup.
+    async fn open_profile_meta(
+        operator: &Operator<NativeSpace>,
+        profile: &Profile,
+        local_replica: &Replica,
+    ) -> Result<(Branch, Replica)> {
+        let profile_repository = Repository::from(profile);
+        let profile_meta = profile_repository
+            .branch(META_BRANCH)
+            .open()
+            .perform(operator)
+            .await
+            .context("Failed to open profile meta branch")?;
+
+        let store = MetaStore::new(&profile_meta, operator);
+        let profile_did = profile.did();
+        let (profile_replica, profile_meta_branch_concept) =
+            store.claim_replica(profile_did.clone(), profile_did, Name(PROFILE_NAME.into()));
+
+        profile_meta
+            .transaction()
+            .assert(profile_replica.clone())
+            .assert(profile_meta_branch_concept)
+            .assert(local_replica.clone())
+            .commit()
+            .perform(operator)
+            .await
+            .context("Failed to bootstrap profile meta")?;
+
+        Ok((profile_meta, profile_replica))
+    }
+
     /// Resolve a site from an optional `--repo` flag. Opens identity + repo.
     pub async fn resolve(
         site_flag: Option<&Path>,
@@ -195,6 +251,8 @@ impl Site {
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
         let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let (profile_meta, profile_replica) =
+            Self::open_profile_meta(&id.operator, &id.profile, &replica).await?;
         Ok(Self {
             root,
             profile: id.profile,
@@ -203,6 +261,8 @@ impl Site {
             branch,
             meta,
             replica,
+            profile_meta,
+            profile_replica,
             profile_location,
         })
     }
@@ -221,6 +281,8 @@ impl Site {
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
         let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let (profile_meta, profile_replica) =
+            Self::open_profile_meta(&id.operator, &id.profile, &replica).await?;
 
         Ok(Self {
             root: carry_dir,
@@ -230,6 +292,8 @@ impl Site {
             branch,
             meta,
             replica,
+            profile_meta,
+            profile_replica,
             profile_location,
         })
     }
@@ -252,6 +316,8 @@ impl Site {
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
         let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let (profile_meta, profile_replica) =
+            Self::open_profile_meta(&id.operator, &id.profile, &replica).await?;
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
@@ -260,6 +326,8 @@ impl Site {
             branch,
             meta,
             replica,
+            profile_meta,
+            profile_replica,
             profile_location,
         })
     }
