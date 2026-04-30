@@ -7,11 +7,27 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
 base58 = { workspace = true }
+blake3 = { workspace = true }
+bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
+dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-varsig = { workspace = true }
+ed25519-dalek = { workspace = true }
+futures-util = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagcbor = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+dialog-credentials = { workspace = true }
+dialog-operator = { workspace = true }
+dialog-remote-ucan-s3 = { workspace = true }
+dialog-repository = { workspace = true, features = ["helpers"] }
+dialog-storage = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

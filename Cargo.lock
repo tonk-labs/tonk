@@ -4706,14 +4706,27 @@ dependencies = [
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base58",
+ "blake3",
+ "bs58",
  "dialog-artifacts",
+ "dialog-capability",
  "dialog-common",
+ "dialog-credentials",
+ "dialog-effects",
+ "dialog-operator",
  "dialog-query",
+ "dialog-remote-ucan-s3",
  "dialog-repository",
+ "dialog-storage",
  "dialog-varsig",
+ "ed25519-dalek",
+ "futures-util",
  "serde",
  "serde_ipld_dagcbor",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
