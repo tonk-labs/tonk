@@ -736,8 +736,8 @@ attribute! person-age:
 concept! person:
     description: A person
     with:
-      name: person-name
-      age:  person-age
+      name: .person-name
+      age:  .person-age
 ";
 
         let response = app
@@ -889,8 +889,8 @@ attribute! person-age:
 concept! person:
   description: A person
   with:
-    name: person-name
-    age:  person-age
+    name: .person-name
+    age:  .person-age
 ";
         let response = app
             .oneshot(

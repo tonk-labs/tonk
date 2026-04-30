@@ -96,6 +96,11 @@ pub struct TransactionPlan {
     /// "this is what got written" — useful when the user wrote
     /// an anonymous head and wants to know the minted entity.
     pub head_entity: Entity,
+    /// Variable name the head was bound to (`person! ?alice:`
+    /// → `Some("alice")`). The multi-expression analyzer uses
+    /// this to register the entity in the document scope so
+    /// later expressions can reference it via `?alice`.
+    pub head_variable: Option<String>,
 }
 
 /// One assertion to commit — `(the, of, is)` plus the surface
@@ -240,6 +245,22 @@ pub enum AnalyzeError {
         /// The bookmark name.
         bookmark: String,
     },
+    /// A variable reference in field-value position couldn't
+    /// be resolved against the document scope. Variables don't
+    /// outlive a document, so an unbound `?name` means the
+    /// matching `attribute! ?name:` (or `concept! ?name:`)
+    /// definition wasn't earlier in the same document.
+    #[error(
+        "field {field:?} references unknown variable ?{variable} \
+         — define it earlier in the same document with `attribute! ?{variable}:` \
+         (variables don't carry across documents)"
+    )]
+    UnknownVariable {
+        /// Field where the variable appeared.
+        field: String,
+        /// The variable name (without `?` prefix).
+        variable: String,
+    },
     /// Claim head with no body fields — claims have no schema
     /// to fall back on, so the body must enumerate at least one
     /// field for the engine to query against.
@@ -319,6 +340,16 @@ pub trait Resolver {
         &self,
         entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError>;
+
+    /// Resolve a document-scope variable name (`?name`) to an
+    /// attribute. Only meaningful for the in-document overlay;
+    /// persistent resolvers (the branch-backed worker resolver)
+    /// always return `Ok(None)` because variable bindings don't
+    /// survive past one document.
+    async fn resolve_variable(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError>;
 }
 
 /// Opaque error from a [`Resolver`] implementation. The analyzer
@@ -363,6 +394,13 @@ impl Resolver for NoopResolver {
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         Ok(None)
     }
+
+    async fn resolve_variable(
+        &self,
+        _name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(None)
+    }
 }
 
 /// In-document overlay resolver. Lets later expressions see
@@ -390,7 +428,14 @@ type AttributeIndex = std::cell::RefCell<BTreeMap<String, ResolvedAttribute>>;
 
 struct DocumentResolver<'a, R: Resolver> {
     inner: &'a R,
+    /// Bookmark-name → attribute. Resolved against the
+    /// underlying [`Resolver::resolve_attribute`] surface,
+    /// shadowing any branch-side bookmark of the same name.
     attributes: AttributeIndex,
+    /// Document-scope variables (`?name`) → attribute. Resolved
+    /// via the in-document path only — variables don't outlive
+    /// the document.
+    variables: AttributeIndex,
 }
 
 impl<'a, R: Resolver> DocumentResolver<'a, R> {
@@ -399,56 +444,85 @@ impl<'a, R: Resolver> DocumentResolver<'a, R> {
         let attributes = std::sync::Mutex::new(BTreeMap::new());
         #[cfg(target_arch = "wasm32")]
         let attributes = std::cell::RefCell::new(BTreeMap::new());
-        Self { inner, attributes }
+        #[cfg(not(target_arch = "wasm32"))]
+        let variables = std::sync::Mutex::new(BTreeMap::new());
+        #[cfg(target_arch = "wasm32")]
+        let variables = std::cell::RefCell::new(BTreeMap::new());
+        Self {
+            inner,
+            attributes,
+            variables,
+        }
     }
 
     fn register_attribute(&self, name: String, attribute: ResolvedAttribute) {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.attributes
-                .lock()
-                .expect("DocumentResolver mutex is never poisoned")
-                .insert(name, attribute);
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.attributes.borrow_mut().insert(name, attribute);
-        }
+        index_insert(&self.attributes, name, attribute);
+    }
+
+    fn register_variable(&self, name: String, attribute: ResolvedAttribute) {
+        index_insert(&self.variables, name, attribute);
     }
 
     fn get_attribute(&self, name: &str) -> Option<ResolvedAttribute> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.attributes
-                .lock()
-                .expect("DocumentResolver mutex is never poisoned")
-                .get(name)
-                .cloned()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.attributes.borrow().get(name).cloned()
-        }
+        index_get(&self.attributes, name)
+    }
+
+    fn get_variable(&self, name: &str) -> Option<ResolvedAttribute> {
+        index_get(&self.variables, name)
     }
 
     fn find_attribute_by_entity(&self, entity: &Entity) -> Option<ResolvedAttribute> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.attributes
-                .lock()
-                .expect("DocumentResolver mutex is never poisoned")
-                .values()
-                .find(|r| &r.entity == entity)
-                .cloned()
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            self.attributes
-                .borrow()
-                .values()
-                .find(|r| &r.entity == entity)
-                .cloned()
-        }
+        index_find_by_entity(&self.attributes, entity)
+            .or_else(|| index_find_by_entity(&self.variables, entity))
+    }
+}
+
+fn index_insert(index: &AttributeIndex, name: String, attribute: ResolvedAttribute) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .insert(name, attribute);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index.borrow_mut().insert(name, attribute);
+    }
+}
+
+fn index_get(index: &AttributeIndex, name: &str) -> Option<ResolvedAttribute> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .get(name)
+            .cloned()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index.borrow().get(name).cloned()
+    }
+}
+
+fn index_find_by_entity(index: &AttributeIndex, entity: &Entity) -> Option<ResolvedAttribute> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .values()
+            .find(|r| &r.entity == entity)
+            .cloned()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index
+            .borrow()
+            .values()
+            .find(|r| &r.entity == entity)
+            .cloned()
     }
 }
 
@@ -461,6 +535,13 @@ impl<'a, R: Resolver> DocumentResolver<'a, R> {
 impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
         self.inner.resolve_concept(name).await
+    }
+
+    async fn resolve_variable(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(self.get_variable(name))
     }
 
     async fn resolve_attribute(
@@ -489,6 +570,13 @@ impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
 impl<'a, R: Resolver> Resolver for DocumentResolver<'a, R> {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
         self.inner.resolve_concept(name).await
+    }
+
+    async fn resolve_variable(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(self.get_variable(name))
     }
 
     async fn resolve_attribute(
@@ -633,6 +721,7 @@ where
             context: "minting placeholder entity".into(),
             reason: e.to_string(),
         })?,
+        head_variable: None,
     };
     let mut last_head = String::new();
     let mut last_entity: Option<Entity> = None;
@@ -643,20 +732,24 @@ where
                 let plan = analyze_assertion(a, &scoped).await?;
                 last_head = plan.head_label.clone();
                 last_entity = Some(plan.head_entity.clone());
-                // Index attribute definitions so later
-                // expressions can resolve `.bookmark` references
-                // against them without hitting the branch.
-                if plan.head_label == "attribute"
-                    && let Some(name) = bookmark_from_assertions(&plan.assertions)
-                {
+                // Index attribute definitions — by bookmark name
+                // (persistent) or doc-scope variable name — so
+                // later expressions can resolve them via
+                // `.bookmark` or `?var` respectively, without
+                // hitting the branch (the writes haven't
+                // committed yet).
+                if plan.head_label == "attribute" {
                     let descriptor = attribute_descriptor_from_assertions(&plan.assertions)?;
-                    scoped.register_attribute(
-                        name,
-                        ResolvedAttribute {
-                            entity: plan.head_entity.clone(),
-                            descriptor,
-                        },
-                    );
+                    let resolved = ResolvedAttribute {
+                        entity: plan.head_entity.clone(),
+                        descriptor,
+                    };
+                    if let Some(name) = bookmark_from_assertions(&plan.assertions) {
+                        scoped.register_attribute(name, resolved.clone());
+                    }
+                    if let Some(var) = &plan.head_variable {
+                        scoped.register_variable(var.clone(), resolved);
+                    }
                 }
                 combined.assertions.extend(plan.assertions);
             }
@@ -777,12 +870,23 @@ async fn analyze_assertion<R: Resolver>(
         return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
     }
 
-    // Resolve the entity the assertion writes against.
+    // Resolve the entity the assertion writes against. A
+    // variable binding (`person! ?alice:`) mints a fresh entity
+    // just like the anonymous form — the variable is a
+    // doc-scoped label later expressions can refer to.
+    let mut head_variable: Option<String> = None;
     let head_entity = match &assertion.head.binding {
         Binding::Anonymous => Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
             context: "minting fresh entity".into(),
             reason: e.to_string(),
         })?,
+        Binding::Variable(name) => {
+            head_variable = Some(name.clone());
+            Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
+                context: "minting fresh entity for variable binding".into(),
+                reason: e.to_string(),
+            })?
+        }
         Binding::Uri(uri) => uri
             .parse()
             .map_err(|e: dialog_artifacts::DialogArtifactsError| {
@@ -791,12 +895,6 @@ async fn analyze_assertion<R: Resolver>(
                     reason: e.to_string(),
                 }
             })?,
-        Binding::Variable(_) => {
-            return Err(AnalyzeError::UnsupportedAssertionBinding {
-                form: "variable (`?name`)",
-                head: head_label,
-            });
-        }
         Binding::Bookmark(_) => {
             return Err(AnalyzeError::UnsupportedAssertionBinding {
                 form: "bookmark name",
@@ -870,6 +968,7 @@ async fn analyze_assertion<R: Resolver>(
         assertions,
         head_label,
         head_entity,
+        head_variable,
     })
 }
 
@@ -885,22 +984,24 @@ async fn analyze_assertion<R: Resolver>(
 /// - `dialog.meta/name` (when the head carries a bookmark
 ///   binding so the name can later resolve back to the entity)
 fn analyze_attribute_assertion(assertion: &Assertion) -> Result<TransactionPlan, AnalyzeError> {
-    let bookmark = match &assertion.head.binding {
-        Binding::Anonymous => None,
-        Binding::Bookmark(name) => Some(name.clone()),
-        Binding::Variable(_) => {
-            return Err(AnalyzeError::UnsupportedAssertionBinding {
-                form: "variable (`?name`)",
-                head: "attribute".into(),
-            });
-        }
+    // Bookmark binding writes a persistent `dialog.meta/name`
+    // claim; variable binding is doc-scoped only (no name
+    // written, but later expressions can reference the entity
+    // via the variable). Both share the content-derived entity
+    // path — the URI comes from the descriptor's `to_uri()`.
+    let mut bookmark: Option<String> = None;
+    let mut head_variable: Option<String> = None;
+    match &assertion.head.binding {
+        Binding::Anonymous => {}
+        Binding::Bookmark(name) => bookmark = Some(name.clone()),
+        Binding::Variable(name) => head_variable = Some(name.clone()),
         Binding::Uri(_) => {
             return Err(AnalyzeError::UnsupportedAssertionBinding {
                 form: "URI — attribute identity is content-derived",
                 head: "attribute".into(),
             });
         }
-    };
+    }
 
     // Pull body fields by name. `attribute!` accepts a fixed
     // schema (the / as / cardinality / description); anything
@@ -1019,6 +1120,7 @@ fn analyze_attribute_assertion(assertion: &Assertion) -> Result<TransactionPlan,
         assertions,
         head_label: "attribute".into(),
         head_entity: entity,
+        head_variable,
     })
 }
 
@@ -1038,22 +1140,22 @@ async fn analyze_concept_assertion<R: Resolver>(
     assertion: &Assertion,
     resolver: &R,
 ) -> Result<TransactionPlan, AnalyzeError> {
-    let bookmark = match &assertion.head.binding {
-        Binding::Anonymous => None,
-        Binding::Bookmark(name) => Some(name.clone()),
-        Binding::Variable(_) => {
-            return Err(AnalyzeError::UnsupportedAssertionBinding {
-                form: "variable (`?name`)",
-                head: "concept".into(),
-            });
-        }
+    // Same dual-binding story as `attribute!`: bookmark writes
+    // a persistent `dialog.meta/name` claim; variable is
+    // doc-scoped only.
+    let mut bookmark: Option<String> = None;
+    let mut head_variable: Option<String> = None;
+    match &assertion.head.binding {
+        Binding::Anonymous => {}
+        Binding::Bookmark(name) => bookmark = Some(name.clone()),
+        Binding::Variable(name) => head_variable = Some(name.clone()),
         Binding::Uri(_) => {
             return Err(AnalyzeError::UnsupportedAssertionBinding {
                 form: "URI — concept identity is content-derived",
                 head: "concept".into(),
             });
         }
-    };
+    }
 
     let mut description: Option<String> = None;
     let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
@@ -1155,6 +1257,7 @@ async fn analyze_concept_assertion<R: Resolver>(
         assertions,
         head_label: "concept".into(),
         head_entity: entity,
+        head_variable,
     })
 }
 
@@ -1165,6 +1268,17 @@ async fn resolve_concept_field<R: Resolver>(
     resolver: &R,
 ) -> Result<ResolvedAttribute, AnalyzeError> {
     match value {
+        FieldValue::Variable(name) => resolver
+            .resolve_variable(name)
+            .await
+            .map_err(|e| AnalyzeError::ResolverFailed {
+                context: format!("variable ?{name}"),
+                reason: e.message,
+            })?
+            .ok_or_else(|| AnalyzeError::UnknownVariable {
+                field: field_name.into(),
+                variable: name.clone(),
+            }),
         FieldValue::Reference(Reference::Bookmark(name)) => resolver
             .resolve_attribute(name)
             .await
@@ -1197,25 +1311,11 @@ async fn resolve_concept_field<R: Resolver>(
                     bookmark: uri.clone(),
                 })
         }
-        FieldValue::Literal(Scalar::String(s)) => {
-            // Lenient fallback: a bare-string value is treated
-            // as a bookmark name. Lets users write
-            // `name: person-name` instead of `name: .person-name`.
-            resolver
-                .resolve_attribute(s)
-                .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("attribute bookmark {s:?}"),
-                    reason: e.message,
-                })?
-                .ok_or_else(|| AnalyzeError::UnknownBookmark {
-                    field: field_name.into(),
-                    bookmark: s.clone(),
-                })
-        }
         _ => Err(AnalyzeError::UnsupportedAssertionFieldValue {
             field: field_name.into(),
-            form: "expected `.bookmark` reference or attribute URI",
+            form: "expected `.bookmark` reference or `the:…` URI \
+                   (bare names are literal strings — prefix with `.` \
+                   to mark as a reference)",
         }),
     }
 }
@@ -1399,6 +1499,12 @@ mod tests {
         ) -> Result<Option<ResolvedAttribute>, ResolverError> {
             Ok(None)
         }
+        async fn resolve_variable(
+            &self,
+            _name: &str,
+        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            Ok(None)
+        }
     }
 
     fn fixed_resolver(name: &str, fields: &[(&str, &str)]) -> FixedResolver {
@@ -1482,16 +1588,52 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn assertion_with_variable_binding_is_unsupported() {
+    async fn assertion_with_variable_binding_records_the_variable() {
         let syntax = parse("person! ?alice:\n  name: \"Alice\"\n")
             .syntax
             .unwrap();
         let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(
-            err,
-            AnalyzeError::UnsupportedAssertionBinding { .. }
-        ));
+        let plan = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
+        // Entity is freshly minted (same shape as Anonymous);
+        // the variable is recorded for later expressions in
+        // the document to reference.
+        assert_eq!(plan.head_variable.as_deref(), Some("alice"));
+        assert!(!plan.assertions.is_empty());
+    }
+
+    #[dialog_common::test]
+    async fn attribute_then_concept_via_variable_resolves() {
+        // `attribute! ?name:` mints a content-derived entity
+        // and records `?name` in the document scope. A later
+        // `concept!` can then reference the variable in its
+        // `with:` block — no bookmark name is written.
+        let syntax = parse(
+            "attribute! ?person-name:\n\
+             \x20 the:         io.gozala.person/name\n\
+             \x20 as:          Text\n\
+             \x20 cardinality: one\n\
+             concept! person:\n\
+             \x20 with:\n\
+             \x20   name: ?person-name\n",
+        )
+        .syntax
+        .unwrap();
+        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
+        assert_eq!(plan.head_label, "concept");
+        // Variable-bound attribute must NOT emit a
+        // `dialog.meta/name` claim — the name is doc-scoped
+        // only.
+        let attribute_name_claims = plan
+            .assertions
+            .iter()
+            .filter(|c| {
+                c.field_name == "name" && matches!(&c.is, Value::String(s) if s == "person-name")
+            })
+            .count();
+        assert_eq!(
+            attribute_name_claims, 0,
+            "variable-bound attribute should not write a dialog.meta/name claim"
+        );
     }
 
     #[dialog_common::test]
@@ -1595,6 +1737,12 @@ mod tests {
             ) -> Result<Option<ResolvedAttribute>, ResolverError> {
                 Ok(None)
             }
+            async fn resolve_variable(
+                &self,
+                _name: &str,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
         }
 
         let syntax = parse(
@@ -1620,6 +1768,26 @@ mod tests {
         // Name field appears twice — once for `dialog.meta/name`
         // and once for `dialog.concept.with/name`.
         assert!(with_fields.contains(&"age"));
+    }
+
+    #[dialog_common::test]
+    async fn concept_with_bare_name_is_rejected() {
+        // `name: person-name` (no leading `.`) is now a literal
+        // string, not a bookmark reference. The analyzer
+        // refuses to silently fall back to a name lookup —
+        // references must be marked explicitly.
+        let syntax = parse(
+            "concept! foo:\n\
+             \x20 with:\n\
+             \x20   name: person-name\n",
+        )
+        .syntax
+        .unwrap();
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(matches!(
+            err,
+            AnalyzeError::UnsupportedAssertionFieldValue { .. }
+        ));
     }
 
     #[dialog_common::test]
@@ -1775,8 +1943,8 @@ mod tests {
                    concept! person:\n    \
                    description: A person\n    \
                    with:\n      \
-                   name: person-name\n      \
-                   age:  person-age\n";
+                   name: .person-name\n      \
+                   age:  .person-age\n";
         let parsed = parse(src);
         assert!(
             parsed.diagnostics.is_empty(),
@@ -1822,8 +1990,8 @@ mod tests {
              \x20 cardinality: one\n\
              concept! person:\n\
              \x20 with:\n\
-             \x20   name: person-name\n\
-             \x20   age:  person-age\n",
+             \x20   name: .person-name\n\
+             \x20   age:  .person-age\n",
         )
         .syntax
         .unwrap();

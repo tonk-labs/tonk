@@ -262,4 +262,13 @@ impl<'a> Resolver for BranchResolver<'a> {
             descriptor: a.descriptor,
         }))
     }
+
+    async fn resolve_variable(
+        &self,
+        _name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        // Document-scope variables don't outlive a document;
+        // the in-document `DocumentResolver` handles them.
+        Ok(None)
+    }
 }

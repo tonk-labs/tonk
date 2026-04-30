@@ -109,14 +109,33 @@ expression refers to.
 
 | Binding             | Meaning                                                |
 |---------------------|--------------------------------------------------------|
-| (omitted)           | Anonymous — query: any entity; assertion: a fresh entity |
-| `?var`              | Bind / refer to entity as variable named `var`         |
+| (omitted)           | Anonymous — query: any entity; assertion: a fresh / content-derived entity |
+| `?var`              | Bind / refer to entity as a document-scope variable named `var` |
 | `.bookmark` *(query)* | Refer to the entity previously bookmarked under this name |
-| `bookmark` *(assertion)* | Derive an entity from the bookmark name and assert a name binding |
+| `bookmark` *(assertion)* | Bookmark binding — derives the entity, plus writes a persistent `dialog.meta/name = <bookmark>` claim |
 | `did:key:zX`        | Explicit entity URI                                    |
 
 Variables join across expressions in the same document — see
 **Joins** below.
+
+### Bookmarks vs. variables on `attribute!` / `concept!`
+
+Both `attribute! foo:` (bookmark) and `attribute! ?foo:`
+(variable) derive the entity the same way — content-addressed
+from the descriptor's `to_uri()` / `this()`. The difference is
+persistence:
+
+- `attribute! foo:` writes a `dialog.meta/name = "foo"` claim,
+  so future documents (and other clients) can resolve `.foo`
+  to this entity.
+- `attribute! ?foo:` writes no name claim. The variable `?foo`
+  is visible to *later expressions in the same document* (so
+  a subsequent `concept! person: with: { name: ?foo }` works),
+  but the next document won't see it.
+
+Use a bookmark when you want the name to be a stable handle on
+the branch. Use a variable when you just need to reference the
+attribute once, in this document.
 
 ## Bodies
 
