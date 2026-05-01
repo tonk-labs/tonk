@@ -57,7 +57,7 @@ impl TestEnv {
         let profile_did = site.did();
 
         // Bootstrap pre-registered concepts
-        carry::schema::bootstrap_builtins(&site.branch, &site.operator).await?;
+        tonk_schema::runtime::bootstrap_builtins(&site.branch, &site.operator).await?;
 
         Ok(Self {
             _temp_dir: temp_dir,

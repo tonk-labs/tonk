@@ -3,11 +3,11 @@
 //! Supports domain targets, concept targets (builtin and user-defined),
 //! file input, and stdin.
 
-use crate::schema;
 use crate::site::Site;
 use crate::target::{Field, FirstArg, Target};
 use anyhow::{Context, Result};
 use std::slice::from_ref;
+use tonk_schema::runtime as schema;
 
 /// Execute `carry retract <TARGET>|<FILE>|- [this=<ENTITY>] [FIELD[=VALUE]...]`.
 pub async fn execute(

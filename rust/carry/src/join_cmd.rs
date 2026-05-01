@@ -1,24 +1,42 @@
-//! `carry join [<INVITE-URL>]` -- join a space using an invite URL.
+//! `carry join [<INVITE-URL>]` -- redeem an invite into a local
+//! replica of the invited space.
 //!
-//! When an invite URL is provided:
+//! Carry's join model mirrors tonk-worker's: redeeming an invite
+//! creates a `.carry/` whose local repo DID equals the invited
+//! subject's DID (via a verifier-only credential), so every
+//! recipient and device that joins the same invite converges on
+//! the same `Replica.this = hash(profile, subject)` and the same
+//! sigil glyph.
 //!
-//! - If the URL has a `#` fragment (open invite), the fragment contains the
-//!   ephemeral private key. The joiner redelegates from the ephemeral key to
-//!   their own profile DID, extending the delegation chain.
+//! Two outcomes:
 //!
-//! - If the URL has no fragment (scoped invite), the delegation was issued
-//!   directly to this profile's DID. The chain is used as-is after verifying
-//!   the audience matches.
+//! - **Fresh** — no `.carry/` was discoverable from the working
+//!   directory (or the user passed `--repo` to a path without one).
+//!   A new `.carry/` is created keyed to the invited subject; an
+//!   `origin` remote is configured to track the invite's access
+//!   service; main branch is wired to track `origin/main`.
 //!
-//! When no URL is provided, self-provisions an upstream for the space.
+//! - **Renewing** — an existing `.carry/` was found whose subject
+//!   DID matches the invite's subject. The delegation chain is
+//!   saved (so the recipient picks up any new access this invite
+//!   carries — e.g. an extended delegation) and the working tree
+//!   is pulled. The remote/upstream wiring already exists.
+//!
+//! Joining a different space's `.carry/` is rejected — the user
+//! is told to leave the directory or pass `--repo` to a fresh
+//! location. Silently mutating an unrelated `.carry/` would
+//! confuse the storage and the meta-branch shape.
 
-use crate::remote_cmd::HIDDEN_BRANCH;
 use crate::site::Site;
-use anyhow::{Context, Result};
-use dialog_remote_ucan_s3::UcanAddress;
-use dialog_repository::SiteAddress;
-use std::path::Path;
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
 use tonk_invite::Invite as TonkInvite;
+
+#[derive(Clone, Copy)]
+enum Outcome {
+    Fresh,
+    Renewing,
+}
 
 /// Execute `carry join [<invite-url>] [--repo <REPO>]`.
 pub async fn execute(
@@ -37,22 +55,34 @@ pub async fn execute(
         .await
         .context("Failed to parse invite URL")?;
 
-    // Resolve or create the .carry/ site
-    let site = match Site::resolve(site_flag, profile_location.clone()).await {
-        Ok(site) => site,
-        Err(_) => {
-            let parent = if let Some(p) = site_flag {
-                if p.ends_with(".carry") {
-                    p.parent()
-                        .context("--repo .carry path has no parent")?
-                        .to_path_buf()
-                } else {
-                    p.to_path_buf()
-                }
+    let invited_subject = parsed.subject().clone();
+    let remote_url = parsed.remote_url.clone();
+
+    // Resolve an existing `.carry/` if one is reachable; otherwise
+    // create a fresh one keyed to the invited subject. Joining a
+    // `.carry/` that already mirrors a *different* subject is
+    // rejected — the storage and meta-branch facts are tied to a
+    // single subject, and silently overwriting them would confuse
+    // every other tool reading the same directory.
+    let (site, outcome) = match Site::resolve(site_flag, profile_location.clone()).await {
+        Ok(site) => {
+            if site.repo.did() == invited_subject {
+                (site, Outcome::Renewing)
             } else {
-                std::env::current_dir().context("Failed to determine current directory")?
-            };
-            Site::init(&parent, profile_location, None).await?
+                bail!(
+                    "This .carry/ is for a different space ({}); the invite is for {}. \
+                     Run from outside it, or pass --repo <PATH> to use a fresh location.",
+                    site.repo.did(),
+                    invited_subject,
+                );
+            }
+        }
+        Err(_) => {
+            let parent = parent_for_new_site(site_flag)?;
+            let site =
+                Site::init_from_invite(&parent, invited_subject.clone(), profile_location, None)
+                    .await?;
+            (site, Outcome::Fresh)
         }
     };
 
@@ -61,55 +91,56 @@ pub async fn execute(
         let audience = parsed.chain.audience();
         let our_did = site.profile.did();
         if *audience != our_did {
-            anyhow::bail!(
-                "Cannot join: this invite was issued to {} but this repository is {}",
+            bail!(
+                "Cannot join: this invite was issued to {} but this profile is {}",
                 audience,
                 our_did
             );
         }
     }
 
-    let remote_url = parsed.remote_url.clone();
-    let subject = parsed.subject().clone();
+    // Always claim and save the delegation chain. Idempotent at
+    // the dialog layer — re-saving the same chain is a no-op,
+    // re-saving an extended one adds a fresh proof.
     let claimed = parsed
         .claim(&site.profile.did())
         .await
         .context("Failed to claim invite")?;
-    let chain = claimed.chain;
-
     site.profile
-        .save(dialog_ucan::UcanDelegation(chain))
+        .save(dialog_ucan::UcanDelegation(claimed.chain))
         .perform(&site.operator)
         .await
         .context("Failed to save delegation chain")?;
 
-    eprintln!("Joined repository as {}", site.did());
+    match outcome {
+        Outcome::Fresh => eprintln!("Joined repository as {}", site.did()),
+        Outcome::Renewing => eprintln!("Renewed access to {}", site.did()),
+    }
 
-    // Configure sync remote from the remote URL and pull.
-    if let Some(ref remote_url) = remote_url {
-        eprintln!("Configuring sync remote...");
-
-        let remote = site
-            .repo
-            .remote("origin")
-            .create(SiteAddress::Ucan(UcanAddress::new(remote_url.as_str())))
-            .subject(subject)
-            .perform(&site.operator)
-            .await
-            .context("Failed to register remote")?;
-
-        let remote_branch = remote
-            .branch(HIDDEN_BRANCH)
-            .open()
-            .perform(&site.operator)
-            .await
-            .context("Failed to open remote branch")?;
-
-        site.branch
-            .set_upstream(remote_branch)
-            .perform(&site.operator)
-            .await
-            .context("Failed to set upstream")?;
+    // Configure the sync remote and pull. On a fresh join, route
+    // through `remote_cmd::execute` so the dialog-side remote
+    // creation and the meta-branch `Remote` + `TrackingBranch`
+    // facts land together. On renewal the remote is already wired;
+    // skip the add and go straight to the pull.
+    if let Some(url) = remote_url {
+        if matches!(outcome, Outcome::Fresh) {
+            eprintln!("Configuring sync remote...");
+            crate::remote_cmd::execute(
+                &site,
+                crate::remote_cmd::RemoteAddOptions {
+                    name: "origin".to_string(),
+                    url: url.to_string(),
+                    subject: Some(invited_subject.to_string()),
+                    s3_endpoint: None,
+                    s3_region: None,
+                    s3_bucket: None,
+                    s3_access_key: None,
+                    s3_secret_key: None,
+                    set_upstream: true,
+                },
+            )
+            .await?;
+        }
 
         match site.branch.pull().perform(&site.operator).await {
             Ok(Some(rev)) => eprintln!("Pulled. Local is now at {}.", rev.tree),
@@ -119,4 +150,23 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+/// Resolve the parent directory for a fresh `.carry/`.
+///
+/// `--repo .carry` and `--repo /path/to/.carry` both resolve to
+/// the parent of `.carry/`; `--repo /path` and no flag use the
+/// path / cwd as the parent directly.
+fn parent_for_new_site(site_flag: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = site_flag {
+        if p.ends_with(".carry") {
+            Ok(p.parent()
+                .context("--repo .carry path has no parent")?
+                .to_path_buf())
+        } else {
+            Ok(p.to_path_buf())
+        }
+    } else {
+        std::env::current_dir().context("Failed to determine current directory")
+    }
 }

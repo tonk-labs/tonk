@@ -7,12 +7,12 @@
 //! `dialog.concept.with/*` attributes, and return all matching entities
 //! with output grouped under the concept's bookmark name.
 
-use crate::schema;
 use crate::site::Site;
 use crate::target::{Field, Target};
 use anyhow::Result;
 use dialog_query::Value;
 use std::collections::BTreeMap;
+use tonk_schema::runtime as schema;
 
 /// A concept field name mapped to its attribute selector (for display).
 struct FieldMapping {

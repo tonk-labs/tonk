@@ -13,7 +13,6 @@
 //! User-defined concepts resolve via `dialog.meta/name` -> concept entity ->
 //! `dialog.concept.with/*` claims -> attribute selectors.
 
-use crate::schema;
 use crate::site::Site;
 use crate::target::{Field, FirstArg, Target};
 use anyhow::{Context, Result};
@@ -21,6 +20,7 @@ use dialog_query::Value;
 use std::collections::BTreeMap;
 use std::slice::from_ref;
 use std::str::FromStr;
+use tonk_schema::runtime as schema;
 
 /// Execute `carry assert <TARGET>|<FILE>|- [this=<ENTITY>] [@name] [FIELD=VALUE...]`.
 ///
@@ -98,7 +98,7 @@ async fn assert_with_target(
 async fn retract_cardinality_one_values(
     site: &Site,
     entity: &dialog_query::Entity,
-    attr: &crate::schema::ClaimAttribute,
+    attr: &tonk_schema::runtime::ClaimAttribute,
     attr_selector: &str,
 ) -> Result<Vec<schema::AttributeStatement>> {
     let cardinality =

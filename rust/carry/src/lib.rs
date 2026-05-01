@@ -14,6 +14,8 @@ pub mod invite_cmd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_cmd;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod list_cmd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pull_cmd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod push_cmd;
@@ -31,9 +33,3 @@ pub mod status_cmd;
 pub mod target;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod telemetry;
-
-// ---------------------------------------------------------------------------
-// Retained internal library modules
-// ---------------------------------------------------------------------------
-#[cfg(not(target_arch = "wasm32"))]
-pub mod schema;

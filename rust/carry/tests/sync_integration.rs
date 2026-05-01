@@ -40,8 +40,9 @@ async fn isolated_site(label: &str) -> Result<Site> {
 
 /// Commit a single claim.
 async fn assert_claim(site: &Site, the: &str, of: &str, is: &str) -> Result<()> {
-    let entity = carry::schema::derive_entity(of)?;
-    let stmt = carry::schema::make_statement(the, entity, dialog_query::Value::String(is.into()))?;
+    let entity = tonk_schema::runtime::derive_entity(of)?;
+    let stmt =
+        tonk_schema::runtime::make_statement(the, entity, dialog_query::Value::String(is.into()))?;
     site.branch
         .transaction()
         .assert(stmt)
@@ -215,5 +216,181 @@ async fn bidirectional_sync(addr: AccessServiceAddress) -> Result<()> {
     values.sort();
     assert_eq!(values, vec!["alice's note", "bob's note"]);
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `carry join` (step 5b) — exercise join_cmd::execute end-to-end so we
+// catch regressions in the verifier-credentialed local-replica flow,
+// the renewal detection, and the wrong-subject error path.
+// ---------------------------------------------------------------------------
+
+/// Resolve a unique `Directory::At(...)` under the platform temp dir.
+/// Mirrors `isolated_site`'s naming convention.
+fn unique_at(label: &str) -> Directory {
+    Directory::At(
+        std::env::temp_dir()
+            .join(unique_name(label))
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[dialog_common::test]
+async fn carry_join_creates_replica_keyed_to_invited_subject(
+    addr: AccessServiceAddress,
+) -> Result<()> {
+    let alice = setup_owner("join-alice", &addr.access_service_url).await?;
+    assert_claim(&alice, "com.test/title", "note:1", "alice writes").await?;
+    alice.branch.push().perform(&alice.operator).await?;
+
+    // Mint a scoped invite addressed to bob's profile DID. Bob's
+    // profile is created in advance so we have a stable DID to
+    // delegate to; he discards the .carry/ that `Site::init`
+    // mints and joins fresh from a separate parent dir, which
+    // exercises `Site::init_from_invite`.
+    let bob_profile_location = unique_at("join-bob-profile");
+    let bob_setup_dir = tempfile::TempDir::new()?;
+    let bob_setup = Site::init(
+        bob_setup_dir.path(),
+        Some(bob_profile_location.clone()),
+        Some(unique_at("join-bob-setup-repo")),
+    )
+    .await?;
+    let bob_did = bob_setup.profile.did();
+    drop(bob_setup);
+    drop(bob_setup_dir);
+
+    let invite = carry::invite_cmd::create_invite(&alice, Some(&bob_did), None).await?;
+
+    // Bob joins from a fresh parent directory — no existing
+    // `.carry/`, so `join_cmd::execute` must create one keyed to
+    // alice's repo DID via `Site::init_from_invite`.
+    let bob_join_parent = tempfile::TempDir::new()?;
+    carry::join_cmd::execute(
+        Some(&invite.url),
+        Some(bob_join_parent.path()),
+        Some(bob_profile_location.clone()),
+    )
+    .await?;
+
+    // Re-resolve the joined site to inspect post-conditions.
+    let joined = Site::resolve(
+        Some(bob_join_parent.path()),
+        Some(bob_profile_location.clone()),
+    )
+    .await?;
+
+    assert_eq!(
+        joined.repo.did().to_string(),
+        alice.repo.did().to_string(),
+        "joined repo DID should equal the invited subject's DID",
+    );
+
+    // Bob's profile-meta must contain alice's replica (filtered
+    // through `list_cmd::list`, which strips the self-replica).
+    let spaces = carry::list_cmd::list(Some(bob_profile_location.clone())).await?;
+    assert!(
+        spaces
+            .iter()
+            .any(|r| r.subject.0.to_string() == alice.repo.did().to_string()),
+        "list should surface the joined replica",
+    );
+
+    // And the pull during join should have brought alice's claim
+    // through. Re-run pull for good measure (idempotent) and
+    // verify the data landed.
+    joined.branch.pull().perform(&joined.operator).await?;
+    let values = query_values(&joined, "com.test/title").await?;
+    assert_eq!(values, vec!["alice writes"]);
+
+    drop(bob_join_parent);
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn carry_join_renews_when_subject_matches(addr: AccessServiceAddress) -> Result<()> {
+    let alice = setup_owner("renew-alice", &addr.access_service_url).await?;
+    alice.branch.push().perform(&alice.operator).await?;
+
+    let bob_profile_location = unique_at("renew-bob-profile");
+    let bob_setup_dir = tempfile::TempDir::new()?;
+    let bob_setup = Site::init(
+        bob_setup_dir.path(),
+        Some(bob_profile_location.clone()),
+        Some(unique_at("renew-bob-setup-repo")),
+    )
+    .await?;
+    let bob_did = bob_setup.profile.did();
+    drop(bob_setup);
+    drop(bob_setup_dir);
+
+    let invite_one = carry::invite_cmd::create_invite(&alice, Some(&bob_did), None).await?;
+
+    // First join — fresh.
+    let bob_join_parent = tempfile::TempDir::new()?;
+    carry::join_cmd::execute(
+        Some(&invite_one.url),
+        Some(bob_join_parent.path()),
+        Some(bob_profile_location.clone()),
+    )
+    .await?;
+
+    // Second join into the same `.carry/` with a fresh invite for
+    // the same subject — should be detected as renewal and not
+    // error out. The remote is already wired so the second join
+    // must skip remote add (which would otherwise fail because
+    // `origin` exists).
+    let invite_two = carry::invite_cmd::create_invite(&alice, Some(&bob_did), None).await?;
+    carry::join_cmd::execute(
+        Some(&invite_two.url),
+        Some(bob_join_parent.path()),
+        Some(bob_profile_location.clone()),
+    )
+    .await?;
+
+    drop(bob_join_parent);
+    Ok(())
+}
+
+#[dialog_common::test]
+async fn carry_join_rejects_unrelated_carry_dir(addr: AccessServiceAddress) -> Result<()> {
+    let alice = setup_owner("reject-alice", &addr.access_service_url).await?;
+    alice.branch.push().perform(&alice.operator).await?;
+
+    let bob_profile_location = unique_at("reject-bob-profile");
+
+    // Bob has an unrelated, freshly-init'd `.carry/` (signer
+    // credential, fresh DID — not alice's subject).
+    let bob_existing_dir = tempfile::TempDir::new()?;
+    let bob_existing = Site::init(
+        bob_existing_dir.path(),
+        Some(bob_profile_location.clone()),
+        Some(unique_at("reject-bob-existing-repo")),
+    )
+    .await?;
+    let bob_did = bob_existing.profile.did();
+    drop(bob_existing);
+
+    // Mint an invite for bob, then attempt to join inside the
+    // existing unrelated `.carry/`. join_cmd should refuse —
+    // silently overlaying alice's subject onto bob's pre-existing
+    // repo would corrupt the storage and meta-branch shape.
+    let invite = carry::invite_cmd::create_invite(&alice, Some(&bob_did), None).await?;
+    let result = carry::join_cmd::execute(
+        Some(&invite.url),
+        Some(bob_existing_dir.path()),
+        Some(bob_profile_location.clone()),
+    )
+    .await;
+
+    let err = result.expect_err("join into unrelated .carry/ should error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("for a different space"),
+        "unexpected error message: {msg}",
+    );
+
+    drop(bob_existing_dir);
     Ok(())
 }

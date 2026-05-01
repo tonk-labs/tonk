@@ -4,11 +4,11 @@
 //! (attribute, concept, bookmark) so they can be queried and used
 //! immediately.
 
-use crate::schema;
 use crate::site::Site;
 use anyhow::Result;
 use dialog_query::Value;
 use std::path::Path;
+use tonk_schema::runtime as schema;
 
 /// Execute `carry init [<name>] [--repo <REPO>]`.
 ///

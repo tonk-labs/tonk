@@ -131,6 +131,10 @@ mod inner {
             invite_url: Option<String>,
         },
 
+        /// List every space this profile knows about
+        #[command(alias = "ls")]
+        List {},
+
         /// Manage sync remotes for this repository
         Remote {
             #[command(subcommand)]
@@ -248,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Identity { .. } => "identity",
         Commands::Invite { .. } => "invite",
         Commands::Join { .. } => "join",
+        Commands::List { .. } => "list",
         Commands::Remote { .. } => "remote",
         Commands::Push { .. } => "push",
         Commands::Pull { .. } => "pull",
@@ -327,6 +332,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Join { invite_url } => {
             carry::join_cmd::execute(invite_url.as_deref(), repo_path, None).await?;
+        }
+        Commands::List {} => {
+            carry::list_cmd::execute(None).await?;
         }
         Commands::Remote { command } => match command {
             RemoteCommands::Add {
@@ -637,5 +645,19 @@ mod tests {
             }
             _ => panic!("Expected Join command"),
         }
+    }
+
+    // -- List -------------------------------------------------------------------
+
+    #[test]
+    fn list_parses() {
+        let cli = Cli::try_parse_from(["carry", "list"]).unwrap();
+        assert!(matches!(cli.command, Commands::List {}));
+    }
+
+    #[test]
+    fn list_alias_ls() {
+        let cli = Cli::try_parse_from(["carry", "ls"]).unwrap();
+        assert!(matches!(cli.command, Commands::List {}));
     }
 }

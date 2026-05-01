@@ -11,11 +11,14 @@
 
 use crate::identity_cmd::{self, PROFILE_NAME, ProfileLocation};
 use anyhow::{Context, Result};
-use dialog_credentials::Credential;
+use dialog_capability::Subject;
+use dialog_credentials::{Credential, Ed25519Verifier};
+use dialog_effects::space::{Space, SpaceExt as _};
 use dialog_effects::storage::Directory;
 use dialog_operator::{Operator, Profile};
 use dialog_repository::{Branch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::NativeSpace;
+use dialog_varsig::Did;
 use std::path::{Path, PathBuf};
 use tonk_schema::{MetaStore, Name, Replica};
 
@@ -280,6 +283,81 @@ impl Site {
         let repo_dir = Self::repo_directory(&carry_dir, repo_location);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
+        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let (profile_meta, profile_replica) =
+            Self::open_profile_meta(&id.operator, &id.profile, &replica).await?;
+
+        Ok(Self {
+            root: carry_dir,
+            profile: id.profile,
+            operator: id.operator,
+            repo,
+            branch,
+            meta,
+            replica,
+            profile_meta,
+            profile_replica,
+            profile_location,
+        })
+    }
+
+    /// Create a new `.carry/` whose local repo is keyed to an
+    /// external `subject` DID — the one the invite is for.
+    ///
+    /// Mirrors tonk-worker's join flow: builds a verifier-only
+    /// credential for `subject` and mounts it as the local space,
+    /// so the local repo's DID equals the invited subject's DID.
+    /// Commits are signed by operator/profile authority rather than
+    /// the (verifier-only) repo credential. This keeps
+    /// `Replica.this` (`hash(profile, subject)`) — and the sigil
+    /// glyph derived from it — stable across every recipient and
+    /// device that joins this space.
+    ///
+    /// The caller is responsible for confirming there is no
+    /// existing `.carry/` at the target location (or that any
+    /// existing one is intentionally being created over). The
+    /// `dialog.create` call will fail if a space already exists at
+    /// `(profile, REPO_NAME)` under the operator's base.
+    pub async fn init_from_invite(
+        parent: &Path,
+        subject: Did,
+        profile_location: Option<ProfileLocation>,
+        repo_location: Option<RepoLocation>,
+    ) -> Result<Self> {
+        let carry_dir = parent.join(".carry");
+        std::fs::create_dir_all(&carry_dir)
+            .with_context(|| format!("Failed to create {}", carry_dir.display()))?;
+
+        let repo_dir = Self::repo_directory(&carry_dir, repo_location);
+        let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
+
+        // Verifier-only credential keyed to the invited subject.
+        // Local repo's DID == subject DID.
+        let verifier: Ed25519Verifier = subject
+            .to_string()
+            .parse()
+            .with_context(|| format!("Invite subject is not a valid Ed25519 did:key: {subject}"))?;
+        let credential = Credential::from(verifier);
+        let space_capability = Subject::from(id.profile.did()).attenuate(Space::new(REPO_NAME));
+        let space_credential = space_capability
+            .create(credential)
+            .perform(&id.operator)
+            .await
+            .context("Failed to create local replica for invited subject")?;
+        let repo: Repository<Credential> = Repository::from(space_credential);
+
+        let branch = repo
+            .branch("main")
+            .open()
+            .perform(&id.operator)
+            .await
+            .context("Failed to open main branch")?;
+        let meta = repo
+            .branch(META_BRANCH)
+            .open()
+            .perform(&id.operator)
+            .await
+            .context("Failed to open meta branch")?;
         let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
         let (profile_meta, profile_replica) =
             Self::open_profile_meta(&id.operator, &id.profile, &replica).await?;

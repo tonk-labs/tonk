@@ -286,7 +286,7 @@ async fn test_assert_with_this_entity() {
     .unwrap();
 
     // Derive the same entity to update it
-    let entity = carry::schema::derive_entity_from_fields(&[(
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[(
         "io.test.person/name".to_string(),
         "Alice".to_string(),
     )])
@@ -339,7 +339,7 @@ async fn test_assert_cardinality_one_replaces_value() {
     .unwrap();
 
     // Derive the entity
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Alice".to_string()),
         ("io.test.person/age".to_string(), "28".to_string()),
     ])
@@ -362,13 +362,14 @@ async fn test_assert_cardinality_one_replaces_value() {
     .unwrap();
 
     // Query: age should be [29], not [28, 29]
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
-        .await
-        .unwrap();
+    let age_values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
+            .await
+            .unwrap();
     assert_eq!(
         age_values.len(),
         1,
@@ -383,9 +384,10 @@ async fn test_assert_cardinality_one_replaces_value() {
 
     // Name should still be Alice (unchanged)
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let name_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
-        .await
-        .unwrap();
+    let name_values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+            .await
+            .unwrap();
     assert_eq!(name_values.len(), 1);
     assert_eq!(
         name_values[0],
@@ -424,7 +426,7 @@ async fn test_retract_specific_field() {
     .await
     .unwrap();
 
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Alice".to_string()),
         ("io.test.person/age".to_string(), "28".to_string()),
     ])
@@ -467,7 +469,7 @@ async fn test_retract_all_fields() {
     .await
     .unwrap();
 
-    let entity = carry::schema::derive_entity_from_fields(&[(
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[(
         "io.test.person/name".to_string(),
         "Alice".to_string(),
     )])
@@ -705,7 +707,7 @@ async fn test_roundtrip_triples_yaml() {
     .unwrap();
 
     // 2. Derive the entity DID (same deterministic derivation as the CLI uses)
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Alice".to_string()),
         ("io.test.person/age".to_string(), "28".to_string()),
     ])
@@ -713,10 +715,10 @@ async fn test_roundtrip_triples_yaml() {
 
     // 3. Verify we can fetch the data
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+    let values = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
@@ -747,18 +749,20 @@ async fn test_roundtrip_triples_yaml() {
     // 6. Verify the data still exists (round-trip preserved it)
 
     let name_attr2 = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr2)
-        .await
-        .unwrap();
+    let values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr2)
+            .await
+            .unwrap();
     assert_eq!(values.len(), 1);
-    assert_eq!(carry::schema::format_value(&values[0]), "Alice");
+    assert_eq!(tonk_schema::runtime::format_value(&values[0]), "Alice");
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
-        .await
-        .unwrap();
+    let age_values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
+            .await
+            .unwrap();
     assert_eq!(age_values.len(), 1);
-    assert_eq!(carry::schema::format_value(&age_values[0]), "28");
+    assert_eq!(tonk_schema::runtime::format_value(&age_values[0]), "28");
 }
 
 /// Round-trip: asserted notation YAML → assert from file → verify.
@@ -790,7 +794,7 @@ async fn test_roundtrip_asserted_notation_yaml() {
     .unwrap();
 
     // 2. Derive entity and build asserted notation YAML
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Bob".to_string()),
         ("io.test.person/age".to_string(), "35".to_string()),
     ])
@@ -819,15 +823,15 @@ async fn test_roundtrip_asserted_notation_yaml() {
         .unwrap();
 
     // 4. Verify data is still intact
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+    let values = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    assert_eq!(carry::schema::format_value(&values[0]), "Bob");
+    assert_eq!(tonk_schema::runtime::format_value(&values[0]), "Bob");
 }
 
 /// Round-trip: asserted notation YAML with multi-valued fields.
@@ -849,12 +853,12 @@ async fn test_roundtrip_asserted_notation_multivalued() {
         .unwrap();
 
     // Verify
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
     let tag_attr = ClaimAttribute::from_str("io.test.person/tag").unwrap();
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, tag_attr)
+    let values = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, tag_attr)
         .await
         .unwrap();
     assert_eq!(
@@ -882,24 +886,25 @@ async fn test_assert_from_eav_triple_yaml() {
         .unwrap();
 
     // Verify
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
 
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+    let values = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    assert_eq!(carry::schema::format_value(&values[0]), "Alice");
+    assert_eq!(tonk_schema::runtime::format_value(&values[0]), "Alice");
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
-        .await
-        .unwrap();
+    let age_values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
+            .await
+            .unwrap();
     assert_eq!(age_values.len(), 1);
-    assert_eq!(carry::schema::format_value(&age_values[0]), "28");
+    assert_eq!(tonk_schema::runtime::format_value(&age_values[0]), "28");
 }
 
 /// Retract from EAV triple YAML file.
@@ -930,7 +935,7 @@ async fn test_retract_from_eav_triple_yaml() {
     .await
     .unwrap();
 
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Alice".to_string()),
         ("io.test.person/age".to_string(), "28".to_string()),
     ])
@@ -938,12 +943,13 @@ async fn test_retract_from_eav_triple_yaml() {
 
     // Verify data exists
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr.clone())
-        .await
-        .unwrap();
+    let values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr.clone())
+            .await
+            .unwrap();
     assert_eq!(values.len(), 1);
 
     // Now retract the age via EAV triple YAML file
@@ -955,16 +961,17 @@ async fn test_retract_from_eav_triple_yaml() {
 
     // Verify age is retracted
 
-    let values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
+    let values = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
         .await
         .unwrap();
     assert_eq!(values.len(), 0, "Age should be retracted");
 
     // Name should still exist
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let name_values = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
-        .await
-        .unwrap();
+    let name_values =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+            .await
+            .unwrap();
     assert_eq!(name_values.len(), 1, "Name should still exist");
 }
 
@@ -996,7 +1003,7 @@ async fn test_retract_from_asserted_yaml() {
     .await
     .unwrap();
 
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Charlie".to_string()),
         ("io.test.person/age".to_string(), "40".to_string()),
     ])
@@ -1026,18 +1033,20 @@ async fn test_retract_from_asserted_yaml() {
 
     // Verify both fields are retracted
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let name_vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
-        .await
-        .unwrap();
+    let name_vals =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+            .await
+            .unwrap();
     assert_eq!(name_vals.len(), 0, "Name should be retracted");
 
     let age_attr = ClaimAttribute::from_str("io.test.person/age").unwrap();
-    let age_vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
-        .await
-        .unwrap();
+    let age_vals =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, age_attr)
+            .await
+            .unwrap();
     assert_eq!(age_vals.len(), 0, "Age should be retracted");
 }
 
@@ -1063,14 +1072,15 @@ async fn test_retract_from_json_content() {
         .unwrap();
 
     // Verify exists
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr.clone())
-        .await
-        .unwrap();
+    let vals =
+        tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr.clone())
+            .await
+            .unwrap();
     assert_eq!(vals.len(), 1);
 
     // Retract via JSON
@@ -1088,7 +1098,7 @@ async fn test_retract_from_json_content() {
 
     // Verify retracted
 
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+    let vals = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 0, "Should be retracted");
@@ -1122,7 +1132,7 @@ async fn test_roundtrip_query_retract_triples() {
     .await
     .unwrap();
 
-    let entity = carry::schema::derive_entity_from_fields(&[
+    let entity = tonk_schema::runtime::derive_entity_from_fields(&[
         ("io.test.person/name".to_string(), "Eve".to_string()),
         ("io.test.person/age".to_string(), "25".to_string()),
     ])
@@ -1152,11 +1162,11 @@ async fn test_roundtrip_query_retract_triples() {
         .unwrap();
 
     // Verify both fields are retracted
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let name_attr = ClaimAttribute::from_str("io.test.person/name").unwrap();
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
+    let vals = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, name_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 0, "Name should be retracted");
@@ -1201,38 +1211,38 @@ async fn test_triples_format_contract() {
         .unwrap();
 
     // Verify each value was stored
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let entity = dialog_query::Entity::from_str(entity_did).unwrap();
 
     let text_attr = ClaimAttribute::from_str("io.test.data/text").unwrap();
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, text_attr)
+    let vals = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, text_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
-    assert_eq!(carry::schema::format_value(&vals[0]), "hello world");
+    assert_eq!(tonk_schema::runtime::format_value(&vals[0]), "hello world");
 
     let num_attr = ClaimAttribute::from_str("io.test.data/number").unwrap();
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, num_attr)
+    let vals = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, num_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
-    assert_eq!(carry::schema::format_value(&vals[0]), "42");
+    assert_eq!(tonk_schema::runtime::format_value(&vals[0]), "42");
 
     let neg_attr = ClaimAttribute::from_str("io.test.data/negative").unwrap();
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, neg_attr)
+    let vals = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, neg_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
-    assert_eq!(carry::schema::format_value(&vals[0]), "-7");
+    assert_eq!(tonk_schema::runtime::format_value(&vals[0]), "-7");
 
     let flag_attr = ClaimAttribute::from_str("io.test.data/flag").unwrap();
-    let vals = carry::schema::fetch_values(&ctx.branch, &ctx.operator, &entity, flag_attr)
+    let vals = tonk_schema::runtime::fetch_values(&ctx.branch, &ctx.operator, &entity, flag_attr)
         .await
         .unwrap();
     assert_eq!(vals.len(), 1);
-    assert_eq!(carry::schema::format_value(&vals[0]), "true");
+    assert_eq!(tonk_schema::runtime::format_value(&vals[0]), "true");
 }
 
 /// Query with --format triples doesn't error.
@@ -1483,7 +1493,7 @@ async fn test_init_bootstraps_builtins() {
     let ctx = env.ctx().await;
 
     for name in &["attribute", "concept", "bookmark"] {
-        let entity = carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, name)
+        let entity = tonk_schema::runtime::lookup_entity_by_name(&ctx.branch, &ctx.operator, name)
             .await
             .unwrap();
         assert!(
@@ -1501,7 +1511,7 @@ async fn test_bootstrap_attribute_concept_has_fields() {
     let env = TestEnv::new().await.unwrap();
     let ctx = env.ctx().await;
 
-    let concept = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "attribute")
+    let concept = tonk_schema::runtime::resolve_concept(&ctx.branch, &ctx.operator, "attribute")
         .await
         .unwrap();
 
@@ -1561,18 +1571,19 @@ async fn test_assert_attribute_creates_entity() {
 
     // Verify the attribute entity exists with the right dialog.attribute/id
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let attr_id = ClaimAttribute::from_str("dialog.attribute/id").unwrap();
-    let entities = carry::schema::find_entities_by_attribute(&ctx.branch, &ctx.operator, attr_id)
-        .await
-        .unwrap();
+    let entities =
+        tonk_schema::runtime::find_entities_by_attribute(&ctx.branch, &ctx.operator, attr_id)
+            .await
+            .unwrap();
 
     // Should find at least the one we just created (plus bootstrapped ones)
     let mut found = false;
     for entity in &entities {
-        let ids = carry::schema::fetch_string_values(
+        let ids = tonk_schema::runtime::fetch_string_values(
             &ctx.branch,
             &ctx.operator,
             entity,
@@ -1624,9 +1635,10 @@ async fn test_assert_attribute_with_name() {
 
     // Verify the attribute entity is discoverable by name
 
-    let entity = carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, "person-name")
-        .await
-        .unwrap();
+    let entity =
+        tonk_schema::runtime::lookup_entity_by_name(&ctx.branch, &ctx.operator, "person-name")
+            .await
+            .unwrap();
     assert!(
         entity.is_some(),
         "Attribute should be discoverable as 'person-name' via dialog.meta/name"
@@ -1663,15 +1675,17 @@ async fn test_assert_attribute_defaults_cardinality() {
 
     // The entity should have been derived with cardinality=one
     let entity =
-        carry::schema::derive_attribute_entity("io.test.thing/color", "Text", "one").unwrap();
+        tonk_schema::runtime::derive_attribute_entity("io.test.thing/color", "Text", "one")
+            .unwrap();
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let card_attr = ClaimAttribute::from_str("dialog.attribute/cardinality").unwrap();
-    let values = carry::schema::fetch_string_values(&ctx.branch, &ctx.operator, &entity, card_attr)
-        .await
-        .unwrap();
+    let values =
+        tonk_schema::runtime::fetch_string_values(&ctx.branch, &ctx.operator, &entity, card_attr)
+            .await
+            .unwrap();
     assert_eq!(
         values,
         vec!["one".to_string()],
@@ -1684,18 +1698,23 @@ async fn test_assert_attribute_defaults_cardinality() {
 #[tokio::test]
 async fn test_assert_attribute_deterministic_entity() {
     let entity_a =
-        carry::schema::derive_attribute_entity("io.test.person/name", "Text", "one").unwrap();
+        tonk_schema::runtime::derive_attribute_entity("io.test.person/name", "Text", "one")
+            .unwrap();
     let entity_b =
-        carry::schema::derive_attribute_entity("io.test.person/name", "Text", "one").unwrap();
+        tonk_schema::runtime::derive_attribute_entity("io.test.person/name", "Text", "one")
+            .unwrap();
     assert_eq!(
         entity_a, entity_b,
         "Same attribute definition should produce same entity"
     );
 
     // Different type should produce different entity
-    let entity_c =
-        carry::schema::derive_attribute_entity("io.test.person/name", "UnsignedInteger", "one")
-            .unwrap();
+    let entity_c = tonk_schema::runtime::derive_attribute_entity(
+        "io.test.person/name",
+        "UnsignedInteger",
+        "one",
+    )
+    .unwrap();
     assert_ne!(
         entity_a, entity_c,
         "Different value type should produce different entity"
@@ -1788,7 +1807,7 @@ async fn test_assert_concept_with_named_attrs() {
     // Verify concept is discoverable by name
 
     let concept_entity =
-        carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, "test-person")
+        tonk_schema::runtime::lookup_entity_by_name(&ctx.branch, &ctx.operator, "test-person")
             .await
             .unwrap();
     assert!(
@@ -1797,7 +1816,7 @@ async fn test_assert_concept_with_named_attrs() {
     );
 
     // Verify concept resolves with correct fields
-    let resolved = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "test-person")
+    let resolved = tonk_schema::runtime::resolve_concept(&ctx.branch, &ctx.operator, "test-person")
         .await
         .unwrap();
     assert_eq!(
@@ -1845,7 +1864,7 @@ async fn test_assert_concept_with_selector_attrs() {
 
     // Verify concept resolves
 
-    let resolved = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "test-widget")
+    let resolved = tonk_schema::runtime::resolve_concept(&ctx.branch, &ctx.operator, "test-widget")
         .await
         .unwrap();
     assert_eq!(resolved.with_fields.len(), 1);
@@ -1995,15 +2014,16 @@ async fn test_concept_query_resolves_by_name() {
 
     // Verify at the data level that the concept resolved correctly
 
-    let resolved = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "cq-person")
+    let resolved = tonk_schema::runtime::resolve_concept(&ctx.branch, &ctx.operator, "cq-person")
         .await
         .unwrap();
 
     // Find entities that match the concept's attributes
-    let selectors = carry::schema::concept_attribute_selectors(&resolved);
-    let entities = carry::schema::find_entities_by_concept(&ctx.branch, &ctx.operator, &selectors)
-        .await
-        .unwrap();
+    let selectors = tonk_schema::runtime::concept_attribute_selectors(&resolved);
+    let entities =
+        tonk_schema::runtime::find_entities_by_concept(&ctx.branch, &ctx.operator, &selectors)
+            .await
+            .unwrap();
     assert_eq!(
         entities.len(),
         2,
@@ -2032,18 +2052,21 @@ async fn test_concept_query_with_filter() {
 
     // The query itself printed output; verify at data level that only Alice matches
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let name_attr = ClaimAttribute::from_str("io.test.cq/name").unwrap();
-    let all_entities =
-        carry::schema::find_entities_by_attribute(&ctx.branch, &ctx.operator, name_attr.clone())
-            .await
-            .unwrap();
+    let all_entities = tonk_schema::runtime::find_entities_by_attribute(
+        &ctx.branch,
+        &ctx.operator,
+        name_attr.clone(),
+    )
+    .await
+    .unwrap();
 
     let mut alice_count = 0;
     for entity in &all_entities {
-        let names = carry::schema::fetch_string_values(
+        let names = tonk_schema::runtime::fetch_string_values(
             &ctx.branch,
             &ctx.operator,
             entity,
@@ -2116,7 +2139,7 @@ async fn test_domain_assert_with_name() {
 
     // Verify the entity is discoverable by the @name
 
-    let entity = carry::schema::lookup_entity_by_name(&ctx.branch, &ctx.operator, "alice")
+    let entity = tonk_schema::runtime::lookup_entity_by_name(&ctx.branch, &ctx.operator, "alice")
         .await
         .unwrap();
     assert!(
@@ -2138,18 +2161,21 @@ async fn test_retract_concept_field() {
 
     // Find Alice's entity DID
 
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let name_attr = ClaimAttribute::from_str("io.test.cq/name").unwrap();
-    let all_entities =
-        carry::schema::find_entities_by_attribute(&ctx.branch, &ctx.operator, name_attr.clone())
-            .await
-            .unwrap();
+    let all_entities = tonk_schema::runtime::find_entities_by_attribute(
+        &ctx.branch,
+        &ctx.operator,
+        name_attr.clone(),
+    )
+    .await
+    .unwrap();
 
     let mut alice_entity = None;
     for entity in &all_entities {
-        let names = carry::schema::fetch_string_values(
+        let names = tonk_schema::runtime::fetch_string_values(
             &ctx.branch,
             &ctx.operator,
             entity,
@@ -2181,19 +2207,27 @@ async fn test_retract_concept_field() {
     // Verify age is gone but name remains
 
     let age_attr = ClaimAttribute::from_str("io.test.cq/age").unwrap();
-    let age_values =
-        carry::schema::fetch_string_values(&ctx.branch, &ctx.operator, &alice_entity, age_attr)
-            .await
-            .unwrap();
+    let age_values = tonk_schema::runtime::fetch_string_values(
+        &ctx.branch,
+        &ctx.operator,
+        &alice_entity,
+        age_attr,
+    )
+    .await
+    .unwrap();
     assert!(
         age_values.is_empty(),
         "Age should have been retracted from Alice"
     );
 
-    let name_values =
-        carry::schema::fetch_string_values(&ctx.branch, &ctx.operator, &alice_entity, name_attr)
-            .await
-            .unwrap();
+    let name_values = tonk_schema::runtime::fetch_string_values(
+        &ctx.branch,
+        &ctx.operator,
+        &alice_entity,
+        name_attr,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         name_values,
         vec!["Alice".to_string()],
@@ -2286,7 +2320,7 @@ async fn test_attribute_concept_data_roundtrip() {
 
     // 4. Verify concept resolves correctly
 
-    let concept = carry::schema::resolve_concept(&ctx.branch, &ctx.operator, "rt-book")
+    let concept = tonk_schema::runtime::resolve_concept(&ctx.branch, &ctx.operator, "rt-book")
         .await
         .unwrap();
     assert_eq!(concept.with_fields.len(), 2);
@@ -2294,34 +2328,35 @@ async fn test_attribute_concept_data_roundtrip() {
     assert_eq!(concept.with_fields["pages"].1, "io.test.book/pages");
 
     // 5. Find entities matching the concept
-    let selectors = carry::schema::concept_attribute_selectors(&concept);
-    let entities = carry::schema::find_entities_by_concept(&ctx.branch, &ctx.operator, &selectors)
-        .await
-        .unwrap();
+    let selectors = tonk_schema::runtime::concept_attribute_selectors(&concept);
+    let entities =
+        tonk_schema::runtime::find_entities_by_concept(&ctx.branch, &ctx.operator, &selectors)
+            .await
+            .unwrap();
     assert_eq!(entities.len(), 1, "Should find exactly 1 book entity");
 
     // 6. Verify the data values
-    use carry::schema::ClaimAttribute;
     use std::str::FromStr;
+    use tonk_schema::runtime::ClaimAttribute;
 
     let title_attr = ClaimAttribute::from_str("io.test.book/title").unwrap();
     let pages_attr = ClaimAttribute::from_str("io.test.book/pages").unwrap();
 
     let title_val =
-        carry::schema::fetch_value(&ctx.branch, &ctx.operator, &entities[0], title_attr)
+        tonk_schema::runtime::fetch_value(&ctx.branch, &ctx.operator, &entities[0], title_attr)
             .await
             .unwrap();
     assert_eq!(
-        title_val.map(|v| carry::schema::format_value(&v)),
+        title_val.map(|v| tonk_schema::runtime::format_value(&v)),
         Some("Moby Dick".to_string())
     );
 
     let pages_val =
-        carry::schema::fetch_value(&ctx.branch, &ctx.operator, &entities[0], pages_attr)
+        tonk_schema::runtime::fetch_value(&ctx.branch, &ctx.operator, &entities[0], pages_attr)
             .await
             .unwrap();
     assert_eq!(
-        pages_val.map(|v| carry::schema::format_value(&v)),
+        pages_val.map(|v| tonk_schema::runtime::format_value(&v)),
         Some("635".to_string())
     );
 
@@ -2564,7 +2599,7 @@ async fn test_join_site_can_write_and_read_data() {
     .await
     .unwrap();
 
-    carry::schema::bootstrap_builtins(&joined.branch, &joined.operator)
+    tonk_schema::runtime::bootstrap_builtins(&joined.branch, &joined.operator)
         .await
         .unwrap();
 
@@ -2598,5 +2633,47 @@ async fn test_join_site_can_write_and_read_data() {
     assert_eq!(
         name_values[0],
         dialog_query::Value::String("Alice".to_string())
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// List
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_list_returns_initialized_repo() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    // After `Site::init`, profile-meta has the profile self-replica
+    // and this carry repo's replica. `list_cmd::list` should filter
+    // out the self-replica and surface exactly the carry repo.
+    let spaces = carry::list_cmd::list(Some(env.profile_location.clone()))
+        .await
+        .expect("list should succeed");
+
+    assert_eq!(spaces.len(), 1, "expected exactly the carry repo replica");
+    assert_eq!(
+        spaces[0].subject.0.to_string(),
+        site.repo.did().to_string(),
+        "subject should match the carry repo's DID",
+    );
+}
+
+#[tokio::test]
+async fn test_list_omits_profile_self_replica() {
+    let env = TestEnv::new().await.unwrap();
+    let site = env.site();
+
+    let spaces = carry::list_cmd::list(Some(env.profile_location.clone()))
+        .await
+        .expect("list should succeed");
+
+    let profile_did = site.profile.did().to_string();
+    assert!(
+        spaces
+            .iter()
+            .all(|r| r.subject.0.to_string() != profile_did),
+        "profile self-replica must not appear in list output",
     );
 }
