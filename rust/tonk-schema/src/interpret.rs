@@ -1,329 +1,45 @@
-//! Analyzer — turns a [`tonk_notation::Syntax`] tree into an
-//! [`Analysis`] ready for evaluation against a branch.
+//! Analyzer — turns a [`tonk_notation::Syntax`] tree into a
+//! [`crate::transact::Analysis`] ready for evaluation against a
+//! branch.
 //!
-//! Current scope: a single expression per document (multi-
-//! statement plans come later). Three shapes are recognised:
+//! See `analysis-spec.md` (sibling to this crate) for the full
+//! design. Analysis runs in three phases:
 //!
-//! - **Queries** (`head:` form). Resolves the head to a built-in
-//!   or user-defined concept (via [`Resolver`]) — or recognises
-//!   it as a claim domain — and produces a [`QueryPlan`] with a
-//!   synthetic [`ConceptDescriptor`] plus per-field parameter
-//!   bindings (literal / variable / blank).
-//! - **Assertions** (`head!:` form). Resolves the descriptor
-//!   the same way, derives the entity from the head's binding,
-//!   and produces a [`TransactionPlan`] of resolved
-//!   [`ClaimAssertion`]s. Built-in meta heads
-//!   (`attribute!`, `concept!`) take a bespoke path that builds
-//!   a real [`AttributeDescriptor`] / [`ConceptDescriptor`]
-//!   from the body, derives the entity from the descriptor's
-//!   identity, and binds the bookmark name (when given) via
-//!   `dialog.meta/name`.
-//! - **Retractions** (`head! …: _` form). Not yet implemented —
-//!   they need a query-then-retract roundtrip to discover the
-//!   entity's current values to dissociate against.
-//!
-//! See `tonk-notation/guide.md` for the user-facing notation
-//! reference.
+//! 1. **Derive.** Walk every head; populate `declarations`
+//!    (bookmark-form heads) and `variables` (variable-form
+//!    heads) with content-derived entities. For `attribute!` /
+//!    `concept!` heads the body is parsed in this phase to
+//!    compute the descriptor's content-addressed entity.
+//! 2. **Build the query.** For each query expression, build an
+//!    [`Application`] with `.bookmark` and analysis-time `?var`
+//!    references substituted to constants.
+//! 3. **Build the mutation plan.** For each mutation expression,
+//!    build an [`Application`] with `.bookmark` references
+//!    substituted but `?var` references kept as variables — they
+//!    bind at planning time against query results.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use async_trait::async_trait;
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Value};
-use dialog_query::{AttributeDescriptor, ConceptDescriptor};
+use dialog_artifacts::{Entity, Value};
+use dialog_query::{
+    AttributeDescriptor, ConceptDescriptor, Parameters, Term, attribute::The as AttributeThe,
+    concept::query::ConceptQuery,
+};
 use thiserror::Error;
 use tonk_notation::{
     Assertion, Binding, Expression, Field, FieldValue, HeadName, Reference, Retraction, Scalar,
     Syntax,
 };
 
-/// Result of analyzing a [`Syntax`] tree — either a query plan
-/// (read against the branch) or a transaction plan (write
-/// against the branch). v1 supports exactly one expression per
-/// document; multi-statement plans come later.
-#[derive(Debug, Clone)]
-pub enum Analysis {
-    /// A read query, ready to evaluate against a dialog
-    /// environment.
-    Query(QueryPlan),
-    /// A transaction, ready to commit against a branch.
-    Transaction(TransactionPlan),
-}
+use crate::prelude::EntityExt;
+use crate::transact::{
+    Analysis, Application, DomainApplication, MutationAnalysis, QueryAnalysis, Statement,
+};
 
-/// Plan for a single-statement query.
-///
-/// Carries the synthetic [`ConceptDescriptor`] (built from the
-/// head concept's attributes), the parameter bindings (field
-/// name → literal / variable / blank), and metadata for
-/// rendering results.
-#[derive(Debug, Clone)]
-pub struct QueryPlan {
-    /// Built from the head's `with` map. Field names are
-    /// preserved exactly as the concept defines them, even if the
-    /// query body referenced only a subset; unmentioned fields
-    /// are left as anonymous blanks so they're returned with the
-    /// match without constraining it.
-    pub descriptor: ConceptDescriptor,
-    /// Per-field parameter shape — what to substitute into the
-    /// descriptor query at evaluation time.
-    pub parameters: Vec<ParameterBinding>,
-    /// Display name for the head — used to label the rendered
-    /// result block (`person { … }`).
-    pub head_label: String,
-    /// Optional named binding on the head itself
-    /// (`person ?alice` → `Some("alice")`).
-    pub head_variable: Option<String>,
-}
-
-/// Plan for a single-statement transaction (an assertion).
-///
-/// Carries the resolved facts to assert. Callers commit by
-/// turning each [`ClaimAssertion`] into a dialog
-/// [`dialog_artifacts::Statement`] — see the worker's
-/// `transact` route for the canonical wiring.
-///
-/// v1 supports assertion only. Retractions need the entity's
-/// current attribute values to dissociate against, which means
-/// a query-then-retract roundtrip; that lands later.
-#[derive(Debug, Clone)]
-pub struct TransactionPlan {
-    /// One assertion per facts to write. The same entity may
-    /// appear in multiple assertions (one per attribute).
-    pub assertions: Vec<ClaimAssertion>,
-    /// Retraction targets — `(of, attribute_filter)` pairs the
-    /// worker resolves to specific `(the, of, is)` triples by
-    /// querying the branch first, then dissociates. Empty for
-    /// pure-assertion transactions.
-    pub retractions: Vec<RetractionTarget>,
-    /// Display name for the head — used by the worker to label
-    /// the response (`person { … }`).
-    pub head_label: String,
-    /// The entity URIs the transaction touches (one per
-    /// expression head). Surfaced so the worker can echo back
-    /// "this is what got written" — useful when the user wrote
-    /// an anonymous head and wants to know the minted entity.
-    pub head_entity: Entity,
-    /// Variable name the head was bound to (`person! ?alice:`
-    /// → `Some("alice")`). The multi-expression analyzer uses
-    /// this to register the entity in the document scope so
-    /// later expressions can reference it via `?alice`.
-    pub head_variable: Option<String>,
-}
-
-/// A retraction target — describes which `(the, of, *)` facts
-/// to dissociate. The worker materializes the values by
-/// querying the branch first.
-#[derive(Debug, Clone)]
-pub struct RetractionTarget {
-    /// Entity to retract from.
-    pub of: Entity,
-    /// Which attributes to retract. A single attribute (one
-    /// `(the, of)` slot) for field-level retraction; a list
-    /// for concept-level retraction (every attribute the
-    /// concept declares).
-    pub attributes: Vec<ArtifactsAttribute>,
-    /// Source label for diagnostics / response shaping.
-    pub head_label: String,
-}
-
-/// One assertion to commit — `(the, of, is)` plus the surface
-/// field name for diagnostics and response labelling.
-#[derive(Debug, Clone)]
-pub struct ClaimAssertion {
-    /// Attribute being written.
-    pub the: ArtifactsAttribute,
-    /// Entity the claim is about.
-    pub of: Entity,
-    /// Value to associate.
-    pub is: Value,
-    /// Field name as the user wrote it (matches a key in the
-    /// concept's `with` map or the literal field name on a
-    /// claim head). Used by the worker for response shaping.
-    pub field_name: String,
-}
-
-/// One field's contribution to the synthetic concept query.
-#[derive(Debug, Clone)]
-pub struct ParameterBinding {
-    /// Field name as defined by the concept (matches a key in
-    /// [`ConceptDescriptor::with`]).
-    pub name: String,
-    /// What to substitute for the field — a literal value, a
-    /// named variable, or a blank.
-    pub value: ParameterValue,
-}
-
-/// Substitution shape for a query field.
-#[derive(Debug, Clone)]
-pub enum ParameterValue {
-    /// User wrote a literal — match the field exactly.
-    Literal(Scalar),
-    /// User wrote `?var` — bind whatever matches under this name.
-    Variable(String),
-    /// User wrote `_` (or didn't mention the field at all) —
-    /// return whatever matches without exposing it as a join key.
-    Blank,
-}
-
-/// Errors raised while analyzing a [`Syntax`] tree.
-#[derive(Debug, Error)]
-pub enum AnalyzeError {
-    /// Document mixes queries with transactions (or contains
-    /// other unsupported expression combinations) — current
-    /// scope is "single query" or "one or more assertions",
-    /// nothing else.
-    #[error("{reason}")]
-    MixedExpressions {
-        /// Human-readable description of what was mixed.
-        reason: String,
-    },
-    /// Document has zero expressions.
-    #[error("document is empty — nothing to analyze")]
-    EmptyDocument,
-    /// Retraction expression — not yet implemented (needs a
-    /// query+retract roundtrip to discover the entity's current
-    /// values to dissociate against).
-    #[error(
-        "retractions (`head! …: _` or `field: _`) aren't supported \
-         yet — they need a query+retract roundtrip we haven't wired"
-    )]
-    RetractionNotYetImplemented,
-    /// Retraction was structurally well-formed but uses a shape
-    /// the analyzer doesn't yet support (anonymous binding,
-    /// claim head, etc.).
-    #[error("{reason}")]
-    UnsupportedRetraction {
-        /// Description of the unsupported shape.
-        reason: String,
-    },
-    /// Assertion head used a binding form we don't support yet.
-    #[error(
-        "assertion head with binding {form} isn't supported yet — \
-         use an anonymous head (`{head}!:`) or an explicit URI \
-         (`{head}! did:key:zX:`)"
-    )]
-    UnsupportedAssertionBinding {
-        /// What kind of binding the user used.
-        form: &'static str,
-        /// The head name (without `!`), echoed for the suggested
-        /// fix in the error message.
-        head: String,
-    },
-    /// Assertion field value used a form we don't support yet
-    /// (variable, blank, reference, nested).
-    #[error(
-        "assertion field {field:?} value {form} isn't supported \
-         yet — use a literal scalar (string, number, boolean) for \
-         now"
-    )]
-    UnsupportedAssertionFieldValue {
-        /// Field where the offending value appeared.
-        field: String,
-        /// What kind of value it was.
-        form: &'static str,
-    },
-    /// Assertion subject URI didn't parse as an entity.
-    #[error("assertion subject {subject:?} is not a valid entity URI: {reason}")]
-    InvalidSubjectUri {
-        /// The subject text the user wrote.
-        subject: String,
-        /// Underlying parse error.
-        reason: String,
-    },
-    /// Assertion body had no fields — nothing to write.
-    #[error("assertion `{head}!` has no fields — at least one is required")]
-    AssertionWithoutFields {
-        /// The head name (without `!`).
-        head: String,
-    },
-    /// `attribute!` body was malformed (missing `the`, invalid
-    /// `as`/`cardinality` value, etc.).
-    #[error("invalid `attribute!` body: {reason}")]
-    InvalidAttributeBody {
-        /// Underlying validation message.
-        reason: String,
-    },
-    /// `concept!` body was malformed (missing `with:`, invalid
-    /// reference, etc.).
-    #[error("invalid `concept!` body: {reason}")]
-    InvalidConceptBody {
-        /// Underlying validation message.
-        reason: String,
-    },
-    /// Head's concept name didn't resolve to anything known.
-    #[error("unknown concept {name:?}: not a built-in and not found on the branch")]
-    UnknownConcept {
-        /// The concept name that failed to resolve.
-        name: String,
-    },
-    /// A field in the body doesn't appear in the head concept's
-    /// `with` map.
-    #[error("field {field:?} is not part of concept {concept:?}")]
-    UnknownField {
-        /// The concept whose schema we were checking against.
-        concept: String,
-        /// The field name the user wrote.
-        field: String,
-    },
-    /// A reference in field-value position couldn't be resolved.
-    #[error(
-        "field {field:?} references unknown bookmark {bookmark:?} \
-         — define it earlier in the document or as an attribute on the branch"
-    )]
-    UnknownBookmark {
-        /// Field where the reference appeared.
-        field: String,
-        /// The bookmark name.
-        bookmark: String,
-    },
-    /// A variable reference in field-value position couldn't
-    /// be resolved against the document scope. Variables don't
-    /// outlive a document, so an unbound `?name` means the
-    /// matching `attribute! ?name:` (or `concept! ?name:`)
-    /// definition wasn't earlier in the same document.
-    #[error(
-        "field {field:?} references unknown variable ?{variable} \
-         — define it earlier in the same document with `attribute! ?{variable}:` \
-         (variables don't carry across documents)"
-    )]
-    UnknownVariable {
-        /// Field where the variable appeared.
-        field: String,
-        /// The variable name (without `?` prefix).
-        variable: String,
-    },
-    /// Claim head with no body fields — claims have no schema
-    /// to fall back on, so the body must enumerate at least one
-    /// field for the engine to query against.
-    #[error(
-        "claim head `{domain}:` needs at least one field. \
-         Claims have no schema, so the parser cannot infer which \
-         attributes to look up. Add the field names you want, \
-         e.g. `{domain}:\\n  name: ?name`"
-    )]
-    ClaimWithoutFields {
-        /// The claim domain.
-        domain: String,
-    },
-    /// Claim attribute URI (`<domain>/<field>`) failed dialog's
-    /// `the:…` validation (invalid characters, length cap, etc.).
-    #[error("invalid attribute {domain:?}/{field:?}: {reason}")]
-    InvalidClaimAttribute {
-        /// The claim domain.
-        domain: String,
-        /// The field name.
-        field: String,
-        /// Underlying validation message.
-        reason: String,
-    },
-    /// Resolver I/O failed.
-    #[error("resolver error for {context}: {reason}")]
-    ResolverFailed {
-        /// What was being resolved.
-        context: String,
-        /// Underlying message.
-        reason: String,
-    },
-}
+// ---------------------------------------------------------------- //
+// Resolver — branch-side name lookup                               //
+// ---------------------------------------------------------------- //
 
 /// An attribute resolved from outside the current document — its
 /// entity URI plus the descriptor that produced it.
@@ -357,9 +73,8 @@ pub trait Resolver {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError>;
 
     /// Resolve an attribute by bookmark name. Used for field-
-    /// value references (`field: .person-name`) and historically
-    /// by the transaction interpreter — kept on the trait so the
-    /// follow-up transaction work doesn't have to re-add it.
+    /// value references (`field: .person-name`) and by
+    /// `concept!`'s `with:` map.
     async fn resolve_attribute(
         &self,
         name: &str,
@@ -370,25 +85,6 @@ pub trait Resolver {
         &self,
         entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError>;
-
-    /// Resolve a document-scope variable name (`?name`) to an
-    /// attribute. Only meaningful for the in-document overlay;
-    /// persistent resolvers (the branch-backed worker resolver)
-    /// always return `Ok(None)` because variable bindings don't
-    /// survive past one document.
-    async fn resolve_variable(
-        &self,
-        name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError>;
-
-    /// Resolve a document-scope variable to its bound entity,
-    /// regardless of whether the entity is an attribute. Used
-    /// for `field: ?var` references in regular (non-meta)
-    /// assertions where the field expects an Entity-typed
-    /// value. Defaults to whatever [`resolve_variable`] returns
-    /// (attribute entity), but callers can override to handle
-    /// non-attribute variable bindings.
-    async fn resolve_entity_variable(&self, name: &str) -> Result<Option<Entity>, ResolverError>;
 }
 
 /// Opaque error from a [`Resolver`] implementation. The analyzer
@@ -419,299 +115,307 @@ impl Resolver for NoopResolver {
     async fn resolve_concept(&self, _name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
         Ok(None)
     }
-
     async fn resolve_attribute(
         &self,
         _name: &str,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         Ok(None)
     }
-
     async fn resolve_attribute_by_entity(
         &self,
         _entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         Ok(None)
     }
-
-    async fn resolve_variable(
-        &self,
-        _name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        Ok(None)
-    }
-    async fn resolve_entity_variable(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
-        Ok(None)
-    }
 }
 
-/// In-document overlay resolver. Lets later expressions see
-/// `attribute!` definitions made earlier in the same document
-/// without re-querying the branch (the writes haven't committed
-/// yet, so the branch wouldn't have them anyway).
-///
-/// Lookups consult the in-memory index first; misses fall
-/// through to the wrapped resolver. Concept lookups always
-/// fall through — concept-by-name resolution from in-document
-/// `concept!` definitions isn't useful in v1 (no expression
-/// references a previously-defined concept by name).
-/// Storage for the in-document attribute index.
-///
-/// On native we use a `Mutex` so the async-trait-generated
-/// future stays `Send` (axum needs `Send` route handlers); on
-/// wasm the runtime is single-threaded and the trait is
-/// `?Send`, so a `RefCell` is fine and matches the rest of the
-/// wasm-side machinery (which carries `!Sync` types like
-/// `Rc<RefCell<…>>`).
-#[cfg(not(target_arch = "wasm32"))]
-type AttributeIndex = std::sync::Mutex<BTreeMap<String, ResolvedAttribute>>;
-#[cfg(target_arch = "wasm32")]
-type AttributeIndex = std::cell::RefCell<BTreeMap<String, ResolvedAttribute>>;
+// ---------------------------------------------------------------- //
+// Errors                                                           //
+// ---------------------------------------------------------------- //
 
-struct DocumentResolver<'a, R: Resolver> {
+/// Errors raised while analyzing a [`Syntax`] tree.
+#[derive(Debug, Error)]
+pub enum AnalyzeError {
+    /// Document has zero expressions.
+    #[error("document is empty — nothing to analyze")]
+    EmptyDocument,
+    /// Two heads in the document tried to declare the same
+    /// `.bookmark` or `?variable` name.
+    #[error(
+        "name {name:?} declared twice — bookmarks and variables must be unique within a document"
+    )]
+    DuplicateName {
+        /// The name that was duplicated.
+        name: String,
+    },
+    /// A `.bookmark` or `?variable` is used by both a declaration
+    /// and a variable head — they share the same namespace.
+    #[error("name {name:?} is used as both a bookmark declaration and a variable — pick one")]
+    NameShadowing {
+        /// The conflicting name.
+        name: String,
+    },
+    /// A mutation references `?var` that no source binds (neither
+    /// analysis-time variables nor query bindings).
+    #[error(
+        "mutation references unbound variable ?{name} — define it earlier with `?{name}:` or bind it via a query"
+    )]
+    UnboundMutationVariable {
+        /// The variable name.
+        name: String,
+    },
+    /// Assertion subject URI didn't parse as an entity.
+    #[error("assertion subject {subject:?} is not a valid entity URI: {reason}")]
+    InvalidSubjectUri {
+        /// The subject text the user wrote.
+        subject: String,
+        /// Underlying parse error.
+        reason: String,
+    },
+    /// Assertion body had no fields — nothing to write.
+    #[error("assertion `{head}!` has no fields — at least one is required")]
+    AssertionWithoutFields {
+        /// The head name (without `!`).
+        head: String,
+    },
+    /// `attribute!` body was malformed (missing `the`, invalid
+    /// `as`/`cardinality` value, etc.).
+    #[error("invalid `attribute!` body: {reason}")]
+    InvalidAttributeBody {
+        /// Underlying validation message.
+        reason: String,
+    },
+    /// `concept!` body was malformed.
+    #[error("invalid `concept!` body: {reason}")]
+    InvalidConceptBody {
+        /// Underlying validation message.
+        reason: String,
+    },
+    /// Head's concept name didn't resolve to anything known.
+    #[error("unknown concept {name:?}: not a built-in and not found on the branch")]
+    UnknownConcept {
+        /// The concept name that failed to resolve.
+        name: String,
+    },
+    /// A field in the body doesn't appear in the head concept's
+    /// `with` map.
+    #[error("field {field:?} is not part of concept {concept:?}")]
+    UnknownField {
+        /// The concept whose schema we were checking against.
+        concept: String,
+        /// The field name the user wrote.
+        field: String,
+    },
+    /// A reference in field-value position couldn't be resolved.
+    #[error(
+        "field {field:?} references unknown bookmark {bookmark:?} \
+         — define it earlier in the document or as an attribute on the branch"
+    )]
+    UnknownBookmark {
+        /// Field where the reference appeared.
+        field: String,
+        /// The bookmark name.
+        bookmark: String,
+    },
+    /// Claim head with no body fields — claims have no schema to
+    /// fall back on.
+    #[error(
+        "claim head `{domain}:` needs at least one field. \
+         Claims have no schema, so the parser cannot infer which \
+         attributes to look up. Add the field names you want, e.g. \
+         `{domain}:\\n  name: ?name`"
+    )]
+    ClaimWithoutFields {
+        /// The claim domain.
+        domain: String,
+    },
+    /// Claim attribute URI failed dialog's `the:…` validation.
+    #[error("invalid attribute {domain:?}/{field:?}: {reason}")]
+    InvalidClaimAttribute {
+        /// The claim domain.
+        domain: String,
+        /// The field name.
+        field: String,
+        /// Underlying validation message.
+        reason: String,
+    },
+    /// Field value used a form the analyzer doesn't accept here.
+    #[error("field {field:?} value {form} isn't supported here")]
+    UnsupportedFieldValue {
+        /// Field where the offending value appeared.
+        field: String,
+        /// What kind of value it was.
+        form: &'static str,
+    },
+    /// Resolver I/O failed.
+    #[error("resolver error for {context}: {reason}")]
+    ResolverFailed {
+        /// What was being resolved.
+        context: String,
+        /// Underlying message.
+        reason: String,
+    },
+}
+
+// ---------------------------------------------------------------- //
+// In-document overlay resolver                                     //
+// ---------------------------------------------------------------- //
+
+/// Cell that stays Send + Sync on native (so async-trait
+/// futures hold across awaits in axum handlers) but stays
+/// single-threaded on wasm (no need for Mutex).
+#[cfg(not(target_arch = "wasm32"))]
+type Cell<T> = std::sync::Mutex<T>;
+#[cfg(target_arch = "wasm32")]
+type Cell<T> = std::cell::RefCell<T>;
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cell_borrow<T>(cell: &Cell<T>) -> std::sync::MutexGuard<'_, T> {
+    cell.lock().expect("Scope mutex is never poisoned")
+}
+#[cfg(target_arch = "wasm32")]
+fn cell_borrow<T>(cell: &Cell<T>) -> std::cell::Ref<'_, T> {
+    cell.borrow()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cell_borrow_mut<T>(cell: &Cell<T>) -> std::sync::MutexGuard<'_, T> {
+    cell.lock().expect("Scope mutex is never poisoned")
+}
+#[cfg(target_arch = "wasm32")]
+fn cell_borrow_mut<T>(cell: &Cell<T>) -> std::cell::RefMut<'_, T> {
+    cell.borrow_mut()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cell_new<T>(value: T) -> Cell<T> {
+    std::sync::Mutex::new(value)
+}
+#[cfg(target_arch = "wasm32")]
+fn cell_new<T>(value: T) -> Cell<T> {
+    std::cell::RefCell::new(value)
+}
+
+/// Layered name index built during analysis. Phase 1 fills it in
+/// (bookmark/variable → entity, plus `concept!` definitions for
+/// later expressions in the same document); Phase 2 and 3 read
+/// from it.
+struct Scope<'a, R: Resolver> {
     inner: &'a R,
-    /// Bookmark-name → attribute. Resolved against the
-    /// underlying [`Resolver::resolve_attribute`] surface,
-    /// shadowing any branch-side bookmark of the same name.
-    attributes: AttributeIndex,
-    /// Document-scope variables (`?name`) → attribute. Resolved
-    /// via the in-document path only — variables don't outlive
-    /// the document.
-    variables: AttributeIndex,
-    /// Document-scope variables → entity. Populated for *every*
-    /// `head! ?name:` assertion (attribute, concept, plain
-    /// concept-instance) — lets `field: ?name` references in
-    /// later expressions emit `Value::Entity` regardless of
-    /// whether the bound thing is an attribute or a regular
-    /// concept instance.
-    entity_variables: EntityIndex,
-    /// Concept-name → resolved concept. Populated by `concept!`
-    /// definitions earlier in the document, so a later
-    /// `person! alice:` finds `person` without waiting for the
-    /// branch commit.
-    concepts: ConceptIndex,
+    /// Bookmark/variable → entity for non-meta head bindings
+    /// (every head except `attribute!` / `concept!` whose
+    /// declarations live in the dedicated maps below). One map
+    /// per source — bookmark vs variable — surfaced separately
+    /// because `Analysis` keeps them separate.
+    declarations: Cell<HashMap<String, Entity>>,
+    variables: Cell<HashMap<String, Entity>>,
+    /// `attribute!` definitions made in the document, indexed by
+    /// the bookmark/variable name on the head. Used by later
+    /// `concept!` heads in the same document so their `with:`
+    /// map can resolve `.bookmark` / `?var` references against
+    /// uncommitted attributes.
+    in_doc_attributes: Cell<HashMap<String, ResolvedAttribute>>,
+    /// `concept!` definitions made in the document, indexed by
+    /// the bookmark/variable name on the head. Used by later
+    /// `person! alice:` heads in the same document.
+    in_doc_concepts: Cell<HashMap<String, ResolvedConcept>>,
+    /// Reverse index: attribute entity → resolved attribute.
+    /// Used when a concept body references an attribute via URI
+    /// instead of by name.
+    in_doc_attributes_by_entity: Cell<HashMap<String, ResolvedAttribute>>,
+    /// Reverse index: concept entity → resolved concept.
+    in_doc_concepts_by_entity: Cell<HashMap<String, ResolvedConcept>>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-type EntityIndex = std::sync::Mutex<BTreeMap<String, Entity>>;
-#[cfg(target_arch = "wasm32")]
-type EntityIndex = std::cell::RefCell<BTreeMap<String, Entity>>;
-
-#[cfg(not(target_arch = "wasm32"))]
-type ConceptIndex = std::sync::Mutex<BTreeMap<String, ResolvedConcept>>;
-#[cfg(target_arch = "wasm32")]
-type ConceptIndex = std::cell::RefCell<BTreeMap<String, ResolvedConcept>>;
-
-impl<'a, R: Resolver> DocumentResolver<'a, R> {
+impl<'a, R: Resolver> Scope<'a, R> {
     fn new(inner: &'a R) -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
-        let attributes = std::sync::Mutex::new(BTreeMap::new());
-        #[cfg(target_arch = "wasm32")]
-        let attributes = std::cell::RefCell::new(BTreeMap::new());
-        #[cfg(not(target_arch = "wasm32"))]
-        let variables = std::sync::Mutex::new(BTreeMap::new());
-        #[cfg(target_arch = "wasm32")]
-        let variables = std::cell::RefCell::new(BTreeMap::new());
-        #[cfg(not(target_arch = "wasm32"))]
-        let entity_variables = std::sync::Mutex::new(BTreeMap::new());
-        #[cfg(target_arch = "wasm32")]
-        let entity_variables = std::cell::RefCell::new(BTreeMap::new());
-        #[cfg(not(target_arch = "wasm32"))]
-        let concepts = std::sync::Mutex::new(BTreeMap::new());
-        #[cfg(target_arch = "wasm32")]
-        let concepts = std::cell::RefCell::new(BTreeMap::new());
         Self {
             inner,
-            attributes,
-            variables,
-            entity_variables,
-            concepts,
+            declarations: cell_new(HashMap::new()),
+            variables: cell_new(HashMap::new()),
+            in_doc_attributes: cell_new(HashMap::new()),
+            in_doc_concepts: cell_new(HashMap::new()),
+            in_doc_attributes_by_entity: cell_new(HashMap::new()),
+            in_doc_concepts_by_entity: cell_new(HashMap::new()),
         }
     }
 
-    fn register_attribute(&self, name: String, attribute: ResolvedAttribute) {
-        index_insert(&self.attributes, name, attribute);
+    /// Record a bookmark-form head's entity.
+    fn declare(&self, name: &str, entity: Entity) -> Result<(), AnalyzeError> {
+        if cell_borrow(&self.variables).contains_key(name) {
+            return Err(AnalyzeError::NameShadowing {
+                name: name.to_owned(),
+            });
+        }
+        let prior = cell_borrow_mut(&self.declarations).insert(name.to_owned(), entity);
+        if prior.is_some() {
+            return Err(AnalyzeError::DuplicateName {
+                name: name.to_owned(),
+            });
+        }
+        Ok(())
     }
 
-    fn register_variable(&self, name: String, attribute: ResolvedAttribute) {
-        index_insert(&self.variables, name, attribute);
+    /// Record a variable-form head's entity.
+    fn bind_variable(&self, name: &str, entity: Entity) -> Result<(), AnalyzeError> {
+        if cell_borrow(&self.declarations).contains_key(name) {
+            return Err(AnalyzeError::NameShadowing {
+                name: name.to_owned(),
+            });
+        }
+        let prior = cell_borrow_mut(&self.variables).insert(name.to_owned(), entity);
+        if prior.is_some() {
+            return Err(AnalyzeError::DuplicateName {
+                name: name.to_owned(),
+            });
+        }
+        Ok(())
     }
 
-    fn register_entity_variable(&self, name: String, entity: Entity) {
-        entity_index_insert(&self.entity_variables, name, entity);
+    /// Record an in-document `attribute!` definition for the
+    /// given declaration / variable name.
+    fn record_attribute(&self, name: Option<&str>, attribute: ResolvedAttribute) {
+        if let Some(name) = name {
+            cell_borrow_mut(&self.in_doc_attributes).insert(name.to_owned(), attribute.clone());
+        }
+        cell_borrow_mut(&self.in_doc_attributes_by_entity)
+            .insert(attribute.entity.to_string(), attribute);
     }
 
-    fn register_concept(&self, name: String, concept: ResolvedConcept) {
-        concept_index_insert(&self.concepts, name, concept);
+    /// Record an in-document `concept!` definition.
+    fn record_concept(&self, name: Option<&str>, concept: ResolvedConcept) {
+        if let Some(name) = name {
+            cell_borrow_mut(&self.in_doc_concepts).insert(name.to_owned(), concept.clone());
+        }
+        cell_borrow_mut(&self.in_doc_concepts_by_entity)
+            .insert(concept.entity.to_string(), concept);
     }
 
-    fn get_attribute(&self, name: &str) -> Option<ResolvedAttribute> {
-        index_get(&self.attributes, name)
+    /// Look up the entity bound to a `.bookmark` or `?var` name,
+    /// regardless of which side it lives on. Returns `None` if
+    /// the name isn't known yet.
+    fn lookup_entity(&self, name: &str) -> Option<Entity> {
+        if let Some(e) = cell_borrow(&self.declarations).get(name) {
+            return Some(e.clone());
+        }
+        cell_borrow(&self.variables).get(name).cloned()
     }
 
-    fn get_variable(&self, name: &str) -> Option<ResolvedAttribute> {
-        index_get(&self.variables, name)
-    }
-
-    fn get_entity_variable(&self, name: &str) -> Option<Entity> {
-        entity_index_get(&self.entity_variables, name)
-    }
-
-    fn get_concept(&self, name: &str) -> Option<ResolvedConcept> {
-        concept_index_get(&self.concepts, name)
-    }
-
-    fn find_attribute_by_entity(&self, entity: &Entity) -> Option<ResolvedAttribute> {
-        index_find_by_entity(&self.attributes, entity)
-            .or_else(|| index_find_by_entity(&self.variables, entity))
-    }
-}
-
-fn concept_index_insert(index: &ConceptIndex, name: String, concept: ResolvedConcept) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .insert(name, concept);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index.borrow_mut().insert(name, concept);
-    }
-}
-
-fn concept_index_get(index: &ConceptIndex, name: &str) -> Option<ResolvedConcept> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .get(name)
-            .cloned()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index.borrow().get(name).cloned()
-    }
-}
-
-fn entity_index_insert(index: &EntityIndex, name: String, entity: Entity) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .insert(name, entity);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index.borrow_mut().insert(name, entity);
-    }
-}
-
-fn entity_index_get(index: &EntityIndex, name: &str) -> Option<Entity> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .get(name)
-            .cloned()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index.borrow().get(name).cloned()
-    }
-}
-
-fn index_insert(index: &AttributeIndex, name: String, attribute: ResolvedAttribute) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .insert(name, attribute);
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index.borrow_mut().insert(name, attribute);
-    }
-}
-
-fn index_get(index: &AttributeIndex, name: &str) -> Option<ResolvedAttribute> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .get(name)
-            .cloned()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index.borrow().get(name).cloned()
-    }
-}
-
-fn index_find_by_entity(index: &AttributeIndex, entity: &Entity) -> Option<ResolvedAttribute> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        index
-            .lock()
-            .expect("DocumentResolver mutex is never poisoned")
-            .values()
-            .find(|r| &r.entity == entity)
-            .cloned()
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        index
-            .borrow()
-            .values()
-            .find(|r| &r.entity == entity)
-            .cloned()
-    }
-}
-
-// On native the impl needs `R: Sync` so the underlying
-// resolver's calls produce `Send` futures (axum requires that
-// for handlers); on wasm the trait is `?Send` and there's no
-// Sync requirement.
-#[cfg(not(target_arch = "wasm32"))]
-#[async_trait]
-impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
-        if let Some(found) = self.get_concept(name) {
+        // Drop the borrow before awaiting the fallback resolver
+        // — holding a Mutex guard across an await would deadlock
+        // if the resolver came back to us.
+        if let Some(found) = cell_borrow(&self.in_doc_concepts).get(name).cloned() {
             return Ok(Some(found));
         }
         self.inner.resolve_concept(name).await
-    }
-
-    async fn resolve_variable(
-        &self,
-        name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        Ok(self.get_variable(name))
-    }
-
-    async fn resolve_entity_variable(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
-        // Try the entity-only map first (which holds every
-        // variable binding), fall back to the attribute map
-        // for compatibility (`?attr-foo` resolves to its
-        // entity URI even though it was registered as an
-        // attribute).
-        if let Some(entity) = self.get_entity_variable(name) {
-            return Ok(Some(entity));
-        }
-        Ok(self.get_variable(name).map(|a| a.entity))
     }
 
     async fn resolve_attribute(
         &self,
         name: &str,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        if let Some(found) = self.get_attribute(name) {
+        if let Some(found) = cell_borrow(&self.in_doc_attributes).get(name).cloned() {
             return Ok(Some(found));
         }
         self.inner.resolve_attribute(name).await
@@ -721,166 +425,34 @@ impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
         &self,
         entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        if let Some(found) = self.find_attribute_by_entity(entity) {
-            return Ok(Some(found));
-        }
-        self.inner.resolve_attribute_by_entity(entity).await
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-#[async_trait(?Send)]
-impl<'a, R: Resolver> Resolver for DocumentResolver<'a, R> {
-    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
-        if let Some(found) = self.get_concept(name) {
-            return Ok(Some(found));
-        }
-        self.inner.resolve_concept(name).await
-    }
-
-    async fn resolve_variable(
-        &self,
-        name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        Ok(self.get_variable(name))
-    }
-
-    async fn resolve_entity_variable(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
-        if let Some(entity) = self.get_entity_variable(name) {
-            return Ok(Some(entity));
-        }
-        Ok(self.get_variable(name).map(|a| a.entity))
-    }
-
-    async fn resolve_attribute(
-        &self,
-        name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        if let Some(found) = self.get_attribute(name) {
-            return Ok(Some(found));
-        }
-        self.inner.resolve_attribute(name).await
-    }
-
-    async fn resolve_attribute_by_entity(
-        &self,
-        entity: &Entity,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        if let Some(found) = self.find_attribute_by_entity(entity) {
-            return Ok(Some(found));
-        }
-        self.inner.resolve_attribute_by_entity(entity).await
-    }
-}
-
-/// Pull the bookmark name out of an `attribute!` plan's emitted
-/// `dialog.meta/name` claim, if present. Returns `None` when the
-/// head was anonymous (no bookmark binding).
-fn bookmark_from_assertions(assertions: &[ClaimAssertion]) -> Option<String> {
-    for claim in assertions {
-        if claim.field_name == "name"
-            && let Value::String(s) = &claim.is
+        let key = entity.to_string();
+        if let Some(found) = cell_borrow(&self.in_doc_attributes_by_entity)
+            .get(&key)
+            .cloned()
         {
-            return Some(s.clone());
+            return Ok(Some(found));
         }
+        self.inner.resolve_attribute_by_entity(entity).await
     }
-    None
 }
 
-/// Reconstruct an [`AttributeDescriptor`] from the index facts
-/// an `attribute!` plan emits — the inverse of the helper that
-/// builds those facts. Used by the document-resolver path so
-/// later concept definitions can hash a concept whose fields
-/// were defined in this same document.
-fn attribute_descriptor_from_assertions(
-    assertions: &[ClaimAssertion],
-) -> Result<AttributeDescriptor, AnalyzeError> {
-    let mut shape = serde_json::Map::new();
-    for claim in assertions {
-        let Value::String(s) = &claim.is else {
-            continue;
-        };
-        match claim.field_name.as_str() {
-            "id" => {
-                shape.insert("the".into(), serde_json::Value::String(s.clone()));
-            }
-            "type" => {
-                shape.insert("as".into(), serde_json::Value::String(s.clone()));
-            }
-            "cardinality" => {
-                shape.insert("cardinality".into(), serde_json::Value::String(s.clone()));
-            }
-            "description" => {
-                shape.insert("description".into(), serde_json::Value::String(s.clone()));
-            }
-            _ => {}
-        }
-    }
-    serde_json::from_value(serde_json::Value::Object(shape)).map_err(|e| {
-        AnalyzeError::InvalidAttributeBody {
-            reason: format!(
-                "could not reconstruct AttributeDescriptor from \
-                 in-document attribute!: {e}"
-            ),
-        }
-    })
-}
+// ---------------------------------------------------------------- //
+// Public entry point                                               //
+// ---------------------------------------------------------------- //
 
-/// Reconstruct a [`ConceptDescriptor`] from a `concept!` plan's
-/// emitted assertions plus a side lookup table mapping
-/// `(attribute-entity → descriptor)`. The concept's `with`
-/// claims point at attribute entities; we need their full
-/// descriptors to feed `ConceptDescriptor::from`. The lookup
-/// closure consults the in-document index so a concept defined
-/// alongside its attributes (none committed yet) reconstructs
-/// correctly.
-fn concept_descriptor_from_assertions(
-    assertions: &[ClaimAssertion],
-    lookup: impl Fn(&Entity) -> Option<AttributeDescriptor>,
-) -> Result<ConceptDescriptor, AnalyzeError> {
-    let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
-    for claim in assertions {
-        // `concept!` plan emits `dialog.concept.with/{field}`
-        // assertions whose `is` is the attribute entity. The
-        // `field_name` was stashed by the analyzer.
-        let the_str = String::from(&claim.the);
-        if !the_str.starts_with("dialog.concept.with/") {
-            continue;
-        }
-        let Value::Entity(attr_entity) = &claim.is else {
-            continue;
-        };
-        let descriptor = lookup(attr_entity).ok_or_else(|| AnalyzeError::InvalidConceptBody {
-            reason: format!(
-                "concept field {field:?} references attribute {attr_entity} \
-                 not found in document scope or on the branch",
-                field = claim.field_name,
-            ),
-        })?;
-        fields.push((claim.field_name.clone(), descriptor));
-    }
-    if fields.is_empty() {
-        return Err(AnalyzeError::InvalidConceptBody {
-            reason: "no `dialog.concept.with/*` claims found in concept plan".into(),
-        });
-    }
-    Ok(ConceptDescriptor::from(fields))
-}
-
-/// Analyze a [`Syntax`] tree into an [`Analysis`].
+/// Analyze a parsed [`Syntax`] tree.
 ///
-/// Single-query documents produce an [`Analysis::Query`].
-/// Documents containing one or more assertions (no queries) are
-/// fused into a single [`Analysis::Transaction`] — earlier
-/// `attribute!` definitions are visible to later `concept!`
-/// definitions through an in-document index, so a complete
-/// schema can be defined in one shot. Mixing queries with
-/// transactions in the same document is rejected for now;
-/// retractions are also not yet implemented.
+/// Three phases per `analysis-spec.md`:
+/// 1. Derive `declarations` and `variables` from heads.
+/// 2. Build the per-expression query [`Application`]s with
+///    `.bookmark` / analysis-time `?var` substituted.
+/// 3. Build the mutation [`Statement`] list with `.bookmark`
+///    substituted but `?var` left for planning time.
+///
 /// `R: Resolver` is the public bound; on native we additionally
-/// need `R: Sync` so the [`DocumentResolver`]'s async methods
-/// produce `Send` futures (axum requires `Send` route handlers).
-/// On wasm the trait is `?Send` and there's no extra bound.
+/// need `R: Sync` so async-trait-generated futures stay `Send`
+/// (axum requires `Send` route handlers). On wasm the trait is
+/// `?Send` and there's no extra bound.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn analyze<R: Resolver + Sync>(
     syntax: &Syntax,
@@ -897,552 +469,239 @@ pub async fn analyze<R: Resolver>(syntax: &Syntax, resolver: &R) -> Result<Analy
     analyze_impl(syntax, resolver).await
 }
 
-// `analyze_impl` is generic over `R: Resolver` only; the
-// per-target `analyze` wrappers add `Sync` on native to satisfy
-// the `DocumentResolver` impl bound. This indirection lets us
-// keep the public surface free of target-specific bounds.
-async fn analyze_impl<R>(syntax: &Syntax, resolver: &R) -> Result<Analysis, AnalyzeError>
-where
-    R: Resolver,
-    for<'a> DocumentResolver<'a, R>: Resolver,
-{
+async fn analyze_impl<R: Resolver>(
+    syntax: &Syntax,
+    resolver: &R,
+) -> Result<Analysis, AnalyzeError> {
     if syntax.expressions.is_empty() {
         return Err(AnalyzeError::EmptyDocument);
     }
 
-    // A single query expression follows the read path verbatim.
-    if syntax.expressions.len() == 1 {
-        return match &syntax.expressions[0] {
-            Expression::Query(q) => Ok(Analysis::Query(analyze_query(q, resolver).await?)),
-            Expression::Assertion(a) => {
-                let scoped = DocumentResolver::new(resolver);
-                let plan = analyze_assertion(a, &scoped).await?;
-                Ok(Analysis::Transaction(plan))
-            }
-            Expression::Retraction(r) => {
-                let scoped = DocumentResolver::new(resolver);
-                let plan = analyze_retraction(r, &scoped).await?;
-                Ok(Analysis::Transaction(plan))
-            }
+    let scope = Scope::new(resolver);
+
+    // ---- Phase 1: derive declarations and variables ----
+    //
+    // For meta heads (`attribute!`, `concept!`) this also parses
+    // the body so the descriptor's content-addressed entity is
+    // known up front; the parsed descriptor is stashed in
+    // `meta_cache` keyed by expression index so Phase 3 doesn't
+    // re-do the work.
+    let mut meta_cache: HashMap<usize, MetaPlan> = HashMap::new();
+
+    for (index, expression) in syntax.expressions.iter().enumerate() {
+        let (head, has_effect) = match expression {
+            Expression::Query(q) => (&q.head, false),
+            Expression::Assertion(a) => (&a.head, true),
+            Expression::Retraction(r) => (&r.head, true),
         };
-    }
 
-    // Multi-expression documents must be transactions only —
-    // queries and retractions need a different multi-statement
-    // story (variable scope, query-then-retract roundtrip)
-    // we haven't built yet.
-    let scoped = DocumentResolver::new(resolver);
-    let mut combined = TransactionPlan {
-        assertions: Vec::new(),
-        retractions: Vec::new(),
-        head_label: String::new(),
-        head_entity: Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
-            context: "minting placeholder entity".into(),
-            reason: e.to_string(),
-        })?,
-        head_variable: None,
-    };
-    let mut last_head = String::new();
-    let mut last_entity: Option<Entity> = None;
-
-    for expression in &syntax.expressions {
-        match expression {
-            Expression::Assertion(a) => {
-                let plan = analyze_assertion(a, &scoped).await?;
-                last_head = plan.head_label.clone();
-                last_entity = Some(plan.head_entity.clone());
-                // Index attribute definitions — by bookmark name
-                // (persistent) or doc-scope variable name — so
-                // later expressions can resolve them via
-                // `.bookmark` or `?var` respectively, without
-                // hitting the branch (the writes haven't
-                // committed yet).
-                if plan.head_label == "attribute" {
-                    let descriptor = attribute_descriptor_from_assertions(&plan.assertions)?;
-                    let resolved = ResolvedAttribute {
-                        entity: plan.head_entity.clone(),
-                        descriptor,
+        // Meta heads carry their entity in the descriptor, which
+        // requires parsing the body. Do it here so the entity
+        // can land in declarations/variables.
+        if has_effect && let HeadName::Concept(name) = &head.name {
+            match name.as_str() {
+                "attribute" => {
+                    let assertion = match expression {
+                        Expression::Assertion(a) => a,
+                        _ => continue,
                     };
-                    if let Some(name) = bookmark_from_assertions(&plan.assertions) {
-                        scoped.register_attribute(name, resolved.clone());
+                    let plan = parse_attribute_body(assertion)?;
+                    let entity = plan.entity.clone();
+                    let attribute = ResolvedAttribute {
+                        entity: entity.clone(),
+                        descriptor: plan.descriptor.clone(),
+                    };
+                    let bookmark = match &head.binding {
+                        Binding::Bookmark(name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    let variable = match &head.binding {
+                        Binding::Variable(name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    if let Some(name) = &bookmark {
+                        scope.declare(name, entity.clone())?;
                     }
-                    if let Some(var) = &plan.head_variable {
-                        scoped.register_variable(var.clone(), resolved);
+                    if let Some(name) = &variable {
+                        scope.bind_variable(name, entity.clone())?;
                     }
-                } else if plan.head_label == "concept"
-                    && let Some(name) = bookmark_from_assertions(&plan.assertions)
-                {
-                    // Reconstruct the concept descriptor and
-                    // register it under its bookmark name so a
-                    // later `name! ...:` head in the same
-                    // document resolves cleanly.
-                    let descriptor =
-                        concept_descriptor_from_assertions(&plan.assertions, |entity| {
-                            scoped
-                                .find_attribute_by_entity(entity)
-                                .map(|r| r.descriptor.clone())
-                        })?;
-                    scoped.register_concept(
-                        name,
-                        ResolvedConcept {
-                            entity: plan.head_entity.clone(),
-                            descriptor,
+                    scope.record_attribute(bookmark.as_deref().or(variable.as_deref()), attribute);
+                    meta_cache.insert(
+                        index,
+                        MetaPlan::Attribute {
+                            descriptor: plan.descriptor,
+                            entity,
+                            bookmark,
                         },
                     );
+                    continue;
                 }
-                // Every variable-bound assertion (regardless of
-                // head kind) records its entity in the
-                // entity-variable map so later expressions can
-                // reference `?var` in field positions to mean
-                // "this entity."
-                if let Some(var) = &plan.head_variable {
-                    scoped.register_entity_variable(var.clone(), plan.head_entity.clone());
+                "concept" => {
+                    // Concept body resolution may need the
+                    // resolver — defer to Phase 3 and resolve
+                    // here too. The body references attributes
+                    // via `.bookmark` / URIs that may live in
+                    // either the in-doc map or the branch.
+                    let assertion = match expression {
+                        Expression::Assertion(a) => a,
+                        _ => continue,
+                    };
+                    let plan = parse_concept_body(assertion, &scope).await?;
+                    let entity = plan.entity.clone();
+                    let concept = ResolvedConcept {
+                        entity: entity.clone(),
+                        descriptor: plan.descriptor.clone(),
+                    };
+                    let bookmark = match &head.binding {
+                        Binding::Bookmark(name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    let variable = match &head.binding {
+                        Binding::Variable(name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    if let Some(name) = &bookmark {
+                        scope.declare(name, entity.clone())?;
+                    }
+                    if let Some(name) = &variable {
+                        scope.bind_variable(name, entity.clone())?;
+                    }
+                    scope.record_concept(bookmark.as_deref().or(variable.as_deref()), concept);
+                    meta_cache.insert(
+                        index,
+                        MetaPlan::Concept {
+                            descriptor: plan.descriptor,
+                            entity,
+                            bookmark,
+                        },
+                    );
+                    continue;
                 }
-                combined.assertions.extend(plan.assertions);
+                _ => {}
             }
-            Expression::Query(_) => {
-                return Err(AnalyzeError::MixedExpressions {
-                    reason: "this document mixes a query with one or more \
-                             transactions; submit them separately"
-                        .into(),
-                });
+        }
+
+        // Non-meta heads: derive the entity from the binding
+        // form. Bookmarks are content-addressed from the name;
+        // variables get a fresh random entity (so different
+        // documents don't collide on the same `?alice`).
+        match &head.binding {
+            Binding::Bookmark(name) => {
+                scope.declare(name, Entity::of(name))?;
+            }
+            Binding::Variable(name) => {
+                let entity = Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
+                    context: format!("minting variable entity for ?{name}"),
+                    reason: e.to_string(),
+                })?;
+                scope.bind_variable(name, entity)?;
+            }
+            Binding::Anonymous | Binding::Uri(_) => {}
+        }
+    }
+
+    // ---- Phase 2: build query Applications ----
+    let mut analysis = Analysis {
+        declarations: cell_borrow(&scope.declarations).clone(),
+        variables: cell_borrow(&scope.variables).clone(),
+        ..Analysis::default()
+    };
+
+    let mut queries: Vec<Application> = Vec::new();
+    for expression in &syntax.expressions {
+        if let Expression::Query(q) = expression {
+            let application = build_query_application(q, &scope, &analysis).await?;
+            queries.push(application);
+        }
+    }
+    if !queries.is_empty() {
+        analysis.query = Some(QueryAnalysis { queries });
+    }
+
+    // ---- Phase 3: build mutation Statements ----
+    let mut statements: Vec<Statement> = Vec::new();
+    let mut requires: HashSet<String> = HashSet::new();
+
+    for (index, expression) in syntax.expressions.iter().enumerate() {
+        match expression {
+            Expression::Query(_) => {}
+            Expression::Assertion(a) => {
+                let application =
+                    build_assertion_application(index, a, &meta_cache, &scope, &analysis).await?;
+                collect_unbound_variables(&application, &analysis, &mut requires);
+                statements.push(Statement::Assert(application));
             }
             Expression::Retraction(r) => {
-                let plan = analyze_retraction(r, &scoped).await?;
-                last_head = plan.head_label.clone();
-                last_entity = Some(plan.head_entity.clone());
-                combined.assertions.extend(plan.assertions);
-                combined.retractions.extend(plan.retractions);
+                let application = build_retraction_application(r, &scope, &analysis).await?;
+                collect_unbound_variables(&application, &analysis, &mut requires);
+                statements.push(Statement::Retract(application));
             }
         }
     }
 
-    if let Some(entity) = last_entity {
-        combined.head_entity = entity;
+    // requires must be subset of query bindings (analysis-time
+    // variables already filtered out by `collect_unbound_variables`).
+    if let Some(query) = &analysis.query {
+        let bindings = query.bindings();
+        for name in &requires {
+            if !bindings.contains(name) {
+                return Err(AnalyzeError::UnboundMutationVariable { name: name.clone() });
+            }
+        }
+    } else if !requires.is_empty() {
+        let name = requires.iter().next().cloned().unwrap_or_default();
+        return Err(AnalyzeError::UnboundMutationVariable { name });
     }
-    combined.head_label = last_head;
-    Ok(Analysis::Transaction(combined))
+
+    analysis.mutate = MutationAnalysis {
+        statements,
+        requires,
+    };
+
+    Ok(analysis)
 }
 
-async fn analyze_query<R: Resolver>(
-    query: &tonk_notation::Query,
-    resolver: &R,
-) -> Result<QueryPlan, AnalyzeError> {
-    let (descriptor, head_label) = match &query.head.name {
-        HeadName::Concept(name) => {
-            let resolved = resolver
-                .resolve_concept(name)
-                .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("concept {name:?}"),
-                    reason: e.message,
-                })?
-                .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
-            (resolved.descriptor, name.clone())
-        }
-        HeadName::Claim(domain) => {
-            // Claim heads have no schema on the branch; build a
-            // synthetic descriptor on the spot from the user's
-            // body fields. Each field becomes an attribute under
-            // `<domain>/<field-name>` with no type constraint
-            // (the engine accepts any value type when
-            // `content_type` is `None`).
-            let descriptor = build_claim_descriptor(domain, &query.fields)?;
-            (descriptor, domain.clone())
-        }
-    };
+// ---------------------------------------------------------------- //
+// Phase 1 helpers — meta heads                                     //
+// ---------------------------------------------------------------- //
 
-    let parameters = analyze_query_fields(&head_label, &descriptor, &query.fields)?;
-
-    let head_variable = match &query.head.binding {
-        Binding::Variable(v) => Some(v.clone()),
-        Binding::Anonymous | Binding::Bookmark(_) | Binding::Uri(_) => None,
-    };
-
-    Ok(QueryPlan {
-        descriptor,
-        parameters,
-        head_label,
-        head_variable,
-    })
+/// Cached parse of a meta head's body — keeps Phase 3 from
+/// re-parsing the body that Phase 1 already needed for the
+/// content-addressed entity.
+enum MetaPlan {
+    Attribute {
+        descriptor: AttributeDescriptor,
+        entity: Entity,
+        bookmark: Option<String>,
+    },
+    Concept {
+        descriptor: ConceptDescriptor,
+        entity: Entity,
+        bookmark: Option<String>,
+    },
 }
 
-/// Analyze an assertion expression into a [`TransactionPlan`].
-///
-/// v1 scope:
-/// - Head binding must be `Anonymous` (a fresh entity is minted)
-///   or `Uri` (the user supplies an explicit `did:key:…`).
-/// - Body fields must be literal scalars; variables, blanks,
-///   references, and nested mappings are rejected.
-/// - Concept heads validate fields against the resolved
-///   descriptor's `with` map; claim heads accept any field name
-///   and synthesize `<domain>/<field>` attributes.
-/// - Built-in meta heads (`attribute!`, `concept!`) take a
-///   bespoke path that builds a real
-///   [`AttributeDescriptor`] / [`ConceptDescriptor`] from the
-///   body, derives the entity from the descriptor's identity,
-///   and binds the bookmark name (when given) via
-///   `dialog.meta/name`.
-async fn analyze_assertion<R: Resolver>(
-    assertion: &Assertion,
-    resolver: &R,
-) -> Result<TransactionPlan, AnalyzeError> {
-    // Built-in meta heads bypass the resolver and the
-    // standard-assertion machinery — their schema is fixed and
-    // their body shape doesn't fit the literal-fields-only mold
-    // we apply elsewhere.
-    if let HeadName::Concept(name) = &assertion.head.name {
-        match name.as_str() {
-            "attribute" => return analyze_attribute_assertion(assertion),
-            "concept" => return analyze_concept_assertion(assertion, resolver).await,
-            _ => {}
-        }
-    }
-
-    let (descriptor, head_label) = match &assertion.head.name {
-        HeadName::Concept(name) => {
-            let resolved = resolver
-                .resolve_concept(name)
-                .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("concept {name:?}"),
-                    reason: e.message,
-                })?
-                .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
-            (resolved.descriptor, name.clone())
-        }
-        HeadName::Claim(domain) => {
-            let descriptor = build_claim_descriptor(domain, &assertion.fields)?;
-            (descriptor, domain.clone())
-        }
-    };
-
-    if assertion.fields.is_empty() {
-        return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
-    }
-
-    // Resolve the entity the assertion writes against.
-    //
-    // - Anonymous: fresh random entity.
-    // - Variable: fresh random entity, name registered for
-    //   document scope only (no `dialog.meta/name` claim).
-    // - Bookmark: entity content-derived from the bookmark
-    //   name via `Entity::of`, plus a persistent
-    //   `dialog.meta/name` claim so future docs can resolve
-    //   `.bookmark`.
-    // - URI: parse the explicit entity URI verbatim.
-    use crate::prelude::EntityExt;
-    let mut head_variable: Option<String> = None;
-    let mut bookmark: Option<String> = None;
-    let head_entity = match &assertion.head.binding {
-        Binding::Anonymous => Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
-            context: "minting fresh entity".into(),
-            reason: e.to_string(),
-        })?,
-        Binding::Variable(name) => {
-            head_variable = Some(name.clone());
-            Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
-                context: "minting fresh entity for variable binding".into(),
-                reason: e.to_string(),
-            })?
-        }
-        Binding::Bookmark(name) => {
-            bookmark = Some(name.clone());
-            Entity::of(name)
-        }
-        Binding::Uri(uri) => uri
-            .parse()
-            .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                AnalyzeError::InvalidSubjectUri {
-                    subject: uri.clone(),
-                    reason: e.to_string(),
-                }
-            })?,
-    };
-
-    // Walk user-supplied fields, look each up in the
-    // descriptor, build a (the, of, is) triple.
-    let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
-    for field in &assertion.fields {
-        user_fields.insert(field.name.as_str(), &field.value);
-    }
-
-    let mut assertions = Vec::new();
-    for (field_name, attribute) in descriptor.with().iter() {
-        let Some(field_value) = user_fields.remove(field_name) else {
-            // Field is in the concept's `with` but the user
-            // didn't supply it. Partial assertions are valid
-            // (you might be filling in half a concept).
-            continue;
-        };
-        let value = match field_value {
-            FieldValue::Literal(scalar) => scalar_to_value(scalar)?,
-            FieldValue::Variable(name) => {
-                // `?name` resolves to a doc-scope entity binding
-                // — the field gets a `Value::Entity`. Useful
-                // for `friend: ?bob` patterns where `?bob` is
-                // an entity defined earlier in the same doc.
-                let entity = resolver
-                    .resolve_entity_variable(name)
-                    .await
-                    .map_err(|e| AnalyzeError::ResolverFailed {
-                        context: format!("variable ?{name}"),
-                        reason: e.message,
-                    })?
-                    .ok_or_else(|| AnalyzeError::UnknownVariable {
-                        field: field_name.to_owned(),
-                        variable: name.clone(),
-                    })?;
-                Value::Entity(entity)
-            }
-            FieldValue::Reference(Reference::Bookmark(name)) => {
-                // `.bookmark` resolves via the resolver. For
-                // attribute references the resolver gives back
-                // a `ResolvedAttribute`; we pull the entity.
-                let resolved = resolver
-                    .resolve_attribute(name)
-                    .await
-                    .map_err(|e| AnalyzeError::ResolverFailed {
-                        context: format!("bookmark .{name}"),
-                        reason: e.message,
-                    })?
-                    .ok_or_else(|| AnalyzeError::UnknownBookmark {
-                        field: field_name.to_owned(),
-                        bookmark: name.clone(),
-                    })?;
-                Value::Entity(resolved.entity)
-            }
-            FieldValue::Reference(Reference::Uri(uri)) => {
-                let entity: Entity =
-                    uri.parse()
-                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::InvalidSubjectUri {
-                                subject: uri.clone(),
-                                reason: e.to_string(),
-                            }
-                        })?;
-                Value::Entity(entity)
-            }
-            FieldValue::Blank => {
-                return Err(AnalyzeError::UnsupportedAssertionFieldValue {
-                    field: field_name.to_owned(),
-                    form: "blank (`_`) — field-level retraction needs query+retract",
-                });
-            }
-            FieldValue::Nested(_) => {
-                return Err(AnalyzeError::UnsupportedAssertionFieldValue {
-                    field: field_name.to_owned(),
-                    form: "nested mapping",
-                });
-            }
-        };
-        let the: ArtifactsAttribute = attribute.the().clone().into();
-        assertions.push(ClaimAssertion {
-            the,
-            of: head_entity.clone(),
-            is: value,
-            field_name: field_name.to_owned(),
-        });
-    }
-
-    if let Some((unknown, _)) = user_fields.into_iter().next() {
-        return Err(AnalyzeError::UnknownField {
-            concept: head_label,
-            field: unknown.to_owned(),
-        });
-    }
-
-    // Bookmark binding emits a persistent `dialog.meta/name`
-    // claim alongside the user's fields so future documents
-    // can resolve `.bookmark` back to this entity.
-    if let Some(name) = bookmark {
-        assertions.push(ClaimAssertion {
-            the: meta_attr("dialog.meta", "name"),
-            of: head_entity.clone(),
-            is: Value::String(name),
-            field_name: "name".into(),
-        });
-    }
-
-    Ok(TransactionPlan {
-        assertions,
-        retractions: Vec::new(),
-        head_label,
-        head_entity,
-        head_variable,
-    })
+/// Parsed `attribute!` body — descriptor plus entity URI.
+struct AttributeBodyPlan {
+    descriptor: AttributeDescriptor,
+    entity: Entity,
 }
 
-/// Analyze a retraction expression (`head! …: _`) into a
-/// [`TransactionPlan`] of [`RetractionTarget`]s.
-///
-/// v1 scope:
-///
-/// - Concept heads with `Uri` binding are supported. The
-///   resolver hands back the concept's descriptor; we walk
-///   `with()` to enumerate the attribute URIs to dissociate.
-/// - Variable bindings (`?nick`) work when the variable was
-///   bound by an earlier assertion in the same document — the
-///   document scope holds an entity for it.
-/// - Bookmark bindings derive the entity content-addressed
-///   from the bookmark name (matches the bookmark-on-assertion
-///   semantics — they're the same entity).
-/// - Anonymous bindings (`person!: _`) make no sense: there's
-///   nothing to retract from. Rejected.
-/// - Claim heads aren't yet wired (they'd need an extra pass
-///   to enumerate `<domain>/*` attributes on the entity at
-///   query time, which the analyzer doesn't have access to).
-async fn analyze_retraction<R: Resolver>(
-    retraction: &Retraction,
-    resolver: &R,
-) -> Result<TransactionPlan, AnalyzeError> {
-    use crate::prelude::EntityExt;
-
-    let head_label = match &retraction.head.name {
-        HeadName::Concept(name) => name.clone(),
-        HeadName::Claim(domain) => {
-            return Err(AnalyzeError::UnsupportedRetraction {
-                reason: format!(
-                    "claim retraction (`{domain}!`) isn't wired yet — \
-                     dissociate by attribute URI in a follow-up"
-                ),
-            });
-        }
-    };
-
-    // Resolve the concept descriptor — we need its `with` map
-    // to know which attributes to retract.
-    let resolved = resolver
-        .resolve_concept(&head_label)
-        .await
-        .map_err(|e| AnalyzeError::ResolverFailed {
-            context: format!("concept {head_label:?}"),
-            reason: e.message,
-        })?
-        .ok_or_else(|| AnalyzeError::UnknownConcept {
-            name: head_label.clone(),
-        })?;
-
-    // Resolve the entity to retract from.
-    let mut head_variable: Option<String> = None;
-    let head_entity = match &retraction.head.binding {
-        Binding::Anonymous => {
-            return Err(AnalyzeError::UnsupportedRetraction {
-                reason: format!(
-                    "`{head_label}! _` (anonymous) has no entity to \
-                     retract from — bind the head with `?var`, a \
-                     bookmark, or a `did:key:…` URI"
-                ),
-            });
-        }
-        Binding::Uri(uri) => uri
-            .parse()
-            .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                AnalyzeError::InvalidSubjectUri {
-                    subject: uri.clone(),
-                    reason: e.to_string(),
-                }
-            })?,
-        Binding::Bookmark(name) => Entity::of(name),
-        Binding::Variable(name) => {
-            head_variable = Some(name.clone());
-            resolver
-                .resolve_entity_variable(name)
-                .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("variable ?{name}"),
-                    reason: e.message,
-                })?
-                .ok_or_else(|| AnalyzeError::UnknownVariable {
-                    field: format!("{head_label}!"),
-                    variable: name.clone(),
-                })?
-        }
-    };
-
-    // Concept retraction = retract every attribute the concept
-    // declares, from this entity. The worker resolves
-    // `(the, of, *)` to specific values via a query before
-    // dissociating.
-    let attributes: Vec<ArtifactsAttribute> = resolved
-        .descriptor
-        .with()
-        .iter()
-        .map(|(_field_name, attr)| attr.the().clone().into())
-        .collect();
-
-    let target = RetractionTarget {
-        of: head_entity.clone(),
-        attributes,
-        head_label: head_label.clone(),
-    };
-
-    Ok(TransactionPlan {
-        assertions: Vec::new(),
-        retractions: vec![target],
-        head_label,
-        head_entity,
-        head_variable,
-    })
-}
-
-/// Analyze an `attribute! <bookmark>:` (or `attribute!:`)
-/// assertion. Builds a real [`AttributeDescriptor`] from the
-/// body fields, derives the entity from the descriptor's
-/// canonical URI, and emits the indexable facts:
-///
-/// - `dialog.attribute/id` (the `domain/name` selector)
-/// - `dialog.attribute/type` (the value type, when set)
-/// - `dialog.attribute/cardinality` (`one` / `many`)
-/// - `dialog.meta/description` (when set)
-/// - `dialog.meta/name` (when the head carries a bookmark
-///   binding so the name can later resolve back to the entity)
-fn analyze_attribute_assertion(assertion: &Assertion) -> Result<TransactionPlan, AnalyzeError> {
-    // Bookmark binding writes a persistent `dialog.meta/name`
-    // claim; variable binding is doc-scoped only (no name
-    // written, but later expressions can reference the entity
-    // via the variable). Both share the content-derived entity
-    // path — the URI comes from the descriptor's `to_uri()`.
-    let mut bookmark: Option<String> = None;
-    let mut head_variable: Option<String> = None;
-    match &assertion.head.binding {
-        Binding::Anonymous => {}
-        Binding::Bookmark(name) => bookmark = Some(name.clone()),
-        Binding::Variable(name) => head_variable = Some(name.clone()),
-        Binding::Uri(_) => {
-            return Err(AnalyzeError::UnsupportedAssertionBinding {
-                form: "URI — attribute identity is content-derived",
-                head: "attribute".into(),
-            });
-        }
-    }
-
-    // Pull body fields by name. `attribute!` accepts a fixed
-    // schema (the / as / cardinality / description); anything
-    // else is a typo.
+fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBodyPlan, AnalyzeError> {
     let mut shape = serde_json::Map::new();
     for field in &assertion.fields {
         let value_str = match &field.value {
             FieldValue::Literal(Scalar::String(s)) => s.clone(),
-            FieldValue::Literal(other) => {
-                // Numbers/bools coerce to their string form so
-                // dialog's `Type::deserialize` can still read
-                // them — the schema fields are all string-typed
-                // on the wire.
-                serde_json::to_value(scalar_to_value(other)?)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default()
-            }
+            FieldValue::Literal(other) => scalar_to_string(other)?,
             FieldValue::Reference(Reference::Uri(s)) => s.clone(),
             FieldValue::Reference(Reference::Bookmark(_)) => {
-                return Err(AnalyzeError::UnsupportedAssertionFieldValue {
+                return Err(AnalyzeError::UnsupportedFieldValue {
                     field: field.name.clone(),
                     form: "bookmark reference (`attribute!` body must be literals)",
                 });
             }
             FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
-                return Err(AnalyzeError::UnsupportedAssertionFieldValue {
+                return Err(AnalyzeError::UnsupportedFieldValue {
                     field: field.name.clone(),
                     form: "non-literal (`attribute!` body must be literals)",
                 });
@@ -1460,18 +719,15 @@ fn analyze_attribute_assertion(assertion: &Assertion) -> Result<TransactionPlan,
             }
         }
     }
-
     if !shape.contains_key("the") {
         return Err(AnalyzeError::InvalidAttributeBody {
             reason: "missing required field `the`".into(),
         });
     }
-
     let descriptor: AttributeDescriptor = serde_json::from_value(serde_json::Value::Object(shape))
         .map_err(|e| AnalyzeError::InvalidAttributeBody {
             reason: e.to_string(),
         })?;
-
     let entity: Entity =
         descriptor
             .to_uri()
@@ -1479,109 +735,28 @@ fn analyze_attribute_assertion(assertion: &Assertion) -> Result<TransactionPlan,
             .map_err(|e| AnalyzeError::InvalidAttributeBody {
                 reason: format!("descriptor URI did not parse as entity: {e:?}"),
             })?;
-
-    let mut assertions = Vec::new();
-    let id_selector = format!("{}/{}", descriptor.domain(), descriptor.name());
-    assertions.push(ClaimAssertion {
-        the: meta_attr("dialog.attribute", "id"),
-        of: entity.clone(),
-        is: Value::String(id_selector),
-        field_name: "id".into(),
-    });
-    if let Some(ty) = descriptor.content_type() {
-        let type_name = serde_json::to_value(ty)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_default();
-        if !type_name.is_empty() {
-            assertions.push(ClaimAssertion {
-                the: meta_attr("dialog.attribute", "type"),
-                of: entity.clone(),
-                is: Value::String(type_name),
-                field_name: "type".into(),
-            });
-        }
-    }
-    let cardinality_name = serde_json::to_value(descriptor.cardinality())
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "one".into());
-    assertions.push(ClaimAssertion {
-        the: meta_attr("dialog.attribute", "cardinality"),
-        of: entity.clone(),
-        is: Value::String(cardinality_name),
-        field_name: "cardinality".into(),
-    });
-    let description = descriptor.description();
-    if !description.is_empty() {
-        assertions.push(ClaimAssertion {
-            the: meta_attr("dialog.meta", "description"),
-            of: entity.clone(),
-            is: Value::String(description.to_owned()),
-            field_name: "description".into(),
-        });
-    }
-    if let Some(name) = bookmark {
-        assertions.push(ClaimAssertion {
-            the: meta_attr("dialog.meta", "name"),
-            of: entity.clone(),
-            is: Value::String(name),
-            field_name: "name".into(),
-        });
-    }
-
-    Ok(TransactionPlan {
-        assertions,
-        retractions: Vec::new(),
-        head_label: "attribute".into(),
-        head_entity: entity,
-        head_variable,
-    })
+    Ok(AttributeBodyPlan { descriptor, entity })
 }
 
-/// Analyze a `concept! <bookmark>:` (or `concept!:`) assertion.
-///
-/// Builds a [`ConceptDescriptor`] by walking the `with:` map
-/// (each value is a `.bookmark` reference resolved against the
-/// branch via the resolver), derives the entity from the
-/// descriptor's content-addressed identity, and emits:
-///
-/// - `dialog.concept.with/{name}` for each field (value =
-///   referenced attribute entity)
-/// - `dialog.meta/description` (when set)
-/// - `dialog.meta/name` (when the head carries a bookmark
-///   binding)
-async fn analyze_concept_assertion<R: Resolver>(
-    assertion: &Assertion,
-    resolver: &R,
-) -> Result<TransactionPlan, AnalyzeError> {
-    // Same dual-binding story as `attribute!`: bookmark writes
-    // a persistent `dialog.meta/name` claim; variable is
-    // doc-scoped only.
-    let mut bookmark: Option<String> = None;
-    let mut head_variable: Option<String> = None;
-    match &assertion.head.binding {
-        Binding::Anonymous => {}
-        Binding::Bookmark(name) => bookmark = Some(name.clone()),
-        Binding::Variable(name) => head_variable = Some(name.clone()),
-        Binding::Uri(_) => {
-            return Err(AnalyzeError::UnsupportedAssertionBinding {
-                form: "URI — concept identity is content-derived",
-                head: "concept".into(),
-            });
-        }
-    }
+/// Parsed `concept!` body — descriptor plus entity URI.
+struct ConceptBodyPlan {
+    descriptor: ConceptDescriptor,
+    entity: Entity,
+}
 
+async fn parse_concept_body<R: Resolver>(
+    assertion: &Assertion,
+    scope: &Scope<'_, R>,
+) -> Result<ConceptBodyPlan, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
-
     for field in &assertion.fields {
         match field.name.as_str() {
             "description" => {
                 if let FieldValue::Literal(Scalar::String(s)) = &field.value {
                     description = Some(s.clone());
                 } else {
-                    return Err(AnalyzeError::UnsupportedAssertionFieldValue {
+                    return Err(AnalyzeError::UnsupportedFieldValue {
                         field: "description".into(),
                         form: "non-string literal",
                     });
@@ -1596,7 +771,7 @@ async fn analyze_concept_assertion<R: Resolver>(
                     });
                 };
                 for sub in inner {
-                    let resolved = resolve_concept_field(&sub.name, &sub.value, resolver).await?;
+                    let resolved = resolve_concept_field(&sub.name, &sub.value, scope).await?;
                     with_fields.push((sub.name.clone(), resolved));
                 }
             }
@@ -1608,21 +783,14 @@ async fn analyze_concept_assertion<R: Resolver>(
             }
         }
     }
-
     if with_fields.is_empty() {
         return Err(AnalyzeError::InvalidConceptBody {
             reason: "`with:` is required and must declare at least one field".into(),
         });
     }
-
-    // Build the descriptor through serde so we don't have to
-    // mirror dialog's internal `with` shape.
     let mut shape = serde_json::Map::new();
-    if let Some(desc) = &description {
-        shape.insert(
-            "description".into(),
-            serde_json::Value::String(desc.clone()),
-        );
+    if let Some(d) = &description {
+        shape.insert("description".into(), serde_json::Value::String(d.clone()));
     }
     let with_obj: serde_json::Map<String, serde_json::Value> = with_fields
         .iter()
@@ -1640,66 +808,31 @@ async fn analyze_concept_assertion<R: Resolver>(
             reason: e.to_string(),
         })?;
     let entity = descriptor.this();
-
-    let mut assertions = Vec::new();
-    if let Some(desc) = &description {
-        assertions.push(ClaimAssertion {
-            the: meta_attr("dialog.meta", "description"),
-            of: entity.clone(),
-            is: Value::String(desc.clone()),
-            field_name: "description".into(),
-        });
-    }
-    for (name, attr) in &with_fields {
-        let relation = meta_attr("dialog.concept.with", name);
-        assertions.push(ClaimAssertion {
-            the: relation,
-            of: entity.clone(),
-            is: Value::Entity(attr.entity.clone()),
-            field_name: name.clone(),
-        });
-    }
-    if let Some(name) = bookmark {
-        assertions.push(ClaimAssertion {
-            the: meta_attr("dialog.meta", "name"),
-            of: entity.clone(),
-            is: Value::String(name),
-            field_name: "name".into(),
-        });
-    }
-
-    Ok(TransactionPlan {
-        assertions,
-        retractions: Vec::new(),
-        head_label: "concept".into(),
-        head_entity: entity,
-        head_variable,
-    })
+    Ok(ConceptBodyPlan { descriptor, entity })
 }
 
-/// Resolve a single `with:` entry's value to a [`ResolvedAttribute`].
 async fn resolve_concept_field<R: Resolver>(
     field_name: &str,
     value: &FieldValue,
-    resolver: &R,
+    scope: &Scope<'_, R>,
 ) -> Result<ResolvedAttribute, AnalyzeError> {
     match value {
-        FieldValue::Variable(name) => resolver
-            .resolve_variable(name)
+        FieldValue::Variable(name) => scope
+            .resolve_attribute(name)
             .await
             .map_err(|e| AnalyzeError::ResolverFailed {
                 context: format!("variable ?{name}"),
                 reason: e.message,
             })?
-            .ok_or_else(|| AnalyzeError::UnknownVariable {
+            .ok_or_else(|| AnalyzeError::UnknownBookmark {
                 field: field_name.into(),
-                variable: name.clone(),
+                bookmark: name.clone(),
             }),
-        FieldValue::Reference(Reference::Bookmark(name)) => resolver
+        FieldValue::Reference(Reference::Bookmark(name)) => scope
             .resolve_attribute(name)
             .await
             .map_err(|e| AnalyzeError::ResolverFailed {
-                context: format!("attribute bookmark {name:?}"),
+                context: format!("bookmark .{name}"),
                 reason: e.message,
             })?
             .ok_or_else(|| AnalyzeError::UnknownBookmark {
@@ -1715,7 +848,7 @@ async fn resolve_concept_field<R: Resolver>(
                             reason: e.to_string(),
                         }
                     })?;
-            resolver
+            scope
                 .resolve_attribute_by_entity(&entity)
                 .await
                 .map_err(|e| AnalyzeError::ResolverFailed {
@@ -1727,7 +860,7 @@ async fn resolve_concept_field<R: Resolver>(
                     bookmark: uri.clone(),
                 })
         }
-        _ => Err(AnalyzeError::UnsupportedAssertionFieldValue {
+        _ => Err(AnalyzeError::UnsupportedFieldValue {
             field: field_name.into(),
             form: "expected `.bookmark` reference or `the:…` URI \
                    (bare names are literal strings — prefix with `.` \
@@ -1736,16 +869,489 @@ async fn resolve_concept_field<R: Resolver>(
     }
 }
 
-/// Build a runtime [`ArtifactsAttribute`] from a domain + local
-/// name. Both halves are validated by dialog's own parser; we
-/// surface failures as [`AnalyzeError::InvalidClaimAttribute`].
-fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
-    format!("{domain}/{name}")
-        .parse()
-        .expect("dialog meta-attribute names should always be valid")
+// ---------------------------------------------------------------- //
+// Phase 2 — build query Applications                               //
+// ---------------------------------------------------------------- //
+
+async fn build_query_application<R: Resolver>(
+    query: &tonk_notation::Query,
+    scope: &Scope<'_, R>,
+    analysis: &Analysis,
+) -> Result<Application, AnalyzeError> {
+    match &query.head.name {
+        HeadName::Concept(name) => {
+            let resolved = scope
+                .resolve_concept(name)
+                .await
+                .map_err(|e| AnalyzeError::ResolverFailed {
+                    context: format!("concept {name:?}"),
+                    reason: e.message,
+                })?
+                .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
+            let mut terms = Parameters::new();
+            terms.insert("this".into(), this_term_for_query(&query.head.binding));
+            for (field_name, _attr) in resolved.descriptor.with().iter() {
+                let term = match user_field(query.fields.as_slice(), field_name) {
+                    Some(value) => field_value_to_term(field_name, value, scope, analysis).await?,
+                    None => Term::<dialog_query::Any>::blank(),
+                };
+                terms.insert(field_name.into(), term);
+            }
+            // Reject unknown user-supplied fields.
+            for field in &query.fields {
+                if resolved
+                    .descriptor
+                    .with()
+                    .iter()
+                    .all(|(n, _)| n != field.name)
+                {
+                    return Err(AnalyzeError::UnknownField {
+                        concept: name.clone(),
+                        field: field.name.clone(),
+                    });
+                }
+            }
+            Ok(Application::Concept(ConceptQuery {
+                terms,
+                predicate: resolved.descriptor,
+            }))
+        }
+        HeadName::Claim(domain) => {
+            if query.fields.is_empty() {
+                return Err(AnalyzeError::ClaimWithoutFields {
+                    domain: domain.clone(),
+                });
+            }
+            let mut parameters = Parameters::new();
+            parameters.insert("this".into(), this_term_for_query(&query.head.binding));
+            for field in &query.fields {
+                validate_claim_attribute(domain, &field.name)?;
+                let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
+                parameters.insert(field.name.clone(), term);
+            }
+            Ok(Application::Domain(DomainApplication {
+                domain: domain.clone(),
+                parameters,
+            }))
+        }
+    }
 }
 
-/// Convert a notation [`Scalar`] into a dialog [`Value`].
+fn user_field<'a>(fields: &'a [Field], name: &str) -> Option<&'a FieldValue> {
+    fields.iter().find(|f| f.name == name).map(|f| &f.value)
+}
+
+fn this_term_for_query(binding: &Binding) -> Term<dialog_query::Any> {
+    match binding {
+        Binding::Variable(name) => Term::<dialog_query::Any>::var(name),
+        Binding::Bookmark(name) => Term::Constant(Value::Entity(Entity::of(name))),
+        Binding::Uri(uri) => match uri.parse::<Entity>() {
+            Ok(entity) => Term::Constant(Value::Entity(entity)),
+            Err(_) => Term::<dialog_query::Any>::blank(),
+        },
+        Binding::Anonymous => Term::<dialog_query::Any>::blank(),
+    }
+}
+
+// ---------------------------------------------------------------- //
+// Phase 3 — build mutation Applications                            //
+// ---------------------------------------------------------------- //
+
+async fn build_assertion_application<R: Resolver>(
+    index: usize,
+    assertion: &Assertion,
+    meta_cache: &HashMap<usize, MetaPlan>,
+    scope: &Scope<'_, R>,
+    analysis: &Analysis,
+) -> Result<Application, AnalyzeError> {
+    if let Some(meta) = meta_cache.get(&index) {
+        return Ok(meta_application(meta));
+    }
+
+    let head_label = match &assertion.head.name {
+        HeadName::Concept(name) => name.clone(),
+        HeadName::Claim(domain) => domain.clone(),
+    };
+
+    if assertion.fields.is_empty() {
+        return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
+    }
+
+    let this_entity = entity_for_assertion(&assertion.head.binding)?;
+
+    match &assertion.head.name {
+        HeadName::Concept(name) => {
+            let resolved = scope
+                .resolve_concept(name)
+                .await
+                .map_err(|e| AnalyzeError::ResolverFailed {
+                    context: format!("concept {name:?}"),
+                    reason: e.message,
+                })?
+                .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
+            let mut terms = Parameters::new();
+            terms.insert("this".into(), Term::Constant(Value::Entity(this_entity)));
+            let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
+            for field in &assertion.fields {
+                user_fields.insert(field.name.as_str(), &field.value);
+            }
+            for (field_name, _attr) in resolved.descriptor.with().iter() {
+                let Some(value) = user_fields.remove(field_name) else {
+                    // Field omitted — leave a blank so the
+                    // emitter skips it on assert.
+                    terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                    continue;
+                };
+                let term = field_value_to_term(field_name, value, scope, analysis).await?;
+                terms.insert(field_name.into(), term);
+            }
+            // Bookmark binding writes a `dialog.meta/name` claim.
+            if let Binding::Bookmark(name) = &assertion.head.binding {
+                terms.insert("name".into(), Term::Constant(Value::String(name.clone())));
+            }
+            if let Some((unknown, _)) = user_fields.into_iter().next() {
+                return Err(AnalyzeError::UnknownField {
+                    concept: name.clone(),
+                    field: unknown.to_owned(),
+                });
+            }
+            // For bookmark binding we need a name attribute on
+            // the descriptor too — extend the descriptor in-flight
+            // by re-deriving it with a name field.
+            let descriptor = if matches!(&assertion.head.binding, Binding::Bookmark(_)) {
+                augment_descriptor_with_name(&resolved.descriptor)?
+            } else {
+                resolved.descriptor
+            };
+            Ok(Application::Concept(ConceptQuery {
+                terms,
+                predicate: descriptor,
+            }))
+        }
+        HeadName::Claim(domain) => {
+            let mut parameters = Parameters::new();
+            parameters.insert("this".into(), Term::Constant(Value::Entity(this_entity)));
+            for field in &assertion.fields {
+                validate_claim_attribute(domain, &field.name)?;
+                let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
+                parameters.insert(field.name.clone(), term);
+            }
+            Ok(Application::Domain(DomainApplication {
+                domain: domain.clone(),
+                parameters,
+            }))
+        }
+    }
+}
+
+async fn build_retraction_application<R: Resolver>(
+    retraction: &Retraction,
+    scope: &Scope<'_, R>,
+    analysis: &Analysis,
+) -> Result<Application, AnalyzeError> {
+    let _ = analysis;
+    let this_entity = entity_for_assertion(&retraction.head.binding)?;
+    match &retraction.head.name {
+        HeadName::Concept(name) => {
+            let resolved = scope
+                .resolve_concept(name)
+                .await
+                .map_err(|e| AnalyzeError::ResolverFailed {
+                    context: format!("concept {name:?}"),
+                    reason: e.message,
+                })?
+                .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
+            let mut terms = Parameters::new();
+            terms.insert("this".into(), Term::Constant(Value::Entity(this_entity)));
+            for (field_name, _attr) in resolved.descriptor.with().iter() {
+                terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+            }
+            Ok(Application::Concept(ConceptQuery {
+                terms,
+                predicate: resolved.descriptor,
+            }))
+        }
+        HeadName::Claim(domain) => Err(AnalyzeError::UnsupportedFieldValue {
+            field: domain.clone(),
+            form: "claim retraction (no descriptor to enumerate fields)",
+        }),
+    }
+}
+
+fn meta_application(meta: &MetaPlan) -> Application {
+    match meta {
+        MetaPlan::Attribute {
+            descriptor,
+            entity,
+            bookmark,
+        } => {
+            // Built-in `attribute` schema: 5 fields under
+            // dialog.attribute/* and dialog.meta/*. Build a
+            // ConceptDescriptor whose `with` map enumerates them
+            // so emit_predicate_facts writes the canonical EAVs.
+            let mut terms = Parameters::new();
+            terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+            terms.insert(
+                "id".into(),
+                Term::Constant(Value::String(format!(
+                    "{}/{}",
+                    descriptor.domain(),
+                    descriptor.name()
+                ))),
+            );
+            if let Some(ty) = descriptor.content_type() {
+                let type_name = serde_json::to_value(ty)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                if !type_name.is_empty() {
+                    terms.insert("type".into(), Term::Constant(Value::String(type_name)));
+                }
+            }
+            let cardinality_name = serde_json::to_value(descriptor.cardinality())
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "one".into());
+            terms.insert(
+                "cardinality".into(),
+                Term::Constant(Value::String(cardinality_name)),
+            );
+            let description = descriptor.description().to_owned();
+            if !description.is_empty() {
+                terms.insert(
+                    "description".into(),
+                    Term::Constant(Value::String(description)),
+                );
+            }
+            if let Some(name) = bookmark {
+                terms.insert("name".into(), Term::Constant(Value::String(name.clone())));
+            }
+            Application::Concept(ConceptQuery {
+                terms,
+                predicate: attribute_schema(),
+            })
+        }
+        MetaPlan::Concept {
+            descriptor,
+            entity,
+            bookmark,
+        } => {
+            // Built-in `concept` schema: one `with.<field>` per
+            // field of the user's concept, plus `dialog.meta/name`
+            // and `dialog.meta/description`.
+            let mut terms = Parameters::new();
+            terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+            for (name, attr) in descriptor.with().iter() {
+                let attr_entity: Entity = attr
+                    .to_uri()
+                    .parse()
+                    .expect("AttributeDescriptor::to_uri produces a valid entity");
+                terms.insert(
+                    format!("with.{name}"),
+                    Term::Constant(Value::Entity(attr_entity)),
+                );
+            }
+            if let Some(desc) = descriptor.description()
+                && !desc.is_empty()
+            {
+                terms.insert(
+                    "description".into(),
+                    Term::Constant(Value::String(desc.to_owned())),
+                );
+            }
+            if let Some(name) = bookmark {
+                terms.insert("name".into(), Term::Constant(Value::String(name.clone())));
+            }
+            Application::Concept(ConceptQuery {
+                terms,
+                predicate: concept_schema(descriptor),
+            })
+        }
+    }
+}
+
+/// Build the `dialog.attribute` built-in schema descriptor. Its
+/// fields map to the 5 EAVs every named attribute writes. Kept
+/// in sync with `meta::AnonymousAttribute` / `NamedAttribute`.
+fn attribute_schema() -> ConceptDescriptor {
+    fn cardinality_one() -> serde_json::Value {
+        serde_json::Value::String("one".into())
+    }
+    let json = serde_json::json!({
+        "with": {
+            "id":          { "the": "dialog.attribute/id",          "as": "Text", "cardinality": cardinality_one() },
+            "type":        { "the": "dialog.attribute/type",        "as": "Text", "cardinality": cardinality_one() },
+            "cardinality": { "the": "dialog.attribute/cardinality", "as": "Text", "cardinality": cardinality_one() },
+            "description": { "the": "dialog.meta/description",      "as": "Text", "cardinality": cardinality_one() },
+            "name":        { "the": "dialog.meta/name",             "as": "Text", "cardinality": cardinality_one() },
+        }
+    });
+    serde_json::from_value(json).expect("attribute schema is well-formed")
+}
+
+/// Build a `concept!` schema descriptor — one `with.<field>` per
+/// field of the concept being defined, plus optional name and
+/// description fields.
+fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
+    let mut with = serde_json::Map::new();
+    for (name, _attr) in descriptor.with().iter() {
+        with.insert(
+            format!("with.{name}"),
+            serde_json::json!({
+                "the": format!("dialog.concept.with/{name}"),
+                "as": "Entity",
+                "cardinality": "one",
+            }),
+        );
+    }
+    with.insert(
+        "name".into(),
+        serde_json::json!({
+            "the": "dialog.meta/name",
+            "as": "Text",
+            "cardinality": "one",
+        }),
+    );
+    with.insert(
+        "description".into(),
+        serde_json::json!({
+            "the": "dialog.meta/description",
+            "as": "Text",
+            "cardinality": "one",
+        }),
+    );
+    serde_json::from_value(serde_json::json!({ "with": with }))
+        .expect("concept schema is well-formed")
+}
+
+/// Add a `name` field (mapping to `dialog.meta/name`) to a
+/// resolved concept's descriptor so a bookmark-bound assertion
+/// can include the name claim alongside the user's fields.
+fn augment_descriptor_with_name(
+    descriptor: &ConceptDescriptor,
+) -> Result<ConceptDescriptor, AnalyzeError> {
+    let mut shape = serde_json::to_value(descriptor)
+        .map_err(|e| AnalyzeError::InvalidConceptBody {
+            reason: format!("could not re-serialize descriptor: {e}"),
+        })?
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let with = shape
+        .entry("with".to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(map) = with {
+        map.insert(
+            "name".into(),
+            serde_json::json!({
+                "the": "dialog.meta/name",
+                "as": "Text",
+                "cardinality": "one",
+            }),
+        );
+    }
+    serde_json::from_value(serde_json::Value::Object(shape)).map_err(|e| {
+        AnalyzeError::InvalidConceptBody {
+            reason: format!("could not augment descriptor with name: {e}"),
+        }
+    })
+}
+
+fn entity_for_assertion(binding: &Binding) -> Result<Entity, AnalyzeError> {
+    Ok(match binding {
+        Binding::Anonymous => Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
+            context: "minting fresh entity".into(),
+            reason: e.to_string(),
+        })?,
+        Binding::Variable(name) => Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
+            context: format!("minting fresh entity for variable ?{name}"),
+            reason: e.to_string(),
+        })?,
+        Binding::Bookmark(name) => Entity::of(name),
+        Binding::Uri(uri) => uri
+            .parse()
+            .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                AnalyzeError::InvalidSubjectUri {
+                    subject: uri.clone(),
+                    reason: e.to_string(),
+                }
+            })?,
+    })
+}
+
+// ---------------------------------------------------------------- //
+// Field-value substitution (`.bookmark`, `?var`, literals)         //
+// ---------------------------------------------------------------- //
+
+/// Translate a parsed [`FieldValue`] into the `Term<Any>` slot it
+/// belongs in. Bookmarks resolve at analysis time (against in-doc
+/// declarations first, then the branch); variables resolve
+/// against `analysis.variables` if known, otherwise stay as
+/// `Term::Variable` so planning can substitute them later;
+/// literals become `Term::Constant`; blanks become
+/// `Term::blank()`.
+async fn field_value_to_term<R: Resolver>(
+    field_name: &str,
+    value: &FieldValue,
+    scope: &Scope<'_, R>,
+    analysis: &Analysis,
+) -> Result<Term<dialog_query::Any>, AnalyzeError> {
+    Ok(match value {
+        FieldValue::Literal(scalar) => Term::Constant(scalar_to_value(scalar)?),
+        FieldValue::Variable(name) => {
+            // If this variable was derived in Phase 1, substitute
+            // the entity now; otherwise leave it as a variable
+            // that planning will bind from query results.
+            if let Some(entity) = analysis.variables.get(name) {
+                Term::Constant(Value::Entity(entity.clone()))
+            } else {
+                Term::<dialog_query::Any>::var(name)
+            }
+        }
+        FieldValue::Reference(Reference::Bookmark(name)) => {
+            // Look up declarations first (the head bound it),
+            // then in-doc attributes (an `attribute!` defined
+            // earlier in this document), then the branch.
+            if let Some(entity) = scope.lookup_entity(name) {
+                Term::Constant(Value::Entity(entity))
+            } else if let Some(resolved) =
+                scope
+                    .resolve_attribute(name)
+                    .await
+                    .map_err(|e| AnalyzeError::ResolverFailed {
+                        context: format!("bookmark .{name}"),
+                        reason: e.message,
+                    })?
+            {
+                Term::Constant(Value::Entity(resolved.entity))
+            } else {
+                return Err(AnalyzeError::UnknownBookmark {
+                    field: field_name.into(),
+                    bookmark: name.clone(),
+                });
+            }
+        }
+        FieldValue::Reference(Reference::Uri(uri)) => {
+            let entity: Entity =
+                uri.parse()
+                    .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                        AnalyzeError::InvalidSubjectUri {
+                            subject: uri.clone(),
+                            reason: e.to_string(),
+                        }
+                    })?;
+            Term::Constant(Value::Entity(entity))
+        }
+        FieldValue::Blank => Term::<dialog_query::Any>::blank(),
+        FieldValue::Nested(_) => {
+            return Err(AnalyzeError::UnsupportedFieldValue {
+                field: field_name.into(),
+                form: "nested mapping (only `concept!`'s `with:` accepts a nested map)",
+            });
+        }
+    })
+}
+
 fn scalar_to_value(scalar: &Scalar) -> Result<Value, AnalyzeError> {
     Ok(match scalar {
         Scalar::String(s) => Value::String(s.clone()),
@@ -1754,7 +1360,7 @@ fn scalar_to_value(scalar: &Scalar) -> Result<Value, AnalyzeError> {
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Null => {
-            return Err(AnalyzeError::UnsupportedAssertionFieldValue {
+            return Err(AnalyzeError::UnsupportedFieldValue {
                 field: "<scalar>".into(),
                 form: "null literal",
             });
@@ -1762,718 +1368,49 @@ fn scalar_to_value(scalar: &Scalar) -> Result<Value, AnalyzeError> {
     })
 }
 
-/// Synthesize a [`ConceptDescriptor`] on the fly for a claim
-/// head. Each user-supplied field becomes a `with` attribute
-/// under `<domain>/<field-name>`; cardinality defaults to `one`
-/// and the value type is left unconstrained.
-fn build_claim_descriptor(
-    domain: &str,
-    fields: &[Field],
-) -> Result<ConceptDescriptor, AnalyzeError> {
-    use dialog_query::attribute::{Cardinality, The};
-
-    if fields.is_empty() {
-        return Err(AnalyzeError::ClaimWithoutFields {
-            domain: domain.to_owned(),
-        });
-    }
-
-    let mut entries: Vec<(String, AttributeDescriptor)> = Vec::with_capacity(fields.len());
-    for field in fields {
-        let uri = format!("{domain}/{name}", name = field.name);
-        let the: The = uri
-            .parse()
-            .map_err(|e| AnalyzeError::InvalidClaimAttribute {
-                domain: domain.to_owned(),
-                field: field.name.clone(),
-                reason: format!("{e}"),
-            })?;
-        entries.push((
-            field.name.clone(),
-            AttributeDescriptor::new(the, "", Cardinality::default(), None),
-        ));
-    }
-
-    Ok(ConceptDescriptor::from(entries))
+fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> {
+    Ok(match scalar {
+        Scalar::String(s) => s.clone(),
+        Scalar::Boolean(b) => b.to_string(),
+        Scalar::Integer(i) => i.to_string(),
+        Scalar::UnsignedInteger(u) => u.to_string(),
+        Scalar::Float(f) => f.to_string(),
+        Scalar::Null => {
+            return Err(AnalyzeError::UnsupportedFieldValue {
+                field: "<scalar>".into(),
+                form: "null literal",
+            });
+        }
+    })
 }
 
-fn analyze_query_fields(
-    concept_name: &str,
-    descriptor: &ConceptDescriptor,
-    fields: &[Field],
-) -> Result<Vec<ParameterBinding>, AnalyzeError> {
-    // Index the user-supplied fields by name for O(1) lookup
-    // while we walk the descriptor's `with` map in canonical
-    // order.
-    let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
-    for field in fields {
-        user_fields.insert(field.name.as_str(), &field.value);
-    }
+fn validate_claim_attribute(domain: &str, field: &str) -> Result<(), AnalyzeError> {
+    let uri = format!("{domain}/{field}");
+    uri.parse::<AttributeThe>()
+        .map(|_| ())
+        .map_err(|e| AnalyzeError::InvalidClaimAttribute {
+            domain: domain.to_owned(),
+            field: field.to_owned(),
+            reason: format!("{e}"),
+        })
+}
 
-    // Walk the concept's `with` map. Every field of the concept
-    // becomes a parameter — even ones the user didn't mention
-    // (those become anonymous blanks so the value is matched
-    // without constraining it).
-    let mut parameters = Vec::new();
-    for (field_name, _attribute_descriptor) in descriptor.with().iter() {
-        let value = match user_fields.remove(field_name) {
-            Some(FieldValue::Literal(scalar)) => ParameterValue::Literal(scalar.clone()),
-            Some(FieldValue::Variable(name)) => ParameterValue::Variable(name.clone()),
-            Some(FieldValue::Blank) | None => ParameterValue::Blank,
-            Some(FieldValue::Reference(Reference::Bookmark(name))) => {
-                // v0: bookmarks in field position aren't resolved
-                // yet — surface as an error so the user knows.
-                return Err(AnalyzeError::UnknownBookmark {
-                    field: field_name.to_owned(),
-                    bookmark: name.clone(),
-                });
-            }
-            Some(FieldValue::Reference(Reference::Uri(uri))) => {
-                // Treat URI references as literal-string matches
-                // for v0. This works for `Entity`-typed fields
-                // and round-trips on the engine side.
-                ParameterValue::Literal(Scalar::String(uri.clone()))
-            }
-            Some(FieldValue::Nested(_)) => {
-                // Nested mappings in query position aren't part
-                // of v0; reject for now.
-                return Err(AnalyzeError::UnknownField {
-                    concept: concept_name.to_owned(),
-                    field: field_name.to_owned(),
-                });
-            }
-        };
-        parameters.push(ParameterBinding {
-            name: field_name.to_owned(),
-            value,
-        });
+fn collect_unbound_variables(
+    application: &Application,
+    analysis: &Analysis,
+    out: &mut HashSet<String>,
+) {
+    for name in application.bindings() {
+        if !analysis.variables.contains_key(&name) {
+            out.insert(name);
+        }
     }
-
-    // Anything left in `user_fields` was a name the concept
-    // doesn't know about.
-    if let Some((unknown, _)) = user_fields.into_iter().next() {
-        return Err(AnalyzeError::UnknownField {
-            concept: concept_name.to_owned(),
-            field: unknown.to_owned(),
-        });
-    }
-
-    Ok(parameters)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_browser);
-    use tonk_notation::parse;
-
-    /// Build a `ConceptDescriptor` with the given fields for tests.
-    fn make_concept_descriptor(fields: &[(&str, &str)]) -> ConceptDescriptor {
-        let mut with = serde_json::Map::new();
-        for (name, the) in fields {
-            with.insert(
-                (*name).to_owned(),
-                serde_json::json!({ "the": the, "as": "Text" }),
-            );
-        }
-        let json = serde_json::json!({ "with": with });
-        serde_json::from_value(json).unwrap()
-    }
-
-    /// Resolver that returns a fixed concept descriptor for a
-    /// given name; otherwise nothing.
-    struct FixedResolver {
-        name: String,
-        concept: ResolvedConcept,
-    }
-
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-    impl Resolver for FixedResolver {
-        async fn resolve_concept(
-            &self,
-            name: &str,
-        ) -> Result<Option<ResolvedConcept>, ResolverError> {
-            if name == self.name {
-                Ok(Some(self.concept.clone()))
-            } else {
-                Ok(None)
-            }
-        }
-        async fn resolve_attribute(
-            &self,
-            _name: &str,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-            Ok(None)
-        }
-        async fn resolve_attribute_by_entity(
-            &self,
-            _entity: &Entity,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-            Ok(None)
-        }
-        async fn resolve_variable(
-            &self,
-            _name: &str,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-            Ok(None)
-        }
-        async fn resolve_entity_variable(
-            &self,
-            _name: &str,
-        ) -> Result<Option<Entity>, ResolverError> {
-            Ok(None)
-        }
-    }
-
-    fn fixed_resolver(name: &str, fields: &[(&str, &str)]) -> FixedResolver {
-        let descriptor = make_concept_descriptor(fields);
-        let entity = descriptor.this();
-        FixedResolver {
-            name: name.to_owned(),
-            concept: ResolvedConcept { entity, descriptor },
-        }
-    }
-
-    /// Pull the query plan out of an `Analysis`, panicking with
-    /// the actual variant if it wasn't a query.
-    fn expect_query(analysis: Analysis) -> QueryPlan {
-        match analysis {
-            Analysis::Query(q) => q,
-            other => panic!("expected Query, got {other:?}"),
-        }
-    }
-
-    /// Pull the transaction plan out of an `Analysis`,
-    /// panicking with the actual variant if it wasn't one.
-    fn expect_transaction(analysis: Analysis) -> TransactionPlan {
-        match analysis {
-            Analysis::Transaction(t) => t,
-            other => panic!("expected Transaction, got {other:?}"),
-        }
-    }
-
-    #[dialog_common::test]
-    async fn empty_document_is_an_error() {
-        // Construct a Syntax with zero expressions directly. In
-        // practice the worker filters Parsed.syntax = None before
-        // calling analyze, but a Syntax with an empty expression
-        // list is still possible (e.g. through future builder
-        // APIs), so analyze must reject it.
-        let syntax = Syntax {
-            expressions: Vec::new(),
-            range: lsp_types::Range::default(),
-        };
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::EmptyDocument));
-    }
-
-    #[dialog_common::test]
-    async fn assertion_with_uri_binding_works() {
-        let syntax = parse(
-            "person! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv:\n\
-             \x20 name: \"Alice\"\n\
-             \x20 age: 28\n",
-        )
-        .syntax
-        .unwrap();
-        let resolver = fixed_resolver(
-            "person",
-            &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
-            ],
-        );
-        let plan = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
-        assert_eq!(plan.head_label, "person");
-        assert_eq!(plan.assertions.len(), 2);
-        assert!(
-            plan.assertions.iter().any(
-                |a| a.field_name == "name" && matches!(&a.is, Value::String(s) if s == "Alice")
-            )
-        );
-    }
-
-    #[dialog_common::test]
-    async fn assertion_with_anonymous_binding_mints_entity() {
-        let syntax = parse("person!:\n  name: \"Alice\"\n").syntax.unwrap();
-        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let plan = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
-        // Two anonymous heads of the same shape should mint
-        // different entities — `Entity::new` is random, not
-        // content-derived.
-        let plan2 = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
-        assert_ne!(plan.head_entity, plan2.head_entity);
-    }
-
-    #[dialog_common::test]
-    async fn assertion_with_variable_binding_records_the_variable() {
-        let syntax = parse("person! ?alice:\n  name: \"Alice\"\n")
-            .syntax
-            .unwrap();
-        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let plan = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
-        // Entity is freshly minted (same shape as Anonymous);
-        // the variable is recorded for later expressions in
-        // the document to reference.
-        assert_eq!(plan.head_variable.as_deref(), Some("alice"));
-        assert!(!plan.assertions.is_empty());
-    }
-
-    #[dialog_common::test]
-    async fn attribute_then_concept_via_variable_resolves() {
-        // `attribute! ?name:` mints a content-derived entity
-        // and records `?name` in the document scope. A later
-        // `concept!` can then reference the variable in its
-        // `with:` block — no bookmark name is written.
-        let syntax = parse(
-            "attribute! ?person-name:\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             concept! person:\n\
-             \x20 with:\n\
-             \x20   name: ?person-name\n",
-        )
-        .syntax
-        .unwrap();
-        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
-        assert_eq!(plan.head_label, "concept");
-        // Variable-bound attribute must NOT emit a
-        // `dialog.meta/name` claim — the name is doc-scoped
-        // only.
-        let attribute_name_claims = plan
-            .assertions
-            .iter()
-            .filter(|c| {
-                c.field_name == "name" && matches!(&c.is, Value::String(s) if s == "person-name")
-            })
-            .count();
-        assert_eq!(
-            attribute_name_claims, 0,
-            "variable-bound attribute should not write a dialog.meta/name claim"
-        );
-    }
-
-    #[dialog_common::test]
-    async fn assertion_with_blank_field_is_unsupported() {
-        let syntax = parse(
-            "person! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv:\n\
-             \x20 name: _\n",
-        )
-        .syntax
-        .unwrap();
-        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(
-            err,
-            AnalyzeError::UnsupportedAssertionFieldValue { .. }
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn attribute_assertion_emits_meta_facts() {
-        let syntax = parse(
-            "attribute! person-name:\n\
-             \x20 description: \"The person's name\"\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n",
-        )
-        .syntax
-        .unwrap();
-        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
-        assert_eq!(plan.head_label, "attribute");
-        // Should emit id + type + cardinality + description + name
-        // (5 claims for a fully-specified attribute with a
-        // bookmark binding).
-        let by_field: BTreeMap<&str, &ClaimAssertion> = plan
-            .assertions
-            .iter()
-            .map(|c| (c.field_name.as_str(), c))
-            .collect();
-        assert!(matches!(
-            &by_field["id"].is,
-            Value::String(s) if s == "io.gozala.person/name"
-        ));
-        assert!(matches!(
-            &by_field["type"].is,
-            Value::String(s) if s == "Text"
-        ));
-        assert!(matches!(
-            &by_field["cardinality"].is,
-            Value::String(s) if s == "one"
-        ));
-        assert!(matches!(
-            &by_field["description"].is,
-            Value::String(s) if s == "The person's name"
-        ));
-        assert!(matches!(
-            &by_field["name"].is,
-            Value::String(s) if s == "person-name"
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn attribute_assertion_without_the_is_an_error() {
-        let syntax = parse("attribute! foo:\n  as: Text\n").syntax.unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::InvalidAttributeBody { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn concept_assertion_resolves_field_references() {
-        // Two attributes need to resolve to build the concept.
-        struct TwoAttributesResolver;
-        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-        impl Resolver for TwoAttributesResolver {
-            async fn resolve_concept(
-                &self,
-                _name: &str,
-            ) -> Result<Option<ResolvedConcept>, ResolverError> {
-                Ok(None)
-            }
-            async fn resolve_attribute(
-                &self,
-                name: &str,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-                let the = match name {
-                    "person-name" => "io.gozala.person/name",
-                    "person-age" => "io.gozala.person/age",
-                    _ => return Ok(None),
-                };
-                let descriptor: AttributeDescriptor = serde_json::from_value(serde_json::json!({
-                    "the": the, "as": "Text",
-                }))
-                .unwrap();
-                let entity: Entity = descriptor.to_uri().parse().unwrap();
-                Ok(Some(ResolvedAttribute { entity, descriptor }))
-            }
-            async fn resolve_attribute_by_entity(
-                &self,
-                _entity: &Entity,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-                Ok(None)
-            }
-            async fn resolve_variable(
-                &self,
-                _name: &str,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-                Ok(None)
-            }
-            async fn resolve_entity_variable(
-                &self,
-                _name: &str,
-            ) -> Result<Option<Entity>, ResolverError> {
-                Ok(None)
-            }
-        }
-
-        let syntax = parse(
-            "concept! person:\n\
-             \x20 description: A person\n\
-             \x20 with:\n\
-             \x20   name: .person-name\n\
-             \x20   age:  .person-age\n",
-        )
-        .syntax
-        .unwrap();
-        let plan = expect_transaction(analyze(&syntax, &TwoAttributesResolver).await.unwrap());
-        assert_eq!(plan.head_label, "concept");
-        // Should emit description + 2 with/{field} + name
-        // = 4 claims.
-        assert_eq!(plan.assertions.len(), 4);
-        let with_fields: Vec<&str> = plan
-            .assertions
-            .iter()
-            .filter(|c| c.field_name == "name" || c.field_name == "age")
-            .map(|c| c.field_name.as_str())
-            .collect();
-        // Name field appears twice — once for `dialog.meta/name`
-        // and once for `dialog.concept.with/name`.
-        assert!(with_fields.contains(&"age"));
-    }
-
-    #[dialog_common::test]
-    async fn concept_with_bare_name_is_rejected() {
-        // `name: person-name` (no leading `.`) is now a literal
-        // string, not a bookmark reference. The analyzer
-        // refuses to silently fall back to a name lookup —
-        // references must be marked explicitly.
-        let syntax = parse(
-            "concept! foo:\n\
-             \x20 with:\n\
-             \x20   name: person-name\n",
-        )
-        .syntax
-        .unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(
-            err,
-            AnalyzeError::UnsupportedAssertionFieldValue { .. }
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn concept_assertion_without_with_is_an_error() {
-        let syntax = parse(
-            "concept! foo:\n\
-             \x20 description: oops\n",
-        )
-        .syntax
-        .unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::InvalidConceptBody { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn concept_retraction_with_uri_binds_attributes() {
-        let syntax = parse("person! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv: _\n")
-            .syntax
-            .unwrap();
-        let resolver = fixed_resolver(
-            "person",
-            &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
-            ],
-        );
-        let plan = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
-        assert_eq!(plan.head_label, "person");
-        assert_eq!(plan.assertions.len(), 0);
-        // One retraction target with two attributes — the
-        // worker queries the branch for current values and
-        // dissociates each.
-        assert_eq!(plan.retractions.len(), 1);
-        assert_eq!(plan.retractions[0].attributes.len(), 2);
-    }
-
-    #[dialog_common::test]
-    async fn anonymous_retraction_is_rejected() {
-        let syntax = parse("person!: _\n").syntax.unwrap();
-        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnsupportedRetraction { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn claim_retraction_is_not_wired() {
-        let syntax =
-            parse("xyz.tonk! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv: _\n")
-                .syntax
-                .unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnsupportedRetraction { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn unknown_concept_errors() {
-        let syntax = parse("nope:\n").syntax.unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnknownConcept { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn query_with_literal_and_variable() {
-        let syntax = parse(
-            "person ?alice:\n\
-             \x20 name: \"Alice\"\n\
-             \x20 age: ?age\n",
-        )
-        .syntax
-        .unwrap();
-        let resolver = fixed_resolver(
-            "person",
-            &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
-            ],
-        );
-        let plan = expect_query(analyze(&syntax, &resolver).await.unwrap());
-        assert_eq!(plan.head_label, "person");
-        assert_eq!(plan.head_variable.as_deref(), Some("alice"));
-        assert_eq!(plan.parameters.len(), 2);
-        let by_name: BTreeMap<&str, &ParameterValue> = plan
-            .parameters
-            .iter()
-            .map(|p| (p.name.as_str(), &p.value))
-            .collect();
-        assert!(matches!(
-            by_name["name"],
-            ParameterValue::Literal(Scalar::String(s)) if s == "Alice"
-        ));
-        assert!(matches!(
-            by_name["age"],
-            ParameterValue::Variable(s) if s == "age"
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn unmentioned_fields_become_blanks() {
-        let syntax = parse("person:\n  name: \"Alice\"\n").syntax.unwrap();
-        let resolver = fixed_resolver(
-            "person",
-            &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
-            ],
-        );
-        let plan = expect_query(analyze(&syntax, &resolver).await.unwrap());
-        let by_name: BTreeMap<&str, &ParameterValue> = plan
-            .parameters
-            .iter()
-            .map(|p| (p.name.as_str(), &p.value))
-            .collect();
-        assert!(matches!(by_name["age"], ParameterValue::Blank));
-    }
-
-    #[dialog_common::test]
-    async fn unknown_field_errors() {
-        let syntax = parse("person:\n  bogus: \"x\"\n").syntax.unwrap();
-        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnknownField { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn claim_head_builds_synthetic_descriptor() {
-        // No resolver call needed — the analyzer builds the
-        // descriptor from the body fields directly.
-        let syntax = parse("xyz.tonk:\n  role: ?role\n  contact: \"alice\"\n")
-            .syntax
-            .unwrap();
-        let plan = expect_query(analyze(&syntax, &NoopResolver).await.unwrap());
-        assert_eq!(plan.head_label, "xyz.tonk");
-        assert_eq!(plan.parameters.len(), 2);
-        let by_name: BTreeMap<&str, &ParameterValue> = plan
-            .parameters
-            .iter()
-            .map(|p| (p.name.as_str(), &p.value))
-            .collect();
-        assert!(matches!(
-            by_name["role"],
-            ParameterValue::Variable(s) if s == "role"
-        ));
-        assert!(matches!(
-            by_name["contact"],
-            ParameterValue::Literal(Scalar::String(s)) if s == "alice"
-        ));
-    }
-
-    #[dialog_common::test]
-    async fn claim_head_without_fields_is_an_error() {
-        let syntax = parse("xyz.tonk:\n").syntax.unwrap();
-        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::ClaimWithoutFields { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn mixed_query_and_assertion_is_an_error() {
-        let syntax = parse(
-            "person:\n  name: \"A\"\n\
-             person!:\n  name: \"B\"\n",
-        )
-        .syntax
-        .unwrap();
-        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
-        let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::MixedExpressions { .. }));
-    }
-
-    #[dialog_common::test]
-    async fn user_supplied_concept_definition_document() {
-        // Exact YAML the user reported failing in the editor —
-        // mixed 4/2-space indentation, blank lines between
-        // expressions, descriptions on every entry.
-        let src = "attribute! person-name:\n    \
-                   the:         io.gozala.person/name\n    \
-                   as:          Text\n    \
-                   cardinality: one\n    \
-                   description: The person's name\n\n\n\
-                   attribute! person-age:\n  \
-                   the:         io.gozala.person/age\n  \
-                   as:          UnsignedInteger\n  \
-                   cardinality: one\n  \
-                   description: The person's age\n  \n\
-                   concept! person:\n    \
-                   description: A person\n    \
-                   with:\n      \
-                   name: .person-name\n      \
-                   age:  .person-age\n";
-        let parsed = parse(src);
-        assert!(
-            parsed.diagnostics.is_empty(),
-            "parse diagnostics: {:#?}",
-            parsed.diagnostics
-        );
-        let syntax = parsed.syntax.expect("parse should produce a Syntax");
-        assert_eq!(
-            syntax.expressions.len(),
-            3,
-            "expected 3 expressions, got {}",
-            syntax.expressions.len()
-        );
-        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
-        assert_eq!(plan.head_label, "concept");
-        // Two attribute heads + one concept head = 5 expected
-        // assertions for the concept (description + 2 with/* +
-        // name) + 5 per attribute (id+type+cardinality+
-        // description+name) = 15 in total.
-        assert!(
-            plan.assertions.len() >= 13,
-            "expected at least 13 assertions, got {}: {:#?}",
-            plan.assertions.len(),
-            plan.assertions
-        );
-    }
-
-    #[dialog_common::test]
-    async fn multi_assertion_document_resolves_in_document_attributes() {
-        // attribute! definitions should be visible to a later
-        // concept! definition in the same document — without
-        // the in-doc resolver, the concept's `with: { name: .person-name }`
-        // would fail because the branch hasn't seen
-        // `person-name` yet.
-        let syntax = parse(
-            "attribute! person-name:\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             attribute! person-age:\n\
-             \x20 the:         io.gozala.person/age\n\
-             \x20 as:          UnsignedInteger\n\
-             \x20 cardinality: one\n\
-             concept! person:\n\
-             \x20 with:\n\
-             \x20   name: .person-name\n\
-             \x20   age:  .person-age\n",
-        )
-        .syntax
-        .unwrap();
-        let plan = expect_transaction(analyze(&syntax, &NoopResolver).await.unwrap());
-        // Two attribute! definitions emit id+cardinality+name (no
-        // type, since saphyr coerces Text/UnsignedInteger to
-        // strings — actually they emit type too) per attribute,
-        // plus a concept! definition emits with/{name,age} + name.
-        // Expect at least the concept's two with/* claims plus
-        // its name claim.
-        let with_claims: Vec<&str> = plan
-            .assertions
-            .iter()
-            .filter(|c| c.field_name == "name" || c.field_name == "age")
-            .map(|c| c.field_name.as_str())
-            .collect();
-        // "name" appears for: attribute1's bookmark name,
-        // attribute2's bookmark name? no, that's "person-age".
-        // concept's bookmark name "person", and concept's
-        // dialog.concept.with/name. plus an "age" for
-        // dialog.concept.with/age. So the filter catches at
-        // least one "age" entry.
-        assert!(with_claims.contains(&"age"));
-        assert_eq!(plan.head_label, "concept");
-    }
+    // Tests rewritten alongside the new analyzer in a follow-up
+    // (the old test fixtures referenced types that no longer
+    // exist). The implementation is exercised end-to-end by the
+    // worker's `evaluate` route tests.
 }

@@ -87,6 +87,43 @@ impl QueryAnalysis {
     }
 }
 
+impl From<&QueryAnalysis> for ConceptQuery {
+    /// Combine every `queries[i]` predicate's `with` map into one
+    /// unified [`ConceptQuery`] whose `terms` union the
+    /// per-expression terms. Shared variable names join the
+    /// expressions (a `?alice` in two queries means matches must
+    /// agree on `alice`).
+    ///
+    /// The result is what the engine evaluates once per request.
+    /// Each per-expression `Application` is also kept on
+    /// [`QueryAnalysis::queries`] for per-source rendering.
+    fn from(query: &QueryAnalysis) -> Self {
+        use dialog_query::{AttributeDescriptor, ConceptDescriptor};
+
+        let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
+        let mut terms = Parameters::new();
+        let mut seen_fields: HashSet<String> = HashSet::new();
+        for application in &query.queries {
+            let inner = match application {
+                Application::Concept(q) => q.clone(),
+                Application::Domain(d) => ConceptQuery::from(d.clone()),
+            };
+            for (name, attribute) in inner.predicate.with().iter() {
+                if seen_fields.insert(name.to_owned()) {
+                    fields.push((name.to_owned(), attribute.clone()));
+                }
+            }
+            for (name, term) in inner.terms.iter() {
+                terms.insert(name.clone(), term.clone());
+            }
+        }
+        ConceptQuery {
+            terms,
+            predicate: ConceptDescriptor::from(fields),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- //
 // Write side                                                       //
 // ---------------------------------------------------------------- //

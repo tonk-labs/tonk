@@ -2,9 +2,9 @@ use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use tonk_worker::{
-    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, IdentifyResponse, JoinRequest,
-    JoinResponse, ProfileInfo, QueryResponse, QueryResultEnvelope, RemoteConfiguration,
-    RepositoryConfiguration, RepositoryInfo, SyncResponse, TransactResponse,
+    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
+    IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
+    RepositoryConfiguration, RepositoryInfo, SyncResponse,
 };
 
 use crate::error::TonkUiError;
@@ -245,23 +245,22 @@ pub async fn select_claims(
     }
 }
 
-/// Submit a transaction document to a branch via
-/// `POST /api/repository/{repo}/branch/{branch}/transact`.
+/// Submit an asserted-notation document to a branch via
+/// `POST /api/repository/{repo}/branch/{branch}/evaluate`.
 ///
-/// The body is sent verbatim with the supplied `content_type`
-/// (typically `application/yaml` from the dialog-yaml editor, or
-/// `application/json`). On success, returns the resolved entity
-/// URI for every named subject in the document so the caller can
-/// reference them later.
-pub async fn transact(
+/// The body may contain any mix of queries and mutations. The
+/// worker analyzes, runs the unified query, then plans + commits
+/// every mutation against each match frame in a single
+/// transaction. Returns matches plus a commit summary.
+pub async fn evaluate(
     repo: &str,
     branch: &str,
     body: String,
     content_type: &str,
-) -> Result<TransactResponse, TonkUiError> {
+) -> Result<EvaluateResponse, TonkUiError> {
     let response = reqwest::Client::new()
         .post(format!(
-            "{}/api/repository/{}/branch/{}/transact",
+            "{}/api/repository/{}/branch/{}/evaluate",
             origin(),
             repo,
             branch
@@ -273,56 +272,16 @@ pub async fn transact(
         .map_err(into_api_error)?;
 
     match response.status() {
-        StatusCode::OK => response.json::<TransactResponse>().await.map_err(|e| {
+        StatusCode::OK => response.json::<EvaluateResponse>().await.map_err(|e| {
             TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/transact: failed to decode response body: {e}",
+                "POST /api/repository/{}/branch/{}/evaluate: failed to decode response body: {e}",
                 repo, branch
             ))
         }),
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/transact returned {}: {}",
-                repo, branch, status, text
-            )))
-        }
-    }
-}
-
-/// Submit a query document to a branch via
-/// `POST /api/repository/{repo}/branch/{branch}/query`.
-///
-/// Body is asserted-notation (YAML). Returns the matching
-/// entities and their bound field values.
-pub async fn query(
-    repo: &str,
-    branch: &str,
-    body: String,
-) -> Result<QueryResultEnvelope, TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/repository/{}/branch/{}/query",
-            origin(),
-            repo,
-            branch
-        ))
-        .header("content-type", "application/yaml")
-        .body(body)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    match response.status() {
-        StatusCode::OK => response.json::<QueryResultEnvelope>().await.map_err(|e| {
-            TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/query: failed to decode response body: {e}",
-                repo, branch
-            ))
-        }),
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/query returned {}: {}",
+                "POST /api/repository/{}/branch/{}/evaluate returned {}: {}",
                 repo, branch, status, text
             )))
         }

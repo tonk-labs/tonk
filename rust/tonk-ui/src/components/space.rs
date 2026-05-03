@@ -6,8 +6,8 @@ use leptos_router::{
     params::Params,
 };
 use tonk_worker::{
-    BranchConfiguration, ClaimResponse, QueryResultEnvelope, RemoteConfiguration, RepositoryInfo,
-    Revision, TransactResponse,
+    BranchConfiguration, ClaimResponse, EvaluateResponse, RemoteConfiguration, RepositoryInfo,
+    Revision,
 };
 use wasm_bindgen::JsCast;
 
@@ -459,31 +459,20 @@ pub(super) fn BranchRow(
                 // We only need the first expression to decide —
                 // documents with mixed kinds aren't supported in
                 // v1, the worker analyzer will reject them.
-                let dispatch = classify_for_dispatch(&body);
-                let result = match dispatch {
-                    DocDispatch::Query => api::query(&repo, &branch, body)
-                        .await
-                        .map(DispatchResult::Query),
-                    DocDispatch::Transact => {
-                        api::transact(&repo, &branch, body, "application/yaml")
-                            .await
-                            .map(DispatchResult::Transact)
+                match classify_for_dispatch(&body) {
+                    DocDispatch::ParseError(messages) => {
+                        transact_state.set(TransactState::Failed(messages));
+                        return;
                     }
                     DocDispatch::Empty => {
                         transact_state.set(TransactState::Idle);
                         return;
                     }
-                    DocDispatch::ParseError(messages) => {
-                        transact_state.set(TransactState::Failed(messages));
-                        return;
-                    }
-                };
-                match result {
-                    Ok(DispatchResult::Query(envelope)) => {
-                        transact_state.set(TransactState::DoneQuery(envelope));
-                    }
-                    Ok(DispatchResult::Transact(response)) => {
-                        transact_state.set(TransactState::DoneTransact(response));
+                    DocDispatch::Submit => {}
+                }
+                match api::evaluate(&repo, &branch, body, "application/yaml").await {
+                    Ok(response) => {
+                        transact_state.set(TransactState::DoneEvaluate(Box::new(response)));
                     }
                     Err(err) => {
                         transact_state.set(TransactState::Failed(format!("{err}")));
@@ -692,44 +681,29 @@ fn read_wa_input_value(event: &leptos::ev::Event) -> String {
 /// error, network error, non-200 from the worker — surfaced as
 /// the message verbatim).
 ///
-/// The editor pre-classifies the document by parsing it locally
-/// (via `tonk_notation`) and routing to `/query` (read) or
-/// `/transact` (write). The two `Done` variants reflect which
-/// route ran.
+/// State of the editor's submit cycle. The worker's `/evaluate`
+/// route handles any mix of queries and mutations — the editor
+/// no longer has to pre-classify the document.
 #[derive(Clone, Debug, PartialEq)]
 enum TransactState {
     Idle,
     Running,
-    DoneQuery(QueryResultEnvelope),
-    DoneTransact(TransactResponse),
+    DoneEvaluate(Box<EvaluateResponse>),
     Failed(String),
 }
 
-/// Outcome of pre-classifying the editor buffer before sending
-/// it. Drives endpoint selection in the submit handler.
+/// Pre-flight check: surface parse diagnostics locally so the
+/// editor doesn't round-trip a malformed buffer.
 enum DocDispatch {
-    /// The first expression is a query.
-    Query,
-    /// The first expression is an assertion or retraction.
-    Transact,
-    /// Empty / whitespace-only document — nothing to send.
+    /// Document parses cleanly — submit it.
+    Submit,
+    /// Empty / whitespace-only document.
     Empty,
-    /// Parser raised diagnostics; surface them verbatim instead
-    /// of round-tripping to the worker.
+    /// Parser raised diagnostics.
     ParseError(String),
 }
 
-/// One success outcome from the dispatched route.
-enum DispatchResult {
-    Query(QueryResultEnvelope),
-    Transact(TransactResponse),
-}
-
-/// Inspect the document's first expression to decide which
-/// endpoint to call. Mirrors what the worker analyzer does, but
-/// done locally so we hit the right route on the first try.
 fn classify_for_dispatch(body: &str) -> DocDispatch {
-    use tonk_notation::Expression;
     let parsed = tonk_notation::parse(body);
     if !parsed.diagnostics.is_empty() {
         let messages = parsed
@@ -743,12 +717,10 @@ fn classify_for_dispatch(body: &str) -> DocDispatch {
     let Some(syntax) = parsed.syntax else {
         return DocDispatch::Empty;
     };
-    let Some(first) = syntax.expressions.first() else {
-        return DocDispatch::Empty;
-    };
-    match first {
-        Expression::Query(_) => DocDispatch::Query,
-        Expression::Assertion(_) | Expression::Retraction(_) => DocDispatch::Transact,
+    if syntax.expressions.is_empty() {
+        DocDispatch::Empty
+    } else {
+        DocDispatch::Submit
     }
 }
 
@@ -777,73 +749,77 @@ fn read_tonk_code_value(event: &leptos::ev::Event) -> String {
 /// show kind-specific success callouts; `Failed` shows the
 /// worker's error text in a danger callout.
 fn render_transact_state(state: TransactState) -> impl IntoView {
-    use leptos::either::EitherOf6;
+    use leptos::either::EitherOf3;
     match state {
-        TransactState::Idle | TransactState::Running => EitherOf6::A(()),
-        TransactState::Failed(message) => EitherOf6::B(view! {
+        TransactState::Idle | TransactState::Running => EitherOf3::A(()),
+        TransactState::Failed(message) => EitherOf3::B(view! {
             <wa-callout variant="danger">
                 <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
                 { message }
             </wa-callout>
         }),
-        TransactState::DoneQuery(envelope) if envelope.results.is_empty() => EitherOf6::C(view! {
-            <wa-callout variant="neutral">
-                <wa-icon slot="icon" name="circle-info"></wa-icon>
-                "No matches."
-            </wa-callout>
-        }),
-        TransactState::DoneQuery(envelope) => EitherOf6::D(view! {
-            <wa-callout variant="success">
-                <wa-icon slot="icon" name="circle-check"></wa-icon>
-                <div class="wa-stack wa-gap-2xs">
-                    <span>{ format!("{} match(es).", envelope.count) }</span>
-                    <ul class="query-results">
-                        { envelope.results.into_iter().map(|result| view! {
-                            <li>
-                                <code class="entity">{ result.this }</code>
-                                <ul class="query-fields">
-                                    { result.fields.into_iter().map(|(name, value)| view! {
-                                        <li>
-                                            <code class="field-name">{ name }</code>
-                                            ": "
-                                            <code class="field-value">{
-                                                serde_json::to_string(&value)
-                                                    .unwrap_or_else(|_| "<?>".to_string())
-                                            }</code>
-                                        </li>
-                                    }).collect_view() }
-                                </ul>
-                            </li>
-                        }).collect_view() }
-                    </ul>
-                </div>
-            </wa-callout>
-        }),
-        TransactState::DoneTransact(response) if response.entities.is_empty() => {
-            EitherOf6::E(view! {
+        TransactState::DoneEvaluate(response) => {
+            let response = *response;
+            EitherOf3::C(view! {
                 <wa-callout variant="success">
                     <wa-icon slot="icon" name="circle-check"></wa-icon>
-                    { format!("Committed {} claim(s).", response.claims) }
+                    <div class="wa-stack wa-gap-2xs">
+                        <span>{ format!("Committed {} claim(s).", response.commits.claims) }</span>
+                        {
+                            if response.matches.is_empty() {
+                                Either::Left(())
+                            } else {
+                                Either::Right(view! {
+                                    <ul class="query-results">
+                                        { response.matches.into_iter().map(|block| view! {
+                                            <li>
+                                                <code class="head-label">{ block.label }</code>
+                                                <ul class="query-fields">
+                                                    { block.results.into_iter().map(|result| view! {
+                                                        <li>
+                                                            <code class="entity">{ result.this }</code>
+                                                            <ul>
+                                                                { result.fields.into_iter().map(|(name, value)| view! {
+                                                                    <li>
+                                                                        <code class="field-name">{ name }</code>
+                                                                        ": "
+                                                                        <code class="field-value">{
+                                                                            serde_json::to_string(&value)
+                                                                                .unwrap_or_else(|_| "<?>".to_string())
+                                                                        }</code>
+                                                                    </li>
+                                                                }).collect_view() }
+                                                            </ul>
+                                                        </li>
+                                                    }).collect_view() }
+                                                </ul>
+                                            </li>
+                                        }).collect_view() }
+                                    </ul>
+                                })
+                            }
+                        }
+                        {
+                            if response.commits.entities.is_empty() {
+                                Either::Left(())
+                            } else {
+                                Either::Right(view! {
+                                    <ul class="entities-list">
+                                        { response.commits.entities.into_iter().map(|(label, uri)| view! {
+                                            <li>
+                                                <code class="head-label">{ label }</code>
+                                                " → "
+                                                <code class="entity">{ uri }</code>
+                                            </li>
+                                        }).collect_view() }
+                                    </ul>
+                                })
+                            }
+                        }
+                    </div>
                 </wa-callout>
             })
         }
-        TransactState::DoneTransact(response) => EitherOf6::F(view! {
-            <wa-callout variant="success">
-                <wa-icon slot="icon" name="circle-check"></wa-icon>
-                <div class="wa-stack wa-gap-2xs">
-                    <span>{ format!("Committed {} claim(s).", response.claims) }</span>
-                    <ul class="entities-list">
-                        { response.entities.into_iter().map(|(label, uri)| view! {
-                            <li>
-                                <code class="head-label">{ label }</code>
-                                " → "
-                                <code class="entity">{ uri }</code>
-                            </li>
-                        }).collect_view() }
-                    </ul>
-                </div>
-            </wa-callout>
-        }),
     }
 }
 

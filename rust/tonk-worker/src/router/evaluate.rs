@@ -1,0 +1,475 @@
+//! Evaluate route — accepts an asserted-notation document and
+//! drives the unified analyze → query → plan → commit pipeline.
+//!
+//! Pipeline:
+//! 1. Parse the body into a [`Syntax`].
+//! 2. Analyze it into a [`tonk_schema::transact::Analysis`].
+//! 3. If the document carries a query, run the unified
+//!    [`ConceptQuery`] derived from it; otherwise use a single
+//!    empty binding frame (so pure-mutation docs commit once).
+//! 4. For each match, plan every mutation [`Statement`] against
+//!    `analysis.variables ∪ match`, then assert / retract via
+//!    [`ApplicationPlan`].
+//! 5. Capture the branch revision before and after the commit
+//!    so the response carries a snapshot pair.
+
+use ::axum::{
+    Json,
+    body::Bytes,
+    extract::{Path, State},
+    http::HeaderMap,
+};
+use async_trait::async_trait;
+use axum_wasm_macros::wasm_compat;
+use dialog_artifacts::{Entity, Value};
+use dialog_query::concept::descriptor::ConceptConclusion;
+use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
+use dialog_repository::{Branch, RepositoryExt as _, Revision};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
+use tonk_common::log;
+use tonk_notation::{Parsed, Syntax, parse};
+use tonk_schema::{
+    concept::{AttributeByEntity, AttributeByName, Concept as ConceptLookup},
+    interpret::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError},
+    transact::{Analysis, ApplicationPlan, Planner as _, Statement},
+};
+
+use super::AppState;
+use crate::{TonkWorkerError, worker::DefaultOperator};
+
+/// Path parameters for the evaluate route.
+#[derive(Debug, Deserialize)]
+pub struct EvaluatePath {
+    /// The repository name.
+    pub repo: String,
+    /// The branch name.
+    pub branch: String,
+}
+
+/// Response from a successful evaluate.
+///
+/// Carries the branch revision before and after the commit
+/// (one before/after pair — every match's mutations land in the
+/// same dialog transaction), the per-source-expression query
+/// matches, and a commit summary.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluateResponse {
+    /// Revision of the branch before the commit, if any. `None`
+    /// when the branch had no prior commits.
+    pub revision_before: Option<Revision>,
+    /// Revision of the branch after the commit. Same as
+    /// `revision_before` when the document carried no mutations.
+    pub revision_after: Option<Revision>,
+    /// One block per source query expression, in document order.
+    /// Empty for pure-mutation documents.
+    pub matches: Vec<QueryMatchBlock>,
+    /// Commit summary — number of EAV claims written/retracted
+    /// and the entities the commit touched.
+    pub commits: CommitSummary,
+}
+
+/// Matches for one source-expression query, projected back into
+/// the user's view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryMatchBlock {
+    /// Display label for the source expression
+    /// (`person ?alice:` → `"person"`).
+    pub label: String,
+    /// One entry per matched entity.
+    pub results: Vec<QueryResult>,
+}
+
+/// One match — an entity plus its bound field values.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueryResult {
+    /// Canonical entity URI for the match.
+    pub this: String,
+    /// Field name → bound value.
+    pub fields: BTreeMap<String, serde_json::Value>,
+}
+
+/// Commit-side summary.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CommitSummary {
+    /// Number of EAV claims committed (asserts + retracts).
+    pub claims: usize,
+    /// Variable name (or `"this"` for anonymous heads) →
+    /// entity URI for every head the mutation touched.
+    pub entities: BTreeMap<String, String>,
+}
+
+/// `POST /api/repository/{repo}/branch/{branch}/evaluate`
+///
+/// Body: an asserted-notation document — any mix of queries and
+/// mutations. Returns query matches and a commit summary in one
+/// response.
+#[wasm_compat]
+pub async fn evaluate(
+    State(state): State<AppState>,
+    Path(path): Path<EvaluatePath>,
+    _headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    let text = std::str::from_utf8(&body)
+        .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
+
+    let parsed = parse(text);
+    let syntax = surface_parse_diagnostics(parsed)?;
+
+    log!(
+        "Evaluating {} expression(s) on repo={}, branch={}",
+        syntax.expressions.len(),
+        path.repo,
+        path.branch,
+    );
+
+    let tonk_state = state.write().await;
+
+    let repo = tonk_state
+        .profile
+        .repository(&path.repo)
+        .load()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", path.repo, e))
+        })?;
+
+    let branch = repo
+        .branch(path.branch.as_str())
+        .open()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", path.branch, e))
+        })?;
+
+    let resolver = BranchResolver {
+        branch: &branch,
+        operator: &tonk_state.operator,
+    };
+
+    let analysis = interpret::analyze(&syntax, &resolver).await.map_err(|e| {
+        log!("Analyzer rejected document: {e}");
+        TonkWorkerError::Router(e.to_string())
+    })?;
+
+    let revision_before = branch.revision();
+    let response = run(&analysis, &syntax, &branch, &tonk_state.operator).await?;
+    let revision_after = branch.revision();
+
+    Ok(Json(EvaluateResponse {
+        revision_before,
+        revision_after,
+        ..response
+    }))
+}
+
+/// Drive the analyze → run → plan → commit pipeline. Returns
+/// the matches + commit summary; the caller fills in the
+/// before/after revisions.
+async fn run(
+    analysis: &Analysis,
+    syntax: &Syntax,
+    branch: &Branch,
+    operator: &DefaultOperator,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    // ---- Build base bindings frame from analysis-derived vars ----
+    let mut base = Parameters::new();
+    for (name, entity) in &analysis.variables {
+        base.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
+    }
+
+    // ---- Run the unified query ----
+    let matches: Vec<Parameters> = match &analysis.query {
+        Some(q) => {
+            let unified = ConceptQuery::from(q);
+            collect_matches(unified, branch, operator).await?
+        }
+        None => vec![Parameters::new()],
+    };
+
+    // ---- Render per-source-expression match blocks ----
+    let match_blocks = render_match_blocks(analysis, syntax, &matches);
+
+    // ---- Plan + commit each mutation per match frame ----
+    let mut commits = CommitSummary::default();
+    for (key, entity) in &analysis.declarations {
+        commits.entities.insert(key.clone(), entity.to_string());
+    }
+    for (key, entity) in &analysis.variables {
+        commits
+            .entities
+            .insert(format!("?{key}"), entity.to_string());
+    }
+    if !analysis.mutate.statements.is_empty() {
+        let mut tx = branch.transaction();
+        let mut claim_count = 0usize;
+        for match_frame in &matches {
+            let mut frame = base.clone();
+            for (k, v) in match_frame.iter() {
+                frame.insert(k.clone(), v.clone());
+            }
+            for statement in &analysis.mutate.statements {
+                let plan = statement
+                    .application()
+                    .clone()
+                    .plan(&frame)
+                    .map_err(|e| TonkWorkerError::Internal(format!("plan failed: {e}")))?;
+                claim_count += count_emitted_claims(&plan);
+                match statement {
+                    Statement::Assert(_) => {
+                        tx = tx.assert(plan);
+                    }
+                    Statement::Retract(_) => {
+                        tx = tx.retract(plan);
+                    }
+                }
+            }
+        }
+        tx.commit().perform(operator).await.map_err(|e| {
+            log!("Transaction commit failed: {:?}", e);
+            TonkWorkerError::Internal(format!("commit failed: {e:?}"))
+        })?;
+        commits.claims = claim_count;
+    }
+
+    Ok(EvaluateResponse {
+        revision_before: None,
+        revision_after: None,
+        matches: match_blocks,
+        commits,
+    })
+}
+
+/// Estimate how many EAVs an [`ApplicationPlan`] will emit on
+/// commit — one per non-blank field. The dialog transaction API
+/// doesn't expose a count after the fact, so we tally
+/// per-statement here as the transaction is built.
+fn count_emitted_claims(plan: &ApplicationPlan) -> usize {
+    let mut n = 0;
+    for (field_name, _attr) in plan.statement.predicate.with().iter() {
+        if field_name == "this" {
+            continue;
+        }
+        if let Some(term) = plan.statement.terms.get(field_name)
+            && matches!(term, Term::Constant(_))
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Run the unified [`ConceptQuery`] against the branch and
+/// collect every match frame as a [`Parameters`] by extracting
+/// every bound variable from each [`ConceptConclusion`].
+async fn collect_matches(
+    query: ConceptQuery,
+    branch: &Branch,
+    operator: &DefaultOperator,
+) -> Result<Vec<Parameters>, TonkWorkerError> {
+    // Capture the variable names present in `query.terms` so we
+    // can ask the conclusion for their bindings.
+    let mut variable_names: Vec<String> = Vec::new();
+    for (_, term) in query.terms.iter() {
+        if let Term::Variable {
+            name: Some(name), ..
+        } = term
+            && !variable_names.contains(name)
+        {
+            variable_names.push(name.clone());
+        }
+    }
+
+    let conclusions: Vec<ConceptConclusion> = branch
+        .query()
+        .select(query)
+        .perform(operator)
+        .try_vec()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("query execution failed: {e:?}")))?;
+
+    let mut frames = Vec::with_capacity(conclusions.len());
+    for conclusion in conclusions {
+        let mut frame = Parameters::new();
+        let source = conclusion.source();
+        for name in &variable_names {
+            if let Ok(value) = source.lookup(&Term::<dialog_query::Any>::var(name)) {
+                frame.insert(name.clone(), Term::Constant(value));
+            }
+        }
+        frames.push(frame);
+    }
+
+    if frames.is_empty() {
+        // No matches — but still need one frame so the caller's
+        // "for each frame, plan and commit" loop runs zero times
+        // (rather than "one empty frame" which would commit a
+        // mutation whose ?vars are all unbound).
+        Ok(vec![])
+    } else {
+        Ok(frames)
+    }
+}
+
+/// Render per-source-expression match blocks. Walks
+/// [`Analysis::query`] in order and projects each match against
+/// the source expression's [`Application`].
+fn render_match_blocks(
+    analysis: &Analysis,
+    syntax: &Syntax,
+    matches: &[Parameters],
+) -> Vec<QueryMatchBlock> {
+    let Some(query) = &analysis.query else {
+        return Vec::new();
+    };
+
+    // Source-expression labels: walk the syntax tree picking out
+    // the head label of each Query in document order.
+    let mut labels: Vec<String> = Vec::new();
+    for expression in &syntax.expressions {
+        if let tonk_notation::Expression::Query(q) = expression {
+            labels.push(q.head.name_source.clone());
+        }
+    }
+
+    let mut blocks = Vec::with_capacity(query.queries.len());
+    for (i, application) in query.queries.iter().enumerate() {
+        let label = labels.get(i).cloned().unwrap_or_else(|| "?".to_owned());
+        let descriptor = match application {
+            tonk_schema::transact::Application::Concept(q) => q.predicate.clone(),
+            tonk_schema::transact::Application::Domain(d) => {
+                ConceptQuery::from(d.clone()).predicate
+            }
+        };
+        let mut results = Vec::with_capacity(matches.len());
+        for frame in matches {
+            results.push(render_one_result(&descriptor, application, frame));
+        }
+        blocks.push(QueryMatchBlock { label, results });
+    }
+    blocks
+}
+
+fn render_one_result(
+    descriptor: &ConceptDescriptor,
+    application: &tonk_schema::transact::Application,
+    frame: &Parameters,
+) -> QueryResult {
+    use tonk_schema::transact::Application;
+
+    let terms = match application {
+        Application::Concept(q) => &q.terms,
+        Application::Domain(d) => &d.parameters,
+    };
+
+    let this = terms
+        .get("this")
+        .and_then(|term| match term {
+            Term::Constant(Value::Entity(e)) => Some(e.to_string()),
+            Term::Variable {
+                name: Some(name), ..
+            } => frame.get(name).and_then(|t| match t {
+                Term::Constant(Value::Entity(e)) => Some(e.to_string()),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    let mut fields = BTreeMap::new();
+    for (field_name, _attr) in descriptor.with().iter() {
+        let Some(term) = terms.get(field_name) else {
+            continue;
+        };
+        let value = match term {
+            Term::Constant(value) => value_to_json(value),
+            Term::Variable {
+                name: Some(name), ..
+            } => match frame.get(name) {
+                Some(Term::Constant(value)) => value_to_json(value),
+                _ => continue,
+            },
+            _ => continue,
+        };
+        fields.insert(field_name.to_owned(), value);
+    }
+
+    QueryResult { this, fields }
+}
+
+fn value_to_json(value: &Value) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
+}
+
+/// Project [`Parsed`] onto a successful syntax or a 400 error
+/// carrying the diagnostic messages.
+fn surface_parse_diagnostics(parsed: Parsed) -> Result<Syntax, TonkWorkerError> {
+    if !parsed.diagnostics.is_empty() {
+        let messages = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(TonkWorkerError::Router(messages));
+    }
+    parsed
+        .syntax
+        .ok_or_else(|| TonkWorkerError::Router("empty document".to_owned()))
+}
+
+/// Branch-backed [`Resolver`] — looks up concepts and attributes
+/// against the open branch via `tonk_schema::concept`'s builder
+/// family.
+struct BranchResolver<'a> {
+    branch: &'a Branch,
+    operator: &'a DefaultOperator,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+impl<'a> Resolver for BranchResolver<'a> {
+    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        let resolved = ConceptLookup::by_name(name)
+            .resolve(self.branch, self.operator)
+            .await
+            .map_err(|e| ResolverError::new(e.to_string()))?;
+        Ok(resolved.map(|c| ResolvedConcept {
+            entity: c.entity,
+            descriptor: c.descriptor,
+        }))
+    }
+
+    async fn resolve_attribute(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        let resolved = AttributeByName::new(name)
+            .resolve(self.branch, self.operator)
+            .await
+            .map_err(|e| ResolverError::new(e.to_string()))?;
+        Ok(resolved.map(|a| ResolvedAttribute {
+            entity: a.entity,
+            descriptor: a.descriptor,
+        }))
+    }
+
+    async fn resolve_attribute_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        let resolved = AttributeByEntity::new(entity.clone())
+            .resolve(self.branch, self.operator)
+            .await
+            .map_err(|e| ResolverError::new(e.to_string()))?;
+        Ok(resolved.map(|a| ResolvedAttribute {
+            entity: a.entity,
+            descriptor: a.descriptor,
+        }))
+    }
+}

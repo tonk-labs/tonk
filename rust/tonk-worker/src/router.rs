@@ -38,11 +38,8 @@ pub use lsp::LspHub;
 mod profile;
 pub use profile::ProfileInfo;
 
-mod transact;
-pub use transact::{TransactPath, TransactResponse};
-
-mod query;
-pub use query::{QueryPath, QueryResult, QueryResultEnvelope};
+mod evaluate;
+pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
@@ -106,18 +103,13 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/claim/select",
             get(claim::select_claims),
         )
-        // Transaction route — accepts a tonk-schema transaction
-        // document (JSON or YAML) and commits all derived facts in
-        // a single transaction.
+        // Evaluate route — accepts an asserted-notation document
+        // (any mix of queries and mutations), runs the unified
+        // analyze → query → plan → commit pipeline, and returns
+        // matches plus a commit summary in one response.
         .route(
-            "/api/repository/{repo}/branch/{branch}/transact",
-            post(transact::transact),
-        )
-        // Query route — accepts an asserted-notation query
-        // document and returns matching entities.
-        .route(
-            "/api/repository/{repo}/branch/{branch}/query",
-            post(query::query),
+            "/api/repository/{repo}/branch/{branch}/evaluate",
+            post(evaluate::evaluate),
         )
         // Inspect operations
         .route(
@@ -743,7 +735,7 @@ concept! person:
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(body))
@@ -761,15 +753,11 @@ concept! person:
             "expected 200 OK; got {status}: {}",
             String::from_utf8_lossy(&body_bytes)
         );
-        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(resp.claims > 0);
-        // The combined plan ends on the concept head; the
-        // response surfaces only the last head's entity (single
-        // entry in the entities map for now).
-        assert_eq!(resp.entities.len(), 1);
-        let (label, entity) = resp.entities.iter().next().unwrap();
-        assert_eq!(label, "concept");
-        assert!(entity.starts_with("concept:"));
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.commits.claims > 0);
+        // Three declared bookmarks → three entities surfaced.
+        let person = resp.commits.entities.get("person").expect("person entity");
+        assert!(person.starts_with("concept:"));
     }
 
     /// A single `attribute!` assertion commits cleanly via the
@@ -793,7 +781,7 @@ attribute! person-name:
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(body))
@@ -811,8 +799,14 @@ attribute! person-name:
             "expected 200 OK; got {status}: {}",
             String::from_utf8_lossy(&body_bytes)
         );
-        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
-        let entity = resp.entities.get("attribute").unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        // The bookmark `person-name` becomes a content-derived
+        // attribute entity surfaced under the bookmark's name.
+        let entity = resp
+            .commits
+            .entities
+            .get("person-name")
+            .expect("person-name entity");
         assert!(entity.starts_with("the:"));
     }
 
@@ -831,7 +825,7 @@ attribute! person-name:
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(body))
@@ -867,7 +861,7 @@ attribute! person-name:
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(first))
@@ -895,7 +889,7 @@ concept! person:
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(second))
@@ -913,8 +907,8 @@ concept! person:
             "expected 200 OK; got {status}: {}",
             String::from_utf8_lossy(&body_bytes)
         );
-        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
-        let entity = resp.entities.get("concept").unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let entity = resp.commits.entities.get("person").unwrap();
         assert!(entity.starts_with("concept:"));
     }
 
@@ -949,7 +943,7 @@ person! alice:
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(setup))
@@ -981,7 +975,7 @@ person! alice:
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
                     .method("POST")
                     .header("content-type", "application/yaml")
                     .body(Body::from(retract))
@@ -999,12 +993,12 @@ person! alice:
             "retraction failed: {}",
             String::from_utf8_lossy(&body_bytes)
         );
-        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         // One claim retracted (Alice's name).
         assert!(
-            resp.claims >= 1,
+            resp.commits.claims >= 1,
             "expected at least 1 retracted claim, got {}",
-            resp.claims
+            resp.commits.claims
         );
     }
 }
