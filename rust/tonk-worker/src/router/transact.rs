@@ -167,18 +167,72 @@ pub async fn transact(
 
 /// Build a dialog transaction from the analyzer's plan, commit
 /// it, and shape the response.
+///
+/// Retractions go through a query-then-dissociate path: for
+/// each `(of, attributes)` target, we query the branch for the
+/// current `(the, of, is)` triples matching `(the, of, *)` and
+/// emit a dissociate per match. Dialog requires the value to
+/// dissociate; we have to materialize it from the branch.
 async fn commit_transaction(
     plan: TransactionPlan,
     branch: &Branch,
     operator: &DefaultOperator,
 ) -> Result<TransactResponse, TonkWorkerError> {
-    let claim_count = plan.assertions.len();
+    use dialog_query::{Output as _, Term};
+
     let head_entity_uri = plan.head_entity.to_string();
     let head_label = plan.head_label.clone();
+
+    // Resolve retraction targets to concrete (the, of, is)
+    // triples by querying the branch first. We use
+    // `DynamicAttributeQuery::new` directly because it takes
+    // `is: Term<Any>` — the value-side `Term<T>` flavours
+    // accepted by `the!().of().is()` constrain the value to a
+    // specific Scalar type, which is wrong for retraction
+    // (any value matches).
+    let mut retraction_claims: Vec<RawClaim> = Vec::new();
+    for target in &plan.retractions {
+        for the in &target.attributes {
+            let the_term: dialog_query::attribute::The = the.clone().into();
+            let query = dialog_query::AttributeQuery::new(
+                Term::from(the_term),
+                Term::from(target.of.clone()),
+                Term::<dialog_query::Any>::var("v"),
+                Term::<dialog_query::attribute::Cause>::blank(),
+                None,
+            );
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(query)
+                .perform(operator)
+                .try_vec()
+                .await
+                .map_err(|e| {
+                    TonkWorkerError::Internal(format!(
+                        "retraction query failed for ({the:?}, {of}): {e:?}",
+                        of = target.of
+                    ))
+                })?;
+            for claim in claims {
+                retraction_claims.push(RawClaim {
+                    the: claim.the.into(),
+                    of: target.of.clone(),
+                    is: claim.is,
+                });
+            }
+        }
+    }
+
+    let assertion_count = plan.assertions.len();
+    let retraction_count = retraction_claims.len();
+    let claim_count = assertion_count + retraction_count;
 
     let mut tx = branch.transaction();
     for assertion in plan.assertions {
         tx = tx.assert(RawClaim::from(assertion));
+    }
+    for claim in retraction_claims {
+        tx = tx.retract(claim);
     }
 
     tx.commit().perform(operator).await.map_err(|e| {
@@ -269,6 +323,10 @@ impl<'a> Resolver for BranchResolver<'a> {
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         // Document-scope variables don't outlive a document;
         // the in-document `DocumentResolver` handles them.
+        Ok(None)
+    }
+
+    async fn resolve_entity_variable(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
         Ok(None)
     }
 }

@@ -47,6 +47,8 @@ pub mod rule;
 
 pub mod interpret;
 
+pub mod transact;
+
 pub mod replica;
 pub use replica::*;
 

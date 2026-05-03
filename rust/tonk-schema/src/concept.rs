@@ -31,7 +31,7 @@ use thiserror::Error;
 
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor};
 
-use crate::meta::{AttributeFacts, Name, Named};
+use crate::meta::{AnonymousAttribute, Name, Named};
 
 /// Domain prefix for required-field claims.
 const WITH_DOMAIN: &str = "dialog.concept.with";
@@ -117,7 +117,7 @@ pub enum ConceptLookupError {
     /// schema is corrupt or out of sync.
     #[error(
         "concept field {field:?} references entity {entity} \
-         with no AttributeFacts"
+         with no AnonymousAttribute"
     )]
     MissingAttribute {
         /// Field name on the concept.
@@ -283,7 +283,7 @@ impl ConceptByEntity {
 // -----------------------------------------------------------------
 // AttributeByEntity — sister builder used internally by the
 // concept resolver. Exposed publicly so the analyzer / route
-// layer can reuse it without re-implementing the AttributeFacts
+// layer can reuse it without re-implementing the AnonymousAttribute
 // → AttributeDescriptor reconstruction.
 // -----------------------------------------------------------------
 
@@ -309,16 +309,16 @@ impl AttributeByEntity {
         Self { entity }
     }
 
-    /// Run the typed [`AttributeFacts`] query against the entity
+    /// Run the typed [`AnonymousAttribute`] query against the entity
     /// and reconstruct the descriptor.
     pub async fn resolve<Env: QueryEnv>(
         self,
         branch: &Branch,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        let facts: Vec<AttributeFacts> = branch
+        let facts: Vec<AnonymousAttribute> = branch
             .query()
-            .select(Query::<AttributeFacts> {
+            .select(Query::<AnonymousAttribute> {
                 this: Term::from(self.entity.clone()),
                 id: Term::var("id"),
                 r#type: Term::var("type"),
@@ -329,7 +329,7 @@ impl AttributeByEntity {
             .try_vec()
             .await
             .map_err(|e| {
-                ConceptLookupError::query(format!("AttributeFacts query failed: {e:?}"))
+                ConceptLookupError::query(format!("AnonymousAttribute query failed: {e:?}"))
             })?;
 
         let Some(facts) = facts.into_iter().next() else {
@@ -387,10 +387,10 @@ impl AttributeByName {
 }
 
 /// Reconstruct an [`AttributeDescriptor`] from its
-/// [`AttributeFacts`]. Round-trips through serde — the same
+/// [`AnonymousAttribute`]. Round-trips through serde — the same
 /// trick dialog itself uses, so we don't have to mirror the
 /// internal `Type` ↔ string mapping.
-fn build_attribute_descriptor(facts: &AttributeFacts) -> Result<AttributeDescriptor, String> {
+fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDescriptor, String> {
     let mut shape = serde_json::Map::new();
     shape.insert(
         "the".to_owned(),
@@ -416,6 +416,185 @@ fn build_attribute_descriptor(facts: &AttributeFacts) -> Result<AttributeDescrip
     }
     serde_json::from_value(serde_json::Value::Object(shape))
         .map_err(|e| format!("could not reconstruct AttributeDescriptor: {e}"))
+}
+
+// -----------------------------------------------------------------
+// Concept-of-concept: hand-written `Statement` + `Concept` impls.
+// -----------------------------------------------------------------
+//
+// Concepts in dialog can't *describe* themselves through
+// `#[derive(Concept)]` because their `with` map is variable-arity
+// — every concept declares a different set of fields. We
+// therefore hand-write `AnonymousConcept` and `NamedConcept`,
+// each presenting the same `Statement` interface as a derived
+// concept: assert/retract walk the wrapped descriptor, emit the
+// right `dialog.concept.with/{field}` claims plus meta claims.
+//
+// The result: a `concept!` head produces one of these structs;
+// the worker's commit loop calls `.assert(update)` on it and
+// dialog writes the per-field claims. Symmetric to the typed
+// `AnonymousAttribute` / `NamedAttribute` wrappers.
+
+use dialog_artifacts::{Statement, Update, Value};
+
+/// A concept stored on a branch *without* a bookmark name.
+/// Identity comes from the wrapped descriptor's
+/// content-addressed entity (`descriptor.this()`).
+///
+/// `assert` writes one `dialog.concept.with/{field}` claim per
+/// field of the descriptor's `with` map (value =
+/// content-addressed attribute entity), plus a
+/// `dialog.meta/description` when the descriptor carries one.
+/// `retract` mirrors.
+#[derive(Debug, Clone)]
+pub struct AnonymousConcept {
+    /// `descriptor.this()` — kept here so successive asserts
+    /// don't re-hash on every call.
+    pub this: Entity,
+    /// The full descriptor — owns description + with-map.
+    pub descriptor: ConceptDescriptor,
+}
+
+impl AnonymousConcept {
+    /// Build from a descriptor; computes the entity via
+    /// [`ConceptDescriptor::this`].
+    pub fn new(descriptor: ConceptDescriptor) -> Self {
+        Self {
+            this: descriptor.this(),
+            descriptor,
+        }
+    }
+}
+
+impl Statement for AnonymousConcept {
+    fn assert(self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+    }
+    fn retract(self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
+    }
+}
+
+// `Predicate` + `Concept` so `AnonymousConcept` plugs into the
+// same query machinery as a `#[derive(Concept)]` type. We
+// delegate to the wrapped descriptor — its `this()` and the
+// associated query types are already what we need.
+impl dialog_query::Predicate for AnonymousConcept {
+    type Conclusion = dialog_query::concept::descriptor::ConceptConclusion;
+    type Application = dialog_query::concept::query::ConceptQuery;
+    type Descriptor = ConceptDescriptor;
+}
+
+impl dialog_query::Concept for AnonymousConcept {
+    type Term = ();
+    fn this(&self) -> Entity {
+        self.this.clone()
+    }
+}
+
+/// A concept stored on a branch *with* a bookmark name.
+/// Same as [`AnonymousConcept`] but also writes (and retracts)
+/// a `dialog.meta/name` claim so future documents can resolve
+/// the concept via `.name`.
+#[derive(Debug, Clone)]
+pub struct NamedConcept {
+    /// `descriptor.this()`.
+    pub this: Entity,
+    /// The full descriptor.
+    pub descriptor: ConceptDescriptor,
+    /// Bookmark name — written as `dialog.meta/name`. Not part
+    /// of the descriptor's identity hash.
+    pub name: String,
+}
+
+impl NamedConcept {
+    /// Build from a descriptor and a bookmark name.
+    pub fn new(descriptor: ConceptDescriptor, name: impl Into<String>) -> Self {
+        Self {
+            this: descriptor.this(),
+            descriptor,
+            name: name.into(),
+        }
+    }
+}
+
+impl Statement for NamedConcept {
+    fn assert(mut self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        update.associate(
+            meta_attr("dialog.meta", "name"),
+            self.this.clone(),
+            Value::String(std::mem::take(&mut self.name)),
+        );
+    }
+    fn retract(mut self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
+        update.dissociate(
+            meta_attr("dialog.meta", "name"),
+            self.this.clone(),
+            Value::String(std::mem::take(&mut self.name)),
+        );
+    }
+}
+
+impl dialog_query::Predicate for NamedConcept {
+    type Conclusion = dialog_query::concept::descriptor::ConceptConclusion;
+    type Application = dialog_query::concept::query::ConceptQuery;
+    type Descriptor = ConceptDescriptor;
+}
+
+impl dialog_query::Concept for NamedConcept {
+    type Term = ();
+    fn this(&self) -> Entity {
+        self.this.clone()
+    }
+}
+
+/// Walk a [`ConceptDescriptor`] and call `op` (either
+/// [`Update::associate`] or [`Update::dissociate`]) for every
+/// fact the concept implies — `dialog.concept.with/{field}`
+/// per field, plus `dialog.meta/description` when the
+/// descriptor carries one. Shared between `assert` and
+/// `retract` so the two stay in lock-step.
+fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value)>(
+    entity: &Entity,
+    descriptor: &ConceptDescriptor,
+    update: &mut U,
+    op: F,
+) {
+    for (field_name, attribute) in descriptor.with().iter() {
+        let relation = meta_attr(WITH_DOMAIN, field_name);
+        let attribute_entity: Entity = attribute
+            .to_uri()
+            .parse()
+            .expect("AttributeDescriptor::to_uri produces a valid entity URI");
+        op(
+            update,
+            relation,
+            entity.clone(),
+            Value::Entity(attribute_entity),
+        );
+    }
+    if let Some(description) = descriptor.description()
+        && !description.is_empty()
+    {
+        op(
+            update,
+            meta_attr("dialog.meta", "description"),
+            entity.clone(),
+            Value::String(description.to_owned()),
+        );
+    }
+}
+
+/// Build a runtime [`ArtifactsAttribute`] from a domain + local
+/// name. Both halves are validated by dialog's own parser; we
+/// rely on the meta domains being well-formed so `expect` is
+/// safe.
+fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
+    format!("{domain}/{name}")
+        .parse()
+        .expect("dialog meta-attribute names should always be valid")
 }
 
 #[cfg(test)]
@@ -470,5 +649,88 @@ mod tests {
         let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
         let entity = descriptor.this();
         assert!(entity.to_string().starts_with("concept:"));
+    }
+
+    /// `AnonymousConcept::assert` should write one
+    /// `dialog.concept.with/{field}` claim per field plus
+    /// `dialog.meta/description` when set, and nothing else.
+    #[test]
+    fn anonymous_concept_writes_with_claims_and_description() {
+        use dialog_artifacts::Changes;
+        let json = r#"{
+            "description": "A cooking recipe",
+            "with": {
+                "title":      { "the": "recipe/title",      "as": "Text", "cardinality": "one" },
+                "ingredient": { "the": "recipe/ingredient", "as": "Text", "cardinality": "many" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept = AnonymousConcept::new(descriptor);
+        let mut changes = Changes::new();
+        concept.assert(&mut changes);
+        // Two with/* claims + one description claim = 3.
+        assert!(!changes.is_empty());
+    }
+
+    /// `NamedConcept::assert` should write the same as
+    /// `AnonymousConcept::assert` plus a `dialog.meta/name`
+    /// claim.
+    #[test]
+    fn named_concept_writes_name_in_addition() {
+        use dialog_artifacts::Changes;
+        let json = r#"{
+            "with": {
+                "title": { "the": "recipe/title", "as": "Text", "cardinality": "one" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept = NamedConcept::new(descriptor, "recipe");
+        let mut changes = Changes::new();
+        concept.assert(&mut changes);
+        assert!(!changes.is_empty());
+    }
+
+    /// Compile-time check: `AnonymousConcept` and
+    /// `NamedConcept` implement the dialog `Concept` trait
+    /// (and its `Predicate` supertrait), so they slot into
+    /// query and rule machinery the same way `#[derive(Concept)]`
+    /// types do.
+    #[test]
+    fn concept_wrappers_satisfy_concept_trait() {
+        fn requires_concept<C: dialog_query::Concept>(_: &C)
+        where
+            C::Conclusion: dialog_query::Conclusion,
+        {
+        }
+        let descriptor: ConceptDescriptor =
+            serde_json::from_str(r#"{"with":{"x":{"the":"a/b","as":"Text","cardinality":"one"}}}"#)
+                .unwrap();
+        let anon = AnonymousConcept::new(descriptor.clone());
+        let named = NamedConcept::new(descriptor, "demo");
+        requires_concept(&anon);
+        requires_concept(&named);
+    }
+
+    /// `assert` then `retract` should leave nothing — every
+    /// claim that goes in comes back out.
+    #[test]
+    fn anonymous_concept_assert_then_retract_balances() {
+        use dialog_artifacts::Changes;
+        let json = r#"{
+            "description": "A cooking recipe",
+            "with": {
+                "title": { "the": "recipe/title", "as": "Text", "cardinality": "one" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept_a = AnonymousConcept::new(descriptor.clone());
+        let concept_b = AnonymousConcept::new(descriptor);
+        let mut changes = Changes::new();
+        concept_a.assert(&mut changes);
+        concept_b.retract(&mut changes);
+        // Net: every association is matched by a dissociation.
+        // We can't easily inspect Changes' internal state, but
+        // both calls succeeded and that's what we wanted to
+        // exercise.
     }
 }

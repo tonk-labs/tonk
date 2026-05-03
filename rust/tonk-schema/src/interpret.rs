@@ -32,7 +32,8 @@ use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Value};
 use dialog_query::{AttributeDescriptor, ConceptDescriptor};
 use thiserror::Error;
 use tonk_notation::{
-    Assertion, Binding, Expression, Field, FieldValue, HeadName, Reference, Scalar, Syntax,
+    Assertion, Binding, Expression, Field, FieldValue, HeadName, Reference, Retraction, Scalar,
+    Syntax,
 };
 
 /// Result of analyzing a [`Syntax`] tree — either a query plan
@@ -88,6 +89,11 @@ pub struct TransactionPlan {
     /// One assertion per facts to write. The same entity may
     /// appear in multiple assertions (one per attribute).
     pub assertions: Vec<ClaimAssertion>,
+    /// Retraction targets — `(of, attribute_filter)` pairs the
+    /// worker resolves to specific `(the, of, is)` triples by
+    /// querying the branch first, then dissociates. Empty for
+    /// pure-assertion transactions.
+    pub retractions: Vec<RetractionTarget>,
     /// Display name for the head — used by the worker to label
     /// the response (`person { … }`).
     pub head_label: String,
@@ -101,6 +107,22 @@ pub struct TransactionPlan {
     /// this to register the entity in the document scope so
     /// later expressions can reference it via `?alice`.
     pub head_variable: Option<String>,
+}
+
+/// A retraction target — describes which `(the, of, *)` facts
+/// to dissociate. The worker materializes the values by
+/// querying the branch first.
+#[derive(Debug, Clone)]
+pub struct RetractionTarget {
+    /// Entity to retract from.
+    pub of: Entity,
+    /// Which attributes to retract. A single attribute (one
+    /// `(the, of)` slot) for field-level retraction; a list
+    /// for concept-level retraction (every attribute the
+    /// concept declares).
+    pub attributes: Vec<ArtifactsAttribute>,
+    /// Source label for diagnostics / response shaping.
+    pub head_label: String,
 }
 
 /// One assertion to commit — `(the, of, is)` plus the surface
@@ -165,6 +187,14 @@ pub enum AnalyzeError {
          yet — they need a query+retract roundtrip we haven't wired"
     )]
     RetractionNotYetImplemented,
+    /// Retraction was structurally well-formed but uses a shape
+    /// the analyzer doesn't yet support (anonymous binding,
+    /// claim head, etc.).
+    #[error("{reason}")]
+    UnsupportedRetraction {
+        /// Description of the unsupported shape.
+        reason: String,
+    },
     /// Assertion head used a binding form we don't support yet.
     #[error(
         "assertion head with binding {form} isn't supported yet — \
@@ -350,6 +380,15 @@ pub trait Resolver {
         &self,
         name: &str,
     ) -> Result<Option<ResolvedAttribute>, ResolverError>;
+
+    /// Resolve a document-scope variable to its bound entity,
+    /// regardless of whether the entity is an attribute. Used
+    /// for `field: ?var` references in regular (non-meta)
+    /// assertions where the field expects an Entity-typed
+    /// value. Defaults to whatever [`resolve_variable`] returns
+    /// (attribute entity), but callers can override to handle
+    /// non-attribute variable bindings.
+    async fn resolve_entity_variable(&self, name: &str) -> Result<Option<Entity>, ResolverError>;
 }
 
 /// Opaque error from a [`Resolver`] implementation. The analyzer
@@ -401,6 +440,9 @@ impl Resolver for NoopResolver {
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         Ok(None)
     }
+    async fn resolve_entity_variable(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
+        Ok(None)
+    }
 }
 
 /// In-document overlay resolver. Lets later expressions see
@@ -436,7 +478,29 @@ struct DocumentResolver<'a, R: Resolver> {
     /// via the in-document path only — variables don't outlive
     /// the document.
     variables: AttributeIndex,
+    /// Document-scope variables → entity. Populated for *every*
+    /// `head! ?name:` assertion (attribute, concept, plain
+    /// concept-instance) — lets `field: ?name` references in
+    /// later expressions emit `Value::Entity` regardless of
+    /// whether the bound thing is an attribute or a regular
+    /// concept instance.
+    entity_variables: EntityIndex,
+    /// Concept-name → resolved concept. Populated by `concept!`
+    /// definitions earlier in the document, so a later
+    /// `person! alice:` finds `person` without waiting for the
+    /// branch commit.
+    concepts: ConceptIndex,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+type EntityIndex = std::sync::Mutex<BTreeMap<String, Entity>>;
+#[cfg(target_arch = "wasm32")]
+type EntityIndex = std::cell::RefCell<BTreeMap<String, Entity>>;
+
+#[cfg(not(target_arch = "wasm32"))]
+type ConceptIndex = std::sync::Mutex<BTreeMap<String, ResolvedConcept>>;
+#[cfg(target_arch = "wasm32")]
+type ConceptIndex = std::cell::RefCell<BTreeMap<String, ResolvedConcept>>;
 
 impl<'a, R: Resolver> DocumentResolver<'a, R> {
     fn new(inner: &'a R) -> Self {
@@ -448,10 +512,20 @@ impl<'a, R: Resolver> DocumentResolver<'a, R> {
         let variables = std::sync::Mutex::new(BTreeMap::new());
         #[cfg(target_arch = "wasm32")]
         let variables = std::cell::RefCell::new(BTreeMap::new());
+        #[cfg(not(target_arch = "wasm32"))]
+        let entity_variables = std::sync::Mutex::new(BTreeMap::new());
+        #[cfg(target_arch = "wasm32")]
+        let entity_variables = std::cell::RefCell::new(BTreeMap::new());
+        #[cfg(not(target_arch = "wasm32"))]
+        let concepts = std::sync::Mutex::new(BTreeMap::new());
+        #[cfg(target_arch = "wasm32")]
+        let concepts = std::cell::RefCell::new(BTreeMap::new());
         Self {
             inner,
             attributes,
             variables,
+            entity_variables,
+            concepts,
         }
     }
 
@@ -463,6 +537,14 @@ impl<'a, R: Resolver> DocumentResolver<'a, R> {
         index_insert(&self.variables, name, attribute);
     }
 
+    fn register_entity_variable(&self, name: String, entity: Entity) {
+        entity_index_insert(&self.entity_variables, name, entity);
+    }
+
+    fn register_concept(&self, name: String, concept: ResolvedConcept) {
+        concept_index_insert(&self.concepts, name, concept);
+    }
+
     fn get_attribute(&self, name: &str) -> Option<ResolvedAttribute> {
         index_get(&self.attributes, name)
     }
@@ -471,9 +553,75 @@ impl<'a, R: Resolver> DocumentResolver<'a, R> {
         index_get(&self.variables, name)
     }
 
+    fn get_entity_variable(&self, name: &str) -> Option<Entity> {
+        entity_index_get(&self.entity_variables, name)
+    }
+
+    fn get_concept(&self, name: &str) -> Option<ResolvedConcept> {
+        concept_index_get(&self.concepts, name)
+    }
+
     fn find_attribute_by_entity(&self, entity: &Entity) -> Option<ResolvedAttribute> {
         index_find_by_entity(&self.attributes, entity)
             .or_else(|| index_find_by_entity(&self.variables, entity))
+    }
+}
+
+fn concept_index_insert(index: &ConceptIndex, name: String, concept: ResolvedConcept) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .insert(name, concept);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index.borrow_mut().insert(name, concept);
+    }
+}
+
+fn concept_index_get(index: &ConceptIndex, name: &str) -> Option<ResolvedConcept> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .get(name)
+            .cloned()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index.borrow().get(name).cloned()
+    }
+}
+
+fn entity_index_insert(index: &EntityIndex, name: String, entity: Entity) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .insert(name, entity);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index.borrow_mut().insert(name, entity);
+    }
+}
+
+fn entity_index_get(index: &EntityIndex, name: &str) -> Option<Entity> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        index
+            .lock()
+            .expect("DocumentResolver mutex is never poisoned")
+            .get(name)
+            .cloned()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        index.borrow().get(name).cloned()
     }
 }
 
@@ -534,6 +682,9 @@ fn index_find_by_entity(index: &AttributeIndex, entity: &Entity) -> Option<Resol
 #[async_trait]
 impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        if let Some(found) = self.get_concept(name) {
+            return Ok(Some(found));
+        }
         self.inner.resolve_concept(name).await
     }
 
@@ -542,6 +693,18 @@ impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
         name: &str,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         Ok(self.get_variable(name))
+    }
+
+    async fn resolve_entity_variable(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+        // Try the entity-only map first (which holds every
+        // variable binding), fall back to the attribute map
+        // for compatibility (`?attr-foo` resolves to its
+        // entity URI even though it was registered as an
+        // attribute).
+        if let Some(entity) = self.get_entity_variable(name) {
+            return Ok(Some(entity));
+        }
+        Ok(self.get_variable(name).map(|a| a.entity))
     }
 
     async fn resolve_attribute(
@@ -569,6 +732,9 @@ impl<'a, R: Resolver + Sync> Resolver for DocumentResolver<'a, R> {
 #[async_trait(?Send)]
 impl<'a, R: Resolver> Resolver for DocumentResolver<'a, R> {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        if let Some(found) = self.get_concept(name) {
+            return Ok(Some(found));
+        }
         self.inner.resolve_concept(name).await
     }
 
@@ -577,6 +743,13 @@ impl<'a, R: Resolver> Resolver for DocumentResolver<'a, R> {
         name: &str,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         Ok(self.get_variable(name))
+    }
+
+    async fn resolve_entity_variable(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+        if let Some(entity) = self.get_entity_variable(name) {
+            return Ok(Some(entity));
+        }
+        Ok(self.get_variable(name).map(|a| a.entity))
     }
 
     async fn resolve_attribute(
@@ -653,6 +826,47 @@ fn attribute_descriptor_from_assertions(
     })
 }
 
+/// Reconstruct a [`ConceptDescriptor`] from a `concept!` plan's
+/// emitted assertions plus a side lookup table mapping
+/// `(attribute-entity → descriptor)`. The concept's `with`
+/// claims point at attribute entities; we need their full
+/// descriptors to feed `ConceptDescriptor::from`. The lookup
+/// closure consults the in-document index so a concept defined
+/// alongside its attributes (none committed yet) reconstructs
+/// correctly.
+fn concept_descriptor_from_assertions(
+    assertions: &[ClaimAssertion],
+    lookup: impl Fn(&Entity) -> Option<AttributeDescriptor>,
+) -> Result<ConceptDescriptor, AnalyzeError> {
+    let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
+    for claim in assertions {
+        // `concept!` plan emits `dialog.concept.with/{field}`
+        // assertions whose `is` is the attribute entity. The
+        // `field_name` was stashed by the analyzer.
+        let the_str = String::from(&claim.the);
+        if !the_str.starts_with("dialog.concept.with/") {
+            continue;
+        }
+        let Value::Entity(attr_entity) = &claim.is else {
+            continue;
+        };
+        let descriptor = lookup(attr_entity).ok_or_else(|| AnalyzeError::InvalidConceptBody {
+            reason: format!(
+                "concept field {field:?} references attribute {attr_entity} \
+                 not found in document scope or on the branch",
+                field = claim.field_name,
+            ),
+        })?;
+        fields.push((claim.field_name.clone(), descriptor));
+    }
+    if fields.is_empty() {
+        return Err(AnalyzeError::InvalidConceptBody {
+            reason: "no `dialog.concept.with/*` claims found in concept plan".into(),
+        });
+    }
+    Ok(ConceptDescriptor::from(fields))
+}
+
 /// Analyze a [`Syntax`] tree into an [`Analysis`].
 ///
 /// Single-query documents produce an [`Analysis::Query`].
@@ -705,7 +919,11 @@ where
                 let plan = analyze_assertion(a, &scoped).await?;
                 Ok(Analysis::Transaction(plan))
             }
-            Expression::Retraction(_) => Err(AnalyzeError::RetractionNotYetImplemented),
+            Expression::Retraction(r) => {
+                let scoped = DocumentResolver::new(resolver);
+                let plan = analyze_retraction(r, &scoped).await?;
+                Ok(Analysis::Transaction(plan))
+            }
         };
     }
 
@@ -716,6 +934,7 @@ where
     let scoped = DocumentResolver::new(resolver);
     let mut combined = TransactionPlan {
         assertions: Vec::new(),
+        retractions: Vec::new(),
         head_label: String::new(),
         head_entity: Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
             context: "minting placeholder entity".into(),
@@ -750,6 +969,34 @@ where
                     if let Some(var) = &plan.head_variable {
                         scoped.register_variable(var.clone(), resolved);
                     }
+                } else if plan.head_label == "concept"
+                    && let Some(name) = bookmark_from_assertions(&plan.assertions)
+                {
+                    // Reconstruct the concept descriptor and
+                    // register it under its bookmark name so a
+                    // later `name! ...:` head in the same
+                    // document resolves cleanly.
+                    let descriptor =
+                        concept_descriptor_from_assertions(&plan.assertions, |entity| {
+                            scoped
+                                .find_attribute_by_entity(entity)
+                                .map(|r| r.descriptor.clone())
+                        })?;
+                    scoped.register_concept(
+                        name,
+                        ResolvedConcept {
+                            entity: plan.head_entity.clone(),
+                            descriptor,
+                        },
+                    );
+                }
+                // Every variable-bound assertion (regardless of
+                // head kind) records its entity in the
+                // entity-variable map so later expressions can
+                // reference `?var` in field positions to mean
+                // "this entity."
+                if let Some(var) = &plan.head_variable {
+                    scoped.register_entity_variable(var.clone(), plan.head_entity.clone());
                 }
                 combined.assertions.extend(plan.assertions);
             }
@@ -760,8 +1007,12 @@ where
                         .into(),
                 });
             }
-            Expression::Retraction(_) => {
-                return Err(AnalyzeError::RetractionNotYetImplemented);
+            Expression::Retraction(r) => {
+                let plan = analyze_retraction(r, &scoped).await?;
+                last_head = plan.head_label.clone();
+                last_entity = Some(plan.head_entity.clone());
+                combined.assertions.extend(plan.assertions);
+                combined.retractions.extend(plan.retractions);
             }
         }
     }
@@ -870,11 +1121,19 @@ async fn analyze_assertion<R: Resolver>(
         return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
     }
 
-    // Resolve the entity the assertion writes against. A
-    // variable binding (`person! ?alice:`) mints a fresh entity
-    // just like the anonymous form — the variable is a
-    // doc-scoped label later expressions can refer to.
+    // Resolve the entity the assertion writes against.
+    //
+    // - Anonymous: fresh random entity.
+    // - Variable: fresh random entity, name registered for
+    //   document scope only (no `dialog.meta/name` claim).
+    // - Bookmark: entity content-derived from the bookmark
+    //   name via `Entity::of`, plus a persistent
+    //   `dialog.meta/name` claim so future docs can resolve
+    //   `.bookmark`.
+    // - URI: parse the explicit entity URI verbatim.
+    use crate::prelude::EntityExt;
     let mut head_variable: Option<String> = None;
+    let mut bookmark: Option<String> = None;
     let head_entity = match &assertion.head.binding {
         Binding::Anonymous => Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
             context: "minting fresh entity".into(),
@@ -887,6 +1146,10 @@ async fn analyze_assertion<R: Resolver>(
                 reason: e.to_string(),
             })?
         }
+        Binding::Bookmark(name) => {
+            bookmark = Some(name.clone());
+            Entity::of(name)
+        }
         Binding::Uri(uri) => uri
             .parse()
             .map_err(|e: dialog_artifacts::DialogArtifactsError| {
@@ -895,12 +1158,6 @@ async fn analyze_assertion<R: Resolver>(
                     reason: e.to_string(),
                 }
             })?,
-        Binding::Bookmark(_) => {
-            return Err(AnalyzeError::UnsupportedAssertionBinding {
-                form: "bookmark name",
-                head: head_label,
-            });
-        }
     };
 
     // Walk user-supplied fields, look each up in the
@@ -914,30 +1171,62 @@ async fn analyze_assertion<R: Resolver>(
     for (field_name, attribute) in descriptor.with().iter() {
         let Some(field_value) = user_fields.remove(field_name) else {
             // Field is in the concept's `with` but the user
-            // didn't supply it. v1 silently skips — partial
-            // assertions are valid (you might be filling in
-            // half a concept). Future work could add a
-            // concept-level "all-or-nothing" mode.
+            // didn't supply it. Partial assertions are valid
+            // (you might be filling in half a concept).
             continue;
         };
-        let scalar = match field_value {
-            FieldValue::Literal(s) => s,
-            FieldValue::Variable(_) => {
-                return Err(AnalyzeError::UnsupportedAssertionFieldValue {
-                    field: field_name.to_owned(),
-                    form: "variable (`?name`)",
-                });
+        let value = match field_value {
+            FieldValue::Literal(scalar) => scalar_to_value(scalar)?,
+            FieldValue::Variable(name) => {
+                // `?name` resolves to a doc-scope entity binding
+                // — the field gets a `Value::Entity`. Useful
+                // for `friend: ?bob` patterns where `?bob` is
+                // an entity defined earlier in the same doc.
+                let entity = resolver
+                    .resolve_entity_variable(name)
+                    .await
+                    .map_err(|e| AnalyzeError::ResolverFailed {
+                        context: format!("variable ?{name}"),
+                        reason: e.message,
+                    })?
+                    .ok_or_else(|| AnalyzeError::UnknownVariable {
+                        field: field_name.to_owned(),
+                        variable: name.clone(),
+                    })?;
+                Value::Entity(entity)
+            }
+            FieldValue::Reference(Reference::Bookmark(name)) => {
+                // `.bookmark` resolves via the resolver. For
+                // attribute references the resolver gives back
+                // a `ResolvedAttribute`; we pull the entity.
+                let resolved = resolver
+                    .resolve_attribute(name)
+                    .await
+                    .map_err(|e| AnalyzeError::ResolverFailed {
+                        context: format!("bookmark .{name}"),
+                        reason: e.message,
+                    })?
+                    .ok_or_else(|| AnalyzeError::UnknownBookmark {
+                        field: field_name.to_owned(),
+                        bookmark: name.clone(),
+                    })?;
+                Value::Entity(resolved.entity)
+            }
+            FieldValue::Reference(Reference::Uri(uri)) => {
+                let entity: Entity =
+                    uri.parse()
+                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                            AnalyzeError::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            }
+                        })?;
+                Value::Entity(entity)
             }
             FieldValue::Blank => {
                 return Err(AnalyzeError::UnsupportedAssertionFieldValue {
                     field: field_name.to_owned(),
                     form: "blank (`_`) — field-level retraction needs query+retract",
-                });
-            }
-            FieldValue::Reference(_) => {
-                return Err(AnalyzeError::UnsupportedAssertionFieldValue {
-                    field: field_name.to_owned(),
-                    form: "reference (`.bookmark` / URI)",
                 });
             }
             FieldValue::Nested(_) => {
@@ -947,7 +1236,6 @@ async fn analyze_assertion<R: Resolver>(
                 });
             }
         };
-        let value = scalar_to_value(scalar)?;
         let the: ArtifactsAttribute = attribute.the().clone().into();
         assertions.push(ClaimAssertion {
             the,
@@ -964,8 +1252,134 @@ async fn analyze_assertion<R: Resolver>(
         });
     }
 
+    // Bookmark binding emits a persistent `dialog.meta/name`
+    // claim alongside the user's fields so future documents
+    // can resolve `.bookmark` back to this entity.
+    if let Some(name) = bookmark {
+        assertions.push(ClaimAssertion {
+            the: meta_attr("dialog.meta", "name"),
+            of: head_entity.clone(),
+            is: Value::String(name),
+            field_name: "name".into(),
+        });
+    }
+
     Ok(TransactionPlan {
         assertions,
+        retractions: Vec::new(),
+        head_label,
+        head_entity,
+        head_variable,
+    })
+}
+
+/// Analyze a retraction expression (`head! …: _`) into a
+/// [`TransactionPlan`] of [`RetractionTarget`]s.
+///
+/// v1 scope:
+///
+/// - Concept heads with `Uri` binding are supported. The
+///   resolver hands back the concept's descriptor; we walk
+///   `with()` to enumerate the attribute URIs to dissociate.
+/// - Variable bindings (`?nick`) work when the variable was
+///   bound by an earlier assertion in the same document — the
+///   document scope holds an entity for it.
+/// - Bookmark bindings derive the entity content-addressed
+///   from the bookmark name (matches the bookmark-on-assertion
+///   semantics — they're the same entity).
+/// - Anonymous bindings (`person!: _`) make no sense: there's
+///   nothing to retract from. Rejected.
+/// - Claim heads aren't yet wired (they'd need an extra pass
+///   to enumerate `<domain>/*` attributes on the entity at
+///   query time, which the analyzer doesn't have access to).
+async fn analyze_retraction<R: Resolver>(
+    retraction: &Retraction,
+    resolver: &R,
+) -> Result<TransactionPlan, AnalyzeError> {
+    use crate::prelude::EntityExt;
+
+    let head_label = match &retraction.head.name {
+        HeadName::Concept(name) => name.clone(),
+        HeadName::Claim(domain) => {
+            return Err(AnalyzeError::UnsupportedRetraction {
+                reason: format!(
+                    "claim retraction (`{domain}!`) isn't wired yet — \
+                     dissociate by attribute URI in a follow-up"
+                ),
+            });
+        }
+    };
+
+    // Resolve the concept descriptor — we need its `with` map
+    // to know which attributes to retract.
+    let resolved = resolver
+        .resolve_concept(&head_label)
+        .await
+        .map_err(|e| AnalyzeError::ResolverFailed {
+            context: format!("concept {head_label:?}"),
+            reason: e.message,
+        })?
+        .ok_or_else(|| AnalyzeError::UnknownConcept {
+            name: head_label.clone(),
+        })?;
+
+    // Resolve the entity to retract from.
+    let mut head_variable: Option<String> = None;
+    let head_entity = match &retraction.head.binding {
+        Binding::Anonymous => {
+            return Err(AnalyzeError::UnsupportedRetraction {
+                reason: format!(
+                    "`{head_label}! _` (anonymous) has no entity to \
+                     retract from — bind the head with `?var`, a \
+                     bookmark, or a `did:key:…` URI"
+                ),
+            });
+        }
+        Binding::Uri(uri) => uri
+            .parse()
+            .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                AnalyzeError::InvalidSubjectUri {
+                    subject: uri.clone(),
+                    reason: e.to_string(),
+                }
+            })?,
+        Binding::Bookmark(name) => Entity::of(name),
+        Binding::Variable(name) => {
+            head_variable = Some(name.clone());
+            resolver
+                .resolve_entity_variable(name)
+                .await
+                .map_err(|e| AnalyzeError::ResolverFailed {
+                    context: format!("variable ?{name}"),
+                    reason: e.message,
+                })?
+                .ok_or_else(|| AnalyzeError::UnknownVariable {
+                    field: format!("{head_label}!"),
+                    variable: name.clone(),
+                })?
+        }
+    };
+
+    // Concept retraction = retract every attribute the concept
+    // declares, from this entity. The worker resolves
+    // `(the, of, *)` to specific values via a query before
+    // dissociating.
+    let attributes: Vec<ArtifactsAttribute> = resolved
+        .descriptor
+        .with()
+        .iter()
+        .map(|(_field_name, attr)| attr.the().clone().into())
+        .collect();
+
+    let target = RetractionTarget {
+        of: head_entity.clone(),
+        attributes,
+        head_label: head_label.clone(),
+    };
+
+    Ok(TransactionPlan {
+        assertions: Vec::new(),
+        retractions: vec![target],
         head_label,
         head_entity,
         head_variable,
@@ -1118,6 +1532,7 @@ fn analyze_attribute_assertion(assertion: &Assertion) -> Result<TransactionPlan,
 
     Ok(TransactionPlan {
         assertions,
+        retractions: Vec::new(),
         head_label: "attribute".into(),
         head_entity: entity,
         head_variable,
@@ -1255,6 +1670,7 @@ async fn analyze_concept_assertion<R: Resolver>(
 
     Ok(TransactionPlan {
         assertions,
+        retractions: Vec::new(),
         head_label: "concept".into(),
         head_entity: entity,
         head_variable,
@@ -1505,6 +1921,12 @@ mod tests {
         ) -> Result<Option<ResolvedAttribute>, ResolverError> {
             Ok(None)
         }
+        async fn resolve_entity_variable(
+            &self,
+            _name: &str,
+        ) -> Result<Option<Entity>, ResolverError> {
+            Ok(None)
+        }
     }
 
     fn fixed_resolver(name: &str, fields: &[(&str, &str)]) -> FixedResolver {
@@ -1743,6 +2165,12 @@ mod tests {
             ) -> Result<Option<ResolvedAttribute>, ResolverError> {
                 Ok(None)
             }
+            async fn resolve_entity_variable(
+                &self,
+                _name: &str,
+            ) -> Result<Option<Entity>, ResolverError> {
+                Ok(None)
+            }
         }
 
         let syntax = parse(
@@ -1803,12 +2231,43 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn retraction_is_not_yet_implemented() {
+    async fn concept_retraction_with_uri_binds_attributes() {
         let syntax = parse("person! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv: _\n")
             .syntax
             .unwrap();
+        let resolver = fixed_resolver(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let plan = expect_transaction(analyze(&syntax, &resolver).await.unwrap());
+        assert_eq!(plan.head_label, "person");
+        assert_eq!(plan.assertions.len(), 0);
+        // One retraction target with two attributes — the
+        // worker queries the branch for current values and
+        // dissociates each.
+        assert_eq!(plan.retractions.len(), 1);
+        assert_eq!(plan.retractions[0].attributes.len(), 2);
+    }
+
+    #[dialog_common::test]
+    async fn anonymous_retraction_is_rejected() {
+        let syntax = parse("person!: _\n").syntax.unwrap();
+        let resolver = fixed_resolver("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(err, AnalyzeError::UnsupportedRetraction { .. }));
+    }
+
+    #[dialog_common::test]
+    async fn claim_retraction_is_not_wired() {
+        let syntax =
+            parse("xyz.tonk! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv: _\n")
+                .syntax
+                .unwrap();
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::RetractionNotYetImplemented));
+        assert!(matches!(err, AnalyzeError::UnsupportedRetraction { .. }));
     }
 
     #[dialog_common::test]

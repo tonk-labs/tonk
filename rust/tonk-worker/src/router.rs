@@ -917,4 +917,94 @@ concept! person:
         let entity = resp.entities.get("concept").unwrap();
         assert!(entity.starts_with("concept:"));
     }
+
+    /// End-to-end concept retraction: define schema, assert
+    /// an instance, then retract the concept-projection — the
+    /// worker should query for the instance's current values
+    /// and dissociate them.
+    #[dialog_common::test]
+    async fn it_retracts_a_concept_instance() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-retract-concept";
+
+        put_repo(&app, repo).await;
+
+        // Define schema + assert an Alice with a bookmark
+        // binding so we know her entity.
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+
+person! alice:
+  name: \"Alice\"
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(setup))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "setup failed: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+
+        // Retract the person concept-projection from Alice
+        // by her bookmark-derived URI. The worker should
+        // query the branch for `(io.gozala.person/name, alice, *)`
+        // and dissociate the matching value.
+        let alice_uri = {
+            use dialog_artifacts::Entity;
+            use tonk_schema::prelude::EntityExt;
+            Entity::of(&"alice".to_owned()).to_string()
+        };
+        let retract = format!("person! {alice_uri}: _\n");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(retract))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "retraction failed: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+        // One claim retracted (Alice's name).
+        assert!(
+            resp.claims >= 1,
+            "expected at least 1 retracted claim, got {}",
+            resp.claims
+        );
+    }
 }

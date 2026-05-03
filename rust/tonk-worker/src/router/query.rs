@@ -370,4 +370,8 @@ impl<'a> Resolver for BranchResolver<'a> {
         // Document-scope variables don't outlive a document.
         Ok(None)
     }
+
+    async fn resolve_entity_variable(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
+        Ok(None)
+    }
 }

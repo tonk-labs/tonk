@@ -90,21 +90,22 @@ pub struct Named {
     pub name: Name,
 }
 
-/// A typed view over an attribute entity carrying its full
-/// indexable fact set.
+/// A typed view over an attribute entity carrying the
+/// always-present fact set: `id`, `type`, `cardinality`,
+/// `description`. Matches every attribute on a branch
+/// regardless of whether the user gave it a bookmark name.
 ///
-/// `AttributeFacts` is what the interpreter queries when a
-/// concept's `with` / `maybe` field references a bookmark that
-/// wasn't defined in the same document. The four fact fields
-/// suffice to reconstruct a `dialog_query::AttributeDescriptor`
-/// and thus the canonical concept hash.
+/// Use this when you need an attribute by entity URI and
+/// don't care whether it was named — for example, when
+/// reconstructing a [`dialog_query::AttributeDescriptor`] for
+/// an attribute referenced by URI from inside a `concept!`
+/// definition.
 ///
-/// Description is required — concepts that don't yet have one
-/// receive an empty string at write time, so the schema-level
-/// invariant "every named attribute has a description claim"
-/// holds for everything written through the transact route.
+/// `description` is required — entries without one receive an
+/// empty string at write time, so the schema-level invariant
+/// "every stored attribute has a description claim" holds.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AttributeFacts {
+pub struct AnonymousAttribute {
     /// The attribute entity (a `the:…` URI).
     pub this: Entity,
     /// Selector — `domain/name` form.
@@ -115,4 +116,29 @@ pub struct AttributeFacts {
     pub cardinality: attribute::Cardinality,
     /// Human-readable description.
     pub description: Description,
+}
+
+/// Same as [`AnonymousAttribute`] but with the `name` field —
+/// the bookmark name the attribute was registered under.
+/// Matches only attributes the user explicitly bookmarked
+/// (`attribute! foo: …` syntax); anonymous and
+/// variable-bound attributes are excluded.
+///
+/// Use this when you need to surface "what name did the user
+/// give this attribute" — for example, in the editor's
+/// attribute list, or to resolve a `.bookmark` reference.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NamedAttribute {
+    /// The attribute entity (a `the:…` URI).
+    pub this: Entity,
+    /// Selector — `domain/name` form.
+    pub id: attribute::Id,
+    /// Value-type descriptor name.
+    pub r#type: attribute::Type,
+    /// `"one"` or `"many"`.
+    pub cardinality: attribute::Cardinality,
+    /// Human-readable description.
+    pub description: Description,
+    /// The bookmark name this attribute was registered under.
+    pub name: Name,
 }
