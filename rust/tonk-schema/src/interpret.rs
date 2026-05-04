@@ -409,6 +409,9 @@ impl<'a, R: Resolver> Scope<'a, R> {
         if let Some(found) = cell_borrow(&self.in_doc_concepts).get(name).cloned() {
             return Ok(Some(found));
         }
+        if let Some(found) = crate::builtin::lookup_concept(name) {
+            return Ok(Some(found));
+        }
         self.inner.resolve_concept(name).await
     }
 
@@ -957,18 +960,21 @@ fn this_term_for_query(binding: &HeadBinding) -> Term<dialog_query::Any> {
             // Query-side bookmark resolution requires hitting
             // the branch to find the entity carrying
             // `dialog.meta/name = name`. The query path doesn't
-            // currently do that (no async access here); use a
-            // fresh variable for now so the engine binds matches.
-            Term::<dialog_query::Any>::var("this")
+            // currently do that (no async access here); mint a
+            // unique variable so anonymous matches bind to a
+            // fresh slot per-expression and don't accidentally
+            // co-unify with another query's `this`.
+            Term::<dialog_query::Any>::unique()
         }
         HeadBinding::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
         HeadBinding::Anonymous => {
             // Dialog's engine requires `this` to be a named
             // variable (so it can bind matches to it) — a blank
             // surfaces as `UnboundVariable { variable_name: "this" }`
-            // at evaluation. Mint a stable name so the engine
-            // and the renderer agree on what to look up.
-            Term::<dialog_query::Any>::var("this")
+            // at evaluation. `Term::unique` mints `__N`, distinct
+            // per call, so two anonymous queries don't end up
+            // joining on a shared literal `"this"` name.
+            Term::<dialog_query::Any>::unique()
         }
     }
 }
@@ -1864,6 +1870,60 @@ mod tests {
         let syntax = must_parse("nope:\n  field: \"x\"\n");
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(matches!(err, AnalyzeError::UnknownConcept { .. }));
+    }
+
+    /// Built-in `attribute:` resolves without a branch resolver
+    /// — the registry is consulted before the inner resolver, so
+    /// the LSP (which uses [`NoopResolver`]) gets autocomplete /
+    /// diagnostics for built-ins for free.
+    #[dialog_common::test]
+    async fn builtin_attribute_resolves_under_noop() {
+        let syntax = must_parse("attribute ?a:\n  name: ?n\n");
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let q = analysis.query.as_ref().unwrap();
+        assert_eq!(q.queries.len(), 1);
+        let Application::Concept { query, .. } = &q.queries[0] else {
+            panic!("expected Concept application");
+        };
+        // The five fields the meta-head plan emits at write time
+        // — id/type/cardinality/description/name — must all be
+        // present in the unified term map.
+        for field in ["id", "type", "cardinality", "description", "name"] {
+            assert!(query.terms.contains(field), "missing {field}");
+        }
+    }
+
+    /// Built-in `branch:` (and other Rust-defined repository
+    /// concepts) resolve through the registry, not the resolver,
+    /// even though they have no branch-side `concept!`
+    /// definition.
+    #[dialog_common::test]
+    async fn builtin_branch_resolves_under_noop() {
+        let syntax = must_parse("branch ?b:\n  name: ?name\n");
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let q = analysis.query.as_ref().unwrap();
+        let Application::Concept { query, .. } = &q.queries[0] else {
+            panic!("expected Concept application");
+        };
+        assert!(query.terms.contains("name"));
+        assert!(query.terms.contains("origin"));
+    }
+
+    /// Built-in `attribute:` empty-body query surfaces every
+    /// well-known field as a defaulted variable. Documents the
+    /// "fields you didn't mention default to ?field" behavior
+    /// applied to a built-in.
+    #[dialog_common::test]
+    async fn builtin_attribute_empty_body_defaults_all_fields() {
+        let syntax = must_parse("attribute:\n");
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let q = analysis.query.as_ref().unwrap();
+        let Application::Concept { query, .. } = &q.queries[0] else {
+            panic!("expected Concept application");
+        };
+        for field in ["id", "type", "cardinality", "description", "name"] {
+            assert!(query.terms.contains(field), "missing {field}");
+        }
     }
 
     /// Claim head with no fields → `ClaimWithoutFields`.

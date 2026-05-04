@@ -75,52 +75,37 @@ pub struct QueryAnalysis {
 }
 
 impl QueryAnalysis {
-    /// Names of `Term::Variable` slots that survived `variables`
-    /// substitution — i.e., what this query binds at evaluation
-    /// time.
+    /// Names of user-named `Term::Variable` slots that survived
+    /// `variables` substitution — i.e., what this query binds at
+    /// evaluation time. Auto-generated [`Term::unique`] variables
+    /// (whose names start with `__`) are excluded; they're an
+    /// implementation detail of anonymous-head bindings, not
+    /// user-visible bindings.
     pub fn bindings(&self) -> HashSet<String> {
         let mut out = HashSet::new();
         for application in &self.queries {
-            collect_variable_names(application.parameters(), &mut out);
+            collect_user_variable_names(application.parameters(), &mut out);
         }
         out
     }
-}
 
-impl From<&QueryAnalysis> for ConceptQuery {
-    /// Combine every `queries[i]` predicate's `with` map into one
-    /// unified [`ConceptQuery`] whose `terms` union the
-    /// per-expression terms. Shared variable names join the
-    /// expressions (a `?alice` in two queries means matches must
-    /// agree on `alice`).
+    /// One [`ConceptQuery`] per expression. `Domain`-shaped
+    /// applications are converted to `ConceptQuery` via the
+    /// existing per-application conversion. Expression order is
+    /// document order.
     ///
-    /// The result is what the engine evaluates once per request.
-    /// Each per-expression `Application` is also kept on
-    /// [`QueryAnalysis::queries`] for per-source rendering.
-    fn from(query: &QueryAnalysis) -> Self {
-        use dialog_query::{AttributeDescriptor, ConceptDescriptor};
-
-        let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
-        let mut terms = Parameters::new();
-        let mut seen_fields: HashSet<String> = HashSet::new();
-        for application in &query.queries {
-            let inner = match application {
+    /// The engine evaluates each query independently; the worker
+    /// post-joins frames on shared user-named variables so
+    /// disjoint expressions cross-product and connected
+    /// expressions equi-join.
+    pub fn expression_queries(&self) -> Vec<ConceptQuery> {
+        self.queries
+            .iter()
+            .map(|application| match application {
                 Application::Concept { query, .. } => query.clone(),
                 Application::Domain { application, .. } => ConceptQuery::from(application.clone()),
-            };
-            for (name, attribute) in inner.predicate.with().iter() {
-                if seen_fields.insert(name.to_owned()) {
-                    fields.push((name.to_owned(), attribute.clone()));
-                }
-            }
-            for (name, term) in inner.terms.iter() {
-                merge_term(&mut terms, name, term);
-            }
-        }
-        ConceptQuery {
-            terms,
-            predicate: ConceptDescriptor::from(fields),
-        }
+            })
+            .collect()
     }
 }
 
@@ -429,48 +414,27 @@ fn substitute_concept_query(
     Ok(query)
 }
 
-/// Merge `incoming` into `terms` under `name` without losing
-/// constraint strength. Strictness order, strictest first:
-///
-///   `Term::Constant`            — fixed value
-///   `Term::Variable(Some(_))`   — named variable, joins across exprs
-///   `Term::Variable(None)`      — blank, accepts anything
-///
-/// A stricter term must not be replaced by a looser one. This
-/// matters when [`From<&QueryAnalysis> for ConceptQuery`]
-/// merges per-expression `terms` into one unified parameter
-/// map: if `person ?alice: { name: "Alice" }` is followed by
-/// `person ?alice: { age: ?age }`, the second expression's
-/// implicit `name: Term::var("name")` (unmentioned-fields
-/// default) must NOT overwrite the first's `name: "Alice"` —
-/// otherwise the unified query loses the literal constraint
-/// and matches every person.
-fn merge_term(terms: &mut Parameters, name: &str, incoming: &Term<dialog_query::Any>) {
-    let existing_strength = terms.get(name).map(term_strength).unwrap_or(0);
-    let incoming_strength = term_strength(incoming);
-    if incoming_strength > existing_strength {
-        terms.insert(name.to_owned(), incoming.clone());
-    }
-}
-
-/// Numeric strictness rank used by [`merge_term`]. Higher =
-/// stricter. Two terms of equal strictness can clash (two
-/// different constants for the same field) but the analyzer
-/// rejects that earlier — only one expression per source can
-/// bind a given field.
-fn term_strength(term: &Term<dialog_query::Any>) -> u8 {
-    match term {
-        Term::Constant(_) => 2,
-        Term::Variable { name: Some(_), .. } => 1,
-        Term::Variable { name: None, .. } => 0,
-    }
-}
-
 fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
     for (_, term) in params.iter() {
         if let Term::Variable {
             name: Some(name), ..
         } = term
+        {
+            out.insert(name.clone());
+        }
+    }
+}
+
+/// Like [`collect_variable_names`] but skips auto-generated
+/// `Term::unique` names (which start with `__`). Used by the
+/// component-grouping logic so anonymous-head bindings do not
+/// accidentally connect unrelated expressions.
+fn collect_user_variable_names(params: &Parameters, out: &mut HashSet<String>) {
+    for (_, term) in params.iter() {
+        if let Term::Variable {
+            name: Some(name), ..
+        } = term
+            && !name.starts_with("__")
         {
             out.insert(name.clone());
         }

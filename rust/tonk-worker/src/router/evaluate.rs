@@ -188,16 +188,22 @@ async fn run(
         base.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
     }
 
-    // ---- Run the unified query against pre-commit state ----
-    // The pre-commit matches drive mutation planning: each
-    // `Statement` fires once per match frame, with `?var`
-    // bindings substituted from the frame.
-    let pre_matches: Vec<Parameters> = match &analysis.query {
-        Some(q) => {
-            let unified = ConceptQuery::from(q);
-            collect_matches(unified, branch, operator).await?
-        }
-        None => vec![Parameters::new()],
+    // ---- Per-expression queries + post-join ----
+    // Each expression runs its own ConceptQuery. The worker
+    // hash-joins their frames on shared user-named variables so
+    // disjoint expressions cross-product (independent results)
+    // and connected expressions equi-join (filtered intersection).
+    //
+    // Disjoint queries used to fail because a single unified
+    // ConceptQuery has only one `this` slot; merging two
+    // expressions collapsed both entities into one.
+    let pre_results = match &analysis.query {
+        Some(q) => Some(run_query(q, branch, operator).await?),
+        None => None,
+    };
+    let pre_matches: Vec<Parameters> = match &pre_results {
+        Some(r) if !r.joined.is_empty() => r.joined.clone(),
+        _ => vec![Parameters::new()],
     };
 
     // ---- Plan + commit each mutation per match frame ----
@@ -269,23 +275,20 @@ async fn run(
     // Render the pre-commit matches now (before we run the
     // post-commit query) so the response carries both shapes
     // and the editor can show a before/after comparison.
-    let matches_before = render_match_blocks(analysis, syntax, &pre_matches);
+    let matches_before = render_match_blocks(analysis, syntax, pre_results.as_ref());
 
-    // ---- Re-run the query against post-commit state ----
+    // ---- Re-run per-expression queries against post-commit state ----
     // For pure-query documents the post-state equals the
-    // pre-state, so reuse `pre_matches` to skip the round-trip.
-    let post_matches: Vec<Parameters> = if analysis.mutate.statements.is_empty() {
-        pre_matches
+    // pre-state, so reuse `pre_results` to skip the round-trip.
+    let post_results = if analysis.mutate.statements.is_empty() {
+        pre_results
     } else {
         match &analysis.query {
-            Some(q) => {
-                let unified = ConceptQuery::from(q);
-                collect_matches(unified, branch, operator).await?
-            }
-            None => pre_matches,
+            Some(q) => Some(run_query(q, branch, operator).await?),
+            None => pre_results,
         }
     };
-    let matches_after = render_match_blocks(analysis, syntax, &post_matches);
+    let matches_after = render_match_blocks(analysis, syntax, post_results.as_ref());
 
     Ok(EvaluateResponse {
         revision_before: None,
@@ -294,6 +297,87 @@ async fn run(
         matches_after,
         commits,
     })
+}
+
+/// Per-expression query results plus the joined frames for
+/// mutation planning.
+///
+/// Each expression runs its own [`ConceptQuery`] independently;
+/// the worker hash-joins frames on shared user-named variables.
+/// Disjoint expressions cross-product (no shared variable to
+/// constrain on); connected expressions equi-join.
+struct QueryResults {
+    /// Per-expression frames, in document order. Each frame
+    /// carries every user-named variable bound by that
+    /// expression's query.
+    per_expression: Vec<Vec<Parameters>>,
+    /// The natural join of `per_expression`. Used for mutation
+    /// planning (one row = one substitution into a [`Statement`]).
+    /// Equivalent to the cross-product when no expressions share
+    /// variables.
+    joined: Vec<Parameters>,
+}
+
+/// Run one [`ConceptQuery`] per expression and join their frames
+/// on shared user-named variables.
+async fn run_query(
+    query: &tonk_schema::transact::QueryAnalysis,
+    branch: &Branch,
+    operator: &DefaultOperator,
+) -> Result<QueryResults, TonkWorkerError> {
+    let mut per_expression = Vec::with_capacity(query.queries.len());
+    for cq in query.expression_queries() {
+        let frames = collect_matches(cq, branch, operator).await?;
+        per_expression.push(frames);
+    }
+    let joined = natural_join(&per_expression);
+    Ok(QueryResults {
+        per_expression,
+        joined,
+    })
+}
+
+/// Natural join of N frame relations on shared user-named
+/// variables (`Parameters` keys). Disjoint frames cross-product;
+/// connected frames keep only combinations that agree on shared
+/// keys.
+///
+/// O(rows × frames-per-rel) — fine for the typical 1–10s of
+/// matches per expression we see in practice.
+fn natural_join(per_expression: &[Vec<Parameters>]) -> Vec<Parameters> {
+    let mut acc: Vec<Parameters> = vec![Parameters::new()];
+    for frames in per_expression {
+        let mut next = Vec::new();
+        for prefix in &acc {
+            for frame in frames {
+                if let Some(combined) = merge_frames(prefix, frame) {
+                    next.push(combined);
+                }
+            }
+        }
+        acc = next;
+        if acc.is_empty() {
+            // Conjunction failed — no rows can satisfy the join.
+            return Vec::new();
+        }
+    }
+    acc
+}
+
+/// Merge two frames; return `None` when they disagree on a
+/// shared key (the join row is filtered out).
+fn merge_frames(a: &Parameters, b: &Parameters) -> Option<Parameters> {
+    let mut combined = a.clone();
+    for (k, v) in b.iter() {
+        if let Some(existing) = combined.get(k) {
+            if existing != v {
+                return None;
+            }
+        } else {
+            combined.insert(k.clone(), v.clone());
+        }
+    }
+    Some(combined)
 }
 
 /// One concrete `(the, of, is)` triple ready for `tx.retract`.
@@ -528,20 +612,26 @@ async fn collect_matches(
     }
 }
 
-/// Render per-source-expression match blocks. Walks
-/// [`Analysis::query`] in order and projects each match against
-/// the source expression's [`Application`].
+/// Render per-source-expression match blocks.
+///
+/// Each block projects from the joined frames so connected
+/// queries display the filtered intersection. Within an
+/// expression, frames are deduplicated by their `this` entity to
+/// avoid showing the same row repeatedly when an unrelated
+/// expression's cross-product introduces duplicates.
 fn render_match_blocks(
     analysis: &Analysis,
     syntax: &Syntax,
-    matches: &[Parameters],
+    results: Option<&QueryResults>,
 ) -> Vec<QueryMatchBlock> {
     let Some(query) = &analysis.query else {
         return Vec::new();
     };
+    let Some(results) = results else {
+        return Vec::new();
+    };
 
-    // Source-expression labels: walk the syntax tree picking out
-    // the head label of each Query in document order.
+    // Source-expression labels in document order.
     let mut labels: Vec<String> = Vec::new();
     for expression in &syntax.expressions {
         if let tonk_notation::Expression::Query(q) = expression {
@@ -549,6 +639,8 @@ fn render_match_blocks(
         }
     }
 
+    // For each expression, collect the user-named variables it
+    // binds. We project the joined frame onto these to dedupe.
     let mut blocks = Vec::with_capacity(query.queries.len());
     for (i, application) in query.queries.iter().enumerate() {
         let label = labels.get(i).cloned().unwrap_or_else(|| "?".to_owned());
@@ -558,11 +650,57 @@ fn render_match_blocks(
                 ConceptQuery::from(d.clone()).predicate
             }
         };
-        let mut results = Vec::with_capacity(matches.len());
-        for frame in matches {
-            results.push(render_one_result(&descriptor, application, frame));
+
+        // Variable names this expression contributes to the join.
+        let mut my_vars: Vec<String> = Vec::new();
+        let terms = match application {
+            tonk_schema::transact::Application::Concept { query: q, .. } => &q.terms,
+            tonk_schema::transact::Application::Domain { application: d, .. } => &d.parameters,
+        };
+        for (_, term) in terms.iter() {
+            if let Term::Variable {
+                name: Some(name), ..
+            } = term
+                && !my_vars.contains(name)
+            {
+                my_vars.push(name.clone());
+            }
         }
-        blocks.push(QueryMatchBlock { label, results });
+
+        // Source frames: prefer joined when non-empty (so
+        // connected queries see the filter); otherwise fall back
+        // to the expression's own frames so disjoint expressions
+        // still surface their solo matches when another
+        // expression returned zero rows and zeroed the join.
+        let source_frames: &[Parameters] = if !results.joined.is_empty() {
+            &results.joined
+        } else {
+            results
+                .per_expression
+                .get(i)
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+        };
+
+        let mut seen = std::collections::HashSet::<Vec<String>>::new();
+        let mut block_results = Vec::new();
+        for frame in source_frames {
+            let mut key = Vec::with_capacity(my_vars.len());
+            for var in &my_vars {
+                key.push(match frame.get(var) {
+                    Some(Term::Constant(v)) => format!("{v:?}"),
+                    _ => String::new(),
+                });
+            }
+            if !seen.insert(key) {
+                continue;
+            }
+            block_results.push(render_one_result(&descriptor, application, frame));
+        }
+        blocks.push(QueryMatchBlock {
+            label,
+            results: block_results,
+        });
     }
     blocks
 }
