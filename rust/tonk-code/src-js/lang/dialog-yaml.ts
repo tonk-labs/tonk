@@ -71,6 +71,15 @@ const nameMark = Decoration.mark({ class: "tonk-cm-name" });
  *  character that flips an expression from query to mutation. */
 const effectMark = Decoration.mark({ class: "tonk-cm-effect" });
 
+/** Head-binding decoration — applied to the binding token of a
+ *  head expression (the part between the head name and the
+ *  trailing `:`). Lets a plain bookmark (`replica home:`) pick
+ *  up a visible color so it doesn't read as ordinary YAML key
+ *  text. `?var` and `did:` bindings still pick up their own
+ *  decorations on top via the `*` descendant selector in the
+ *  theme. */
+const bindingMark = Decoration.mark({ class: "tonk-cm-binding" });
+
 /** Match a `?` followed by one or more word characters. */
 const VARIABLE_NAMED = /\?\w+/g;
 
@@ -103,6 +112,20 @@ const NAME_REF = /(?<=^|[\s,[{])(\.)(\w[\w-]*)/gm;
  *  catch a stray `!` elsewhere. */
 const EFFECT_BANG = /(?<=[A-Za-z0-9._/-])!(?=:|\s)/g;
 
+/** Match the *binding* slot of a head — the token between the
+ *  head name (and its optional `!`) and the closing `:`. Heads
+ *  only appear at column 0 of the document root mapping (the
+ *  `m` flag makes `^` line-start; the `d` flag exposes per-group
+ *  ranges via `match.indices`). The capture lets us decorate
+ *  just the binding text, leaving the head name untouched.
+ *
+ *  The binding can contain colons (`did:key:zNick`), so the
+ *  capture is greedy up to the trailing `:` that ends the YAML
+ *  key. The `\S+` keeps it on one line; only bookmarks are
+ *  styled — `?var` and URI bindings get their own decorations
+ *  via the variable/entity regexes. */
+const HEAD_BINDING = /^[A-Za-z][A-Za-z0-9._/-]*!?\s+(\S+):\s*$/gdm;
+
 /** Walk every visible range and emit a decoration for each
  *  match. `RangeSetBuilder` requires its inputs in order; we
  *  collect into an array, sort, and add in one pass to keep the
@@ -126,6 +149,25 @@ function buildDecorations(view: EditorView): DecorationSet {
     collect(VARIABLE_BLANK, variableMark);
     collect(ENTITY_URI, entityMark);
     collect(EFFECT_BANG, effectMark);
+    // Head bindings — only decorate plain bookmarks. `?var`
+    // bindings already pick up the variable mark and `did:`-style
+    // URIs already pick up the entity mark; layering the binding
+    // mark on top would compete with those (same specificity,
+    // later rule wins) and erase the more specific decoration.
+    HEAD_BINDING.lastIndex = 0;
+    for (let m; (m = HEAD_BINDING.exec(text)); ) {
+      const indices = (m as RegExpExecArray & { indices?: Array<[number, number]> })
+        .indices;
+      if (!indices || !indices[1]) continue;
+      const binding = m[1];
+      if (binding.startsWith("?") || binding.includes(":")) continue;
+      const [start, end] = indices[1];
+      hits.push({
+        from: from + start,
+        to: from + end,
+        mark: bindingMark,
+      });
+    }
     // `.name` references — sigil and name decorated separately.
     NAME_REF.lastIndex = 0;
     for (let m; (m = NAME_REF.exec(text)); ) {
@@ -174,28 +216,39 @@ const dialectDecorations = ViewPlugin.fromClass(
 
 /** Theme rules for the decoration classes. Routed through the
  *  element's `--tonk-code-*` variable contract so consumers can
- *  retheme without touching this file. */
+ *  retheme without touching this file.
+ *
+ *  Each rule also targets descendants (`& *`) because the host
+ *  YAML grammar wraps the same range in its own token spans
+ *  (e.g. a `?var` head-binding sits inside a YAML-key span); the
+ *  inner span's `color` would otherwise win the cascade and the
+ *  decoration's color would be invisible. `font-style` /
+ *  `text-decoration` inherit by default and don't need this. */
 const dialectTheme = EditorView.theme({
-  ".tonk-cm-variable": {
+  ".tonk-cm-variable, .tonk-cm-variable *": {
     color: "var(--tonk-code-variable)",
     fontStyle: "italic",
   },
-  ".tonk-cm-entity": {
+  ".tonk-cm-entity, .tonk-cm-entity *": {
+    color: "var(--tonk-code-entity)",
     textDecoration: "underline",
     textDecorationColor: "var(--tonk-code-entity)",
     textDecorationStyle: "solid",
     textDecorationThickness: "1px",
     textUnderlineOffset: "2px",
   },
-  ".tonk-cm-name-sigil": {
+  ".tonk-cm-name-sigil, .tonk-cm-name-sigil *": {
     color: "var(--tonk-code-name-sigil)",
   },
-  ".tonk-cm-name": {
+  ".tonk-cm-name, .tonk-cm-name *": {
     color: "var(--tonk-code-name)",
   },
-  ".tonk-cm-effect": {
+  ".tonk-cm-effect, .tonk-cm-effect *": {
     color: "var(--tonk-code-effect)",
     fontWeight: "bold",
+  },
+  ".tonk-cm-binding, .tonk-cm-binding *": {
+    color: "var(--tonk-code-binding, var(--tonk-code-name))",
   },
 });
 
