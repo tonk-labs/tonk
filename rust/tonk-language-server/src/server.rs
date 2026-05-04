@@ -69,7 +69,7 @@ impl Server {
     /// Server-pushed notifications generated as a side effect (e.g.
     /// publishDiagnostics fired by `didChange`) are queued in the
     /// outbound buffer; the host pulls them with `take_outbound`.
-    pub fn handle_message(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
+    pub async fn handle_message(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
         let parsed: Incoming = match serde_json::from_slice(raw) {
             Ok(p) => p,
             Err(err) => {
@@ -87,7 +87,7 @@ impl Server {
                 serde_json::to_vec(&response).ok()
             }
             Incoming::Notification(note) => {
-                self.handle_notification(&note.method, note.params);
+                self.handle_notification(&note.method, note.params).await;
                 None
             }
             Incoming::Response { .. } => {
@@ -130,7 +130,7 @@ impl Server {
         }
     }
 
-    fn handle_notification(&mut self, method: &str, params: Value) {
+    async fn handle_notification(&mut self, method: &str, params: Value) {
         match method {
             "initialized" => {
                 // No payload; `initialize` already flipped the flag.
@@ -145,7 +145,7 @@ impl Server {
                     let uri = p.text_document.uri;
                     let text = p.text_document.text;
                     self.documents.insert(uri.clone(), text.clone());
-                    self.publish(uri, &text);
+                    self.publish(uri, &text).await;
                 }
             }
             "textDocument/didChange" => {
@@ -160,7 +160,7 @@ impl Server {
                     };
                     let uri = p.text_document.uri;
                     self.documents.insert(uri.clone(), last.text.clone());
-                    self.publish(uri, &last.text);
+                    self.publish(uri, &last.text).await;
                 }
             }
             "textDocument/didClose" => {
@@ -178,8 +178,32 @@ impl Server {
     /// notification on the outbound channel. Always emits the
     /// notification, even when the diagnostic list is empty — that's
     /// how clients learn an error has been *resolved*.
-    fn publish(&mut self, uri: Uri, text: &str) {
-        let diagnostics = tonk_notation::document_diagnostics(text);
+    ///
+    /// Two passes:
+    ///
+    /// 1. **Parser** — `tonk_notation::document_diagnostics` returns
+    ///    structural diagnostics (unbalanced indentation, missing
+    ///    colon, etc.). The parser is permissive: it produces a
+    ///    `Syntax` tree even when there are recoverable errors.
+    /// 2. **Analyzer** — when the parser returns *no* diagnostics,
+    ///    we run `tonk_schema::interpret::analyze` with a
+    ///    `NoopResolver` to catch structural errors the parser
+    ///    accepts (`AssertionWithoutFields`, `ClaimWithoutFields`,
+    ///    etc.). Errors that need the branch (`UnknownConcept`,
+    ///    `UnknownBookmark`, `ResolverFailed`) are filtered out —
+    ///    they need a real branch resolver and the worker's
+    ///    evaluate route is the source of truth for those.
+    async fn publish(&mut self, uri: Uri, text: &str) {
+        let parsed = tonk_notation::parse(text);
+        let mut diagnostics = parsed.diagnostics.clone();
+        // Only run the analyzer when the parser is happy — its
+        // errors are noise on top of structural parse failures.
+        if diagnostics.is_empty()
+            && let Some(syntax) = &parsed.syntax
+            && !syntax.expressions.is_empty()
+        {
+            diagnostics.extend(analyzer_diagnostics(syntax).await);
+        }
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics,
@@ -192,6 +216,66 @@ impl Server {
         self.outbound
             .push(OutboundNotification::new(PublishDiagnostics::METHOD, value));
     }
+}
+
+/// Walk the syntax tree and return LSP diagnostics for the
+/// structural problems the analyzer would catch *if* it could
+/// run end-to-end without a branch resolver. We don't actually
+/// invoke the analyzer here — it short-circuits on the first
+/// error, so a single `UnknownConcept` (which needs the branch)
+/// would mask later structural errors like
+/// `AssertionWithoutFields` in subsequent expressions.
+///
+/// Mirrors the structural checks in
+/// `tonk_schema::interpret::analyze`. Each check is purely
+/// syntactic — no resolver work required — so a "the branch
+/// will resolve `person`" outcome doesn't change whether
+/// `person!:` (no body) is malformed.
+///
+/// Stays `async` for shape symmetry with the rest of the LSP
+/// pipeline: when this function gains real branch-resolver
+/// calls (the planned multi-pass analyzer) the surrounding
+/// plumbing is already async.
+async fn analyzer_diagnostics(syntax: &tonk_notation::Syntax) -> Vec<lsp_types::Diagnostic> {
+    use lsp_types::{Diagnostic, DiagnosticSeverity};
+    use tonk_notation::{Expression, HeadName};
+
+    let mut out = Vec::new();
+    for expression in &syntax.expressions {
+        let Expression::Assertion(assertion) = expression else {
+            continue;
+        };
+        if !assertion.fields.is_empty() {
+            continue;
+        }
+        // Skip meta heads where empty-body might mean
+        // something else; the worker's analyzer can refine
+        // these messages. For non-meta `head!:`, an empty body
+        // is unambiguously useless.
+        let is_meta = matches!(
+            &assertion.head.name,
+            HeadName::Concept(name) if matches!(name.as_str(), "attribute" | "concept")
+        );
+        if is_meta {
+            continue;
+        }
+        let head_label = match &assertion.head.name {
+            HeadName::Concept(name) => name.clone(),
+            HeadName::Claim(domain) => domain.clone(),
+        };
+        out.push(Diagnostic {
+            range: assertion.head.name_range,
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: Some("tonk-schema".into()),
+            message: format!("assertion `{head_label}!` has no fields — at least one is required"),
+            related_information: None,
+            tags: None,
+            data: None,
+        });
+    }
+    out
 }
 
 /// Capabilities advertised in the `initialize` response. Kept in one
@@ -228,15 +312,16 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    fn run(server: &mut Server, msg: &Value) -> Option<Value> {
+    async fn run(server: &mut Server, msg: &Value) -> Option<Value> {
         let bytes = serde_json::to_vec(msg).unwrap();
         server
             .handle_message(&bytes)
+            .await
             .map(|reply| serde_json::from_slice(&reply).unwrap())
     }
 
     #[dialog_common::test]
-    fn initialize_returns_capabilities() {
+    async fn initialize_returns_capabilities() {
         let mut server = Server::new();
         let req = json!({
             "jsonrpc": "2.0",
@@ -248,13 +333,13 @@ mod tests {
                 "capabilities": {}
             }
         });
-        let reply = run(&mut server, &req).expect("response");
+        let reply = run(&mut server, &req).await.expect("response");
         assert_eq!(reply["id"], json!(1));
         assert!(reply["result"]["capabilities"].is_object());
     }
 
     #[dialog_common::test]
-    fn did_open_clean_yaml_publishes_empty_diagnostics() {
+    async fn did_open_clean_yaml_publishes_empty_diagnostics() {
         let mut server = Server::new();
         let _ = run(
             &mut server,
@@ -264,7 +349,8 @@ mod tests {
                 "method": "initialize",
                 "params": { "capabilities": {} }
             }),
-        );
+        )
+        .await;
         let note = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -277,7 +363,7 @@ mod tests {
                 }
             }
         });
-        run(&mut server, &note);
+        run(&mut server, &note).await;
         let outbound = server.take_outbound();
         assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].method, "textDocument/publishDiagnostics");
@@ -286,7 +372,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn did_open_broken_yaml_publishes_one_diagnostic() {
+    async fn did_open_broken_yaml_publishes_one_diagnostic() {
         let mut server = Server::new();
         let _ = run(
             &mut server,
@@ -296,7 +382,8 @@ mod tests {
                 "method": "initialize",
                 "params": { "capabilities": {} }
             }),
-        );
+        )
+        .await;
         let note = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
@@ -309,7 +396,7 @@ mod tests {
                 }
             }
         });
-        run(&mut server, &note);
+        run(&mut server, &note).await;
         let outbound = server.take_outbound();
         assert_eq!(outbound.len(), 1);
         let diags = outbound[0].params["diagnostics"].as_array().unwrap();

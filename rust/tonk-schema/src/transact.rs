@@ -450,6 +450,8 @@ fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
 /// skipped on assert and skipped on retract — retract treats
 /// only fields with concrete values as targets.
 fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert: bool) {
+    use dialog_query::Cardinality;
+
     let Some(this) = query.terms.get("this") else {
         return;
     };
@@ -466,7 +468,19 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         };
         let the: dialog_artifacts::Attribute = attribute.the().clone().into();
         if assert {
-            update.associate(the, this_entity.clone(), value.clone());
+            // Cardinality-one fields use `associate_unique` so a
+            // re-assert of the same attribute on the same entity
+            // *replaces* the prior value rather than accumulating
+            // multiple claims. Cardinality-many fields stay
+            // additive (the whole point is multiple values).
+            match attribute.cardinality() {
+                Cardinality::One => {
+                    update.associate_unique(the, this_entity.clone(), value.clone());
+                }
+                Cardinality::Many => {
+                    update.associate(the, this_entity.clone(), value.clone());
+                }
+            }
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
         }

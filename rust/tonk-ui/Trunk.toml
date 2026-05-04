@@ -6,7 +6,20 @@ offline = true
 port = 8080
 
 [watch]
-watch = ["./", "../tonk-common", "../tonk-worker"]
+# Watch every workspace crate that contributes to the
+# tonk-ui wasm bundle (directly or via the in-SW
+# tonk-worker). Without these, edits to e.g. the LSP
+# server or the schema analyzer wouldn't trigger a
+# rebuild and the dev server would silently serve a stale
+# binary.
+watch = [
+    "./",
+    "../tonk-common",
+    "../tonk-worker",
+    "../tonk-language-server",
+    "../tonk-schema",
+    "../tonk-notation",
+]
 
 # Proxy for /ucan/ is configured via dev:web command.
 # Set UCAN_ENDPOINT env var to override the default.

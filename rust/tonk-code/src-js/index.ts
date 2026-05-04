@@ -42,6 +42,22 @@
 //              `doc` is the live `Text` instance for callers that
 //              want incremental access without re-stringifying.
 //   ready    — fires once when the editor view has been mounted.
+//   run      — CustomEvent<{value, doc}>. Fires when the user
+//              presses Shift+Enter or Mod+Enter (Ctrl/Cmd+Enter)
+//              in the editor. The keystroke is consumed — no
+//              line break is inserted. Lets consumers wire a
+//              "run / evaluate / submit" affordance without
+//              having to reach into CodeMirror's keymap directly.
+//              Named `run` rather than `submit` so it doesn't
+//              collide with the native HTMLForm `submit` event
+//              when the element sits inside a `<form>`.
+//   diagnostics — CustomEvent<{count, errorCount}>. Fires
+//              whenever the diagnostic set changes (e.g. an LSP
+//              `publishDiagnostics` arrives, or local linters
+//              re-run). `count` is the total; `errorCount` is
+//              the subset whose severity is `error`. Lets a
+//              consumer gate run/submit affordances on
+//              "no errors outstanding."
 //
 // Theming runs through `--tonk-code-*` CSS custom properties so
 // the element stays decoupled from any consumer's design system.
@@ -67,6 +83,7 @@ import {
   syntaxHighlighting,
   HighlightStyle,
 } from "@codemirror/language";
+import { forEachDiagnostic } from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
 import type { LSPClient } from "@codemirror/lsp-client";
 import { connectLsp } from "./lsp/client";
@@ -87,6 +104,20 @@ export type ReadyDetail = {
    *  reach in and dispatch transactions directly. Treat this as a
    *  power-user surface — most consumers should stick to attrs. */
   view: EditorView;
+};
+
+/** Detail object dispatched on the `run` event. Shape mirrors
+ *  `ChangeDetail` so consumers can read the buffer without
+ *  reaching back into the element. */
+export type RunDetail = ChangeDetail;
+
+/** Detail object dispatched on the `diagnostics` event. */
+export type DiagnosticsDetail = {
+  /** Total number of diagnostics on the document. */
+  count: number;
+  /** Subset whose severity is `error`. The other diagnostics
+   *  are warnings, info, hints — those should not block submit. */
+  errorCount: number;
 };
 
 const OBSERVED = [
@@ -430,6 +461,67 @@ class TonkCodeElement extends HTMLElement {
    *  writes so consumers don't see their own writes echoed back. */
   #suppressChange = false;
 
+  /** Fire the `run` CustomEvent. Called from the
+   *  Shift+Enter / Mod+Enter keymap. Returns nothing — the
+   *  keymap binding consumes the key regardless of whether
+   *  there's a listener. */
+  #dispatchRun(): void {
+    const view = this.#view;
+    if (!view) return;
+    this.dispatchEvent(
+      new CustomEvent<RunDetail>("run", {
+        detail: {
+          value: view.state.doc.toString(),
+          doc: view.state.doc,
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  /** Last published diagnostic counts. Initialized to a sentinel
+   *  pair that won't match any real count, so the first
+   *  emission goes through unconditionally. */
+  #lastDiagnosticTotal = -1;
+  #lastDiagnosticErrors = -1;
+
+  /** Public getter — total diagnostic count on the current
+   *  document. Surfaces to consumers who'd rather poll than
+   *  subscribe to the `diagnostics` event. */
+  get errorCount(): number {
+    return Math.max(0, this.#lastDiagnosticErrors);
+  }
+
+  /** Recount diagnostics from the current state and dispatch a
+   *  `diagnostics` event if the totals changed. Cheap to call —
+   *  `forEachDiagnostic` walks a small in-memory range tree. */
+  #maybeDispatchDiagnostics(): void {
+    const view = this.#view;
+    if (!view) return;
+    let total = 0;
+    let errors = 0;
+    forEachDiagnostic(view.state, (d) => {
+      total += 1;
+      if (d.severity === "error") errors += 1;
+    });
+    if (
+      total === this.#lastDiagnosticTotal &&
+      errors === this.#lastDiagnosticErrors
+    ) {
+      return;
+    }
+    this.#lastDiagnosticTotal = total;
+    this.#lastDiagnosticErrors = errors;
+    this.dispatchEvent(
+      new CustomEvent<DiagnosticsDetail>("diagnostics", {
+        detail: { count: total, errorCount: errors },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   /** Most-recently-requested language — used to ignore stale
    *  resolves when the attribute changes again before a load
    *  completes. */
@@ -458,9 +550,46 @@ class TonkCodeElement extends HTMLElement {
     const showLineNumbers = this.hasAttribute("line-numbers");
     const showActiveLine = this.hasAttribute("active-line");
 
+    // Submit keymap: Shift+Enter and Mod+Enter both fire the
+    // `run` CustomEvent and consume the key (returning `true`
+    // tells CodeMirror's keymap dispatcher to stop) so the
+    // editor doesn't *also* insert a newline.
+    //
+    // Belt-and-braces `preventDefault` on the `keydown` itself:
+    // when `<tonk-code>` sits inside a `<form>`, some browsers
+    // can still bubble the key event up to the form's implicit
+    // submit handler before CodeMirror's own preventDefault
+    // runs — manifesting as a page-top scroll on Shift+Enter.
+    // Catching keydown at the host's bubble phase (after CM's
+    // capture-phase handler) lets us swallow it before the
+    // form's submit logic kicks in.
+    const submitKeymap = keymap.of([
+      {
+        key: "Shift-Enter",
+        run: () => {
+          this.#dispatchRun();
+          return true;
+        },
+        preventDefault: true,
+        stopPropagation: true,
+      },
+      {
+        key: "Mod-Enter",
+        run: () => {
+          this.#dispatchRun();
+          return true;
+        },
+        preventDefault: true,
+        stopPropagation: true,
+      },
+    ]);
+
     const state = EditorState.create({
       doc: initialDoc,
       extensions: [
+        // Submit keymap first so it wins against `defaultKeymap`'s
+        // Enter binding (which `splitLine`s).
+        submitKeymap,
         ...baseExtensions(),
         this.#language.of([]),
         this.#readOnly.of(EditorState.readOnly.of(isReadOnly)),
@@ -471,18 +600,28 @@ class TonkCodeElement extends HTMLElement {
         this.#activeLine.of(showActiveLine ? activeLineExtensions() : []),
         this.#lsp.of([]),
         EditorView.updateListener.of((update) => {
-          if (!update.docChanged) return;
-          if (this.#suppressChange) return;
-          this.dispatchEvent(
-            new CustomEvent<ChangeDetail>("change", {
-              detail: {
-                value: update.state.doc.toString(),
-                doc: update.state.doc,
-              },
-              bubbles: true,
-              composed: true,
-            })
-          );
+          if (update.docChanged && !this.#suppressChange) {
+            this.dispatchEvent(
+              new CustomEvent<ChangeDetail>("change", {
+                detail: {
+                  value: update.state.doc.toString(),
+                  doc: update.state.doc,
+                },
+                bubbles: true,
+                composed: true,
+              })
+            );
+          }
+          // Re-count diagnostics whenever the lint state plugin
+          // could have changed: doc edits can shift error
+          // ranges, and `setDiagnosticsEffect` (the LSP client
+          // applies it on every `publishDiagnostics`) is a
+          // state-only transaction. `update.transactions` covers
+          // both — only emit when the count actually changed to
+          // keep the event channel quiet during typing.
+          if (update.transactions.length > 0) {
+            this.#maybeDispatchDiagnostics();
+          }
         }),
       ],
     });

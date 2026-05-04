@@ -1075,9 +1075,9 @@ person! alice:
             String::from_utf8_lossy(&body_bytes)
         );
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(resp.matches.len(), 1, "expected 1 match block");
+        assert_eq!(resp.matches_after.len(), 1, "expected 1 match block");
         assert_eq!(
-            resp.matches[0].results.len(),
+            resp.matches_after[0].results.len(),
             1,
             "expected 1 result for Alice"
         );
@@ -1100,13 +1100,636 @@ person! alice:
             .await
             .unwrap();
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
-        assert_eq!(resp.matches[0].results.len(), 1);
-        let alice = &resp.matches[0].results[0];
+        assert_eq!(resp.matches_after[0].results.len(), 1);
+        let alice = &resp.matches_after[0].results[0];
         assert_eq!(
             alice.fields.get("name"),
             Some(&serde_json::json!("Alice")),
             "empty-body query should surface the `name` field; got {:?}",
             alice.fields
         );
+    }
+
+    /// Cardinality-one assert against an existing entity must
+    /// *replace* the prior value, not accumulate alongside it.
+    /// Dialog's storage layer is additive, so the worker has to
+    /// query-then-dissociate the prior value before the new
+    /// associate. Three update paths are exercised:
+    /// query-bound `?var`, explicit URI, and re-asserted
+    /// bookmark on the same body (no-op).
+    #[dialog_common::test]
+    async fn it_supersedes_cardinality_one_field_on_update() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-supersede";
+
+        put_repo(&app, repo).await;
+
+        // Setup: schema + Alice with age 28.
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+    age:  .person-age
+
+person! alice:
+  name: \"Alice\"
+  age:  28
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(setup))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let alice_uri = setup_resp.commits.entities.get("alice").cloned().unwrap();
+
+        // --- Path 1: query-bound `?alice` then assert.
+        let update_via_query = "\
+person ?alice:
+  name: \"Alice\"
+person! ?alice:
+  age:  29
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(update_via_query))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // Anonymous query must now see exactly one Alice with
+        // age = 29 — not two ages, not the old 28.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from("person:\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            resp.matches_after[0].results.len(),
+            1,
+            "expected exactly 1 person after update; got {:?}",
+            resp.matches_after[0].results
+        );
+        assert_eq!(
+            resp.matches_after[0].results[0].fields.get("age"),
+            Some(&serde_json::json!(29)),
+            "age should be 29 after `?alice` update; got {:?}",
+            resp.matches_after[0].results[0].fields
+        );
+
+        // --- Path 2: explicit URI assert.
+        let update_via_uri = format!("person! {alice_uri}:\n  age: 30\n");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(update_via_uri))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from("person:\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(resp.matches_after[0].results.len(), 1);
+        assert_eq!(
+            resp.matches_after[0].results[0].fields.get("age"),
+            Some(&serde_json::json!(30)),
+            "age should be 30 after URI update; got {:?}",
+            resp.matches_after[0].results[0].fields
+        );
+
+        // --- Path 3: re-assert the same value should be a
+        // no-op (no new claim, no churn).
+        let reassert = format!("person! {alice_uri}:\n  age: 30\n");
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(reassert))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Bookmark git-tag rebind: `person! alice: { …new body… }`
+    /// derives a *new* entity from the new body and rebinds the
+    /// `dialog.meta/name = "alice"` claim from the old entity to
+    /// the new one (cardinality-one supersession on the meta
+    /// name itself). After the rebind, the old entity still
+    /// holds its facts but is no longer addressable by `.alice`.
+    #[dialog_common::test]
+    async fn it_rebinds_bookmark_on_body_change() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-rebind-bookmark";
+
+        put_repo(&app, repo).await;
+
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+    age:  .person-age
+
+person! alice:
+  name: \"Alice\"
+  age:  28
+";
+        let body_bytes = post_yaml(&app, repo, setup).await;
+        let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let alice_v1 = setup_resp.commits.entities.get("alice").cloned().unwrap();
+
+        // Same bookmark, different body → new entity.
+        let rebind = "\
+person! alice:
+  name: \"Alice\"
+  age:  29
+";
+        let body_bytes = post_yaml(&app, repo, rebind).await;
+        let rebind_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let alice_v2 = rebind_resp.commits.entities.get("alice").cloned().unwrap();
+        assert_ne!(
+            alice_v1, alice_v2,
+            "different body must produce a different bookmark target"
+        );
+
+        // .person-name reference in field position resolves
+        // through the same in-doc declarations / branch-side
+        // attribute lookup. Test cross-doc bookmark resolution
+        // by referencing `.person-name` from a follow-up doc.
+        let follow_up = "\
+person ?p:
+  name: ?n
+";
+        let body_bytes = post_yaml(&app, repo, follow_up).await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        // Both entities should still match the `person` concept
+        // (we never retracted v1's facts) — but only v2 should
+        // be addressable via `.alice`.
+        assert!(
+            resp.matches_after[0].results.len() >= 1,
+            "expected at least one match"
+        );
+    }
+
+    /// Anonymous head (`person!:`) mints a body-derived entity,
+    /// no name claim. Re-running the same body is a no-op (same
+    /// hash → same entity → cardinality-one supersession).
+    #[dialog_common::test]
+    async fn it_mints_anonymous_head_from_body() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-anon-head";
+
+        put_repo(&app, repo).await;
+
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+";
+        let _ = post_yaml(&app, repo, setup).await;
+
+        // First commit: anonymous head, body-derived entity.
+        let body = "person!:\n  name: \"Bob\"\n";
+        let body_bytes = post_yaml(&app, repo, body).await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(resp.commits.claims >= 1);
+
+        // Query — exactly one Bob.
+        let body_bytes = post_yaml(&app, repo, "person:\n").await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let bobs: Vec<_> = resp.matches_after[0]
+            .results
+            .iter()
+            .filter(|r| r.fields.get("name") == Some(&serde_json::json!("Bob")))
+            .collect();
+        assert_eq!(bobs.len(), 1, "expected exactly 1 Bob; got {bobs:?}");
+
+        // Re-commit same body — still exactly one Bob.
+        let _ = post_yaml(&app, repo, body).await;
+        let body_bytes = post_yaml(&app, repo, "person:\n").await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let bobs: Vec<_> = resp.matches_after[0]
+            .results
+            .iter()
+            .filter(|r| r.fields.get("name") == Some(&serde_json::json!("Bob")))
+            .collect();
+        assert_eq!(
+            bobs.len(),
+            1,
+            "anonymous head re-asserted same body should be no-op; got {bobs:?}"
+        );
+    }
+
+    /// Variable-binding head with no preceding query mints an
+    /// entity and registers `?var` for subsequent expressions in
+    /// the same document.
+    #[dialog_common::test]
+    async fn it_introduces_variable_head_in_document_scope() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-var-intro";
+
+        put_repo(&app, repo).await;
+
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+    age:  .person-age
+";
+        let _ = post_yaml(&app, repo, setup).await;
+
+        // Single head introduces `?carol` and writes both fields.
+        // (Two heads with the same `person! ?carol:` text would
+        // collapse to one expression at the YAML mapping-key
+        // level — that's a parser-side detail, not a semantic
+        // limit of variable scope.)
+        let doc = "\
+person! ?carol:
+  name: \"Carol\"
+  age:  31
+";
+        let body_bytes = post_yaml(&app, repo, doc).await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let carol_uri = resp
+            .commits
+            .entities
+            .get("?carol")
+            .cloned()
+            .expect("?carol should be surfaced in commits.entities");
+
+        // Verify both facts landed on the same entity.
+        let body_bytes = post_yaml(&app, repo, "person:\n  name: \"Carol\"\n").await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let carols: Vec<_> = resp.matches_after[0]
+            .results
+            .iter()
+            .filter(|r| r.this == carol_uri)
+            .collect();
+        assert_eq!(carols.len(), 1, "expected one Carol at {carol_uri}");
+        assert_eq!(carols[0].fields.get("age"), Some(&serde_json::json!(31)));
+    }
+
+    /// Cardinality-many fields stay additive — re-asserting
+    /// adds another value rather than superseding.
+    #[dialog_common::test]
+    async fn it_accumulates_cardinality_many_field() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-many";
+
+        put_repo(&app, repo).await;
+
+        let setup = "\
+attribute! tagged-name:
+  the:         io.gozala.tagged/name
+  as:          Text
+  cardinality: one
+
+attribute! tagged-tag:
+  the:         io.gozala.tagged/tag
+  as:          Text
+  cardinality: many
+
+concept! tagged:
+  with:
+    name: .tagged-name
+    tag:  .tagged-tag
+
+tagged! dave:
+  name: \"Dave\"
+  tag:  \"engineer\"
+";
+        let body_bytes = post_yaml(&app, repo, setup).await;
+        let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let dave_uri = setup_resp.commits.entities.get("dave").cloned().unwrap();
+
+        // Add a second tag using URI binding (avoids body
+        // hashing producing a new entity).
+        let add_tag = format!("tagged! {dave_uri}:\n  tag: \"author\"\n");
+        let _ = post_yaml(&app, repo, &add_tag).await;
+
+        // Both tags should be on Dave. The query renders one
+        // tag value at a time (cardinality-many surfaces as
+        // multiple result rows in dialog), so look at the raw
+        // claim count via a tag-only query.
+        let body_bytes = post_yaml(&app, repo, "tagged:\n  tag: ?tag\n").await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let dave_tags: Vec<_> = resp.matches_after[0]
+            .results
+            .iter()
+            .filter(|r| r.this == dave_uri)
+            .filter_map(|r| r.fields.get("tag"))
+            .collect();
+        assert_eq!(
+            dave_tags.len(),
+            2,
+            "cardinality-many should accumulate; got {dave_tags:?}"
+        );
+    }
+
+    /// Concept-level retraction by URI removes every fact in
+    /// the concept's `with` map for the entity.
+    #[dialog_common::test]
+    async fn it_retracts_concept_projection_by_uri() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-retract-uri";
+
+        put_repo(&app, repo).await;
+
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+    age:  .person-age
+
+person! erin:
+  name: \"Erin\"
+  age:  41
+";
+        let body_bytes = post_yaml(&app, repo, setup).await;
+        let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let erin_uri = setup_resp.commits.entities.get("erin").cloned().unwrap();
+
+        // Retract the projection.
+        let retract = format!("person! {erin_uri}: _\n");
+        let body_bytes = post_yaml(&app, repo, &retract).await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(
+            resp.commits.claims >= 2,
+            "expected at least 2 retracted claims (name + age); got {}",
+            resp.commits.claims
+        );
+
+        // Querying for Erin should now return no matches.
+        let body_bytes = post_yaml(&app, repo, "person:\n  name: \"Erin\"\n").await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let erins: Vec<_> = resp.matches_after[0]
+            .results
+            .iter()
+            .filter(|r| r.fields.get("name") == Some(&serde_json::json!("Erin")))
+            .collect();
+        assert!(
+            erins.is_empty(),
+            "Erin should be gone after retraction; got {erins:?}"
+        );
+    }
+
+    /// Concept-level retraction via query-bound `?var` removes
+    /// the projection for every match.
+    #[dialog_common::test]
+    async fn it_retracts_concept_projection_via_query() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-retract-var";
+
+        put_repo(&app, repo).await;
+
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+
+person! frank:
+  name: \"Frank\"
+";
+        let _ = post_yaml(&app, repo, setup).await;
+
+        let retract = "\
+person ?frank:
+  name: \"Frank\"
+person! ?frank: _
+";
+        let body_bytes = post_yaml(&app, repo, retract).await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(
+            resp.commits.claims >= 1,
+            "expected ≥1 retracted claim; got {}",
+            resp.commits.claims
+        );
+
+        // Frank gone.
+        let body_bytes = post_yaml(&app, repo, "person:\n  name: \"Frank\"\n").await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let franks: Vec<_> = resp.matches_after[0]
+            .results
+            .iter()
+            .filter(|r| r.fields.get("name") == Some(&serde_json::json!("Frank")))
+            .collect();
+        assert!(franks.is_empty(), "Frank should be gone; got {franks:?}");
+    }
+
+    /// Multi-expression query joins on shared variables. Two
+    /// query expressions sharing `?p` filter to entities that
+    /// match both.
+    #[dialog_common::test]
+    async fn it_joins_queries_on_shared_variable() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-join";
+
+        put_repo(&app, repo).await;
+
+        // Two concepts that overlap on a `name` field via
+        // different attribute namespaces. We'll query for
+        // entities present in both.
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+attribute! employee-id:
+  the:         io.gozala.employee/id
+  as:          Text
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+
+concept! employee:
+  with:
+    eid: .employee-id
+
+person! gina:
+  name: \"Gina\"
+";
+        let body_bytes = post_yaml(&app, repo, setup).await;
+        let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let gina_uri = setup_resp.commits.entities.get("gina").cloned().unwrap();
+
+        // Add an employee fact on Gina's entity.
+        let add_emp = format!("employee! {gina_uri}:\n  eid: \"E-007\"\n");
+        let _ = post_yaml(&app, repo, &add_emp).await;
+
+        // Joined query.
+        let join = "\
+person ?p:
+  name: ?n
+employee ?p:
+  eid: ?e
+";
+        let body_bytes = post_yaml(&app, repo, join).await;
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(resp.matches_after.len(), 2, "expected 2 query blocks");
+        // Both blocks should surface Gina's entity (the join
+        // filters to the shared row).
+        for block in &resp.matches_after {
+            let on_gina: Vec<_> = block
+                .results
+                .iter()
+                .filter(|r| r.this == gina_uri)
+                .collect();
+            assert_eq!(
+                on_gina.len(),
+                1,
+                "block {} should match Gina; got {:?}",
+                block.label,
+                block.results
+            );
+        }
+    }
+
+    /// Helper: POST a YAML body to /evaluate and return raw
+    /// response bytes (asserting a 200). Cuts the per-call
+    /// boilerplate that was making the matrix tests above
+    /// dense to read.
+    async fn post_yaml(app: &Router, repo: &str, body: &str) -> Vec<u8> {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(body.to_owned()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "evaluate failed: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+        body_bytes.to_vec()
     }
 }

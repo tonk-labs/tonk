@@ -823,3 +823,92 @@ tonk-code {
 tonk-code:focus-within {
     border-color: transparent;
 }
+
+/* Editor + floating play button. The button sits half-overlapping
+   the editor's bottom edge (Observable-style) so it reads as
+   attached to the editor without taking up its own row. The
+   `is-visible` class is toggled by Leptos when the buffer parses
+   cleanly; we animate opacity so the button doesn't pop in/out
+   abruptly while the user types. */
+.evaluate-editor {
+    position: relative;
+    /* Reserve space so the floating button doesn't overlap
+       whatever follows (the result callout). */
+    margin-block-end: var(--wa-space-l);
+}
+.evaluate-editor tonk-code {
+    display: block;
+    width: 100%;
+}
+.evaluate-play {
+    position: absolute;
+    /* Half-overlap the editor's bottom edge. */
+    bottom: calc(-1 * var(--wa-space-m));
+    /* Keep the button on the right; mirrors Observable's
+       `Run`/`Stop` placement. */
+    right: var(--wa-space-s);
+    z-index: 1;
+    /* Hidden by default; the `is-visible` class fades it in
+       when the buffer has at least one parseable expression. */
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms ease-out;
+}
+.evaluate-play.is-visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* The evaluate-result comparison panel.
+   `.branch-row` re-defines `--wa-color-surface-default` /
+   `--wa-color-surface-raised` as transparent so the row blends
+   into the page; that cascade reaches the `<wa-comparison>`
+   inside, leaving its panels and handle invisible. Restore
+   solid surfaces here. */
+.evaluate-comparison {
+    /* Reset the surface vars to the page-level defaults so the
+       comparison's slot panels render with a real fill. */
+    --wa-color-surface-default: var(--wa-color-neutral-fill-quiet);
+    --wa-color-surface-raised: var(--wa-color-neutral-fill-normal);
+
+    display: block;
+    /* Comparison panels are absolute inside the slider; without
+       a height on the host the whole thing collapses to 0. */
+    min-height: 18rem;
+    background: var(--wa-color-surface-default);
+    border: 1px solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-s);
+}
+.evaluate-comparison::part(handle) {
+    /* Force a visible handle — without an explicit fill the
+       SVG inside renders against whatever happens to be behind
+       it, which is often the same color as the comparison panel. */
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+}
+.evaluate-comparison::part(divider) {
+    background: var(--wa-color-text-normal);
+}
+.evaluate-side {
+    /* Each slot fills its slider half. Padding gives the
+       contents breathing room from the divider. */
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: var(--wa-space-s);
+    background: var(--wa-color-surface-default);
+    color: var(--wa-color-text-normal);
+    overflow: auto;
+}
+.evaluate-side-before {
+    /* Dim the pre-commit side so the user can tell at a glance
+       which is "old". Slightly desaturated + lower opacity
+       reads as "previous" without making the text hard to
+       read. */
+    color: var(--wa-color-text-quiet);
+    background: var(--wa-color-surface-lowered, var(--wa-color-neutral-fill-quiet));
+}
+.evaluate-revision {
+    /* Sits above the match list as a one-line tag. */
+    margin-block-end: var(--wa-space-2xs);
+}

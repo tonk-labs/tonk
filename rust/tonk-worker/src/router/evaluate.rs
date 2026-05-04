@@ -54,7 +54,8 @@ pub struct EvaluatePath {
 /// Carries the branch revision before and after the commit
 /// (one before/after pair — every match's mutations land in the
 /// same dialog transaction), the per-source-expression query
-/// matches, and a commit summary.
+/// matches in both pre- and post-commit shape, and a commit
+/// summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluateResponse {
     /// Revision of the branch before the commit, if any. `None`
@@ -63,9 +64,13 @@ pub struct EvaluateResponse {
     /// Revision of the branch after the commit. Same as
     /// `revision_before` when the document carried no mutations.
     pub revision_after: Option<Revision>,
-    /// One block per source query expression, in document order.
-    /// Empty for pure-mutation documents.
-    pub matches: Vec<QueryMatchBlock>,
+    /// Per-source-expression query matches as they looked
+    /// *before* the commit. Same shape as `matches_after`. For
+    /// pure-query documents this equals `matches_after`.
+    pub matches_before: Vec<QueryMatchBlock>,
+    /// Per-source-expression query matches as they look *after*
+    /// the commit — what the user just produced.
+    pub matches_after: Vec<QueryMatchBlock>,
     /// Commit summary — number of EAV claims written/retracted
     /// and the entities the commit touched.
     pub commits: CommitSummary,
@@ -183,17 +188,17 @@ async fn run(
         base.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
     }
 
-    // ---- Run the unified query ----
-    let matches: Vec<Parameters> = match &analysis.query {
+    // ---- Run the unified query against pre-commit state ----
+    // The pre-commit matches drive mutation planning: each
+    // `Statement` fires once per match frame, with `?var`
+    // bindings substituted from the frame.
+    let pre_matches: Vec<Parameters> = match &analysis.query {
         Some(q) => {
             let unified = ConceptQuery::from(q);
             collect_matches(unified, branch, operator).await?
         }
         None => vec![Parameters::new()],
     };
-
-    // ---- Render per-source-expression match blocks ----
-    let match_blocks = render_match_blocks(analysis, syntax, &matches);
 
     // ---- Plan + commit each mutation per match frame ----
     let mut commits = CommitSummary::default();
@@ -213,7 +218,7 @@ async fn run(
         // tx.retract'd in one shot below so we don't interleave
         // queries with transaction building.
         let mut retract_claims: Vec<RawClaim> = Vec::new();
-        for match_frame in &matches {
+        for match_frame in &pre_matches {
             let mut frame = base.clone();
             for (k, v) in match_frame.iter() {
                 frame.insert(k.clone(), v.clone());
@@ -226,7 +231,18 @@ async fn run(
                     .map_err(|e| TonkWorkerError::Internal(format!("plan failed: {e}")))?;
                 match statement {
                     Statement::Assert(_) => {
+                        // Cardinality-one fields need prior
+                        // values dissociated so the new value
+                        // replaces rather than accumulates with
+                        // them. Dialog's storage layer is
+                        // additive — `associate_unique` only
+                        // de-dupes within the current batch, not
+                        // against committed state. So query the
+                        // branch first.
+                        let supersedes =
+                            resolve_supersession_targets(&plan, branch, operator).await?;
                         claim_count += count_emitted_claims(&plan);
+                        retract_claims.extend(supersedes);
                         tx = tx.assert(plan);
                     }
                     Statement::Retract(_) => {
@@ -250,10 +266,32 @@ async fn run(
         commits.claims = claim_count;
     }
 
+    // Render the pre-commit matches now (before we run the
+    // post-commit query) so the response carries both shapes
+    // and the editor can show a before/after comparison.
+    let matches_before = render_match_blocks(analysis, syntax, &pre_matches);
+
+    // ---- Re-run the query against post-commit state ----
+    // For pure-query documents the post-state equals the
+    // pre-state, so reuse `pre_matches` to skip the round-trip.
+    let post_matches: Vec<Parameters> = if analysis.mutate.statements.is_empty() {
+        pre_matches
+    } else {
+        match &analysis.query {
+            Some(q) => {
+                let unified = ConceptQuery::from(q);
+                collect_matches(unified, branch, operator).await?
+            }
+            None => pre_matches,
+        }
+    };
+    let matches_after = render_match_blocks(analysis, syntax, &post_matches);
+
     Ok(EvaluateResponse {
         revision_before: None,
         revision_after: None,
-        matches: match_blocks,
+        matches_before,
+        matches_after,
         commits,
     })
 }
@@ -274,6 +312,82 @@ impl dialog_artifacts::Statement for RawClaim {
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
         update.dissociate(self.the, self.of, self.is);
     }
+}
+
+/// For an *assert* plan: find prior values of every
+/// cardinality-one field on the plan's `this` entity and emit
+/// them as `RawClaim`s ready for `tx.retract`. Dialog's storage
+/// is additive — without this, re-asserting `age = 30` on Alice
+/// leaves `age = 28` and `age = 30` both present, and the
+/// engine returns whichever it finds first.
+///
+/// Cardinality-many fields are skipped (the whole point is
+/// multiple values per entity).
+async fn resolve_supersession_targets(
+    plan: &ApplicationPlan,
+    branch: &Branch,
+    operator: &DefaultOperator,
+) -> Result<Vec<RawClaim>, TonkWorkerError> {
+    use dialog_query::Cardinality;
+
+    let Some(this_term) = plan.statement.terms.get("this") else {
+        return Ok(Vec::new());
+    };
+    let this_entity = match this_term {
+        Term::Constant(Value::Entity(e)) => e.clone(),
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut out = Vec::new();
+    for (field_name, attribute) in plan.statement.predicate.with().iter() {
+        if attribute.cardinality() != Cardinality::One {
+            continue;
+        }
+        // Only supersede when the new assert *would* write a
+        // concrete value — leaving a blank is an "unset" /
+        // "skip" signal, not "retract whatever's there".
+        let new_value = match plan.statement.terms.get(field_name) {
+            Some(Term::Constant(value)) => value.clone(),
+            _ => continue,
+        };
+
+        let the_term: dialog_query::attribute::The = attribute.the().clone();
+        let query = dialog_query::AttributeQuery::new(
+            Term::from(the_term),
+            Term::from(this_entity.clone()),
+            Term::<dialog_query::Any>::var("v"),
+            Term::<dialog_query::attribute::Cause>::blank(),
+            None,
+        );
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(query)
+            .perform(operator)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!(
+                    "supersession query failed for ({:?}, {of}): {e:?}",
+                    attribute.the(),
+                    of = this_entity
+                ))
+            })?;
+        for claim in claims {
+            // Skip retracting the value we're about to write —
+            // re-asserting the same value is a no-op, and
+            // emitting a retract+assert pair for the same
+            // (the, of, is) would be churn.
+            if claim.is == new_value {
+                continue;
+            }
+            out.push(RawClaim {
+                the: claim.the.into(),
+                of: this_entity.clone(),
+                is: claim.is,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Resolve a retraction `ApplicationPlan` to concrete

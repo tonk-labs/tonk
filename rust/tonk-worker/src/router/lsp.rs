@@ -106,7 +106,7 @@ impl LspHub {
     /// (for notifications and unparseable messages).
     async fn dispatch(&self, raw: &[u8]) -> Option<Vec<u8>> {
         let mut server = self.server.lock().await;
-        let reply = server.handle_message(raw);
+        let reply = server.handle_message(raw).await;
         let outbound = self.outbound.lock().await;
         for note in server.take_outbound() {
             let bytes = match serde_json::to_vec(&note) {

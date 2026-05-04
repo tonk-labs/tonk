@@ -6,8 +6,7 @@ use leptos_router::{
     params::Params,
 };
 use tonk_worker::{
-    BranchConfiguration, ClaimResponse, EvaluateResponse, RemoteConfiguration, RepositoryInfo,
-    Revision,
+    BranchConfiguration, EvaluateResponse, RemoteConfiguration, RepositoryInfo, Revision,
 };
 use wasm_bindgen::JsCast;
 
@@ -374,69 +373,66 @@ pub(super) fn BranchRow(
         }
     };
 
-    // Per-branch claim-query state. Two inputs (`the` =
-    // attribute, `of` = entity); a `LocalResource` fires when
-    // either is non-empty after a submit.
-    let the_input = RwSignal::new(String::new());
-    let of_input = RwSignal::new(String::new());
-    let submitted = RwSignal::new(None::<(Option<String>, Option<String>)>);
-
-    let claims = {
-        let branch_name = branch_name.clone();
-        LocalResource::new(move || {
-            let repo = space_name.get();
-            let query = submitted.get();
-            let branch = branch_name.clone();
-            async move {
-                match (repo, query) {
-                    (Some(repo), Some((the, of))) => {
-                        api::select_claims(&repo, &branch, the.as_deref(), of.as_deref())
-                            .await
-                            .map(|r| Some(r.claims))
-                            .map_err(|e| format!("{e}"))
-                    }
-                    _ => Ok(None),
-                }
-            }
-        })
-    };
-
-    let submit_query = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-        let the = the_input.get_untracked().trim().to_string();
-        let of = of_input.get_untracked().trim().to_string();
-        if the.is_empty() && of.is_empty() {
-            return;
-        }
-        submitted.set(Some((
-            (!the.is_empty()).then_some(the),
-            (!of.is_empty()).then_some(of),
-        )));
-    };
-
-    let on_the_input = move |ev: leptos::ev::Event| {
-        the_input.set(read_wa_input_value(&ev));
-    };
-    let on_of_input = move |ev: leptos::ev::Event| {
-        of_input.set(read_wa_input_value(&ev));
-    };
-
     // Per-branch transaction state. The buffer lives in the
     // editor's DOM property — we only mirror it on `change` so
     // we can submit it without reaching into the element on every
     // keystroke. `transact_state` drives the status surface below
     // the editor.
+    //
+    // `last_response` is sticky across submits — it only updates
+    // on a successful `DoneEvaluate`. The result panel reads from
+    // it and stays mounted with the *previous* response while a
+    // new request is in flight, so the form doesn't shrink/grow
+    // mid-request and the page doesn't reflow.
     let transact_buffer = RwSignal::new(String::new());
     let transact_state = RwSignal::new(TransactState::Idle);
+    let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
 
     let on_transact_change = move |ev: leptos::ev::Event| {
         transact_buffer.set(read_tonk_code_value(&ev));
     };
 
-    let submit_transact = {
-        let branch_name = branch_name.clone();
-        move |ev: leptos::ev::SubmitEvent| {
-            ev.prevent_default();
+    // Number of *error*-severity diagnostics the editor's
+    // LSP/lint plugins currently show. The `<tonk-code>`
+    // element fires a `diagnostics` event whenever the count
+    // changes; we mirror it into a signal so the play button
+    // can hide while errors are outstanding.
+    let editor_error_count = RwSignal::new(0_u32);
+    let on_diagnostics = move |ev: web_sys::CustomEvent| {
+        let count =
+            js_sys::Reflect::get(&ev.detail(), &wasm_bindgen::JsValue::from_str("errorCount"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(|n| n as u32)
+                .unwrap_or(0);
+        editor_error_count.set(count);
+    };
+
+    // The play button is shown when:
+    //  - the buffer is non-empty,
+    //  - the parser accepts it, *and*
+    //  - the LSP isn't showing any error-severity diagnostics.
+    // Structural errors (`AssertionWithoutFields` etc.) come
+    // back as LSP diagnostics; we use that count as the source
+    // of truth for "this won't run."
+    let is_runnable = Signal::derive(move || {
+        let body = transact_buffer.get();
+        if body.trim().is_empty() {
+            return false;
+        }
+        if editor_error_count.get() > 0 {
+            return false;
+        }
+        matches!(classify_for_dispatch(&body), DocDispatch::Submit)
+    });
+
+    // The actual evaluate call, fired from both the floating
+    // play button and Shift+Enter on the editor. Defined as a
+    // helper that takes the captured branch name and fires;
+    // each adapter clones the name before delegating.
+    let evaluate_now = {
+        let branch_template = branch_name.clone();
+        move |branch_name: String| {
             let body = transact_buffer.get_untracked();
             if body.trim().is_empty() {
                 return;
@@ -449,16 +445,8 @@ pub(super) fn BranchRow(
                 return;
             }
             transact_state.set(TransactState::Running);
-            let branch = branch_name.clone();
+            let _ = &branch_template; // silence unused-capture warning
             spawn_local(async move {
-                // Pre-classify locally so we hit the right
-                // endpoint. Asserted-notation distinguishes
-                // queries (`head:`) from assertions (`head!:`)
-                // by the trailing `!`; the parser surfaces this
-                // through `Expression::{Query,Assertion,Retraction}`.
-                // We only need the first expression to decide —
-                // documents with mixed kinds aren't supported in
-                // v1, the worker analyzer will reject them.
                 match classify_for_dispatch(&body) {
                     DocDispatch::ParseError(messages) => {
                         transact_state.set(TransactState::Failed(messages));
@@ -470,15 +458,47 @@ pub(super) fn BranchRow(
                     }
                     DocDispatch::Submit => {}
                 }
-                match api::evaluate(&repo, &branch, body, "application/yaml").await {
+                match api::evaluate(&repo, &branch_name, body, "application/yaml").await {
                     Ok(response) => {
-                        transact_state.set(TransactState::DoneEvaluate(Box::new(response)));
+                        last_response.set(Some(Box::new(response)));
+                        transact_state.set(TransactState::Idle);
                     }
                     Err(err) => {
                         transact_state.set(TransactState::Failed(format!("{err}")));
                     }
                 }
             });
+        }
+    };
+
+    let on_play_click = {
+        let branch_name = branch_name.clone();
+        let evaluate_now = evaluate_now.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            // Belt-and-braces: prevent any default action and
+            // stop the click from bubbling out of the editor's
+            // form. `<wa-button>` defaults to `type="button"`
+            // (opposite of native), but we pin both sides so a
+            // future change to the button's defaults can't
+            // sneak a form submit back in (which scrolls the
+            // page to the top via the browser's GET-current-url
+            // default).
+            ev.prevent_default();
+            ev.stop_propagation();
+            evaluate_now(branch_name.clone())
+        }
+    };
+    // `<tonk-code>` fires a `run` CustomEvent on
+    // Shift+Enter / Mod+Enter (consuming the key in the
+    // editor's keymap so no line break is inserted). We
+    // listen for it and forward to the same evaluate path as
+    // the play button. The event name is `run` rather than
+    // `submit` to avoid colliding with the form's native
+    // `submit` event.
+    let on_editor_run = {
+        let branch_name = branch_name.clone();
+        move |_ev: web_sys::CustomEvent| {
+            evaluate_now(branch_name.clone());
         }
     };
 
@@ -573,53 +593,62 @@ pub(super) fn BranchRow(
                 // and posts to `/query` or `/transact` accordingly.
                 <form
                     class="branch-yaml-query wa-stack wa-gap-xs"
-                    on:submit=submit_transact
+                    // Form submission on click anywhere in the
+                    // form (e.g., the floating play button) was
+                    // navigating to the page top because the
+                    // browser default is GET on the current URL.
+                    // Swallow it; the play button's own click
+                    // handler runs the evaluator.
+                    on:submit=|ev: leptos::ev::SubmitEvent| ev.prevent_default()
                 >
                     <label class="hint">"Asserted-notation (query or transaction)"</label>
-                    <tonk-code
-                        language="dialog-yaml"
-                        language-server
-                        active-line
-                        placeholder="person ?alice:\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!:\n#   name: \"Alice\""
-                        on:change=on_transact_change
-                    ></tonk-code>
-                    <wa-button
-                        type="submit"
-                        size="small"
-                        variant="neutral"
-                        appearance="filled"
-                        prop:loading=move ||
-                            matches!(transact_state.get(), TransactState::Running)
-                    >"Run"</wa-button>
-                    { move || render_transact_state(transact_state.get()) }
-                </form>
-                <form class="branch-claims" on:submit=submit_query>
-                    <div class="wa-grid wa-gap-s">
-                        <wa-input
-                            name="claim-the"
-                            label="Attribute"
-                            placeholder="namespace/name"
-                            autocomplete="off"
-                            prop:value=move || the_input.get()
-                            on:input=on_the_input
-                        ></wa-input>
-                        <wa-input
-                            name="claim-of"
-                            label="Entity"
-                            placeholder="did:key:… or test:id"
-                            autocomplete="off"
-                            prop:value=move || of_input.get()
-                            on:input=on_of_input
-                        ></wa-input>
+                    <div class="evaluate-editor">
+                        <tonk-code
+                            language="dialog-yaml"
+                            language-server
+                            active-line
+                            placeholder="person ?alice:\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!:\n#   name: \"Alice\""
+                            on:change=on_transact_change
+                            on:run=on_editor_run
+                            on:diagnostics=on_diagnostics
+                        ></tonk-code>
+                        // Floating play button under the
+                        // editor — Observable-style. Visible
+                        // only when the buffer is runnable
+                        // (parses cleanly + non-empty); click
+                        // or Shift+Enter triggers evaluation.
+                        // The `type="button"` prevents the
+                        // browser from treating the click as a
+                        // form-submit (which would scroll the
+                        // page to the top).
+                        // No `prop:disabled` here on purpose:
+                        // disabling a *focused* button forces
+                        // browsers to drop focus to `<body>`,
+                        // which scrolls the page to the top.
+                        // The `loading` state gives visual
+                        // feedback while in flight, and
+                        // `evaluate_now`'s own re-entry guard
+                        // (the `Running` early return) prevents
+                        // double-submit if the user clicks
+                        // again.
+                        <wa-button
+                            class="evaluate-play"
+                            class:is-visible=move || is_runnable.get()
+                            type="button"
+                            variant="neutral"
+                            appearance="filled"
+                            size="small"
+                            pill
+                            title="Run (Shift+Enter)"
+                            prop:loading=move ||
+                                matches!(transact_state.get(), TransactState::Running)
+                            on:click=on_play_click
+                        >
+                            <wa-icon name="play" variant="solid"></wa-icon>
+                        </wa-button>
                     </div>
-                    <wa-button
-                        type="submit"
-                        size="small"
-                        variant="neutral"
-                        appearance="filled"
-                    >"Query"</wa-button>
+                    { move || render_transact_state(transact_state.get(), last_response.get()) }
                 </form>
-                { move || render_claims(claims.get()) }
             </div>
         </wa-details>
     }
@@ -654,24 +683,6 @@ pub(super) fn RemoteCard(
     }
 }
 
-/// Pull a current value out of a `wa-input` event. The custom
-/// element re-fires the platform `input` event whose `target.value`
-/// carries the live text, but `target` is typed as
-/// [`web_sys::EventTarget`] so we have to walk up to
-/// [`web_sys::HtmlElement`] and read the `value` property
-/// reflectively. Mirrors the pattern in [`super::create_space`].
-fn read_wa_input_value(event: &leptos::ev::Event) -> String {
-    event
-        .target()
-        .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
-        .and_then(|el| {
-            js_sys::Reflect::get(&el, &wasm_bindgen::JsValue::from_str("value"))
-                .ok()
-                .and_then(|v| v.as_string())
-        })
-        .unwrap_or_default()
-}
-
 /// State machine for the per-branch transaction editor.
 ///
 /// Mirrors the shape of [`SyncState`]: idle until the user
@@ -684,18 +695,31 @@ fn read_wa_input_value(event: &leptos::ev::Event) -> String {
 /// State of the editor's submit cycle. The worker's `/evaluate`
 /// route handles any mix of queries and mutations — the editor
 /// no longer has to pre-classify the document.
+///
+/// Successful results don't live here; they live in
+/// `last_response` and stay across re-runs so the result panel
+/// keeps rendering during a new in-flight request. This state
+/// only carries the *transient* lifecycle (idle / running /
+/// failed).
 #[derive(Clone, Debug, PartialEq)]
 enum TransactState {
     Idle,
     Running,
-    DoneEvaluate(Box<EvaluateResponse>),
     Failed(String),
 }
 
-/// Pre-flight check: surface parse diagnostics locally so the
-/// editor doesn't round-trip a malformed buffer.
+/// Pre-flight check: parser-only. Catches malformed buffers
+/// before they hit the worker. Structural errors the parser is
+/// permissive about (e.g. `AssertionWithoutFields`) come back
+/// as LSP diagnostics in the editor — the LSP runs the
+/// analyzer with a no-op resolver on every change and surfaces
+/// the errors as squigglies. The worker's analyzer is the final
+/// authority for "this can run" so we don't duplicate that work
+/// here.
 enum DocDispatch {
-    /// Document parses cleanly — submit it.
+    /// Parser accepted the buffer and there's at least one
+    /// expression. The play button shows; on click, the worker
+    /// gets the real say.
     Submit,
     /// Empty / whitespace-only document.
     Empty,
@@ -748,122 +772,119 @@ fn read_tonk_code_value(event: &leptos::ev::Event) -> String {
 /// the loading spinner via `prop:loading`). The `Done…` variants
 /// show kind-specific success callouts; `Failed` shows the
 /// worker's error text in a danger callout.
-fn render_transact_state(state: TransactState) -> impl IntoView {
-    use leptos::either::EitherOf3;
-    match state {
-        TransactState::Idle | TransactState::Running => EitherOf3::A(()),
-        TransactState::Failed(message) => EitherOf3::B(view! {
+/// Render the area below the editor: the failure callout (when
+/// the most recent submit errored) plus the result panel from
+/// the most recent successful response. Both regions are always
+/// mounted; their inner content swaps. Keeping the wrapper divs
+/// in the tree across the Idle → Running → Done cycle prevents
+/// the form from shrinking and re-expanding mid-request, which
+/// otherwise reads as a "flash" as the page reflows.
+fn render_transact_state(
+    state: TransactState,
+    response: Option<Box<EvaluateResponse>>,
+) -> impl IntoView {
+    let failure = match state {
+        TransactState::Failed(message) => Either::Left(view! {
             <wa-callout variant="danger">
                 <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
                 { message }
             </wa-callout>
         }),
-        TransactState::DoneEvaluate(response) => {
+        TransactState::Idle | TransactState::Running => Either::Right(()),
+    };
+    let result = match response {
+        Some(response) => {
             let response = *response;
-            EitherOf3::C(view! {
-                <wa-callout variant="success">
-                    <wa-icon slot="icon" name="circle-check"></wa-icon>
-                    <div class="wa-stack wa-gap-2xs">
-                        <div class="wa-cluster wa-gap-2xs">
-                            <span>{ format!("Committed {} claim(s).", response.commits.claims) }</span>
-                            { revision_pair(
-                                response.revision_before.clone(),
-                                response.revision_after.clone(),
-                            ) }
-                        </div>
-                        {
-                            if response.matches.is_empty() {
-                                Either::Left(())
-                            } else {
-                                Either::Right(view! {
-                                    <ul class="query-results">
-                                        { response.matches.into_iter().map(|block| view! {
-                                            <li>
-                                                <code class="head-label">{ block.label }</code>
-                                                <ul class="query-fields">
-                                                    { block.results.into_iter().map(|result| view! {
-                                                        <li>
-                                                            <code class="entity">{ result.this }</code>
-                                                            <ul>
-                                                                { result.fields.into_iter().map(|(name, value)| view! {
-                                                                    <li>
-                                                                        <code class="field-name">{ name }</code>
-                                                                        ": "
-                                                                        <code class="field-value">{
-                                                                            serde_json::to_string(&value)
-                                                                                .unwrap_or_else(|_| "<?>".to_string())
-                                                                        }</code>
-                                                                    </li>
-                                                                }).collect_view() }
-                                                            </ul>
-                                                        </li>
-                                                    }).collect_view() }
-                                                </ul>
-                                            </li>
-                                        }).collect_view() }
-                                    </ul>
-                                })
-                            }
-                        }
-                        {
-                            if response.commits.entities.is_empty() {
-                                Either::Left(())
-                            } else {
-                                Either::Right(view! {
-                                    <ul class="entities-list">
-                                        { response.commits.entities.into_iter().map(|(label, uri)| view! {
-                                            <li>
-                                                <code class="head-label">{ label }</code>
-                                                " → "
-                                                <code class="entity">{ uri }</code>
-                                            </li>
-                                        }).collect_view() }
-                                    </ul>
-                                })
-                            }
-                        }
-                    </div>
-                </wa-callout>
-            })
+            Either::Left(render_evaluate_matches(
+                response.matches_before,
+                response.matches_after,
+                response.revision_before,
+                response.revision_after,
+            ))
         }
+        None => Either::Right(()),
+    };
+    view! {
+        <div class="evaluate-result">
+            <div class="evaluate-failure">{ failure }</div>
+            <div class="evaluate-content">{ result }</div>
+        </div>
     }
 }
 
-/// Render the claim-query result for a branch's expanded body.
+/// Render the evaluate response's match blocks.
 ///
-/// Pre-submit / unset states render nothing — the form itself
-/// is the affordance, no need to nag the user. Post-submit
-/// branches render an error callout, an empty-state hint, or
-/// the actual list.
-fn render_claims(state: Option<Result<Option<Vec<ClaimResponse>>, String>>) -> impl IntoView {
-    use leptos::either::EitherOf4;
-    match state {
-        None | Some(Ok(None)) => EitherOf4::A(()),
-        Some(Err(e)) => EitherOf4::B(view! {
-            <wa-callout variant="danger">
-                <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
-                { e }
-            </wa-callout>
-        }),
-        Some(Ok(Some(list))) if list.is_empty() => {
-            EitherOf4::C(view! { <p class="hint">"No claims matched."</p> })
-        }
-        Some(Ok(Some(list))) => EitherOf4::D(view! {
-            <ul class="claims-list">
-                { list.into_iter().map(|c| {
-                    let value = serde_json::to_string(&c.is).unwrap_or_default();
-                    view! {
-                        <li>
-                            <code class="the">{ c.the }</code>
-                            " of "
-                            <code class="of">{ c.of }</code>
-                            " is "
-                            <code class="is">{ value }</code>
-                        </li>
-                    }
-                }).collect_view() }
-            </ul>
-        }),
+/// When the commit changed the result set, render a
+/// `<wa-comparison>` slider with the pre-commit state on the
+/// left (dimmed) and the post-commit state on the right, with
+/// each side's branch revision badged in its header. Otherwise
+/// just render the blocks once with the after-revision badge.
+fn render_evaluate_matches(
+    before: Vec<tonk_worker::QueryMatchBlock>,
+    after: Vec<tonk_worker::QueryMatchBlock>,
+    revision_before: Option<Revision>,
+    revision_after: Option<Revision>,
+) -> impl IntoView {
+    use leptos::either::EitherOf3;
+    if after.is_empty() && before.is_empty() {
+        return EitherOf3::A(view! {
+            <div class="evaluate-revision">{ revision_badge(revision_after.or(revision_before)) }</div>
+        });
+    }
+    if before == after {
+        let badge = revision_badge(revision_after.or(revision_before.clone()));
+        return EitherOf3::B(view! {
+            <div class="evaluate-results wa-stack wa-gap-2xs">
+                <div class="evaluate-revision">{ badge }</div>
+                { render_match_block_list(after) }
+            </div>
+        });
+    }
+    EitherOf3::C(view! {
+        <wa-comparison position="50" class="evaluate-comparison">
+            <div slot="before" class="evaluate-side evaluate-side-before wa-stack wa-gap-2xs">
+                <div class="evaluate-revision">{ revision_badge(revision_before) }</div>
+                { render_match_block_list(before) }
+            </div>
+            <div slot="after" class="evaluate-side evaluate-side-after wa-stack wa-gap-2xs">
+                <div class="evaluate-revision">{ revision_badge(revision_after) }</div>
+                { render_match_block_list(after) }
+            </div>
+        </wa-comparison>
+    })
+}
+
+/// Render one stack of `<ul>`s for a list of match blocks.
+/// Shared between the comparison-slider arms and the no-change
+/// fallback.
+fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    view! {
+        <ul class="query-results">
+            { blocks.into_iter().map(|block| view! {
+                <li>
+                    <code class="head-label">{ block.label }</code>
+                    <ul class="query-fields">
+                        { block.results.into_iter().map(|result| view! {
+                            <li>
+                                <code class="entity">{ result.this }</code>
+                                <ul>
+                                    { result.fields.into_iter().map(|(name, value)| view! {
+                                        <li>
+                                            <code class="field-name">{ name }</code>
+                                            ": "
+                                            <code class="field-value">{
+                                                serde_json::to_string(&value)
+                                                    .unwrap_or_else(|_| "<?>".to_string())
+                                            }</code>
+                                        </li>
+                                    }).collect_view() }
+                                </ul>
+                            </li>
+                        }).collect_view() }
+                    </ul>
+                </li>
+            }).collect_view() }
+        </ul>
     }
 }
 
@@ -948,29 +969,6 @@ fn revision_badge(revision: Option<Revision>) -> impl IntoView {
                 "no commits"
             </wa-badge>
         }),
-    }
-}
-
-/// Render a `before → after` pair of revision badges. When the
-/// commit didn't change the tree (no mutations, or no-op
-/// re-assert), collapses to a single badge so the UI doesn't
-/// shout `X → X`.
-fn revision_pair(before: Option<Revision>, after: Option<Revision>) -> impl IntoView {
-    let unchanged = match (&before, &after) {
-        (Some(b), Some(a)) => b.tree == a.tree,
-        (None, None) => true,
-        _ => false,
-    };
-    if unchanged {
-        Either::Left(revision_badge(after.or(before)))
-    } else {
-        Either::Right(view! {
-            <span class="wa-cluster wa-gap-2xs">
-                { revision_badge(before) }
-                <wa-icon name="arrow-right" aria-label="to"></wa-icon>
-                { revision_badge(after) }
-            </span>
-        })
     }
 }
 
