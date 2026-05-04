@@ -86,6 +86,16 @@ pub trait Resolver {
         &self,
         entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError>;
+
+    /// Resolve any entity by its `dialog.meta/name` claim.
+    /// Powers `.bookmark` references that point at concepts or
+    /// concept instances rather than attributes — `view!`
+    /// referencing `.person` should pick up a `concept! person:`
+    /// definition or a `person! foo:` instance with `name: foo`.
+    /// Returns the entity URI; the analyzer doesn't need a
+    /// descriptor here because the bookmark only uses the entity
+    /// as a constant in field-value position.
+    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError>;
 }
 
 /// Opaque error from a [`Resolver`] implementation. The analyzer
@@ -126,6 +136,9 @@ impl Resolver for NoopResolver {
         &self,
         _entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(None)
+    }
+    async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
         Ok(None)
     }
 }
@@ -413,6 +426,18 @@ impl<'a, R: Resolver> Scope<'a, R> {
             return Ok(Some(found));
         }
         self.inner.resolve_concept(name).await
+    }
+
+    /// Resolve a `.bookmark` to *any* in-doc or branch entity
+    /// with that name. Used by [`field_value_to_term`] when the
+    /// bookmark doesn't match an attribute — concepts and
+    /// previously-asserted instances also have
+    /// `dialog.meta/name` claims and should be reachable.
+    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+        if let Some(found) = cell_borrow(&self.in_doc_concepts).get(name).cloned() {
+            return Ok(Some(found.entity));
+        }
+        self.inner.resolve_named_entity(name).await
     }
 
     async fn resolve_attribute(
@@ -1549,9 +1574,20 @@ async fn field_value_to_term<R: Resolver>(
             }
         }
         FieldValue::Reference(Reference::Bookmark(name)) => {
-            // Look up declarations first (the head bound it),
-            // then in-doc attributes (an `attribute!` defined
-            // earlier in this document), then the branch.
+            // Resolution order:
+            //   1. Doc-local declarations (head bookmark from the
+            //      same document — `concept! foo:` or
+            //      `attribute! foo:`).
+            //   2. Doc-local attribute by name (variable-form
+            //      `attribute! ?foo:` records this without a
+            //      declaration).
+            //   3. Any branch entity with `dialog.meta/name = name`
+            //      via [`Resolver::resolve_named_entity`]. Picks
+            //      up concepts, concept instances, and any other
+            //      named entity — `.person` resolves to a
+            //      `concept! person:` written in an earlier session
+            //      just as it would resolve to a `person! …:`
+            //      instance.
             if let Some(entity) = scope.lookup_entity(name) {
                 Term::Constant(Value::Entity(entity))
             } else if let Some(resolved) =
@@ -1564,6 +1600,13 @@ async fn field_value_to_term<R: Resolver>(
                     })?
             {
                 Term::Constant(Value::Entity(resolved.entity))
+            } else if let Some(entity) = scope.resolve_named_entity(name).await.map_err(|e| {
+                AnalyzeError::ResolverFailed {
+                    context: format!("bookmark .{name}"),
+                    reason: e.message,
+                }
+            })? {
+                Term::Constant(Value::Entity(entity))
             } else {
                 return Err(AnalyzeError::UnknownBookmark {
                     field: field_name.into(),
@@ -1701,6 +1744,9 @@ mod tests {
         ) -> Result<Option<ResolvedAttribute>, ResolverError> {
             Ok(None)
         }
+        async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
+            Ok(None)
+        }
     }
 
     fn fixed_concept(name: &str, fields: &[(&str, &str)]) -> FixedConcept {
@@ -1825,6 +1871,52 @@ mod tests {
             panic!("expected Assert(Concept) for concept");
         };
         assert!(matches!(binding, HeadBinding::Bookmark(b) if b == "person"));
+    }
+
+    /// `.bookmark` in field-value position resolves through the
+    /// in-doc concept table — referencing `.person` should find a
+    /// `concept! person:` defined earlier in the same document,
+    /// not error as if `person` were an unknown attribute.
+    #[dialog_common::test]
+    async fn bookmark_resolves_in_doc_concept() {
+        let syntax = must_parse(
+            "concept! person:\n\
+             \x20 description: A person\n\
+             \x20 with:\n\
+             \x20   name:\n\
+             \x20     description: Name of the person\n\
+             \x20     the:         xyz.tonk.person/name\n\
+             \x20     as:          Text\n\
+             \x20     cardinality: one\n\
+             concept! view:\n\
+             \x20 description: A view\n\
+             \x20 with:\n\
+             \x20   source:\n\
+             \x20     description: Source concept\n\
+             \x20     the:         dialog.view/source\n\
+             \x20     as:          Entity\n\
+             \x20     cardinality: one\n\
+             view! title:\n\
+             \x20 source: .person\n",
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        // The view's `source` term should be a constant entity
+        // pointing at the `person` concept's entity, not a
+        // variable.
+        let person_entity = analysis
+            .declarations
+            .get("person")
+            .expect("person was declared");
+        let view_assert = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = view_assert else {
+            panic!("expected view assertion");
+        };
+        match query.terms.get("source") {
+            Some(Term::Constant(Value::Entity(e))) => {
+                assert_eq!(e, person_entity, "source should resolve to person's entity");
+            }
+            other => panic!("source should be a constant entity, got {other:?}"),
+        }
     }
 
     /// Attribute definitions without `description` are rejected.

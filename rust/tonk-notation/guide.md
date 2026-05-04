@@ -72,12 +72,14 @@ block maps field names to attribute references. References use
 
 ```yaml
 attribute! person-name:
-  the:         io.gozala.person/name
+  description: name of the person
+  the:         xyz.tonk.person/name
   as:          Text
   cardinality: one
 
 attribute! person-age:
-  the:         io.gozala.person/age
+  description: age of the person
+  the:         xyz.tonk.person/age
   as:          UnsignedInteger
   cardinality: one
 
