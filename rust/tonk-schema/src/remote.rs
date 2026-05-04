@@ -59,17 +59,17 @@ enum This<'a> {
 ///
 /// ```no_run
 /// use dialog_varsig::did;
-/// use tonk_schema::{Address, Name, Remote, Replica};
+/// use tonk_schema::{Remote, Replica, domain::remote::Address};
 /// let replica = Replica::new(
 ///     did!("test:profile"),
 ///     did!("test:repo"),
-///     Name("home".into()),
+///     "home",
 /// );
 /// let remote = Remote::new(
 ///     &replica,
 ///     did!("test:repo"),
 ///     Address(vec![]),
-///     Name("origin".into()),
+///     "origin",
 /// );
 /// ```
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

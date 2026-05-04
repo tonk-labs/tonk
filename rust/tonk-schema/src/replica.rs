@@ -51,9 +51,9 @@ use crate::prelude::*;
 ///
 /// ```no_run
 /// use dialog_varsig::Did;
-/// use tonk_schema::{Replica, Name};
+/// use tonk_schema::Replica;
 /// # fn example(profile: Did, subject: Did) -> Replica {
-/// Replica::new(profile, subject, Name("home".into()))
+/// Replica::new(profile, subject, "home")
 /// # }
 /// ```
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

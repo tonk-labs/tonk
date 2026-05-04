@@ -51,12 +51,18 @@ fn build_registry() -> Vec<(&'static str, ResolvedConcept)> {
     ]
 }
 
-/// Built-in `attribute` view. Mirrors what
-/// [`AnonymousAttribute`][crate::meta::AnonymousAttribute] would
-/// produce, defined inline rather than reusing the typed concept
-/// because we want the same schema the meta-head plan emits at
-/// write time (id/type/cardinality/description/name) and that
-/// schema is built from JSON in the analyzer.
+/// Built-in `attribute` view — anonymous attribute shape:
+/// `id`, `type`, `cardinality`, `description`. Every attribute
+/// (bookmark, variable, or inline in `concept!`'s `with:`) carries
+/// these four claims with non-empty defaults, so the descriptor's
+/// match-all-fields semantics surfaces every defined attribute.
+///
+/// `dialog.meta/name` is *not* part of this view: only bookmark-
+/// form attributes carry that claim, and dialog's
+/// [`ConceptDescriptor::maybe`] is parsed but not yet consulted
+/// by the engine — moving `name` to `maybe:` would make every
+/// query miss anonymous attrs. To recover the name when needed,
+/// join with `dialog.meta/name` separately.
 fn attribute_descriptor() -> ResolvedConcept {
     let json = serde_json::json!({
         "with": {
@@ -64,7 +70,6 @@ fn attribute_descriptor() -> ResolvedConcept {
             "type":        { "the": "dialog.attribute/type",        "as": "Text", "cardinality": "one" },
             "cardinality": { "the": "dialog.attribute/cardinality", "as": "Text", "cardinality": "one" },
             "description": { "the": "dialog.meta/description",      "as": "Text", "cardinality": "one" },
-            "name":        { "the": "dialog.meta/name",             "as": "Text", "cardinality": "one" },
         }
     });
     let descriptor: ConceptDescriptor =

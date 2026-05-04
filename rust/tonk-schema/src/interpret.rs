@@ -573,12 +573,27 @@ async fn analyze_impl<R: Resolver>(
                         scope.bind_variable(name, entity.clone())?;
                     }
                     scope.record_concept(bookmark.as_deref().or(variable.as_deref()), concept);
+                    let inline_attributes = plan
+                        .inline_attributes
+                        .into_iter()
+                        .map(|attr| MetaPlan::Attribute {
+                            descriptor: attr.descriptor,
+                            entity: attr.entity,
+                            // Inline attrs are anonymous — no
+                            // `dialog.meta/name` claim. The
+                            // bookmark name was the *concept's*
+                            // local field name, not a global
+                            // label for the attribute.
+                            binding: HeadBinding::Anonymous,
+                        })
+                        .collect();
                     meta_cache.insert(
                         index,
                         MetaPlan::Concept {
                             descriptor: plan.descriptor,
                             entity,
                             binding,
+                            inline_attributes,
                         },
                     );
                     continue;
@@ -624,6 +639,21 @@ async fn analyze_impl<R: Resolver>(
         match expression {
             Expression::Query(_) => {}
             Expression::Assertion(a) => {
+                // Inline attributes defined inside a `concept!`
+                // body are emitted as their own assertions before
+                // the concept itself, so the attribute facts are
+                // present on the branch (queryable via
+                // `attribute:`) by the time anything reads back.
+                if let Some(MetaPlan::Concept {
+                    inline_attributes, ..
+                }) = meta_cache.get(&index)
+                {
+                    for inline in inline_attributes {
+                        let application = meta_application(inline);
+                        collect_unbound_variables(&application, &analysis, &mut requires);
+                        statements.push(Statement::Assert(application));
+                    }
+                }
                 let application =
                     build_assertion_application(index, a, &meta_cache, &scope, &mut analysis)
                         .await?;
@@ -677,6 +707,11 @@ enum MetaPlan {
         descriptor: ConceptDescriptor,
         entity: Entity,
         binding: HeadBinding,
+        /// Attributes defined inline inside this concept's `with`
+        /// map. Phase 3 emits an extra `Statement::Assert` per
+        /// entry so they land as queryable `attribute:` facts
+        /// alongside the concept itself.
+        inline_attributes: Vec<MetaPlan>,
     },
 }
 
@@ -687,8 +722,18 @@ struct AttributeBodyPlan {
 }
 
 fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBodyPlan, AnalyzeError> {
+    parse_attribute_fields(&assertion.fields)
+}
+
+/// Parse an attribute definition's fields into a descriptor.
+///
+/// Used by `attribute! …:` heads (Phase 1, via [`parse_attribute_body`])
+/// and by inline `with: { foo: { the: …, as: …, … } }` definitions
+/// nested inside a `concept!` body. Same shape: `the`, `as`,
+/// `cardinality`, and a *required* `description`.
+fn parse_attribute_fields(fields: &[Field]) -> Result<AttributeBodyPlan, AnalyzeError> {
     let mut shape = serde_json::Map::new();
-    for field in &assertion.fields {
+    for field in fields {
         let value_str = match &field.value {
             FieldValue::Literal(Scalar::String(s)) => s.clone(),
             FieldValue::Literal(other) => scalar_to_string(other)?,
@@ -696,13 +741,13 @@ fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBodyPlan, Anal
             FieldValue::Reference(Reference::Bookmark(_)) => {
                 return Err(AnalyzeError::UnsupportedFieldValue {
                     field: field.name.clone(),
-                    form: "bookmark reference (`attribute!` body must be literals)",
+                    form: "bookmark reference (attribute definitions take literals)",
                 });
             }
             FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
                 return Err(AnalyzeError::UnsupportedFieldValue {
                     field: field.name.clone(),
-                    form: "non-literal (`attribute!` body must be literals)",
+                    form: "non-literal (attribute definitions take literals)",
                 });
             }
         };
@@ -723,6 +768,17 @@ fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBodyPlan, Anal
             reason: "missing required field `the`".into(),
         });
     }
+    let description_present = shape
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|s| !s.is_empty());
+    if !description_present {
+        return Err(AnalyzeError::InvalidAttributeBody {
+            reason: "missing required field `description` (attribute \
+                     definitions must include a non-empty description)"
+                .into(),
+        });
+    }
     let descriptor: AttributeDescriptor = serde_json::from_value(serde_json::Value::Object(shape))
         .map_err(|e| AnalyzeError::InvalidAttributeBody {
             reason: e.to_string(),
@@ -737,10 +793,19 @@ fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBodyPlan, Anal
     Ok(AttributeBodyPlan { descriptor, entity })
 }
 
-/// Parsed `concept!` body — descriptor plus entity URI.
+/// Parsed `concept!` body — descriptor plus entity URI plus any
+/// inline attribute definitions that need to be registered as
+/// their own meta-head plans alongside the concept's own.
 struct ConceptBodyPlan {
     descriptor: ConceptDescriptor,
     entity: Entity,
+    /// Attributes defined inline in the `with:` map (as opposed to
+    /// referenced via `.bookmark` / URI). Each carries the
+    /// descriptor needed to emit `dialog.attribute/{id,type,
+    /// cardinality}` + `dialog.meta/description` claims so the
+    /// attribute is queryable via `attribute:` after the
+    /// `concept!` commits.
+    inline_attributes: Vec<AttributeBodyPlan>,
 }
 
 async fn parse_concept_body<R: Resolver>(
@@ -749,6 +814,7 @@ async fn parse_concept_body<R: Resolver>(
 ) -> Result<ConceptBodyPlan, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
+    let mut inline_attributes: Vec<AttributeBodyPlan> = Vec::new();
     for field in &assertion.fields {
         match field.name.as_str() {
             "description" => {
@@ -765,13 +831,29 @@ async fn parse_concept_body<R: Resolver>(
                 let FieldValue::Nested(inner) = &field.value else {
                     return Err(AnalyzeError::InvalidConceptBody {
                         reason: "`with:` must be a mapping of field name → \
-                                 attribute reference (`.bookmark` or URI)"
+                                 attribute reference (`.bookmark`, `?var`, \
+                                 URI) or inline attribute definition \
+                                 (mapping with `the`/`as`/`cardinality`/\
+                                 `description`)"
                             .into(),
                     });
                 };
                 for sub in inner {
-                    let resolved = resolve_concept_field(&sub.name, &sub.value, scope).await?;
-                    with_fields.push((sub.name.clone(), resolved));
+                    if let FieldValue::Nested(attr_fields) = &sub.value {
+                        // Inline attribute definition. Parse it as
+                        // an attribute body and register it for
+                        // emission as a separate meta-head plan.
+                        let plan = parse_attribute_fields(attr_fields)?;
+                        let resolved = ResolvedAttribute {
+                            entity: plan.entity.clone(),
+                            descriptor: plan.descriptor.clone(),
+                        };
+                        with_fields.push((sub.name.clone(), resolved));
+                        inline_attributes.push(plan);
+                    } else {
+                        let resolved = resolve_concept_field(&sub.name, &sub.value, scope).await?;
+                        with_fields.push((sub.name.clone(), resolved));
+                    }
                 }
             }
             other => {
@@ -807,7 +889,11 @@ async fn parse_concept_body<R: Resolver>(
             reason: e.to_string(),
         })?;
     let entity = descriptor.this();
-    Ok(ConceptBodyPlan { descriptor, entity })
+    Ok(ConceptBodyPlan {
+        descriptor,
+        entity,
+        inline_attributes,
+    })
 }
 
 async fn resolve_concept_field<R: Resolver>(
@@ -1187,6 +1273,7 @@ fn meta_application(meta: &MetaPlan) -> Application {
             descriptor,
             entity,
             binding,
+            inline_attributes: _,
         } => {
             // Built-in `concept` schema: one `with.<field>` per
             // field of the user's concept, plus
@@ -1651,7 +1738,8 @@ mod tests {
             "attribute! person-name:\n\
              \x20 the:         io.gozala.person/name\n\
              \x20 as:          Text\n\
-             \x20 cardinality: one\n",
+             \x20 cardinality: one\n\
+             \x20 description: Person's name\n",
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         assert!(analysis.declarations.contains_key("person-name"));
@@ -1674,11 +1762,14 @@ mod tests {
              \x20 the:         io.gozala.person/name\n\
              \x20 as:          Text\n\
              \x20 cardinality: one\n\
+             \x20 description: Person's name\n\
              attribute! person-age:\n\
              \x20 the:         io.gozala.person/age\n\
              \x20 as:          UnsignedInteger\n\
              \x20 cardinality: one\n\
+             \x20 description: Person's age\n\
              concept! person:\n\
+             \x20 description: Person concept\n\
              \x20 with:\n\
              \x20   name: .person-name\n\
              \x20   age:  .person-age\n",
@@ -1692,6 +1783,67 @@ mod tests {
         assert_eq!(analysis.mutate.statements.len(), 3);
     }
 
+    /// `concept!` `with:` accepts inline attribute definitions
+    /// alongside `.bookmark` references. Each inline definition
+    /// becomes its own `Statement::Assert` so the attribute
+    /// surfaces in `attribute:` queries; the inline attrs are
+    /// anonymous (no `dialog.meta/name` claim, since the field
+    /// key is the concept's local name, not a global label).
+    #[dialog_common::test]
+    async fn inline_attribute_definitions_in_concept_with() {
+        let syntax = must_parse(
+            "concept! person:\n\
+             \x20 description: A person\n\
+             \x20 with:\n\
+             \x20   name:\n\
+             \x20     description: Name of the person\n\
+             \x20     the:         xyz.tonk.person/name\n\
+             \x20     as:          Text\n\
+             \x20     cardinality: one\n\
+             \x20   age:\n\
+             \x20     description: Age of the person\n\
+             \x20     the:         xyz.tonk.person/age\n\
+             \x20     as:          UnsignedInteger\n\
+             \x20     cardinality: one\n",
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        // 3 statements: 2 inline attrs + 1 concept.
+        assert_eq!(analysis.mutate.statements.len(), 3);
+        // First two are anonymous-bound attribute assertions.
+        for i in 0..2 {
+            let Statement::Assert(Application::Concept { binding, .. }) =
+                &analysis.mutate.statements[i]
+            else {
+                panic!("expected Assert(Concept) for inline attr {i}");
+            };
+            assert!(matches!(binding, HeadBinding::Anonymous));
+        }
+        // Third is the concept itself.
+        let Statement::Assert(Application::Concept { binding, .. }) =
+            &analysis.mutate.statements[2]
+        else {
+            panic!("expected Assert(Concept) for concept");
+        };
+        assert!(matches!(binding, HeadBinding::Bookmark(b) if b == "person"));
+    }
+
+    /// Attribute definitions without `description` are rejected.
+    /// Both `attribute! …:` form and inline-in-`concept!` form.
+    #[dialog_common::test]
+    async fn attribute_without_description_is_an_error() {
+        let syntax = must_parse(
+            "attribute! foo:\n\
+             \x20 the:         x.y/foo\n\
+             \x20 as:          Text\n\
+             \x20 cardinality: one\n",
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(&err, AnalyzeError::InvalidAttributeBody { reason } if reason.contains("description")),
+            "expected InvalidAttributeBody about description, got {err:?}"
+        );
+    }
+
     /// Variable-form `attribute! ?foo:` lands in `variables`,
     /// not `declarations`, and does NOT emit a `dialog.meta/name`
     /// claim (the name is doc-scoped only).
@@ -1701,7 +1853,8 @@ mod tests {
             "attribute! ?person-name:\n\
              \x20 the:         io.gozala.person/name\n\
              \x20 as:          Text\n\
-             \x20 cardinality: one\n",
+             \x20 cardinality: one\n\
+             \x20 description: Person's name\n",
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         assert!(analysis.declarations.is_empty());
@@ -1727,7 +1880,8 @@ mod tests {
             "attribute! person-name:\n\
              \x20 the:         io.gozala.person/name\n\
              \x20 as:          Text\n\
-             \x20 cardinality: one\n",
+             \x20 cardinality: one\n\
+             \x20 description: Person's name\n",
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let Statement::Assert(Application::Concept { query, binding }) =
@@ -1757,6 +1911,7 @@ mod tests {
              \x20 the:         x.y/a\n\
              \x20 as:          Text\n\
              \x20 cardinality: one\n\
+             \x20 description: A\n\
              concept! a:\n\
              \x20 with:\n\
              \x20   x: .a\n",
@@ -1776,10 +1931,12 @@ mod tests {
              \x20 the:         x.y/a\n\
              \x20 as:          Text\n\
              \x20 cardinality: one\n\
+             \x20 description: A\n\
              attribute! ?foo:\n\
              \x20 the:         x.y/b\n\
              \x20 as:          Text\n\
-             \x20 cardinality: one\n",
+             \x20 cardinality: one\n\
+             \x20 description: B\n",
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(matches!(err, AnalyzeError::NameShadowing { .. }));
@@ -1878,17 +2035,19 @@ mod tests {
     /// diagnostics for built-ins for free.
     #[dialog_common::test]
     async fn builtin_attribute_resolves_under_noop() {
-        let syntax = must_parse("attribute ?a:\n  name: ?n\n");
+        let syntax = must_parse("attribute ?a:\n  description: ?d\n");
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        // The five fields the meta-head plan emits at write time
-        // — id/type/cardinality/description/name — must all be
-        // present in the unified term map.
-        for field in ["id", "type", "cardinality", "description", "name"] {
+        // The four anonymous-attribute fields — id/type/
+        // cardinality/description — must all be present in the
+        // unified term map. `name` is intentionally not in the
+        // built-in `attribute:` view (only bookmark-form attrs
+        // carry a `dialog.meta/name` claim).
+        for field in ["id", "type", "cardinality", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }
@@ -1921,7 +2080,7 @@ mod tests {
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
         };
-        for field in ["id", "type", "cardinality", "description", "name"] {
+        for field in ["id", "type", "cardinality", "description"] {
             assert!(query.terms.contains(field), "missing {field}");
         }
     }

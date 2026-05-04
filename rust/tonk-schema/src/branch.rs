@@ -58,13 +58,13 @@ enum This<'a> {
 ///
 /// ```no_run
 /// use dialog_varsig::did;
-/// use tonk_schema::{Branch, Replica, Name};
+/// use tonk_schema::{Branch, Replica};
 /// let replica = Replica::new(
 ///     did!("test:profile"),
 ///     did!("test:repo"),
-///     Name("home".into()),
+///     "home",
 /// );
-/// let main = Branch::new(&replica, Name("main".into()));
+/// let main = Branch::new(&replica, "main");
 /// ```
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Branch {
