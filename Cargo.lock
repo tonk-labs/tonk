@@ -4710,6 +4710,7 @@ dependencies = [
  "dialog-common",
  "lsp-types",
  "saphyr",
+ "saphyr-parser",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -13,7 +13,8 @@
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
-use saphyr::{LoadableYamlNode, MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData};
+use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader};
+use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
 use crate::syntax::{
     Assertion, Binding, Expression, Field, FieldValue, Head, HeadName, Query, Reference,
@@ -39,7 +40,7 @@ pub struct Parsed {
 ///
 /// Empty input is a no-op success.
 pub fn parse(text: &str) -> Parsed {
-    let documents = match MarkedYaml::load_from_str(text) {
+    let documents = match parse_documents(text) {
         Ok(documents) => documents,
         Err(err) => {
             return Parsed {
@@ -57,7 +58,7 @@ pub fn parse(text: &str) -> Parsed {
     let mut expressions = Vec::new();
     let mut overall_range: Option<Range> = None;
     for doc in &documents {
-        let doc_range = range_of(doc);
+        let doc_range = range_from_span(doc.span);
         overall_range = Some(match overall_range {
             None => doc_range,
             Some(existing) => extend_range(existing, doc_range),
@@ -73,23 +74,280 @@ pub fn parse(text: &str) -> Parsed {
 }
 
 // -----------------------------------------------------------------
+// Duplicate-preserving document loader
+// -----------------------------------------------------------------
+//
+// saphyr's high-level `MarkedYaml::load_from_str` builds the
+// document-root mapping into a `LinkedHashMap`, which silently
+// collapses duplicate keys (last value wins). We want the opposite:
+// two identical `head:` blocks at the document root should both
+// produce expressions, so the user can spread one query across
+// multiple blocks. Inside nested mappings we still rely on saphyr's
+// natural map semantics — duplicate field names there are not
+// meaningful.
+//
+// To preserve duplicates only at the document root we drive the
+// `saphyr-parser` event stream ourselves, capture the root mapping
+// as an ordered `Vec<(MarkedYaml, MarkedYaml)>`, and replay the
+// events for each value sub-tree into a fresh `YamlLoader` so
+// nested structure (and source spans) come back identical to what
+// `MarkedYaml::load_from_str` would have produced.
+
+/// One parsed YAML document with its root pairs in source order.
+/// `pairs == None` means the document root was not a mapping.
+struct TopLevelDoc<'input> {
+    pairs: Option<Vec<(MarkedYaml<'input>, MarkedYaml<'input>)>>,
+    span: Span,
+}
+
+fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
+    let mut parser = Parser::new_from_str(text);
+    let mut docs = Vec::new();
+    let mut state = LoaderState::Idle;
+    while let Some(event) = parser.next_event() {
+        let (event, span) = event?;
+        match &mut state {
+            LoaderState::Idle => match event {
+                Event::DocumentStart(_) => {
+                    state = LoaderState::DocumentStarted { start: span.start };
+                }
+                Event::StreamStart | Event::StreamEnd | Event::Nothing => {}
+                _ => {}
+            },
+            LoaderState::DocumentStarted { start } => match event {
+                Event::MappingStart(_, _) => {
+                    state = LoaderState::DocumentRoot {
+                        start: *start,
+                        pairs: Vec::new(),
+                        pending_key: None,
+                    };
+                }
+                Event::DocumentEnd => {
+                    docs.push(TopLevelDoc {
+                        pairs: None,
+                        span: Span::new(*start, span.end),
+                    });
+                    state = LoaderState::Idle;
+                }
+                _ => {
+                    // Non-mapping document root (scalar / sequence).
+                    // Drain any nested events back to DocumentEnd
+                    // so we can attach a span and report `not a
+                    // mapping` to the caller.
+                    let mut depth = match &event {
+                        Event::SequenceStart(_, _) | Event::MappingStart(_, _) => 1u32,
+                        _ => 0,
+                    };
+                    let mut last_end = span.end;
+                    while depth > 0 {
+                        match parser.next_event() {
+                            Some(Ok((ev, sp))) => {
+                                last_end = sp.end;
+                                match ev {
+                                    Event::SequenceStart(_, _) | Event::MappingStart(_, _) => {
+                                        depth += 1
+                                    }
+                                    Event::SequenceEnd | Event::MappingEnd => depth -= 1,
+                                    _ => {}
+                                }
+                            }
+                            Some(Err(err)) => return Err(err),
+                            None => break,
+                        }
+                    }
+                    let document_end = expect_document_end(&mut parser, last_end)?;
+                    docs.push(TopLevelDoc {
+                        pairs: None,
+                        span: Span::new(*start, document_end),
+                    });
+                    state = LoaderState::Idle;
+                }
+            },
+            LoaderState::DocumentRoot {
+                start,
+                pairs,
+                pending_key,
+            } => match event {
+                Event::MappingEnd => {
+                    let pairs = std::mem::take(pairs);
+                    let document_end = expect_document_end(&mut parser, span.end)?;
+                    docs.push(TopLevelDoc {
+                        pairs: Some(pairs),
+                        span: Span::new(*start, document_end),
+                    });
+                    state = LoaderState::Idle;
+                }
+                Event::Scalar(_, _, _, _) if pending_key.is_none() => {
+                    let key = scalar_to_marked_yaml(event, span);
+                    *pending_key = Some(key);
+                }
+                _ if pending_key.is_some() => {
+                    // The next sub-tree (scalar/mapping/sequence/
+                    // alias) is the value for the pending key.
+                    let key = pending_key.take().unwrap();
+                    let value = load_subtree(&mut parser, event, span)?;
+                    pairs.push((key, value));
+                }
+                Event::Scalar(_, _, _, _) => {
+                    // Unreachable: `pending_key.is_none()` matched above.
+                    unreachable!("scalar handling covered by pending_key arms");
+                }
+                _ => {
+                    // Mapping/sequence/alias *as a key* — not
+                    // supported here. Surface as an empty pair
+                    // with a synthetic null key so the walker can
+                    // diagnose it. Consume the sub-tree to keep
+                    // state consistent.
+                    let synthetic_key = MarkedYaml {
+                        span,
+                        data: YamlData::Value(SaphyrScalar::Null),
+                    };
+                    let value = load_subtree(&mut parser, event, span)?;
+                    pairs.push((synthetic_key, value));
+                }
+            },
+        }
+    }
+    Ok(docs)
+}
+
+enum LoaderState<'input> {
+    Idle,
+    DocumentStarted {
+        start: Marker,
+    },
+    DocumentRoot {
+        start: Marker,
+        pairs: Vec<(MarkedYaml<'input>, MarkedYaml<'input>)>,
+        pending_key: Option<MarkedYaml<'input>>,
+    },
+}
+
+/// Build a `MarkedYaml` for a single scalar event (used for the
+/// document-root keys we capture before delegating values back to
+/// the loader).
+fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml<'input> {
+    let Event::Scalar(value, style, _, tag) = event else {
+        unreachable!("scalar_to_marked_yaml called on non-scalar event");
+    };
+    let data = match style {
+        ScalarStyle::Plain | ScalarStyle::DoubleQuoted | ScalarStyle::SingleQuoted
+            if tag.as_ref().is_some_and(|t| !t.is_yaml_core_schema()) =>
+        {
+            YamlData::Representation(value, style, tag)
+        }
+        _ => {
+            let yaml = saphyr::Yaml::value_from_cow_and_metadata(value, style, tag.as_ref());
+            yaml_to_data(yaml)
+        }
+    };
+    MarkedYaml { span, data }
+}
+
+fn yaml_to_data<'input>(yaml: saphyr::Yaml<'input>) -> YamlData<'input, MarkedYaml<'input>> {
+    match yaml {
+        saphyr::Yaml::Value(scalar) => YamlData::Value(scalar),
+        saphyr::Yaml::Representation(text, style, tag) => {
+            YamlData::Representation(text, style, tag)
+        }
+        saphyr::Yaml::BadValue => YamlData::BadValue,
+        // Scalars only here; mapping/sequence are not produced by
+        // value_from_cow_and_metadata.
+        _ => YamlData::BadValue,
+    }
+}
+
+/// Replay a single value sub-tree starting from `first_event` into
+/// a fresh `YamlLoader<MarkedYaml>` and return the loaded node.
+///
+/// Tracks nesting depth to know when the sub-tree is complete.
+/// Wraps the events in synthetic `StreamStart/DocumentStart/
+/// DocumentEnd/StreamEnd` so the loader produces exactly one
+/// document.
+fn load_subtree<'input>(
+    parser: &mut Parser<'input, StrInput<'input>>,
+    first_event: Event<'input>,
+    first_span: Span,
+) -> Result<MarkedYaml<'input>, ScanError> {
+    let mut loader: YamlLoader<MarkedYaml<'input>> = YamlLoader::default();
+    let stream_mark = Span::empty(first_span.start);
+    loader.on_event(Event::StreamStart, stream_mark);
+    loader.on_event(Event::DocumentStart(false), stream_mark);
+
+    let mut depth = match &first_event {
+        Event::SequenceStart(_, _) | Event::MappingStart(_, _) => 1i32,
+        _ => 0,
+    };
+    let mut last_end = first_span.end;
+    loader.on_event(first_event, first_span);
+    while depth > 0 {
+        match parser.next_event() {
+            Some(Ok((ev, sp))) => {
+                last_end = sp.end;
+                match &ev {
+                    Event::SequenceStart(_, _) | Event::MappingStart(_, _) => depth += 1,
+                    Event::SequenceEnd | Event::MappingEnd => depth -= 1,
+                    _ => {}
+                }
+                loader.on_event(ev, sp);
+            }
+            Some(Err(err)) => return Err(err),
+            None => break,
+        }
+    }
+    let end_mark = Span::empty(last_end);
+    loader.on_event(Event::DocumentEnd, end_mark);
+    loader.on_event(Event::StreamEnd, end_mark);
+
+    let mut docs = loader.into_documents();
+    Ok(docs.pop().unwrap_or(MarkedYaml {
+        span: first_span,
+        data: YamlData::BadValue,
+    }))
+}
+
+/// After a document root finishes, drain events until `DocumentEnd`
+/// and return its end marker. (`StreamEnd` may follow but is not
+/// our concern.)
+fn expect_document_end<'input>(
+    parser: &mut Parser<'input, StrInput<'input>>,
+    fallback: Marker,
+) -> Result<Marker, ScanError> {
+    while let Some(event) = parser.next_event() {
+        let (event, span) = event?;
+        match event {
+            Event::DocumentEnd => return Ok(span.end),
+            Event::StreamEnd => return Ok(span.end),
+            _ => {}
+        }
+    }
+    Ok(fallback)
+}
+
+// -----------------------------------------------------------------
 // YAML walker (saphyr → Syntax)
 // -----------------------------------------------------------------
 
+/// Top-level walk of one YAML document. Each `(head, body)` pair
+/// from the document-root mapping becomes one [`Expression`].
+///
+/// Pairs are produced in source order with duplicates preserved
+/// (see [`parse_documents`]) so two `person ?alice:` blocks do not
+/// silently collapse into one.
 fn walk_document(
-    doc: &MarkedYaml<'_>,
+    doc: &TopLevelDoc<'_>,
     expressions: &mut Vec<Expression>,
     out: &mut Vec<Diagnostic>,
 ) {
-    let YamlData::Mapping(top) = &doc.data else {
+    let Some(pairs) = &doc.pairs else {
         out.push(error(
-            range_of(doc),
+            range_from_span(doc.span),
             "Asserted notation expects a mapping at the document root \
              (head → body).",
         ));
         return;
     };
-    for (head_key, body_value) in top {
+    for (head_key, body_value) in pairs {
         if let Some(expression) = walk_expression(head_key, body_value, out) {
             expressions.push(expression);
         }
@@ -374,8 +632,12 @@ pub(crate) fn position_at(marker: &saphyr::Marker) -> Position {
 /// Convert a saphyr node's span to an LSP range. Zero-width spans
 /// get widened to one column so editor squiggles render visibly.
 pub(crate) fn range_of(node: &MarkedYaml<'_>) -> Range {
-    let start = position_at(&node.span.start);
-    let mut end = position_at(&node.span.end);
+    range_from_span(node.span)
+}
+
+pub(crate) fn range_from_span(span: Span) -> Range {
+    let start = position_at(&span.start);
+    let mut end = position_at(&span.end);
     if start.line == end.line && start.character == end.character {
         end.character = end.character.saturating_add(1);
     }
@@ -694,6 +956,54 @@ mod tests {
         assert!(matches!(
             &q.fields[0].value,
             FieldValue::Literal(Scalar::Integer(28))
+        ));
+    }
+
+    #[dialog_common::test]
+    fn duplicate_top_level_keys_are_preserved() {
+        // Two `person ?alice:` blocks at the document root must
+        // both surface as separate expressions; the analyzer fans
+        // them into one unified query so a constraint in either
+        // block applies. saphyr's high-level loader would silently
+        // collapse these into one (last-wins).
+        let syntax = parse_clean(
+            "person ?alice:\n\
+             \x20 name: \"Alice\"\n\
+             person ?alice:\n\
+             \x20 age: ?age\n",
+        );
+        assert_eq!(syntax.expressions.len(), 2);
+        let Expression::Query(q1) = &syntax.expressions[0] else {
+            panic!("expected first Query, got {:?}", syntax.expressions[0]);
+        };
+        let Expression::Query(q2) = &syntax.expressions[1] else {
+            panic!("expected second Query, got {:?}", syntax.expressions[1]);
+        };
+        assert!(matches!(&q1.head.binding, Binding::Variable(v) if v == "alice"));
+        assert!(matches!(&q2.head.binding, Binding::Variable(v) if v == "alice"));
+        assert_eq!(q1.fields.len(), 1);
+        assert_eq!(q1.fields[0].name, "name");
+        assert_eq!(q2.fields.len(), 1);
+        assert_eq!(q2.fields[0].name, "age");
+    }
+
+    #[dialog_common::test]
+    fn duplicate_field_keys_are_collapsed() {
+        // Inside a nested mapping (field body), duplicate keys
+        // still follow saphyr's natural last-wins semantics — only
+        // the document root needs the duplicate-preserving path.
+        let syntax = parse_clean(
+            "person ?alice:\n\
+             \x20 age: 28\n\
+             \x20 age: 29\n",
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        assert_eq!(q.fields.len(), 1);
+        assert!(matches!(
+            &q.fields[0].value,
+            FieldValue::Literal(Scalar::Integer(29))
         ));
     }
 
