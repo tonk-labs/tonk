@@ -1053,6 +1053,7 @@ person! alice:
 
         // The actual regression: `person:` (no `?var`, no `!`).
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
@@ -1079,6 +1080,33 @@ person! alice:
             resp.matches[0].results.len(),
             1,
             "expected 1 result for Alice"
+        );
+        // Empty-body anonymous query (`person:`) reads as
+        // `person:\n  name: ?name\n  …` — every field of the
+        // concept is surfaced in the result, not just `this`.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from("person:\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(resp.matches[0].results.len(), 1);
+        let alice = &resp.matches[0].results[0];
+        assert_eq!(
+            alice.fields.get("name"),
+            Some(&serde_json::json!("Alice")),
+            "empty-body query should surface the `name` field; got {:?}",
+            alice.fields
         );
     }
 }

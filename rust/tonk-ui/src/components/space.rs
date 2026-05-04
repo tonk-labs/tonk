@@ -764,7 +764,13 @@ fn render_transact_state(state: TransactState) -> impl IntoView {
                 <wa-callout variant="success">
                     <wa-icon slot="icon" name="circle-check"></wa-icon>
                     <div class="wa-stack wa-gap-2xs">
-                        <span>{ format!("Committed {} claim(s).", response.commits.claims) }</span>
+                        <div class="wa-cluster wa-gap-2xs">
+                            <span>{ format!("Committed {} claim(s).", response.commits.claims) }</span>
+                            { revision_pair(
+                                response.revision_before.clone(),
+                                response.revision_after.clone(),
+                            ) }
+                        </div>
                         {
                             if response.matches.is_empty() {
                                 Either::Left(())
@@ -919,6 +925,53 @@ fn abbreviate_tree(tree: &str) -> String {
     const SHORT_LEN: usize = 8;
     let body = tree.strip_prefix('#').unwrap_or(tree);
     body.chars().take(SHORT_LEN).collect()
+}
+
+/// Render a single revision as the same `<wa-badge>` shape used
+/// in the branch-row header (truncated tree hash with the full
+/// hash exposed via `title`). `None` produces a "no commits"
+/// fallback identical to the branch row's empty state.
+fn revision_badge(revision: Option<Revision>) -> impl IntoView {
+    match revision {
+        Some(rev) => {
+            let full = rev.tree.to_string();
+            let short = abbreviate_tree(&full);
+            Either::Left(view! {
+                <wa-badge variant="neutral" appearance="filled" title=full>
+                    <wa-icon name="code-commit" slot="start"></wa-icon>
+                    { short }
+                </wa-badge>
+            })
+        }
+        None => Either::Right(view! {
+            <wa-badge variant="neutral" appearance="filled">
+                "no commits"
+            </wa-badge>
+        }),
+    }
+}
+
+/// Render a `before → after` pair of revision badges. When the
+/// commit didn't change the tree (no mutations, or no-op
+/// re-assert), collapses to a single badge so the UI doesn't
+/// shout `X → X`.
+fn revision_pair(before: Option<Revision>, after: Option<Revision>) -> impl IntoView {
+    let unchanged = match (&before, &after) {
+        (Some(b), Some(a)) => b.tree == a.tree,
+        (None, None) => true,
+        _ => false,
+    };
+    if unchanged {
+        Either::Left(revision_badge(after.or(before)))
+    } else {
+        Either::Right(view! {
+            <span class="wa-cluster wa-gap-2xs">
+                { revision_badge(before) }
+                <wa-icon name="arrow-right" aria-label="to"></wa-icon>
+                { revision_badge(after) }
+            </span>
+        })
+    }
 }
 
 /// Sigil hex string for a DID, suitable for `<tonk-sigil value=...>`.

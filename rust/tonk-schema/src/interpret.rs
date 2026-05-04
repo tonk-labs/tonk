@@ -888,9 +888,15 @@ async fn build_query_application<R: Resolver>(
             let mut terms = Parameters::new();
             terms.insert("this".into(), this_term_for_query(&binding));
             for (field_name, _attr) in resolved.descriptor.with().iter() {
+                // Fields the user mentioned use whatever they
+                // wrote (literal, variable, blank, etc.). Fields
+                // they *omitted* default to a named variable so
+                // matches surface the value in the response —
+                // `person:` reads the same as
+                // `person:\n  name: ?name\n  age: ?age`.
                 let term = match user_field(query.fields.as_slice(), field_name) {
                     Some(value) => field_value_to_term(field_name, value, scope, analysis).await?,
-                    None => Term::<dialog_query::Any>::blank(),
+                    None => Term::<dialog_query::Any>::var(field_name),
                 };
                 terms.insert(field_name.into(), term);
             }
