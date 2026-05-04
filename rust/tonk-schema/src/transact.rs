@@ -114,7 +114,7 @@ impl From<&QueryAnalysis> for ConceptQuery {
                 }
             }
             for (name, term) in inner.terms.iter() {
-                terms.insert(name.clone(), term.clone());
+                merge_term(&mut terms, name, term);
             }
         }
         ConceptQuery {
@@ -427,6 +427,43 @@ fn substitute_concept_query(
     }
     query.terms = new_terms;
     Ok(query)
+}
+
+/// Merge `incoming` into `terms` under `name` without losing
+/// constraint strength. Strictness order, strictest first:
+///
+///   `Term::Constant`            — fixed value
+///   `Term::Variable(Some(_))`   — named variable, joins across exprs
+///   `Term::Variable(None)`      — blank, accepts anything
+///
+/// A stricter term must not be replaced by a looser one. This
+/// matters when [`From<&QueryAnalysis> for ConceptQuery`]
+/// merges per-expression `terms` into one unified parameter
+/// map: if `person ?alice: { name: "Alice" }` is followed by
+/// `person ?alice: { age: ?age }`, the second expression's
+/// implicit `name: Term::var("name")` (unmentioned-fields
+/// default) must NOT overwrite the first's `name: "Alice"` —
+/// otherwise the unified query loses the literal constraint
+/// and matches every person.
+fn merge_term(terms: &mut Parameters, name: &str, incoming: &Term<dialog_query::Any>) {
+    let existing_strength = terms.get(name).map(term_strength).unwrap_or(0);
+    let incoming_strength = term_strength(incoming);
+    if incoming_strength > existing_strength {
+        terms.insert(name.to_owned(), incoming.clone());
+    }
+}
+
+/// Numeric strictness rank used by [`merge_term`]. Higher =
+/// stricter. Two terms of equal strictness can clash (two
+/// different constants for the same field) but the analyzer
+/// rejects that earlier — only one expression per source can
+/// bind a given field.
+fn term_strength(term: &Term<dialog_query::Any>) -> u8 {
+    match term {
+        Term::Constant(_) => 2,
+        Term::Variable { name: Some(_), .. } => 1,
+        Term::Variable { name: None, .. } => 0,
+    }
 }
 
 fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
