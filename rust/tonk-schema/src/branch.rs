@@ -10,8 +10,8 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 use serde::Serialize;
 
+use crate::domain::branch::{Name, Origin};
 use crate::prelude::*;
-use crate::{Name, Origin};
 
 /// Hash input for [`Branch::this`].
 ///
@@ -112,51 +112,47 @@ impl Branch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Name, Replica};
+    use crate::Replica;
     use dialog_varsig::did;
-
-    fn branch_name(tag: &str) -> Name {
-        Name(tag.into())
-    }
 
     #[test]
     fn same_replica_same_name_same_entity() {
-        let r = Replica::new(did!("test:p"), did!("test:r"), Name("home".into()));
-        let a = Branch::new(&r, branch_name("main"));
-        let b = Branch::new(&r, branch_name("main"));
+        let r = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let a = Branch::new(&r, "main");
+        let b = Branch::new(&r, "main");
         assert_eq!(a.this, b.this);
     }
 
     #[test]
     fn different_name_different_entity() {
-        let r = Replica::new(did!("test:p"), did!("test:r"), Name("home".into()));
-        let a = Branch::new(&r, branch_name("main"));
-        let b = Branch::new(&r, branch_name("meta"));
+        let r = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let a = Branch::new(&r, "main");
+        let b = Branch::new(&r, "meta");
         assert_ne!(a.this, b.this);
     }
 
     #[test]
     fn different_replica_different_entity() {
-        let r1 = Replica::new(did!("test:p1"), did!("test:r"), Name("home".into()));
-        let r2 = Replica::new(did!("test:p2"), did!("test:r"), Name("home".into()));
-        let a = Branch::new(&r1, branch_name("main"));
-        let b = Branch::new(&r2, branch_name("main"));
+        let r1 = Replica::new(did!("test:p1"), did!("test:r"), "home");
+        let r2 = Replica::new(did!("test:p2"), did!("test:r"), "home");
+        let a = Branch::new(&r1, "main");
+        let b = Branch::new(&r2, "main");
         assert_ne!(a.this, b.this);
     }
 
     #[test]
     fn different_repo_different_entity() {
-        let r1 = Replica::new(did!("test:p"), did!("test:r1"), Name("home".into()));
-        let r2 = Replica::new(did!("test:p"), did!("test:r2"), Name("home".into()));
-        let a = Branch::new(&r1, branch_name("main"));
-        let b = Branch::new(&r2, branch_name("main"));
+        let r1 = Replica::new(did!("test:p"), did!("test:r1"), "home");
+        let r2 = Replica::new(did!("test:p"), did!("test:r2"), "home");
+        let a = Branch::new(&r1, "main");
+        let b = Branch::new(&r2, "main");
         assert_ne!(a.this, b.this);
     }
 
     #[test]
     fn attributes_reflect_replica() {
-        let r = Replica::new(did!("test:p"), did!("test:r"), Name("home".into()));
-        let b = Branch::new(&r, branch_name("main"));
+        let r = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let b = Branch::new(&r, "main");
         assert_eq!(b.origin.0, r.this);
     }
 
@@ -164,10 +160,10 @@ mod tests {
     fn replica_name_does_not_affect_branch_entity() {
         // The replica's display name is not part of Replica.this, so
         // renaming the replica doesn't change the branch entity.
-        let home = Replica::new(did!("test:p"), did!("test:r"), Name("home".into()));
-        let pics = Replica::new(did!("test:p"), did!("test:r"), Name("pictures".into()));
-        let a = Branch::new(&home, branch_name("main"));
-        let b = Branch::new(&pics, branch_name("main"));
+        let home = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let pics = Replica::new(did!("test:p"), did!("test:r"), "pictures");
+        let a = Branch::new(&home, "main");
+        let b = Branch::new(&pics, "main");
         assert_eq!(a.this, b.this);
     }
 
@@ -176,16 +172,17 @@ mod tests {
         // A `Branch` is polymorphic over its origin — the same name
         // on a replica vs. on a remote still produces distinct
         // entities because the origin entities themselves differ.
-        use crate::{Address, Remote};
-        let replica = Replica::new(did!("test:p"), did!("test:r"), Name("home".into()));
+        use crate::Remote;
+        use crate::domain::remote::Address;
+        let replica = Replica::new(did!("test:p"), did!("test:r"), "home");
         let remote = Remote::new(
             &replica,
             did!("test:repo"),
             Address(b"addr".to_vec()),
-            Name("origin".into()),
+            "origin",
         );
-        let local = Branch::new(&replica, branch_name("main"));
-        let tracking = Branch::new(&remote, branch_name("main"));
+        let local = Branch::new(&replica, "main");
+        let tracking = Branch::new(&remote, "main");
         assert_ne!(local.this, tracking.this);
         assert_eq!(local.origin.0, replica.this);
         assert_eq!(tracking.origin.0, remote.this);

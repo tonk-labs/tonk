@@ -9,7 +9,8 @@
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
-use crate::{Branch, Origin, Upstream};
+use crate::Branch;
+use crate::domain::branch::{Origin, Upstream};
 
 /// A local branch's tracking relationship with a remote branch.
 ///
@@ -109,16 +110,17 @@ impl Branch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Address, Name, Remote, Replica};
+    use crate::domain::remote::Address;
+    use crate::{Remote, Replica};
     use dialog_varsig::did;
 
     fn setup() -> (Branch, Branch) {
-        let replica = Replica::new(did!("test:p"), did!("test:r"), Name("home".into()));
+        let replica = Replica::new(did!("test:p"), did!("test:r"), "home");
         let remote = Remote::new(
             &replica,
             did!("test:repo"),
             Address(b"addr".to_vec()),
-            Name("origin".into()),
+            "origin",
         );
         let local = replica.branch("main");
         let tracked = remote.branch("main");

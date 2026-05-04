@@ -11,8 +11,10 @@ use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
+use crate::Branch;
+use crate::Replica;
+use crate::domain::remote::{Address, Name, Origin, Subject};
 use crate::prelude::*;
-use crate::{Address, Branch, Name, Origin, Replica, Subject};
 
 /// Hash input for [`Remote::this`].
 ///
@@ -109,9 +111,11 @@ impl Remote {
 
     /// Create a [`Branch`] concept on this remote.
     ///
-    /// `name` accepts anything convertible into [`Name`],
-    /// matching the [`Branch::new`] signature.
-    pub fn branch(&self, name: impl Into<Name>) -> Branch {
+    /// `name` accepts anything convertible into a
+    /// [`branch::Name`], matching the [`Branch::new`] signature.
+    ///
+    /// [`branch::Name`]: crate::domain::branch::Name
+    pub fn branch(&self, name: impl Into<crate::domain::branch::Name>) -> Branch {
         Branch::new(self, name)
     }
 }
@@ -128,7 +132,7 @@ mod tests {
     use dialog_varsig::did;
 
     fn replica() -> Replica {
-        Replica::new(did!("test:p"), did!("test:r"), Name("home".into()))
+        Replica::new(did!("test:p"), did!("test:r"), "home")
     }
 
     fn addr(bytes: &[u8]) -> Address {
@@ -138,16 +142,16 @@ mod tests {
     #[test]
     fn same_replica_same_name_same_entity() {
         let r = replica();
-        let a = Remote::new(&r, did!("test:repo"), addr(b"host1"), Name("origin".into()));
-        let b = Remote::new(&r, did!("test:repo"), addr(b"host1"), Name("origin".into()));
+        let a = Remote::new(&r, did!("test:repo"), addr(b"host1"), "origin");
+        let b = Remote::new(&r, did!("test:repo"), addr(b"host1"), "origin");
         assert_eq!(a.this, b.this);
     }
 
     #[test]
     fn different_name_different_entity() {
         let r = replica();
-        let a = Remote::new(&r, did!("test:repo"), addr(b"host1"), Name("origin".into()));
-        let b = Remote::new(&r, did!("test:repo"), addr(b"host1"), Name("backup".into()));
+        let a = Remote::new(&r, did!("test:repo"), addr(b"host1"), "origin");
+        let b = Remote::new(&r, did!("test:repo"), addr(b"host1"), "backup");
         assert_ne!(a.this, b.this);
     }
 
@@ -157,25 +161,25 @@ mod tests {
         // "origin" at a different host rewrites the attribute on
         // the same entity.
         let r = replica();
-        let a = Remote::new(&r, did!("test:repo"), addr(b"host1"), Name("origin".into()));
-        let b = Remote::new(&r, did!("test:repo"), addr(b"host2"), Name("origin".into()));
+        let a = Remote::new(&r, did!("test:repo"), addr(b"host1"), "origin");
+        let b = Remote::new(&r, did!("test:repo"), addr(b"host2"), "origin");
         assert_eq!(a.this, b.this);
     }
 
     #[test]
     fn subject_does_not_affect_entity() {
         let r = replica();
-        let a = Remote::new(&r, did!("test:repo-a"), addr(b"h"), Name("origin".into()));
-        let b = Remote::new(&r, did!("test:repo-b"), addr(b"h"), Name("origin".into()));
+        let a = Remote::new(&r, did!("test:repo-a"), addr(b"h"), "origin");
+        let b = Remote::new(&r, did!("test:repo-b"), addr(b"h"), "origin");
         assert_eq!(a.this, b.this);
     }
 
     #[test]
     fn different_replica_different_entity() {
-        let r1 = Replica::new(did!("test:p1"), did!("test:r"), Name("home".into()));
-        let r2 = Replica::new(did!("test:p2"), did!("test:r"), Name("home".into()));
-        let a = Remote::new(&r1, did!("test:repo"), addr(b"h"), Name("origin".into()));
-        let b = Remote::new(&r2, did!("test:repo"), addr(b"h"), Name("origin".into()));
+        let r1 = Replica::new(did!("test:p1"), did!("test:r"), "home");
+        let r2 = Replica::new(did!("test:p2"), did!("test:r"), "home");
+        let a = Remote::new(&r1, did!("test:repo"), addr(b"h"), "origin");
+        let b = Remote::new(&r2, did!("test:repo"), addr(b"h"), "origin");
         assert_ne!(a.this, b.this);
     }
 
@@ -186,8 +190,8 @@ mod tests {
         // distinct.
         use crate::Branch;
         let r = replica();
-        let branch = Branch::new(&r, Name("shared".into()));
-        let remote = Remote::new(&r, did!("test:repo"), addr(b"h"), Name("shared".into()));
+        let branch = Branch::new(&r, "shared");
+        let remote = Remote::new(&r, did!("test:repo"), addr(b"h"), "shared");
         assert_ne!(
             branch.this, remote.this,
             "branch and remote collided on entity"
@@ -203,8 +207,8 @@ mod tests {
         // has the same `origin` + `name` attribute shape).
         use crate::Branch;
         let r = replica();
-        let remote_origin = Remote::new(&r, did!("test:repo"), addr(b"h"), Name("origin".into()));
-        let branch_origin = Branch::new(&r, Name("origin".into()));
+        let remote_origin = Remote::new(&r, did!("test:repo"), addr(b"h"), "origin");
+        let branch_origin = Branch::new(&r, "origin");
         assert_ne!(
             remote_origin.this, branch_origin.this,
             "a replica's remote 'origin' and branch 'origin' collided on entity"
@@ -214,12 +218,7 @@ mod tests {
     #[test]
     fn attributes_reflect_inputs() {
         let r = replica();
-        let remote = Remote::new(
-            &r,
-            did!("test:repo-x"),
-            addr(b"addr"),
-            Name("origin".into()),
-        );
+        let remote = Remote::new(&r, did!("test:repo-x"), addr(b"addr"), "origin");
         assert_eq!(remote.origin.0, r.this);
         assert_eq!(remote.subject.0.to_string(), "did:test:repo-x");
         assert_eq!(remote.address.0, b"addr");

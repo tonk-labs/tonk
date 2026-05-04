@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{Profile as ProfileEntity, Replica, prelude::DidExt as _};
+use tonk_schema::{Replica, domain::replica::Profile as ProfileEntity, prelude::DidExt as _};
 
 use super::{AppState, RepositoryInfo, repository::build_repository_info};
 use crate::TonkWorkerError;

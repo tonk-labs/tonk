@@ -12,8 +12,10 @@ use dialog_repository::SiteAddress;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::{Address, Branch, Name, Profile, Remote, Subject};
-
+use crate::Branch;
+use crate::Remote;
+use crate::domain::remote::Address;
+use crate::domain::replica::{Name, Profile, Subject};
 use crate::prelude::*;
 
 /// A replica — this device's view of a specific repository.
@@ -106,9 +108,11 @@ impl Replica {
 
     /// Create a [`Branch`] concept on this replica.
     ///
-    /// `name` is anything convertible into [`Name`], matching
-    /// the [`Branch::new`] signature.
-    pub fn branch(&self, name: impl Into<Name>) -> Branch {
+    /// `name` is anything convertible into a [`branch::Name`],
+    /// matching the [`Branch::new`] signature.
+    ///
+    /// [`branch::Name`]: crate::domain::branch::Name
+    pub fn branch(&self, name: impl Into<crate::domain::branch::Name>) -> Branch {
         Branch::new(self, name)
     }
 
@@ -119,7 +123,12 @@ impl Replica {
     /// (we can't surface that as a `From` impl without clashing
     /// with the blanket one the `Attribute` derive emits — see
     /// [`Address::encode`]).
-    pub fn remote(&self, name: impl Into<Name>, subject: Did, address: &SiteAddress) -> Remote {
+    pub fn remote(
+        &self,
+        name: impl Into<crate::domain::remote::Name>,
+        subject: Did,
+        address: &SiteAddress,
+    ) -> Remote {
         Remote::new(self, subject, Address::encode(address), name)
     }
 }

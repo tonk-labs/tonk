@@ -266,8 +266,10 @@ async fn find_replica_name_for_subject(
         .select(Query::<Replica> {
             this: Term::var("this"),
             name: Term::var("name"),
-            subject: Term::from(tonk_schema::Subject(subject.this())),
-            profile: Term::from(tonk_schema::Profile(tonk.profile.did().this())),
+            subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
+            profile: Term::from(tonk_schema::domain::replica::Profile(
+                tonk.profile.did().this(),
+            )),
         })
         .perform(&tonk.operator)
         .try_vec()
