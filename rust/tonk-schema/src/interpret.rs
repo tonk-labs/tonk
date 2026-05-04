@@ -34,7 +34,8 @@ use tonk_notation::{
 
 use crate::prelude::EntityExt;
 use crate::transact::{
-    Analysis, Application, DomainApplication, MutationAnalysis, QueryAnalysis, Statement,
+    Analysis, Application, DomainApplication, HeadBinding, MutationAnalysis, QueryAnalysis,
+    Statement,
 };
 
 // ---------------------------------------------------------------- //
@@ -511,12 +512,13 @@ async fn analyze_impl<R: Resolver>(
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
-                    let bookmark = match &head.binding {
-                        Binding::Bookmark(name) => Some(name.clone()),
+                    let binding = head_binding_for(&head.binding)?;
+                    let bookmark = match &binding {
+                        HeadBinding::Bookmark(name) => Some(name.clone()),
                         _ => None,
                     };
-                    let variable = match &head.binding {
-                        Binding::Variable(name) => Some(name.clone()),
+                    let variable = match &binding {
+                        HeadBinding::Variable(name) => Some(name.clone()),
                         _ => None,
                     };
                     if let Some(name) = &bookmark {
@@ -531,7 +533,7 @@ async fn analyze_impl<R: Resolver>(
                         MetaPlan::Attribute {
                             descriptor: plan.descriptor,
                             entity,
-                            bookmark,
+                            binding,
                         },
                     );
                     continue;
@@ -552,12 +554,13 @@ async fn analyze_impl<R: Resolver>(
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
-                    let bookmark = match &head.binding {
-                        Binding::Bookmark(name) => Some(name.clone()),
+                    let binding = head_binding_for(&head.binding)?;
+                    let bookmark = match &binding {
+                        HeadBinding::Bookmark(name) => Some(name.clone()),
                         _ => None,
                     };
-                    let variable = match &head.binding {
-                        Binding::Variable(name) => Some(name.clone()),
+                    let variable = match &binding {
+                        HeadBinding::Variable(name) => Some(name.clone()),
                         _ => None,
                     };
                     if let Some(name) = &bookmark {
@@ -572,7 +575,7 @@ async fn analyze_impl<R: Resolver>(
                         MetaPlan::Concept {
                             descriptor: plan.descriptor,
                             entity,
-                            bookmark,
+                            binding,
                         },
                     );
                     continue;
@@ -581,15 +584,15 @@ async fn analyze_impl<R: Resolver>(
             }
         }
 
-        // Non-meta heads: only bookmark bindings derive an
-        // entity at analysis time (content-addressed from the
-        // name). Variable bindings on non-meta heads are bound
-        // at planning time by query results, so they don't go
-        // in `variables` — that map is only for analysis-time
-        // derivations (currently meta heads).
-        if let Binding::Bookmark(name) = &head.binding {
-            scope.declare(name, Entity::of(name))?;
-        }
+        // Non-meta heads: nothing to do in Phase 1. Bookmark and
+        // variable forms both produce body-content-derived
+        // entities, which we don't compute until Phase 3.
+        // Bookmarks act like git tags: a `dialog.meta/name`
+        // claim points the bookmark name at the body-derived
+        // entity. Variables stay as `Term::Variable` until
+        // planning binds them from query results, or — for
+        // unbound variables — Phase 3 mints a body-derived
+        // entity and registers the name in `analysis.variables`.
     }
 
     // ---- Phase 2: build query Applications ----
@@ -619,12 +622,13 @@ async fn analyze_impl<R: Resolver>(
             Expression::Query(_) => {}
             Expression::Assertion(a) => {
                 let application =
-                    build_assertion_application(index, a, &meta_cache, &scope, &analysis).await?;
+                    build_assertion_application(index, a, &meta_cache, &scope, &mut analysis)
+                        .await?;
                 collect_unbound_variables(&application, &analysis, &mut requires);
                 statements.push(Statement::Assert(application));
             }
             Expression::Retraction(r) => {
-                let application = build_retraction_application(r, &scope, &analysis).await?;
+                let application = build_retraction_application(r, &scope, &mut analysis).await?;
                 collect_unbound_variables(&application, &analysis, &mut requires);
                 statements.push(Statement::Retract(application));
             }
@@ -664,12 +668,12 @@ enum MetaPlan {
     Attribute {
         descriptor: AttributeDescriptor,
         entity: Entity,
-        bookmark: Option<String>,
+        binding: HeadBinding,
     },
     Concept {
         descriptor: ConceptDescriptor,
         entity: Entity,
-        bookmark: Option<String>,
+        binding: HeadBinding,
     },
 }
 
@@ -870,6 +874,7 @@ async fn build_query_application<R: Resolver>(
     scope: &Scope<'_, R>,
     analysis: &Analysis,
 ) -> Result<Application, AnalyzeError> {
+    let binding = head_binding_for(&query.head.binding)?;
     match &query.head.name {
         HeadName::Concept(name) => {
             let resolved = scope
@@ -881,7 +886,7 @@ async fn build_query_application<R: Resolver>(
                 })?
                 .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
             let mut terms = Parameters::new();
-            terms.insert("this".into(), this_term_for_query(&query.head.binding));
+            terms.insert("this".into(), this_term_for_query(&binding));
             for (field_name, _attr) in resolved.descriptor.with().iter() {
                 let term = match user_field(query.fields.as_slice(), field_name) {
                     Some(value) => field_value_to_term(field_name, value, scope, analysis).await?,
@@ -903,10 +908,13 @@ async fn build_query_application<R: Resolver>(
                     });
                 }
             }
-            Ok(Application::Concept(ConceptQuery {
-                terms,
-                predicate: resolved.descriptor,
-            }))
+            Ok(Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: resolved.descriptor,
+                },
+                binding,
+            })
         }
         HeadName::Claim(domain) => {
             if query.fields.is_empty() {
@@ -915,16 +923,19 @@ async fn build_query_application<R: Resolver>(
                 });
             }
             let mut parameters = Parameters::new();
-            parameters.insert("this".into(), this_term_for_query(&query.head.binding));
+            parameters.insert("this".into(), this_term_for_query(&binding));
             for field in &query.fields {
                 validate_claim_attribute(domain, &field.name)?;
                 let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
                 parameters.insert(field.name.clone(), term);
             }
-            Ok(Application::Domain(DomainApplication {
-                domain: domain.clone(),
-                parameters,
-            }))
+            Ok(Application::Domain {
+                application: DomainApplication {
+                    domain: domain.clone(),
+                    parameters,
+                },
+                binding,
+            })
         }
     }
 }
@@ -933,15 +944,20 @@ fn user_field<'a>(fields: &'a [Field], name: &str) -> Option<&'a FieldValue> {
     fields.iter().find(|f| f.name == name).map(|f| &f.value)
 }
 
-fn this_term_for_query(binding: &Binding) -> Term<dialog_query::Any> {
+fn this_term_for_query(binding: &HeadBinding) -> Term<dialog_query::Any> {
     match binding {
-        Binding::Variable(name) => Term::<dialog_query::Any>::var(name),
-        Binding::Bookmark(name) => Term::Constant(Value::Entity(Entity::of(name))),
-        Binding::Uri(uri) => match uri.parse::<Entity>() {
-            Ok(entity) => Term::Constant(Value::Entity(entity)),
-            Err(_) => Term::<dialog_query::Any>::blank(),
-        },
-        Binding::Anonymous => Term::<dialog_query::Any>::blank(),
+        HeadBinding::Variable(name) => Term::<dialog_query::Any>::var(name),
+        HeadBinding::Bookmark(_name) => {
+            // Query-side bookmark resolution requires hitting
+            // the branch to find the entity carrying
+            // `dialog.meta/name = name`. The query path doesn't
+            // currently do that (no async access here); use a
+            // blank for now and revisit if the editor surfaces a
+            // need for this shape.
+            Term::<dialog_query::Any>::blank()
+        }
+        HeadBinding::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
+        HeadBinding::Anonymous => Term::<dialog_query::Any>::blank(),
     }
 }
 
@@ -954,7 +970,7 @@ async fn build_assertion_application<R: Resolver>(
     assertion: &Assertion,
     meta_cache: &HashMap<usize, MetaPlan>,
     scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    analysis: &mut Analysis,
 ) -> Result<Application, AnalyzeError> {
     if let Some(meta) = meta_cache.get(&index) {
         return Ok(meta_application(meta));
@@ -969,7 +985,8 @@ async fn build_assertion_application<R: Resolver>(
         return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
     }
 
-    let this_term = this_term_for_assertion(&assertion.head.binding, analysis)?;
+    let binding = head_binding_for(&assertion.head.binding)?;
+    let this_term = this_term_for_assertion(&binding, &assertion.fields, analysis)?;
 
     match &assertion.head.name {
         HeadName::Concept(name) => {
@@ -997,28 +1014,19 @@ async fn build_assertion_application<R: Resolver>(
                 let term = field_value_to_term(field_name, value, scope, analysis).await?;
                 terms.insert(field_name.into(), term);
             }
-            // Bookmark binding writes a `dialog.meta/name` claim.
-            if let Binding::Bookmark(name) = &assertion.head.binding {
-                terms.insert("name".into(), Term::Constant(Value::String(name.clone())));
-            }
             if let Some((unknown, _)) = user_fields.into_iter().next() {
                 return Err(AnalyzeError::UnknownField {
                     concept: name.clone(),
                     field: unknown.to_owned(),
                 });
             }
-            // For bookmark binding we need a name attribute on
-            // the descriptor too — extend the descriptor in-flight
-            // by re-deriving it with a name field.
-            let descriptor = if matches!(&assertion.head.binding, Binding::Bookmark(_)) {
-                augment_descriptor_with_name(&resolved.descriptor)?
-            } else {
-                resolved.descriptor
-            };
-            Ok(Application::Concept(ConceptQuery {
-                terms,
-                predicate: descriptor,
-            }))
+            Ok(Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: resolved.descriptor,
+                },
+                binding,
+            })
         }
         HeadName::Claim(domain) => {
             let mut parameters = Parameters::new();
@@ -1028,10 +1036,13 @@ async fn build_assertion_application<R: Resolver>(
                 let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
                 parameters.insert(field.name.clone(), term);
             }
-            Ok(Application::Domain(DomainApplication {
-                domain: domain.clone(),
-                parameters,
-            }))
+            Ok(Application::Domain {
+                application: DomainApplication {
+                    domain: domain.clone(),
+                    parameters,
+                },
+                binding,
+            })
         }
     }
 }
@@ -1039,10 +1050,14 @@ async fn build_assertion_application<R: Resolver>(
 async fn build_retraction_application<R: Resolver>(
     retraction: &Retraction,
     scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    analysis: &mut Analysis,
 ) -> Result<Application, AnalyzeError> {
-    let _ = analysis;
-    let this_term = this_term_for_assertion(&retraction.head.binding, analysis)?;
+    let binding = head_binding_for(&retraction.head.binding)?;
+    // Retraction has no body, so the entity has to come from a
+    // bookmark/variable binding (whose name resolves through
+    // the branch / declarations), an explicit URI, or a query
+    // binding. Anonymous retractions have no entity to act on.
+    let this_term = this_term_for_retraction(&binding, analysis)?;
     match &retraction.head.name {
         HeadName::Concept(name) => {
             let resolved = scope
@@ -1058,10 +1073,13 @@ async fn build_retraction_application<R: Resolver>(
             for (field_name, _attr) in resolved.descriptor.with().iter() {
                 terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
             }
-            Ok(Application::Concept(ConceptQuery {
-                terms,
-                predicate: resolved.descriptor,
-            }))
+            Ok(Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: resolved.descriptor,
+                },
+                binding,
+            })
         }
         HeadName::Claim(domain) => Err(AnalyzeError::UnsupportedFieldValue {
             field: domain.clone(),
@@ -1070,17 +1088,41 @@ async fn build_retraction_application<R: Resolver>(
     }
 }
 
+/// Translate a parsed [`Binding`] to the analyzer's
+/// [`HeadBinding`]. Validates URIs eagerly so the `Application`
+/// carries a parsed `Entity` rather than a string.
+fn head_binding_for(binding: &Binding) -> Result<HeadBinding, AnalyzeError> {
+    Ok(match binding {
+        Binding::Anonymous => HeadBinding::Anonymous,
+        Binding::Variable(name) => HeadBinding::Variable(name.clone()),
+        Binding::Bookmark(name) => HeadBinding::Bookmark(name.clone()),
+        Binding::Uri(uri) => {
+            let entity: Entity =
+                uri.parse()
+                    .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                        AnalyzeError::InvalidSubjectUri {
+                            subject: uri.clone(),
+                            reason: e.to_string(),
+                        }
+                    })?;
+            HeadBinding::Uri(entity)
+        }
+    })
+}
+
 fn meta_application(meta: &MetaPlan) -> Application {
     match meta {
         MetaPlan::Attribute {
             descriptor,
             entity,
-            bookmark,
+            binding,
         } => {
-            // Built-in `attribute` schema: 5 fields under
-            // dialog.attribute/* and dialog.meta/*. Build a
-            // ConceptDescriptor whose `with` map enumerates them
-            // so emit_predicate_facts writes the canonical EAVs.
+            // Built-in `attribute` schema: 4 fields under
+            // dialog.attribute/* and dialog.meta/description.
+            // The bookmark name (`dialog.meta/name` claim) is
+            // emitted by the planner via `HeadBinding::Bookmark`,
+            // not encoded as a parameter — same way it works for
+            // any user concept's bookmark binding.
             let mut terms = Parameters::new();
             terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
             terms.insert(
@@ -1091,15 +1133,18 @@ fn meta_application(meta: &MetaPlan) -> Application {
                     descriptor.name()
                 ))),
             );
-            if let Some(ty) = descriptor.content_type() {
-                let type_name = serde_json::to_value(ty)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_owned))
-                    .unwrap_or_default();
-                if !type_name.is_empty() {
-                    terms.insert("type".into(), Term::Constant(Value::String(type_name)));
-                }
-            }
+            // `AnonymousAttribute`/`NamedAttribute` require all
+            // five claims to be present (id/type/cardinality/
+            // description/name) — ConceptByEntity reconstruction
+            // depends on the full set. Emit every field with an
+            // empty-string default so `dialog.attribute/type` and
+            // `dialog.meta/description` always exist.
+            let type_name = descriptor
+                .content_type()
+                .and_then(|ty| serde_json::to_value(ty).ok())
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default();
+            terms.insert("type".into(), Term::Constant(Value::String(type_name)));
             let cardinality_name = serde_json::to_value(descriptor.cardinality())
                 .ok()
                 .and_then(|v| v.as_str().map(str::to_owned))
@@ -1108,29 +1153,27 @@ fn meta_application(meta: &MetaPlan) -> Application {
                 "cardinality".into(),
                 Term::Constant(Value::String(cardinality_name)),
             );
-            let description = descriptor.description().to_owned();
-            if !description.is_empty() {
-                terms.insert(
-                    "description".into(),
-                    Term::Constant(Value::String(description)),
-                );
+            terms.insert(
+                "description".into(),
+                Term::Constant(Value::String(descriptor.description().to_owned())),
+            );
+            Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: attribute_schema(),
+                },
+                binding: binding.clone(),
             }
-            if let Some(name) = bookmark {
-                terms.insert("name".into(), Term::Constant(Value::String(name.clone())));
-            }
-            Application::Concept(ConceptQuery {
-                terms,
-                predicate: attribute_schema(),
-            })
         }
         MetaPlan::Concept {
             descriptor,
             entity,
-            bookmark,
+            binding,
         } => {
             // Built-in `concept` schema: one `with.<field>` per
-            // field of the user's concept, plus `dialog.meta/name`
-            // and `dialog.meta/description`.
+            // field of the user's concept, plus
+            // `dialog.meta/description`. The bookmark name is
+            // emitted by the planner via `HeadBinding::Bookmark`.
             let mut terms = Parameters::new();
             terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
             for (name, attr) in descriptor.with().iter() {
@@ -1151,13 +1194,13 @@ fn meta_application(meta: &MetaPlan) -> Application {
                     Term::Constant(Value::String(desc.to_owned())),
                 );
             }
-            if let Some(name) = bookmark {
-                terms.insert("name".into(), Term::Constant(Value::String(name.clone())));
+            Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: concept_schema(descriptor),
+                },
+                binding: binding.clone(),
             }
-            Application::Concept(ConceptQuery {
-                terms,
-                predicate: concept_schema(descriptor),
-            })
         }
     }
 }
@@ -1216,75 +1259,159 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
         .expect("concept schema is well-formed")
 }
 
-/// Add a `name` field (mapping to `dialog.meta/name`) to a
-/// resolved concept's descriptor so a bookmark-bound assertion
-/// can include the name claim alongside the user's fields.
-fn augment_descriptor_with_name(
-    descriptor: &ConceptDescriptor,
-) -> Result<ConceptDescriptor, AnalyzeError> {
-    let mut shape = serde_json::to_value(descriptor)
-        .map_err(|e| AnalyzeError::InvalidConceptBody {
-            reason: format!("could not re-serialize descriptor: {e}"),
-        })?
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    let with = shape
-        .entry("with".to_string())
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    if let serde_json::Value::Object(map) = with {
-        map.insert(
-            "name".into(),
-            serde_json::json!({
-                "the": "dialog.meta/name",
-                "as": "Text",
-                "cardinality": "one",
-            }),
-        );
-    }
-    serde_json::from_value(serde_json::Value::Object(shape)).map_err(|e| {
-        AnalyzeError::InvalidConceptBody {
-            reason: format!("could not augment descriptor with name: {e}"),
+/// What to put in the `this` slot of a mutation [`Application`].
+///
+/// - `Anonymous`: mint a body-content-derived entity.
+/// - `Bookmark(name)`: same — body-derived entity. The
+///   `dialog.meta/name = name` claim is emitted by the planner
+///   from the [`HeadBinding::Bookmark`] discriminant, not a
+///   parameter on the predicate.
+/// - `Variable(name)` already in `analysis.variables`: substitute
+///   the registered entity (this happens when an earlier
+///   `?name:` head registered it, or when an `attribute! ?name:`
+///   / `concept! ?name:` head derived it from the body).
+/// - `Variable(name)` not yet known: if there's no query
+///   binding for it, mint a body-derived entity and register it
+///   in `analysis.variables` so subsequent uses share the
+///   entity. If a query binding exists, leave as
+///   `Term::Variable` — planning will substitute from the
+///   query frame.
+/// - `Uri(entity)`: substitute directly.
+fn this_term_for_assertion(
+    binding: &HeadBinding,
+    fields: &[Field],
+    analysis: &mut Analysis,
+) -> Result<Term<dialog_query::Any>, AnalyzeError> {
+    Ok(match binding {
+        HeadBinding::Anonymous => Term::Constant(Value::Entity(Entity::of(&body_digest(fields)))),
+        HeadBinding::Bookmark(name) => {
+            // Non-meta bookmark: body-derived entity. Register
+            // the name → entity binding in `declarations` so
+            // the worker can surface it in the response and
+            // duplicate-name checks across heads catch overlaps.
+            let entity = Entity::of(&body_digest(fields));
+            if let Some(prior) = analysis.declarations.get(name)
+                && prior != &entity
+            {
+                return Err(AnalyzeError::DuplicateName { name: name.clone() });
+            }
+            analysis.declarations.insert(name.clone(), entity.clone());
+            Term::Constant(Value::Entity(entity))
         }
+        HeadBinding::Variable(name) => {
+            if let Some(entity) = analysis.variables.get(name) {
+                Term::Constant(Value::Entity(entity.clone()))
+            } else if query_binds(analysis, name) {
+                // Bound at planning time from query results.
+                Term::<dialog_query::Any>::var(name)
+            } else {
+                // First introduction — mint a body-derived
+                // entity and register it for later expressions
+                // that share `?name`.
+                let entity = Entity::of(&body_digest(fields));
+                analysis.variables.insert(name.clone(), entity.clone());
+                Term::Constant(Value::Entity(entity))
+            }
+        }
+        HeadBinding::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
     })
 }
 
-/// What to put in the `this` slot of a mutation [`Application`].
-///
-/// Bookmarks substitute to a content-derived constant entity;
-/// variable bindings stay as `Term::Variable(name)` so planning
-/// can substitute them from query results — unless the variable
-/// was already derived in Phase 1 (an `attribute! ?foo:` head),
-/// in which case the entity goes inline now.
-fn this_term_for_assertion(
-    binding: &Binding,
+/// `this` term for a retraction (no body to hash). The entity
+/// must come from a Bookmark (looked up by name on the branch),
+/// a Variable (registered earlier or query-bound), or a URI.
+/// `Anonymous` retraction has no entity to act on.
+fn this_term_for_retraction(
+    binding: &HeadBinding,
     analysis: &Analysis,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match binding {
-        Binding::Anonymous => {
-            let entity = Entity::new().map_err(|e| AnalyzeError::ResolverFailed {
-                context: "minting fresh entity".into(),
-                reason: e.to_string(),
-            })?;
-            Term::Constant(Value::Entity(entity))
+        HeadBinding::Anonymous => {
+            return Err(AnalyzeError::UnsupportedFieldValue {
+                field: "head".into(),
+                form: "anonymous retraction has no entity to act on; \
+                       bind the head with `?var`, a bookmark, or a `did:key:…` URI",
+            });
         }
-        Binding::Variable(name) => match analysis.variables.get(name) {
+        HeadBinding::Bookmark(_name) => {
+            // We can't synchronously resolve the bookmark to an
+            // entity here without a branch query; the worker's
+            // retraction path would have to take a name and run
+            // the lookup. For now: leave as a blank — the worker
+            // will need to handle this case explicitly when we
+            // wire it. Most retractions are URI-bound.
+            Term::<dialog_query::Any>::blank()
+        }
+        HeadBinding::Variable(name) => match analysis.variables.get(name) {
             Some(entity) => Term::Constant(Value::Entity(entity.clone())),
             None => Term::<dialog_query::Any>::var(name),
         },
-        Binding::Bookmark(name) => Term::Constant(Value::Entity(Entity::of(name))),
-        Binding::Uri(uri) => {
-            let entity: Entity =
-                uri.parse()
-                    .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                        AnalyzeError::InvalidSubjectUri {
-                            subject: uri.clone(),
-                            reason: e.to_string(),
-                        }
-                    })?;
-            Term::Constant(Value::Entity(entity))
-        }
+        HeadBinding::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
     })
+}
+
+/// Hash-stable summary of an assertion body — pairs of
+/// `(field_name, FieldDigest)` sorted by name. Used by
+/// `Entity::of` to derive a content-addressed entity for
+/// `Anonymous` / `Bookmark` / unbound `Variable` heads.
+///
+/// Only literal scalars contribute. Variables, references, and
+/// blanks are skipped — they're not part of the entity's
+/// identity (they'd reference *other* entities, and including
+/// them in the hash would defeat the deterministic-rerun
+/// property).
+fn body_digest(fields: &[Field]) -> Vec<(String, FieldDigest)> {
+    let mut out: Vec<(String, FieldDigest)> = Vec::new();
+    for field in fields {
+        let digest = match &field.value {
+            FieldValue::Literal(scalar) => FieldDigest::from_scalar(scalar),
+            // Skip variables, references, blanks, nested.
+            _ => continue,
+        };
+        out.push((field.name.clone(), digest));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Serializable shadow of [`Scalar`] used only by
+/// [`body_digest`]. Round-trips the scalar's primitive value so
+/// `Entity::of` can hash it deterministically. Distinct from
+/// `Scalar` because we want a stable serde representation
+/// independent of any future surface-syntax changes.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum FieldDigest {
+    String(String),
+    Integer(i128),
+    UnsignedInteger(u128),
+    Float(f64),
+    Boolean(bool),
+    Null,
+}
+
+impl FieldDigest {
+    fn from_scalar(scalar: &Scalar) -> Self {
+        match scalar {
+            Scalar::String(s) => Self::String(s.clone()),
+            Scalar::Integer(i) => Self::Integer(*i),
+            Scalar::UnsignedInteger(u) => Self::UnsignedInteger(*u),
+            Scalar::Float(f) => Self::Float(*f),
+            Scalar::Boolean(b) => Self::Boolean(*b),
+            Scalar::Null => Self::Null,
+        }
+    }
+}
+
+/// Does `analysis.query` bind `?name`? Used by
+/// [`this_term_for_assertion`] to decide between minting a
+/// body-derived entity and leaving the variable for planning.
+fn query_binds(analysis: &Analysis, name: &str) -> bool {
+    analysis
+        .query
+        .as_ref()
+        .map(|q| q.bindings().contains(name))
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------- //
@@ -1514,7 +1641,7 @@ mod tests {
         assert!(analysis.query.is_none());
         assert_eq!(analysis.mutate.statements.len(), 1);
         assert!(analysis.mutate.requires.is_empty());
-        let Statement::Assert(Application::Concept(_)) = &analysis.mutate.statements[0] else {
+        let Statement::Assert(Application::Concept { .. }) = &analysis.mutate.statements[0] else {
             panic!("expected Assert(Concept)");
         };
     }
@@ -1561,17 +1688,23 @@ mod tests {
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         assert!(analysis.declarations.is_empty());
         assert!(analysis.variables.contains_key("person-name"));
-        let Statement::Assert(Application::Concept(q)) = &analysis.mutate.statements[0] else {
+        let Statement::Assert(Application::Concept { query, binding }) =
+            &analysis.mutate.statements[0]
+        else {
             panic!("expected Assert(Concept)");
         };
-        // Variable-form: no `name` term.
-        assert!(q.terms.get("name").is_none());
+        // No `name` term — meta-name is carried by the binding,
+        // not as a parameter.
+        assert!(query.terms.get("name").is_none());
+        assert!(matches!(binding, HeadBinding::Variable(s) if s == "person-name"));
     }
 
-    /// `attribute! foo:` (bookmark form) DOES emit a `name`
-    /// term carrying the bookmark string.
+    /// `attribute! foo:` (bookmark form): the head's `binding`
+    /// records the bookmark string. The planner emits the
+    /// `dialog.meta/name` claim from `HeadBinding::Bookmark`,
+    /// not from a parameter.
     #[dialog_common::test]
-    async fn bookmark_form_attribute_emits_name_term() {
+    async fn bookmark_form_attribute_carries_binding() {
         let syntax = must_parse(
             "attribute! person-name:\n\
              \x20 the:         io.gozala.person/name\n\
@@ -1579,33 +1712,38 @@ mod tests {
              \x20 cardinality: one\n",
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
-        let Statement::Assert(Application::Concept(q)) = &analysis.mutate.statements[0] else {
+        let Statement::Assert(Application::Concept { query, binding }) =
+            &analysis.mutate.statements[0]
+        else {
             panic!("expected Assert(Concept)");
         };
-        let name_term = q.terms.get("name").expect("bookmark form must set `name`");
-        assert!(matches!(
-            name_term,
-            Term::Constant(Value::String(s)) if s == "person-name"
-        ));
+        assert!(query.terms.get("name").is_none());
+        assert!(matches!(binding, HeadBinding::Bookmark(s) if s == "person-name"));
     }
 
-    /// Two heads of different shapes that derive the same
-    /// bookmark name → `DuplicateName`. (Two heads of the
-    /// *same* shape collapse to one expression at the YAML
-    /// mapping-key level, so this case requires distinct
-    /// head shapes.)
+    /// Two meta heads of different kinds (`attribute!` and
+    /// `concept!`) that share a bookmark name → `DuplicateName`.
+    /// Phase 1 sees both heads declare `foo` and the second
+    /// `declare` returns `Some(prior_entity)`, triggering the
+    /// error. Only meta heads register declarations in Phase 1
+    /// — non-meta heads defer their entity to Phase 3 and so
+    /// are not checked for name collisions today.
     #[dialog_common::test]
-    async fn duplicate_bookmark_across_head_shapes_is_an_error() {
+    async fn duplicate_meta_bookmarks_is_an_error() {
+        // The concept's `with: { x: .a }` references the `a`
+        // attribute defined just above, so concept-body
+        // resolution succeeds and Phase 1 reaches the second
+        // `declare("a", …)` call which finds the prior entry.
         let syntax = must_parse(
-            "attribute! foo:\n\
+            "attribute! a:\n\
              \x20 the:         x.y/a\n\
              \x20 as:          Text\n\
              \x20 cardinality: one\n\
-             person! foo:\n\
-             \x20 name: \"Foo\"\n",
+             concept! a:\n\
+             \x20 with:\n\
+             \x20   x: .a\n",
         );
-        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
             matches!(err, AnalyzeError::DuplicateName { .. }),
             "expected DuplicateName, got {err:?}"
@@ -1690,7 +1828,9 @@ mod tests {
         );
         let analysis = analyze(&syntax, &resolver).await.unwrap();
         assert_eq!(analysis.mutate.statements.len(), 1);
-        let Statement::Retract(Application::Concept(q)) = &analysis.mutate.statements[0] else {
+        let Statement::Retract(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
             panic!("expected Retract(Concept)");
         };
         // `this` is bound; all other fields are blank.
@@ -1730,7 +1870,7 @@ mod tests {
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
-        let Application::Domain(d) = &q.queries[0] else {
+        let Application::Domain { application: d, .. } = &q.queries[0] else {
             panic!("expected Domain application");
         };
         assert_eq!(d.domain, "xyz.tonk");

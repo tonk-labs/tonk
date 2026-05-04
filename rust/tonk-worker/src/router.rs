@@ -962,15 +962,19 @@ person! alice:
             String::from_utf8_lossy(&body_bytes)
         );
 
-        // Retract the person concept-projection from Alice
-        // by her bookmark-derived URI. The worker should
-        // query the branch for `(io.gozala.person/name, alice, *)`
-        // and dissociate the matching value.
-        let alice_uri = {
-            use dialog_artifacts::Entity;
-            use tonk_schema::prelude::EntityExt;
-            Entity::of(&"alice".to_owned()).to_string()
-        };
+        // Pull Alice's entity URI from the setup response —
+        // bookmark heads put `name → entity` in `commits.entities`.
+        let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let alice_uri = setup_resp
+            .commits
+            .entities
+            .get("alice")
+            .expect("setup should bind `alice` to an entity")
+            .clone();
+        // Retract the person concept-projection from Alice by
+        // that URI. The worker should query the branch for
+        // `(io.gozala.person/name, alice, *)` and dissociate
+        // the matching value.
         let retract = format!("person! {alice_uri}: _\n");
         let response = app
             .oneshot(

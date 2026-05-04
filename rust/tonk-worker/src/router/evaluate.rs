@@ -208,6 +208,11 @@ async fn run(
     if !analysis.mutate.statements.is_empty() {
         let mut tx = branch.transaction();
         let mut claim_count = 0usize;
+        // Retraction targets resolved by querying the branch
+        // *before* the transaction commits — collected here and
+        // tx.retract'd in one shot below so we don't interleave
+        // queries with transaction building.
+        let mut retract_claims: Vec<RawClaim> = Vec::new();
         for match_frame in &matches {
             let mut frame = base.clone();
             for (k, v) in match_frame.iter() {
@@ -219,16 +224,24 @@ async fn run(
                     .clone()
                     .plan(&frame)
                     .map_err(|e| TonkWorkerError::Internal(format!("plan failed: {e}")))?;
-                claim_count += count_emitted_claims(&plan);
                 match statement {
                     Statement::Assert(_) => {
+                        claim_count += count_emitted_claims(&plan);
                         tx = tx.assert(plan);
                     }
                     Statement::Retract(_) => {
-                        tx = tx.retract(plan);
+                        // Resolve blank fields by querying the
+                        // branch for their current values, then
+                        // dissociate each match.
+                        let resolved = resolve_retraction_targets(plan, branch, operator).await?;
+                        claim_count += resolved.len();
+                        retract_claims.extend(resolved);
                     }
                 }
             }
+        }
+        for claim in retract_claims {
+            tx = tx.retract(claim);
         }
         tx.commit().perform(operator).await.map_err(|e| {
             log!("Transaction commit failed: {:?}", e);
@@ -243,6 +256,91 @@ async fn run(
         matches: match_blocks,
         commits,
     })
+}
+
+/// One concrete `(the, of, is)` triple ready for `tx.retract`.
+/// Wraps dialog's `Statement` trait so retraction targets land
+/// in the transaction the same way an `ApplicationPlan` does.
+struct RawClaim {
+    the: dialog_artifacts::Attribute,
+    of: Entity,
+    is: Value,
+}
+
+impl dialog_artifacts::Statement for RawClaim {
+    fn assert(self, update: &mut impl dialog_artifacts::Update) {
+        update.associate(self.the, self.of, self.is);
+    }
+    fn retract(self, update: &mut impl dialog_artifacts::Update) {
+        update.dissociate(self.the, self.of, self.is);
+    }
+}
+
+/// Resolve a retraction `ApplicationPlan` to concrete
+/// `(the, of, is)` triples by querying the branch.
+///
+/// Walks the plan's predicate. For each field whose term is
+/// `Term::Variable { name: None, .. }` (a blank), runs an
+/// `AttributeQuery` against `(the, this, *)` and emits one
+/// `RawClaim` per match. Bound `Term::Constant` fields are
+/// **not** retracted — they're treated as match anchors. Per
+/// `analysis-spec.md` example 5b: `name: "Alice"` anchors,
+/// `age: _` is the only field dissociated.
+async fn resolve_retraction_targets(
+    plan: ApplicationPlan,
+    branch: &Branch,
+    operator: &DefaultOperator,
+) -> Result<Vec<RawClaim>, TonkWorkerError> {
+    let Some(this_term) = plan.statement.terms.get("this") else {
+        return Ok(Vec::new());
+    };
+    let this_entity = match this_term {
+        Term::Constant(Value::Entity(e)) => e.clone(),
+        _ => return Ok(Vec::new()),
+    };
+
+    let mut out = Vec::new();
+    for (field_name, attribute) in plan.statement.predicate.with().iter() {
+        let term = match plan.statement.terms.get(field_name) {
+            Some(t) => t,
+            None => continue,
+        };
+        // Bound constant ≠ retraction target; only blanks (and
+        // bare Term::Variable, which the planner would have
+        // errored on already if unbound) get dissociated.
+        if !matches!(term, Term::Variable { name: None, .. }) {
+            continue;
+        }
+        let the_term: dialog_query::attribute::The = attribute.the().clone();
+        let query = dialog_query::AttributeQuery::new(
+            Term::from(the_term),
+            Term::from(this_entity.clone()),
+            Term::<dialog_query::Any>::var("v"),
+            Term::<dialog_query::attribute::Cause>::blank(),
+            None,
+        );
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(query)
+            .perform(operator)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!(
+                    "retraction query failed for ({:?}, {of}): {e:?}",
+                    attribute.the(),
+                    of = this_entity
+                ))
+            })?;
+        for claim in claims {
+            out.push(RawClaim {
+                the: claim.the.into(),
+                of: this_entity.clone(),
+                is: claim.is,
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Estimate how many EAVs an [`ApplicationPlan`] will emit on
@@ -341,8 +439,8 @@ fn render_match_blocks(
     for (i, application) in query.queries.iter().enumerate() {
         let label = labels.get(i).cloned().unwrap_or_else(|| "?".to_owned());
         let descriptor = match application {
-            tonk_schema::transact::Application::Concept(q) => q.predicate.clone(),
-            tonk_schema::transact::Application::Domain(d) => {
+            tonk_schema::transact::Application::Concept { query: q, .. } => q.predicate.clone(),
+            tonk_schema::transact::Application::Domain { application: d, .. } => {
                 ConceptQuery::from(d.clone()).predicate
             }
         };
@@ -363,8 +461,8 @@ fn render_one_result(
     use tonk_schema::transact::Application;
 
     let terms = match application {
-        Application::Concept(q) => &q.terms,
-        Application::Domain(d) => &d.parameters,
+        Application::Concept { query: q, .. } => &q.terms,
+        Application::Domain { application: d, .. } => &d.parameters,
     };
 
     let this = terms

@@ -21,16 +21,19 @@ empty, mutation-only docs leave `query` as `None`.
 
 Producing an `Analysis` runs three phases:
 
-1. **Derive.** Walk every head in the document and compute
-   what we can without the branch:
-   - Bookmark-form heads (`attribute! foo:`, `concept! foo:`,
-     `person! alice:`) get a derived entity registered in
-     `declarations` keyed by the bookmark name.
-   - Variable-form heads (`attribute! ?foo:`, `concept! ?foo:`,
-     `person! ?alice:`) get a derived entity registered in
-     `variables` keyed by the variable name.
-   - Anonymous heads register nothing — their entity will
-     live directly inside the relevant `Application`.
+1. **Derive.** Walk every head in the document. Only `attribute!`
+   and `concept!` heads produce an analysis-time entity (their
+   identity is content-derived from the body's descriptor).
+   - `attribute! foo:` / `attribute! ?foo:` → entity from
+     `descriptor.to_uri()`. Bookmark form registers in
+     `declarations`; variable form registers in `variables`.
+   - `concept! foo:` / `concept! ?foo:` → entity from
+     `descriptor.this()`. Same registration rules.
+   - All other heads (`person! foo:`, `person! ?alice:`,
+     `person!:`, `person! did:key:zX:`) are deferred to Phase 3
+     — their entity comes from `Entity::of(&body)` (or the
+     query frame for query-bound variables, or the parsed URI),
+     none of which is known yet.
 
 2. **Build the query.** For each query expression, build an
    `Application`. Substitute `.bookmark` references against
@@ -38,18 +41,31 @@ Producing an `Analysis` runs three phases:
    `Term::Constant(<entity>)`. Substitute `?var` references
    against `variables` into `Term::Constant(<entity>)`. Store
    the per-expression `Application`s on `QueryAnalysis` in
-   source order. The unified `ConceptApplication` the engine
-   evaluates is derived on demand via
-   `ConceptApplication::from(&query_analysis)` — combining
-   every expression's predicate into one.
+   source order. The unified `ConceptQuery` the engine evaluates
+   is derived on demand via `ConceptQuery::from(&query_analysis)`
+   — combining every expression's predicate into one.
 
 3. **Build the mutation plan.** For each mutation expression,
-   build an `Application`. Substitute `.bookmark` references
-   the same way as in Phase 2 (analysis-time-substituted). Do
-   *not* substitute `?var` — those stay as
-   `Term::Variable(name)` until planning time, because some
-   may be query-bound. Store as `Statement::Assert(_)` or
-   `Statement::Retract(_)` in document order.
+   build an `Application` carrying the source-form `HeadBinding`
+   verbatim. Compute `terms["this"]` from the binding:
+   - `Anonymous` / `Bookmark(_)` → `Term::Constant(Entity::of(&body))`
+   - `Variable(name)` if `name` ∈ `analysis.variables` →
+     `Term::Constant(<derived entity>)`
+   - `Variable(name)` otherwise → `Term::Variable(name)` (will
+     be substituted at planning time from query bindings, or
+     errored as `UnboundMutationVariable`)
+   - `Uri(uri)` → `Term::Constant(<parsed entity>)`
+
+   Substitute `.bookmark` references in field values the same
+   way as Phase 2; leave `?var` field references as variables.
+   Store as `Statement::Assert(_)` or `Statement::Retract(_)`
+   in document order.
+
+   The `dialog.meta/name` claim for bookmark-bound non-meta
+   heads (`person! alice:`) is *not* encoded as a parameter on
+   the user concept's predicate. It's emitted by the planner
+   when `binding == HeadBinding::Bookmark(_)`, so a user
+   concept's own `name` field can't collide with it.
 
 ### Resolution rules summarized
 
@@ -164,39 +180,74 @@ pub enum Statement {
 
 // -------------- shared between read and write sides --------------
 
-/// Same applied-form types used for queries — predicate plus
-/// parameters. The mutation side and query side share these
-/// because both express "a predicate applied to specific
-/// terms," and the only difference is whether you want to
-/// find facts matching the pattern (query) or commit /
-/// dissociate them (mutation).
+/// Predicate plus terms plus the source-form binding the head
+/// carried. Shared between queries and mutations because both
+/// express "a predicate applied to specific terms" — only the
+/// consumer differs.
+///
+/// `binding` is the structural intent: did the user write
+/// `person!:` (anon), `person! ?alice:` (variable),
+/// `person! alice:` (bookmark — git-tag the result), or
+/// `person! did:key:zX:` (explicit URI)? `terms["this"]` is
+/// derived from `binding` (so the planner sees a flat parameter
+/// map dialog can evaluate), but `binding` is the source of
+/// truth — going from `Application` back to surface syntax
+/// reads it directly.
+///
+/// The bookmark binding causes a `dialog.meta/name` claim to be
+/// written alongside the user's fields. This is emitted by the
+/// planner / worker, not encoded as a parameter, so a user
+/// concept's own `name` field can't collide with it.
 pub enum Application {
-    /// `person …:` head — `ConceptApplication` is dialog's
-    /// `ConceptQuery` (`{ predicate: ConceptDescriptor, terms: Parameters }`),
+    /// `person …:` head — `ConceptQuery` is dialog's
+    /// `{ predicate: ConceptDescriptor, terms: Parameters }`,
     /// produced by resolving the concept against the branch
     /// (or in-document state) and applying the user's terms.
-    Concept(ConceptApplication),
-    /// `xyz.tonk …:` head — synthesized inline because claim
+    Concept {
+        query: ConceptQuery,
+        binding: HeadBinding,
+    },
+    /// `xyz.tonk …:` head — descriptor is synthesized at
+    /// planning time from the parameter set because claim
     /// domains have no schema to look up.
-    Domain(DomainApplication),
+    Domain {
+        application: DomainApplication,
+        binding: HeadBinding,
+    },
+}
+
+/// Source-form head binding. Mirrors `tonk_notation::Binding`
+/// 1-to-1 so `Application → Syntax` is direct. `terms["this"]`
+/// is computed from this:
+/// - Anonymous → `Term::Constant(Entity::of(&body))`
+/// - Variable bound by query → `Term::Variable(name)`
+/// - Variable unbound by query → `Term::Constant(Entity::of(&body))`,
+///   plus `name` registered in `analysis.variables`
+/// - Bookmark → `Term::Constant(Entity::of(&body))`, plus a
+///   `dialog.meta/name = name` claim emitted by the planner
+/// - Uri → `Term::Constant(Entity::parse(uri))`
+pub enum HeadBinding {
+    Anonymous,
+    Variable(String),
+    Bookmark(String),
+    Uri(Entity),
 }
 
 impl Application {
     pub fn parameters(&self) -> &Parameters { ... }
-    pub fn bindings(&self) -> Vec<String> { ... }
+    pub fn binding(&self) -> &HeadBinding { ... }
+    pub fn bindings(&self) -> HashSet<String> { ... }
 }
-
-pub type ConceptApplication = ConceptQuery;
 
 pub struct DomainApplication {
     pub domain: String,
     pub parameters: Parameters,
 }
 
-impl From<DomainApplication> for ConceptApplication {
+impl From<DomainApplication> for ConceptQuery {
     /// Synthesize a `ConceptDescriptor` with attribute
     /// `<domain>/<key>` per parameter (no value-type
-    /// constraint), then `descriptor.apply(parameters)`.
+    /// constraint), then apply `parameters` to it.
     fn from(d: DomainApplication) -> Self { ... }
 }
 
@@ -222,25 +273,32 @@ impl Planner for Application {
 }
 
 /// Fully concrete, ready to commit. Wraps a substituted
-/// [`ConceptQuery`]; `assert` walks the predicate's `with` map
-/// and emits one EAV per non-blank field; `retract` mirrors via
-/// dissociate.
+/// [`ConceptQuery`] and carries the source-form binding so the
+/// emitter knows whether to also write a `dialog.meta/name`
+/// claim (bookmark form) and so an `ApplicationPlan` round-trips
+/// back to its `Application`.
+///
+/// `assert` walks the predicate's `with` map and emits one EAV
+/// per non-blank field, plus a `dialog.meta/name` claim when
+/// `binding` is `Bookmark`. `retract` mirrors via dissociate.
 ///
 /// The same shape carries every concept — including the
 /// built-in `attribute` and `concept` schemas, whose fields are
 /// real EAV attributes (`dialog.attribute/id` etc.) just like
 /// any user concept's. There is no special dispatch arm for
-/// built-ins; the bootstrap step writes their descriptors to
-/// `main` + `meta` at repo creation, and from then on they're
-/// resolved like any other concept.
+/// built-ins.
 pub struct ApplicationPlan {
     pub statement: ConceptQuery,
+    pub binding: HeadBinding,
 }
 
 impl Statement for ApplicationPlan {
     fn assert(self, update: &mut impl Update) {
-        // emit one (the, of=this, value) per field where the
-        // term is Term::Constant; skip blanks/variables.
+        // 1. Emit one (the, of=this, value) per field where the
+        //    term is Term::Constant; skip blanks/variables.
+        // 2. If `binding == HeadBinding::Bookmark(name)`, also
+        //    emit (dialog.meta/name, this, name) so the entity
+        //    can later be resolved by `.name`.
     }
     fn retract(self, update: &mut impl Update) {
         // mirror with dissociate.
