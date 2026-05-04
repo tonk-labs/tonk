@@ -952,12 +952,18 @@ fn this_term_for_query(binding: &HeadBinding) -> Term<dialog_query::Any> {
             // the branch to find the entity carrying
             // `dialog.meta/name = name`. The query path doesn't
             // currently do that (no async access here); use a
-            // blank for now and revisit if the editor surfaces a
-            // need for this shape.
-            Term::<dialog_query::Any>::blank()
+            // fresh variable for now so the engine binds matches.
+            Term::<dialog_query::Any>::var("this")
         }
         HeadBinding::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
-        HeadBinding::Anonymous => Term::<dialog_query::Any>::blank(),
+        HeadBinding::Anonymous => {
+            // Dialog's engine requires `this` to be a named
+            // variable (so it can bind matches to it) — a blank
+            // surfaces as `UnboundVariable { variable_name: "this" }`
+            // at evaluation. Mint a stable name so the engine
+            // and the renderer agree on what to look up.
+            Term::<dialog_query::Any>::var("this")
+        }
     }
 }
 
@@ -1876,5 +1882,24 @@ mod tests {
         assert_eq!(d.domain, "xyz.tonk");
         assert!(d.parameters.contains("role"));
         assert!(d.parameters.contains("contact"));
+    }
+
+    /// Anonymous-head queries (`person:`) need `this` as a
+    /// named variable, not a blank — otherwise dialog's engine
+    /// fails with `UnboundVariable { variable_name: "this" }`
+    /// at evaluation. Regression for that crash.
+    #[dialog_common::test]
+    async fn anonymous_query_head_binds_this_as_variable() {
+        let syntax = must_parse("person:\n  name: \"Alice\"\n");
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let q = analysis.query.as_ref().unwrap();
+        let Application::Concept { query, .. } = &q.queries[0] else {
+            panic!("expected Concept application");
+        };
+        assert!(matches!(
+            query.terms.get("this"),
+            Some(Term::Variable { name: Some(_), .. })
+        ));
     }
 }

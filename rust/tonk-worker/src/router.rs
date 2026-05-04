@@ -1005,4 +1005,80 @@ person! alice:
             resp.commits.claims
         );
     }
+
+    /// Anonymous-head query (`person:`) must not crash dialog
+    /// with `UnboundVariable { variable_name: "this" }`. The
+    /// analyzer mints a named variable for `this` so the engine
+    /// can bind matches; the `/evaluate` route exercises that
+    /// path end-to-end.
+    #[dialog_common::test]
+    async fn it_runs_anonymous_query() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-anon-query";
+
+        put_repo(&app, repo).await;
+
+        // Define a `person` concept and assert one Alice so the
+        // query has something to match.
+        let setup = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+
+concept! person:
+  with:
+    name: .person-name
+
+person! alice:
+  name: \"Alice\"
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(setup))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+
+        // The actual regression: `person:` (no `?var`, no `!`).
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from("person:\n  name: \"Alice\"\n"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "anonymous query failed: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(resp.matches.len(), 1, "expected 1 match block");
+        assert_eq!(
+            resp.matches[0].results.len(),
+            1,
+            "expected 1 result for Alice"
+        );
+    }
 }
