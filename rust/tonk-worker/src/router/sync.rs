@@ -3,10 +3,14 @@
 //! These endpoints allow synchronizing a branch with its upstream remote.
 //! Each response carries the local branch revision before and after the
 //! operation so the UI can render a diff (or detect "nothing changed").
+//!
+//! Pull/push run through the reactor's chain so a successful pull
+//! re-polls every subscription on the branch (push doesn't change
+//! local state, so it doesn't re-poll).
 
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
-use dialog_repository::{RepositoryExt as _, Revision};
+use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
@@ -44,8 +48,6 @@ pub struct SyncResponse {
 }
 
 /// Pull changes from the upstream remote.
-///
-/// Fetches changes from the remote and merges them into the local branch.
 #[wasm_compat]
 pub async fn pull(
     State(state): State<AppState>,
@@ -59,28 +61,24 @@ pub async fn pull(
 
     let tonk_state = state.write().await;
 
-    let repo = tonk_state
-        .profile
+    let session = tonk_state
+        .reactor
         .repository(&params.repo)
-        .load()
+        .branch(&params.branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+
+    let before = session.handle().revision();
+
+    match tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .pull()
         .perform(&tonk_state.operator)
         .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
-        })?;
-
-    let branch = repo
-        .branch(params.branch.as_str())
-        .open()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
-        })?;
-
-    let before = branch.revision();
-
-    match branch.pull().perform(&tonk_state.operator).await {
+    {
         Ok(after) => {
             log!("Pull succeeded");
             Ok(Json(SyncResponse {
@@ -91,7 +89,7 @@ pub async fn pull(
             }))
         }
         Err(e) => {
-            log!("Pull failed: {:?}", e);
+            log!("Pull failed: {e:?}");
             Ok(Json(SyncResponse {
                 success: false,
                 before: before.clone(),
@@ -103,8 +101,6 @@ pub async fn pull(
 }
 
 /// Push local changes to the upstream remote.
-///
-/// Sends local changes to the remote.
 #[wasm_compat]
 pub async fn push(
     State(state): State<AppState>,
@@ -118,39 +114,35 @@ pub async fn push(
 
     let tonk_state = state.write().await;
 
-    let repo = tonk_state
-        .profile
+    let session = tonk_state
+        .reactor
         .repository(&params.repo)
-        .load()
+        .branch(&params.branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+
+    let before = session.handle().revision();
+
+    match tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .push()
         .perform(&tonk_state.operator)
         .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
-        })?;
-
-    let branch = repo
-        .branch(params.branch.as_str())
-        .open()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
-        })?;
-
-    let before = branch.revision();
-
-    match branch.push().perform(&tonk_state.operator).await {
+    {
         Ok(_) => {
             log!("Push succeeded");
             Ok(Json(SyncResponse {
                 success: true,
                 before: before.clone(),
-                after: branch.revision(),
+                after: session.handle().revision(),
                 error: None,
             }))
         }
         Err(e) => {
-            log!("Push failed: {:?}", e);
+            log!("Push failed: {e:?}");
             Ok(Json(SyncResponse {
                 success: false,
                 before: before.clone(),
@@ -162,8 +154,6 @@ pub async fn push(
 }
 
 /// Full sync: pull then push.
-///
-/// First pulls changes from upstream, then pushes local changes.
 #[wasm_compat]
 pub async fn sync(
     State(state): State<AppState>,
@@ -177,62 +167,63 @@ pub async fn sync(
 
     let tonk_state = state.write().await;
 
-    let repo = tonk_state
-        .profile
+    let session = tonk_state
+        .reactor
         .repository(&params.repo)
-        .load()
+        .branch(&params.branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+
+    let before = session.handle().revision();
+
+    let after_pull = match tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .pull()
         .perform(&tonk_state.operator)
         .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
-        })?;
-
-    let branch = repo
-        .branch(params.branch.as_str())
-        .open()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
-        })?;
-
-    let before = branch.revision();
-
-    // First pull
-    let after_pull = match branch.pull().perform(&tonk_state.operator).await {
+    {
         Ok(after) => {
             log!("Pull succeeded");
             after
         }
         Err(e) => {
-            log!("Pull failed: {:?}", e);
+            log!("Pull failed: {e:?}");
             return Ok(Json(SyncResponse {
                 success: false,
                 before: before.clone(),
                 after: before,
-                error: Some(format!("Pull failed: {}", e)),
+                error: Some(format!("Pull failed: {e}")),
             }));
         }
     };
 
-    // Then push
-    match branch.push().perform(&tonk_state.operator).await {
+    match tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .push()
+        .perform(&tonk_state.operator)
+        .await
+    {
         Ok(_) => {
             log!("Push succeeded");
             Ok(Json(SyncResponse {
                 success: true,
                 before,
-                after: branch.revision(),
+                after: session.handle().revision(),
                 error: None,
             }))
         }
         Err(e) => {
-            log!("Push failed: {:?}", e);
+            log!("Push failed: {e:?}");
             Ok(Json(SyncResponse {
                 success: false,
                 before,
                 after: after_pull,
-                error: Some(format!("Push failed: {}", e)),
+                error: Some(format!("Push failed: {e}")),
             }))
         }
     }

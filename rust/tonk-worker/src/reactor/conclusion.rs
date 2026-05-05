@@ -5,27 +5,41 @@
 
 use std::collections::BTreeMap;
 
-use dialog_query::ConceptConclusion;
+use dialog_query::{Any, ConceptConclusion, Parameters, Term};
 use serde::Serialize;
 
 /// Serializable projection of a [`ConceptConclusion`] — the
-/// concept's entity plus a placeholder for field values. The
-/// route layer can do a richer projection if needed; this is
-/// the minimum viable wire shape.
+/// concept's entity plus the projected field values for every
+/// term named by the originating query.
 #[derive(Debug, Clone, Serialize)]
 pub struct Conclusion {
     /// Entity URI of the matched concept (`did:key:…` etc.).
     pub this: String,
-    /// Per-field values projected from the conclusion. Empty for
-    /// the v1 wire format — extend when consumers need it.
+    /// Field values keyed by term name from the query. Each
+    /// value is the raw `dialog_artifacts::Value` serialized via
+    /// its `serde::Serialize` impl (untagged enum — strings,
+    /// numbers, bools, entity URIs, byte buffers).
     pub fields: BTreeMap<String, serde_json::Value>,
 }
 
-impl From<&ConceptConclusion> for Conclusion {
-    fn from(c: &ConceptConclusion) -> Self {
+impl Conclusion {
+    /// Project a [`ConceptConclusion`] using the query's `terms`
+    /// to discover which field names were bound.
+    pub fn project(conclusion: &ConceptConclusion, terms: &Parameters) -> Self {
+        let mut fields = BTreeMap::new();
+        for (name, _) in terms.iter() {
+            let lookup = conclusion
+                .source()
+                .lookup(&Term::<Any>::var(name.clone()))
+                .ok()
+                .and_then(|v| serde_json::to_value(&v).ok());
+            if let Some(value) = lookup {
+                fields.insert(name.clone(), value);
+            }
+        }
         Self {
-            this: c.entity().to_string(),
-            fields: BTreeMap::new(),
+            this: conclusion.entity().to_string(),
+            fields,
         }
     }
 }

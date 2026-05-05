@@ -67,6 +67,7 @@ impl SubscriptionPoll<'_> {
             subscription.query.clone()
         };
 
+        let terms = query.terms.clone();
         let conclusions = match self
             .state
             .branch
@@ -83,7 +84,10 @@ impl SubscriptionPoll<'_> {
             }
         };
 
-        let wire: Vec<Conclusion> = conclusions.iter().map(Conclusion::from).collect();
+        let wire: Vec<Conclusion> = conclusions
+            .iter()
+            .map(|c| Conclusion::project(c, &terms))
+            .collect();
         let bytes = match serde_json::to_vec(&wire) {
             Ok(b) => Bytes::from(b),
             Err(err) => {

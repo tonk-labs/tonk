@@ -96,6 +96,7 @@ pub async fn query(
             .acquire(&tonk.operator)
             .await
             .map_err(reactor_to_error)?;
+        let terms = query.terms.clone();
         let conclusions = session
             .handle()
             .select(query)
@@ -103,7 +104,10 @@ pub async fn query(
             .try_vec()
             .await
             .map_err(|e| reactor_to_error(ReactorError::QueryFailed(e)))?;
-        let wire: Vec<Conclusion> = conclusions.iter().map(Conclusion::from).collect();
+        let wire: Vec<Conclusion> = conclusions
+            .iter()
+            .map(|c| Conclusion::project(c, &terms))
+            .collect();
         Ok(Json(wire).into_response())
     }
 }

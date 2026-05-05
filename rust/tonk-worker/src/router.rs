@@ -1777,9 +1777,15 @@ employee ?p:
     /// `dialog.meta/name`. Matches every entity on the branch
     /// that carries a `dialog.meta/name` claim. Tests below seed
     /// at least one such entity via `/evaluate` before querying.
+    /// Binds both `this` and `name` so the projected
+    /// [`Conclusion::fields`] carries the entity URI and the
+    /// concept's display name.
     fn named_concept_wire_query() -> serde_json::Value {
         serde_json::json!({
-            "terms": { "this": { "?": { "name": "this" } } },
+            "terms": {
+                "this": { "?": { "name": "this" } },
+                "name": { "?": { "name": "name" } },
+            },
             "predicate": {
                 "with": {
                     "name": {
@@ -2100,6 +2106,86 @@ attribute! {name}:
         assert!(
             session.state.subscriptions().lock().is_empty(),
             "dropped subscriber's subscription must be pruned after a change-driven poll"
+        );
+    }
+
+    /// One-shot `/query` projects every term named in the
+    /// query's `terms` map into [`Conclusion::fields`]. The
+    /// `Named` view binds `this` and `name`, so each row must
+    /// carry both — the entity URI and the display name string.
+    #[dialog_common::test]
+    async fn it_projects_query_terms_into_conclusion_fields() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-projection";
+        put_repo(&app, repo).await;
+        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
+
+        let body = post_query(&app, repo, "main").await;
+        let arr = body.as_array().expect("array");
+        assert!(!arr.is_empty(), "expected matches: {body}");
+
+        for row in arr {
+            let fields = row.get("fields").and_then(|f| f.as_object());
+            let fields = fields.unwrap_or_else(|| panic!("row missing fields object: {row}"));
+            assert!(
+                fields.contains_key("this"),
+                "fields must include `this`: {row}",
+            );
+            let name = fields
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("fields[\"name\"] must be a string: {row}"));
+            assert!(!name.is_empty(), "name binding must be non-empty: {row}");
+        }
+    }
+
+    /// Pull through the reactor's chain must re-poll
+    /// subscriptions on success. We can't test against a real
+    /// upstream here, but the no-op pull (no remote configured)
+    /// still drives the chain and proves the wiring exists.
+    /// After the pull, a subscription remains live and a
+    /// follow-up commit broadcasts a fresh frame — proving the
+    /// pull path didn't tear anything down.
+    #[dialog_common::test]
+    async fn it_keeps_subscription_live_across_pull() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+
+        let repo = "test-reactor-pull";
+        put_repo(&app, repo).await;
+        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
+
+        let mut body = open_subscription(&app, repo, "main").await;
+        let snapshot_before = read_sse_frame(&mut body).await;
+
+        // Pull through the reactor. With no upstream the dialog
+        // pull is a no-op, but the reactor wiring still runs the
+        // post-pull re-poll.
+        let pull_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/sync/pull"))
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(pull_response.status(), StatusCode::OK);
+
+        // Subscription must still be alive — proven by a commit
+        // delivering a fresh frame on the same SSE body.
+        seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
+        let snapshot_after = read_sse_frame(&mut body).await;
+        assert_ne!(
+            snapshot_before, snapshot_after,
+            "post-pull commit must still broadcast"
         );
     }
 

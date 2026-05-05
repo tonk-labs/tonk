@@ -1,9 +1,9 @@
 # `TonkReactor`: query subscriptions over branches
 
 `TonkReactor` is the worker's reactive layer over dialog
-branches. It holds (a) the worker's `operator` + `profile`
-handles — same things `TonkState` carries today — and (b) a set
-of standing query subscriptions keyed by branch.
+branches. It holds (a) the worker's `profile` handle and (b) a
+two-tier cache of open repository and branch handles, with the
+subscriptions registered against each branch.
 
 A subscription names "this query, on this branch." Whenever the
 branch changes (a transaction commits, a sync pulls in artifacts)
@@ -52,7 +52,8 @@ What we *do* do:
   subscriber for the same query attaches to the existing
   subscription rather than allocating a parallel one. When
   every subscriber disconnects, the subscription is dropped on
-  the next change pass.
+  the next change pass (its dead channel is detected the next
+  time the poll attempts to send).
 
 ---
 
@@ -95,227 +96,294 @@ What we *do* do:
 ```rust
 pub struct TonkReactor {
     profile: Profile,
-    repos: Mutex<HashMap<String, RepoEntry>>,
+    repos: Mutex<HashMap<String, Arc<RepositoryState>>>,
 }
 ```
 
 Owned by the worker (lives on `TonkState`). The reactor doesn't
-own the operator — every effect takes `&Env` at `perform` time,
+own an operator — every effect takes `&Env` at `perform` time,
 matching dialog's pattern. That keeps the reactor agnostic to
 *which* operator runs the effect (test stubs, the worker's
 `DefaultOperator`, etc.) and avoids holding a long-lived handle
 that would need teardown coordination.
 
-The `repos` map is populated lazily by `perform`: a chain that
-references a repo + branch resolves each level against the
-cache; on miss it opens the underlying handle (using `env`) and
-inserts. One open per repo + one per branch is the floor; every
-subsequent `perform` for the same chain skips both opens.
+The `repos` map is populated lazily. A chain that references a
+repo + branch resolves each level against the cache; on miss it
+opens the underlying handle (using `env`) and inserts. One open
+per repo + one per branch is the floor; every subsequent
+`acquire` for the same chain skips both opens.
+
+The cache is two-tier `Arc`-shared: `Arc<RepositoryState>` and
+`Arc<BranchState>`. Once a chain has acquired a session it can
+operate on the branch (subscribe, poll) without re-locking the
+reactor's outer map.
+
+`parking_lot::Mutex` covers both maps' critical sections — they
+are short and synchronous.
 
 ## API surface
 
 The public API is a builder chain. Each method on the chain
 returns a description; nothing touches the reactor's caches or
-the network until `perform`.
+the network until `acquire` (for the inner handle) or `perform`
+(for a leaf effect).
 
 ```rust
 reactor
-    .repository("home")          // RepositoryHandle, builder
-    .branch("meta")              // BranchHandle, builder
+    .repository("home")          // RepositoryReference
+    .branch("meta")              // BranchReference
     .transaction()               // TransactionBuilder
     .assert(...)
     .commit()                    // Commit, an effect
     .perform(&operator).await?;
 ```
 
-Three leaf effects exist: `commit` (mutating), `query` (one-
-shot read), `subscribe` (subscription read). All take `&Env`
-at perform time:
+Leaf effects: `commit` (transaction), `subscribe` (subscription
+read), `pull`, `push`. The one-shot read uses dialog's native
+`Branch::select(...)` directly, after acquiring the session,
+because it returns a stream rather than a materialized `Vec`.
+Two-phase keeps the underlying lazy stream visible to the caller
+(who can `try_next` for streaming or `try_vec` to collect):
 
 ```rust
-reactor.repository("home").branch("meta").query(q).perform(&op).await?
-// → Vec<ConceptConclusion>
+let session = reactor.repository("home").branch("meta")
+    .acquire(&op).await?;
 
-reactor.repository("home").branch("meta").subscribe(q).perform(&op).await?
-// → broadcast::Receiver<Bytes>, with initial snapshot already enqueued
+let conclusions = session.handle()
+    .select(q).perform(&op).try_vec().await?;
+// Vec<ConceptConclusion>
 
-reactor.repository("home").branch("meta").transaction().assert(...).commit().perform(&op).await?
-// → commit result; on success the perform path re-evaluates every
+let subscriber = reactor.repository("home").branch("meta")
+    .subscribe(q).perform(&op).await?;
+// Subscriber { hash, receiver: UnboundedReceiver<Bytes> }
+// — first event is the current snapshot, enqueued before
+// `perform` returns
+
+reactor.repository("home").branch("meta")
+    .transaction().assert(...).commit().perform(&op).await?
+// — on success the perform path re-evaluates every
 //   subscription on this branch against the same `&op`.
+
+reactor.repository("home").branch("meta")
+    .pull().perform(&op).await?
+// — on success the perform path re-polls every subscription.
 ```
 
-`perform` semantics for the chain:
+Mutation chain semantics:
 
-1. Look up `RepoEntry` for the repository name. On miss, open
-   the repository via `env` and insert.
-2. Look up `BranchEntry` for the branch name in
-   `repo.branches`. On miss, open the branch via `env` and
-   insert.
-3. Run the leaf effect (`commit` / `query` / `subscribe`)
-   against the resolved branch.
-4. For `commit`: on success, walk `branch.subscriptions` and
-   re-evaluate each one against `env`. Failures here log and
-   are swallowed — the commit already succeeded; subscription
-   broadcasts are best-effort.
+1. Walk the chain to a leaf effect.
+2. Leaf `perform` calls `branch_reference.acquire(env)` —
+   reusing a cached `BranchSession` if present, otherwise
+   opening (and caching) the repository and branch.
+3. Run the underlying dialog operation (`commit` / `pull` /
+   `push`).
+4. On success — for `commit` and `pull` — call
+   `branch_session.state.poll(env)`, walking the subscription
+   map and re-running each query. Failures here log and are
+   swallowed; the mutation already succeeded.
 
-### `RepoEntry`
+`push` doesn't re-poll because it doesn't change local branch
+state.
+
+### `RepositoryState`
 
 ```rust
-struct RepoEntry {
-    repository: Repository,
-    branches: HashMap<String, BranchEntry>,
+pub struct RepositoryState {
+    repository: Arc<Repository>,
+    branches: Mutex<HashMap<String, Arc<BranchState>>>,
 }
 ```
 
-Caches the open `Repository` handle so subsequent branches under
-the same repo skip the repository load. `Repository` is the
-result of `state.profile.repository(name).load().perform(op)`
-and stays valid across requests.
+Caches the open `Repository` handle so subsequent branches
+under the same repo skip the repository load. `Arc<Repository>`
+because the repo handle is cloned into per-branch chains.
 
-### `BranchEntry`
+### `BranchState`
 
 ```rust
-struct BranchEntry {
-    branch: Branch,
-    subscriptions: HashMap<QueryHash, Subscription>,
+pub struct BranchState {
+    pub branch: Branch,
+    subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
 }
 ```
 
-Caches the open `Branch` handle and the subscriptions registered
-against it. `Branch` internally holds a `Cell<Revision>` that
-tracks the revision automatically as the branch advances, so a
-cached handle stays current — re-evaluation doesn't need to
-re-open between commits.
+Caches the open `Branch` handle and the subscriptions
+registered against it. `Branch` internally holds a
+`Cell<Revision>` that tracks the revision automatically as the
+branch advances, so a cached handle stays current —
+re-evaluation doesn't need to re-open between commits.
+
+### `BranchSession`
+
+```rust
+pub struct BranchSession {
+    pub state: Arc<BranchState>,
+}
+
+impl BranchSession {
+    pub fn handle(&self) -> &Branch;
+    pub fn subscription(&self, hash: QueryHash) -> SubscriptionReference<'_>;
+}
+```
+
+Returned by `BranchReference::acquire(&env)`. Holds the
+`Arc<BranchState>` so callers operate on the branch (subscribe,
+select, poll) without re-locking the reactor's outer map.
 
 ### Builder types
 
-The chain is built from the following types, each holding the
-state accumulated so far. Every method on a chain returns a new
-chain value — nothing async, nothing touches the reactor's
-caches until `perform`.
-
 ```rust
-pub struct RepositoryHandle<'a> {
-    reactor: &'a TonkReactor,
-    repo: String,
+pub struct RepositoryReference<'a> {
+    pub reactor: &'a TonkReactor,
+    pub name: &'a str,
 }
 
-impl RepositoryHandle<'_> {
-    pub fn branch(self, name: impl Into<String>) -> BranchHandle<'_>;
+impl RepositoryReference<'_> {
+    pub fn branch(self, name: &str) -> BranchReference<'_>;
+    pub async fn acquire<Env>(&self, env: &Env) -> Result<Arc<RepositoryState>, ReactorError>
+        where Env: LoadProvider;
 }
 
-pub struct BranchHandle<'a> {
-    reactor: &'a TonkReactor,
-    repo: String,
-    branch: String,
+pub struct BranchReference<'a> {
+    pub repository: RepositoryReference<'a>,
+    pub name: &'a str,
 }
 
-impl BranchHandle<'_> {
-    pub fn transaction(self) -> TransactionBuilder<'_>;
-    pub fn query(self, q: ConceptQuery) -> Query<'_>;
+impl BranchReference<'_> {
+    pub async fn acquire<Env>(&self, env: &Env) -> Result<BranchSession, ReactorError>
+        where Env: LoadProvider + BranchOpenProvider;
+
     pub fn subscribe(self, q: ConceptQuery) -> Subscribe<'_>;
+    pub fn transaction(self) -> TransactionBuilder<'_>;
+    pub fn pull(self) -> Pull<'_>;
+    pub fn push(self) -> Push<'_>;
 }
 
-pub struct TransactionBuilder<'a> {
-    /* repo + branch + asserts + retracts */
-}
+pub struct TransactionBuilder<'a> { /* repo + branch + asserts + retracts */ }
 
 impl TransactionBuilder<'_> {
-    pub fn assert<S: Statement>(self, s: S) -> Self;
-    pub fn retract<S: Statement>(self, s: S) -> Self;
+    pub fn assert(self, c: Claim) -> Self;
+    pub fn retract(self, c: Claim) -> Self;
     pub fn commit(self) -> Commit<'_>;
 }
 ```
 
-The leaf effect types — `Commit`, `Query`, `Subscribe` — each
-have a single `perform` method:
+There is no `Query` (one-shot) effect type. Use the dialog
+`Branch::select(...)` chain on a `BranchSession::handle()` for
+that.
 
-```rust
-impl Commit<'_> {
-    pub async fn perform<Env>(self, env: &Env) -> Result<CommitResult, ReactorError>
-    where
-        Env: /* dialog operator bound */;
-}
+### Per-operation env traits
 
-impl Query<'_> {
-    pub async fn perform<Env>(self, env: &Env) -> Result<Vec<ConceptConclusion>, ReactorError>
-    where Env: /* … */;
-}
+The chain bounds `Env` per leaf, not via a single umbrella
+trait, so each operation states the provider capabilities it
+actually needs:
 
-impl Subscribe<'_> {
-    pub async fn perform<Env>(self, env: &Env) -> Result<broadcast::Receiver<Bytes>, ReactorError>
-    where Env: /* … */;
-}
-```
-
-The bare `Branch::transaction()` / `Branch::pull` / etc. paths
-are not exposed on routes. Mutation flows through the reactor's
-chain so the perform path can re-evaluate subscriptions before
-returning.
+- `LoadProvider` — `RepositoryReference::acquire`
+- `BranchOpenProvider` — `BranchReference::acquire`
+- `SelectProvider` — re-poll path (subscription evaluation)
+- `CommitProvider` — `Commit::perform`
+- `PullProvider` — `Pull::perform`
+- `PushProvider` — `Push::perform`
 
 ### `QueryHash`
 
 ```rust
-struct QueryHash(blake3::Hash);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct QueryHash(Blake3Hash);
+
+impl From<&ConceptQuery> for QueryHash { /* … */ }
 ```
 
-Content hash of the canonical-CBOR encoding of the
-`ConceptQuery` (via `serde_ipld_dagcbor`). CBOR gives a
-deterministic byte layout without writing a custom canonicalizer
-— map keys sort, integers pack consistently. Same machinery
-dialog uses for content addressing.
+Blake3 of the canonical-JSON encoding of a `Query` (the
+serializable wire shape of `ConceptQuery`). JSON is
+deterministic enough within one Rust process: `Parameters` and
+`NamedAttributes` both serialize keys in `BTreeMap` order via
+their custom serializers.
 
 The repo + branch don't go into this hash because the
-subscription is keyed *inside* its branch's `BranchEntry` —
+subscription is keyed *inside* its branch's `BranchState` —
 two different branches with the same query naturally land in
 different sub-maps. Within one branch, two clients sending
 identical `ConceptQuery` values collide on `QueryHash` and
 share one subscription.
 
 `ConceptQuery` doesn't implement `Hash`, but it implements
-`PartialEq`, so the worker verifies on a hash collision (a
-distinct query producing the same hash — negligible with
-blake3, but cheap to check) and rejects the second.
+`PartialEq`, so the worker verifies on subscribe (a hash
+collision being a distinct query producing the same hash —
+negligible with blake3, but cheap to check) and rejects the
+second.
 
-### `Subscription`
+### `Subscription` and friends
 
 ```rust
-struct Subscription {
-    query: ConceptQuery,
-    last_hash: Option<blake3::Hash>,
-    subscribers: Vec<Subscriber>,
+pub(crate) struct Subscription {
+    pub query: ConceptQuery,
+    pub last_hash: Option<Blake3Hash>,
+    pub subscribers: Vec<SubscriberSession>,
 }
 
-struct Subscriber {
-    sender: mpsc::UnboundedSender<Bytes>,
-    status: Status,
+pub(crate) struct SubscriberSession {
+    pub sender: UnboundedSender<Bytes>,
+    pub status: Status,
 }
 
-enum Status {
-    /// Just attached — hasn't received the current snapshot yet.
-    Pending,
-    /// Has received bytes whose hash matches the subscription's
-    /// `last_hash`.
-    Established,
+pub(crate) enum Status {
+    Pending,      // attached, hasn't received the current snapshot
+    Established,  // received bytes whose hash matches `last_hash`
 }
 ```
 
 One subscription per `(branch, query)` pair, regardless of how
 many subscribers have attached. The branch handle isn't carried
-here — the poll path already has a `&BranchEntry.branch` at the
-point it iterates subscriptions.
+here — the poll path already has access via the parent
+`BranchState`.
 
-- **`query`** — the `ConceptQuery` to re-run.
-- **`last_hash`** — blake3 of the most recent serialization of
-  the query result. `None` until the first poll completes.
-- **`subscribers`** — open downstream channels with their
-  delivery status. New subscribers join as `Pending`; the next
-  poll either promotes them to `Established` (if it broadcast
-  to them) or drops them (if their channel closed).
+The public-facing handle a subscriber holds is:
 
-Broadcast bytes are framed as JSON (`Vec<ConceptConclusion>`
-serialized via serde_json) so the SSE event payload is directly
-parseable by clients.
+```rust
+pub struct Subscriber {
+    pub hash: QueryHash,
+    pub receiver: UnboundedReceiver<Bytes>,
+}
+```
+
+`SubscriberSession` (in the subscription map) and `Subscriber`
+(returned to the caller) deliberately have distinct names: the
+former is internal channel state, the latter is the caller's
+read handle.
+
+Broadcast bytes are framed as JSON `Vec<Conclusion>` (the wire
+projection of `ConceptConclusion`) so SSE event payloads parse
+directly client-side.
+
+### Wire shapes: `Query` and `Conclusion`
+
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct Query {
+    pub terms: Parameters,
+    pub predicate: ConceptDescriptor,
+}
+
+#[derive(Serialize)]
+pub struct Conclusion {
+    pub this: String,                                    // entity URI
+    pub fields: BTreeMap<String, serde_json::Value>,     // term → value
+}
+```
+
+`Query` is the serializable projection of `ConceptQuery` (used
+as the `/query` request body and the canonical input to the
+subscription hash). `Conclusion` is the serializable projection
+of `ConceptConclusion` (used as the `/query` response and the
+broadcast frame).
+
+`Conclusion::project(c, terms)` walks the query's `terms` map,
+looks each name up against the conclusion's underlying `Match`,
+and serializes the resulting `dialog_artifacts::Value` via its
+existing `serde::Serialize` impl. So `fields` carries one entry
+per term named in the originating query: `this`, plus any other
+variables the query bound.
 
 ---
 
@@ -324,18 +392,19 @@ parseable by clients.
 A single `poll` routine handles both first-delivery to a new
 subscriber and broadcast-on-change. It's invoked from
 `Subscribe::perform` (after attaching the new subscriber) and
-from the success path of `Commit::perform`, `Pull::perform`,
-and `Sync::perform`.
+from the success path of `Commit::perform` and `Pull::perform`.
 
-For each subscription on the branch (commit/pull/sync polls
-all subscriptions; subscribe polls only the affected one):
+For each subscription on the branch (commit/pull poll all
+subscriptions; subscribe polls only the affected one):
 
-1. **Re-evaluate.** Run `subscription.query` against the
-   branch using the `&env` the caller passed. Collect
-   `Vec<ConceptConclusion>`.
-2. **Serialize.** Encode as JSON bytes (broadcast format) and
-   blake3-hash the bytes → `new_hash`.
-3. **Decide who receives.**
+1. **Snapshot the query** out of the lock so re-evaluation
+   doesn't hold the subscription mutex across an await.
+2. **Re-evaluate.** Run the query against the branch using the
+   `&env` the caller passed. Collect `Vec<ConceptConclusion>`.
+3. **Project + serialize.** Render every conclusion through
+   `Conclusion::project(c, &terms)`, encode the `Vec<Conclusion>`
+   as JSON bytes, blake3-hash the bytes → `new_hash`.
+4. **Decide who receives.**
    - If `Some(new_hash) != last_hash`: send `bytes` to *every*
      subscriber (Pending + Established). Set
      `last_hash = Some(new_hash)`. Mark all Pending →
@@ -343,19 +412,20 @@ all subscriptions; subscribe polls only the affected one):
    - Else: send `bytes` only to Pending subscribers; mark them
      Established. Established subscribers skip — they already
      received bytes that matched this hash.
-4. **Cleanup.** Drop any subscriber whose
-   `sender.send(...)` returned `Err` (downstream receiver
-   closed). If `subscribers.is_empty()` afterward, drop the
-   subscription.
+5. **Cleanup.** Drop any subscriber whose `sender.send(...)`
+   returned `Err` (downstream receiver closed). If
+   `subscribers.is_empty()` afterward, drop the subscription.
 
 Errors during re-evaluation (branch closed, query rejected)
 log and skip — a single broken subscription doesn't bring down
 the whole branch's poll pass.
 
-This routine isn't on the public surface: the reactor doesn't
-expose a `notify_changed` method, because every legitimate way
-to mutate a branch already goes through the chain and the poll
-is bundled into the leaf effect's perform.
+This routine isn't on the public surface as a notify hook: the
+reactor doesn't expose a `notify_changed` method, because every
+legitimate way to mutate a branch already goes through the
+chain and the poll is bundled into the leaf effect's perform.
+A `BranchState::poll(&env)` method *is* public, used by the
+chain effects internally and by tests asserting on cache state.
 
 #### Why two-status instead of per-subscriber hashes
 
@@ -370,24 +440,44 @@ yet?" — which is all the poll needs to decide who to send to.
 Per-subscriber state stays at one byte regardless of how many
 subscriptions accumulate.
 
+#### Dead-subscriber pruning
+
+Pruning is piggy-backed on the send attempt — there is no
+separate reaper. A dropped SSE body closes the receiver; the
+next change-driven poll's `send(...)` to that subscriber
+returns `Err`, `retain_mut` drops it, and (if it was the last
+subscriber) the subscription itself is removed.
+
+This means an idle subscription whose sole subscriber dropped
+will linger until the *next* commit or pull on the branch. In
+practice, polls only fire on real change, and the first such
+change reclaims the slot. We don't probe `is_closed()` on every
+poll because that adds work to every iteration for a problem
+that resolves itself the next time anything actually happens.
+
 ### `TonkReactor::shutdown`
 
 ```rust
-pub async fn shutdown(&self);
+pub fn shutdown(&self);
 ```
 
-Drops every subscription's senders so all open SSE response
-bodies finish. Subscription map clears. Called from the SW
-`onupdatefound` path alongside `LspHub::shutdown`.
+Drops every cached handle (and therefore every subscription's
+sender) so all open SSE response bodies finish. Subscription
+maps clear via the `Arc` reference count dropping to zero.
+Called from the SW `onupdatefound` path alongside
+`LspHub::shutdown`.
 
 ### `ReactorError`
 
 ```rust
 pub enum ReactorError {
-    BranchNotFound { repo: String, branch: String },
-    QueryRejected(String),
+    RepositoryNotFound { repo: String, reason: String },
+    BranchNotFound { repo: String, branch: String, reason: String },
+    QueryFailed(#[from] EvaluationError),
+    Commit(#[from] CommitError),
+    Pull(#[from] PullError),
+    Push(#[from] PushError),
     QueryHashCollision,
-    Internal(String),
 }
 ```
 
@@ -401,7 +491,7 @@ Surfaced through the route's error mapping into the existing
 ```
 POST /api/repository/{repo}/branch/{branch}/query
 Content-Type: application/json
-Body: ConceptQuery (serialized as { terms, predicate })
+Body: Query (serialized as { terms, predicate })
 ```
 
 ### Without `Accept: text/event-stream`
@@ -409,12 +499,12 @@ Body: ConceptQuery (serialized as { terms, predicate })
 ```
 200 OK
 Content-Type: application/json
-Body: Vec<ConceptConclusion>
+Body: Vec<Conclusion>
 ```
 
-Builds and performs:
-`reactor.repository(repo).branch(branch).query(q).perform(&op)`.
-One-shot.
+Acquires the `BranchSession` via the reactor chain, then calls
+dialog's `branch.select(q).perform(&op).try_vec()` and projects
+each `ConceptConclusion` through `Conclusion::project`.
 
 ### With `Accept: text/event-stream`
 
@@ -423,13 +513,13 @@ One-shot.
 Content-Type: text/event-stream
 Cache-Control: no-cache
 Connection: keep-alive
-Body: stream of `data: <Vec<ConceptConclusion> as JSON>\n\n`
+Body: stream of `data: <Vec<Conclusion> as JSON>\n\n`
 ```
 
 Builds and performs:
 `reactor.repository(repo).branch(branch).subscribe(q).perform(&op)`.
-The leaf returns the per-subscriber `mpsc::UnboundedReceiver<Bytes>`;
-the route wraps it as an SSE body, framing each item as
+The leaf returns the `Subscriber { hash, receiver }`; the route
+wraps `receiver` as an SSE body, framing each item as
 `data: <bytes>\n\n`. The stream terminates when the
 subscription's sender is dropped (worker shutdown or
 subscription GC).
@@ -440,7 +530,7 @@ result to the freshly-attached Pending subscriber.
 
 ### Error responses
 
-- `400 Bad Request` — request body isn't a valid `ConceptQuery`.
+- `400 Bad Request` — request body isn't a valid `Query`.
 - `404 Not Found` — repository or branch doesn't exist.
 - `500 Internal Server Error` — query execution failed.
 
@@ -451,18 +541,20 @@ The error body is the existing JSON envelope
 
 ## Migration
 
-Every route that currently calls
-`state.profile.repository(repo).load().perform(op).await?
-.branch(b).open().perform(op).await?` and then mutates through
-`Branch::transaction()` / `Branch::pull()` / etc. swaps to
-`state.reactor.repository(repo).branch(b)` followed by the
-chain methods. The reactor's cached handles eliminate the
-load + open overhead per request as a side benefit.
+Routes that mutate (transaction/commit, pull, push, sync) flow
+through the reactor's chain. The reactor's cached handles
+eliminate per-request load + open overhead as a side benefit,
+and — load-bearing — every successful mutation re-polls
+subscriptions before returning so SSE clients see fresh frames.
 
-A notification failure during commit/pull/sync logs and returns
-to the caller; the request still succeeds. The reactor is a
-background concern — clients shouldn't see request errors
-because of a subscription glitch.
+Routes that only *read* (one-shot select, inspect endpoints)
+acquire a `BranchSession` for the cache benefit, then call
+dialog's native APIs on the underlying handle.
+
+A re-poll failure during commit/pull logs and is swallowed; the
+mutation request still succeeds. The reactor is a background
+concern — clients shouldn't see request errors because of a
+subscription glitch.
 
 ---
 
@@ -470,11 +562,14 @@ because of a subscription glitch.
 
 - **Per-branch lock granularity.** The reactor holds one
   `Mutex` over the whole repos map. Re-evaluation for branch A
-  holds the lock while running A's queries, blocking reads for
-  branch B. If subscription counts grow we'll need per-branch
-  locks; for now the simpler shape is fine.
+  holds the lock briefly to enumerate; the actual query runs
+  outside the lock. If subscription counts grow we may want
+  finer-grained locks; for now the simpler shape is fine.
 - **Hash collision detection.** Blake3 collisions are
   vanishingly unlikely, but the spec mentions verifying with
   `PartialEq` on subscribe to be safe. Cost is one
   `ConceptQuery == ConceptQuery` comparison per subscribe; cheap
   and prevents a class of footgun. Worth keeping.
+- **Cross-tab broadcast.** Phase 3 work: a `BroadcastChannel`
+  between SW instances so a commit in one tab fans out to
+  subscribers in others. Not in this spec.
