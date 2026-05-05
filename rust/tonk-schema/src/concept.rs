@@ -729,6 +729,108 @@ fn stub_predicate() -> ConceptDescriptor {
     ConceptDescriptor::from(Vec::<(&str, AttributeDescriptor)>::new())
 }
 
+// -----------------------------------------------------------------
+// Concept-of-concept sentinel descriptor + dispatch table.
+// -----------------------------------------------------------------
+
+/// The well-known descriptor for the "concept of concept" head.
+///
+/// Its `with` map names the marker (`dialog.meta/concept`), bookmark
+/// name, description, and the synthesised `source` field — enough
+/// for the analyzer to project the fields a `concept:` head
+/// exposes. The `source` claim has no real EAV backing; it is
+/// produced only by [`AnonymousConceptQuery::evaluate`] which
+/// [`QueryPlan::from`] dispatches to whenever it sees this
+/// descriptor's `this()`.
+pub fn concept_of_concept_descriptor() -> &'static ConceptDescriptor {
+    static DESCRIPTOR: std::sync::OnceLock<ConceptDescriptor> = std::sync::OnceLock::new();
+    DESCRIPTOR.get_or_init(|| {
+        serde_json::from_value(serde_json::json!({
+            "description": "Every concept asserted on a branch.",
+            "with": {
+                "concept":     { "the": "dialog.meta/concept",     "as": "Entity", "cardinality": "one" },
+                "name":        { "the": "dialog.meta/name",        "as": "Text",   "cardinality": "one" },
+                "description": { "the": "dialog.meta/description", "as": "Text",   "cardinality": "one" },
+                "source":      { "the": "dialog.meta/source",      "as": "Text",   "cardinality": "one" }
+            }
+        }))
+        .expect("concept-of-concept descriptor is well-formed")
+    })
+}
+
+/// Cached `this()` of [`concept_of_concept_descriptor`] — the
+/// dispatch sentinel for [`QueryPlan::from`]. Computing it once
+/// avoids re-hashing the descriptor on every query.
+fn concept_of_concept_entity() -> &'static Entity {
+    static ENTITY: std::sync::OnceLock<Entity> = std::sync::OnceLock::new();
+    ENTITY.get_or_init(|| concept_of_concept_descriptor().this())
+}
+
+/// Resolved query — what actually runs against the engine after
+/// built-in dispatch.
+///
+/// A wire `ConceptQuery` is mapped through [`QueryPlan::from`]:
+/// when its `predicate.this()` matches a known built-in sentinel
+/// (today: the concept-of-concept descriptor) the plan uses a
+/// custom `Application` that knows how to surface that built-in's
+/// rows; otherwise the plan stays a [`ConceptQuery`] and runs
+/// against the branch as usual.
+///
+/// All variants implement [`Application<Conclusion =
+/// ConceptConclusion>`][Application], so downstream code can treat
+/// the plan uniformly.
+#[derive(Debug, Clone)]
+pub enum QueryPlan {
+    /// Standard branch-side concept query — the engine evaluates
+    /// the wrapped [`ConceptQuery`] verbatim.
+    Standard(ConceptQuery),
+    /// Concept-of-concept enumeration via [`AnonymousConceptQuery`].
+    AnonymousConcept(AnonymousConceptQuery),
+}
+
+impl From<ConceptQuery> for QueryPlan {
+    fn from(query: ConceptQuery) -> Self {
+        if &query.predicate.this() == concept_of_concept_entity() {
+            QueryPlan::AnonymousConcept(AnonymousConceptQuery::new(query.terms))
+        } else {
+            QueryPlan::Standard(query)
+        }
+    }
+}
+
+impl Application for QueryPlan {
+    type Conclusion = ConceptConclusion;
+
+    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
+    where
+        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    {
+        try_stream! {
+            match self {
+                QueryPlan::Standard(q) => {
+                    let stream = q.evaluate(selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
+                QueryPlan::AnonymousConcept(q) => {
+                    let stream = q.evaluate(selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
+            }
+        }
+    }
+
+    fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
+        match self {
+            QueryPlan::Standard(q) => Application::realize(q, source),
+            QueryPlan::AnonymousConcept(q) => Application::realize(q, source),
+        }
+    }
+}
+
 /// Pull a constant entity out of a term — either from a constant
 /// term or from a variable that the upstream selection already
 /// bound. Returns `None` if the term is unbound or absent.
@@ -1071,6 +1173,36 @@ mod tests {
         let named = NamedConcept::new(descriptor, "demo");
         requires_concept(&anon);
         requires_concept(&named);
+    }
+
+    /// `QueryPlan::from(ConceptQuery)` dispatches to the
+    /// [`AnonymousConceptQuery`] branch when the wire query's
+    /// predicate is the concept-of-concept descriptor; otherwise
+    /// it stays a [`ConceptQuery`].
+    #[test]
+    fn it_dispatches_concept_of_concept_to_anonymous_query() {
+        // Concept-of-concept predicate → AnonymousConcept variant.
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: concept_of_concept_descriptor().clone(),
+        });
+        assert!(
+            matches!(plan, QueryPlan::AnonymousConcept(_)),
+            "concept-of-concept predicate should dispatch to AnonymousConcept",
+        );
+
+        // Any other descriptor → Standard variant.
+        let other: ConceptDescriptor =
+            serde_json::from_str(r#"{"with":{"x":{"the":"a/b","as":"Text","cardinality":"one"}}}"#)
+                .unwrap();
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: other,
+        });
+        assert!(
+            matches!(plan, QueryPlan::Standard(_)),
+            "non-sentinel predicate should stay a Standard ConceptQuery",
+        );
     }
 
     /// `assert` then `retract` should leave nothing — every

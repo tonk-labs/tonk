@@ -585,7 +585,7 @@ async fn collect_matches(
 
     let conclusions: Vec<ConceptConclusion> = branch
         .query()
-        .select(query)
+        .select(tonk_schema::concept::QueryPlan::from(query))
         .perform(operator)
         .try_vec()
         .await

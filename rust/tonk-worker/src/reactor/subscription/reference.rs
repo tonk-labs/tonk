@@ -72,7 +72,7 @@ impl SubscriptionPoll<'_> {
             .state
             .branch
             .query()
-            .select(query)
+            .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(env)
             .try_vec()
             .await

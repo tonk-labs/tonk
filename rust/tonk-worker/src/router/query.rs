@@ -99,7 +99,7 @@ pub async fn query(
         let terms = query.terms.clone();
         let conclusions = session
             .handle()
-            .select(query)
+            .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(&tonk.operator)
             .try_vec()
             .await

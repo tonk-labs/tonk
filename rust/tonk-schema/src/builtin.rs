@@ -22,7 +22,6 @@ use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor;
 
 use crate::interpret::ResolvedConcept;
-use crate::meta::NamedQuery;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
 
 /// Look up a built-in concept by head-name. Returns `None` for
@@ -84,16 +83,15 @@ fn attribute_descriptor() -> ResolvedConcept {
     descriptor_to_resolved(descriptor)
 }
 
-/// Built-in `concept` view. Concept entities have variable-arity
-/// `dialog.concept.with/{field}` claims, so no fixed
-/// [`ConceptDescriptor`] matches every concept entity. We use the
-/// [`Named`][crate::meta::Named] view instead — it surfaces every
-/// concept that has a `dialog.meta/name` claim, which covers the
-/// `concept! ?name:` and `concept! name:` cases. Anonymous
-/// concepts (no name) are not reachable through `concept:` at the
-/// moment.
+/// Built-in `concept` view — the concept-of-concept descriptor.
+///
+/// Resolves to the sentinel descriptor whose `this()` triggers
+/// dispatch to [`crate::concept::AnonymousConceptQuery`] in
+/// [`crate::concept::QueryPlan::from`], so a `concept:` head at
+/// query time enumerates *every* concept (built-in + branch) with
+/// a synthesised `source` field.
 fn concept_descriptor() -> ResolvedConcept {
-    concept_from_query::<NamedQuery>()
+    descriptor_to_resolved(crate::concept::concept_of_concept_descriptor().clone())
 }
 
 /// Build a `ResolvedConcept` from a `#[derive(Concept)]` Rust
