@@ -219,27 +219,9 @@ pub async fn assert_claim(
     let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
     let value = parse_value(content_type, &body)?;
 
-    // Build and commit the assertion using the transaction API
+    // Build and commit the assertion through the reactor so
+    // subscriptions on this branch re-poll on success.
     let tonk_state = state.write().await;
-
-    let repo = tonk_state
-        .profile
-        .repository(&path.repo)
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", path.repo, e))
-        })?;
-
-    let branch = repo
-        .branch(path.branch.as_str())
-        .open()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", path.branch, e))
-        })?;
 
     let claim = RawClaim {
         the: attribute,
@@ -247,7 +229,10 @@ pub async fn assert_claim(
         is: value,
     };
 
-    branch
+    tonk_state
+        .reactor
+        .repository(&path.repo)
+        .branch(&path.branch)
         .transaction()
         .assert(claim)
         .commit()
@@ -299,25 +284,6 @@ pub async fn retract_claim(
     // Build and commit the retraction using the transaction API
     let tonk_state = state.write().await;
 
-    let repo = tonk_state
-        .profile
-        .repository(&path.repo)
-        .load()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", path.repo, e))
-        })?;
-
-    let branch = repo
-        .branch(path.branch.as_str())
-        .open()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", path.branch, e))
-        })?;
-
     // Parse attribute
     let attribute: Attribute = attribute_str
         .parse()
@@ -329,7 +295,10 @@ pub async fn retract_claim(
         is: value,
     };
 
-    branch
+    tonk_state
+        .reactor
+        .repository(&path.repo)
+        .branch(&path.branch)
         .transaction()
         .retract(claim)
         .commit()

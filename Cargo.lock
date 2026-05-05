@@ -4829,6 +4829,7 @@ dependencies = [
  "getrandom 0.4.1",
  "http-body-util",
  "js-sys",
+ "parking_lot",
  "rand 0.9.2",
  "serde",
  "serde_json",

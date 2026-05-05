@@ -1,45 +1,35 @@
-//! [`Query`] — one-shot read effect.
+//! Wire shape for [`dialog_query::ConceptQuery`] — the dialog
+//! type doesn't derive serde directly, so the route layer
+//! deserializes into [`Query`] and converts.
 
-use dialog_query::{ConceptConclusion, ConceptQuery};
+use dialog_query::{ConceptDescriptor, ConceptQuery, Parameters};
+use serde::{Deserialize, Serialize};
 
-use crate::worker::DefaultOperator;
-
-use super::error::ReactorError;
-use super::{TonkReactor, run_query};
-
-/// One-shot read. `.perform(&op)` returns a
-/// `Vec<ConceptConclusion>`. No subscription is registered.
-pub struct Query<'a> {
-    reactor: &'a TonkReactor,
-    repo: &'a str,
-    branch: &'a str,
-    query: ConceptQuery,
+/// Serializable projection of a [`ConceptQuery`] — used as the
+/// `/query` request body and as the canonical input to the
+/// subscription hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Query {
+    /// Term bindings for the query. Mirrors `ConceptQuery::terms`.
+    pub terms: Parameters,
+    /// Concept predicate. Mirrors `ConceptQuery::predicate`.
+    pub predicate: ConceptDescriptor,
 }
 
-impl<'a> Query<'a> {
-    pub(super) fn new(
-        reactor: &'a TonkReactor,
-        repo: &'a str,
-        branch: &'a str,
-        query: ConceptQuery,
-    ) -> Self {
+impl From<&ConceptQuery> for Query {
+    fn from(q: &ConceptQuery) -> Self {
         Self {
-            reactor,
-            repo,
-            branch,
-            query,
+            terms: q.terms.clone(),
+            predicate: q.predicate.clone(),
         }
     }
+}
 
-    /// Execute the query against the branch.
-    pub async fn perform(
-        self,
-        env: &DefaultOperator,
-    ) -> Result<Vec<ConceptConclusion>, ReactorError> {
-        let branch = self
-            .reactor
-            .resolve_branch(self.repo, self.branch, env)
-            .await?;
-        run_query(&branch, self.query, env).await
+impl From<Query> for ConceptQuery {
+    fn from(w: Query) -> Self {
+        ConceptQuery {
+            terms: w.terms,
+            predicate: w.predicate,
+        }
     }
 }

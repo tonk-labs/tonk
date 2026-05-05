@@ -24,7 +24,7 @@ use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{Entity, Value};
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, RepositoryExt as _, Revision};
+use dialog_repository::{Branch, Revision};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -134,27 +134,20 @@ pub async fn evaluate(
 
     let tonk_state = state.write().await;
 
-    let repo = tonk_state
-        .profile
+    // Acquire the cached branch via the reactor so the same
+    // handle is reused across requests and subscription polling
+    // sees commits emitted below.
+    let tonk_branch = tonk_state
+        .reactor
         .repository(&path.repo)
-        .load()
-        .perform(&tonk_state.operator)
+        .branch(&path.branch);
+    let branch = tonk_branch
+        .acquire(&tonk_state.operator)
         .await
-        .map_err(|e| {
-            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", path.repo, e))
-        })?;
-
-    let branch = repo
-        .branch(path.branch.as_str())
-        .open()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", path.branch, e))
-        })?;
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
 
     let resolver = BranchResolver {
-        branch: &branch,
+        branch: branch.handle(),
         operator: &tonk_state.operator,
     };
 
@@ -163,9 +156,16 @@ pub async fn evaluate(
         TonkWorkerError::Router(e.to_string())
     })?;
 
-    let revision_before = branch.revision();
-    let response = run(&analysis, &syntax, &branch, &tonk_state.operator).await?;
-    let revision_after = branch.revision();
+    let revision_before = branch.handle().revision();
+    let response = run(
+        &analysis,
+        &syntax,
+        branch.handle(),
+        tonk_branch,
+        &tonk_state.operator,
+    )
+    .await?;
+    let revision_after = branch.handle().revision();
 
     Ok(Json(EvaluateResponse {
         revision_before,
@@ -177,10 +177,11 @@ pub async fn evaluate(
 /// Drive the analyze → run → plan → commit pipeline. Returns
 /// the matches + commit summary; the caller fills in the
 /// before/after revisions.
-async fn run(
+async fn run<'a>(
     analysis: &Analysis,
     syntax: &Syntax,
     branch: &Branch,
+    tonk_branch: crate::reactor::BranchReference<'a>,
     operator: &DefaultOperator,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     // ---- Build base bindings frame from analysis-derived vars ----
@@ -218,7 +219,7 @@ async fn run(
             .insert(format!("?{key}"), entity.to_string());
     }
     if !analysis.mutate.statements.is_empty() {
-        let mut tx = branch.transaction();
+        let mut tx = tonk_branch.transaction();
         let mut claim_count = 0usize;
         // Retraction targets resolved by querying the branch
         // *before* the transaction commits — collected here and
@@ -268,7 +269,7 @@ async fn run(
         }
         tx.commit().perform(operator).await.map_err(|e| {
             log!("Transaction commit failed: {:?}", e);
-            TonkWorkerError::Internal(format!("commit failed: {e:?}"))
+            TonkWorkerError::Internal(format!("commit failed: {e}"))
         })?;
         commits.claims = claim_count;
     }

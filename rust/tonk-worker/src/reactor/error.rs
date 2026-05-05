@@ -1,3 +1,5 @@
+use dialog_query::EvaluationError;
+use dialog_repository::{CommitError, PullError, PushError};
 use thiserror::Error;
 
 /// Errors surfaced by the reactor's chain effects. Routes map
@@ -16,11 +18,17 @@ pub enum ReactorError {
         reason: String,
     },
     /// A query against the branch failed.
-    #[error("query failed: {0}")]
-    QueryFailed(String),
+    #[error("query failed: {0:?}")]
+    QueryFailed(#[from] EvaluationError),
     /// A commit against the branch failed.
     #[error("commit failed: {0}")]
-    CommitFailed(String),
+    Commit(#[from] CommitError),
+    /// A pull from upstream failed.
+    #[error("pull failed: {0}")]
+    Pull(#[from] PullError),
+    /// A push to upstream failed.
+    #[error("push failed: {0}")]
+    Push(#[from] PushError),
     /// Two distinct queries produced the same blake3 hash. The
     /// second subscribe attempt is rejected so the colliding
     /// queries don't share a subscription.

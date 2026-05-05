@@ -59,7 +59,13 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// the SW entry point can call [`LspHub::shutdown`] when a newer
 /// worker version begins installing.
 pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
-    let state: AppState = Arc::new(RwLock::new(state));
+    api_router_from_state(Arc::new(RwLock::new(state)))
+}
+
+/// Same as [`api_router`] but takes an already-wrapped
+/// [`AppState`]. Useful in tests that need to keep an `Arc`
+/// handle to the state for poking the reactor directly.
+pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let (lsp_routes, lsp_hub) = lsp::lsp_router();
     let router = Router::new()
         .route("/api", get(root))
@@ -1767,7 +1773,7 @@ employee ?p:
     // Reactor: /api/repository/{repo}/branch/{branch}/query      //
     // ---------------------------------------------------------- //
 
-    /// A `WireQuery` over the `Named` view — `this` plus
+    /// A wire `Query` over the `Named` view — `this` plus
     /// `dialog.meta/name`. Matches every entity on the branch
     /// that carries a `dialog.meta/name` claim. Tests below seed
     /// at least one such entity via `/evaluate` before querying.
@@ -1789,14 +1795,22 @@ employee ?p:
     /// Seed one named entity on `main` so the reactor tests have
     /// something to query.
     async fn seed_named_entity(app: &Router, repo: &str) {
-        let body = "\
-attribute! person-name:
-  the:         io.gozala.person/name
+        seed_named_attribute(app, repo, "person-name", "xyz.tonk.person/name").await;
+    }
+
+    /// Seed an attribute definition with a chosen name and `the:`
+    /// IRI so tests can grow the result set across commits.
+    async fn seed_named_attribute(app: &Router, repo: &str, name: &str, the: &str) {
+        let body = format!(
+            "\
+attribute! {name}:
+  the:         {the}
   as:          Text
   cardinality: one
-  description: The person's name
-";
-        let _ = post_yaml(app, repo, body).await;
+  description: A test attribute
+"
+        );
+        let _ = post_yaml(app, repo, &body).await;
     }
 
     /// Run a one-shot `/query` request and return the parsed
@@ -1821,10 +1835,9 @@ attribute! person-name:
         serde_json::from_slice(&body).expect("query response is JSON")
     }
 
-    /// Open an SSE subscription, read the first event off the
-    /// stream, and return the parsed JSON snapshot.
-    async fn subscribe_first_event(app: &Router, repo: &str, branch: &str) -> serde_json::Value {
-        use http_body_util::BodyExt as _;
+    /// Open an SSE subscription and return the open body so the
+    /// caller can read frames as they arrive.
+    async fn open_subscription(app: &Router, repo: &str, branch: &str) -> Body {
         let response = app
             .clone()
             .oneshot(
@@ -1846,8 +1859,13 @@ attribute! person-name:
                 .map(|v| v.to_str().unwrap_or("")),
             Some("text/event-stream"),
         );
-        // Read one chunk off the stream.
-        let mut body = response.into_body();
+        response.into_body()
+    }
+
+    /// Read one SSE `data: <json>\n\n` frame off `body` and parse
+    /// the JSON payload.
+    async fn read_sse_frame(body: &mut Body) -> serde_json::Value {
+        use http_body_util::BodyExt as _;
         let frame = body
             .frame()
             .await
@@ -1855,7 +1873,6 @@ attribute! person-name:
             .expect("frame ok");
         let bytes = frame.into_data().expect("data frame");
         let text = std::str::from_utf8(&bytes).expect("utf8");
-        // Strip the SSE framing: `data: <json>\n\n`.
         let json_text = text
             .strip_prefix("data: ")
             .and_then(|s| s.strip_suffix("\n\n"))
@@ -1863,11 +1880,18 @@ attribute! person-name:
         serde_json::from_str(json_text).expect("snapshot is JSON")
     }
 
+    /// Open an SSE subscription, read the first event, and return
+    /// the parsed snapshot. Drops the body afterwards.
+    async fn subscribe_first_event(app: &Router, repo: &str, branch: &str) -> serde_json::Value {
+        let mut body = open_subscription(app, repo, branch).await;
+        read_sse_frame(&mut body).await
+    }
+
     /// One-shot `/query` returns the current matches as a JSON
-    /// array of `WireConclusion`. Each row carries a `this`
+    /// array of `Conclusion`. Each row carries a `this`
     /// entity URI.
     #[dialog_common::test]
-    async fn reactor_query_one_shot() {
+    async fn it_returns_query_results_one_shot() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-query";
@@ -1889,7 +1913,7 @@ attribute! person-name:
     /// current snapshot — the same payload the one-shot route
     /// returns inline.
     #[dialog_common::test]
-    async fn reactor_query_sse_first_event_is_snapshot() {
+    async fn it_streams_initial_snapshot_over_sse() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-sse";
@@ -1909,7 +1933,7 @@ attribute! person-name:
     /// both subscribers attach to the same `Subscription` and
     /// each sees a snapshot.
     #[dialog_common::test]
-    async fn reactor_repeated_subscribe_shares_subscription() {
+    async fn it_shares_subscription_across_subscribers_with_same_query() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-shared";
@@ -1928,7 +1952,7 @@ attribute! person-name:
     /// Malformed request body returns 400 with a parse error
     /// rather than crashing.
     #[dialog_common::test]
-    async fn reactor_query_rejects_malformed_body() {
+    async fn it_rejects_malformed_query_body() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-malformed";
@@ -1949,10 +1973,140 @@ attribute! person-name:
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// A commit on a branch must fan out a fresh SSE event to
+    /// every subscriber whose query result changed. This is the
+    /// load-bearing path of the whole reactor.
+    #[dialog_common::test]
+    async fn it_broadcasts_changed_snapshot_after_commit() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-broadcast";
+        put_repo(&app, repo).await;
+        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
+
+        let mut body = open_subscription(&app, repo, "main").await;
+        let snapshot_before = read_sse_frame(&mut body).await;
+
+        // Commit a second named attribute — the result set grows.
+        seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
+
+        let snapshot_after = read_sse_frame(&mut body).await;
+        assert_ne!(
+            snapshot_before, snapshot_after,
+            "commit must broadcast a changed snapshot"
+        );
+        assert!(
+            snapshot_after.as_array().map(|a| a.len()).unwrap_or(0)
+                > snapshot_before.as_array().map(|a| a.len()).unwrap_or(0),
+            "post-commit snapshot has more rows than pre-commit"
+        );
+    }
+
+    /// Re-polling a subscription whose result didn't change must
+    /// not push another SSE event. The poll path hashes the new
+    /// payload and compares against `last_hash`; equal hashes
+    /// short-circuit.
+    #[dialog_common::test]
+    async fn it_skips_broadcast_when_repoll_is_unchanged() {
+        use http_body_util::BodyExt as _;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+
+        let repo = "test-reactor-noop-repoll";
+        put_repo(&app, repo).await;
+        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
+
+        let mut body = open_subscription(&app, repo, "main").await;
+        let _snapshot = read_sse_frame(&mut body).await;
+
+        // Trigger a re-poll directly via the reactor — same query,
+        // same data, same hash, so the dedup path must skip the
+        // broadcast and the subscriber must not receive a frame.
+        {
+            let guard = app_state.read().await;
+            let session = guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .acquire(&guard.operator)
+                .await
+                .expect("acquire");
+            session.state.poll(&guard.operator).await;
+        }
+
+        // Race the next frame against a short sleep. We expect
+        // the sleep to win — no frame should arrive.
+        let next_frame = body.frame();
+        let timeout = crate::sleep(web_time::Duration::from_millis(200));
+        tokio::select! {
+            frame = next_frame => panic!("unexpected SSE frame after no-op repoll: {frame:?}"),
+            _ = timeout => {} // expected — no broadcast
+        }
+    }
+
+    /// When a subscriber's receiver closes (the SSE body is
+    /// dropped), the next change-driven re-poll must evict that
+    /// subscriber. With no subscribers left, the subscription
+    /// itself is removed from the branch's map. Pruning is
+    /// piggy-backed on the send attempt — there is no separate
+    /// reaper — so this test drives a commit to trigger the send.
+    #[dialog_common::test]
+    async fn it_prunes_dropped_subscriber_on_change() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+
+        let repo = "test-reactor-prune";
+        put_repo(&app, repo).await;
+        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
+
+        // Subscribe and read the first frame so the subscriber is
+        // registered with `Status::Established`.
+        {
+            let mut body = open_subscription(&app, repo, "main").await;
+            let _snapshot = read_sse_frame(&mut body).await;
+            // body drops here, closing the receiver.
+        }
+
+        let session = {
+            let guard = app_state.read().await;
+            guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .acquire(&guard.operator)
+                .await
+                .expect("acquire")
+        };
+        assert_eq!(
+            session.state.subscriptions().lock().len(),
+            1,
+            "subscription registered before prune"
+        );
+
+        // Commit a change so the next poll has new bytes to
+        // broadcast. The send to the dead channel fails,
+        // `retain_mut` drops the subscriber, and with the list
+        // empty the subscription itself is removed.
+        seed_named_attribute(&app, repo, "person-age", "xyz.tonk.person/age").await;
+
+        assert!(
+            session.state.subscriptions().lock().is_empty(),
+            "dropped subscriber's subscription must be pruned after a change-driven poll"
+        );
+    }
+
     /// `/query` against a missing repository returns 404, not
     /// 500.
     #[dialog_common::test]
-    async fn reactor_query_unknown_repo_is_404() {
+    async fn it_returns_404_for_query_against_unknown_repo() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
 
