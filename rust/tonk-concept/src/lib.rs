@@ -19,7 +19,7 @@ pub mod template;
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
-pub mod render;
+mod render;
 #[cfg(target_arch = "wasm32")]
 mod sse;
 
