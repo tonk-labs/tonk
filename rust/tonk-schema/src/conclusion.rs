@@ -1,24 +1,23 @@
-//! Wire shape for [`dialog_query::ConceptConclusion`] — the
-//! dialog type doesn't derive serde directly, so the route and
-//! broadcast layers project into [`Conclusion`] before
-//! serializing.
+//! On-the-wire shape for query results — a serializable
+//! projection of [`ConceptConclusion`] that workers emit and
+//! browser clients deserialize.
 
 use std::collections::BTreeMap;
 
 use dialog_query::{Any, ConceptConclusion, Parameters, Term};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Serializable projection of a [`ConceptConclusion`] — the
 /// concept's entity plus the projected field values for every
 /// term named by the originating query.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conclusion {
     /// Entity URI of the matched concept (`did:key:…` etc.).
     pub this: String,
-    /// Field values keyed by term name from the query. Each
-    /// value is the raw `dialog_artifacts::Value` serialized via
-    /// its `serde::Serialize` impl (untagged enum — strings,
-    /// numbers, bools, entity URIs, byte buffers).
+    /// Field values keyed by term name from the query. Each value
+    /// is the raw `dialog_artifacts::Value` serialized via its
+    /// `serde::Serialize` impl (untagged enum — strings, numbers,
+    /// bools, entity URIs, byte buffers).
     pub fields: BTreeMap<String, serde_json::Value>,
 }
 

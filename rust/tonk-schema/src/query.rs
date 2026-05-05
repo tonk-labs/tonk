@@ -1,13 +1,13 @@
-//! Wire shape for [`dialog_query::ConceptQuery`] — the dialog
-//! type doesn't derive serde directly, so the route layer
-//! deserializes into [`Query`] and converts.
+//! On-the-wire shape for `/query` requests — a serializable
+//! projection of [`ConceptQuery`] that workers receive and
+//! browser clients send.
 
 use dialog_query::{ConceptDescriptor, ConceptQuery, Parameters};
 use serde::{Deserialize, Serialize};
 
-/// Serializable projection of a [`ConceptQuery`] — used as the
-/// `/query` request body and as the canonical input to the
-/// subscription hash.
+/// Serializable projection of a [`ConceptQuery`] — the body of a
+/// `/query` request and the canonical input to the subscription
+/// hash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Query {
     /// Term bindings for the query. Mirrors `ConceptQuery::terms`.

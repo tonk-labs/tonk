@@ -16,7 +16,7 @@ use dialog_query::Output as _;
 use tonk_common::log;
 
 use crate::reactor::BranchState;
-use crate::reactor::conclusion::Conclusion;
+use crate::reactor::Conclusion;
 use crate::reactor::env::SelectProvider;
 
 use super::state::{QueryHash, Status};

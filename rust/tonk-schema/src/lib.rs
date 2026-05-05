@@ -50,6 +50,10 @@ pub mod builtin;
 
 pub mod transact;
 
+pub mod query;
+
+pub mod conclusion;
+
 pub mod replica;
 pub use replica::*;
 

@@ -23,29 +23,31 @@ use dialog_operator::Profile;
 use parking_lot::Mutex;
 
 mod branch;
-mod conclusion;
 mod env;
 mod error;
 mod pull;
 mod push;
-mod query;
 mod repository;
 mod subscribe;
 mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState};
-pub use conclusion::Conclusion;
 pub use env::{
     BranchOpenProvider, CommitProvider, LoadProvider, PullProvider, PushProvider, SelectProvider,
 };
 pub use error::ReactorError;
 pub use pull::Pull;
 pub use push::Push;
-pub use query::Query;
 pub use repository::{RepositoryReference, RepositoryState};
 pub use subscribe::Subscribe;
 pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
+/// On-the-wire `Conclusion` and `Query` — re-exported from
+/// [`tonk_schema`] so consumers (browser clients, the
+/// `<tonk-concept>` element) can deserialize without depending
+/// on this crate.
+pub use tonk_schema::conclusion::Conclusion;
+pub use tonk_schema::query::Query;
 pub use transaction::{Commit, TransactionBuilder};
 
 /// The worker's reactive layer. Owned by `TonkState`.

@@ -6,7 +6,7 @@ use dialog_common::Blake3Hash;
 use dialog_query::ConceptQuery;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::reactor::query::Query;
+use crate::reactor::Query;
 
 /// Identity of a subscription within one branch — blake3 over a
 /// deterministic serialization of the [`ConceptQuery`]. Wraps
