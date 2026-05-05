@@ -4672,6 +4672,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-concept"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "custom-elements",
+ "dialog-common",
+ "futures",
+ "indexmap",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonk-schema",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wasm-streams",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-invite"
 version = "0.1.0"
 dependencies = [
