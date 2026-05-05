@@ -41,6 +41,9 @@ pub use profile::ProfileInfo;
 mod evaluate;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 
+mod query;
+pub use query::QueryPath;
+
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -110,6 +113,14 @@ pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
+        )
+        // Query route — accepts a serialized `ConceptQuery`,
+        // returns conclusions. With `Accept: text/event-stream`
+        // the response is an SSE subscription that re-broadcasts
+        // whenever the branch changes.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/query",
+            post(query::query),
         )
         // Inspect operations
         .route(
@@ -190,10 +201,12 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
+        let reactor = crate::TonkReactor::new(profile.clone());
         TonkState {
             profile,
             operator,
             profile_name: "test-tonk".to_string(),
+            reactor,
         }
     }
 
@@ -1748,5 +1761,213 @@ employee ?p:
             String::from_utf8_lossy(&body_bytes)
         );
         body_bytes.to_vec()
+    }
+
+    // ---------------------------------------------------------- //
+    // Reactor: /api/repository/{repo}/branch/{branch}/query      //
+    // ---------------------------------------------------------- //
+
+    /// A `WireQuery` over the `Named` view — `this` plus
+    /// `dialog.meta/name`. Matches every entity on the branch
+    /// that carries a `dialog.meta/name` claim. Tests below seed
+    /// at least one such entity via `/evaluate` before querying.
+    fn named_concept_wire_query() -> serde_json::Value {
+        serde_json::json!({
+            "terms": { "this": { "?": { "name": "this" } } },
+            "predicate": {
+                "with": {
+                    "name": {
+                        "the": "dialog.meta/name",
+                        "as": "Text",
+                        "cardinality": "one",
+                    },
+                },
+            },
+        })
+    }
+
+    /// Seed one named entity on `main` so the reactor tests have
+    /// something to query.
+    async fn seed_named_entity(app: &Router, repo: &str) {
+        let body = "\
+attribute! person-name:
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: The person's name
+";
+        let _ = post_yaml(app, repo, body).await;
+    }
+
+    /// Run a one-shot `/query` request and return the parsed
+    /// JSON body.
+    async fn post_query(app: &Router, repo: &str, branch: &str) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/{branch}/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).expect("query response is JSON")
+    }
+
+    /// Open an SSE subscription, read the first event off the
+    /// stream, and return the parsed JSON snapshot.
+    async fn subscribe_first_event(app: &Router, repo: &str, branch: &str) -> serde_json::Value {
+        use http_body_util::BodyExt as _;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/{branch}/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("accept", "text/event-stream")
+                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("text/event-stream"),
+        );
+        // Read one chunk off the stream.
+        let mut body = response.into_body();
+        let frame = body
+            .frame()
+            .await
+            .expect("at least one frame")
+            .expect("frame ok");
+        let bytes = frame.into_data().expect("data frame");
+        let text = std::str::from_utf8(&bytes).expect("utf8");
+        // Strip the SSE framing: `data: <json>\n\n`.
+        let json_text = text
+            .strip_prefix("data: ")
+            .and_then(|s| s.strip_suffix("\n\n"))
+            .expect("SSE-framed body");
+        serde_json::from_str(json_text).expect("snapshot is JSON")
+    }
+
+    /// One-shot `/query` returns the current matches as a JSON
+    /// array of `WireConclusion`. Each row carries a `this`
+    /// entity URI.
+    #[dialog_common::test]
+    async fn reactor_query_one_shot() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-query";
+        put_repo(&app, repo).await;
+        seed_named_entity(&app, repo).await;
+
+        let body = post_query(&app, repo, "main").await;
+        let arr = body.as_array().expect("array");
+        assert!(
+            !arr.is_empty(),
+            "expected at least one named entity after seeding, got {body}"
+        );
+        for row in arr {
+            assert!(row.get("this").is_some(), "every row carries `this`: {row}");
+        }
+    }
+
+    /// SSE `/query` opens a stream whose first event is the
+    /// current snapshot — the same payload the one-shot route
+    /// returns inline.
+    #[dialog_common::test]
+    async fn reactor_query_sse_first_event_is_snapshot() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-sse";
+        put_repo(&app, repo).await;
+        seed_named_entity(&app, repo).await;
+
+        let snapshot = subscribe_first_event(&app, repo, "main").await;
+        let arr = snapshot.as_array().expect("array");
+        assert!(!arr.is_empty(), "snapshot non-empty");
+
+        let oneshot = post_query(&app, repo, "main").await;
+        assert_eq!(snapshot, oneshot, "SSE snapshot matches one-shot result");
+    }
+
+    /// Subscribing twice with the same query against the same
+    /// branch must collide on the subscription's content hash —
+    /// both subscribers attach to the same `Subscription` and
+    /// each sees a snapshot.
+    #[dialog_common::test]
+    async fn reactor_repeated_subscribe_shares_subscription() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-shared";
+        put_repo(&app, repo).await;
+        seed_named_entity(&app, repo).await;
+
+        let first = subscribe_first_event(&app, repo, "main").await;
+        let second = subscribe_first_event(&app, repo, "main").await;
+
+        assert_eq!(
+            first, second,
+            "both subscribers receive the same snapshot bytes"
+        );
+    }
+
+    /// Malformed request body returns 400 with a parse error
+    /// rather than crashing.
+    #[dialog_common::test]
+    async fn reactor_query_rejects_malformed_body() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-malformed";
+        put_repo(&app, repo).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{ this is not valid JSON"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// `/query` against a missing repository returns 404, not
+    /// 500.
+    #[dialog_common::test]
+    async fn reactor_query_unknown_repo_is_404() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/repository/no-such-repo/branch/main/query")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(named_concept_wire_query().to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

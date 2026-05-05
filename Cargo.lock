@@ -4808,6 +4808,8 @@ dependencies = [
  "axum-wasm-macros",
  "base58",
  "base64",
+ "blake3",
+ "bytes",
  "console_error_panic_hook",
  "dialog-artifacts",
  "dialog-capability",

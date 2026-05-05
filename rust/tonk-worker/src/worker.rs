@@ -47,6 +47,11 @@ pub struct TonkState {
     /// not retain this internally, so we carry it here for routes
     /// that report it back to the UI (e.g. `GET /api/profile`).
     pub profile_name: String,
+    /// Reactive layer: cached repository/branch handles and the
+    /// query subscriptions registered against them. Routes that
+    /// mutate a branch flow through `reactor.repository(r).branch(b)`
+    /// so subscription broadcasts happen automatically.
+    pub reactor: crate::TonkReactor,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -112,10 +117,12 @@ impl TonkServiceWorker {
 
         // 4. Build state and bootstrap the profile repo's meta
         // branch. Idempotent — safe to run on every worker boot.
+        let reactor = crate::TonkReactor::new(profile.clone());
         let state = TonkState {
             profile,
             operator,
             profile_name: PROFILE_NAME.to_string(),
+            reactor,
         };
         bootstrap_profile_meta(&state, PROFILE_NAME)
             .await

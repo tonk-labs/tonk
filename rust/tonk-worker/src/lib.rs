@@ -71,3 +71,6 @@ pub use worker::*;
 
 mod r#async;
 pub use r#async::*;
+
+mod reactor;
+pub use reactor::*;

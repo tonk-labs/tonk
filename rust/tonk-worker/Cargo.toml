@@ -14,6 +14,8 @@ async-trait = { workspace = true }
 axum = { workspace = true, features = ["json", "macros", "query"] }
 base58 = { workspace = true }
 base64 = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
 axum-wasm-macros = { workspace = true }
 console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }
