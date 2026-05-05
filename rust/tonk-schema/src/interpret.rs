@@ -1695,6 +1695,10 @@ mod tests {
     use super::*;
     use crate::transact::Application;
     use tonk_notation::parse;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     /// `parse` returns `Parsed`; tests want the `Syntax` and panic on diagnostics.
     fn must_parse(src: &str) -> Syntax {

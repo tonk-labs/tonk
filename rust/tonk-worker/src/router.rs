@@ -879,6 +879,7 @@ attribute! person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
   cardinality: one
+  description: The person's age
 
 concept! person:
   description: A person
@@ -931,6 +932,7 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 concept! person:
   with:
@@ -1026,6 +1028,7 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 concept! person:
   with:
@@ -1131,11 +1134,13 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 attribute! person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
   cardinality: one
+  description: The person's age
 
 concept! person:
   with:
@@ -1299,11 +1304,13 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 attribute! person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
   cardinality: one
+  description: The person's age
 
 concept! person:
   with:
@@ -1367,6 +1374,7 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 concept! person:
   with:
@@ -1422,11 +1430,13 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 attribute! person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
   cardinality: one
+  description: The person's age
 
 concept! person:
   with:
@@ -1481,11 +1491,13 @@ attribute! tagged-name:
   the:         io.gozala.tagged/name
   as:          Text
   cardinality: one
+  description: Name of the tagged item
 
 attribute! tagged-tag:
   the:         io.gozala.tagged/tag
   as:          Text
   cardinality: many
+  description: Tags applied to the item
 
 concept! tagged:
   with:
@@ -1539,11 +1551,13 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 attribute! person-age:
   the:         io.gozala.person/age
   as:          UnsignedInteger
   cardinality: one
+  description: The person's age
 
 concept! person:
   with:
@@ -1597,6 +1611,7 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 concept! person:
   with:
@@ -1650,11 +1665,13 @@ attribute! person-name:
   the:         io.gozala.person/name
   as:          Text
   cardinality: one
+  description: The person's name
 
 attribute! employee-id:
   the:         io.gozala.employee/id
   as:          Text
   cardinality: one
+  description: Employee identifier
 
 concept! person:
   with:
