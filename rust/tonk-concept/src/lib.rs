@@ -17,4 +17,19 @@ pub mod resolve;
 pub mod template;
 
 #[cfg(target_arch = "wasm32")]
+mod element;
+#[cfg(target_arch = "wasm32")]
+mod render;
+#[cfg(target_arch = "wasm32")]
 mod sse;
+
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+/// Register the `<tonk-concept>` custom element with the page.
+/// Idempotent — calling more than once is harmless.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub fn register() {
+    element::register();
+}
