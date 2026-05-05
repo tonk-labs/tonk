@@ -4809,6 +4809,7 @@ dependencies = [
  "tokio",
  "tonk-access-service",
  "tonk-code",
+ "tonk-concept",
  "tonk-invite",
  "tonk-notation",
  "tonk-sigil",
