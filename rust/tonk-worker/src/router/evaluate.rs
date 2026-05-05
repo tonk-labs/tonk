@@ -320,16 +320,20 @@ struct QueryResults {
     joined: Vec<Parameters>,
 }
 
-/// Run one [`ConceptQuery`] per expression and join their frames
-/// on shared user-named variables.
+/// Run each expression's [`Application`] independently and join
+/// their frames on shared user-named variables.
+///
+/// `Application` impls `dialog_query::Application` and dispatches
+/// internally to the right [`QueryPlan`] (built-in or branch
+/// concept), so this loop is uniform across head kinds.
 async fn run_query(
     query: &tonk_schema::transact::QueryAnalysis,
     branch: &Branch,
     operator: &DefaultOperator,
 ) -> Result<QueryResults, TonkWorkerError> {
     let mut per_expression = Vec::with_capacity(query.queries.len());
-    for cq in query.expression_queries() {
-        let frames = collect_matches(cq, branch, operator).await?;
+    for application in &query.queries {
+        let frames = collect_matches(application.clone(), branch, operator).await?;
         per_expression.push(frames);
     }
     let joined = natural_join(&per_expression);
@@ -562,18 +566,19 @@ fn count_emitted_claims(plan: &ApplicationPlan) -> usize {
     n
 }
 
-/// Run the unified [`ConceptQuery`] against the branch and
-/// collect every match frame as a [`Parameters`] by extracting
-/// every bound variable from each [`ConceptConclusion`].
+/// Run a single expression's [`Application`] against the branch
+/// and collect every match frame as a [`Parameters`] by
+/// extracting every bound variable from each
+/// [`ConceptConclusion`].
 async fn collect_matches(
-    query: ConceptQuery,
+    application: tonk_schema::transact::Application,
     branch: &Branch,
     operator: &DefaultOperator,
 ) -> Result<Vec<Parameters>, TonkWorkerError> {
-    // Capture the variable names present in `query.terms` so we
-    // can ask the conclusion for their bindings.
+    // Capture the variable names present in the application's
+    // parameters so we can ask the conclusion for their bindings.
     let mut variable_names: Vec<String> = Vec::new();
-    for (_, term) in query.terms.iter() {
+    for (_, term) in application.parameters().iter() {
         if let Term::Variable {
             name: Some(name), ..
         } = term
@@ -585,7 +590,7 @@ async fn collect_matches(
 
     let conclusions: Vec<ConceptConclusion> = branch
         .query()
-        .select(tonk_schema::concept::QueryPlan::from(query))
+        .select(application)
         .perform(operator)
         .try_vec()
         .await

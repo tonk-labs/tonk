@@ -21,9 +21,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
-use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
+use dialog_artifacts::{Entity, Select, Statement as ArtifactsStatement, Update, Value};
+use dialog_capability::Provider;
+use dialog_common::ConditionalSync;
+use dialog_query::concept::descriptor::ConceptConclusion;
+use dialog_query::source::SelectRules;
+use dialog_query::{
+    Application as DialogApplication, EvaluationError, Match, Parameters, Selection, Term,
+    concept::query::ConceptQuery, try_stream,
+};
 use thiserror::Error;
+
+use crate::concept::QueryPlan;
 
 /// Result of analyzing a parsed asserted-notation document.
 ///
@@ -87,25 +96,6 @@ impl QueryAnalysis {
             collect_user_variable_names(application.parameters(), &mut out);
         }
         out
-    }
-
-    /// One [`ConceptQuery`] per expression. `Domain`-shaped
-    /// applications are converted to `ConceptQuery` via the
-    /// existing per-application conversion. Expression order is
-    /// document order.
-    ///
-    /// The engine evaluates each query independently; the worker
-    /// post-joins frames on shared user-named variables so
-    /// disjoint expressions cross-product and connected
-    /// expressions equi-join.
-    pub fn expression_queries(&self) -> Vec<ConceptQuery> {
-        self.queries
-            .iter()
-            .map(|application| match application {
-                Application::Concept { query, .. } => query.clone(),
-                Application::Domain { application, .. } => ConceptQuery::from(application.clone()),
-            })
-            .collect()
     }
 }
 
@@ -485,5 +475,150 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
         }
+    }
+}
+
+// ---------------------------------------------------------------- //
+// Read-side evaluation: Application + QueryAnalysis as queries.    //
+// ---------------------------------------------------------------- //
+//
+// Both [`Application`] and [`QueryAnalysis`] are analyzer outputs
+// and both impl `dialog_query::Application`. `Application` runs
+// one expression at a time (delegating to [`QueryPlan`] so
+// built-in heads dispatch transparently). `QueryAnalysis` chains
+// every expression's evaluation through a shared selection
+// stream, which gives the engine's variable-binding consistency
+// check the role of a natural join: matches that disagree on a
+// shared user-named variable never reach the conclusion.
+//
+// Conclusions:
+// - `Application::Conclusion = ConceptConclusion` (one entity per
+//   row).
+// - `QueryAnalysis::Conclusion = QueryNotationConclusion` (a
+//   `Parameters` row over every user-named variable).
+
+/// Convert an [`Application`] into the [`QueryPlan`] it should be
+/// evaluated as. `Concept` carries a `ConceptQuery` directly;
+/// `Domain` synthesises one from its parameter map.
+fn application_to_plan(application: Application) -> QueryPlan {
+    match application {
+        Application::Concept { query, .. } => QueryPlan::from(query),
+        Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
+    }
+}
+
+/// Like [`application_to_plan`] but borrows. Needed for
+/// [`DialogApplication::realize`] which receives `&self`.
+fn application_to_plan_cloned(application: &Application) -> QueryPlan {
+    match application {
+        Application::Concept { query, .. } => QueryPlan::from(query.clone()),
+        Application::Domain { application, .. } => {
+            QueryPlan::from(ConceptQuery::from(application.clone()))
+        }
+    }
+}
+
+impl DialogApplication for Application {
+    type Conclusion = ConceptConclusion;
+
+    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
+    where
+        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    {
+        let plan = application_to_plan(self);
+        try_stream! {
+            let stream = plan.evaluate(selection, env);
+            for await each in stream {
+                yield each?;
+            }
+        }
+    }
+
+    fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
+        DialogApplication::realize(&application_to_plan_cloned(self), source)
+    }
+}
+
+/// One joined frame produced by a [`QueryAnalysis`] evaluation.
+///
+/// A document's `query:` block can hold multiple expressions; each
+/// expression contributes user-named variable bindings, and the
+/// engine natural-joins them on shared names. This type is the
+/// realized form of a single joined row.
+#[derive(Debug, Clone)]
+pub struct QueryNotationConclusion {
+    /// User-named variable bindings carried by this row. Keys are
+    /// the user's `?var` names; values are constants.
+    pub bindings: Parameters,
+}
+
+/// Variable names (`Term::Variable { name: Some(_) }`) appearing
+/// in a parameter map, deduplicated.
+fn collect_named_variables(params: &Parameters) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (_, term) in params.iter() {
+        if let Term::Variable {
+            name: Some(name), ..
+        } = term
+            && !names.contains(name)
+        {
+            names.push(name.clone());
+        }
+    }
+    names
+}
+
+/// Every user-named variable across every expression in this
+/// analysis, deduplicated. Used by the realize step to know which
+/// keys to project from the joined match into the conclusion's
+/// `bindings`.
+fn collect_analysis_variables(analysis: &QueryAnalysis) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for application in &analysis.queries {
+        for n in collect_named_variables(application.parameters()) {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
+    names
+}
+
+impl DialogApplication for QueryAnalysis {
+    type Conclusion = QueryNotationConclusion;
+
+    /// Evaluate every expression in document order, threading the
+    /// upstream selection through each. A `Selection` is itself a
+    /// stream of `Match` values; chaining `Application::evaluate`
+    /// on each expression performs the natural join automatically
+    /// because shared variable names re-bind to the same value
+    /// (consistency-preserving) and disagreement aborts the row.
+    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
+    where
+        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    {
+        try_stream! {
+            // Box::pin once per expression so the chained stream
+            // type stays sized as the chain grows.
+            let mut current: std::pin::Pin<Box<dyn Selection<Item = Result<Match, EvaluationError>> + 'a>> =
+                Box::pin(selection);
+            for application in self.queries {
+                let next = application.evaluate(current, env);
+                current = Box::pin(next);
+            }
+            for await each in current {
+                yield each?;
+            }
+        }
+    }
+
+    fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
+        let mut bindings = Parameters::new();
+        for name in collect_analysis_variables(self) {
+            if let Ok(value) = source.lookup(&Term::<dialog_query::Any>::var(name.clone())) {
+                bindings.insert(name, Term::Constant(value));
+            }
+        }
+        Ok(QueryNotationConclusion { bindings })
     }
 }
