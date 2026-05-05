@@ -4722,6 +4722,7 @@ dependencies = [
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base58",
  "bs58",

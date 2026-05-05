@@ -20,17 +20,26 @@
 //! that field-name facts written by either tool describe the same
 //! concept identically.
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity};
+use std::collections::HashSet;
+
+use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Select};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::memory::Resolve;
-use dialog_query::{Output as _, Query, Term};
+use dialog_query::concept::descriptor::ConceptConclusion;
+use dialog_query::concept::query::ConceptQuery;
+use dialog_query::source::SelectRules;
+use dialog_query::{
+    Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Selection, Term,
+    the, try_stream,
+};
 use dialog_repository::{Branch, RemoteSite};
 use thiserror::Error;
 
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor};
 
+use crate::builtin::concept_registry;
 use crate::meta::{AnonymousAttribute, Name, Named};
 
 /// Domain prefix for required-field claims.
@@ -476,12 +485,15 @@ impl Statement for AnonymousConcept {
 }
 
 // `Predicate` + `Concept` so `AnonymousConcept` plugs into the
-// same query machinery as a `#[derive(Concept)]` type. We
-// delegate to the wrapped descriptor — its `this()` and the
-// associated query types are already what we need.
+// same query machinery as a `#[derive(Concept)]` type. The
+// `Application` is [`AnonymousConceptQuery`] — a custom query
+// that yields one row per concept on the branch (built-in or
+// asserted) with its descriptor materialised as a JSON `source`
+// field, rather than reading per-attribute facts the way the
+// derived `ConceptQuery` does.
 impl dialog_query::Predicate for AnonymousConcept {
-    type Conclusion = dialog_query::concept::descriptor::ConceptConclusion;
-    type Application = dialog_query::concept::query::ConceptQuery;
+    type Conclusion = ConceptConclusion;
+    type Application = AnonymousConceptQuery;
     type Descriptor = ConceptDescriptor;
 }
 
@@ -538,8 +550,8 @@ impl Statement for NamedConcept {
 }
 
 impl dialog_query::Predicate for NamedConcept {
-    type Conclusion = dialog_query::concept::descriptor::ConceptConclusion;
-    type Application = dialog_query::concept::query::ConceptQuery;
+    type Conclusion = ConceptConclusion;
+    type Application = AnonymousConceptQuery;
     type Descriptor = ConceptDescriptor;
 }
 
@@ -548,6 +560,272 @@ impl dialog_query::Concept for NamedConcept {
     fn this(&self) -> Entity {
         self.this.clone()
     }
+}
+
+// -----------------------------------------------------------------
+// AnonymousConceptQuery — yields one row per concept on a branch.
+// -----------------------------------------------------------------
+
+/// Custom query application that surfaces every concept on a
+/// branch as a [`ConceptConclusion`].
+///
+/// Unlike dialog's [`ConceptQuery`], which reads a single concept's
+/// per-attribute facts, this query enumerates *every* concept and
+/// materialises its descriptor into a synthesised `source` field
+/// alongside `this` (the concept entity) and `name` (the bookmark
+/// name, when one is set).
+///
+/// Two sources are folded together:
+///
+/// 1. **Built-ins** — every entry of [`concept_registry`].
+/// 2. **Branch** — every entity carrying the
+///    `dialog.meta/concept = concept:concept` marker claim, with
+///    its descriptor reconstructed from the on-branch facts.
+///
+/// Built-ins win on `name` collision: a branch concept whose name
+/// matches a built-in is suppressed.
+///
+/// `terms` follows the [`ConceptQuery`] convention: parameter keys
+/// `this`, `name`, and `source` map to the user's variable
+/// names. Constant values become filters; variables become output
+/// bindings.
+#[derive(Debug, Clone)]
+pub struct AnonymousConceptQuery {
+    /// Term bindings — same shape as `ConceptQuery::terms`. Keys
+    /// `this` (entity), `name` (bookmark name), `source`
+    /// (descriptor as JSON string).
+    pub terms: Parameters,
+}
+
+impl AnonymousConceptQuery {
+    /// Construct a new query from a parameter map.
+    pub fn new(terms: Parameters) -> Self {
+        Self { terms }
+    }
+}
+
+impl Application for AnonymousConceptQuery {
+    type Conclusion = ConceptConclusion;
+
+    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
+    where
+        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    {
+        let app = self;
+        try_stream! {
+            for await each in selection {
+                let input = each?;
+
+                let this_term = app.terms.get("this").cloned();
+                let name_term = app.terms.get("name").cloned();
+                let source_term = app.terms.get("source").cloned();
+
+                // Resolve filters from constant terms or from
+                // upstream-bound variables.
+                let this_filter = resolve_entity_filter(&this_term, &input);
+                let name_filter = resolve_string_filter(&name_term, &input);
+
+                let mut emitted_names: HashSet<String> = HashSet::new();
+
+                // ---- Built-in source ----
+                for (builtin_name, resolved) in concept_registry().iter() {
+                    if let Some(ref e) = this_filter
+                        && e != &resolved.entity
+                    {
+                        continue;
+                    }
+                    if let Some(ref n) = name_filter
+                        && n != *builtin_name
+                    {
+                        continue;
+                    }
+                    emitted_names.insert((*builtin_name).to_string());
+
+                    let mut m = input.clone();
+                    if let Some(ref t) = this_term {
+                        m.bind(t, dialog_query::Value::Entity(resolved.entity.clone()))?;
+                    }
+                    if let Some(ref t) = name_term {
+                        m.bind(t, dialog_query::Value::String((*builtin_name).to_string()))?;
+                    }
+                    if let Some(ref t) = source_term {
+                        let json = serde_json::to_string(&resolved.descriptor)
+                            .map_err(|e| EvaluationError::Store(e.to_string()))?;
+                        m.bind(t, dialog_query::Value::String(json))?;
+                    }
+                    yield m;
+                }
+
+                // ---- Branch source ----
+                let marker = concept_marker_entity();
+                let this_term_for_marker: Term<Entity> = match &this_filter {
+                    Some(e) => Term::Constant(dialog_query::Value::Entity(e.clone())),
+                    None => Term::var("__concept_query_this"),
+                };
+                let claims: Vec<Claim> = the!("dialog.meta/concept")
+                    .of(this_term_for_marker)
+                    .is(marker)
+                    .perform(env)
+                    .try_vec()
+                    .await?;
+
+                for claim in claims {
+                    let entity = claim.of.clone();
+                    let descriptor = match resolve_branch_descriptor(&entity, env).await? {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let entity_name = lookup_entity_name(&entity, env).await?;
+
+                    if let Some(ref ref_name) = name_filter {
+                        match entity_name.as_deref() {
+                            Some(n) if n == ref_name => {}
+                            _ => continue,
+                        }
+                    }
+                    if let Some(ref n) = entity_name
+                        && emitted_names.contains(n)
+                    {
+                        continue;
+                    }
+
+                    let mut m = input.clone();
+                    if let Some(ref t) = this_term {
+                        m.bind(t, dialog_query::Value::Entity(entity.clone()))?;
+                    }
+                    if let Some(ref t) = name_term
+                        && let Some(n) = &entity_name
+                    {
+                        m.bind(t, dialog_query::Value::String(n.clone()))?;
+                    }
+                    if let Some(ref t) = source_term {
+                        let json = serde_json::to_string(&descriptor)
+                            .map_err(|e| EvaluationError::Store(e.to_string()))?;
+                        m.bind(t, dialog_query::Value::String(json))?;
+                    }
+                    yield m;
+                }
+            }
+        }
+    }
+
+    fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
+        // `ConceptConclusion`'s fields are private; delegate to
+        // dialog's own `ConceptQuery::realize` which only reads
+        // `terms` and the match's `this` binding. The `predicate`
+        // is unused by `realize` so a stub stands in.
+        let synthetic = ConceptQuery {
+            terms: self.terms.clone(),
+            predicate: stub_predicate(),
+        };
+        Application::realize(&synthetic, source)
+    }
+}
+
+/// Stable empty descriptor used as the unused `predicate` slot of
+/// the synthetic [`ConceptQuery`] in
+/// [`AnonymousConceptQuery::realize`].
+fn stub_predicate() -> ConceptDescriptor {
+    ConceptDescriptor::from(Vec::<(&str, AttributeDescriptor)>::new())
+}
+
+/// Pull a constant entity out of a term — either from a constant
+/// term or from a variable that the upstream selection already
+/// bound. Returns `None` if the term is unbound or absent.
+fn resolve_entity_filter(term: &Option<Term<dialog_query::Any>>, input: &Match) -> Option<Entity> {
+    let t = term.as_ref()?;
+    match t {
+        Term::Constant(value) => Entity::try_from(value.clone()).ok(),
+        Term::Variable { name: Some(_), .. } => {
+            let value = input.lookup(t).ok()?;
+            Entity::try_from(value).ok()
+        }
+        Term::Variable { name: None, .. } => None,
+    }
+}
+
+/// Pull a constant string out of a term — same shape as
+/// [`resolve_entity_filter`] but for string-valued filters.
+fn resolve_string_filter(term: &Option<Term<dialog_query::Any>>, input: &Match) -> Option<String> {
+    let t = term.as_ref()?;
+    let value = match t {
+        Term::Constant(value) => value.clone(),
+        Term::Variable { name: Some(_), .. } => input.lookup(t).ok()?,
+        Term::Variable { name: None, .. } => return None,
+    };
+    String::try_from(value).ok()
+}
+
+/// Reconstruct the descriptor for a branch concept entity by
+/// enumerating its `dialog.concept.with/*` claims and resolving
+/// each referenced attribute via the [`AnonymousAttribute`]
+/// concept query.
+async fn resolve_branch_descriptor<'a, Env>(
+    entity: &Entity,
+    env: &'a Env,
+) -> Result<Option<ConceptDescriptor>, EvaluationError>
+where
+    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+{
+    let with_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
+        Term::<dialog_query::attribute::The>::var("the")
+            .of(Term::from(entity.clone()))
+            .is(Term::<Entity>::var("attribute")),
+    )
+    .perform(env)
+    .try_vec()
+    .await?;
+
+    let mut fields: Vec<(String, AttributeDescriptor)> = Vec::new();
+    for claim in with_claims {
+        let the: ArtifactsAttribute = claim.the.into();
+        let Some(field_name) = parse_with(&the) else {
+            continue;
+        };
+        let Ok(attribute_entity) = Entity::try_from(claim.is) else {
+            continue;
+        };
+        let facts: Vec<AnonymousAttribute> = Query::<AnonymousAttribute> {
+            this: Term::from(attribute_entity.clone()),
+            id: Term::var("id"),
+            r#type: Term::var("type"),
+            cardinality: Term::var("cardinality"),
+            description: Term::var("description"),
+        }
+        .perform(env)
+        .try_vec()
+        .await?;
+        let Some(facts) = facts.into_iter().next() else {
+            continue;
+        };
+        let descriptor = build_attribute_descriptor(&facts).map_err(EvaluationError::Store)?;
+        fields.push((field_name, descriptor));
+    }
+
+    if fields.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(ConceptDescriptor::from(fields)))
+    }
+}
+
+/// Look up an entity's `dialog.meta/name`, if any. Used to
+/// associate a branch concept entity with its bookmark name.
+async fn lookup_entity_name<'a, Env>(
+    entity: &Entity,
+    env: &'a Env,
+) -> Result<Option<String>, EvaluationError>
+where
+    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+{
+    let names: Vec<Named> = Query::<Named> {
+        this: Term::from(entity.clone()),
+        name: Term::var("__concept_query_name"),
+    }
+    .perform(env)
+    .try_vec()
+    .await?;
+    Ok(names.into_iter().next().map(|n| n.name.0))
 }
 
 /// Walk a [`ConceptDescriptor`] and call `op` (either
@@ -816,5 +1094,109 @@ mod tests {
         // We can't easily inspect Changes' internal state, but
         // both calls succeeded and that's what we wanted to
         // exercise.
+    }
+
+    /// Round-trip a [`NamedConcept`] through a branch and
+    /// recover its descriptor via [`AnonymousConceptQuery`]'s
+    /// synthesised `source` field.
+    ///
+    /// Asserting a named concept writes the marker claim, the
+    /// `dialog.concept.with/{field}` claims, and the
+    /// `dialog.meta/name` claim. The query enumerates the
+    /// branch via the marker, reconstructs the descriptor for
+    /// each entity, and binds it as a JSON string in `source`.
+    #[dialog_common::test]
+    async fn it_returns_concept_with_source_from_concept_query() -> anyhow::Result<()> {
+        use dialog_query::{Any, Output as _, Parameters, Term};
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+        // The concept references one attribute by URI; the
+        // attribute's own facts (`dialog.attribute/id|type|
+        // cardinality`, `dialog.meta/description`) must exist on
+        // the branch for [`AnonymousConceptQuery`] to reconstruct
+        // the descriptor — emit them inline alongside the concept.
+        let (_, attr_descriptor) = descriptor.with().iter().next().expect("one field");
+        let attr_entity: Entity = attr_descriptor.to_uri().parse()?;
+        let concept = NamedConcept::new(descriptor.clone(), "person");
+        branch
+            .transaction()
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(attr_entity.clone())
+                    .is(format!(
+                        "{}/{}",
+                        attr_descriptor.domain(),
+                        attr_descriptor.name()
+                    )),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(attr_entity.clone())
+                    .is("Text".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(attr_entity)
+                    .is(String::new()),
+            )
+            .assert(concept)
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".to_string(), Term::<Any>::var("this"));
+        terms.insert("name".to_string(), Term::<Any>::var("name"));
+        terms.insert("source".to_string(), Term::<Any>::var("source"));
+
+        let conclusions: Vec<ConceptConclusion> = branch
+            .query()
+            .select(AnonymousConceptQuery::new(terms))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        let row = conclusions
+            .iter()
+            .find(|c| {
+                c.source()
+                    .lookup(&Term::<Any>::var("name"))
+                    .ok()
+                    .and_then(|v| String::try_from(v).ok())
+                    .as_deref()
+                    == Some("person")
+            })
+            .expect("expected a row with name = \"person\"");
+
+        let source: String = String::try_from(row.source().lookup(&Term::<Any>::var("source"))?)
+            .expect("source binding must be a string");
+        let parsed: ConceptDescriptor = serde_json::from_str(&source)?;
+        assert_eq!(
+            parsed.with().iter().count(),
+            descriptor.with().iter().count()
+        );
+        for ((a_name, a_attr), (b_name, b_attr)) in
+            parsed.with().iter().zip(descriptor.with().iter())
+        {
+            assert_eq!(a_name, b_name);
+            assert_eq!(a_attr.to_uri(), b_attr.to_uri());
+        }
+        Ok(())
     }
 }
