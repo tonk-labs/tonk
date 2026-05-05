@@ -90,8 +90,20 @@ fn attribute_descriptor() -> ResolvedConcept {
 /// [`crate::concept::QueryPlan::from`], so a `concept:` head at
 /// query time enumerates *every* concept (built-in + branch) with
 /// a synthesised `source` field.
+///
+/// The entity is fixed at the well-known `concept:concept` URI
+/// (rather than `descriptor.this()`'s content hash) so the row
+/// for the concept-of-concept built-in is identifiable without
+/// knowing the descriptor's hash. This is the same URI used as
+/// the value of every `dialog.meta/concept` marker claim — the
+/// symmetry is intentional.
 fn concept_descriptor() -> ResolvedConcept {
-    descriptor_to_resolved(crate::concept::concept_of_concept_descriptor().clone())
+    ResolvedConcept {
+        entity: "concept:concept"
+            .parse()
+            .expect("`concept:concept` is a valid entity URI"),
+        descriptor: crate::concept::concept_of_concept_descriptor().clone(),
+    }
 }
 
 /// Build a `ResolvedConcept` from a `#[derive(Concept)]` Rust
