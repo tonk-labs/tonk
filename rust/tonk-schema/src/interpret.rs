@@ -1301,11 +1301,20 @@ fn meta_application(meta: &MetaPlan) -> Application {
             inline_attributes: _,
         } => {
             // Built-in `concept` schema: one `with.<field>` per
-            // field of the user's concept, plus
-            // `dialog.meta/description`. The bookmark name is
-            // emitted by the planner via `HeadBinding::Bookmark`.
+            // field of the user's concept, plus the
+            // `dialog.meta/concept` marker and `dialog.meta/description`.
+            // The bookmark name is emitted by the planner via
+            // `HeadBinding::Bookmark`.
             let mut terms = Parameters::new();
             terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+            terms.insert(
+                "concept".into(),
+                Term::Constant(Value::Entity(
+                    "concept:concept"
+                        .parse()
+                        .expect("`concept:concept` is a valid entity URI"),
+                )),
+            );
             for (name, attr) in descriptor.with().iter() {
                 let attr_entity: Entity = attr
                     .to_uri()
@@ -1355,8 +1364,10 @@ fn attribute_schema() -> ConceptDescriptor {
 }
 
 /// Build a `concept!` schema descriptor — one `with.<field>` per
-/// field of the concept being defined, plus optional name and
-/// description fields.
+/// field of the concept being defined, plus the
+/// `dialog.meta/concept` marker (so branch-wide `concept:` queries
+/// can find every concept entity) and optional name and description
+/// fields.
 fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     let mut with = serde_json::Map::new();
     for (name, _attr) in descriptor.with().iter() {
@@ -1369,6 +1380,14 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
             }),
         );
     }
+    with.insert(
+        "concept".into(),
+        serde_json::json!({
+            "the": "dialog.meta/concept",
+            "as": "Entity",
+            "cardinality": "one",
+        }),
+    );
     with.insert(
         "name".into(),
         serde_json::json!({
