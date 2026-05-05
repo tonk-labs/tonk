@@ -5,11 +5,16 @@
 use std::sync::Arc;
 
 use crate::{
-    LspHub, api_router,
+    LspHub,
     axum::{RequestConversion, ResponseConversion},
     bootstrap_profile_meta,
+    router::{AppState, ClientId, GuestBindings, api_router_with_state},
 };
-use axum::{Router, body::Body};
+use axum::{
+    Router,
+    body::Body,
+    http::{HeaderValue, header::HeaderName},
+};
 use dialog_capability::Subject;
 use dialog_operator::{Operator, Profile};
 use dialog_storage::provider::storage::Storage;
@@ -18,8 +23,189 @@ use tokio::sync::Mutex;
 use tonk_common::log;
 use tower_service::Service;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::future_to_promise;
-use web_sys::{Request, Response};
+use wasm_bindgen_futures::{JsFuture, future_to_promise};
+use web_sys::{FetchEvent, Request, Response};
+
+// Global `self.fetch(...)` in the service-worker scope. Fetches
+// issued from an SW bypass the SW's own `onfetch` listener (per
+// spec), so this is how we pass through requests the Rust side
+// chose not to handle.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_name = fetch)]
+    fn sw_fetch(request: &Request) -> Promise;
+
+    #[wasm_bindgen(js_name = fetch)]
+    fn sw_fetch_str(url: &str) -> Promise;
+}
+
+/// Extract the `resultingClientId` property from a `FetchEvent`.
+///
+/// `web-sys` exposes `FetchEvent.client_id()` but not
+/// `resultingClientId`. For navigation requests `client_id` is
+/// empty and `resultingClientId` carries the ID the new document
+/// will have, so we need both. Read the property via reflection
+/// rather than extending `FetchEvent` with a manual extern —
+/// `wasm-bindgen` doesn't allow extending foreign types from
+/// outside their defining crate.
+fn event_resulting_client_id(event: &FetchEvent) -> String {
+    js_sys::Reflect::get(event, &JsValue::from_str("resultingClientId"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// Outcome of the routing decision made in
+/// [`TonkServiceWorker::on_fetch`].
+enum Route {
+    /// Dispatch through the axum router. `rewritten_path` is
+    /// `Some` only when the request originated from a registered
+    /// guest iframe and its path needs to be re-rooted under the
+    /// iframe's branch.
+    Handle { rewritten_path: Option<String> },
+    /// Pass the request through to the network.
+    Passthrough,
+}
+
+/// Decides how the Rust side should route this request.
+///
+/// - Paths under `/api/` are handled by the axum router as-is.
+/// - Requests whose initiating client is a registered guest
+///   iframe are *also* handled by the router, but with their
+///   path rewritten to live under
+///   `/api/repository/{repo}/branch/{branch}`. That gives the
+///   iframe a virtual root scoped to its branch: a fetch for
+///   `/foo.js` lands at `/api/repository/{repo}/branch/{branch}/foo.js`.
+/// - Everything else falls through to the network.
+async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
+    if path.starts_with("/api/") {
+        return Route::Handle {
+            rewritten_path: None,
+        };
+    }
+    if client_id.is_empty() {
+        return Route::Passthrough;
+    }
+
+    let binding = {
+        let guests = state.read().await.guests.clone();
+        let guard = guests.read().await;
+        guard.get(&ClientId(client_id.to_string())).cloned()
+    };
+
+    let Some(binding) = binding else {
+        return Route::Passthrough;
+    };
+
+    let suffix = if path == "/" || path.is_empty() {
+        String::new()
+    } else {
+        path.to_string()
+    };
+    let rewritten = format!(
+        "/api/repository/{}/branch/{}{}",
+        binding.repo, binding.branch, suffix,
+    );
+    Route::Handle {
+        rewritten_path: Some(rewritten),
+    }
+}
+
+/// Route the request through the axum router, apply response
+/// headers (CORS, client-id echo), and convert back to a browser
+/// `Response`.
+///
+/// If `rewritten_path` is `Some`, the request's URI is rewritten
+/// to that path before axum gets it — that's how guest-iframe
+/// requests get redirected into branch-scoped routes without
+/// axum's own routing layer ever seeing the un-scoped URL.
+async fn handle_via_router(
+    router: Arc<Mutex<Router>>,
+    browser_request: Request,
+    client_id: String,
+    rewritten_path: Option<String>,
+) -> Result<JsValue, JsValue> {
+    let mut request: axum::http::Request<Body> = RequestConversion::from(browser_request)
+        .try_into()
+        .map_err(JsValue::from)?;
+
+    if let Some(new_path) = rewritten_path {
+        let uri_string = match request.uri().query() {
+            Some(q) => format!("{}?{}", new_path, q),
+            None => new_path.clone(),
+        };
+        if let Ok(uri) = uri_string.parse::<axum::http::Uri>() {
+            log!("handle_via_router: rewriting path to {}", uri);
+            *request.uri_mut() = uri;
+        }
+    }
+
+    if !client_id.is_empty() {
+        request.extensions_mut().insert(ClientId(client_id.clone()));
+    }
+
+    let mut response = router
+        .lock()
+        .await
+        .call(request)
+        .await
+        .expect_throw("Failed to handle API request");
+
+    let headers = response.headers_mut();
+
+    if !client_id.is_empty()
+        && let Ok(value) = HeaderValue::from_str(&client_id)
+    {
+        headers.insert(HeaderName::from_static("x-tonk-client-id"), value);
+    }
+
+    // CORS: sandboxed iframes have an opaque origin and send
+    // `Origin: null`, so cross-origin rules apply even though
+    // the iframe and the SW share an origin. Send permissive
+    // headers on every response — same-origin callers ignore
+    // them and opaque-origin callers need them to read the body.
+    headers.insert(
+        HeaderName::from_static("access-control-allow-origin"),
+        HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-allow-methods"),
+        HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-allow-headers"),
+        HeaderValue::from_static("content-type, if-none-match, accept"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-expose-headers"),
+        HeaderValue::from_static("x-tonk-client-id"),
+    );
+
+    ResponseConversion::from(response)
+        .try_into()
+        .map(|value: Response| JsValue::from(value))
+        .map_err(JsValue::from)
+}
+
+/// Pass the request through to the network by calling
+/// `self.fetch(request)` from inside the service worker. Such
+/// fetches bypass the SW's own `onfetch` handler (per spec), so
+/// this really does hit the network.
+///
+/// For navigation requests that 404, retry against `/index.html`
+/// so the client-side SPA router can match unknown paths.
+async fn passthrough(request: Request, is_navigation: bool) -> Result<JsValue, JsValue> {
+    let response: Response = JsFuture::from(sw_fetch(&request)).await?.dyn_into()?;
+
+    if is_navigation && response.status() == 404 {
+        let fallback: Response = JsFuture::from(sw_fetch_str("/index.html"))
+            .await?
+            .dyn_into()?;
+        return Ok(JsValue::from(fallback));
+    }
+
+    Ok(JsValue::from(response))
+}
 
 /// Default storage type — IndexedDB on WASM, filesystem on native.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -52,6 +238,11 @@ pub struct TonkState {
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
     /// so subscription broadcasts happen automatically.
     pub reactor: crate::TonkReactor,
+    /// Guest-iframe bindings keyed by service-worker Client ID.
+    /// Behind its own interior lock so guest registration /
+    /// lookup doesn't contend with profile/operator access on
+    /// the outer state lock.
+    pub guests: GuestBindings,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -70,6 +261,13 @@ unsafe impl Sync for TonkState {}
 #[wasm_bindgen]
 pub struct TonkServiceWorker {
     router: Arc<Mutex<Router>>,
+    /// Shared application state. The router owns it too, but we
+    /// keep a handle here so [`Self::on_fetch`] can consult the
+    /// guest-binding map *before* dispatching — that's how we
+    /// decide whether a request should be routed through axum
+    /// (with optional path rewriting) or passed through to the
+    /// network.
+    state: AppState,
     /// Handle to the language-server hub. Used by [`Self::onupdatefound`]
     /// to release in-flight SSE responses when a newer worker
     /// version begins installing — without this the active worker
@@ -123,19 +321,20 @@ impl TonkServiceWorker {
             operator,
             profile_name: PROFILE_NAME.to_string(),
             reactor,
+            guests: Default::default(),
         };
         bootstrap_profile_meta(&state, PROFILE_NAME)
             .await
             .map_err(|e| JsError::new(&format!("Failed to bootstrap profile meta: {}", e)))?;
 
-        // 5. Wrap state in the router. `api_router` returns the LSP
-        // hub alongside it so the worker can address it directly
-        // (independent of the request-handling path) when the SW
-        // lifecycle requires releasing in-flight streams.
-        let (router, lsp) = api_router(state);
+        // 5. Wrap state in the router. `api_router_with_state`
+        // returns the LSP hub *and* a cloneable `AppState` handle:
+        // the worker keeps the latter so `on_fetch` can read the
+        // guest-binding map without going through the router.
+        let (router, state, lsp) = api_router_with_state(state);
         let router = Arc::new(Mutex::new(router));
 
-        Ok(Self { router, lsp })
+        Ok(Self { router, state, lsp })
     }
 
     /// Hook the SW's `updatefound` event from JavaScript.
@@ -162,35 +361,64 @@ impl TonkServiceWorker {
 
     /// Handles incoming fetch events from the browser.
     ///
-    /// Converts the browser's `Request` to an Axum request, processes it through
-    /// the router, and converts the response back to a browser `Response`.
+    /// Called from the JS shim's `self.onfetch` listener for *every*
+    /// request the service worker sees. The Rust side decides
+    /// whether to handle the request itself (via the axum router)
+    /// or pass it through to the network. The shim never
+    /// inspects the URL — all routing policy lives here.
     ///
-    /// # Parameters
+    /// Decision rule (see [`route_for`]):
+    /// - If the request's path starts with `/api/`, route through
+    ///   the axum router unchanged.
+    /// - If the initiating client is a registered guest iframe,
+    ///   rewrite the path to live under
+    ///   `/api/repository/{repo}/branch/{branch}` and route
+    ///   through the axum router. The iframe sees its branch as
+    ///   its virtual root.
+    /// - Otherwise, pass through to the network via `sw_fetch`.
     ///
-    /// - `request`: The incoming browser fetch request
-    ///
-    /// # Returns
-    ///
-    /// A JavaScript `Promise` that resolves to the response
+    /// Navigation requests that pass through and 404 are retried
+    /// against `/index.html` so the client-side SPA router can
+    /// match unknown paths.
     #[wasm_bindgen(js_name = "onfetch")]
-    pub fn on_fetch(&self, request: Request) -> Promise {
-        log!("Handling fetch!");
+    pub fn on_fetch(&self, event: FetchEvent) -> Promise {
+        let request = event.request();
+        let client_id = event.client_id().unwrap_or_default();
+        let resulting_client_id = event_resulting_client_id(&event);
+
+        // Prefer `clientId` (subresource fetches) over
+        // `resultingClientId` (navigations). Exactly one is
+        // populated for any fetch a service worker sees.
+        let effective_client_id = if !client_id.is_empty() {
+            client_id
+        } else {
+            resulting_client_id
+        };
+
+        let url = request.url();
+        let is_navigation = request.mode() == web_sys::RequestMode::Navigate;
+
+        let path = url::Url::parse(&url)
+            .map(|u| u.path().to_string())
+            .unwrap_or_default();
 
         let router = self.router.clone();
-        let request: axum::http::Request<Body> =
-            RequestConversion::from(request).try_into().unwrap_throw();
+        let state = self.state.clone();
 
         future_to_promise(async move {
-            let response = router
-                .lock()
-                .await
-                .call(request)
-                .await
-                .expect_throw("Failed to handle API request");
-            ResponseConversion::from(response)
-                .try_into()
-                .map(|value: Response| JsValue::from(value))
-                .map_err(JsValue::from)
+            log!(
+                "onfetch path={} mode={:?} client={:?}",
+                path,
+                request.mode(),
+                effective_client_id,
+            );
+
+            match route_for(&path, &effective_client_id, &state).await {
+                Route::Handle { rewritten_path } => {
+                    handle_via_router(router, request, effective_client_id, rewritten_path).await
+                }
+                Route::Passthrough => passthrough(request, is_navigation).await,
+            }
         })
     }
 

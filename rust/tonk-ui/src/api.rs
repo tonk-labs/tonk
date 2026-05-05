@@ -65,16 +65,23 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
 }
 
 /// Ensures the default repository exists via
-/// `PUT /api/repository/{name}` with `If-None-Match: *`.
+/// `PUT /api/repository/{name}` with `If-None-Match: *`, and
+/// returns the hosting document's service-worker Client ID as
+/// reported by the worker in the `X-Tonk-Client-Id` response
+/// header.
 ///
-/// Returns `Ok(())` whether the repo was just created (`201`) or
-/// already existed (`412`) — both are fine from the UI's point of
-/// view. Any other non-success status is turned into an error.
+/// Succeeds whether the repo was just created (`201`) or
+/// already existed (`200`) — both carry a `RepositoryInfo`
+/// body and the same client-id header. The Rust side returns
+/// `200 OK` for the existed case (rather than `412 Precondition
+/// Failed`) so `reqwest`'s wasm client doesn't tear down the
+/// response body on a non-2xx status; functionally the two
+/// outcomes are equivalent for our caller.
 ///
 /// The body wires up an `origin` remote pointing at the UCAN access
 /// service (resolved against the current window origin) and sets
 /// the default branch to track `origin/{branch}`.
-pub async fn init() -> Result<(), TonkUiError> {
+pub async fn init() -> Result<String, TonkUiError> {
     log!("Ensuring repository '{}' exists...", DEFAULT_REPO);
 
     let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
@@ -98,7 +105,16 @@ pub async fn init() -> Result<(), TonkUiError> {
         .map_err(into_api_error)?;
 
     match response.status() {
-        StatusCode::CREATED | StatusCode::PRECONDITION_FAILED => Ok(()),
+        StatusCode::OK | StatusCode::CREATED => response
+            .headers()
+            .get("x-tonk-client-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .ok_or_else(|| {
+                TonkUiError::ApiError(
+                    "PUT /api/repository response missing X-Tonk-Client-Id header".to_string(),
+                )
+            }),
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
@@ -113,9 +129,11 @@ pub async fn init() -> Result<(), TonkUiError> {
 ///
 /// Distinguishes "name already taken" from other failures so the
 /// dialog can surface a field-specific message instead of a
-/// generic error. 409/412 both mean "already exists" — the 412
-/// case just signals that the caller used `If-None-Match: *`,
-/// which we always do here.
+/// generic error. With `If-None-Match: *` the server signals
+/// "already exists" by returning the existing record under
+/// `200 OK` — that's a successful round-trip from the wire's
+/// point of view, which the create-space flow needs to surface
+/// as `AlreadyExists` so the dialog can keep the form open.
 #[derive(Debug)]
 pub enum CreateSpaceError {
     /// A repository with this name is already registered.
@@ -158,9 +176,10 @@ pub async fn create_space(name: &str) -> Result<RepositoryInfo, CreateSpaceError
             .await
             .map_err(into_api_error)
             .map_err(CreateSpaceError::Other),
-        StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT => {
-            Err(CreateSpaceError::AlreadyExists)
-        }
+        // `200 OK` means the repo already existed; the body is
+        // the existing record, which we don't need here. `409`
+        // covers the no-`If-None-Match` collision path.
+        StatusCode::OK | StatusCode::CONFLICT => Err(CreateSpaceError::AlreadyExists),
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(

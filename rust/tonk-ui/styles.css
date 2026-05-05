@@ -235,6 +235,23 @@ h6 {
     opacity: 0.7;
 }
 
+/* Viewer page: drop the inner padding so the iframe fills the
+   available main area edge-to-edge; the banner above keeps the
+   page chrome consistent with the regular space view. */
+.space-viewer {
+    padding: 0;
+    gap: 0;
+    flex: 1;
+    min-height: 0;
+}
+.space-viewer-frame {
+    border: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 60vh;
+    background: transparent;
+}
+
 /* Branches as collapsible rows. Each row's `<wa-details>`
    summary is a single horizontal line: icon + name + version +
    sync icon-buttons + status chip, all packed tight via gap.
@@ -735,8 +752,16 @@ tonk-code {
        fill is too saturated against the form-control background;
        a low-alpha tint of the foreground reads as a subtle band
        on both light and dark themes. */
-    --tonk-code-active-line: color-mix(in srgb, var(--wa-color-text-normal) 2%, transparent);
-    --tonk-code-gutter-bg: color-mix(in srgb, var(--wa-color-text-normal) 4%, transparent);
+    --tonk-code-active-line: color-mix(
+        in srgb,
+        var(--wa-color-text-normal) 2%,
+        transparent
+    );
+    --tonk-code-gutter-bg: color-mix(
+        in srgb,
+        var(--wa-color-text-normal) 4%,
+        transparent
+    );
     --tonk-code-cursor: var(--wa-color-brand-fill-loud);
     /* Selection / bracket match — color-mixed alpha tints rather
        than raw `--wa-color-brand-fill-quiet`, because wa-details
@@ -745,8 +770,16 @@ tonk-code {
        (a brand color, not a surface) is unaffected, so we mix
        against it for predictable visibility regardless of
        ancestor wa-component scoping. */
-    --tonk-code-selection: color-mix(in srgb, var(--wa-color-brand-fill-loud) 25%, transparent);
-    --tonk-code-bracket-match-bg: color-mix(in srgb, var(--wa-color-brand-fill-loud) 18%, transparent);
+    --tonk-code-selection: color-mix(
+        in srgb,
+        var(--wa-color-brand-fill-loud) 25%,
+        transparent
+    );
+    --tonk-code-bracket-match-bg: color-mix(
+        in srgb,
+        var(--wa-color-brand-fill-loud) 18%,
+        transparent
+    );
     --tonk-code-bracket-match-border: var(--wa-color-brand-border-loud);
     /* Suppress the element's default focus halo. wa-input doesn't
        paint one either, and rendering it inside a wa-details body
@@ -762,9 +795,17 @@ tonk-code {
        see-through. A color-mix against the page foreground gives
        a solid, raised-looking surface that survives any wa
        ancestor scoping. */
-    --tonk-code-tooltip-bg: color-mix(in srgb, var(--wa-color-text-normal) 12%, var(--wa-form-control-background-color));
+    --tonk-code-tooltip-bg: color-mix(
+        in srgb,
+        var(--wa-color-text-normal) 12%,
+        var(--wa-form-control-background-color)
+    );
     --tonk-code-tooltip-fg: var(--wa-color-text-normal);
-    --tonk-code-tooltip-border: color-mix(in srgb, var(--wa-color-text-normal) 18%, transparent);
+    --tonk-code-tooltip-border: color-mix(
+        in srgb,
+        var(--wa-color-text-normal) 18%,
+        transparent
+    );
 
     /* Syntax — muted Bauhaus palette.
        Kandinsky's triad (red→square, yellow→triangle, blue→circle)
@@ -778,23 +819,23 @@ tonk-code {
        further down map roles onto the palette so reassigning a
        role (e.g. point variables at red instead of blue) is a
        one-line change. */
-    --tonk-bauhaus-yellow: #c89a2b;    /* muted ochre */
-    --tonk-bauhaus-red:    #b94a3d;    /* muted brick */
-    --tonk-bauhaus-blue:   #3d6da8;    /* muted slate-blue */
-    --tonk-bauhaus-grey:   #7a7268;    /* warm neutral */
-    --tonk-bauhaus-alarm:  #a8302a;    /* hotter than the brick red */
+    --tonk-bauhaus-yellow: #c89a2b; /* muted ochre */
+    --tonk-bauhaus-red: #b94a3d; /* muted brick */
+    --tonk-bauhaus-blue: #3d6da8; /* muted slate-blue */
+    --tonk-bauhaus-grey: #7a7268; /* warm neutral */
+    --tonk-bauhaus-alarm: #a8302a; /* hotter than the brick red */
 
     /* Code-role assignments. The Bauhaus school's own logic for
        the primaries:
          - yellow / triangle → keys (loud, structural, eye-catching)
          - red    / square   → strings (grounded, literal substance)
          - blue   / circle   → numbers (abstract, receding) */
-    --tonk-code-key:         var(--tonk-bauhaus-yellow);
-    --tonk-code-string:      var(--tonk-bauhaus-red);
-    --tonk-code-number:      var(--tonk-bauhaus-blue);
-    --tonk-code-comment:     var(--tonk-bauhaus-grey);
+    --tonk-code-key: var(--tonk-bauhaus-yellow);
+    --tonk-code-string: var(--tonk-bauhaus-red);
+    --tonk-code-number: var(--tonk-bauhaus-blue);
+    --tonk-code-comment: var(--tonk-bauhaus-grey);
     --tonk-code-punctuation: var(--wa-color-text-normal);
-    --tonk-code-error:       var(--tonk-bauhaus-alarm);
+    --tonk-code-error: var(--tonk-bauhaus-alarm);
 
     /* Dialect decorations (dialog-yaml). Choices follow the
        Kandinsky logic: variables (abstract holes) → blue;
@@ -803,11 +844,11 @@ tonk-code {
        will change state") → alarm red. Entity URIs and the `.`
        sigil ride a quiet text color to read as "reference" without
        competing with the role color of the surrounding token. */
-    --tonk-code-variable:   var(--tonk-bauhaus-blue);
-    --tonk-code-entity:     var(--wa-color-text-quiet);
-    --tonk-code-name:       var(--tonk-bauhaus-yellow);
+    --tonk-code-variable: var(--tonk-bauhaus-blue);
+    --tonk-code-entity: var(--wa-color-text-quiet);
+    --tonk-code-name: var(--tonk-bauhaus-yellow);
     --tonk-code-name-sigil: var(--wa-color-text-quiet);
-    --tonk-code-effect:     var(--tonk-bauhaus-alarm);
+    --tonk-code-effect: var(--tonk-bauhaus-alarm);
 
     /* Typography */
     --tonk-code-font: var(--wa-font-family-code);
@@ -906,7 +947,10 @@ tonk-code:focus-within {
        reads as "previous" without making the text hard to
        read. */
     color: var(--wa-color-text-quiet);
-    background: var(--wa-color-surface-lowered, var(--wa-color-neutral-fill-quiet));
+    background: var(
+        --wa-color-surface-lowered,
+        var(--wa-color-neutral-fill-quiet)
+    );
 }
 .evaluate-revision {
     /* Sits above the match list as a one-line tag. */

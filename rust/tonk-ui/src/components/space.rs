@@ -12,7 +12,7 @@ use wasm_bindgen::JsCast;
 
 use crate::{
     api,
-    components::{ActiveSubject, InviteSpace, Status},
+    components::{ActiveSubject, HostId, InviteSpace, Status},
     did,
 };
 
@@ -1004,5 +1004,195 @@ fn summarize_address(address: &SiteAddress) -> RemoteAddressSummary {
             url: addr.endpoint().to_string(),
             details: Some(format!("{} · {}", addr.bucket(), addr.region())),
         },
+    }
+}
+
+#[derive(Params, PartialEq, Clone, Debug)]
+pub struct TonkSpaceViewerParams {
+    space: Option<String>,
+    branch: Option<String>,
+    entity: Option<String>,
+}
+
+/// Entity-rendering view at
+/// `/space/{space}/branch/{branch}/view/{entity}`.
+///
+/// Shares the shell layout with [`TonkSpace`] (banner + share
+/// button) but replaces the branches/remotes sections in `main`
+/// with a sandboxed guest iframe. The iframe's `src` is the
+/// host/guest bridge URL — initial navigation registers the
+/// iframe's client id against `{repo, branch}` and serves the
+/// entity's HTML body via the same path that backs
+/// `GET /api/repository/{repo}/branch/{branch}/content/{entity}`
+/// with `Accept: text/html`.
+///
+/// The iframe is gated on the [`HostId`] context: until the
+/// shell's `PUT /api/repository/...` round-trip completes we
+/// don't have a hosting Client ID, so the URL would be
+/// incomplete. Rendering is held back to a spinner state until
+/// then.
+#[component]
+#[allow(clippy::unused_unit)]
+pub fn TonkSpaceViewer() -> impl IntoView {
+    let params = use_params::<TonkSpaceViewerParams>();
+
+    let space_name = Signal::derive_local(move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.space)
+            .filter(|s| !s.is_empty())
+    });
+    let branch_name = Signal::derive_local(move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.branch)
+            .filter(|s| !s.is_empty())
+    });
+    let entity_name = Signal::derive_local(move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.entity)
+            .filter(|s| !s.is_empty())
+    });
+
+    let status = use_context::<Signal<Status, LocalStorage>>();
+    let host_id = use_context::<Signal<Option<HostId>, LocalStorage>>();
+
+    let repository = LocalResource::new(move || {
+        let name = space_name.get();
+        let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(true);
+        async move {
+            if !ready {
+                return Ok(None);
+            }
+            match name {
+                None => Ok(None),
+                Some(name) => api::repository(&name).await,
+            }
+        }
+    });
+
+    let active_subject =
+        use_context::<ActiveSubject>().expect("ActiveSubject context provided by TonkShell");
+    Effect::new(move |_| {
+        let subject = repository
+            .get()
+            .and_then(|result| result.ok())
+            .flatten()
+            .map(|info| info.subject.to_string());
+        active_subject.set(subject);
+    });
+
+    let invite_space = use_context::<InviteSpace>().expect("InviteSpace provided by TonkShell");
+    let on_share = move |_| {
+        if let Some(name) = space_name.get() {
+            invite_space.set(Some(name));
+        }
+    };
+
+    view! {
+        <Suspense fallback=|| view! {
+            <wa-spinner></wa-spinner>
+        }>
+            <ErrorBoundary fallback=|errors| view! {
+                <wa-callout variant="danger">
+                    <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                    { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
+                </wa-callout>
+            }>
+                { move || repository.get().map(|result| result.map(|repo| match repo {
+                    Some(info) => Either::Left(render_viewer_view(
+                        info,
+                        space_name,
+                        branch_name,
+                        entity_name,
+                        host_id,
+                        on_share,
+                    )),
+                    None => Either::Right(view! {
+                        <wa-callout variant="neutral">
+                            <wa-icon slot="icon" name="circle-info"></wa-icon>
+                            { move || format!(
+                                "Repository '{}' not found",
+                                space_name.get().unwrap_or_default(),
+                            ) }
+                        </wa-callout>
+                    }),
+                })) }
+            </ErrorBoundary>
+        </Suspense>
+    }
+}
+
+/// Renders the viewer's banner header and an iframe-only
+/// `<main>`. Mirrors [`render_space_view`]'s banner so the
+/// viewer reads as the same page chrome — just with the
+/// branches/remotes sections replaced by the entity render.
+fn render_viewer_view<F>(
+    info: RepositoryInfo,
+    space_name: Signal<Option<String>, LocalStorage>,
+    branch_name: Signal<Option<String>, LocalStorage>,
+    entity_name: Signal<Option<String>, LocalStorage>,
+    host_id: Option<Signal<Option<HostId>, LocalStorage>>,
+    on_share: F,
+) -> impl IntoView
+where
+    F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
+{
+    let local_subject = info.subject.to_string();
+    let space_title = info.name.clone();
+    let title_attr = local_subject.clone();
+
+    // Iframe `src` is `Some(...)` once we know all four pieces:
+    // the hosting document's Client ID (from [`HostId`]) plus
+    // the route's space, branch, and entity segments. Until
+    // then the iframe is a placeholder — same loading affordance
+    // [`TonkSpace`] uses while waiting on the shell.
+    let iframe_src = Signal::derive_local(move || {
+        let host = host_id.and_then(|s| s.get()).map(|h| h.0)?;
+        let space = space_name.get()?;
+        let branch = branch_name.get()?;
+        let entity = entity_name.get()?;
+        Some(format!(
+            "/api/repository/{}/branch/{}/host/{}/{}",
+            space, branch, host, entity,
+        ))
+    });
+
+    view! {
+        <header slot="main-header" class="space-banner">
+            <h1 class="space-banner-title" title=title_attr>
+                { space_title }
+            </h1>
+            <wa-button
+                variant="neutral"
+                appearance="accent"
+                size="small"
+                on:click=on_share
+            >
+                <wa-icon
+                    name="share-nodes"
+                    variant="solid"
+                    label="Invite someone to this space"
+                ></wa-icon>
+            </wa-button>
+        </header>
+        <main class="wa-stack space-view space-viewer">
+            { move || match iframe_src.get() {
+                Some(src) => Either::Left(view! {
+                    <iframe
+                        class="space-viewer-frame"
+                        sandbox="allow-scripts allow-same-origin"
+                        src=src
+                    />
+                }),
+                None => Either::Right(view! {
+                    <wa-spinner></wa-spinner>
+                }),
+            } }
+        </main>
     }
 }

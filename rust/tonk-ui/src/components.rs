@@ -51,6 +51,14 @@ pub enum Status {
     Ready,
 }
 
+/// The hosting document's service-worker Client ID, learned from
+/// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
+/// response. Provided as a Leptos context so descendant
+/// components can embed it in iframe URLs for the host/guest
+/// bridge.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostId(pub String);
+
 /// The subject DID of the currently viewed space. `None` when no
 /// space is loaded (or still loading). Updated by [`TonkSpace`]
 /// when its [`RepositoryInfo`] resolves; consumed by the sidebar
@@ -111,7 +119,7 @@ pub fn TonkShell() -> impl IntoView {
         service_worker_activates().await;
         log!("SW is activated, ensuring default repository...");
 
-        api::init().await?;
+        let host_id = api::init().await?;
 
         let pathname = window()
             .location()
@@ -122,13 +130,13 @@ pub fn TonkShell() -> impl IntoView {
             BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
         }
 
-        Ok::<_, crate::error::TonkUiError>(())
+        Ok::<_, crate::error::TonkUiError>(host_id)
     });
 
     // Derive the application status from init resource
     let status = Signal::derive_local(move || {
         match init_resource.get() {
-            Some(Ok(())) => Status::Ready,
+            Some(Ok(_)) => Status::Ready,
             Some(Err(e)) => {
                 log!("Initialization error: {:?}", e);
                 // Still show as loading on error - could add an Error state later
@@ -138,7 +146,14 @@ pub fn TonkShell() -> impl IntoView {
         }
     });
 
+    // Publish the host id as a reactive context so descendant
+    // components can subscribe: `None` while init is in flight
+    // or has errored, `Some(HostId)` once the PUT succeeds.
+    let host_id =
+        Signal::derive_local(move || init_resource.get().and_then(|r| r.ok()).map(HostId));
+
     provide_context(status);
+    provide_context(host_id);
 
     let active_subject: ActiveSubject = RwSignal::new_local(None);
     provide_context(active_subject);

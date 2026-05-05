@@ -44,6 +44,9 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 mod query;
 pub use query::QueryPath;
 
+mod host;
+pub use host::{ClientId, GuestBinding, GuestBindings};
+
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -60,6 +63,17 @@ async fn root(State(_state): State<AppState>) -> &'static str {
 /// worker version begins installing.
 pub fn api_router(state: TonkState) -> (Router, Arc<LspHub>) {
     api_router_from_state(Arc::new(RwLock::new(state)))
+}
+
+/// Variant of [`api_router`] that also surfaces the wrapped
+/// [`AppState`] handle. The worker uses this so it can consult
+/// shared state (notably the guest-binding map) outside the
+/// request path, before deciding whether to dispatch into the
+/// router or pass a fetch through to the network.
+pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>) {
+    let state = Arc::new(RwLock::new(state));
+    let (router, hub) = api_router_from_state(state.clone());
+    (router, state, hub)
 }
 
 /// Same as [`api_router`] but takes an already-wrapped
@@ -127,6 +141,17 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
+        )
+        // Host/guest iframe bridge. The shell embeds an iframe
+        // pointed at this URL; the handler records the iframe's
+        // client id against `{repo, branch}` so its later
+        // subresource fetches can be re-rooted, and serves the
+        // entity's body by selecting `(the=<mime>, of=<entity>)`
+        // on the branch. The MIME comes from the entity's
+        // trailing `.<ext>` (defaulting to `text/html`).
+        .route(
+            "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
+            get(host::guest),
         )
         // Inspect operations
         .route(
@@ -213,6 +238,7 @@ pub mod tests {
             operator,
             profile_name: "test-tonk".to_string(),
             reactor,
+            guests: Default::default(),
         }
     }
 

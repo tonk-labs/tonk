@@ -1,6 +1,6 @@
 use crate::components::{
     LastJoinOutcome, TonkCreateSpace, TonkInviteDialog, TonkJoin, TonkProfile, TonkSpace,
-    TonkToolbar,
+    TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -30,6 +30,15 @@ pub fn TonkLauncher() -> impl IntoView {
             >
                 <TonkToolbar />
                 <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
+                    // Order matters: the more specific viewer
+                    // route is listed before the catch-all
+                    // `space/:space?` so deep links like
+                    // `/space/foo/branch/main/view/bar` don't
+                    // get swallowed by the generic space route.
+                    <Route
+                        path=path!("space/:space/branch/:branch/view/:entity")
+                        view=TonkSpaceViewer
+                    />
                     <Route path=path!("space/:space?") view=TonkSpace />
                     <Route path=path!("profile") view=TonkProfile />
                     <Route path=path!("join") view=TonkJoin />

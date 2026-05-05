@@ -58,6 +58,7 @@ web-sys = { workspace = true, features = [
     "Headers",
     "Request",
     "RequestInit",
+    "RequestMode",
     "Response",
     "ResponseInit",
     "ServiceWorkerGlobalScope",
