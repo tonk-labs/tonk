@@ -562,6 +562,17 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
     update: &mut U,
     op: F,
 ) {
+    // Marker claim — every concept entity carries
+    // `(?this, dialog.meta/concept, "concept:concept")` so
+    // queries that want "all concepts on this branch" have a
+    // selectable triple to start from (the engine refuses
+    // selections with no bound component).
+    op(
+        update,
+        meta_attr("dialog.meta", "concept"),
+        entity.clone(),
+        Value::Entity(concept_marker_entity()),
+    );
     for (field_name, attribute) in descriptor.with().iter() {
         let relation = meta_attr(WITH_DOMAIN, field_name);
         let attribute_entity: Entity = attribute
@@ -585,6 +596,16 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
             Value::String(description.to_owned()),
         );
     }
+}
+
+/// The well-known entity used as the value of the
+/// `dialog.meta/concept` marker claim. Every concept entity
+/// asserted on a branch carries
+/// `(?this, dialog.meta/concept, concept:concept)`.
+fn concept_marker_entity() -> Entity {
+    "concept:concept"
+        .parse()
+        .expect("`concept:concept` is a valid entity URI")
 }
 
 /// Build a runtime [`ArtifactsAttribute`] from a domain + local
@@ -653,7 +674,9 @@ mod tests {
 
     /// `AnonymousConcept::assert` should write one
     /// `dialog.concept.with/{field}` claim per field plus
-    /// `dialog.meta/description` when set, and nothing else.
+    /// `dialog.meta/description` when set, plus the marker
+    /// claim `dialog.meta/concept = concept:concept` that lets
+    /// branch-wide concept enumeration find this entity.
     #[test]
     fn anonymous_concept_writes_with_claims_and_description() {
         use dialog_artifacts::Changes;
@@ -668,8 +691,69 @@ mod tests {
         let concept = AnonymousConcept::new(descriptor);
         let mut changes = Changes::new();
         concept.assert(&mut changes);
-        // Two with/* claims + one description claim = 3.
+        // Marker + two with/* claims + one description claim = 4.
         assert!(!changes.is_empty());
+    }
+
+    /// Every concept assert must include the
+    /// `(?this, dialog.meta/concept, concept:concept)` marker so
+    /// `concept:` queries with `?this` unbound can drive
+    /// selection from a single bound triple.
+    #[test]
+    fn anonymous_concept_writes_marker_claim() {
+        use dialog_artifacts::{Changes, Instruction};
+        let json = r#"{
+            "with": {
+                "x": { "the": "a/b", "as": "Text", "cardinality": "one" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept = AnonymousConcept::new(descriptor);
+        let mut changes = Changes::new();
+        concept.assert(&mut changes);
+        let marker_attr = meta_attr("dialog.meta", "concept");
+        let marker_value = Value::Entity(concept_marker_entity());
+        let saw_marker = changes
+            .into_instructions()
+            .into_iter()
+            .any(|inst| match inst {
+                Instruction::Assert(a) => a.the == marker_attr && a.is == marker_value,
+                _ => false,
+            });
+        assert!(
+            saw_marker,
+            "expected dialog.meta/concept = concept:concept marker claim",
+        );
+    }
+
+    /// Retract path mirrors assert: the marker dissociation must
+    /// be emitted alongside the with-claim retractions so the
+    /// branch ends up clean.
+    #[test]
+    fn anonymous_concept_retracts_marker_claim() {
+        use dialog_artifacts::{Changes, Instruction};
+        let json = r#"{
+            "with": {
+                "x": { "the": "a/b", "as": "Text", "cardinality": "one" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept = AnonymousConcept::new(descriptor);
+        let mut changes = Changes::new();
+        concept.retract(&mut changes);
+        let marker_attr = meta_attr("dialog.meta", "concept");
+        let marker_value = Value::Entity(concept_marker_entity());
+        let saw_retract = changes
+            .into_instructions()
+            .into_iter()
+            .any(|inst| match inst {
+                Instruction::Retract(a) => a.the == marker_attr && a.is == marker_value,
+                _ => false,
+            });
+        assert!(
+            saw_retract,
+            "expected dialog.meta/concept marker retraction",
+        );
     }
 
     /// `NamedConcept::assert` should write the same as
