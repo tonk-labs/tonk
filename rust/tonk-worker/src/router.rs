@@ -44,6 +44,9 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 mod query;
 pub use query::QueryPath;
 
+mod concept;
+pub use concept::ConceptPath;
+
 mod host;
 pub use host::{ClientId, GuestBinding, GuestBindings};
 
@@ -141,6 +144,14 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/query",
             post(query::query),
+        )
+        // Concept-view route — server-rendered HTML page that
+        // mounts a `<tonk-concept>` element with a default
+        // `<table>` template auto-generated from the concept's
+        // descriptor. Browser-pasteable, bookmarkable.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/concept/{source}",
+            get(concept::concept_view),
         )
         // Host/guest iframe bridge. The shell embeds an iframe
         // pointed at this URL; the handler records the iframe's
@@ -2235,5 +2246,133 @@ attribute! {name}:
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Helper: seed `attribute! person-{name,age}: …` plus
+    /// `concept! person:` so a concept-view route has something
+    /// to render.
+    async fn seed_person_concept(app: &Router, repo: &str) {
+        let body = "\
+attribute! person-name:
+    the:         io.gozala.person/name
+    as:          Text
+    cardinality: one
+    description: The person's name
+
+attribute! person-age:
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+  description: The person's age
+
+concept! person:
+    description: A person
+    with:
+      name: .person-name
+      age:  .person-age
+";
+        let _ = post_yaml(app, repo, body).await;
+    }
+
+    /// Helper: GET the concept-view route, return (status, body).
+    async fn get_concept(
+        app: &Router,
+        repo: &str,
+        branch: &str,
+        path_tail: &str,
+    ) -> (StatusCode, String) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{repo}/branch/{branch}/concept/{path_tail}"
+                    ))
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[dialog_common::test]
+    async fn it_renders_concept_page_for_known_bookmark() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-concept-view-bookmark";
+
+        put_repo(&app, repo).await;
+        seed_person_concept(&app, repo).await;
+
+        let (status, body) = get_concept(&app, repo, "main", "person").await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(
+            body.contains("<tonk-concept"),
+            "expected <tonk-concept> in body: {body}",
+        );
+        assert!(
+            body.contains("source=\"person\""),
+            "expected source=\"person\" in body: {body}",
+        );
+        // Both fields must appear as table headers.
+        assert!(
+            body.contains("<th>name</th>"),
+            "missing name header: {body}"
+        );
+        assert!(body.contains("<th>age</th>"), "missing age header: {body}");
+        // Row template uses the {field} placeholders.
+        assert!(
+            body.contains("<td>{name}</td>") && body.contains("<td>{age}</td>"),
+            "missing template cells: {body}",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_renders_concept_page_for_builtin() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-concept-view-builtin";
+        put_repo(&app, repo).await;
+
+        // `branch` is a built-in concept — no branch state needed.
+        let (status, body) = get_concept(&app, repo, "main", "branch").await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(body.contains("<tonk-concept"), "missing element: {body}");
+        assert!(body.contains("source=\"branch\""), "missing source: {body}");
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_404_for_unknown_source() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-concept-view-unknown";
+        put_repo(&app, repo).await;
+
+        let (status, _body) = get_concept(&app, repo, "main", "no-such-concept").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[dialog_common::test]
+    async fn it_passes_query_string_through_to_element() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-concept-view-querystring";
+        put_repo(&app, repo).await;
+        seed_person_concept(&app, repo).await;
+
+        let (status, body) = get_concept(&app, repo, "main", "person?name=Alice").await;
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        // Filters are surfaced inside the source attribute on the
+        // mounted element.
+        assert!(
+            body.contains("source=\"person?name=Alice\""),
+            "expected querystring in source attribute: {body}",
+        );
     }
 }
