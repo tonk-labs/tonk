@@ -96,6 +96,12 @@ pub fn TonkConceptView() -> impl IntoView {
                     Some(resolved) => render_concept_view(
                         space_name.get().unwrap_or_default(),
                         branch_name.get().unwrap_or_default(),
+                        // Banner: bare bookmark name, never the
+                        // full `name?key=value` form — filters are
+                        // implementation detail of the live query.
+                        source_param.get().unwrap_or_default(),
+                        // Element: full source-with-filters so the
+                        // SSE subscription is constrained.
                         source_attr.get().unwrap_or_default(),
                         resolved,
                     ).into_any(),
@@ -110,11 +116,11 @@ pub fn TonkConceptView() -> impl IntoView {
     }
 }
 
-/// Worker-resolved descriptor for the source — its `this` URI and
-/// the field names extracted from the descriptor JSON.
+/// Worker-resolved descriptor for the source — the field names
+/// extracted from the descriptor JSON. Drives the auto-generated
+/// table chrome.
 #[derive(Clone, Debug)]
 struct ResolvedDescriptor {
-    this: String,
     fields: Vec<String>,
 }
 
@@ -177,11 +183,6 @@ async fn resolve_descriptor(
     let Some(first) = conclusions.into_iter().next() else {
         return Ok(None);
     };
-    let this = first
-        .get("this")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .unwrap_or_default();
     let descriptor_json = first
         .get("fields")
         .and_then(|f| f.get("source"))
@@ -199,15 +200,20 @@ async fn resolve_descriptor(
         .map(|m| m.keys().cloned().collect())
         .unwrap_or_default();
     fields.sort();
-    Ok(Some(ResolvedDescriptor { this, fields }))
+    Ok(Some(ResolvedDescriptor { fields }))
 }
 
 /// Build the `<tonk-concept>` markup with an auto-generated
 /// `<table>` template inside.
+///
+/// `banner_name` is the bare bookmark name shown in the page
+/// banner (`person`); `source_attr` is the full source-with-
+/// filters form passed to the element (`person?name=Alice`).
 fn render_concept_view(
     space: String,
     branch: String,
-    source: String,
+    banner_name: String,
+    source_attr: String,
     descriptor: ResolvedDescriptor,
 ) -> impl IntoView {
     // The `<tonk-concept>` host's body is built imperatively
@@ -218,9 +224,9 @@ fn render_concept_view(
     // not under Leptos's `attr:` namespace.
     let inner_html = build_template_html(&descriptor);
     let mount: NodeRef<leptos::html::Div> = NodeRef::new();
-    let space_attr = space.clone();
-    let branch_attr = branch.clone();
-    let source_attr = source.clone();
+    let space_for_effect = space.clone();
+    let branch_for_effect = branch.clone();
+    let source_for_effect = source_attr.clone();
     Effect::new(move |_| {
         if let Some(slot) = mount.get() {
             // Replace the slot's contents with a fresh
@@ -233,25 +239,39 @@ fn render_concept_view(
                 Ok(el) => el,
                 Err(_) => return,
             };
-            let _ = host.set_attribute("space", &space_attr);
-            let _ = host.set_attribute("branch", &branch_attr);
-            let _ = host.set_attribute("source", &source_attr);
+            let _ = host.set_attribute("space", &space_for_effect);
+            let _ = host.set_attribute("branch", &branch_for_effect);
+            let _ = host.set_attribute("source", &source_for_effect);
             host.set_inner_html(&inner_html);
             let _ = slot.append_child(&host);
         }
     });
 
+    // `descriptor` is already captured by the closure that built
+    // `inner_html`; no Leptos reactivity is needed for the table
+    // chrome itself.
+    let _ = descriptor;
+
     view! {
-        <article class="concept-view">
-            <h1>{source.clone()} " " <small>{descriptor.this.clone()}</small></h1>
-            <div node_ref=mount></div>
-        </article>
+        <header slot="main-header" class="space-banner">
+            <h1 class="space-banner-title" title=banner_name.clone()>
+                { banner_name.clone() }
+            </h1>
+        </header>
+        <main class="wa-stack concept-view">
+            <div class="concept-view-table" node_ref=mount></div>
+        </main>
     }
 }
 
 /// Build the `<table>`-shaped inner HTML for `<tonk-concept>`.
 /// Setting this via `set_inner_html` ensures the browser's HTML
 /// parser preserves `<template>` correctly inside `<tbody>`.
+///
+/// The first column carries the entity URI (`{this}`); CSS
+/// truncates it with an ellipsis so a long `did:key:…` string
+/// can't push the table off-screen. The cell's `title` attribute
+/// holds the full value for hover-to-reveal.
 fn build_template_html(descriptor: &ResolvedDescriptor) -> String {
     let header_cells: String = descriptor
         .fields
@@ -265,9 +285,14 @@ fn build_template_html(descriptor: &ResolvedDescriptor) -> String {
         .collect();
     format!(
         "<table>\
-           <thead><tr><th>this</th>{header_cells}</tr></thead>\
+           <thead><tr><th class=\"concept-view-this\">this</th>{header_cells}</tr></thead>\
            <tbody>\
-             <template><tr><td>{{this}}</td>{row_cells}</tr></template>\
+             <template>\
+               <tr>\
+                 <td class=\"concept-view-this\" title=\"{{this}}\"><span>{{this}}</span></td>\
+                 {row_cells}\
+               </tr>\
+             </template>\
            </tbody>\
          </table>",
     )

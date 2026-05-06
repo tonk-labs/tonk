@@ -244,6 +244,85 @@ h6 {
     flex: 1;
     min-height: 0;
 }
+
+/* Concept view: same padding as `.space-view`. The
+   `<tonk-concept>` element is `display: inline` by default, and
+   its rendered `<table>` would otherwise overflow the main slot
+   on narrow widths. The wrapper makes the host a block-level
+   scroll container so the table scrolls horizontally inside the
+   page rather than stretching the page itself. */
+.concept-view {
+    padding: var(--wa-space-m) var(--wa-space-xl);
+    padding-block-end: var(--wa-space-2xl);
+    gap: var(--wa-space-l);
+}
+.concept-view-table {
+    /* Container query context — cell padding and font size
+       scale with the wrapper's width, not the viewport. The
+       table feels right whether the page is full-screen on a
+       desktop or tucked into a narrow side panel. */
+    container-type: inline-size;
+    max-width: 100%;
+}
+.concept-view-table tonk-concept {
+    display: block;
+}
+.concept-view-table table {
+    border-collapse: collapse;
+    /* Fill the wrapper so the table is grounded in the page;
+       columns auto-size to their content. The `this` column is
+       capped at ~7ch (just the URI's last few characters) so it
+       never demands the whole row. */
+    width: 100%;
+    /* Fluid type — `clamp(min, scale, max)` keeps the body
+       readable across container-width breakpoints without media
+       queries. */
+    font-size: clamp(0.85rem, 1.4cqi, 1.05rem);
+}
+.concept-view-table th,
+.concept-view-table td {
+    padding: clamp(0.25rem, 1cqi, 0.75rem) clamp(0.5rem, 1.5cqi, 1rem);
+    text-align: start;
+    border-bottom: 1px solid var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
+    /* Cells wrap by default — long entity URIs etc. break to
+       a new line rather than overflowing the table. */
+    word-break: break-word;
+}
+.concept-view-table th {
+    font-weight: 600;
+    font-size: clamp(0.7rem, 1cqi, 0.85rem);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.7;
+}
+
+/* The `this` column carries an entity URI (`did:key:…`).
+   Monospace it so prefixes line up across rows; truncate via a
+   block-level inner span (which *does* honor `max-width` even
+   without `table-layout: fixed`). The full URI stays on the
+   cell's `title` attribute for hover-to-reveal. */
+.concept-view-table .concept-view-this {
+    font-family: var(--wa-font-family-code, ui-monospace, monospace);
+    opacity: 0.7;
+}
+.concept-view-table td.concept-view-this > span {
+    /* Always show only the last 8 characters of the URI (the
+       unique suffix); the prefix is `did:key:z6Mk…` boilerplate.
+       Width is fixed to 8ch so the column is predictable; the
+       cell `direction: rtl` clips from the start (no ellipsis —
+       hard clip), and a LRM `::before` keeps the actual
+       character order LTR. */
+    display: inline-block;
+    width: 8ch;
+    overflow: hidden;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: start;
+    vertical-align: bottom;
+}
+.concept-view-table td.concept-view-this > span::before {
+    content: "\200E"; /* LRM — preserves left-to-right glyph order */
+}
 .space-viewer-frame {
     border: 0;
     width: 100%;

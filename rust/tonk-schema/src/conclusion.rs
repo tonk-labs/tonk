@@ -24,15 +24,27 @@ pub struct Conclusion {
 impl Conclusion {
     /// Project a [`ConceptConclusion`] using the query's `terms`
     /// to discover which field names were bound.
+    ///
+    /// Variable terms read their value from the match's bindings;
+    /// constant terms emit the constant directly. Constants
+    /// matter for filter use-cases — `terms.name = "Alice"`
+    /// means the caller already knows the value and the engine
+    /// won't bind a variable for it; without surfacing the
+    /// constant here, `fields["name"]` would be missing for every
+    /// row even though every row's `name` is, by construction,
+    /// `"Alice"`.
     pub fn project(conclusion: &ConceptConclusion, terms: &Parameters) -> Self {
         let mut fields = BTreeMap::new();
-        for (name, _) in terms.iter() {
-            let lookup = conclusion
-                .source()
-                .lookup(&Term::<Any>::var(name.clone()))
-                .ok()
-                .and_then(|v| serde_json::to_value(&v).ok());
-            if let Some(value) = lookup {
+        for (name, term) in terms.iter() {
+            let value = match term {
+                Term::Constant(value) => serde_json::to_value(value).ok(),
+                Term::Variable { .. } => conclusion
+                    .source()
+                    .lookup(&Term::<Any>::var(name.clone()))
+                    .ok()
+                    .and_then(|v| serde_json::to_value(&v).ok()),
+            };
+            if let Some(value) = value {
                 fields.insert(name.clone(), value);
             }
         }
