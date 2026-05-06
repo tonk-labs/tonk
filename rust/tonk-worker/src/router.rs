@@ -153,6 +153,15 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/branch/{branch}/host/{host}/{entity}",
             get(host::guest),
         )
+        // Bookmark-name → entity-DID resolution. Selects the entity
+        // carrying `dialog.meta/name = {name}` on the branch and
+        // returns its DID. Used by the portals UI so users can type
+        // `hello-page` instead of pasting a `did:key:…` (deriving
+        // the same DID in JS would mean shipping blake3+did:key).
+        .route(
+            "/api/repository/{repo}/branch/{branch}/resolve/{name}",
+            get(host::resolve),
+        )
         // Inspect operations
         .route(
             "/api/inspect/repository/{repo}/branch/{branch}",

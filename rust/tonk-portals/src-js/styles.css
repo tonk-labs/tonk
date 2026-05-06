@@ -1,52 +1,644 @@
+/*
+ * tonk-portals styles. All selectors are scoped under
+ * `.tonk-portals-root` because the bundle injects this stylesheet
+ * into the host page's <head>; we share a document with the Leptos
+ * shell, so unscoped names like `.grid`, `.square`, `.rail` would
+ * collide with anything else on the page.
+ *
+ * The original prototype assumed it owned the viewport (`.app`
+ * was 100vw/100vh). Here, the element lives inside a <main> that
+ * sits next to the Leptos sidebar and below the banner, so we
+ * size off the wrapper element instead and let `useElementSize`
+ * drive the grid dimensions.
+ */
+
 .tonk-portals-root {
   position: relative;
   width: 100%;
-  min-height: 60vh;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  /* Theme-aware tokens. We deliberately *don't* hard-code light
+     colours here — the host page picks the WA theme (default is
+     fairly dark/brutalist on this site), so the tile chrome and
+     pick-button text need to follow the host's foreground
+     colour or they go invisible on a dark surface. The fallbacks
+     mirror the prototype's light-mode look for non-WA hosts. */
+  --tp-bg: transparent;
+  --tp-square-bg: var(--wa-color-surface-default, #ffffff);
+  --tp-square-fg: var(--wa-color-text-normal, #1d1d1f);
+  --tp-square-fg-quiet: color-mix(in oklab, var(--tp-square-fg) 70%, transparent);
+  --tp-square-fg-quieter: color-mix(in oklab, var(--tp-square-fg) 45%, transparent);
+  --tp-square-fg-faint: color-mix(in oklab, var(--tp-square-fg) 25%, transparent);
+  --tp-square-border: color-mix(in oklab, var(--tp-square-fg) 18%, transparent);
+  --tp-square-hover: color-mix(in oklab, var(--tp-square-fg) 8%, transparent);
+  --tp-accent: var(--wa-color-brand-fill-loud, #0a84ff);
+  --tp-accent-soft: color-mix(in oklab, var(--tp-accent) 12%, transparent);
+  --tp-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --tp-shadow-strong: 0 10px 24px rgba(0, 0, 0, 0.14);
+  --tp-dot: color-mix(in oklab, var(--tp-square-fg) 22%, transparent);
+  background: var(--tp-bg);
+  color: var(--tp-square-fg);
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: inherit;
 }
 
-.tonk-portals-stub {
-  padding: 2rem;
-  font-family: system-ui, sans-serif;
-  color: #1a1a2e;
-  border: 1px dashed #c9d1e0;
+.tonk-portals-root *,
+.tonk-portals-root *::before,
+.tonk-portals-root *::after {
+  box-sizing: border-box;
+}
+
+.tonk-portals-root .grid-wrapper {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.tonk-portals-root .grid {
+  position: relative;
+  cursor: crosshair;
+  overflow: hidden;
+}
+
+.tonk-portals-root .grid--dragging {
+  cursor: crosshair;
+}
+
+.tonk-portals-root .grid__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--tp-square-fg-quieter);
+  font-size: 14px;
+  letter-spacing: 0.01em;
+}
+
+.tonk-portals-root .grid-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.tonk-portals-root .grid:hover .grid-overlay {
+  opacity: 0.35;
+}
+
+.tonk-portals-root .grid--dragging .grid-overlay {
+  opacity: 1;
+}
+
+.tonk-portals-root .grid-dot {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  margin-left: -1.5px;
+  margin-top: -1.5px;
+  border-radius: 50%;
+  background: var(--tp-dot);
+}
+
+.tonk-portals-root .square {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: var(--tp-square-bg);
   border-radius: 12px;
-  background: #fafbfd;
+  box-shadow: var(--tp-shadow);
+  cursor: pointer;
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 150ms ease;
 }
 
-.tonk-portals-stub h2 {
-  margin: 0 0 1rem;
-  font-size: 1.1rem;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: #5a6478;
+.tonk-portals-root .square--selected {
+  box-shadow:
+    var(--tp-shadow-strong),
+    inset 0 0 0 2px var(--tp-accent);
 }
 
-.tonk-portals-stub dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 0.4rem 1.2rem;
-  margin: 0 0 1.25rem;
+.tonk-portals-root .square--active {
+  opacity: 0.35;
+  transition: opacity 100ms ease;
 }
 
-.tonk-portals-stub dt {
-  font-weight: 600;
-  color: #5a6478;
+.tonk-portals-root .square__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  cursor: grab;
+  border-top-left-radius: 12px;
+  border-top-right-radius: 12px;
+  touch-action: none;
+  z-index: 1;
 }
 
-.tonk-portals-stub dd {
-  margin: 0;
+.tonk-portals-root .square__name {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  padding: 0 96px;
 }
 
-.tonk-portals-stub code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
-  background: #eef1f6;
-  padding: 0.05rem 0.4rem;
+.tonk-portals-root .square__name > span {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tp-square-fg-quiet);
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.tonk-portals-root .square__bar:active {
+  cursor: grabbing;
+}
+
+.tonk-portals-root .square__minimize,
+.tonk-portals-root .square__fullscreen,
+.tonk-portals-root .square__close {
+  position: absolute;
+  top: 4px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
   border-radius: 4px;
+  color: var(--tp-square-fg-quieter);
+  padding: 0;
+  z-index: 5;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
 }
 
-.tonk-portals-stub__note {
-  margin: 0;
-  font-size: 0.9rem;
-  color: #5a6478;
+.tonk-portals-root .square__close { left: 18px; }
+.tonk-portals-root .square__minimize { left: 44px; }
+.tonk-portals-root .square__fullscreen { left: 70px; }
+
+.tonk-portals-root .square__minimize:hover,
+.tonk-portals-root .square__fullscreen:hover,
+.tonk-portals-root .square__close:hover {
+  background: var(--tp-square-hover);
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .square__minimize::before {
+  content: "";
+  width: 10px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.tonk-portals-root .square__fullscreen::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.tonk-portals-root .square__close::before,
+.tonk-portals-root .square__close::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 1.5px;
+  background: currentColor;
+  border-radius: 1px;
+}
+
+.tonk-portals-root .square__close::before { transform: rotate(45deg); }
+.tonk-portals-root .square__close::after { transform: rotate(-45deg); }
+
+.tonk-portals-root .bar-menu {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 5;
+}
+
+.tonk-portals-root .bar-menu__btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--tp-square-fg-quieter);
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.tonk-portals-root .bar-menu__btn:hover {
+  background: var(--tp-square-hover);
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .bar-menu__line {
+  width: 3px;
+  height: 3px;
+  background: currentColor;
+  border-radius: 50%;
+}
+
+.tonk-portals-root .bar-menu__dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 140px;
+  background: var(--tp-square-bg);
+  border-radius: 8px;
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+  padding: 4px;
+  z-index: 51;
+  display: flex;
+  flex-direction: column;
+  animation: tp-pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: top right;
+}
+
+.tonk-portals-root .bar-menu__item {
+  background: transparent;
+  border: none;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--tp-square-fg);
+  white-space: nowrap;
+  transition: background 80ms ease;
+}
+
+.tonk-portals-root .bar-menu__item:hover {
+  background: var(--tp-square-hover);
+}
+
+.tonk-portals-root .bar-menu__flash {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: rgba(29, 29, 31, 0.92);
+  color: white;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  z-index: 51;
+  letter-spacing: 0.02em;
+  animation: tp-pop 120ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.tonk-portals-root .rail {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  z-index: 10;
+  max-width: calc(100% - 32px);
+  overflow-x: auto;
+  padding: 4px;
+}
+
+.tonk-portals-root .rail__tab {
+  height: 36px;
+  min-width: 100px;
+  max-width: 180px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--tp-square-bg);
+  box-shadow: var(--tp-shadow);
+  border: 1px solid var(--tp-square-border);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--tp-square-fg-quiet);
+  letter-spacing: 0.01em;
+  transition:
+    transform 120ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 120ms ease,
+    color 120ms ease;
+}
+
+.tonk-portals-root .rail__tab:hover {
+  box-shadow: var(--tp-shadow-strong);
+  transform: translateY(-1px);
+  color: var(--tp-accent);
+}
+
+.tonk-portals-root .rail__tab-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  font-weight: 500;
+}
+
+.tonk-portals-root .square__body {
+  position: absolute;
+  top: 28px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  border-bottom-left-radius: 12px;
+  border-bottom-right-radius: 12px;
+}
+
+.tonk-portals-root .square__iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  display: block;
+}
+
+/* While *any* square is mid-drag or mid-resize, every iframe
+   must stop swallowing pointermove events — otherwise the
+   hook's window-level listeners go silent the moment the
+   cursor crosses into an iframe's box (an iframe owns its
+   own window's events; they never bubble to the host). The
+   `:has(.square--active)` scope flips this on for the whole
+   portal whenever any tile is being manipulated, so a drag
+   that crosses neighbouring tiles still gets every move. */
+.tonk-portals-root:has(.square--active) .square__iframe {
+  pointer-events: none;
+}
+
+.tonk-portals-root .square__pick {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--tp-square-fg-quiet);
+  transition:
+    background 120ms ease,
+    color 120ms ease;
+}
+
+.tonk-portals-root .square__pick:hover {
+  background: var(--tp-square-hover);
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .square__pick-plus {
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1;
+  color: var(--tp-square-fg-faint);
+}
+
+.tonk-portals-root .square__pick:hover .square__pick-plus {
+  color: var(--tp-accent);
+}
+
+.tonk-portals-root .square__pick-label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.tonk-portals-root .square__pick-size {
+  font-size: 11px;
+  color: var(--tp-square-fg-quieter);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.tonk-portals-root .square__edge {
+  position: absolute;
+  touch-action: none;
+  z-index: 3;
+}
+
+.tonk-portals-root .square__edge--t {
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.tonk-portals-root .square__edge--b {
+  bottom: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.tonk-portals-root .square__edge--l {
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.tonk-portals-root .square__edge--r {
+  top: 14px;
+  bottom: 14px;
+  right: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.tonk-portals-root .square__handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  touch-action: none;
+  z-index: 4;
+}
+
+.tonk-portals-root .square__handle--tl { top: 0; left: 0; cursor: nwse-resize; }
+.tonk-portals-root .square__handle--tr { top: 0; right: 0; cursor: nesw-resize; }
+.tonk-portals-root .square__handle--bl { bottom: 0; left: 0; cursor: nesw-resize; }
+.tonk-portals-root .square__handle--br { bottom: 0; right: 0; cursor: nwse-resize; }
+
+.tonk-portals-root .selection-cell {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: var(--tp-accent-soft);
+  border: 1.5px solid var(--tp-accent);
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.tonk-portals-root .picker-anchor {
+  position: absolute;
+  top: calc(50% + 14px);
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 50;
+  pointer-events: none;
+}
+
+.tonk-portals-root .picker {
+  pointer-events: auto;
+  width: 320px;
+  background: var(--tp-square-bg);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: tp-pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: center;
+}
+
+.tonk-portals-root .picker__input {
+  width: 100%;
+  border: none;
+  outline: none;
+  padding: 12px 14px;
+  font-size: 13px;
+  font-family: inherit;
+  background: transparent;
+  color: var(--tp-square-fg);
+  border-bottom: 1px solid var(--tp-square-border);
+}
+
+.tonk-portals-root .picker__input::placeholder {
+  color: var(--tp-square-fg-faint);
+}
+
+.tonk-portals-root .picker__input--secondary {
+  font-size: 12px;
+  padding: 10px 14px;
+  color: var(--tp-square-fg-quiet);
+}
+
+.tonk-portals-root .picker__error {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--wa-color-danger-fill-loud, #e03131);
+  background: color-mix(in oklab, var(--wa-color-danger-fill-loud, #e03131) 10%, transparent);
+  border-bottom: 1px solid var(--tp-square-border);
+}
+
+.tonk-portals-root .picker__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 10px 12px 4px;
+}
+
+.tonk-portals-root .picker__action {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--tp-square-border);
+  background: transparent;
+  color: var(--tp-square-fg);
+  cursor: pointer;
+  transition:
+    background 80ms ease,
+    color 80ms ease,
+    border-color 80ms ease;
+}
+
+.tonk-portals-root .picker__action:hover:not(:disabled) {
+  background: var(--tp-square-hover);
+}
+
+.tonk-portals-root .picker__action--primary {
+  background: var(--tp-accent);
+  border-color: var(--tp-accent);
+  color: white;
+}
+
+.tonk-portals-root .picker__action--primary:hover:not(:disabled) {
+  filter: brightness(0.95);
+  background: var(--tp-accent);
+}
+
+.tonk-portals-root .picker__action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tonk-portals-root .picker__hint {
+  padding: 8px 14px 12px;
+  font-size: 11px;
+  color: var(--tp-square-fg-quieter);
+  letter-spacing: 0.01em;
+}
+
+.tonk-portals-root .picker__hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  background: var(--tp-square-hover);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--tp-square-fg-quiet);
+}
+
+@keyframes tp-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }

@@ -28,6 +28,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use ::axum::{
+    Json,
     body::Body,
     extract::{Path, Request, State},
     http::{HeaderValue, StatusCode, header},
@@ -35,13 +36,15 @@ use ::axum::{
 };
 use axum_wasm_macros::wasm_compat;
 use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
+use dialog_query::{Output as _, Query, Term};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::meta::{Name, Named};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -258,4 +261,85 @@ pub async fn guest(
         "No claim found for entity={} attribute={}",
         entity_str, attribute_str,
     )))
+}
+
+/// Path parameters for the bookmark-name resolution route.
+#[derive(Debug, Deserialize)]
+pub struct ResolvePath {
+    pub repo: String,
+    pub branch: String,
+    pub name: String,
+}
+
+/// Body returned by [`resolve`] — just the resolved entity DID as
+/// a string. We surface the name back too so a client doing many
+/// resolves can disambiguate responses without tracking request
+/// state.
+#[derive(Debug, Serialize)]
+pub struct ResolveResponse {
+    pub name: String,
+    pub entity: String,
+}
+
+/// Handler for `GET /api/repository/{repo}/branch/{branch}/resolve/{name}`.
+///
+/// Looks up the entity carrying `dialog.meta/name = name` on the
+/// branch via the typed [`Named`] concept query (the same shape
+/// used by `evaluate::BranchResolver::resolve_named_entity`) and
+/// returns its DID. 404 if no entity is bookmarked under that
+/// name on the given branch.
+///
+/// Why a server-side handler at all: carry derives entity DIDs by
+/// `derive_entity_from_hash(blake3::hash(name.as_bytes()))`, so a
+/// browser-side resolver would need a blake3 implementation plus
+/// did:key multibase encoding. One worker route is one less moving
+/// part for the prototype.
+#[wasm_compat]
+pub async fn resolve(
+    State(state): State<AppState>,
+    Path(params): Path<ResolvePath>,
+) -> Result<Json<ResolveResponse>, TonkWorkerError> {
+    let tonk = state.read().await;
+
+    let repo = tonk
+        .profile
+        .repository(&params.repo)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", params.repo, e))
+        })?;
+
+    let branch = repo
+        .branch(params.branch.as_str())
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to open branch '{}': {}", params.branch, e))
+        })?;
+
+    let rows: Vec<Named> = branch
+        .query()
+        .select(Query::<Named> {
+            this: Term::var("this"),
+            name: Term::from(Name(params.name.clone())),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("Named lookup failed: {e:?}")))?;
+
+    let Some(found) = rows.into_iter().next() else {
+        return Err(TonkWorkerError::NotFound(format!(
+            "No entity bookmarked as '{}' on branch '{}'",
+            params.name, params.branch,
+        )));
+    };
+
+    Ok(Json(ResolveResponse {
+        name: params.name,
+        entity: found.this.to_string(),
+    }))
 }

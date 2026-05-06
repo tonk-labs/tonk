@@ -252,6 +252,216 @@ h6 {
     background: transparent;
 }
 
+/* On the portals page the floating notch already provides
+   space switching and profile access, so the right rail (the
+   wa-page navigation column) is redundant — and the grid
+   wants every horizontal pixel it can get. Collapse the rail
+   to zero width and hide its tiles when a `.space-portals`
+   main is mounted. */
+wa-page:has(.space-portals) {
+    --menu-width: 0;
+}
+wa-page:has(.space-portals)::part(navigation),
+wa-page:has(.space-portals)::part(navigation-footer) {
+    display: none;
+}
+
+/* Portals page: full-bleed grid with two floating "notch"
+   controls (Figma-style) instead of a horizontal banner. The
+   grid claims every vertical pixel; chrome lives in the
+   corners. We use `100dvh` (dynamic viewport height) so mobile
+   URL bars don't punch a hole into the bottom of the grid. */
+.space-portals {
+    padding: 0;
+    gap: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    height: 100dvh;
+    min-height: 24rem;
+}
+.space-portals tonk-portals {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+}
+
+/* The two floating notches: top-left holds the space switcher,
+   top-right holds profile + share. Both are absolutely
+   positioned over the grid so the React app underneath fills
+   the full viewport — the notches sit *on top* via z-index. */
+.portals-notch {
+    position: absolute;
+    top: var(--wa-space-s);
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-2xs);
+    padding: var(--wa-space-2xs) var(--wa-space-xs);
+    background: var(--wa-color-surface-default);
+    border: 1px solid var(--wa-color-neutral-border-quiet);
+    border-radius: var(--wa-border-radius-m, 8px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+.portals-notch--left {
+    left: var(--wa-space-s);
+}
+.portals-notch--right {
+    right: var(--wa-space-s);
+}
+
+/* Space switcher: `<details>` opens the dropdown on click. The
+   summary shows the current space name and a chevron; the menu
+   is absolutely positioned just below so it never affects the
+   grid below. `list-style: none` strips the native disclosure
+   triangle so we can supply our own caret via wa-icon. */
+.portals-switcher {
+    position: relative;
+}
+.portals-switcher__current {
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-2xs);
+    padding: var(--wa-space-2xs) var(--wa-space-xs);
+    cursor: pointer;
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+    color: var(--wa-color-text-normal);
+    list-style: none;
+    border-radius: var(--wa-border-radius-s, 4px);
+    user-select: none;
+}
+.portals-switcher__current::-webkit-details-marker {
+    display: none;
+}
+.portals-switcher__current:hover {
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.portals-switcher__caret {
+    font-size: 0.75em;
+    color: var(--wa-color-text-quiet);
+    transition: transform 120ms ease;
+}
+.portals-switcher[open] .portals-switcher__caret {
+    transform: rotate(180deg);
+}
+.portals-switcher__menu {
+    position: absolute;
+    top: calc(100% + var(--wa-space-2xs));
+    left: 0;
+    min-width: 14rem;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--wa-color-surface-default);
+    border: 1px solid var(--wa-color-neutral-border-quiet);
+    border-radius: var(--wa-border-radius-m, 8px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    padding: var(--wa-space-2xs);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.portals-switcher__item {
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+    padding: var(--wa-space-2xs) var(--wa-space-xs);
+    text-decoration: none;
+    color: var(--wa-color-text-normal);
+    border-radius: var(--wa-border-radius-s, 4px);
+    font-size: var(--wa-font-size-s);
+}
+.portals-switcher__item:hover {
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.portals-switcher__item--current {
+    background: var(--wa-color-neutral-fill-quiet);
+    font-weight: 600;
+}
+
+/* "Create new space" row at the bottom of the menu — same
+   visual rhythm as the space links (sigil-sized leading
+   glyph, then label) so it reads as part of the same list. */
+.portals-switcher__item--create {
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--wa-color-neutral-border-quiet);
+    margin-top: var(--wa-space-2xs);
+    padding-top: var(--wa-space-xs);
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    color: var(--wa-color-text-normal);
+}
+.portals-switcher__plus {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+    font-size: 1rem;
+    line-height: 1;
+    font-weight: 400;
+    color: var(--wa-color-text-quiet);
+    border: 1px dashed var(--wa-color-neutral-border-quiet);
+    border-radius: 50%;
+}
+.portals-switcher__item--create:hover .portals-switcher__plus {
+    color: var(--wa-color-brand-fill-loud);
+    border-color: var(--wa-color-brand-fill-loud);
+}
+.portals-switcher__sigil {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+}
+.portals-switcher__item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Right-notch chrome: profile sigil tile + share button packed
+   into the same notch pill. The profile link wraps the sigil so
+   clicking the sigil routes to /profile. */
+.portals-notch-profile {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    overflow: hidden;
+    transition: transform 120ms ease;
+}
+.portals-notch-profile:hover {
+    transform: scale(1.05);
+}
+.portals-notch-sigil {
+    width: 100%;
+    height: 100%;
+}
+
+/* Share button sits next to the profile sigil — match its
+   compact circular footprint so the notch reads as a single
+   pill of icon-buttons rather than a banner with a chunky CTA.
+   wa-button exposes `--wa-form-control-height-s` and inset
+   padding tokens; we drop both to zero so the button hugs the
+   icon. */
+.portals-notch wa-button {
+    --wa-form-control-height-s: 1.75rem;
+    --wa-form-control-padding-inline-s: 0;
+}
+.portals-notch wa-button::part(base) {
+    width: 1.75rem;
+    height: 1.75rem;
+    min-width: 0;
+    padding: 0;
+    border-radius: 50%;
+}
+
 /* Branches as collapsible rows. Each row's `<wa-details>`
    summary is a single horizontal line: icon + name + version +
    sync icon-buttons + status chip, all packed tight via gap.

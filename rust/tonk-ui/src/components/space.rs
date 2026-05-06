@@ -12,9 +12,10 @@ use wasm_bindgen::JsCast;
 
 use crate::{
     api,
-    components::{ActiveSubject, HostId, InviteSpace, Status},
+    components::{ActiveSubject, CreateSpaceOpen, HostId, InviteSpace, ProfileResource, Status},
     did,
 };
+use js_sys::encode_uri_component;
 
 /// The currently-running (or last-completed) sync operation for a
 /// single branch row. Each branch in the space view owns its own
@@ -1303,12 +1304,24 @@ pub fn TonkPortals() -> impl IntoView {
     }
 }
 
-/// Renders the portals banner header and a `<tonk-portals>`
-/// element in `<main>`. The element is hidden until the host
-/// Client ID is available — the React app handles a missing
-/// `host` attribute itself by showing a "waiting…" stub, but
-/// gating in Leptos avoids registering an empty guest binding
-/// in the service worker.
+/// Renders the portals view as a single full-bleed `<main>` with
+/// two floating "notch" controls — Figma-style — instead of a
+/// horizontal banner. The grid claims every vertical pixel; the
+/// chrome (space switcher, profile, share) lives on top of it
+/// in the corners.
+///
+/// Top-left notch: a `<details>` dropdown showing the current
+/// space name. Click to reveal a list of spaces from the shared
+/// [`ProfileResource`]; each entry is a link to
+/// `/portals/<name>`.
+///
+/// Top-right notch: profile sigil (linking to `/profile`) and the
+/// share button. Both float over the grid surface.
+///
+/// The `<tonk-portals>` element is gated on a non-empty host id —
+/// the React app would render a "waiting…" stub otherwise, but
+/// gating in Leptos avoids registering an empty guest binding in
+/// the service worker.
 fn render_portals_view<F>(
     info: RepositoryInfo,
     space_name: Signal<Option<String>, LocalStorage>,
@@ -1318,9 +1331,8 @@ fn render_portals_view<F>(
 where
     F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
 {
-    let local_subject = info.subject.to_string();
     let space_title = info.name.clone();
-    let title_attr = local_subject.clone();
+    let space_title_for_summary = space_title.clone();
 
     let repo_attr = Signal::derive_local(move || space_name.get().unwrap_or_default());
     let host_attr = Signal::derive_local(move || {
@@ -1333,25 +1345,130 @@ where
         !repo_attr.get().is_empty() && !host_attr.get().is_empty()
     });
 
+    // Profile data drives both the space-switcher dropdown
+    // (top-left notch) and the profile sigil (top-right notch).
+    // Provided by `TonkShell`; refetched on `/api/profile`
+    // broadcasts so a newly-created space appears without a
+    // reload.
+    let profile_resource =
+        use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
+    let create_space_open =
+        use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
+    let open_create_space = move |_| create_space_open.set(true);
+
+    let profile_sigil = Signal::derive_local(move || {
+        let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
+        did::did_key_prefix(info.profile.subject.as_ref()).map(|bytes| {
+            let n = u32::from_be_bytes(bytes);
+            format!("0x{n:08x}")
+        })
+    });
+
+    // Sorted list of (name, did:key:...) pairs for the
+    // dropdown. Same shape and sort order as the sidebar
+    // toolbar so the two stay in sync. Entries become
+    // `<a href="/portals/<encoded-name>">` links.
+    let space_entries = Signal::derive_local(move || {
+        let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
+        let mut spaces: Vec<(String, String)> = info
+            .space
+            .into_iter()
+            .map(|(name, did)| (name, did.to_string()))
+            .collect();
+        spaces.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(spaces)
+    });
+
+    let space_title_for_compare = space_title.clone();
+
     view! {
-        <header slot="main-header" class="space-banner">
-            <h1 class="space-banner-title" title=title_attr>
-                { space_title }
-            </h1>
-            <wa-button
-                variant="neutral"
-                appearance="accent"
-                size="small"
-                on:click=on_share
-            >
-                <wa-icon
-                    name="share-nodes"
-                    variant="solid"
-                    label="Invite someone to this space"
-                ></wa-icon>
-            </wa-button>
-        </header>
-        <main class="space-view space-portals">
+        <main class="space-portals">
+            <div class="portals-notch portals-notch--left">
+                <details class="portals-switcher">
+                    <summary class="portals-switcher__current">
+                        <span class="portals-switcher__name">
+                            { space_title_for_summary }
+                        </span>
+                        <wa-icon
+                            class="portals-switcher__caret"
+                            name="chevron-down"
+                            label="Switch space"
+                        ></wa-icon>
+                    </summary>
+                    <div class="portals-switcher__menu">
+                        { move || space_entries.get().map(|spaces| {
+                            spaces
+                                .into_iter()
+                                .map(|(name, did)| {
+                                    let encoded = encode_uri_component(&name)
+                                        .as_string()
+                                        .unwrap_or_else(|| name.clone());
+                                    let href = format!("/portals/{encoded}");
+                                    let is_current = name == space_title_for_compare;
+                                    let n = u32::from_be_bytes(
+                                        did::did_key_prefix(&did).unwrap_or_default(),
+                                    );
+                                    let sigil = format!("0x{n:08x}");
+                                    let label_aria = format!("Open {name}");
+                                    let item_class = if is_current {
+                                        "portals-switcher__item portals-switcher__item--current"
+                                    } else {
+                                        "portals-switcher__item"
+                                    };
+                                    view! {
+                                        <a
+                                            class=item_class
+                                            href=href
+                                            aria-label=label_aria
+                                        >
+                                            <tonk-sigil
+                                                class="portals-switcher__sigil"
+                                                value=sigil
+                                            ></tonk-sigil>
+                                            <span class="portals-switcher__item-name">{ name }</span>
+                                        </a>
+                                    }
+                                })
+                                .collect_view()
+                        }) }
+                        <button
+                            type="button"
+                            class="portals-switcher__item portals-switcher__item--create"
+                            on:click=open_create_space
+                            aria-label="Create new space"
+                        >
+                            <span class="portals-switcher__plus" aria-hidden="true">"+"</span>
+                            <span class="portals-switcher__item-name">"New space"</span>
+                        </button>
+                    </div>
+                </details>
+            </div>
+
+            <div class="portals-notch portals-notch--right">
+                <a
+                    class="portals-notch-profile"
+                    href="/profile"
+                    aria-label="Profile"
+                >
+                    <tonk-sigil
+                        class="portals-notch-sigil"
+                        value=move || profile_sigil.get()
+                    ></tonk-sigil>
+                </a>
+                <wa-button
+                    variant="neutral"
+                    appearance="accent"
+                    size="small"
+                    on:click=on_share
+                >
+                    <wa-icon
+                        name="share-nodes"
+                        variant="solid"
+                        label="Invite someone to this space"
+                    ></wa-icon>
+                </wa-button>
+            </div>
+
             { move || if ready.get() {
                 Either::Left(view! {
                     <tonk-portals
