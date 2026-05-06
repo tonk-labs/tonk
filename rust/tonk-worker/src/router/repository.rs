@@ -159,21 +159,13 @@ pub struct RepositoryInfo {
 /// Create a repository with optional remote and branch configuration.
 ///
 /// Semantics:
-/// - Fresh create returns `201 Created` with a [`RepositoryInfo`] body.
-/// - If the repository already exists, the response depends on
-///   the `If-None-Match` header:
-///   - With `If-None-Match: *` — same body, but `200 OK`. The
-///     status differs from the create case so callers can
-///     distinguish, while the body shape stays identical so
-///     `reqwest`'s wasm client doesn't trip over a missing body
-///     on the alternative `412 Precondition Failed` path (the
-///     Fetch API tears down opaque bodies on non-2xx responses
-///     in some Chromium builds, which `reqwest` then surfaces
-///     as a decode error).
-///   - Without `If-None-Match` — `409 Conflict`.
+/// - Always creates — if the repository exists, fails with `412
+///   Precondition Failed` when `If-None-Match: *` was sent, or
+///   `409 Conflict` otherwise.
 /// - On success, delegates repository access to the current profile,
 ///   sets up any remotes from the body, creates each listed branch,
 ///   and wires up upstream tracking when specified.
+/// - Returns `201 Created` with a [`RepositoryInfo`] body.
 #[wasm_compat]
 pub async fn put_repository(
     State(state): State<AppState>,
@@ -201,24 +193,28 @@ pub async fn put_repository(
 
     let tonk = state.write().await;
 
-    // 1. Check if the repo already exists. With `If-None-Match:
-    // *` we treat that as a no-op success and return the current
-    // repository info under `200 OK` — see the function-level
-    // doc comment for why we don't use `412` here. Without the
-    // header it's a genuine collision: `409 Conflict`.
-    if let Ok(existing) = tonk
+    // 1. Check if the repo already exists before attempting to
+    // create. `.load()` returns Ok when the space is present; in
+    // that case the PUT is rejected with 412 (if the caller sent
+    // `If-None-Match: *`) or 409 (otherwise). Relying on
+    // `.create()`'s own error signalling isn't enough because
+    // it's possible for the space to exist while being
+    // inconsistent enough that `.create()` would either succeed
+    // (overwriting) or fail in a way we can't classify cleanly.
+    if tonk
         .profile
         .repository(&name)
         .load()
         .perform(&tonk.operator)
         .await
+        .is_ok()
     {
-        if if_none_match_star {
-            let info = build_repository_info(&tonk, &name, &existing).await;
-            return Ok((StatusCode::OK, Json(info)));
-        }
         let message = format!("Repository '{}' already exists", name);
-        return Err(TonkWorkerError::Conflict(message));
+        return Err(if if_none_match_star {
+            TonkWorkerError::PreconditionFailed(message)
+        } else {
+            TonkWorkerError::Conflict(message)
+        });
     }
 
     // 2. Create the repository and everything that comes with
