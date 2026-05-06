@@ -1,5 +1,6 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { RepoContext } from "../context";
+import { resolveName } from "../lib/resolveName";
 
 export type PickPayload = {
   // The resolved entity DID. Always a `did:key:…` once committed
@@ -19,36 +20,6 @@ type Props = {
   onPick: (payload: PickPayload) => void;
   onClose: () => void;
 };
-
-// Resolution cache shared across all picker instances on the
-// page — keyed by `repo::branch::name` so a typo doesn't refetch
-// indefinitely and the same name across two pickers shares a
-// result. Lives at module scope because picker components are
-// short-lived (one per pick action).
-const resolveCache = new Map<string, string>();
-
-async function resolveName(
-  repo: string,
-  branch: string,
-  name: string,
-): Promise<string> {
-  const key = `${repo}::${branch}::${name}`;
-  const cached = resolveCache.get(key);
-  if (cached) return cached;
-
-  const url = `/api/repository/${encodeURIComponent(repo)}/branch/${encodeURIComponent(branch)}/resolve/${encodeURIComponent(name)}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(
-      res.status === 404
-        ? `No entity bookmarked as "${name}" on branch "${branch}"`
-        : `resolve failed (${res.status})`,
-    );
-  }
-  const body = (await res.json()) as { entity: string };
-  resolveCache.set(key, body.entity);
-  return body.entity;
-}
 
 export function EntityPicker({ initialEntity, initialBranch, onPick, onClose }: Props) {
   const repo = useContext(RepoContext);

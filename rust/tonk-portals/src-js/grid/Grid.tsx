@@ -1,8 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { clamp, computeGridDims, spanForWidgets } from "../lib/presets";
 import { pixelRectToCell } from "../lib/snap";
 import { collidesWithAny, pack, packAroundBounded } from "../lib/pack";
 import { useDragSelect } from "../lib/useDragSelect";
+import { resolveName } from "../lib/resolveName";
+import { isTileMessage, SQUARE_ID_ATTR, type TileMessage } from "../lib/tile-messages";
+import { RepoContext } from "../context";
 import type { Square as SquareT } from "../types";
 import type { PickPayload } from "./EntityPicker";
 import { Square } from "./Square";
@@ -40,6 +43,7 @@ export function Grid() {
   const [squares, setSquares] = useState<SquareT[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pickerForId, setPickerForId] = useState<string | null>(null);
+  const repo = useContext(RepoContext);
 
   const { cols, rows, maxW, maxH, cellSize } = useMemo(
     () => computeGridDims(vp.w, vp.h),
@@ -219,6 +223,90 @@ export function Grid() {
     },
     [cols],
   );
+
+  // Listen for postMessages from artifact iframes. The wire
+  // contract lives in `lib/tile-messages.ts`; here we resolve the
+  // posting iframe back to its owning square via the
+  // `data-square-id` marker the wrapper carries, and dispatch on
+  // `type`. Origin is checked against the shell's own origin —
+  // `allow-same-origin` sandboxed iframes post under that origin,
+  // so the equality holds.
+  useEffect(() => {
+    if (!repo) return;
+
+    const findSquareIdFor = (source: MessageEventSource | null): string | null => {
+      if (!source) return null;
+      const iframes = document.querySelectorAll<HTMLIFrameElement>("iframe.square__iframe");
+      for (const frame of iframes) {
+        if (frame.contentWindow !== source) continue;
+        const wrapper = frame.closest<HTMLElement>(`[${SQUARE_ID_ATTR}]`);
+        return wrapper?.getAttribute(SQUARE_ID_ATTR) ?? null;
+      }
+      return null;
+    };
+
+    const handleNavigate = async (
+      squareId: string,
+      msg: Extract<TileMessage, { type: "tonk:navigate" }>,
+    ) => {
+      const targetBranch = msg.branch?.trim() || undefined;
+      let entity = msg.entity?.trim();
+      let name = msg.name?.trim() || undefined;
+
+      if (!entity && name) {
+        try {
+          entity = await resolveName(repo, targetBranch ?? "main", name);
+        } catch (err) {
+          console.warn(`[tonk-portals] tonk:navigate resolve failed: ${err}`);
+          return;
+        }
+      }
+
+      if (!entity) {
+        console.warn("[tonk-portals] tonk:navigate ignored: missing entity and name");
+        return;
+      }
+
+      setSquares((prev) =>
+        prev.map((s) =>
+          s.id === squareId
+            ? {
+                ...s,
+                entity,
+                name: name ?? (entity === s.entity ? s.name : undefined),
+                branch: targetBranch ?? s.branch,
+              }
+            : s,
+        ),
+      );
+    };
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (!isTileMessage(event.data)) return;
+      const squareId = findSquareIdFor(event.source);
+      if (!squareId) return;
+
+      const msg = event.data;
+      switch (msg.type) {
+        case "tonk:navigate":
+          void handleNavigate(squareId, msg);
+          break;
+        case "tonk:close":
+          handleClose(squareId);
+          break;
+        default: {
+          // Exhaustiveness — adding a new variant to TileMessage
+          // without a case here makes TS error.
+          const _exhaustive: never = msg;
+          void _exhaustive;
+        }
+      }
+    };
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [repo, handleClose]);
 
   const handleRestore = useCallback(
     (id: string) => {

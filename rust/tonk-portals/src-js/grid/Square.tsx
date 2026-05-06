@@ -6,6 +6,7 @@ import { type Corner, type Edge, useResize } from "../lib/useResize";
 import { EntityPicker, type PickPayload } from "./EntityPicker";
 import { ArtifactMenu } from "./ArtifactMenu";
 import { colorForArtifact } from "../lib/color";
+import { SQUARE_ID_ATTR } from "../lib/tile-messages";
 import { HostContext, RepoContext } from "../context";
 
 type Props = {
@@ -105,6 +106,7 @@ export function Square({
           e.stopPropagation();
           onSelect(square.id);
         }}
+        {...{ [SQUARE_ID_ATTR]: square.id }}
       >
         <div
           className="square__bar"
