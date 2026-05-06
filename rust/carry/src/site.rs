@@ -17,7 +17,7 @@ use dialog_operator::{Operator, Profile};
 use dialog_repository::{Branch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::NativeSpace;
 use std::path::{Path, PathBuf};
-use tonk_schema::{Name, Replica};
+use tonk_schema::Replica;
 
 /// Repository name within the operator's base directory.
 ///
@@ -194,7 +194,7 @@ impl Site {
         let repo_dir = Self::repo_directory(&root, None);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
-        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let replica = Replica::new(id.profile.did(), repo.did(), REPO_NAME);
         Ok(Self {
             root,
             profile: id.profile,
@@ -220,7 +220,7 @@ impl Site {
         let repo_dir = Self::repo_directory(&carry_dir, repo_location);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
-        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let replica = Replica::new(id.profile.did(), repo.did(), REPO_NAME);
 
         Ok(Self {
             root: carry_dir,
@@ -251,7 +251,7 @@ impl Site {
         let repo_dir = Self::repo_directory(&carry_dir, repo_location);
         let id = identity_cmd::ensure_identity(profile_location.clone(), Some(repo_dir)).await?;
         let (repo, branch, meta) = Self::open_repo_and_branches(&id.operator, &id.profile).await?;
-        let replica = Replica::new(id.profile.did(), repo.did(), Name(REPO_NAME.into()));
+        let replica = Replica::new(id.profile.did(), repo.did(), REPO_NAME);
         Ok(Self {
             root: carry_dir,
             profile: id.profile,
