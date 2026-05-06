@@ -1,19 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "rust/carry",
-    "rust/carry-telemetry-service",
-    "rust/tonk-access-service",
-    "rust/tonk-code",
-    "rust/tonk-assess",
-    "rust/tonk-common",
-    "rust/tonk-invite",
-    "rust/tonk-language-server",
-    "rust/tonk-notation",
-    "rust/tonk-schema",
-    "rust/tonk-sigil",
-    "rust/tonk-ui",
-    "rust/tonk-worker",
+  "rust/carry",
+  "rust/carry-telemetry-service",
+  "rust/tonk-access-service",
+  "rust/tonk-assess",
+  "rust/tonk-code",
+  "rust/tonk-common",
+  "rust/tonk-invite",
+  "rust/tonk-language-server",
+  "rust/tonk-notation",
+  "rust/tonk-schema",
+  "rust/tonk-sigil",
+  "rust/tonk-ui",
+  "rust/tonk-worker",
 ]
 
 [workspace.package]
@@ -26,8 +26,8 @@ license = "MIT"
 carry = { path = "./rust/carry" }
 carry-telemetry-service = { path = "./rust/carry-telemetry-service" }
 tonk-access-service = { path = "./rust/tonk-access-service" }
-tonk-code = { path = "./rust/tonk-code" }
 tonk-assess = { path = "./rust/tonk-assess" }
+tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
@@ -54,8 +54,8 @@ ciborium = "0.2"
 clap = { version = "4", features = ["derive"] }
 clap_complete = { version = "4", features = ["unstable-dynamic"] }
 console_error_panic_hook = "0.1"
-custom-elements = "0.2"
 crypto-common = "=0.2.0-rc.5"
+custom-elements = "0.2"
 dialoguer = "0.11"
 digest = "=0.11.0-rc.4"
 dirs = "5"
@@ -72,14 +72,15 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 idb = "0.6"
+indexmap = { version = "2", features = ["serde"] }
 ipld-core = { version = "0.4", features = ["serde"] }
 keyring = "3.6"
 leptos = "0.8"
 leptos_router = "0.8"
 leptos-use = "0.17"
 lsp-types = "0.97"
-saphyr = "0.0.6"
 open = "5"
+parking_lot = "0.12"
 port_check = "0.3"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }
@@ -88,10 +89,13 @@ reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls",
 ] }
+saphyr = "0.0.6"
+saphyr-parser = "0.0.6"
 serde = "1"
 serde_bytes = "0.11"
 serde_ipld_dagcbor = "0.6"
 serde_json = "1"
+serde-wasm-bindgen = "0.6"
 serde_yaml = "0.9"
 serial_test = "3"
 sha2_0_10 = { package = "sha2", version = "0.10" }
