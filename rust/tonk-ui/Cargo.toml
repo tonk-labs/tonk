@@ -41,6 +41,7 @@ bs58 = { workspace = true }
 tonk-code = { workspace = true, features = ["web"] }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-portals = { workspace = true, features = ["web"] }
 tonk-sigil = { workspace = true, features = ["web"] }
 tonk-worker = { workspace = true }
 url = { workspace = true }

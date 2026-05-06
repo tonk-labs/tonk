@@ -1196,3 +1196,174 @@ where
         </main>
     }
 }
+
+#[derive(Params, PartialEq, Clone, Debug)]
+pub struct TonkPortalsParams {
+    space: Option<String>,
+}
+
+/// Portals view at `/portals/{space}`.
+///
+/// Portals are a UI *layer* over a repo, not a piece of data
+/// inside one — that's why the URL doesn't share the
+/// `/space/{name}/branch/...` namespace, which is reserved for
+/// addressing data within a repo. Individual artifact tiles
+/// rendered inside the portal *do* link back to data URLs of
+/// that shape (`/api/repository/{repo}/branch/{branch}/host/{host}/{entity}`),
+/// so each tile picks its own branch as needed.
+///
+/// Reuses [`TonkSpace`]'s shell — banner with the share button —
+/// and replaces `<main>` with the `<tonk-portals>` web component.
+/// The custom element is implemented in TS/React (see
+/// `rust/tonk-portals/src-js/`), which lets us host a grid of
+/// iframe panels without rewriting the React `grid-select`
+/// prototype in Leptos.
+///
+/// `repo` and `host` are passed in as attributes; the React app
+/// reads them via `attributeChangedCallback` so a host id
+/// arriving late (after the `PUT /api/repository/...` round-trip
+/// resolves) flows in without a remount.
+#[component]
+#[allow(clippy::unused_unit)]
+pub fn TonkPortals() -> impl IntoView {
+    let params = use_params::<TonkPortalsParams>();
+
+    let space_name = Signal::derive_local(move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.space)
+            .filter(|s| !s.is_empty())
+    });
+
+    let status = use_context::<Signal<Status, LocalStorage>>();
+    let host_id = use_context::<Signal<Option<HostId>, LocalStorage>>();
+
+    let repository = LocalResource::new(move || {
+        let name = space_name.get();
+        let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(true);
+        async move {
+            if !ready {
+                return Ok(None);
+            }
+            match name {
+                None => Ok(None),
+                Some(name) => api::repository(&name).await,
+            }
+        }
+    });
+
+    let active_subject =
+        use_context::<ActiveSubject>().expect("ActiveSubject context provided by TonkShell");
+    Effect::new(move |_| {
+        let subject = repository
+            .get()
+            .and_then(|result| result.ok())
+            .flatten()
+            .map(|info| info.subject.to_string());
+        active_subject.set(subject);
+    });
+
+    let invite_space = use_context::<InviteSpace>().expect("InviteSpace provided by TonkShell");
+    let on_share = move |_| {
+        if let Some(name) = space_name.get() {
+            invite_space.set(Some(name));
+        }
+    };
+
+    view! {
+        <Suspense fallback=|| view! {
+            <wa-spinner></wa-spinner>
+        }>
+            <ErrorBoundary fallback=|errors| view! {
+                <wa-callout variant="danger">
+                    <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                    { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
+                </wa-callout>
+            }>
+                { move || repository.get().map(|result| result.map(|repo| match repo {
+                    Some(info) => Either::Left(render_portals_view(
+                        info,
+                        space_name,
+                        host_id,
+                        on_share,
+                    )),
+                    None => Either::Right(view! {
+                        <wa-callout variant="neutral">
+                            <wa-icon slot="icon" name="circle-info"></wa-icon>
+                            { move || format!(
+                                "Repository '{}' not found",
+                                space_name.get().unwrap_or_default(),
+                            ) }
+                        </wa-callout>
+                    }),
+                })) }
+            </ErrorBoundary>
+        </Suspense>
+    }
+}
+
+/// Renders the portals banner header and a `<tonk-portals>`
+/// element in `<main>`. The element is hidden until the host
+/// Client ID is available — the React app handles a missing
+/// `host` attribute itself by showing a "waiting…" stub, but
+/// gating in Leptos avoids registering an empty guest binding
+/// in the service worker.
+fn render_portals_view<F>(
+    info: RepositoryInfo,
+    space_name: Signal<Option<String>, LocalStorage>,
+    host_id: Option<Signal<Option<HostId>, LocalStorage>>,
+    on_share: F,
+) -> impl IntoView
+where
+    F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
+{
+    let local_subject = info.subject.to_string();
+    let space_title = info.name.clone();
+    let title_attr = local_subject.clone();
+
+    let repo_attr = Signal::derive_local(move || space_name.get().unwrap_or_default());
+    let host_attr = Signal::derive_local(move || {
+        host_id
+            .and_then(|s| s.get())
+            .map(|h| h.0)
+            .unwrap_or_default()
+    });
+    let ready = Signal::derive_local(move || {
+        !repo_attr.get().is_empty() && !host_attr.get().is_empty()
+    });
+
+    view! {
+        <header slot="main-header" class="space-banner">
+            <h1 class="space-banner-title" title=title_attr>
+                { space_title }
+            </h1>
+            <wa-button
+                variant="neutral"
+                appearance="accent"
+                size="small"
+                on:click=on_share
+            >
+                <wa-icon
+                    name="share-nodes"
+                    variant="solid"
+                    label="Invite someone to this space"
+                ></wa-icon>
+            </wa-button>
+        </header>
+        <main class="space-view space-portals">
+            { move || if ready.get() {
+                Either::Left(view! {
+                    <tonk-portals
+                        repo=move || repo_attr.get()
+                        host=move || host_attr.get()
+                    ></tonk-portals>
+                })
+            } else {
+                Either::Right(view! {
+                    <wa-spinner></wa-spinner>
+                })
+            } }
+        </main>
+    }
+}

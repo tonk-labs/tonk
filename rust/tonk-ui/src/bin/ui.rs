@@ -19,6 +19,7 @@ async fn main() {
     // matches the `copy-dir` target in `index.html` — both must
     // change together if the deployment layout shifts.
     tonk_code::install("/tonk-code/tonk-code.js");
+    tonk_portals::install("/tonk-portals/tonk-portals.js");
 
     leptos::mount::mount_to_body(TonkShell);
 }

@@ -1,0 +1,3 @@
+node_modules/
+# Source maps regenerate on every bundle; keep them out of git.
+assets/*.map

@@ -4719,6 +4719,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-portals"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
@@ -4789,6 +4798,7 @@ dependencies = [
  "tonk-code",
  "tonk-invite",
  "tonk-notation",
+ "tonk-portals",
  "tonk-sigil",
  "tonk-worker",
  "url",

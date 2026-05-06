@@ -1,6 +1,6 @@
 use crate::components::{
-    LastJoinOutcome, TonkCreateSpace, TonkInviteDialog, TonkJoin, TonkProfile, TonkSpace,
-    TonkSpaceViewer, TonkToolbar,
+    LastJoinOutcome, TonkCreateSpace, TonkInviteDialog, TonkJoin, TonkPortals, TonkProfile,
+    TonkSpace, TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -39,6 +39,11 @@ pub fn TonkLauncher() -> impl IntoView {
                         path=path!("space/:space/branch/:branch/view/:entity")
                         view=TonkSpaceViewer
                     />
+                    // Portals are a UI layer over a repo, not a
+                    // piece of data inside one — kept out of the
+                    // `/space/.../branch/...` namespace which is
+                    // reserved for addressing data.
+                    <Route path=path!("portals/:space") view=TonkPortals />
                     <Route path=path!("space/:space?") view=TonkSpace />
                     <Route path=path!("profile") view=TonkProfile />
                     <Route path=path!("join") view=TonkJoin />

@@ -1,0 +1,26 @@
+[package]
+name = "tonk-portals"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+web = [
+    "dep:js-sys",
+    "dep:wasm-bindgen",
+    "dep:web-sys",
+]
+
+[dependencies]
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true, features = [
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlHeadElement",
+    "HtmlScriptElement",
+    "Node",
+    "Window",
+] }

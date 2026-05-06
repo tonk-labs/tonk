@@ -1,0 +1,21 @@
+{
+  "name": "tonk-portals",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React-backed grid-of-iframes portal UI bundled as a <tonk-portals> custom element.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

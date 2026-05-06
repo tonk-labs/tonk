@@ -7,6 +7,7 @@ members = [
     "rust/tonk-invite",
     "rust/tonk-language-server",
     "rust/tonk-notation",
+    "rust/tonk-portals",
     "rust/tonk-schema",
     "rust/tonk-sigil",
     "rust/tonk-ui",
@@ -27,6 +28,7 @@ tonk-common = { path = "./rust/tonk-common" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-notation = { path = "./rust/tonk-notation" }
+tonk-portals = { path = "./rust/tonk-portals" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }
