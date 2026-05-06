@@ -23,7 +23,9 @@ where
     TonkUiError::ApiError(format!("{error}"))
 }
 
-fn origin() -> String {
+/// Returns the page origin (`http://host:port`). Used by API
+/// helpers to build absolute URLs against the worker's routes.
+pub fn origin() -> String {
     window()
         .location()
         .origin()

@@ -19,6 +19,9 @@ use toolbar::*;
 mod space;
 use space::*;
 
+mod concept;
+use concept::*;
+
 mod profile;
 use profile::*;
 

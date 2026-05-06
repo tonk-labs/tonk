@@ -45,6 +45,19 @@ impl BranchState {
         &self.subscriptions
     }
 
+    /// Drop every subscriber session on this branch.
+    ///
+    /// Each session owns an `mpsc::Sender`; dropping it surfaces
+    /// `None` on the receiver side, which ends the
+    /// `UnboundedReceiverStream` driving the SSE response body, so
+    /// the in-flight fetch settles. Called from the worker's
+    /// `onupdatefound` path so the old SW can be replaced —
+    /// without this, the SW spec keeps the worker alive for as long
+    /// as any open fetch still holds a stream.
+    pub fn clear_subscribers(&self) {
+        self.subscriptions.lock().clear();
+    }
+
     /// Register a fresh subscriber for `query`. Returns a
     /// [`Subscriber`] carrying the subscription's hash and the
     /// receiver to read broadcast bytes from. The caller is

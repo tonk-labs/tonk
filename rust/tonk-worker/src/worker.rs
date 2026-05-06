@@ -342,8 +342,9 @@ impl TonkServiceWorker {
     /// When the registration sees a newer worker entering the
     /// `installing` state, this active worker is on its way out.
     /// We use the moment to close every long-lived stream we're
-    /// serving — chiefly `/api/lsp/events` SSE — so the in-flight
-    /// fetch events settle and the new worker can activate.
+    /// serving — `/api/lsp/events` SSE plus every `/query` SSE
+    /// subscription — so the in-flight fetch events settle and the
+    /// new worker can activate.
     ///
     /// Without this the SW spec keeps the active worker alive
     /// while any of its fetches are open, so a freshly-installed
@@ -353,8 +354,15 @@ impl TonkServiceWorker {
     pub fn on_update_found(&self) -> Promise {
         log!("Update found — releasing in-flight streams");
         let lsp = self.lsp.clone();
+        let state = self.state.clone();
         future_to_promise(async move {
             lsp.shutdown().await;
+            // Also drain every query subscription. Each carries an
+            // `mpsc::Sender` whose receiver drives an SSE response
+            // body; dropping the sender ends the body so the fetch
+            // settles.
+            let tonk = state.read().await;
+            tonk.reactor.shutdown();
             Ok(JsValue::UNDEFINED)
         })
     }

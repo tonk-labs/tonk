@@ -67,11 +67,33 @@ impl TonkReactor {
         }
     }
 
-    /// Drop every cached handle so open SSE response bodies
-    /// finish. Called from the SW upgrade path so the old worker
-    /// can be replaced.
+    /// Drop every cached handle and every active SSE subscriber
+    /// so open response bodies finish. Called from the SW upgrade
+    /// path so the old worker can be replaced.
+    ///
+    /// Walking the cache and explicitly dropping subscriber
+    /// senders is the load-bearing step: the
+    /// [`BranchState`](crate::reactor::BranchState) `Arc`s are
+    /// shared with `SubscriptionPoll` futures still holding a
+    /// reference, so removing the cache entry alone isn't enough.
+    /// Clearing each branch's subscriber map drops every
+    /// `mpsc::Sender`, which surfaces `None` on the receiver side
+    /// and ends the SSE response stream regardless of who else
+    /// holds the state.
     pub fn shutdown(&self) {
-        self.repos.lock().clear();
+        let repos = {
+            let mut map = self.repos.lock();
+            std::mem::take(&mut *map)
+        };
+        for (_, repo) in repos {
+            let branches = {
+                let mut map = repo.branches().lock();
+                std::mem::take(&mut *map)
+            };
+            for (_, branch) in branches {
+                branch.clear_subscribers();
+            }
+        }
     }
 
     /// Begin a chain scoped to the named repository.

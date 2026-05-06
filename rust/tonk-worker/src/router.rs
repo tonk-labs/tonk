@@ -2236,4 +2236,48 @@ attribute! {name}:
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
+    /// `TonkReactor::shutdown` must drop every active subscriber's
+    /// `mpsc::Sender` so the SSE response body finishes and the SW
+    /// can release in-flight fetches.
+    ///
+    /// Drives the SW upgrade scenario without an actual SW: open a
+    /// subscription, read its initial frame, call shutdown, then
+    /// expect the body to end (next frame yields `None`).
+    #[dialog_common::test]
+    async fn it_releases_sse_subscribers_on_shutdown() {
+        use http_body_util::BodyExt as _;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+
+        let repo = "test-reactor-shutdown-releases";
+        put_repo(&app, repo).await;
+        seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
+
+        let mut body = open_subscription(&app, repo, "main").await;
+        let _snapshot = read_sse_frame(&mut body).await;
+
+        // Trigger the shutdown the SW upgrade path runs.
+        {
+            let guard = app_state.read().await;
+            guard.reactor.shutdown();
+        }
+
+        // The body must end — `frame()` returns `None`. Race
+        // against a timeout so a regression hangs the test rather
+        // than passing on a delayed frame.
+        let next_frame = body.frame();
+        let timeout = crate::sleep(web_time::Duration::from_millis(500));
+        tokio::select! {
+            frame = next_frame => assert!(
+                frame.is_none(),
+                "expected stream end, got frame: {frame:?}",
+            ),
+            _ = timeout => panic!("subscription body did not end after shutdown"),
+        }
+    }
 }
