@@ -1,0 +1,51 @@
+[package]
+name = "slide"
+description = "Local-only CLI for reading and writing tonk facts via asserted-notation."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "slide"
+path = "src/bin/slide.rs"
+
+[features]
+integration-tests = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-operator = { workspace = true }
+dialog-query = { workspace = true }
+dialog-repository = { workspace = true }
+dialog-storage = { workspace = true }
+dirs = { workspace = true }
+lsp-types = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util"] }
+tonk-notation = { workspace = true }
+tonk-schema = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+rand = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }

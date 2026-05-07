@@ -8,6 +8,7 @@ members = [
     "rust/tonk-invite",
     "rust/tonk-language-server",
     "rust/tonk-notation",
+    "rust/slide",
     "rust/tonk-schema",
     "rust/tonk-sigil",
     "rust/tonk-ui",
