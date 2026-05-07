@@ -40,7 +40,7 @@ use thiserror::Error;
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor};
 
 use crate::builtin::concept_registry;
-use crate::meta::{AnonymousAttribute, Name, Named};
+use crate::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.
 const WITH_DOMAIN: &str = "dialog.concept.with";
@@ -177,8 +177,10 @@ impl<T> QueryEnv for T where
 }
 
 impl Concept {
-    /// Look up a concept by its bookmark name (the value of a
-    /// `dialog.meta/name` claim).
+    /// Look up a concept by its published name. The branch's
+    /// `id:<name>` entity carries the `dialog.meta/name` claim
+    /// that points at the concept entity; the resolver chases
+    /// that pointer and reconstructs the descriptor.
     pub fn by_name(name: impl Into<String>) -> ConceptByName {
         ConceptByName { name: name.into() }
     }
@@ -199,9 +201,13 @@ pub struct ConceptByName {
 impl ConceptByName {
     /// Resolve the concept against a branch.
     ///
-    /// Two-step query:
-    /// 1. Find the entity carrying `dialog.meta/name = <name>`
-    ///    via the typed [`Named`] concept query.
+    /// The user-facing name `<name>` is published as a separate
+    /// entity at `id:<name>` carrying a `dialog.meta/name`
+    /// claim that points at the actual concept entity. Two
+    /// steps:
+    ///
+    /// 1. Look up `(id:<name>, dialog.meta/name, ?value)` to
+    ///    get the concept entity.
     /// 2. Delegate to [`ConceptByEntity::resolve`] for the
     ///    field-list reconstruction.
     pub async fn resolve<Env: QueryEnv>(
@@ -209,21 +215,10 @@ impl ConceptByName {
         branch: &Branch,
         env: &Env,
     ) -> Result<Option<Concept>, ConceptLookupError> {
-        let named: Vec<Named> = branch
-            .query()
-            .select(Query::<Named> {
-                this: Term::var("this"),
-                name: Term::from(Name(self.name.clone())),
-            })
-            .perform(env)
-            .try_vec()
-            .await
-            .map_err(|e| ConceptLookupError::query(format!("Named query failed: {e:?}")))?;
-
-        let Some(found) = named.into_iter().next() else {
+        let Some(target) = lookup_named_entity(&self.name, branch, env).await? else {
             return Ok(None);
         };
-        Concept::by_entity(found.this).resolve(branch, env).await
+        Concept::by_entity(target).resolve(branch, env).await
     }
 }
 
@@ -352,14 +347,15 @@ impl AttributeByEntity {
     }
 }
 
-/// Builder for looking up an attribute by its bookmark name
-/// (the value of a `dialog.meta/name` claim).
+/// Builder for looking up an attribute by its published name —
+/// the user-facing label `<name>` whose `id:<name>` entity
+/// carries a `dialog.meta/name` claim pointing at the attribute.
 pub struct AttributeByName {
     name: String,
 }
 
 impl AttributeByName {
-    /// Construct a lookup for the given bookmark name.
+    /// Construct a lookup for the given published name.
     pub fn new(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
@@ -376,22 +372,10 @@ impl AttributeByName {
         branch: &Branch,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        let named: Vec<Named> = branch
-            .query()
-            .select(Query::<Named> {
-                this: Term::var("this"),
-                name: Term::from(Name(self.name.clone())),
-            })
-            .perform(env)
-            .try_vec()
-            .await
-            .map_err(|e| ConceptLookupError::query(format!("Named query failed: {e:?}")))?;
-        let Some(found) = named.into_iter().next() else {
+        let Some(target) = lookup_named_entity(&self.name, branch, env).await? else {
             return Ok(None);
         };
-        AttributeByEntity::new(found.this)
-            .resolve(branch, env)
-            .await
+        AttributeByEntity::new(target).resolve(branch, env).await
     }
 }
 
@@ -857,8 +841,13 @@ where
     }
 }
 
-/// Look up an entity's `dialog.meta/name`, if any. Used to
-/// associate a branch concept entity with its bookmark name.
+/// Look up the published name of `entity`, if any.
+///
+/// Inverted from the pre-Stage-2 model: instead of asking "what
+/// `dialog.meta/name` claim sits on `entity`?", this asks "what
+/// `id:<n>` URI carries a `dialog.meta/name = entity` claim?"
+/// and recovers the `<n>` portion. Returns `None` when no `id:`
+/// URI points at the entity.
 async fn lookup_entity_name<'a, Env>(
     entity: &Entity,
     env: &'a Env,
@@ -866,14 +855,64 @@ async fn lookup_entity_name<'a, Env>(
 where
     Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
 {
-    let names: Vec<Named> = Query::<Named> {
-        this: Term::from(entity.clone()),
-        name: Term::var("__concept_query_name"),
-    }
-    .perform(env)
-    .try_vec()
-    .await?;
-    Ok(names.into_iter().next().map(|n| n.name.0))
+    let claims: Vec<Claim> = the!("dialog.meta/name")
+        .of(Term::<Entity>::var("__concept_query_id"))
+        .is(Term::from(entity.clone()))
+        .perform(env)
+        .try_vec()
+        .await?;
+    Ok(claims
+        .into_iter()
+        .next()
+        .and_then(|claim| name_from_id_uri(&claim.of)))
+}
+
+/// Strip the `id:` scheme prefix from a name URI to recover the
+/// user-facing name. Returns `None` for URIs in any other scheme
+/// (`db:`, `did:key:`, etc.) — those are direct entity
+/// references, not user-published names.
+fn name_from_id_uri(entity: &Entity) -> Option<String> {
+    let s = entity.to_string();
+    s.strip_prefix("id:").map(str::to_owned)
+}
+
+/// Resolve a published name to the entity it points at by
+/// reading the `dialog.meta/name` claim attached to `id:<name>`.
+///
+/// Returns `None` when:
+/// - The `id:<name>` URI itself doesn't parse as an entity
+///   (only happens if `name` contains characters the URI scheme
+///   rejects).
+/// - The branch has no `dialog.meta/name` claim attached to
+///   that entity (no name was ever published with this label,
+///   or the prior publication was retracted).
+pub async fn lookup_named_entity<Env: QueryEnv>(
+    name: &str,
+    branch: &Branch,
+    env: &Env,
+) -> Result<Option<Entity>, ConceptLookupError> {
+    let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
+        return Ok(None);
+    };
+    let claims: Vec<Claim> = branch
+        .query()
+        .select(dialog_query::AttributeQuery::from(
+            Term::<dialog_query::attribute::The>::from(
+                "dialog.meta/name"
+                    .parse::<dialog_query::attribute::The>()
+                    .expect("dialog.meta/name is a valid attribute URI"),
+            )
+            .of(Term::from(id_entity))
+            .is(Term::<Entity>::var("__concept_query_target")),
+        ))
+        .perform(env)
+        .try_vec()
+        .await
+        .map_err(|e| ConceptLookupError::query(format!("name lookup failed: {e:?}")))?;
+    Ok(claims
+        .into_iter()
+        .next()
+        .and_then(|claim| Entity::try_from(claim.is).ok()))
 }
 
 /// Walk a [`ConceptDescriptor`] and call `op` (either
@@ -1264,6 +1303,49 @@ mod tests {
             assert_eq!(a_name, b_name);
             assert_eq!(a_attr.to_uri(), b_attr.to_uri());
         }
+        Ok(())
+    }
+
+    /// `lookup_named_entity("alice")` reads the
+    /// `(id:alice, dialog.meta/name, ?target)` claim and
+    /// returns the target entity. Round-trip a hand-written
+    /// claim through a branch and confirm the lookup recovers
+    /// the target.
+    #[dialog_common::test]
+    async fn it_resolves_published_name_to_target_entity() -> anyhow::Result<()> {
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let id_alice: Entity = "id:alice".parse()?;
+        let target: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv".parse()?;
+        branch
+            .transaction()
+            .assert(the!("dialog.meta/name").of(id_alice).is(target.clone()))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let resolved = lookup_named_entity("alice", &branch, &operator).await?;
+        assert_eq!(resolved, Some(target));
+        Ok(())
+    }
+
+    /// Looking up a name with no published `id:<n>` claim
+    /// returns `None` — both for "the name was never asserted"
+    /// and for "the prior assertion was retracted."
+    #[dialog_common::test]
+    async fn it_returns_none_for_unknown_published_name() -> anyhow::Result<()> {
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let resolved = lookup_named_entity("ghost", &branch, &operator).await?;
+        assert!(resolved.is_none());
         Ok(())
     }
 }

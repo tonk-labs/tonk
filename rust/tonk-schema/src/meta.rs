@@ -15,15 +15,21 @@
 use dialog_artifacts::Entity;
 use dialog_query::{Attribute, Concept};
 
-/// Human-readable name for any entity.
+/// The `dialog.meta/name` attribute — the published target a
+/// name URI points at.
 ///
-/// Stored as `dialog.meta/name` with cardinality `one`. Used to
-/// label attribute and concept entities defined in user-authored
-/// schemas, but applicable to any entity that benefits from a
-/// display name.
+/// Cardinality `one`. Lives on the *name entity* (an `id:<n>`
+/// URI), not on the named target. The value is the entity the
+/// name currently identifies. Re-pointing a name to a different
+/// entity is a cardinality-one supersession on this attribute.
+///
+/// This is the inverted shape of the pre-Stage-2 model, where
+/// `dialog.meta/name` lived on the target with a string value
+/// — see `transact::emit_name_assertion` for how the analyzer
+/// emits the new direction from anchor-form heads.
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[domain("dialog.meta")]
-pub struct Name(pub String);
+pub struct Name(pub Entity);
 
 /// Human-readable description for any entity.
 ///
@@ -75,25 +81,10 @@ pub mod attribute {
     pub struct Cardinality(pub String);
 }
 
-/// A typed view over an entity that carries a name.
-///
-/// `Named` exists so callers can query "find me the entity with
-/// `dialog.meta/name = X`" through dialog's typed concept-query
-/// API instead of dropping into raw `ArtifactSelector` calls.
-/// Two-field concept on purpose: anything more would be carry-
-/// flavoured policy that doesn't belong here.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Named {
-    /// The named entity.
-    pub this: Entity,
-    /// The name attached as `dialog.meta/name`.
-    pub name: Name,
-}
-
 /// A typed view over an attribute entity carrying the
 /// always-present fact set: `id`, `type`, `cardinality`,
 /// `description`. Matches every attribute on a branch
-/// regardless of whether the user gave it a bookmark name.
+/// regardless of whether the user gave it a published name.
 ///
 /// Use this when you need an attribute by entity URI and
 /// don't care whether it was named — for example, when
@@ -116,29 +107,4 @@ pub struct AnonymousAttribute {
     pub cardinality: attribute::Cardinality,
     /// Human-readable description.
     pub description: Description,
-}
-
-/// Same as [`AnonymousAttribute`] but with the `name` field —
-/// the published name the attribute was registered under.
-/// Matches only attributes the user explicitly anchored
-/// (`attribute!: &foo` syntax); anonymous and variable-bound
-/// attributes are excluded.
-///
-/// Use this when you need to surface "what name did the user
-/// give this attribute" — for example, in the editor's
-/// attribute list, or to resolve a bare-symbol reference.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct NamedAttribute {
-    /// The attribute entity (a `the:…` URI).
-    pub this: Entity,
-    /// Selector — `domain/name` form.
-    pub id: attribute::Id,
-    /// Value-type descriptor name.
-    pub r#type: attribute::Type,
-    /// `"one"` or `"many"`.
-    pub cardinality: attribute::Cardinality,
-    /// Human-readable description.
-    pub description: Description,
-    /// The bookmark name this attribute was registered under.
-    pub name: Name,
 }

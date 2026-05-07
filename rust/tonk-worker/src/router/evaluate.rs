@@ -33,8 +33,7 @@ use tonk_common::log;
 use tonk_notation::{Parsed, Syntax, parse};
 use tonk_schema::{
     analyzer::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError},
-    concept::{AttributeByEntity, AttributeByName, Concept as ConceptLookup},
-    meta::{Name, Named},
+    concept::{AttributeByEntity, AttributeByName, Concept as ConceptLookup, lookup_named_entity},
     transact::{Analysis, ApplicationPlan, Planner as _, Statement},
 };
 
@@ -830,24 +829,14 @@ impl<'a> Resolver for BranchResolver<'a> {
         }))
     }
 
-    /// Find any branch entity carrying `dialog.meta/name = name`
-    /// via the typed [`Named`] concept query. Returns the first
-    /// match — name uniqueness is not a schema-level invariant
-    /// (two distinct concepts could share a display name), but in
-    /// practice the meta branch enforces it via cardinality-one.
+    /// Find the entity that the user-published name `<name>`
+    /// points at — `(id:<name>, dialog.meta/name, ?target)`.
+    /// Cardinality-one on `dialog.meta/name` means at most one
+    /// target per name, so the first (and only) match is
+    /// returned.
     async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
-        use dialog_query::{Output as _, Query};
-        let rows: Vec<Named> = self
-            .branch
-            .query()
-            .select(Query::<Named> {
-                this: Term::var("this"),
-                name: Term::from(Name(name.to_owned())),
-            })
-            .perform(self.operator)
-            .try_vec()
+        lookup_named_entity(name, self.branch, self.operator)
             .await
-            .map_err(|e| ResolverError::new(format!("Named lookup failed: {e:?}")))?;
-        Ok(rows.into_iter().next().map(|n| n.this))
+            .map_err(|e| ResolverError::new(format!("name lookup failed: {e:?}")))
     }
 }
