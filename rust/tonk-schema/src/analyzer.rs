@@ -1265,6 +1265,69 @@ person:
         }
     }
 
+    /// `this: my-concept` resolves to a `concept!: &my-concept`
+    /// declared earlier in the same document. Symmetric with the
+    /// in-doc anchor case for non-meta heads, but routes through
+    /// `scope.declarations` after `concept!` registers it.
+    #[dialog_common::test]
+    async fn it_resolves_bare_symbol_in_this_via_in_doc_concept_anchor() {
+        let syntax = must_parse(
+            r#"
+concept!: &my-thing
+  description: "x"
+  with:
+    label:
+      description: "the label"
+      the:         x.y/label
+      as:          Text
+      cardinality: one
+my-thing!:
+  this: my-thing
+  label: "hi"
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let concept_entity = analysis
+            .declarations
+            .get("my-thing")
+            .expect("my-thing declared")
+            .clone();
+        // Last statement is the `my-thing!` instance; its `this`
+        // should be the resolved concept entity.
+        let last = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { this, .. }) = last else {
+            panic!("expected Assert(Concept) for instance");
+        };
+        match this {
+            ThisIntent::Uri(e) => assert_eq!(e, &concept_entity),
+            other => panic!("expected ThisIntent::Uri(my-thing), got {other:?}"),
+        }
+    }
+
+    /// Non-meta `&anchor` and meta `&same-name` collide →
+    /// `DuplicateName`. Tests Phase 1's pre-registration of
+    /// non-meta anchors.
+    #[dialog_common::test]
+    async fn it_rejects_collision_between_meta_and_non_meta_anchors() {
+        let syntax = must_parse(
+            r#"
+person!: &foo
+  name: "Alice"
+attribute!: &foo
+  the:         x.y/foo
+  as:          Text
+  cardinality: one
+  description: "F"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::DuplicateName { .. }),
+            "expected DuplicateName, got {err:?}"
+        );
+    }
+
     /// `this: 42` (literal) is rejected — `this:` accepts only
     /// `?var` / URI / bare symbol per the guide.
     #[dialog_common::test]
