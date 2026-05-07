@@ -119,14 +119,14 @@ pub struct AnonymousAttribute {
 }
 
 /// Same as [`AnonymousAttribute`] but with the `name` field —
-/// the bookmark name the attribute was registered under.
-/// Matches only attributes the user explicitly bookmarked
-/// (`attribute! foo: …` syntax); anonymous and
-/// variable-bound attributes are excluded.
+/// the published name the attribute was registered under.
+/// Matches only attributes the user explicitly anchored
+/// (`attribute!: &foo` syntax); anonymous and variable-bound
+/// attributes are excluded.
 ///
 /// Use this when you need to surface "what name did the user
 /// give this attribute" — for example, in the editor's
-/// attribute list, or to resolve a `.bookmark` reference.
+/// attribute list, or to resolve a bare-symbol reference.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NamedAttribute {
     /// The attribute entity (a `the:…` URI).

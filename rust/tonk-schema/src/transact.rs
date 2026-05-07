@@ -43,15 +43,15 @@ use crate::concept::QueryPlan;
 /// See `analysis-spec.md` for the three-phase derivation.
 #[derive(Debug, Clone, Default)]
 pub struct Analysis {
-    /// `.foo` → entity. Bookmark-form heads
-    /// (`attribute! foo:`, `concept! foo:`, `person! alice:`).
+    /// `name` → entity. Anchor-form heads
+    /// (`attribute!: &foo`, `concept!: &foo`, `person!: &alice`).
     /// Substituted at analysis time into both queries and
     /// mutations; kept here for the editor's "you defined these
     /// names" introspection view.
     pub declarations: HashMap<String, Entity>,
 
-    /// `?foo` → entity. Variable-form heads
-    /// (`attribute! ?foo:` etc.) where the entity is
+    /// `?foo` → entity. Variable-form heads (`this: ?foo` on
+    /// any meta or non-meta assertion) where the entity is
     /// content-derived. Used as parameter substitutions when
     /// building the unified query (Phase 2), and merged with
     /// query-bound values when planning mutations (Phase 3).
@@ -73,7 +73,7 @@ pub struct Analysis {
 /// `declarations` and `variables` already substituted in.
 ///
 /// The renderer uses these to project each match back into the
-/// user's view ("for the `person ?alice:` expression, here are
+/// user's view ("for the `person:\n  this: ?alice` expression, here are
 /// the matches"). The unified [`ConceptQuery`] the engine
 /// evaluates is derived on demand via
 /// `ConceptQuery::from(&query_analysis)`.

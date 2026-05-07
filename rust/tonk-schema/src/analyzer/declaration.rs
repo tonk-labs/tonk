@@ -47,7 +47,7 @@ pub(crate) fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBod
 
 /// Parse an attribute definition's fields into a descriptor.
 ///
-/// Used by `attribute! …:` heads and by inline
+/// Used by `attribute!:` heads and by inline
 /// `with: { foo: { the: …, as: …, … } }` definitions nested
 /// inside a `concept!` body. Same shape: `the`, `as`,
 /// `cardinality`, and a *required* `description`.
@@ -62,30 +62,20 @@ pub(crate) fn parse_attribute_fields(
         if is_meta_field(&field.name) {
             continue;
         }
-        let value_str = match &field.value {
-            FieldValue::Literal(Scalar::String(s)) => s.clone(),
-            FieldValue::Literal(other) => scalar_to_string(other)?,
-            FieldValue::Uri(s) => s.clone(),
-            FieldValue::Symbol(s) => {
-                // Symbols in attribute-definition fields are
-                // unusual (the `as:` and `cardinality:` slots
-                // expect typed string literals like `text` /
-                // `one`); the parser classified the lowercase
-                // token as a Symbol, but for these slots we want
-                // the literal text. Treat as the symbol's name.
-                s.clone()
-            }
-            FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
-                return Err(AnalyzeError::UnsupportedFieldValue {
-                    field: field.name.clone(),
-                    form: "non-literal (attribute definitions take literals)",
-                });
-            }
-        };
+        // Per-field value-shape requirements:
+        //
+        // - `as` accepts a Symbol (`text`), a string literal
+        //   (`"Text"`) or a URI-like form. Translates to
+        //   dialog's serde discriminant.
+        // - `cardinality` is the same.
+        // - `the` accepts a URI (`xyz.tonk/foo`) or a literal
+        //   string holding the same shape.
+        // - `description` requires a quoted string literal —
+        //   bare symbols are rejected to discourage one-word
+        //   non-descriptions like `description: recipe`.
         match field.name.as_str() {
             "as" => {
-                // Translate the user-facing kebab-case-lowercase
-                // type name to dialog's PascalCase serde form.
+                let value_str = stringify_simple_value(field)?;
                 let normalized = normalize_type_name(&value_str).ok_or_else(|| {
                     AnalyzeError::InvalidAttributeBody {
                         reason: format!(
@@ -99,6 +89,7 @@ pub(crate) fn parse_attribute_fields(
                 shape.insert("as".into(), serde_json::Value::String(normalized.into()));
             }
             "cardinality" => {
+                let value_str = stringify_simple_value(field)?;
                 let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
                     AnalyzeError::InvalidAttributeBody {
                         reason: format!(
@@ -112,8 +103,13 @@ pub(crate) fn parse_attribute_fields(
                     serde_json::Value::String(normalized.into()),
                 );
             }
-            "the" | "description" => {
-                shape.insert(field.name.clone(), serde_json::Value::String(value_str));
+            "the" => {
+                let value_str = stringify_simple_value(field)?;
+                shape.insert("the".into(), serde_json::Value::String(value_str));
+            }
+            "description" => {
+                let value_str = require_string_description(field)?;
+                shape.insert("description".into(), serde_json::Value::String(value_str));
             }
             other => {
                 return Err(AnalyzeError::UnknownField {
@@ -183,14 +179,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
         }
         match field.name.as_str() {
             "description" => {
-                if let FieldValue::Literal(Scalar::String(s)) = &field.value {
-                    description = Some(s.clone());
-                } else {
-                    return Err(AnalyzeError::UnsupportedFieldValue {
-                        field: "description".into(),
-                        form: "non-string literal",
-                    });
-                }
+                description = Some(require_string_description(field)?);
             }
             "with" => {
                 let FieldValue::Nested(inner) = &field.value else {
@@ -522,5 +511,48 @@ fn normalize_cardinality_name(name: &str) -> Option<&'static str> {
         "one" | "One" => Some("one"),
         "many" | "Many" => Some("many"),
         _ => None,
+    }
+}
+
+/// Coerce a "simple" attribute-body field into a string. Used
+/// for `the:`, `as:`, `cardinality:` — slots whose value is a
+/// short typed token (URI / type name / cardinality keyword).
+/// Symbols, URIs, and literals all flow through; variables,
+/// blanks, and nested mappings are rejected.
+fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
+    Ok(match &field.value {
+        FieldValue::Literal(Scalar::String(s)) => s.clone(),
+        FieldValue::Literal(other) => scalar_to_string(other)?,
+        FieldValue::Uri(s) => s.clone(),
+        FieldValue::Symbol(s) => s.clone(),
+        FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
+            return Err(AnalyzeError::UnsupportedFieldValue {
+                field: field.name.clone(),
+                form: "non-literal (attribute definitions take literals)",
+            });
+        }
+    })
+}
+
+/// Coerce a `description:` field into its string content. Only
+/// quoted string literals are accepted — bare symbols would
+/// match the symbol charset (lowercase, no spaces, no
+/// punctuation) and are almost always one-word filler like
+/// `description: recipe`. Forcing quotes pushes authors toward
+/// writing prose descriptions ("A recipe with a title and
+/// ingredients") instead of repeating the concept's name.
+fn require_string_description(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
+    match &field.value {
+        FieldValue::Literal(Scalar::String(s)) => Ok(s.clone()),
+        FieldValue::Symbol(s) => Err(AnalyzeError::InvalidAttributeBody {
+            reason: format!(
+                "`description:` value {s:?} looks like a bare symbol — write a \
+                 quoted string explaining what the entity represents \
+                 (`description: \"…\"`)"
+            ),
+        }),
+        _ => Err(AnalyzeError::InvalidAttributeBody {
+            reason: "`description:` must be a string".into(),
+        }),
     }
 }

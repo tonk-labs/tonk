@@ -757,24 +757,24 @@ pub mod tests {
         put_repo(&app, repo).await;
 
         let body = "\
-attribute! person-name:
-    the:         io.gozala.person/name
-    as:          Text
-    cardinality: one
-    description: The person's name
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          text
+  cardinality: one
+  description: The person's name
 
 
-attribute! person-age:
+attribute!: &person-age
   the:         io.gozala.person/age
-  as:          UnsignedInteger
+  as:          unsigned-integer
   cardinality: one
   description: The person's age
 
-concept! person:
-    description: A person
-    with:
-      name: .person-name
-      age:  .person-age
+concept!: &person
+  description: A person
+  with:
+    name: person-name
+    age:  person-age
 ";
 
         let response = app
@@ -816,9 +816,9 @@ concept! person:
         put_repo(&app, repo).await;
 
         let body = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 ";
@@ -896,9 +896,9 @@ attribute! person-name:
 
         // First transaction: define `person-name` only.
         let first = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 ";
@@ -920,17 +920,17 @@ attribute! person-name:
         // `person` whose `with.name` references the *previously*
         // declared `person-name`.
         let second = "\
-attribute! person-age:
+attribute!: &person-age
   the:         io.gozala.person/age
-  as:          UnsignedInteger
+  as:          unsigned-integer
   cardinality: one
   description: The person's age
 
-concept! person:
+concept!: &person
   description: A person
   with:
-    name: .person-name
-    age:  .person-age
+    name: person-name
+    age:  person-age
 ";
         let response = app
             .oneshot(
@@ -973,17 +973,17 @@ concept! person:
         // Define schema + assert an Alice with a bookmark
         // binding so we know her entity.
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
+    name: person-name
 
-person! alice:
+person!: &alice
   name: \"Alice\"
 ";
         let response = app
@@ -1022,7 +1022,7 @@ person! alice:
         // that URI. The worker should query the branch for
         // `(io.gozala.person/name, alice, *)` and dissociate
         // the matching value.
-        let retract = format!("person! {alice_uri}: _\n");
+        let retract = format!("person!:\n  this: {alice_uri}\n  ..: _\n");
         let response = app
             .oneshot(
                 Request::builder()
@@ -1069,17 +1069,17 @@ person! alice:
         // Define a `person` concept and assert one Alice so the
         // query has something to match.
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
+    name: person-name
 
-person! alice:
+person!: &alice
   name: \"Alice\"
 ";
         let response = app
@@ -1175,24 +1175,24 @@ person! alice:
 
         // Setup: schema + Alice with age 28.
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-attribute! person-age:
+attribute!: &person-age
   the:         io.gozala.person/age
-  as:          UnsignedInteger
+  as:          unsigned-integer
   cardinality: one
   description: The person's age
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
-    age:  .person-age
+    name: person-name
+    age:  person-age
 
-person! alice:
+person!: &alice
   name: \"Alice\"
   age:  28
 ";
@@ -1217,9 +1217,11 @@ person! alice:
 
         // --- Path 1: query-bound `?alice` then assert.
         let update_via_query = "\
-person ?alice:
+person:
+  this: ?alice
   name: \"Alice\"
-person! ?alice:
+person!:
+  this: ?alice
   age:  29
 ";
         let response = app
@@ -1271,7 +1273,7 @@ person! ?alice:
         );
 
         // --- Path 2: explicit URI assert.
-        let update_via_uri = format!("person! {alice_uri}:\n  age: 30\n");
+        let update_via_uri = format!("person!:\n  this: {alice_uri}\n  age: 30\n");
         let response = app
             .clone()
             .oneshot(
@@ -1315,7 +1317,7 @@ person! ?alice:
 
         // --- Path 3: re-assert the same value should be a
         // no-op (no new claim, no churn).
-        let reassert = format!("person! {alice_uri}:\n  age: 30\n");
+        let reassert = format!("person!:\n  this: {alice_uri}\n  age: 30\n");
         let response = app
             .oneshot(
                 Request::builder()
@@ -1330,11 +1332,12 @@ person! ?alice:
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    /// Bookmark git-tag rebind: `person! alice: { …new body… }`
-    /// derives a *new* entity from the new body and rebinds the
-    /// `dialog.meta/name = "alice"` claim from the old entity to
-    /// the new one (cardinality-one supersession on the meta
-    /// name itself). After the rebind, the old entity still
+    /// Anchor git-tag rebind: `person!: &alice` with a different
+    /// body derives a *new* entity from the new body and rebinds
+    /// the `id:alice → entity` claim from the old entity to the
+    /// new one (cardinality-one supersession on
+    /// `dialog.meta/name`). After the rebind, the old entity
+    /// still
     /// holds its facts but is no longer addressable by `.alice`.
     #[dialog_common::test]
     async fn it_rebinds_bookmark_on_body_change() {
@@ -1345,24 +1348,24 @@ person! ?alice:
         put_repo(&app, repo).await;
 
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-attribute! person-age:
+attribute!: &person-age
   the:         io.gozala.person/age
-  as:          UnsignedInteger
+  as:          unsigned-integer
   cardinality: one
   description: The person's age
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
-    age:  .person-age
+    name: person-name
+    age:  person-age
 
-person! alice:
+person!: &alice
   name: \"Alice\"
   age:  28
 ";
@@ -1370,9 +1373,9 @@ person! alice:
         let setup_resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         let alice_v1 = setup_resp.commits.entities.get("alice").cloned().unwrap();
 
-        // Same bookmark, different body → new entity.
+        // Same anchor name, different body → new entity.
         let rebind = "\
-person! alice:
+person!: &alice
   name: \"Alice\"
   age:  29
 ";
@@ -1389,7 +1392,8 @@ person! alice:
         // attribute lookup. Test cross-doc bookmark resolution
         // by referencing `.person-name` from a follow-up doc.
         let follow_up = "\
-person ?p:
+person:
+  this: ?p
   name: ?n
 ";
         let body_bytes = post_yaml(&app, repo, follow_up).await;
@@ -1415,15 +1419,15 @@ person ?p:
         put_repo(&app, repo).await;
 
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
+    name: person-name
 ";
         let _ = post_yaml(&app, repo, setup).await;
 
@@ -1471,32 +1475,33 @@ concept! person:
         put_repo(&app, repo).await;
 
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-attribute! person-age:
+attribute!: &person-age
   the:         io.gozala.person/age
-  as:          UnsignedInteger
+  as:          unsigned-integer
   cardinality: one
   description: The person's age
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
-    age:  .person-age
+    name: person-name
+    age:  person-age
 ";
         let _ = post_yaml(&app, repo, setup).await;
 
         // Single head introduces `?carol` and writes both fields.
-        // (Two heads with the same `person! ?carol:` text would
-        // collapse to one expression at the YAML mapping-key
-        // level — that's a parser-side detail, not a semantic
-        // limit of variable scope.)
+        // (Two heads with the same `person!:` body containing
+        // `this: ?carol` would collapse to one expression at the
+        // YAML mapping-key level — that's a parser-side detail,
+        // not a semantic limit of variable scope.)
         let doc = "\
-person! ?carol:
+person!:
+  this: ?carol
   name: \"Carol\"
   age:  31
 ";
@@ -1532,24 +1537,24 @@ person! ?carol:
         put_repo(&app, repo).await;
 
         let setup = "\
-attribute! tagged-name:
+attribute!: &tagged-name
   the:         io.gozala.tagged/name
-  as:          Text
+  as:          text
   cardinality: one
   description: Name of the tagged item
 
-attribute! tagged-tag:
+attribute!: &tagged-tag
   the:         io.gozala.tagged/tag
-  as:          Text
+  as:          text
   cardinality: many
   description: Tags applied to the item
 
-concept! tagged:
+concept!: &tagged
   with:
-    name: .tagged-name
-    tag:  .tagged-tag
+    name: tagged-name
+    tag:  tagged-tag
 
-tagged! dave:
+tagged!: &dave
   name: \"Dave\"
   tag:  \"engineer\"
 ";
@@ -1559,7 +1564,7 @@ tagged! dave:
 
         // Add a second tag using URI binding (avoids body
         // hashing producing a new entity).
-        let add_tag = format!("tagged! {dave_uri}:\n  tag: \"author\"\n");
+        let add_tag = format!("tagged!:\n  this: {dave_uri}\n  tag: \"author\"\n");
         let _ = post_yaml(&app, repo, &add_tag).await;
 
         // Both tags should be on Dave. The query renders one
@@ -1592,24 +1597,24 @@ tagged! dave:
         put_repo(&app, repo).await;
 
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-attribute! person-age:
+attribute!: &person-age
   the:         io.gozala.person/age
-  as:          UnsignedInteger
+  as:          unsigned-integer
   cardinality: one
   description: The person's age
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
-    age:  .person-age
+    name: person-name
+    age:  person-age
 
-person! erin:
+person!: &erin
   name: \"Erin\"
   age:  41
 ";
@@ -1618,7 +1623,7 @@ person! erin:
         let erin_uri = setup_resp.commits.entities.get("erin").cloned().unwrap();
 
         // Retract the projection.
-        let retract = format!("person! {erin_uri}: _\n");
+        let retract = format!("person!:\n  this: {erin_uri}\n  ..: _\n");
         let body_bytes = post_yaml(&app, repo, &retract).await;
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
         assert!(
@@ -1652,25 +1657,28 @@ person! erin:
         put_repo(&app, repo).await;
 
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
+    name: person-name
 
-person! frank:
+person!: &frank
   name: \"Frank\"
 ";
         let _ = post_yaml(&app, repo, setup).await;
 
         let retract = "\
-person ?frank:
+person:
+  this: ?frank
   name: \"Frank\"
-person! ?frank: _
+person!:
+  this: ?frank
+  ..: _
 ";
         let body_bytes = post_yaml(&app, repo, retract).await;
         let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
@@ -1706,27 +1714,27 @@ person! ?frank: _
         // different attribute namespaces. We'll query for
         // entities present in both.
         let setup = "\
-attribute! person-name:
+attribute!: &person-name
   the:         io.gozala.person/name
-  as:          Text
+  as:          text
   cardinality: one
   description: The person's name
 
-attribute! employee-id:
+attribute!: &employee-id
   the:         io.gozala.employee/id
-  as:          Text
+  as:          text
   cardinality: one
   description: Employee identifier
 
-concept! person:
+concept!: &person
   with:
-    name: .person-name
+    name: person-name
 
-concept! employee:
+concept!: &employee
   with:
-    eid: .employee-id
+    eid: employee-id
 
-person! gina:
+person!: &gina
   name: \"Gina\"
 ";
         let body_bytes = post_yaml(&app, repo, setup).await;
@@ -1734,14 +1742,16 @@ person! gina:
         let gina_uri = setup_resp.commits.entities.get("gina").cloned().unwrap();
 
         // Add an employee fact on Gina's entity.
-        let add_emp = format!("employee! {gina_uri}:\n  eid: \"E-007\"\n");
+        let add_emp = format!("employee!:\n  this: {gina_uri}\n  eid: \"E-007\"\n");
         let _ = post_yaml(&app, repo, &add_emp).await;
 
         // Joined query.
         let join = "\
-person ?p:
+person:
+  this: ?p
   name: ?n
-employee ?p:
+employee:
+  this: ?p
   eid: ?e
 ";
         let body_bytes = post_yaml(&app, repo, join).await;
@@ -1835,9 +1845,9 @@ employee ?p:
     async fn seed_named_attribute(app: &Router, repo: &str, name: &str, the: &str) {
         let body = format!(
             "\
-attribute! {name}:
+attribute!: &{name}
   the:         {the}
-  as:          Text
+  as:          text
   cardinality: one
   description: A test attribute
 "

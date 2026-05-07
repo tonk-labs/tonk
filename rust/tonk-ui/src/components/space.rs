@@ -607,7 +607,7 @@ pub(super) fn BranchRow(
                             language="dialog-yaml"
                             language-server
                             active-line
-                            placeholder="person ?alice:\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!:\n#   name: \"Alice\""
+                            placeholder="person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
                             on:change=on_transact_change
                             on:run=on_editor_run
                             on:diagnostics=on_diagnostics

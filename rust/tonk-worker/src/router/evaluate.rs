@@ -32,8 +32,8 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_notation::{Parsed, Syntax, parse};
 use tonk_schema::{
-    concept::{AttributeByEntity, AttributeByName, Concept as ConceptLookup},
     analyzer::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError},
+    concept::{AttributeByEntity, AttributeByName, Concept as ConceptLookup},
     meta::{Name, Named},
     transact::{Analysis, ApplicationPlan, Planner as _, Statement},
 };
@@ -82,7 +82,7 @@ pub struct EvaluateResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryMatchBlock {
     /// Display label for the source expression
-    /// (`person ?alice:` → `"person"`).
+    /// (`person:\n  this: ?alice` → `"person"`).
     pub label: String,
     /// One entry per matched entity.
     pub results: Vec<QueryResult>,

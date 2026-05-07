@@ -2094,4 +2094,112 @@ person!:
             Statement::Assert(_)
         ));
     }
+
+    // ----------------------------------------------------------- //
+    // Description-field shape acceptance                          //
+    // ----------------------------------------------------------- //
+
+    /// Bare unquoted multi-word description on `attribute!` —
+    /// the parser classifies it as a string literal (uppercase
+    /// + space outside the symbol charset), and the analyzer
+    /// accepts it without quotes.
+    #[dialog_common::test]
+    async fn it_accepts_bare_multi_word_description_on_attribute() {
+        let syntax = must_parse(
+            r#"
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          text
+  cardinality: one
+  description: The person's name
+"#,
+        );
+        analyze(&syntax, &NoopResolver).await.unwrap();
+    }
+
+    /// Bare unquoted multi-word description on `concept!`.
+    #[dialog_common::test]
+    async fn it_accepts_bare_multi_word_description_on_concept() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: A person
+  with:
+    name:
+      description: Name of the person
+      the:         x.y/name
+      as:          text
+      cardinality: one
+"#,
+        );
+        analyze(&syntax, &NoopResolver).await.unwrap();
+    }
+
+    /// A single bare lowercase token in `description:` (`recipe`)
+    /// is parsed as a `Symbol` — the analyzer rejects it to push
+    /// authors toward writing a prose description rather than
+    /// repeating the concept's name. Quote it (`description:
+    /// "recipe"`) to override.
+    #[dialog_common::test]
+    async fn it_rejects_bare_symbol_description_to_encourage_prose() {
+        let syntax = must_parse(
+            r#"
+attribute!: &foo
+  the:         x.y/foo
+  as:          text
+  cardinality: one
+  description: recipe
+"#,
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("recipe") && reason.contains("symbol")
+            ),
+            "expected guidance about bare symbol in `description:`, got {err:?}"
+        );
+    }
+
+    /// Same rule on `concept!`'s `description:` field — Symbol
+    /// rejected, prose required.
+    #[dialog_common::test]
+    async fn it_rejects_bare_symbol_description_on_concept() {
+        let syntax = must_parse(
+            r#"
+concept!: &thing
+  description: recipe
+  with:
+    title:
+      description: A short title
+      the:         x.y/title
+      as:          text
+      cardinality: one
+"#,
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("recipe")
+            ),
+            "expected guidance about bare symbol in `description:`, got {err:?}"
+        );
+    }
+
+    /// Quoted single-word description is fine — quotes signal
+    /// the author meant the literal string.
+    #[dialog_common::test]
+    async fn it_accepts_quoted_single_word_description() {
+        let syntax = must_parse(
+            r#"
+attribute!: &foo
+  the:         x.y/foo
+  as:          text
+  cardinality: one
+  description: "recipe"
+"#,
+        );
+        analyze(&syntax, &NoopResolver).await.unwrap();
+    }
 }
