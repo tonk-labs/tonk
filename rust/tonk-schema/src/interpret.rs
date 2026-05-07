@@ -27,10 +27,7 @@ use dialog_query::{
     concept::query::ConceptQuery,
 };
 use thiserror::Error;
-use tonk_notation::{
-    Assertion, Binding, Expression, Field, FieldValue, HeadName, Reference, Retraction, Scalar,
-    Syntax,
-};
+use tonk_notation::{Anchor, Assertion, Expression, Field, FieldValue, HeadName, Scalar, Syntax};
 
 use crate::prelude::EntityExt;
 use crate::transact::{
@@ -521,7 +518,6 @@ async fn analyze_impl<R: Resolver>(
         let (head, has_effect) = match expression {
             Expression::Query(q) => (&q.head, false),
             Expression::Assertion(a) => (&a.head, true),
-            Expression::Retraction(r) => (&r.head, true),
         };
 
         // Meta heads carry their entity in the descriptor, which
@@ -540,7 +536,8 @@ async fn analyze_impl<R: Resolver>(
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
-                    let binding = head_binding_for(&head.binding)?;
+                    let binding =
+                        derive_head_binding(&assertion.fields, assertion.anchor.as_ref())?;
                     let bookmark = match &binding {
                         HeadBinding::Bookmark(name) => Some(name.clone()),
                         _ => None,
@@ -582,7 +579,8 @@ async fn analyze_impl<R: Resolver>(
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
-                    let binding = head_binding_for(&head.binding)?;
+                    let binding =
+                        derive_head_binding(&assertion.fields, assertion.anchor.as_ref())?;
                     let bookmark = match &binding {
                         HeadBinding::Bookmark(name) => Some(name.clone()),
                         _ => None,
@@ -685,11 +683,6 @@ async fn analyze_impl<R: Resolver>(
                 collect_unbound_variables(&application, &analysis, &mut requires);
                 statements.push(Statement::Assert(application));
             }
-            Expression::Retraction(r) => {
-                let application = build_retraction_application(r, &scope, &mut analysis).await?;
-                collect_unbound_variables(&application, &analysis, &mut requires);
-                statements.push(Statement::Retract(application));
-            }
         }
     }
 
@@ -759,15 +752,24 @@ fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBodyPlan, Anal
 fn parse_attribute_fields(fields: &[Field]) -> Result<AttributeBodyPlan, AnalyzeError> {
     let mut shape = serde_json::Map::new();
     for field in fields {
+        // `this:` and `..:` are reserved meta-keys handled by the
+        // outer assertion-binding flow; they don't contribute to
+        // the attribute descriptor itself.
+        if is_meta_field(&field.name) {
+            continue;
+        }
         let value_str = match &field.value {
             FieldValue::Literal(Scalar::String(s)) => s.clone(),
             FieldValue::Literal(other) => scalar_to_string(other)?,
-            FieldValue::Reference(Reference::Uri(s)) => s.clone(),
-            FieldValue::Reference(Reference::Bookmark(_)) => {
-                return Err(AnalyzeError::UnsupportedFieldValue {
-                    field: field.name.clone(),
-                    form: "bookmark reference (attribute definitions take literals)",
-                });
+            FieldValue::Uri(s) => s.clone(),
+            FieldValue::Symbol(s) => {
+                // Symbols in attribute-definition fields are
+                // unusual (the `as:` and `cardinality:` slots
+                // expect typed string literals like `text` /
+                // `one`); the parser classified the lowercase
+                // token as a Symbol, but for these slots we want
+                // the literal text. Treat as the symbol's name.
+                s.clone()
             }
             FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
                 return Err(AnalyzeError::UnsupportedFieldValue {
@@ -938,18 +940,18 @@ async fn resolve_concept_field<R: Resolver>(
                 field: field_name.into(),
                 bookmark: name.clone(),
             }),
-        FieldValue::Reference(Reference::Bookmark(name)) => scope
+        FieldValue::Symbol(name) => scope
             .resolve_attribute(name)
             .await
             .map_err(|e| AnalyzeError::ResolverFailed {
-                context: format!("bookmark .{name}"),
+                context: format!("symbol {name}"),
                 reason: e.message,
             })?
             .ok_or_else(|| AnalyzeError::UnknownBookmark {
                 field: field_name.into(),
                 bookmark: name.clone(),
             }),
-        FieldValue::Reference(Reference::Uri(uri)) => {
+        FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
                     .map_err(|e: dialog_artifacts::DialogArtifactsError| {
@@ -972,9 +974,8 @@ async fn resolve_concept_field<R: Resolver>(
         }
         _ => Err(AnalyzeError::UnsupportedFieldValue {
             field: field_name.into(),
-            form: "expected `.bookmark` reference or `the:…` URI \
-                   (bare names are literal strings — prefix with `.` \
-                   to mark as a reference)",
+            form: "expected a bare symbol (name lookup) or a URI \
+                   (`xyz.tonk/foo`, `id:foo`, etc.)",
         }),
     }
 }
@@ -988,7 +989,9 @@ async fn build_query_application<R: Resolver>(
     scope: &Scope<'_, R>,
     analysis: &Analysis,
 ) -> Result<Application, AnalyzeError> {
-    let binding = head_binding_for(&query.head.binding)?;
+    // Queries can't carry an `&anchor` (parser rejects that), so
+    // binding derivation only inspects `this:`.
+    let binding = derive_head_binding(&query.fields, None)?;
     match &query.head.name {
         HeadName::Concept(name) => {
             let resolved = scope
@@ -1014,8 +1017,14 @@ async fn build_query_application<R: Resolver>(
                 };
                 terms.insert(field_name.into(), term);
             }
-            // Reject unknown user-supplied fields.
+            // Reject unknown user-supplied fields. `this:` and
+            // `..:` are reserved meta-keys (selecting the entity
+            // and rest-of-attributes retraction respectively),
+            // not real fields — exempt them.
             for field in &query.fields {
+                if is_meta_field(&field.name) {
+                    continue;
+                }
                 if resolved
                     .descriptor
                     .with()
@@ -1037,14 +1046,23 @@ async fn build_query_application<R: Resolver>(
             })
         }
         HeadName::Claim(domain) => {
-            if query.fields.is_empty() {
+            // Filter `this:` and `..:` out before the
+            // claim-needs-fields check so an expression whose
+            // only body field is `this:` (no claim attributes)
+            // surfaces the right "claim without fields" error.
+            let body_fields: Vec<&Field> = query
+                .fields
+                .iter()
+                .filter(|f| !is_meta_field(&f.name))
+                .collect();
+            if body_fields.is_empty() {
                 return Err(AnalyzeError::ClaimWithoutFields {
                     domain: domain.clone(),
                 });
             }
             let mut parameters = Parameters::new();
             parameters.insert("this".into(), this_term_for_query(&binding));
-            for field in &query.fields {
+            for field in &body_fields {
                 validate_claim_attribute(domain, &field.name)?;
                 let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
                 parameters.insert(field.name.clone(), term);
@@ -1057,11 +1075,22 @@ async fn build_query_application<R: Resolver>(
                 binding,
             })
         }
+        HeadName::Uri(uri) => Err(AnalyzeError::UnsupportedFieldValue {
+            field: uri.clone(),
+            form: "URI head in query (not yet implemented in Stage 2.1)",
+        }),
     }
 }
 
 fn user_field<'a>(fields: &'a [Field], name: &str) -> Option<&'a FieldValue> {
     fields.iter().find(|f| f.name == name).map(|f| &f.value)
+}
+
+/// Reserved body field names that don't correspond to schema
+/// fields: `this:` (entity selection), `..:` (rest-of-attributes
+/// retraction marker).
+fn is_meta_field(name: &str) -> bool {
+    matches!(name, "this" | "..")
 }
 
 fn this_term_for_query(binding: &HeadBinding) -> Term<dialog_query::Any> {
@@ -1108,13 +1137,14 @@ async fn build_assertion_application<R: Resolver>(
     let head_label = match &assertion.head.name {
         HeadName::Concept(name) => name.clone(),
         HeadName::Claim(domain) => domain.clone(),
+        HeadName::Uri(uri) => uri.clone(),
     };
 
     if assertion.fields.is_empty() {
         return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
     }
 
-    let binding = head_binding_for(&assertion.head.binding)?;
+    let binding = derive_head_binding(&assertion.fields, assertion.anchor.as_ref())?;
     let this_term = this_term_for_assertion(&binding, &assertion.fields, analysis)?;
 
     match &assertion.head.name {
@@ -1131,6 +1161,9 @@ async fn build_assertion_application<R: Resolver>(
             terms.insert("this".into(), this_term);
             let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
             for field in &assertion.fields {
+                if is_meta_field(&field.name) {
+                    continue;
+                }
                 user_fields.insert(field.name.as_str(), &field.value);
             }
             for (field_name, _attr) in resolved.descriptor.with().iter() {
@@ -1161,6 +1194,9 @@ async fn build_assertion_application<R: Resolver>(
             let mut parameters = Parameters::new();
             parameters.insert("this".into(), this_term);
             for field in &assertion.fields {
+                if is_meta_field(&field.name) {
+                    continue;
+                }
                 validate_claim_attribute(domain, &field.name)?;
                 let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
                 parameters.insert(field.name.clone(), term);
@@ -1173,59 +1209,48 @@ async fn build_assertion_application<R: Resolver>(
                 binding,
             })
         }
-    }
-}
-
-async fn build_retraction_application<R: Resolver>(
-    retraction: &Retraction,
-    scope: &Scope<'_, R>,
-    analysis: &mut Analysis,
-) -> Result<Application, AnalyzeError> {
-    let binding = head_binding_for(&retraction.head.binding)?;
-    // Retraction has no body, so the entity has to come from a
-    // bookmark/variable binding (whose name resolves through
-    // the branch / declarations), an explicit URI, or a query
-    // binding. Anonymous retractions have no entity to act on.
-    let this_term = this_term_for_retraction(&binding, analysis)?;
-    match &retraction.head.name {
-        HeadName::Concept(name) => {
-            let resolved = scope
-                .resolve_concept(name)
-                .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("concept {name:?}"),
-                    reason: e.message,
-                })?
-                .ok_or_else(|| AnalyzeError::UnknownConcept { name: name.clone() })?;
-            let mut terms = Parameters::new();
-            terms.insert("this".into(), this_term);
-            for (field_name, _attr) in resolved.descriptor.with().iter() {
-                terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
-            }
-            Ok(Application::Concept {
-                query: ConceptQuery {
-                    terms,
-                    predicate: resolved.descriptor,
-                },
-                binding,
-            })
-        }
-        HeadName::Claim(domain) => Err(AnalyzeError::UnsupportedFieldValue {
-            field: domain.clone(),
-            form: "claim retraction (no descriptor to enumerate fields)",
+        HeadName::Uri(uri) => Err(AnalyzeError::UnsupportedFieldValue {
+            field: uri.clone(),
+            form: "URI head in assertion (not yet implemented in Stage 2.1)",
         }),
     }
 }
 
-/// Translate a parsed [`Binding`] to the analyzer's
-/// [`HeadBinding`]. Validates URIs eagerly so the `Application`
-/// carries a parsed `Entity` rather than a string.
-fn head_binding_for(binding: &Binding) -> Result<HeadBinding, AnalyzeError> {
-    Ok(match binding {
-        Binding::Anonymous => HeadBinding::Anonymous,
-        Binding::Variable(name) => HeadBinding::Variable(name.clone()),
-        Binding::Bookmark(name) => HeadBinding::Bookmark(name.clone()),
-        Binding::Uri(uri) => {
+/// Derive a [`HeadBinding`] from an expression's body and optional
+/// anchor.
+///
+/// Under the new grammar the head carries no binding token; the
+/// entity-selection mechanism lives in the body's `this:` field
+/// and (on assertions) the `&anchor` between the head's colon and
+/// the body. The mapping:
+///
+/// - `&anchor` present → [`HeadBinding::Bookmark(anchor.name)`].
+///   The planner emits an extra `dialog.meta/name` claim per the
+///   bookmark semantics.
+/// - `this: ?var` → [`HeadBinding::Variable(var)`].
+/// - `this: did:key:…` / `this: id:foo` / `this: db:foo` →
+///   [`HeadBinding::Uri(entity)`].
+/// - `this: alice` (bare symbol) → for now treated like a
+///   bookmark reference — Stage 2.4 will resolve through the name
+///   table.
+/// - omitted `this:` → [`HeadBinding::Anonymous`].
+///
+/// `&anchor` and `this:` are mutually exclusive on the same head.
+/// The analyzer rejects documents that combine both (a future
+/// extension could relax this).
+fn derive_head_binding(
+    fields: &[Field],
+    anchor: Option<&Anchor>,
+) -> Result<HeadBinding, AnalyzeError> {
+    if let Some(anchor) = anchor {
+        return Ok(HeadBinding::Bookmark(anchor.name.clone()));
+    }
+    let Some(this) = fields.iter().find(|f| f.name == "this") else {
+        return Ok(HeadBinding::Anonymous);
+    };
+    match &this.value {
+        FieldValue::Variable(name) => Ok(HeadBinding::Variable(name.clone())),
+        FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
                     .map_err(|e: dialog_artifacts::DialogArtifactsError| {
@@ -1234,9 +1259,24 @@ fn head_binding_for(binding: &Binding) -> Result<HeadBinding, AnalyzeError> {
                             reason: e.to_string(),
                         }
                     })?;
-            HeadBinding::Uri(entity)
+            Ok(HeadBinding::Uri(entity))
         }
-    })
+        FieldValue::Symbol(name) => {
+            // Stage 2.1 placeholder: bare symbols in `this:` are
+            // name-table references that resolve through the
+            // branch. For now treat like the old bookmark form so
+            // the planner mints a body-derived entity. Stage 2.4
+            // implements proper resolution.
+            Ok(HeadBinding::Bookmark(name.clone()))
+        }
+        FieldValue::Literal(_) | FieldValue::Blank | FieldValue::Nested(_) => {
+            Err(AnalyzeError::UnsupportedFieldValue {
+                field: "this".into(),
+                form: "expected `?var`, a URI (`did:key:…`, `id:…`, `db:…`), \
+                       or a bare symbol",
+            })
+        }
+    }
 }
 
 fn meta_application(meta: &MetaPlan) -> Application {
@@ -1466,39 +1506,6 @@ fn this_term_for_assertion(
     })
 }
 
-/// `this` term for a retraction (no body to hash). The entity
-/// must come from a Bookmark (looked up by name on the branch),
-/// a Variable (registered earlier or query-bound), or a URI.
-/// `Anonymous` retraction has no entity to act on.
-fn this_term_for_retraction(
-    binding: &HeadBinding,
-    analysis: &Analysis,
-) -> Result<Term<dialog_query::Any>, AnalyzeError> {
-    Ok(match binding {
-        HeadBinding::Anonymous => {
-            return Err(AnalyzeError::UnsupportedFieldValue {
-                field: "head".into(),
-                form: "anonymous retraction has no entity to act on; \
-                       bind the head with `?var`, a bookmark, or a `did:key:…` URI",
-            });
-        }
-        HeadBinding::Bookmark(_name) => {
-            // We can't synchronously resolve the bookmark to an
-            // entity here without a branch query; the worker's
-            // retraction path would have to take a name and run
-            // the lookup. For now: leave as a blank — the worker
-            // will need to handle this case explicitly when we
-            // wire it. Most retractions are URI-bound.
-            Term::<dialog_query::Any>::blank()
-        }
-        HeadBinding::Variable(name) => match analysis.variables.get(name) {
-            Some(entity) => Term::Constant(Value::Entity(entity.clone())),
-            None => Term::<dialog_query::Any>::var(name),
-        },
-        HeadBinding::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
-    })
-}
-
 /// Hash-stable summary of an assertion body — pairs of
 /// `(field_name, FieldDigest)` sorted by name. Used by
 /// `Entity::of` to derive a content-addressed entity for
@@ -1592,21 +1599,14 @@ async fn field_value_to_term<R: Resolver>(
                 Term::<dialog_query::Any>::var(name)
             }
         }
-        FieldValue::Reference(Reference::Bookmark(name)) => {
-            // Resolution order:
-            //   1. Doc-local declarations (head bookmark from the
-            //      same document — `concept! foo:` or
-            //      `attribute! foo:`).
-            //   2. Doc-local attribute by name (variable-form
-            //      `attribute! ?foo:` records this without a
-            //      declaration).
-            //   3. Any branch entity with `dialog.meta/name = name`
-            //      via [`Resolver::resolve_named_entity`]. Picks
-            //      up concepts, concept instances, and any other
-            //      named entity — `.person` resolves to a
-            //      `concept! person:` written in an earlier session
-            //      just as it would resolve to a `person! …:`
-            //      instance.
+        FieldValue::Symbol(name) => {
+            // Bare lowercase symbol — name-table lookup. Same
+            // resolution order as the old `.bookmark` form:
+            //   1. Doc-local declarations (head anchor from the
+            //      same document — `concept!: &foo` or
+            //      `attribute!: &foo`).
+            //   2. Doc-local attribute by name.
+            //   3. Branch entity with `dialog.meta/name = name`.
             if let Some(entity) = scope.lookup_entity(name) {
                 Term::Constant(Value::Entity(entity))
             } else if let Some(resolved) =
@@ -1614,14 +1614,14 @@ async fn field_value_to_term<R: Resolver>(
                     .resolve_attribute(name)
                     .await
                     .map_err(|e| AnalyzeError::ResolverFailed {
-                        context: format!("bookmark .{name}"),
+                        context: format!("symbol {name}"),
                         reason: e.message,
                     })?
             {
                 Term::Constant(Value::Entity(resolved.entity))
             } else if let Some(entity) = scope.resolve_named_entity(name).await.map_err(|e| {
                 AnalyzeError::ResolverFailed {
-                    context: format!("bookmark .{name}"),
+                    context: format!("symbol {name}"),
                     reason: e.message,
                 }
             })? {
@@ -1633,7 +1633,7 @@ async fn field_value_to_term<R: Resolver>(
                 });
             }
         }
-        FieldValue::Reference(Reference::Uri(uri)) => {
+        FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
                     .map_err(|e: dialog_artifacts::DialogArtifactsError| {
@@ -1789,7 +1789,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn empty_document_is_an_error() {
+    async fn it_rejects_empty_document() {
         let syntax = Syntax {
             expressions: Vec::new(),
             range: lsp_types::Range::default(),
@@ -1798,17 +1798,19 @@ mod tests {
         assert!(matches!(err, AnalyzeError::EmptyDocument));
     }
 
-    /// `attribute! foo:` declares a content-derived attribute
+    /// `attribute!: &foo` declares a content-derived attribute
     /// entity in `declarations`, an Assert statement, no query,
     /// no requires.
     #[dialog_common::test]
-    async fn single_attribute_assertion() {
+    async fn it_declares_a_single_attribute_assertion() {
         let syntax = must_parse(
-            "attribute! person-name:\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: Person's name\n",
+            r#"
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: "Person's name"
+"#,
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         assert!(analysis.declarations.contains_key("person-name"));
@@ -1822,26 +1824,28 @@ mod tests {
     }
 
     /// Three-expression doc: two `attribute!` + one `concept!`
-    /// referencing them via `.bookmark`. Concept body resolution
+    /// referencing them via bare symbols. Concept body resolution
     /// must hit the in-doc index, not the (Noop) outer resolver.
     #[dialog_common::test]
-    async fn attributes_then_concept_in_one_doc() {
+    async fn it_resolves_attributes_referenced_by_a_concept_in_the_same_doc() {
         let syntax = must_parse(
-            "attribute! person-name:\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: Person's name\n\
-             attribute! person-age:\n\
-             \x20 the:         io.gozala.person/age\n\
-             \x20 as:          UnsignedInteger\n\
-             \x20 cardinality: one\n\
-             \x20 description: Person's age\n\
-             concept! person:\n\
-             \x20 description: Person concept\n\
-             \x20 with:\n\
-             \x20   name: .person-name\n\
-             \x20   age:  .person-age\n",
+            r#"
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: "Person's name"
+attribute!: &person-age
+  the:         io.gozala.person/age
+  as:          UnsignedInteger
+  cardinality: one
+  description: "Person's age"
+concept!: &person
+  description: "Person concept"
+  with:
+    name: person-name
+    age:  person-age
+"#,
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         assert!(analysis.declarations.contains_key("person-name"));
@@ -1853,27 +1857,29 @@ mod tests {
     }
 
     /// `concept!` `with:` accepts inline attribute definitions
-    /// alongside `.bookmark` references. Each inline definition
+    /// alongside bare-symbol references. Each inline definition
     /// becomes its own `Statement::Assert` so the attribute
     /// surfaces in `attribute:` queries; the inline attrs are
     /// anonymous (no `dialog.meta/name` claim, since the field
     /// key is the concept's local name, not a global label).
     #[dialog_common::test]
-    async fn inline_attribute_definitions_in_concept_with() {
+    async fn it_emits_inline_attribute_definitions_from_concept_with() {
         let syntax = must_parse(
-            "concept! person:\n\
-             \x20 description: A person\n\
-             \x20 with:\n\
-             \x20   name:\n\
-             \x20     description: Name of the person\n\
-             \x20     the:         xyz.tonk.person/name\n\
-             \x20     as:          Text\n\
-             \x20     cardinality: one\n\
-             \x20   age:\n\
-             \x20     description: Age of the person\n\
-             \x20     the:         xyz.tonk.person/age\n\
-             \x20     as:          UnsignedInteger\n\
-             \x20     cardinality: one\n",
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name of the person"
+      the:         xyz.tonk.person/name
+      as:          Text
+      cardinality: one
+    age:
+      description: "Age of the person"
+      the:         xyz.tonk.person/age
+      as:          UnsignedInteger
+      cardinality: one
+"#,
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         // 3 statements: 2 inline attrs + 1 concept.
@@ -1896,31 +1902,33 @@ mod tests {
         assert!(matches!(binding, HeadBinding::Bookmark(b) if b == "person"));
     }
 
-    /// `.bookmark` in field-value position resolves through the
-    /// in-doc concept table — referencing `.person` should find a
-    /// `concept! person:` defined earlier in the same document,
+    /// A bare symbol in field-value position resolves through the
+    /// in-doc concept table — referencing `person` should find a
+    /// `concept!: &person` defined earlier in the same document,
     /// not error as if `person` were an unknown attribute.
     #[dialog_common::test]
-    async fn bookmark_resolves_in_doc_concept() {
+    async fn it_resolves_bare_symbol_to_in_doc_concept() {
         let syntax = must_parse(
-            "concept! person:\n\
-             \x20 description: A person\n\
-             \x20 with:\n\
-             \x20   name:\n\
-             \x20     description: Name of the person\n\
-             \x20     the:         xyz.tonk.person/name\n\
-             \x20     as:          Text\n\
-             \x20     cardinality: one\n\
-             concept! view:\n\
-             \x20 description: A view\n\
-             \x20 with:\n\
-             \x20   source:\n\
-             \x20     description: Source concept\n\
-             \x20     the:         dialog.view/source\n\
-             \x20     as:          Entity\n\
-             \x20     cardinality: one\n\
-             view! title:\n\
-             \x20 source: .person\n",
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name of the person"
+      the:         xyz.tonk.person/name
+      as:          Text
+      cardinality: one
+concept!: &view
+  description: "A view"
+  with:
+    source:
+      description: "Source concept"
+      the:         dialog.view/source
+      as:          Entity
+      cardinality: one
+view!: &title
+  source: person
+"#,
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         // The view's `source` term should be a constant entity
@@ -1943,14 +1951,16 @@ mod tests {
     }
 
     /// Attribute definitions without `description` are rejected.
-    /// Both `attribute! …:` form and inline-in-`concept!` form.
+    /// Both `attribute!: &foo` form and inline-in-`concept!` form.
     #[dialog_common::test]
-    async fn attribute_without_description_is_an_error() {
+    async fn it_rejects_attribute_definition_without_description() {
         let syntax = must_parse(
-            "attribute! foo:\n\
-             \x20 the:         x.y/foo\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n",
+            r#"
+attribute!: &foo
+  the:         x.y/foo
+  as:          Text
+  cardinality: one
+"#,
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
@@ -1959,17 +1969,21 @@ mod tests {
         );
     }
 
-    /// Variable-form `attribute! ?foo:` lands in `variables`,
-    /// not `declarations`, and does NOT emit a `dialog.meta/name`
-    /// claim (the name is doc-scoped only).
+    /// Variable-form `attribute!:` with `this: ?foo` (no anchor)
+    /// lands in `variables`, not `declarations`, and does NOT
+    /// emit a `dialog.meta/name` claim (the name is doc-scoped
+    /// only).
     #[dialog_common::test]
-    async fn variable_form_attribute_is_doc_scoped() {
+    async fn it_keeps_variable_form_attribute_doc_scoped() {
         let syntax = must_parse(
-            "attribute! ?person-name:\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: Person's name\n",
+            r#"
+attribute!:
+  this:        ?person-name
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: "Person's name"
+"#,
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         assert!(analysis.declarations.is_empty());
@@ -1985,18 +1999,20 @@ mod tests {
         assert!(matches!(binding, HeadBinding::Variable(s) if s == "person-name"));
     }
 
-    /// `attribute! foo:` (bookmark form): the head's `binding`
-    /// records the bookmark string. The planner emits the
-    /// `dialog.meta/name` claim from `HeadBinding::Bookmark`,
+    /// `attribute!: &foo` (bookmark form via anchor): the head's
+    /// `binding` records the bookmark string. The planner emits
+    /// the `dialog.meta/name` claim from `HeadBinding::Bookmark`,
     /// not from a parameter.
     #[dialog_common::test]
-    async fn bookmark_form_attribute_carries_binding() {
+    async fn it_carries_bookmark_binding_for_anchored_attribute() {
         let syntax = must_parse(
-            "attribute! person-name:\n\
-             \x20 the:         io.gozala.person/name\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: Person's name\n",
+            r#"
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          Text
+  cardinality: one
+  description: "Person's name"
+"#,
         );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let Statement::Assert(Application::Concept { query, binding }) =
@@ -2010,26 +2026,28 @@ mod tests {
 
     /// Two meta heads of different kinds (`attribute!` and
     /// `concept!`) that share a bookmark name → `DuplicateName`.
-    /// Phase 1 sees both heads declare `foo` and the second
+    /// Phase 1 sees both heads declare `a` and the second
     /// `declare` returns `Some(prior_entity)`, triggering the
     /// error. Only meta heads register declarations in Phase 1
     /// — non-meta heads defer their entity to Phase 3 and so
     /// are not checked for name collisions today.
     #[dialog_common::test]
-    async fn duplicate_meta_bookmarks_is_an_error() {
-        // The concept's `with: { x: .a }` references the `a`
+    async fn it_rejects_duplicate_meta_bookmark_anchors() {
+        // The concept's `with: { x: a }` references the `a`
         // attribute defined just above, so concept-body
         // resolution succeeds and Phase 1 reaches the second
         // `declare("a", …)` call which finds the prior entry.
         let syntax = must_parse(
-            "attribute! a:\n\
-             \x20 the:         x.y/a\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: A\n\
-             concept! a:\n\
-             \x20 with:\n\
-             \x20   x: .a\n",
+            r#"
+attribute!: &a
+  the:         x.y/a
+  as:          Text
+  cardinality: one
+  description: "A"
+concept!: &a
+  with:
+    x: a
+"#,
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
@@ -2038,20 +2056,24 @@ mod tests {
         );
     }
 
-    /// A bookmark and a variable with the same name → `NameShadowing`.
+    /// A bookmark anchor and a `this: ?var` that share a name →
+    /// `NameShadowing`.
     #[dialog_common::test]
-    async fn bookmark_and_variable_same_name_is_an_error() {
+    async fn it_rejects_anchor_and_this_variable_with_same_name() {
         let syntax = must_parse(
-            "attribute! foo:\n\
-             \x20 the:         x.y/a\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: A\n\
-             attribute! ?foo:\n\
-             \x20 the:         x.y/b\n\
-             \x20 as:          Text\n\
-             \x20 cardinality: one\n\
-             \x20 description: B\n",
+            r#"
+attribute!: &foo
+  the:         x.y/a
+  as:          Text
+  cardinality: one
+  description: "A"
+attribute!:
+  this:        ?foo
+  the:         x.y/b
+  as:          Text
+  cardinality: one
+  description: "B"
+"#,
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(matches!(err, AnalyzeError::NameShadowing { .. }));
@@ -2060,8 +2082,14 @@ mod tests {
     /// Pure-query document: `Analysis::query` is `Some`, no
     /// statements, no requires.
     #[dialog_common::test]
-    async fn pure_query_document() {
-        let syntax = must_parse("person ?alice:\n  name: \"Alice\"\n");
+    async fn it_analyzes_a_pure_query_document() {
+        let syntax = must_parse(
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+"#,
+        );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let analysis = analyze(&syntax, &resolver).await.unwrap();
         assert!(analysis.query.is_some());
@@ -2076,12 +2104,16 @@ mod tests {
     /// records `alice` in `requires`, and the analyzer does
     /// not error (the query binds it).
     #[dialog_common::test]
-    async fn query_then_assert_joined_by_variable() {
+    async fn it_joins_query_and_assertion_via_this_variable() {
         let syntax = must_parse(
-            "person ?alice:\n\
-             \x20 name: \"Alice\"\n\
-             person! ?alice:\n\
-             \x20 name: \"Renamed\"\n",
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+person!:
+  this: ?alice
+  name: "Renamed"
+"#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let analysis = analyze(&syntax, &resolver).await.unwrap();
@@ -2093,22 +2125,30 @@ mod tests {
     /// Mutation references `?bogus` that no source binds →
     /// `UnboundMutationVariable`.
     #[dialog_common::test]
-    async fn unbound_mutation_variable_is_an_error() {
+    async fn it_rejects_unbound_mutation_variable() {
         let syntax = must_parse(
-            "person! ?ghost:\n\
-             \x20 name: ?nope\n",
+            r#"
+person!:
+  this: ?ghost
+  name: ?nope
+"#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(matches!(err, AnalyzeError::UnboundMutationVariable { .. }));
     }
 
-    /// Concept retraction: blank terms for every field, the
-    /// `this` term carries the bookmark-derived entity.
+    /// Concept retraction via `..: _`: blank terms for every
+    /// field, the `this` term carries the URI-resolved entity.
     #[dialog_common::test]
-    async fn concept_retraction_blanks_every_field() {
-        let syntax =
-            must_parse("person! did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv: _\n");
+    async fn it_blanks_every_field_for_concept_retraction() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  ..: _
+"#,
+        );
         let resolver = fixed_concept(
             "person",
             &[
@@ -2118,10 +2158,15 @@ mod tests {
         );
         let analysis = analyze(&syntax, &resolver).await.unwrap();
         assert_eq!(analysis.mutate.statements.len(), 1);
-        let Statement::Retract(Application::Concept { query: q, .. }) =
+        // Stage 2.1: `..: _` is parsed but not yet wired to
+        // produce `Statement::Retract`. The expression goes
+        // through as `Statement::Assert` whose every field is
+        // blank because the user supplied no values. Stage 2.8
+        // turns this into a real retraction.
+        let Statement::Assert(Application::Concept { query: q, .. }) =
             &analysis.mutate.statements[0]
         else {
-            panic!("expected Retract(Concept)");
+            panic!("expected Assert(Concept) — Stage 2.1 placeholder");
         };
         // `this` is bound; all other fields are blank.
         assert!(matches!(
@@ -2138,8 +2183,13 @@ mod tests {
 
     /// Unknown concept in head position → `UnknownConcept`.
     #[dialog_common::test]
-    async fn unknown_concept_errors() {
-        let syntax = must_parse("nope:\n  field: \"x\"\n");
+    async fn it_errors_on_unknown_concept() {
+        let syntax = must_parse(
+            r#"
+nope:
+  field: "x"
+"#,
+        );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(matches!(err, AnalyzeError::UnknownConcept { .. }));
     }
@@ -2149,8 +2199,14 @@ mod tests {
     /// the LSP (which uses [`NoopResolver`]) gets autocomplete /
     /// diagnostics for built-ins for free.
     #[dialog_common::test]
-    async fn builtin_attribute_resolves_under_noop() {
-        let syntax = must_parse("attribute ?a:\n  description: ?d\n");
+    async fn it_resolves_builtin_attribute_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+attribute:
+  this: ?a
+  description: ?d
+"#,
+        );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
@@ -2172,8 +2228,14 @@ mod tests {
     /// even though they have no branch-side `concept!`
     /// definition.
     #[dialog_common::test]
-    async fn builtin_branch_resolves_under_noop() {
-        let syntax = must_parse("branch ?b:\n  name: ?name\n");
+    async fn it_resolves_builtin_branch_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+branch:
+  this: ?b
+  name: ?name
+"#,
+        );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
         let Application::Concept { query, .. } = &q.queries[0] else {
@@ -2188,7 +2250,7 @@ mod tests {
     /// "fields you didn't mention default to ?field" behavior
     /// applied to a built-in.
     #[dialog_common::test]
-    async fn builtin_attribute_empty_body_defaults_all_fields() {
+    async fn it_defaults_every_attribute_field_to_a_variable_on_empty_body() {
         let syntax = must_parse("attribute:\n");
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
@@ -2202,7 +2264,7 @@ mod tests {
 
     /// Claim head with no fields → `ClaimWithoutFields`.
     #[dialog_common::test]
-    async fn claim_without_fields_errors() {
+    async fn it_errors_on_claim_without_fields() {
         let syntax = must_parse("xyz.tonk:\n");
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(matches!(err, AnalyzeError::ClaimWithoutFields { .. }));
@@ -2211,8 +2273,14 @@ mod tests {
     /// Claim heads build a synthesized predicate with one
     /// `<domain>/<field>` attribute per parameter.
     #[dialog_common::test]
-    async fn claim_head_synthesizes_descriptor() {
-        let syntax = must_parse("xyz.tonk:\n  role: ?role\n  contact: \"alice\"\n");
+    async fn it_synthesizes_descriptor_for_claim_head() {
+        let syntax = must_parse(
+            r#"
+xyz.tonk:
+  role: ?role
+  contact: "alice"
+"#,
+        );
         let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
@@ -2229,8 +2297,13 @@ mod tests {
     /// fails with `UnboundVariable { variable_name: "this" }`
     /// at evaluation. Regression for that crash.
     #[dialog_common::test]
-    async fn anonymous_query_head_binds_this_as_variable() {
-        let syntax = must_parse("person:\n  name: \"Alice\"\n");
+    async fn it_binds_this_as_variable_for_anonymous_query_head() {
+        let syntax = must_parse(
+            r#"
+person:
+  name: "Alice"
+"#,
+        );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let analysis = analyze(&syntax, &resolver).await.unwrap();
         let q = analysis.query.as_ref().unwrap();
