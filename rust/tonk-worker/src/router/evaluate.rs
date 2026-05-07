@@ -152,7 +152,10 @@ pub async fn evaluate(
 
     let analysis = analyzer::analyze(&syntax, &resolver).await.map_err(|e| {
         log!("Analyzer rejected document: {e}");
-        TonkWorkerError::Router(e.to_string())
+        // Preserve structure (code + range) so the editor can
+        // attach the diagnostic to the offending source span
+        // instead of rendering a banner.
+        TonkWorkerError::from(e)
     })?;
 
     let revision_before = branch.handle().revision();

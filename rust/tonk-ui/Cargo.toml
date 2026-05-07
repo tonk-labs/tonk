@@ -27,6 +27,7 @@ js-sys = { workspace = true }
 leptos = { workspace = true, features = ["csr"] }
 leptos_router = { workspace = true }
 leptos-use = { workspace = true }
+lsp-types = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 send_wrapper = { workspace = true }

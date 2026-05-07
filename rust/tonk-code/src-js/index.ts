@@ -83,7 +83,11 @@ import {
   syntaxHighlighting,
   HighlightStyle,
 } from "@codemirror/language";
-import { forEachDiagnostic } from "@codemirror/lint";
+import {
+  forEachDiagnostic,
+  setDiagnostics,
+  type Diagnostic as CmDiagnostic,
+} from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
 import type { LSPClient } from "@codemirror/lsp-client";
 import { connectLsp } from "./lsp/client";
@@ -119,6 +123,56 @@ export type DiagnosticsDetail = {
    *  are warnings, info, hints — those should not block submit. */
   errorCount: number;
 };
+
+/** LSP-shaped diagnostic accepted by `setExternalDiagnostics`.
+ *  Mirrors the relevant subset of `lsp.Diagnostic`. */
+export type ExternalDiagnostic = {
+  range: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
+  /** LSP severity numbers: 1 = Error, 2 = Warning, 3 = Info,
+   *  4 = Hint. Defaults to Error when omitted. */
+  severity?: number;
+  /** Stable code (e.g. `E_INCOMPLETE_ASSERTION`). Carried into
+   *  the CodeMirror diagnostic but not currently displayed. */
+  code?: string;
+  message: string;
+  /** Source label shown in the lint tooltip. Defaults to
+   *  `"tonk-worker"`. */
+  source?: string;
+};
+
+/** Resolve an LSP `Position` (line + UTF-16 character) into a
+ *  CodeMirror document offset. Returns `null` when the position
+ *  is past the end of the document (the worker may report a
+ *  range that no longer exists if the buffer has been edited
+ *  since the request was sent — drop those rather than crash). */
+function positionToOffset(
+  doc: import("@codemirror/state").Text,
+  position: { line: number; character: number },
+): number | null {
+  // CodeMirror lines are 1-indexed; LSP lines are 0-indexed.
+  const lineNumber = position.line + 1;
+  if (lineNumber < 1 || lineNumber > doc.lines) return null;
+  const line = doc.line(lineNumber);
+  return Math.min(line.from + position.character, line.to);
+}
+
+/** Map LSP severity numbers to CodeMirror's string literals. */
+function lspToCmSeverity(severity: number | undefined): CmDiagnostic["severity"] {
+  switch (severity) {
+    case 2:
+      return "warning";
+    case 3:
+      return "info";
+    case 4:
+      return "hint";
+    case 1:
+    default:
+      return "error";
+  }
+}
 
 const OBSERVED = [
   "value",
@@ -927,6 +981,38 @@ class TonkCodeElement extends HTMLElement {
    *  changed and the server needs to see a new `languageId`). */
   #rebuildLspNow(): void {
     this.#connectLsp();
+  }
+
+  /** Replace any externally-pushed diagnostics on the editor.
+   *  Used by callers (the Tonk UI) to surface analyzer errors
+   *  returned by the worker as squiggles on the buffer instead
+   *  of as a banner. Pass an empty array to clear.
+   *
+   *  Diagnostics are LSP-shaped (`range`, `severity`, `code`,
+   *  `message`); the editor maps them onto CodeMirror's lint
+   *  state. The LSP client's own `publishDiagnostics` flow is
+   *  separate — those go through the client extension and
+   *  aren't affected here.
+   *
+   *  Diagnostics with no `range` are silently dropped (the
+   *  lint plugin can't render them without a position). */
+  setExternalDiagnostics(diagnostics: ExternalDiagnostic[]): void {
+    const view = this.#view;
+    if (!view) return;
+    const cm: CmDiagnostic[] = [];
+    for (const d of diagnostics) {
+      const from = positionToOffset(view.state.doc, d.range.start);
+      const to = positionToOffset(view.state.doc, d.range.end);
+      if (from === null || to === null) continue;
+      cm.push({
+        from,
+        to: Math.max(from, to),
+        severity: lspToCmSeverity(d.severity),
+        message: d.message,
+        source: d.source ?? "tonk-worker",
+      });
+    }
+    view.dispatch(setDiagnostics(view.state, cm));
   }
 
   /** Current document text. */

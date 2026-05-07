@@ -14,6 +14,7 @@ use crate::{
     api,
     components::{ActiveSubject, HostId, InviteSpace, Status},
     did,
+    error::TonkUiError,
 };
 
 /// The currently-running (or last-completed) sync operation for a
@@ -460,11 +461,26 @@ pub(super) fn BranchRow(
                 }
                 match api::evaluate(&repo, &branch_name, body, "application/yaml").await {
                     Ok(response) => {
+                        // Drop any prior squiggles from a
+                        // previous failed submit — the doc is
+                        // good now.
+                        clear_external_diagnostics();
                         last_response.set(Some(Box::new(response)));
                         transact_state.set(TransactState::Idle);
                     }
                     Err(err) => {
-                        transact_state.set(TransactState::Failed(format!("{err}")));
+                        // Structured analyzer rejection: push
+                        // it onto the editor as a squiggle,
+                        // not a banner. The editor's own
+                        // `diagnostics` event will then keep
+                        // the play button hidden until the
+                        // user fixes it.
+                        if matches!(&err, TonkUiError::Analyze { .. }) {
+                            push_external_diagnostic(&err);
+                            transact_state.set(TransactState::Idle);
+                        } else {
+                            transact_state.set(TransactState::Failed(format!("{err}")));
+                        }
                     }
                 }
             });
@@ -764,6 +780,126 @@ fn read_tonk_code_value(event: &leptos::ev::Event) -> String {
                 .and_then(|v| v.as_string())
         })
         .unwrap_or_default()
+}
+
+/// Push an analyzer diagnostic onto the live `<tonk-code>` editor
+/// so the worker's structured rejections surface as squiggles on
+/// the buffer rather than as a banner. The element exposes a
+/// `setExternalDiagnostics(diagnostics: lsp.Diagnostic[])` method
+/// (see `rust/tonk-code/src-js/index.ts`); we look it up
+/// reflectively because there's no Rust type for the custom
+/// element.
+///
+/// Pass an empty slice to clear externally-pushed diagnostics —
+/// the LSP client's own publishDiagnostics flow is unaffected.
+fn push_external_diagnostic(error: &TonkUiError) {
+    let document = match window().document() {
+        Some(d) => d,
+        None => return,
+    };
+    let element = match document.query_selector("tonk-code").ok().flatten() {
+        Some(el) => el,
+        None => return,
+    };
+    let setter = match js_sys::Reflect::get(
+        &element,
+        &wasm_bindgen::JsValue::from_str("setExternalDiagnostics"),
+    ) {
+        Ok(v) if v.is_function() => v,
+        _ => return,
+    };
+    let setter = match setter.dyn_into::<js_sys::Function>() {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let diagnostics = js_sys::Array::new();
+    if let TonkUiError::Analyze {
+        code,
+        message,
+        range,
+    } = error
+        && let Some(range) = range
+    {
+        let entry = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &entry,
+            &wasm_bindgen::JsValue::from_str("range"),
+            &lsp_range_to_js(*range),
+        );
+        // LSP severity 1 = Error.
+        let _ = js_sys::Reflect::set(
+            &entry,
+            &wasm_bindgen::JsValue::from_str("severity"),
+            &wasm_bindgen::JsValue::from_f64(1.0),
+        );
+        let _ = js_sys::Reflect::set(
+            &entry,
+            &wasm_bindgen::JsValue::from_str("code"),
+            &wasm_bindgen::JsValue::from_str(code),
+        );
+        let _ = js_sys::Reflect::set(
+            &entry,
+            &wasm_bindgen::JsValue::from_str("message"),
+            &wasm_bindgen::JsValue::from_str(message),
+        );
+        diagnostics.push(&entry);
+    }
+    let _ = setter.call1(&element, &diagnostics);
+}
+
+fn lsp_range_to_js(range: lsp_types::Range) -> wasm_bindgen::JsValue {
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &wasm_bindgen::JsValue::from_str("start"),
+        &lsp_position_to_js(range.start),
+    );
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &wasm_bindgen::JsValue::from_str("end"),
+        &lsp_position_to_js(range.end),
+    );
+    obj.into()
+}
+
+fn lsp_position_to_js(position: lsp_types::Position) -> wasm_bindgen::JsValue {
+    let obj = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &wasm_bindgen::JsValue::from_str("line"),
+        &wasm_bindgen::JsValue::from_f64(position.line as f64),
+    );
+    let _ = js_sys::Reflect::set(
+        &obj,
+        &wasm_bindgen::JsValue::from_str("character"),
+        &wasm_bindgen::JsValue::from_f64(position.character as f64),
+    );
+    obj.into()
+}
+
+/// Clear all externally-pushed diagnostics on the live editor.
+/// Called when the user successfully runs after a previous
+/// rejection — we don't want last submit's red squiggle hanging
+/// around once the doc is good.
+fn clear_external_diagnostics() {
+    let document = match window().document() {
+        Some(d) => d,
+        None => return,
+    };
+    let element = match document.query_selector("tonk-code").ok().flatten() {
+        Some(el) => el,
+        None => return,
+    };
+    let setter = match js_sys::Reflect::get(
+        &element,
+        &wasm_bindgen::JsValue::from_str("setExternalDiagnostics"),
+    ) {
+        Ok(v) if v.is_function() => v,
+        _ => return,
+    };
+    if let Ok(setter) = setter.dyn_into::<js_sys::Function>() {
+        let _ = setter.call1(&element, &js_sys::Array::new());
+    }
 }
 
 /// Render the status surface below the editor.

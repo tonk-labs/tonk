@@ -1,6 +1,7 @@
 use dialog_remote_ucan_s3::UcanAddress;
 use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
+use serde::Deserialize;
 use tonk_worker::{
     BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
     IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
@@ -8,6 +9,24 @@ use tonk_worker::{
 };
 
 use crate::error::TonkUiError;
+
+/// Mirrors the worker's error envelope so we can decode
+/// structured rejections (analyzer code + range) instead of
+/// stringifying the response body.
+#[derive(Deserialize)]
+struct ErrorBody {
+    error: ErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct ErrorDetail {
+    kind: String,
+    message: String,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    range: Option<lsp_types::Range>,
+}
 
 /// Default repository name used by the UI.
 pub const DEFAULT_REPO: &str = "home";
@@ -293,6 +312,33 @@ pub async fn evaluate(
                 repo, branch
             ))
         }),
+        StatusCode::BAD_REQUEST => {
+            let text = response.text().await.unwrap_or_default();
+            // The worker emits a structured error body for
+            // analyzer rejections (`{"error":{"kind":"analyze",
+            // "code":"E_…","message":"…","range":{…}}}`). Try
+            // to decode it so the editor can route it as a
+            // diagnostic with proper position.
+            match serde_json::from_str::<ErrorBody>(&text) {
+                Ok(ErrorBody {
+                    error:
+                        ErrorDetail {
+                            kind,
+                            code: Some(code),
+                            message,
+                            range,
+                        },
+                }) if kind == "analyze" => Err(TonkUiError::Analyze {
+                    code,
+                    message,
+                    range,
+                }),
+                _ => Err(TonkUiError::ApiError(format!(
+                    "POST /api/repository/{}/branch/{}/evaluate returned 400: {}",
+                    repo, branch, text
+                ))),
+            }
+        }
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
