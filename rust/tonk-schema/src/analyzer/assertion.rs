@@ -1,0 +1,286 @@
+//! Assertion-side analysis — `build_assertion_application`,
+//! `derive_head_intent`, and the entity-derivation helpers
+//! (`this_term_for_assertion`, `body_digest`).
+
+use std::collections::BTreeMap;
+
+use dialog_artifacts::{Entity, Value};
+use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
+use tonk_notation::{Anchor, Assertion, Field, FieldValue, HeadName, Scalar};
+
+use super::error::AnalyzeError;
+use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
+use super::resolver::Resolver;
+use super::scope::Scope;
+use crate::prelude::EntityExt;
+use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
+
+pub(crate) async fn build_assertion_application<R: Resolver>(
+    assertion: &Assertion,
+    scope: &Scope<'_, R>,
+    analysis: &mut Analysis,
+) -> Result<Application, AnalyzeError> {
+    let head_label = match &assertion.head.name {
+        HeadName::Concept(name) => name.clone(),
+        HeadName::Claim(domain) => domain.clone(),
+        HeadName::Uri(uri) => uri.clone(),
+    };
+
+    if assertion.fields.is_empty() {
+        return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
+    }
+
+    let (this, name) = derive_head_intent(&assertion.fields, assertion.anchor.as_ref())?;
+    let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis)?;
+
+    match &assertion.head.name {
+        HeadName::Concept(concept_name) => {
+            let resolved = scope
+                .resolve_concept(concept_name)
+                .await
+                .map_err(|e| AnalyzeError::ResolverFailed {
+                    context: format!("concept {concept_name:?}"),
+                    reason: e.message,
+                })?
+                .ok_or_else(|| AnalyzeError::UnknownConcept {
+                    name: concept_name.clone(),
+                })?;
+            let mut terms = Parameters::new();
+            terms.insert("this".into(), this_term);
+            let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
+            for field in &assertion.fields {
+                if is_meta_field(&field.name) {
+                    continue;
+                }
+                user_fields.insert(field.name.as_str(), &field.value);
+            }
+            for (field_name, _attr) in resolved.descriptor.with().iter() {
+                let Some(value) = user_fields.remove(field_name) else {
+                    // Field omitted — leave a blank so the
+                    // emitter skips it on assert.
+                    terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                    continue;
+                };
+                let term = field_value_to_term(field_name, value, scope, analysis).await?;
+                terms.insert(field_name.into(), term);
+            }
+            if let Some((unknown, _)) = user_fields.into_iter().next() {
+                return Err(AnalyzeError::UnknownField {
+                    concept: concept_name.clone(),
+                    field: unknown.to_owned(),
+                });
+            }
+            Ok(Application::Concept {
+                query: ConceptQuery {
+                    terms,
+                    predicate: resolved.descriptor,
+                },
+                this,
+                name,
+            })
+        }
+        HeadName::Claim(domain) => {
+            let mut parameters = Parameters::new();
+            parameters.insert("this".into(), this_term);
+            for field in &assertion.fields {
+                if is_meta_field(&field.name) {
+                    continue;
+                }
+                validate_claim_attribute(domain, &field.name)?;
+                let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
+                parameters.insert(field.name.clone(), term);
+            }
+            Ok(Application::Domain {
+                application: DomainApplication {
+                    domain: domain.clone(),
+                    parameters,
+                },
+                this,
+                name,
+            })
+        }
+        HeadName::Uri(uri) => Err(AnalyzeError::UnsupportedFieldValue {
+            field: uri.clone(),
+            form: "URI head in assertion (not yet implemented in Stage 2.1)",
+        }),
+    }
+}
+
+/// Derive the head's source-form intent — `(ThisIntent, name)`
+/// — from an expression's body and optional value-side anchor.
+///
+/// Under the new grammar the head carries no binding token; the
+/// two intent axes live in the body and value side:
+///
+/// - **Entity selection** — the body's `this:` field. Mapping:
+///   - omitted → [`ThisIntent::Derived`]
+///   - `?var` → [`ThisIntent::Variable(var)`]
+///   - `did:key:…` / `id:…` / `db:…` → [`ThisIntent::Uri(entity)`]
+///   - bare symbol → name lookup; Stage 2.4 will resolve through
+///     the name table. Today: error.
+///
+/// - **Naming** — the `&name` on the value side, captured by the
+///   parser as `Anchor`. Returned as `Some(name)` when present.
+///
+/// The two are independent: every combination is meaningful
+/// (e.g. `person!: &alice\n  this: did:key:zX` → publish `id:alice`
+/// pointing at zX without producing a new entity).
+pub(crate) fn derive_head_intent(
+    fields: &[Field],
+    anchor: Option<&Anchor>,
+) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
+    let name = anchor.map(|a| a.name.clone());
+    let this = match fields.iter().find(|f| f.name == "this") {
+        None => ThisIntent::Derived,
+        Some(field) => match &field.value {
+            FieldValue::Variable(v) => ThisIntent::Variable(v.clone()),
+            FieldValue::Uri(uri) => {
+                let entity: Entity =
+                    uri.parse()
+                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                            AnalyzeError::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            }
+                        })?;
+                ThisIntent::Uri(entity)
+            }
+            FieldValue::Symbol(_)
+            | FieldValue::Literal(_)
+            | FieldValue::Blank
+            | FieldValue::Nested(_) => {
+                return Err(AnalyzeError::UnsupportedFieldValue {
+                    field: "this".into(),
+                    form: "expected `?var` or a URI (`did:key:…`, `id:…`, `db:…`); \
+                           bare-symbol name lookup arrives in Stage 2.4",
+                });
+            }
+        },
+    };
+    Ok((this, name))
+}
+
+/// What to put in the `this` slot of a mutation [`Application`].
+///
+/// Driven by the entity-selection axis (`this`) and the optional
+/// published name (`name`). The two axes are orthogonal — both
+/// can be present, both can be absent.
+///
+/// - `Derived` + no `name`: mint a body-content-derived entity.
+/// - `Derived` + `name`: body-derived entity. The
+///   `dialog.meta/name` claim on `id:<name>` is emitted by the
+///   planner from `ApplicationPlan::name`, not as a parameter
+///   on the predicate. Also registers the name → entity binding
+///   in `analysis.declarations` so duplicate-name checks across
+///   heads catch overlaps.
+/// - `Variable(name)` already in `analysis.variables`: substitute
+///   the registered entity.
+/// - `Variable(name)` not yet known: if there's no query
+///   binding for it, mint a body-derived entity and register it
+///   in `analysis.variables` so subsequent uses share the
+///   entity. If a query binding exists, leave as
+///   `Term::Variable` — planning will substitute from the
+///   query frame.
+/// - `Uri(entity)`: substitute directly. With `name`, this is
+///   the "publish a name pointing at an existing entity" form.
+fn this_term_for_assertion(
+    this: &ThisIntent,
+    name: &Option<String>,
+    fields: &[Field],
+    analysis: &mut Analysis,
+) -> Result<Term<dialog_query::Any>, AnalyzeError> {
+    Ok(match this {
+        ThisIntent::Derived => {
+            let entity = Entity::of(&body_digest(fields));
+            if let Some(name) = name {
+                if let Some(prior) = analysis.declarations.get(name)
+                    && prior != &entity
+                {
+                    return Err(AnalyzeError::DuplicateName { name: name.clone() });
+                }
+                analysis.declarations.insert(name.clone(), entity.clone());
+            }
+            Term::Constant(Value::Entity(entity))
+        }
+        ThisIntent::Variable(var) => {
+            if let Some(entity) = analysis.variables.get(var) {
+                Term::Constant(Value::Entity(entity.clone()))
+            } else if query_binds(analysis, var) {
+                // Bound at planning time from query results.
+                Term::<dialog_query::Any>::var(var)
+            } else {
+                // First introduction — mint a body-derived
+                // entity and register it for later expressions
+                // that share `?name`.
+                let entity = Entity::of(&body_digest(fields));
+                analysis.variables.insert(var.clone(), entity.clone());
+                Term::Constant(Value::Entity(entity))
+            }
+        }
+        ThisIntent::Uri(entity) => Term::Constant(Value::Entity(entity.clone())),
+    })
+}
+
+/// Hash-stable summary of an assertion body — pairs of
+/// `(field_name, FieldDigest)` sorted by name. Used by
+/// `Entity::of` to derive a content-addressed entity for
+/// `Derived` and unbound `Variable` heads.
+///
+/// Only literal scalars contribute. Variables, references, and
+/// blanks are skipped — they're not part of the entity's
+/// identity (they'd reference *other* entities, and including
+/// them in the hash would defeat the deterministic-rerun
+/// property).
+fn body_digest(fields: &[Field]) -> Vec<(String, FieldDigest)> {
+    let mut out: Vec<(String, FieldDigest)> = Vec::new();
+    for field in fields {
+        let digest = match &field.value {
+            FieldValue::Literal(scalar) => FieldDigest::from_scalar(scalar),
+            // Skip variables, references, blanks, nested.
+            _ => continue,
+        };
+        out.push((field.name.clone(), digest));
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// Serializable shadow of [`Scalar`] used only by
+/// [`body_digest`]. Round-trips the scalar's primitive value so
+/// `Entity::of` can hash it deterministically. Distinct from
+/// `Scalar` because we want a stable serde representation
+/// independent of any future surface-syntax changes.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum FieldDigest {
+    String(String),
+    Integer(i128),
+    UnsignedInteger(u128),
+    Float(f64),
+    Boolean(bool),
+    Null,
+}
+
+impl FieldDigest {
+    fn from_scalar(scalar: &Scalar) -> Self {
+        match scalar {
+            Scalar::String(s) => Self::String(s.clone()),
+            Scalar::Integer(i) => Self::Integer(*i),
+            Scalar::UnsignedInteger(u) => Self::UnsignedInteger(*u),
+            Scalar::Float(f) => Self::Float(*f),
+            Scalar::Boolean(b) => Self::Boolean(*b),
+            Scalar::Null => Self::Null,
+        }
+    }
+}
+
+/// Does `analysis.query` bind `?name`? Used by
+/// [`this_term_for_assertion`] to decide between minting a
+/// body-derived entity and leaving the variable for planning.
+fn query_binds(analysis: &Analysis, name: &str) -> bool {
+    analysis
+        .query
+        .as_ref()
+        .map(|q| q.bindings().contains(name))
+        .unwrap_or(false)
+}
