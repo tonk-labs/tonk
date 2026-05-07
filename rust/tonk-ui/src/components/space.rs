@@ -423,11 +423,15 @@ pub(super) fn BranchRow(
 
     // The play button is shown when:
     //  - the buffer is non-empty,
-    //  - the parser accepts it, *and*
-    //  - the LSP isn't showing any error-severity diagnostics.
-    // Structural errors (`AssertionWithoutFields` etc.) come
-    // back as LSP diagnostics; we use that count as the source
-    // of truth for "this won't run."
+    //  - the parser accepts it,
+    //  - the LSP isn't showing any error-severity diagnostics, *and*
+    //  - the document has at least one assertion (`head!:`).
+    // Pure-query documents auto-evaluate on idle so the play
+    // affordance only needs to surface when there's actually
+    // something to commit. Structural errors
+    // (`AssertionWithoutFields` etc.) come back as LSP
+    // diagnostics; we use that count as the source of truth for
+    // "this won't run."
     let is_runnable = Signal::derive(move || {
         let body = transact_buffer.get();
         if body.trim().is_empty() {
@@ -436,7 +440,10 @@ pub(super) fn BranchRow(
         if editor_error_count.get() > 0 {
             return false;
         }
-        matches!(classify_for_dispatch(&body), DocDispatch::Submit)
+        matches!(
+            classify_for_dispatch(&body),
+            DocDispatch::Submit { has_mutation: true }
+        )
     });
 
     // The actual evaluate call, fired from both the floating
@@ -471,7 +478,7 @@ pub(super) fn BranchRow(
                         transact_state.set(TransactState::Idle);
                         return;
                     }
-                    DocDispatch::Submit => {}
+                    DocDispatch::Submit { .. } => {}
                 }
                 // Explicit submit (play button / Shift+Enter) is
                 // a real commit — the user asked for it.
@@ -742,12 +749,12 @@ pub(super) fn BranchRow(
                             appearance="filled"
                             size="small"
                             pill
-                            title="Run (Shift+Enter)"
+                            title="Submit transaction (Shift+Enter)"
                             prop:loading=move ||
                                 matches!(transact_state.get(), TransactState::Running)
                             on:click=on_play_click
                         >
-                            <wa-icon name="play" variant="solid"></wa-icon>
+                            <wa-icon name="paper-plane" variant="solid"></wa-icon>
                         </wa-button>
                     </div>
                     { move || render_transact_state(transact_state.get(), last_response.get()) }
@@ -821,9 +828,11 @@ enum TransactState {
 /// here.
 enum DocDispatch {
     /// Parser accepted the buffer and there's at least one
-    /// expression. The play button shows; on click, the worker
-    /// gets the real say.
-    Submit,
+    /// expression. `has_mutation` is true if any expression is
+    /// an assertion (`head!:`) — the play button only surfaces
+    /// when there's something to commit; pure-query documents
+    /// auto-evaluate on idle and don't need the affordance.
+    Submit { has_mutation: bool },
     /// Empty / whitespace-only document.
     Empty,
     /// Parser raised diagnostics.
@@ -845,10 +854,13 @@ fn classify_for_dispatch(body: &str) -> DocDispatch {
         return DocDispatch::Empty;
     };
     if syntax.expressions.is_empty() {
-        DocDispatch::Empty
-    } else {
-        DocDispatch::Submit
+        return DocDispatch::Empty;
     }
+    let has_mutation = syntax
+        .expressions
+        .iter()
+        .any(|e| matches!(e, tonk_notation::Expression::Assertion(_)));
+    DocDispatch::Submit { has_mutation }
 }
 
 /// Read the `value` property off a `<tonk-code>` element from one
