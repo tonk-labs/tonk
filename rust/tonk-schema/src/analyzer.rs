@@ -27,6 +27,7 @@ use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, Parameters, Term, attribute::The as AttributeThe,
     concept::query::ConceptQuery,
 };
+use parking_lot::Mutex;
 use thiserror::Error;
 use tonk_notation::{Anchor, Assertion, Expression, Field, FieldValue, HeadName, Scalar, Syntax};
 
@@ -273,93 +274,67 @@ pub enum AnalyzeError {
 // In-document overlay resolver                                     //
 // ---------------------------------------------------------------- //
 
-/// Cell that stays Send + Sync on native (so async-trait
-/// futures hold across awaits in axum handlers) but stays
-/// single-threaded on wasm (no need for Mutex).
-#[cfg(not(target_arch = "wasm32"))]
-type Cell<T> = std::sync::Mutex<T>;
-#[cfg(target_arch = "wasm32")]
-type Cell<T> = std::cell::RefCell<T>;
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cell_borrow<T>(cell: &Cell<T>) -> std::sync::MutexGuard<'_, T> {
-    cell.lock().expect("Scope mutex is never poisoned")
-}
-#[cfg(target_arch = "wasm32")]
-fn cell_borrow<T>(cell: &Cell<T>) -> std::cell::Ref<'_, T> {
-    cell.borrow()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cell_borrow_mut<T>(cell: &Cell<T>) -> std::sync::MutexGuard<'_, T> {
-    cell.lock().expect("Scope mutex is never poisoned")
-}
-#[cfg(target_arch = "wasm32")]
-fn cell_borrow_mut<T>(cell: &Cell<T>) -> std::cell::RefMut<'_, T> {
-    cell.borrow_mut()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn cell_new<T>(value: T) -> Cell<T> {
-    std::sync::Mutex::new(value)
-}
-#[cfg(target_arch = "wasm32")]
-fn cell_new<T>(value: T) -> Cell<T> {
-    std::cell::RefCell::new(value)
-}
-
 /// Layered name index built during analysis. Phase 1 fills it in
-/// (bookmark/variable → entity, plus `concept!` definitions for
+/// (anchor/variable → entity, plus `concept!` definitions for
 /// later expressions in the same document); Phase 2 and 3 read
 /// from it.
+///
+/// Each map is wrapped in a `parking_lot::Mutex` so the analyzer
+/// can mutate the scope from inside `&self` methods (the same
+/// scope is shared across the analyzer's three phases). The
+/// guards are `Send`, so axum handlers stay happy on native; on
+/// wasm the runtime is single-threaded and the lock is
+/// uncontended. Critical sections never cross an `.await` —
+/// `lookup_entity` and `resolve_*` drop their guards before
+/// recursing into the inner resolver.
 struct Scope<'a, R: Resolver> {
     inner: &'a R,
-    /// Bookmark/variable → entity for non-meta head bindings
+    /// Anchor/variable → entity for non-meta head bindings
     /// (every head except `attribute!` / `concept!` whose
     /// declarations live in the dedicated maps below). One map
-    /// per source — bookmark vs variable — surfaced separately
+    /// per source — anchor vs variable — surfaced separately
     /// because `Analysis` keeps them separate.
-    declarations: Cell<HashMap<String, Entity>>,
-    variables: Cell<HashMap<String, Entity>>,
+    declarations: Mutex<HashMap<String, Entity>>,
+    variables: Mutex<HashMap<String, Entity>>,
     /// `attribute!` definitions made in the document, indexed by
-    /// the bookmark/variable name on the head. Used by later
+    /// the anchor/variable name on the head. Used by later
     /// `concept!` heads in the same document so their `with:`
-    /// map can resolve `.bookmark` / `?var` references against
+    /// map can resolve bare-symbol / `?var` references against
     /// uncommitted attributes.
-    in_doc_attributes: Cell<HashMap<String, ResolvedAttribute>>,
+    in_doc_attributes: Mutex<HashMap<String, ResolvedAttribute>>,
     /// `concept!` definitions made in the document, indexed by
-    /// the bookmark/variable name on the head. Used by later
-    /// `person! alice:` heads in the same document.
-    in_doc_concepts: Cell<HashMap<String, ResolvedConcept>>,
+    /// the anchor/variable name on the head. Used by later
+    /// `person!: &alice` heads in the same document.
+    in_doc_concepts: Mutex<HashMap<String, ResolvedConcept>>,
     /// Reverse index: attribute entity → resolved attribute.
     /// Used when a concept body references an attribute via URI
     /// instead of by name.
-    in_doc_attributes_by_entity: Cell<HashMap<String, ResolvedAttribute>>,
+    in_doc_attributes_by_entity: Mutex<HashMap<String, ResolvedAttribute>>,
     /// Reverse index: concept entity → resolved concept.
-    in_doc_concepts_by_entity: Cell<HashMap<String, ResolvedConcept>>,
+    in_doc_concepts_by_entity: Mutex<HashMap<String, ResolvedConcept>>,
 }
 
 impl<'a, R: Resolver> Scope<'a, R> {
     fn new(inner: &'a R) -> Self {
         Self {
             inner,
-            declarations: cell_new(HashMap::new()),
-            variables: cell_new(HashMap::new()),
-            in_doc_attributes: cell_new(HashMap::new()),
-            in_doc_concepts: cell_new(HashMap::new()),
-            in_doc_attributes_by_entity: cell_new(HashMap::new()),
-            in_doc_concepts_by_entity: cell_new(HashMap::new()),
+            declarations: Mutex::new(HashMap::new()),
+            variables: Mutex::new(HashMap::new()),
+            in_doc_attributes: Mutex::new(HashMap::new()),
+            in_doc_concepts: Mutex::new(HashMap::new()),
+            in_doc_attributes_by_entity: Mutex::new(HashMap::new()),
+            in_doc_concepts_by_entity: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Record a bookmark-form head's entity.
+    /// Record an anchor-form head's entity.
     fn declare(&self, name: &str, entity: Entity) -> Result<(), AnalyzeError> {
-        if cell_borrow(&self.variables).contains_key(name) {
+        if self.variables.lock().contains_key(name) {
             return Err(AnalyzeError::NameShadowing {
                 name: name.to_owned(),
             });
         }
-        let prior = cell_borrow_mut(&self.declarations).insert(name.to_owned(), entity);
+        let prior = self.declarations.lock().insert(name.to_owned(), entity);
         if prior.is_some() {
             return Err(AnalyzeError::DuplicateName {
                 name: name.to_owned(),
@@ -370,12 +345,12 @@ impl<'a, R: Resolver> Scope<'a, R> {
 
     /// Record a variable-form head's entity.
     fn bind_variable(&self, name: &str, entity: Entity) -> Result<(), AnalyzeError> {
-        if cell_borrow(&self.declarations).contains_key(name) {
+        if self.declarations.lock().contains_key(name) {
             return Err(AnalyzeError::NameShadowing {
                 name: name.to_owned(),
             });
         }
-        let prior = cell_borrow_mut(&self.variables).insert(name.to_owned(), entity);
+        let prior = self.variables.lock().insert(name.to_owned(), entity);
         if prior.is_some() {
             return Err(AnalyzeError::DuplicateName {
                 name: name.to_owned(),
@@ -388,36 +363,42 @@ impl<'a, R: Resolver> Scope<'a, R> {
     /// given declaration / variable name.
     fn record_attribute(&self, name: Option<&str>, attribute: ResolvedAttribute) {
         if let Some(name) = name {
-            cell_borrow_mut(&self.in_doc_attributes).insert(name.to_owned(), attribute.clone());
+            self.in_doc_attributes
+                .lock()
+                .insert(name.to_owned(), attribute.clone());
         }
-        cell_borrow_mut(&self.in_doc_attributes_by_entity)
+        self.in_doc_attributes_by_entity
+            .lock()
             .insert(attribute.entity.to_string(), attribute);
     }
 
     /// Record an in-document `concept!` definition.
     fn record_concept(&self, name: Option<&str>, concept: ResolvedConcept) {
         if let Some(name) = name {
-            cell_borrow_mut(&self.in_doc_concepts).insert(name.to_owned(), concept.clone());
+            self.in_doc_concepts
+                .lock()
+                .insert(name.to_owned(), concept.clone());
         }
-        cell_borrow_mut(&self.in_doc_concepts_by_entity)
+        self.in_doc_concepts_by_entity
+            .lock()
             .insert(concept.entity.to_string(), concept);
     }
 
-    /// Look up the entity bound to a `.bookmark` or `?var` name,
+    /// Look up the entity bound to an anchor or `?var` name,
     /// regardless of which side it lives on. Returns `None` if
     /// the name isn't known yet.
     fn lookup_entity(&self, name: &str) -> Option<Entity> {
-        if let Some(e) = cell_borrow(&self.declarations).get(name) {
+        if let Some(e) = self.declarations.lock().get(name) {
             return Some(e.clone());
         }
-        cell_borrow(&self.variables).get(name).cloned()
+        self.variables.lock().get(name).cloned()
     }
 
     async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
-        // Drop the borrow before awaiting the fallback resolver
-        // — holding a Mutex guard across an await would deadlock
-        // if the resolver came back to us.
-        if let Some(found) = cell_borrow(&self.in_doc_concepts).get(name).cloned() {
+        // Drop the lock before awaiting the fallback resolver —
+        // holding a guard across an await could deadlock if the
+        // resolver came back to us.
+        if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Ok(Some(found));
         }
         if let Some(found) = crate::builtin::lookup_concept(name) {
@@ -426,13 +407,13 @@ impl<'a, R: Resolver> Scope<'a, R> {
         self.inner.resolve_concept(name).await
     }
 
-    /// Resolve a `.bookmark` to *any* in-doc or branch entity
+    /// Resolve a bare symbol to *any* in-doc or branch entity
     /// with that name. Used by [`field_value_to_term`] when the
-    /// bookmark doesn't match an attribute — concepts and
+    /// symbol doesn't match an attribute — concepts and
     /// previously-asserted instances also have
     /// `dialog.meta/name` claims and should be reachable.
     async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
-        if let Some(found) = cell_borrow(&self.in_doc_concepts).get(name).cloned() {
+        if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Ok(Some(found.entity));
         }
         self.inner.resolve_named_entity(name).await
@@ -442,7 +423,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
         &self,
         name: &str,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
-        if let Some(found) = cell_borrow(&self.in_doc_attributes).get(name).cloned() {
+        if let Some(found) = self.in_doc_attributes.lock().get(name).cloned() {
             return Ok(Some(found));
         }
         self.inner.resolve_attribute(name).await
@@ -453,10 +434,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
         entity: &Entity,
     ) -> Result<Option<ResolvedAttribute>, ResolverError> {
         let key = entity.to_string();
-        if let Some(found) = cell_borrow(&self.in_doc_attributes_by_entity)
-            .get(&key)
-            .cloned()
-        {
+        if let Some(found) = self.in_doc_attributes_by_entity.lock().get(&key).cloned() {
             return Ok(Some(found));
         }
         self.inner.resolve_attribute_by_entity(entity).await
@@ -610,8 +588,8 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
 
     // ---- Phase 2: build query Applications ----
     let mut analysis = Analysis {
-        declarations: cell_borrow(&scope.declarations).clone(),
-        variables: cell_borrow(&scope.variables).clone(),
+        declarations: scope.declarations.lock().clone(),
+        variables: scope.variables.lock().clone(),
         ..Analysis::default()
     };
 
