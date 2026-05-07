@@ -12,7 +12,7 @@
 //!
 //! When no URL is provided, self-provisions an upstream for the space.
 
-use crate::remote_cmd::HIDDEN_BRANCH;
+use crate::remote_cmd;
 use crate::site::Site;
 use anyhow::{Context, Result};
 use dialog_remote_ucan_s3::UcanAddress;
@@ -89,25 +89,30 @@ pub async fn execute(
     if let Some(ref remote_url) = remote_url {
         eprintln!("Configuring sync remote...");
 
-        let remote = site
-            .repo
+        let site_address = SiteAddress::Ucan(UcanAddress::new(remote_url.as_str()));
+
+        site.repo
             .remote("origin")
-            .create(SiteAddress::Ucan(UcanAddress::new(remote_url.as_str())))
-            .subject(subject)
+            .create(site_address.clone())
+            .subject(subject.clone())
             .perform(&site.operator)
             .await
             .context("Failed to register remote")?;
 
-        let remote_branch = remote
-            .branch(HIDDEN_BRANCH)
-            .open()
+        // Mirror the registration on the meta branch so `remote list`
+        // / `remote show` find this remote.
+        site.meta
+            .transaction()
+            .assert(site.replica.remote("origin", subject, &site_address))
+            .commit()
             .perform(&site.operator)
             .await
-            .context("Failed to open remote branch")?;
+            .context("failed to record remote 'origin' on meta branch")?;
 
-        site.branch
-            .set_upstream(remote_branch)
-            .perform(&site.operator)
+        // Wire up upstream on both the dialog side (so push/pull
+        // resolve) and the meta side (so `remote show` can report
+        // the upstream of `main`).
+        remote_cmd::set_upstream(&site, "origin")
             .await
             .context("Failed to set upstream")?;
 

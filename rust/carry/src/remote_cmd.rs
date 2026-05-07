@@ -266,7 +266,7 @@ pub async fn execute_set_upstream(site: &Site, name: &str) -> Result<()> {
 ///   and a `TrackingBranch` linking them so `remote show` (and any
 ///   other meta-branch reader) can answer "what's the upstream of
 ///   `main`?" without consulting dialog's storage.
-async fn set_upstream(site: &Site, name: &str) -> Result<()> {
+pub(crate) async fn set_upstream(site: &Site, name: &str) -> Result<()> {
     let remote = site
         .repo
         .remote(name)
