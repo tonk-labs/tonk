@@ -83,7 +83,36 @@ pub(crate) fn parse_attribute_fields(
             }
         };
         match field.name.as_str() {
-            "the" | "as" | "cardinality" | "description" => {
+            "as" => {
+                // Translate the user-facing kebab-case-lowercase
+                // type name to dialog's PascalCase serde form.
+                let normalized = normalize_type_name(&value_str).ok_or_else(|| {
+                    AnalyzeError::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown attribute type {value_str:?} — \
+                             expected one of: text, unsigned-integer, \
+                             signed-integer, float, boolean, entity, \
+                             bytes"
+                        ),
+                    }
+                })?;
+                shape.insert("as".into(), serde_json::Value::String(normalized.into()));
+            }
+            "cardinality" => {
+                let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
+                    AnalyzeError::InvalidAttributeBody {
+                        reason: format!(
+                            "unknown cardinality {value_str:?} — \
+                             expected `one` or `many`"
+                        ),
+                    }
+                })?;
+                shape.insert(
+                    "cardinality".into(),
+                    serde_json::Value::String(normalized.into()),
+                );
+            }
+            "the" | "description" => {
                 shape.insert(field.name.clone(), serde_json::Value::String(value_str));
             }
             other => {
@@ -456,4 +485,42 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     );
     serde_json::from_value(serde_json::json!({ "with": with }))
         .expect("concept schema is well-formed")
+}
+
+/// Translate a user-facing attribute type name into dialog's
+/// serde discriminant.
+///
+/// The guide uses kebab-case-lowercase (`text`,
+/// `unsigned-integer`, `signed-integer`, `float`, `boolean`,
+/// `entity`, `bytes`); dialog's `Type` enum is PascalCase
+/// (`Text`, `UnsignedInteger`, …). The analyzer translates at
+/// the boundary so the user-facing surface is the only one
+/// anyone has to remember.
+///
+/// PascalCase is also accepted so internal callers and schemas
+/// authored before the guide rewrite work without
+/// double-translation.
+fn normalize_type_name(name: &str) -> Option<&'static str> {
+    match name {
+        "text" | "Text" => Some("Text"),
+        "unsigned-integer" | "UnsignedInteger" => Some("UnsignedInteger"),
+        "signed-integer" | "SignedInteger" => Some("SignedInteger"),
+        "float" | "Float" => Some("Float"),
+        "boolean" | "Boolean" => Some("Boolean"),
+        "entity" | "Entity" => Some("Entity"),
+        "bytes" | "Bytes" => Some("Bytes"),
+        _ => None,
+    }
+}
+
+/// Validate a user-facing cardinality name. Dialog's serde
+/// format uses lowercase (`one`, `many`); historically
+/// PascalCase was accepted too — preserve that for back-compat
+/// while normalizing to lowercase.
+fn normalize_cardinality_name(name: &str) -> Option<&'static str> {
+    match name {
+        "one" | "One" => Some("one"),
+        "many" | "Many" => Some("many"),
+        _ => None,
+    }
 }

@@ -1848,4 +1848,113 @@ concept!: &person
             }
         }
     }
+
+    // ----------------------------------------------------------- //
+    // Stage 2.6 — type-name normalization                         //
+    // ----------------------------------------------------------- //
+
+    /// User-facing kebab-case-lowercase type names (`text`,
+    /// `unsigned-integer`, …) are accepted and normalized to
+    /// dialog's PascalCase serde form. The analyzer hides the
+    /// translation from authors.
+    #[dialog_common::test]
+    async fn it_accepts_lowercase_type_names_in_attribute_body() {
+        let syntax = must_parse(
+            r#"
+attribute!: &age
+  the:         x.y/age
+  as:          unsigned-integer
+  cardinality: one
+  description: "Person's age"
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.declarations.contains_key("age"));
+    }
+
+    /// Each guide-listed type name is accepted in `as:`.
+    #[dialog_common::test]
+    async fn it_accepts_every_lowercase_type_name() {
+        for ty in &[
+            "text",
+            "unsigned-integer",
+            "signed-integer",
+            "float",
+            "boolean",
+            "entity",
+            "bytes",
+        ] {
+            let src = format!(
+                "attribute!: &foo\n  the:         x.y/foo\n  as:          {ty}\n  cardinality: one\n  description: \"x\"\n"
+            );
+            let syntax = must_parse(&src);
+            analyze(&syntax, &NoopResolver)
+                .await
+                .unwrap_or_else(|e| panic!("type {ty:?} should be accepted: {e:?}"));
+        }
+    }
+
+    /// Legacy PascalCase type names still work — schemas authored
+    /// before the guide rewrite pass through unchanged.
+    #[dialog_common::test]
+    async fn it_still_accepts_pascal_case_type_names_for_back_compat() {
+        let syntax = must_parse(
+            r#"
+attribute!: &age
+  the:         x.y/age
+  as:          UnsignedInteger
+  cardinality: one
+  description: "x"
+"#,
+        );
+        analyze(&syntax, &NoopResolver).await.unwrap();
+    }
+
+    /// An unknown type name surfaces a guiding error listing the
+    /// accepted forms.
+    #[dialog_common::test]
+    async fn it_rejects_unknown_type_name_with_guidance() {
+        let syntax = must_parse(
+            r#"
+attribute!: &age
+  the:         x.y/age
+  as:          quaternion
+  cardinality: one
+  description: "x"
+"#,
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("quaternion")
+                    && reason.contains("text")
+            ),
+            "expected InvalidAttributeBody listing accepted types, got {err:?}"
+        );
+    }
+
+    /// Cardinality also has a normalization layer — only `one`
+    /// and `many` are accepted (PascalCase forms also work for
+    /// back-compat).
+    #[dialog_common::test]
+    async fn it_rejects_unknown_cardinality_name() {
+        let syntax = must_parse(
+            r#"
+attribute!: &foo
+  the:         x.y/foo
+  as:          text
+  cardinality: maybe
+  description: "x"
+"#,
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("maybe")
+            ),
+            "expected InvalidAttributeBody listing accepted cardinality, got {err:?}"
+        );
+    }
 }
