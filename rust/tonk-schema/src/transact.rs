@@ -141,26 +141,28 @@ impl Statement {
 // Shared between read and write sides                              //
 // ---------------------------------------------------------------- //
 
-/// Predicate plus terms plus the source-form binding the head
-/// carried. Shared between queries and mutations because both
-/// express "a predicate applied to specific terms" — only the
-/// consumer differs.
+/// Predicate plus terms plus the source-form intent the head
+/// carried — entity selection (`this:`) and naming (`&anchor`).
+/// Shared between queries and mutations because both express
+/// "a predicate applied to specific terms" — only the consumer
+/// differs.
 ///
-/// [`HeadBinding`] is the structural intent (anonymous,
-/// variable, bookmark, or URI); `terms["this"]` is computed
-/// from it, but the binding is the source of truth. Going
-/// `Application` → surface syntax reads it directly. The
-/// planner uses it to decide whether to also emit a
-/// `dialog.meta/name` claim (bookmark form).
+/// `this` and `anchor` are independent. `terms["this"]` is
+/// computed from `this`; the planner reads `anchor` to decide
+/// whether to also emit the desugared `name!` assertion.
 #[derive(Debug, Clone)]
 pub enum Application {
     /// `person …:` head — resolved concept with applied terms.
     Concept {
         /// `{ predicate, terms }` ready for evaluation. `terms`
-        /// includes a `"this"` slot derived from `binding`.
+        /// includes a `"this"` slot derived from `this`.
         query: ConceptQuery,
-        /// Source-form binding the head carried.
-        binding: HeadBinding,
+        /// Where the entity in `terms["this"]` comes from.
+        this: ThisIntent,
+        /// `&anchor` on the value side, if any. The planner
+        /// emits a desugared `name!` assertion against `id:<n>`
+        /// for each `Some(n)`.
+        name: Option<String>,
     },
     /// `xyz.tonk …:` head — claim domain with applied terms;
     /// descriptor is synthesized at planning time from
@@ -168,8 +170,10 @@ pub enum Application {
     Domain {
         /// The domain + parameter map.
         application: DomainApplication,
-        /// Source-form binding the head carried.
-        binding: HeadBinding,
+        /// Where the entity in `parameters["this"]` comes from.
+        this: ThisIntent,
+        /// `&anchor` on the value side, if any.
+        name: Option<String>,
     },
 }
 
@@ -184,10 +188,17 @@ impl Application {
         }
     }
 
-    /// The source-form binding the head carried.
-    pub fn binding(&self) -> &HeadBinding {
+    /// Where the entity in `terms["this"]` was selected from.
+    pub fn this(&self) -> &ThisIntent {
         match self {
-            Self::Concept { binding, .. } | Self::Domain { binding, .. } => binding,
+            Self::Concept { this, .. } | Self::Domain { this, .. } => this,
+        }
+    }
+
+    /// Name to publish (`&name`), if any.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Concept { name, .. } | Self::Domain { name, .. } => name.as_deref(),
         }
     }
 
@@ -200,44 +211,34 @@ impl Application {
     }
 }
 
-/// Source-form intent for entity selection on a head. Derived
-/// from the body's `this:` field and (on assertions) any `&anchor`
-/// between the head's colon and the body. The relationship between
-/// `binding` and `terms["this"]`:
+/// How the entity in `terms["this"]` is selected. Mirrors the
+/// `this:` body field's value forms. Hoisted onto
+/// [`Application`] / [`ApplicationPlan`] alongside an optional
+/// anchor, since the two intents are orthogonal: every
+/// combination of `this:` and `&anchor` is meaningful.
 ///
-/// - `Anonymous` (no `this:`, no `&anchor`) →
-///   `Term::Constant(Entity::of(&body))`
-/// - `Variable(name)` (`this: ?name`) bound by query →
-///   `Term::Variable(name)`
-/// - `Variable(name)` (`this: ?name`) unbound by query →
-///   `Term::Constant(<derived entity>)`, with `name` registered
-///   in `Analysis::variables`
-/// - `Anchor(name)` (`&name` anchor on assertion) →
-///   `Term::Constant(Entity::of(&body))`, **plus** a desugared
-///   `name!` assertion emitted by the planner against `id:<name>`
-///   that points at the body-derived target via `dialog.meta/name`
-/// - `Uri(entity)` (`this: did:key:…` / `id:…` / `db:…`) →
-///   `Term::Constant(Value::Entity(entity))`
+/// Examples:
+///
+/// - `person!:` — `Derived` + `anchor = None`
+/// - `person!:\n  this: ?alice` — `Variable("alice")` + `anchor
+///   = None`
+/// - `person!: &alice` — `Derived` + `anchor = Some("alice")`
+///   (publish `id:alice` pointing at the body-derived entity)
+/// - `person!: &alice\n  this: did:key:zX` — `Uri(zX)` +
+///   `anchor = Some("alice")` (publish `id:alice` pointing at
+///   zX without producing a new entity)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HeadBinding {
-    /// No `this:` field, no `&anchor`. Entity is body-derived.
-    Anonymous,
+pub enum ThisIntent {
+    /// `this:` omitted. Entity is body-derived
+    /// (`Entity::of(&body)`); on queries this surfaces as a
+    /// fresh anonymous variable so dialog's engine has a slot
+    /// to bind matches into.
+    Derived,
     /// `this: ?name`. Bound by query if some preceding query
     /// expression names `?name`; otherwise the analyzer mints a
     /// body-derived entity and registers `name` in
     /// `Analysis::variables`.
     Variable(String),
-    /// `&name` anchor on an assertion's value side (`person!:
-    /// &alice`). The asserted entity is body-derived (so
-    /// re-running the same body is a no-op); the planner *also*
-    /// emits the implicit `name!` assertion that desugars from
-    /// the anchor: `(id:<name>, dialog.meta/name, body-entity)`.
-    /// Cardinality-one on `dialog.meta/name` means re-running
-    /// with a different body replaces the prior `entity:` claim
-    /// on `id:<name>`, repointing the name at the new target —
-    /// same git-tag semantics, but the EAV hangs off the *name*
-    /// entity, not the named one.
-    Anchor(String),
     /// `this:` carried a URI directly (`did:key:…`, `id:…`,
     /// `db:…`).
     Uri(Entity),
@@ -318,16 +319,15 @@ impl Planner for Application {
     type Output = ApplicationPlan;
 
     fn plan(self, bindings: &Parameters) -> Result<ApplicationPlan, PlanError> {
-        let (query, binding) = match self {
-            Self::Concept { query, binding } => (query, binding),
+        let (query, name) = match self {
+            Self::Concept { query, name, .. } => (query, name),
             Self::Domain {
-                application,
-                binding,
-            } => (ConceptQuery::from(application), binding),
+                application, name, ..
+            } => (ConceptQuery::from(application), name),
         };
         Ok(ApplicationPlan {
             statement: substitute_concept_query(query, bindings)?,
-            binding,
+            name,
         })
     }
 }
@@ -335,8 +335,8 @@ impl Planner for Application {
 /// Fully concrete, ready to commit. Wraps a [`ConceptQuery`]
 /// whose every `Term::Variable` has been substituted to
 /// `Term::Constant` against the planning bindings, plus the
-/// source-form binding so the emitter knows whether to also
-/// write a `dialog.meta/name` claim (bookmark form).
+/// optional name to publish so the emitter knows whether to also
+/// emit the desugared `name!` assertion.
 ///
 /// Asserting / retracting walks the predicate's `with` map and
 /// emits one EAV per non-blank field — exactly the same
@@ -346,18 +346,19 @@ impl Planner for Application {
 pub struct ApplicationPlan {
     /// The substituted query.
     pub statement: ConceptQuery,
-    /// Source-form binding the head carried.
-    pub binding: HeadBinding,
+    /// `&name` published by this expression, if any. Triggers
+    /// the desugared `name!` assertion against `id:<name>`.
+    pub name: Option<String>,
 }
 
 impl ArtifactsStatement for ApplicationPlan {
     fn assert(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, true);
-        emit_anchor_name_assertion(&self.binding, &self.statement.terms, update, true);
+        emit_name_assertion(self.name.as_deref(), &self.statement.terms, update, true);
     }
     fn retract(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, false);
-        emit_anchor_name_assertion(&self.binding, &self.statement.terms, update, false);
+        emit_name_assertion(self.name.as_deref(), &self.statement.terms, update, false);
     }
 }
 
@@ -391,13 +392,13 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
 /// charset produces a valid `id:<name>`; the conservative skip
 /// keeps a hypothetical bad case from poisoning the surrounding
 /// transaction.
-fn emit_anchor_name_assertion<U: Update>(
-    binding: &HeadBinding,
+fn emit_name_assertion<U: Update>(
+    name: Option<&str>,
     terms: &Parameters,
     update: &mut U,
     assert: bool,
 ) {
-    let HeadBinding::Anchor(name) = binding else {
+    let Some(name) = name else {
         return;
     };
     let Some(target) = entity_of_this(terms) else {
@@ -703,7 +704,7 @@ mod tests {
                 terms,
                 predicate: descriptor,
             },
-            binding: HeadBinding::Anchor(anchor_name.into()),
+            name: Some(anchor_name.into()),
         }
     }
 
@@ -790,7 +791,7 @@ mod tests {
                 terms,
                 predicate: descriptor,
             },
-            binding: HeadBinding::Anonymous,
+            name: None,
         };
 
         let mut changes = Changes::new();
