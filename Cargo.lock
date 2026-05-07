@@ -4756,6 +4756,7 @@ dependencies = [
  "dialog-repository",
  "dialog-varsig",
  "lsp-types",
+ "parking_lot",
  "serde",
  "serde_ipld_dagcbor",
  "serde_json",

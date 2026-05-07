@@ -262,9 +262,10 @@ async fn analyzer_diagnostics(syntax: &tonk_notation::Syntax) -> Vec<lsp_types::
         let head_label = match &assertion.head.name {
             HeadName::Concept(name) => name.clone(),
             HeadName::Claim(domain) => domain.clone(),
+            HeadName::Uri(uri) => uri.clone(),
         };
         out.push(Diagnostic {
-            range: assertion.head.name_range,
+            range: assertion.head.range,
             severity: Some(DiagnosticSeverity::ERROR),
             code: None,
             code_description: None,

@@ -642,7 +642,7 @@ fn render_match_blocks(
     let mut labels: Vec<String> = Vec::new();
     for expression in &syntax.expressions {
         if let tonk_notation::Expression::Query(q) = expression {
-            labels.push(q.head.name_source.clone());
+            labels.push(q.head.source.clone());
         }
     }
 
