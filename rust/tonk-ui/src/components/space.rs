@@ -754,7 +754,7 @@ pub(super) fn BranchRow(
                                 matches!(transact_state.get(), TransactState::Running)
                             on:click=on_play_click
                         >
-                            <wa-icon name="paper-plane" variant="solid"></wa-icon>
+                            <wa-icon name="bolt" variant="solid"></wa-icon>
                         </wa-button>
                     </div>
                     { move || render_transact_state(transact_state.get(), last_response.get()) }
