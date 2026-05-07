@@ -215,7 +215,17 @@ pub fn TonkShell() -> impl IntoView {
     provide_context(last_join_outcome);
 
     view! {
-        <TonkLauncher></TonkLauncher>
+        // App-wide LSP transport. One <tonk-diagnostics-provider>
+        // wraps the entire shell so every <tonk-code> editor in
+        // the app — across spaces, branches, dialogs — shares
+        // one LSP client. Editors announce themselves via
+        // `tonk-code-connect`; the provider attaches its client
+        // to each. Spaces correspond to repositories, so this
+        // also gives the language server a single transport
+        // through which it sees every repository's documents.
+        <tonk-diagnostics-provider>
+            <TonkLauncher></TonkLauncher>
+        </tonk-diagnostics-provider>
     }
 }
 

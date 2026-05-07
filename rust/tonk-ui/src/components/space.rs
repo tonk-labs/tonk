@@ -246,16 +246,6 @@ where
                 ></wa-icon>
             </wa-button>
         </header>
-        // One LSP client per space — shared across every branch
-        // editor mounted under this provider. `<tonk-code>`
-        // descendants dispatch `tonk-code-connect` events and the
-        // provider attaches its client. Mounting the provider at
-        // the space level (rather than per-branch) means a single
-        // language-server transport carries every editor's
-        // didOpen/didChange/publishDiagnostics, which sets up the
-        // cross-branch resolution we'll want once the server is
-        // branch-aware.
-        <tonk-diagnostics-provider>
         <main class="wa-stack space-view">
             <section class="wa-stack">
                 <h2 class="space-section-title">{ format!("Branches ({branch_count})") }</h2>
@@ -278,7 +268,6 @@ where
                 } }
             </section>
         </main>
-        </tonk-diagnostics-provider>
     }
 }
 
