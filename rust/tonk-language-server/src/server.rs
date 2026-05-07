@@ -218,31 +218,82 @@ impl Server {
     }
 }
 
-/// Run `tonk_schema::analyzer::analyze` against the parsed
-/// syntax with a `NoopResolver` and surface the result as LSP
-/// diagnostics.
+/// Run the analyzer and the structural variable-occurrence scan
+/// against the parsed syntax, then merge their findings into a
+/// single diagnostic list.
 ///
-/// Errors that fundamentally need the branch (`UnknownConcept`,
-/// `UnknownBookmark`, `ResolverFailed`, `InvalidClaimAttribute`)
-/// are filtered out here — they trigger spuriously under the
-/// noop resolver and are the worker's responsibility once
-/// `evaluate` runs against a real branch.
+/// Two passes:
 ///
-/// The analyzer short-circuits on the first error today, so
-/// callers see at most one diagnostic per pass. Multi-error
-/// reporting is a future analyzer change; once it lands, this
-/// function picks it up automatically by virtue of mapping
-/// every error in the result.
+/// 1. **Variable scan** — purely structural, no resolver work,
+///    runs unconditionally so warnings surface even when the
+///    main analyzer short-circuits.
+/// 2. **`tonk_schema::analyzer::analyze`** with `NoopResolver` —
+///    catches structural errors the parser accepts. Errors that
+///    fundamentally need the branch (`UnknownConcept`,
+///    `UnknownBookmark`, `ResolverFailed`,
+///    `InvalidClaimAttribute`) are filtered out — they trigger
+///    spuriously under the noop resolver and are the worker's
+///    responsibility once `evaluate` runs against a real branch.
 async fn analyzer_diagnostics(syntax: &tonk_notation::Syntax) -> Vec<lsp_types::Diagnostic> {
-    use tonk_schema::analyzer::{NoopResolver, analyze};
+    use tonk_schema::analyzer::{NoopResolver, analyze, scan_variables};
+
+    let mut out: Vec<lsp_types::Diagnostic> = scan_variables(syntax)
+        .into_iter()
+        .map(|d| diagnostic_from_analyze_diagnostic(syntax, d))
+        .collect();
 
     let resolver = NoopResolver;
     match analyze(syntax, &resolver).await {
-        Ok(_) => Vec::new(),
-        Err(err) => match diagnostic_from_analyze_error(syntax, err) {
-            Some(diag) => vec![diag],
-            None => Vec::new(),
-        },
+        Ok(analysis) => {
+            // The analyzer's own diagnostics duplicate the scan
+            // we already did above — `scan_variables` is also
+            // called inside `analyze`. Dedup by (code, range).
+            for diag in analysis.diagnostics {
+                let mapped = diagnostic_from_analyze_diagnostic(syntax, diag);
+                if !out
+                    .iter()
+                    .any(|existing| existing.code == mapped.code && existing.range == mapped.range)
+                {
+                    out.push(mapped);
+                }
+            }
+        }
+        Err(err) => {
+            if let Some(diag) = diagnostic_from_analyze_error(syntax, err) {
+                out.push(diag);
+            }
+        }
+    }
+    out
+}
+
+/// Translate an [`AnalyzeDiagnostic`] (warning/error severity)
+/// into an LSP [`Diagnostic`]. Falls back to the document range
+/// when the diagnostic carries no source span.
+fn diagnostic_from_analyze_diagnostic(
+    syntax: &tonk_notation::Syntax,
+    diagnostic: tonk_schema::analyzer::AnalyzeDiagnostic,
+) -> lsp_types::Diagnostic {
+    use lsp_types::{Diagnostic, DiagnosticSeverity as LspSeverity, NumberOrString};
+    use tonk_schema::analyzer::DiagnosticSeverity;
+
+    let severity = match diagnostic.severity {
+        DiagnosticSeverity::Warning => LspSeverity::WARNING,
+        DiagnosticSeverity::Error => LspSeverity::ERROR,
+    };
+    let code = diagnostic.code();
+    let message = diagnostic.message();
+    let range = diagnostic.range.unwrap_or(syntax.range);
+    Diagnostic {
+        range,
+        severity: Some(severity),
+        code: Some(NumberOrString::String(code.into())),
+        code_description: None,
+        source: Some("tonk-schema".into()),
+        message,
+        related_information: None,
+        tags: None,
+        data: None,
     }
 }
 
@@ -411,6 +462,49 @@ mod tests {
         assert_eq!(outbound.len(), 1);
         let diags = outbound[0].params["diagnostics"].as_array().unwrap();
         assert_eq!(diags.len(), 1);
+    }
+
+    /// `person!:\n  this: ?alice\n  age: 29` — the user's
+    /// exact reproducer. `person` is unknown to the LSP's noop
+    /// resolver, but the structural variable scan still
+    /// surfaces a warning on the lone `?alice` because it runs
+    /// independently of concept resolution.
+    #[dialog_common::test]
+    async fn it_warns_on_lone_assertion_this_variable_even_when_concept_unknown() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        let note = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "tonk-buffer:///test",
+                    "languageId": "carry-asserted",
+                    "version": 1,
+                    "text": "person!:\n  this: ?alice\n  age: 29\n"
+                }
+            }
+        });
+        run(&mut server, &note).await;
+        let outbound = server.take_outbound();
+        let diags = outbound[0].params["diagnostics"].as_array().unwrap();
+        let codes: Vec<&str> = diags
+            .iter()
+            .map(|d| d["code"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            codes.contains(&"W_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_THIS"),
+            "expected the lone ?alice warning, got codes {codes:?}"
+        );
     }
 
     /// Analyzer-derived diagnostics carry a stable `code` and a

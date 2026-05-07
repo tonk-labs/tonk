@@ -63,6 +63,11 @@ pub struct Analysis {
     /// Write side. `mutate.statements` is empty for pure-query
     /// documents.
     pub mutate: MutationAnalysis,
+
+    /// Non-fatal findings the analyzer accumulated during the
+    /// pass. Always present (empty when nothing surfaced); the
+    /// LSP and worker convert these to editor diagnostics.
+    pub diagnostics: Vec<crate::analyzer::AnalyzeDiagnostic>,
 }
 
 // ---------------------------------------------------------------- //

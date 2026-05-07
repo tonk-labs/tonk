@@ -39,6 +39,7 @@ mod error;
 mod field;
 mod query;
 mod resolver;
+mod scan;
 mod scope;
 
 use std::collections::{HashMap, HashSet};
@@ -50,8 +51,11 @@ use crate::transact::{
     Analysis, Application, MutationAnalysis, QueryAnalysis, Statement, ThisIntent,
 };
 
-pub use error::{AnalyzeError, AnalyzeErrorKind};
+pub use error::{
+    AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
+};
 pub use resolver::{NoopResolver, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
+pub use scan::scan_variables;
 
 use crate::prelude::EntityExt;
 use assertion::{body_digest, build_assertion_application, derive_head_intent};
@@ -240,6 +244,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     let mut analysis = Analysis {
         declarations: scope.declarations.lock().clone(),
         variables: scope.variables.lock().clone(),
+        diagnostics: scan::scan_variables(syntax),
         ..Analysis::default()
     };
 

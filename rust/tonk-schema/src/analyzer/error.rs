@@ -67,6 +67,157 @@ impl From<AnalyzeErrorKind> for AnalyzeError {
     }
 }
 
+/// Severity of an [`AnalyzeDiagnostic`]. Mirrors LSP's three
+/// useful severity levels; `Hint` and `Information` aren't used
+/// by the analyzer today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    /// User intent likely doesn't match what was written; the
+    /// analyzer can still produce a plan.
+    Warning,
+    /// Pattern is malformed in a way the analyzer chose not to
+    /// hard-fail on, but execution will misbehave or produce
+    /// nothing useful. Surfaced alongside the `Result::Ok`
+    /// analysis.
+    Error,
+}
+
+/// Non-fatal finding from the analyzer. Carries the same shape
+/// (kind + range + code) as [`AnalyzeError`] so the LSP can
+/// surface them through the same diagnostic pipeline, plus a
+/// severity so the editor can color them differently.
+///
+/// Distinct from [`AnalyzeError`] because diagnostics are
+/// *accumulated* into [`crate::transact::Analysis`] alongside a
+/// successful analysis, whereas [`AnalyzeError`] short-circuits
+/// the whole pass.
+#[derive(Debug, Clone)]
+pub struct AnalyzeDiagnostic {
+    /// What the diagnostic is about.
+    pub kind: AnalyzeDiagnosticKind,
+    /// Severity for editor styling.
+    pub severity: DiagnosticSeverity,
+    /// Source range of the offending construct, when known.
+    pub range: Option<lsp_types::Range>,
+}
+
+impl AnalyzeDiagnostic {
+    /// Construct a warning-level diagnostic at a known range.
+    pub fn warning(kind: AnalyzeDiagnosticKind, range: lsp_types::Range) -> Self {
+        Self {
+            kind,
+            severity: DiagnosticSeverity::Warning,
+            range: Some(range),
+        }
+    }
+
+    /// Construct an error-level diagnostic at a known range.
+    pub fn error(kind: AnalyzeDiagnosticKind, range: lsp_types::Range) -> Self {
+        Self {
+            kind,
+            severity: DiagnosticSeverity::Error,
+            range: Some(range),
+        }
+    }
+
+    /// Stable, machine-readable code for the diagnostic.
+    pub fn code(&self) -> &'static str {
+        self.kind.code()
+    }
+
+    /// Human-readable message.
+    pub fn message(&self) -> String {
+        self.kind.to_string()
+    }
+}
+
+/// Categories of non-fatal analyzer findings.
+///
+/// Each variant has a stable `code()` like
+/// `"W_SINGLE_OCCURRENCE_VARIABLE_QUERY_FIELD"` so the editor
+/// can route quickfixes by code.
+#[derive(Debug, Clone, Error)]
+pub enum AnalyzeDiagnosticKind {
+    /// A `?var` appears exactly once in a query body's non-`this:`
+    /// field. Variables exist to create joins; a single use binds
+    /// nothing useful. The user almost certainly meant `_`.
+    #[error(
+        "variable ?{name} is used only once in field {field:?} — \
+         use `_` if you don't need to bind the value, or \
+         reference ?{name} elsewhere to create a join"
+    )]
+    SingleOccurrenceVariableQueryField {
+        /// The variable name (without `?`).
+        name: String,
+        /// The field where the variable appears.
+        field: String,
+    },
+    /// A `?var` appears exactly once as the `this:` value of a
+    /// query body. Same logic as above but for the entity slot —
+    /// `_` means "any entity" and is the right form when the user
+    /// just wants to enumerate.
+    #[error(
+        "variable ?{name} is used only once in `this:` — \
+         use `_` if you don't need to bind the entity, or \
+         reference ?{name} elsewhere to create a join"
+    )]
+    SingleOccurrenceVariableQueryThis {
+        /// The variable name (without `?`).
+        name: String,
+    },
+    /// A `?var` appears exactly once as the `this:` value of an
+    /// assertion body. The variable provides no entity selection
+    /// (nothing else binds it), so the assertion would create a
+    /// fresh entity — but the user wrote a variable name as if
+    /// they meant something specific. Likely they meant to omit
+    /// `this:` and let the body derive the entity.
+    #[error(
+        "variable ?{name} in `this:` isn't bound by anything — \
+         omit `this:` if you mean to create a fresh body-derived \
+         entity, or query for the existing entity first"
+    )]
+    SingleOccurrenceVariableAssertionThis {
+        /// The variable name (without `?`).
+        name: String,
+    },
+    /// A `?var` appears exactly once in an assertion body's
+    /// non-`this:` field. The variable has no value to write —
+    /// the assertion would commit a logic variable as a fact,
+    /// which is meaningless. This is an error, not a warning,
+    /// because no execution path produces useful behavior.
+    #[error(
+        "variable ?{name} in field {field:?} of an assertion has no value — \
+         use a literal, a bare symbol (name lookup), or bind ?{name} \
+         in a preceding query"
+    )]
+    SingleOccurrenceVariableAssertionField {
+        /// The variable name (without `?`).
+        name: String,
+        /// The field where the variable appears.
+        field: String,
+    },
+}
+
+impl AnalyzeDiagnosticKind {
+    /// Stable code for this diagnostic category.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::SingleOccurrenceVariableQueryField { .. } => {
+                "W_SINGLE_OCCURRENCE_VARIABLE_QUERY_FIELD"
+            }
+            Self::SingleOccurrenceVariableQueryThis { .. } => {
+                "W_SINGLE_OCCURRENCE_VARIABLE_QUERY_THIS"
+            }
+            Self::SingleOccurrenceVariableAssertionThis { .. } => {
+                "W_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_THIS"
+            }
+            Self::SingleOccurrenceVariableAssertionField { .. } => {
+                "E_SINGLE_OCCURRENCE_VARIABLE_ASSERTION_FIELD"
+            }
+        }
+    }
+}
+
 /// What went wrong, independent of source location. The
 /// [`AnalyzeError`] wrapper adds the `range` and is what
 /// callers actually receive.
