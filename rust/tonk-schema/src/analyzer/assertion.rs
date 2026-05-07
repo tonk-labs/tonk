@@ -32,6 +32,9 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
 
     let (this, name) =
         derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope).await?;
+    if let ThisIntent::Uri(entity) = &this {
+        check_writable(entity)?;
+    }
     let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis)?;
 
     match &assertion.head.name {
@@ -320,4 +323,28 @@ fn query_binds(analysis: &Analysis, name: &str) -> bool {
         .as_ref()
         .map(|q| q.bindings().contains(name))
         .unwrap_or(false)
+}
+
+/// Reject assertions targeting a system-reserved URI scheme.
+///
+/// Per the guide, the `db:` scheme is reserved for built-in
+/// entities (`db:attribute`, `db:concept`, `db:name`); user
+/// assertions cannot modify what lives at these URIs.
+///
+/// The check fires on any resolved [`ThisIntent::Uri`], whether
+/// the user wrote `this: db:concept` directly or named a symbol
+/// that happens to resolve to a `db:`-prefixed entity.
+fn check_writable(entity: &Entity) -> Result<(), AnalyzeError> {
+    const RESERVED_SCHEMES: &[&str] = &["db"];
+    let s = entity.to_string();
+    for scheme in RESERVED_SCHEMES {
+        let prefix = format!("{scheme}:");
+        if s.starts_with(&prefix) {
+            return Err(AnalyzeError::ProtectedUri {
+                entity: s,
+                scheme: (*scheme).to_owned(),
+            });
+        }
+    }
+    Ok(())
 }

@@ -126,4 +126,17 @@ pub enum AnalyzeError {
         /// Underlying message.
         reason: String,
     },
+    /// Assertion targets an entity in a reserved URI scheme.
+    /// `db:` is reserved for system-published built-ins
+    /// (`db:attribute`, `db:concept`, `db:name`); user
+    /// assertions cannot modify what lives at these URIs.
+    #[error(
+        "assertion targets reserved URI {entity} — the `{scheme}:` scheme is system-owned and cannot be written from user notation"
+    )]
+    ProtectedUri {
+        /// The entity URI the assertion tried to target.
+        entity: String,
+        /// The reserved scheme prefix (e.g. `db`).
+        scheme: String,
+    },
 }

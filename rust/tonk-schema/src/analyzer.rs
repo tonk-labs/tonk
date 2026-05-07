@@ -1069,9 +1069,11 @@ person!:
         }
     }
 
-    /// `this: db:foo` (Uri form, `db:` scheme).
+    /// `this: db:concept` is rejected — `db:` is reserved for
+    /// system-published built-ins; user assertions cannot
+    /// modify what lives there. Stage 2.4.
     #[dialog_common::test]
-    async fn it_accepts_db_uri_in_this() {
+    async fn it_rejects_assertion_targeting_db_uri() {
         let syntax = must_parse(
             r#"
 person!:
@@ -1080,15 +1082,90 @@ person!:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
-        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[0]
-        else {
-            panic!("expected Assert(Concept)");
-        };
-        match this {
-            ThisIntent::Uri(e) => assert_eq!(e.to_string(), "db:concept"),
-            other => panic!("expected ThisIntent::Uri(db:concept), got {other:?}"),
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(&err, AnalyzeError::ProtectedUri { entity, scheme } if entity == "db:concept" && scheme == "db"),
+            "expected ProtectedUri{{entity:\"db:concept\", scheme:\"db\"}}, got {err:?}"
+        );
+    }
+
+    /// Same protection fires when `db:` arrives via a resolved
+    /// bare symbol — the gate runs on the resolved
+    /// `ThisIntent::Uri`, not on the source-form text.
+    #[dialog_common::test]
+    async fn it_rejects_assertion_when_resolved_symbol_targets_db_uri() {
+        struct DbResolver;
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        impl Resolver for DbResolver {
+            async fn resolve_concept(
+                &self,
+                name: &str,
+            ) -> Result<Option<ResolvedConcept>, ResolverError> {
+                if name == "person" {
+                    let descriptor: ConceptDescriptor =
+                        serde_json::from_value(serde_json::json!({
+                            "with": { "name": { "the": "x.y/name", "as": "Text", "cardinality": "one" } }
+                        }))
+                        .unwrap();
+                    Ok(Some(ResolvedConcept {
+                        entity: descriptor.this(),
+                        descriptor,
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            async fn resolve_attribute(
+                &self,
+                _name: &str,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
+            async fn resolve_attribute_by_entity(
+                &self,
+                _entity: &Entity,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
+            async fn resolve_named_entity(
+                &self,
+                name: &str,
+            ) -> Result<Option<Entity>, ResolverError> {
+                if name == "evil" {
+                    Ok(Some("db:concept".parse().unwrap()))
+                } else {
+                    Ok(None)
+                }
+            }
         }
+        let syntax = must_parse(
+            r#"
+person!:
+  this: evil
+  name: "x"
+"#,
+        );
+        let err = analyze(&syntax, &DbResolver).await.unwrap_err();
+        assert!(
+            matches!(&err, AnalyzeError::ProtectedUri { entity, .. } if entity == "db:concept"),
+            "expected ProtectedUri after resolving `evil` to db:concept, got {err:?}"
+        );
+    }
+
+    /// Querying `db:` URIs is fine — only assertions are
+    /// protected.
+    #[dialog_common::test]
+    async fn it_allows_querying_with_db_uri_in_this() {
+        let syntax = must_parse(
+            r#"
+attribute:
+  this: db:attribute
+  description: ?d
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.query.is_some());
     }
 
     /// `this: alice` (bare symbol) resolves through the name
