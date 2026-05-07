@@ -49,6 +49,47 @@ pub struct EvaluatePath {
     pub branch: String,
 }
 
+/// Query-string parameters for the evaluate route. Today the only
+/// option is `transact`, which lets the caller suppress the
+/// commit step so auto-fire evaluates (e.g. when the editor
+/// settles after an edit) can project what *would* happen
+/// without applying mutations the user hasn't confirmed.
+#[derive(Debug, Deserialize)]
+pub struct EvaluateQuery {
+    /// When `false`, run analysis and queries but do not commit
+    /// any mutation. The response carries the same shape as a
+    /// real evaluate (`matches_before`, etc.) — `commits.claims`
+    /// will be `0` and `revision_after == revision_before`.
+    ///
+    /// Defaults to `true` (full commit) so existing callers keep
+    /// today's behavior. Accepts `true`/`false`, `1`/`0`,
+    /// `yes`/`no`.
+    #[serde(default = "default_true", deserialize_with = "deserialize_bool")]
+    pub transact: bool,
+}
+
+impl Default for EvaluateQuery {
+    fn default() -> Self {
+        Self { transact: true }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Deserialize a query-string boolean from the loose forms a
+/// browser query string might carry — `true`, `false`, `1`,
+/// `0`, `yes`, `no`. Anything else falls back to `true` so a
+/// stray value can't accidentally suppress the commit.
+fn deserialize_bool<'de, D: serde::Deserializer<'de>>(de: D) -> Result<bool, D::Error> {
+    let raw = String::deserialize(de)?;
+    Ok(!matches!(
+        raw.to_ascii_lowercase().as_str(),
+        "false" | "0" | "no"
+    ))
+}
+
 /// Response from a successful evaluate.
 ///
 /// Carries the branch revision before and after the commit
@@ -111,10 +152,18 @@ pub struct CommitSummary {
 /// Body: an asserted-notation document — any mix of queries and
 /// mutations. Returns query matches and a commit summary in one
 /// response.
+///
+/// Query string:
+/// - `transact=false` — analyze + run queries but skip the
+///   commit. Used by the editor's auto-evaluate (on idle) to
+///   project query results without applying mutations the user
+///   hasn't confirmed. `commits.claims` will be `0` and
+///   `revision_after == revision_before`. Defaults to `true`.
 #[wasm_compat]
 pub async fn evaluate(
     State(state): State<AppState>,
     Path(path): Path<EvaluatePath>,
+    axum::extract::Query(query): axum::extract::Query<EvaluateQuery>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
@@ -165,6 +214,7 @@ pub async fn evaluate(
         branch.handle(),
         tonk_branch,
         &tonk_state.operator,
+        query.transact,
     )
     .await?;
     let revision_after = branch.handle().revision();
@@ -179,12 +229,21 @@ pub async fn evaluate(
 /// Drive the analyze → run → plan → commit pipeline. Returns
 /// the matches + commit summary; the caller fills in the
 /// before/after revisions.
+///
+/// `transact` controls the commit step: when `true` (the normal
+/// case) mutations land on the branch and `matches_after`
+/// reflects the post-commit state. When `false` the planning
+/// runs (so any plan-level error still surfaces) but the
+/// transaction is dropped instead of committed, and
+/// `matches_after` reuses the pre-commit results — the route is
+/// effectively "what would happen if I ran this?".
 async fn run<'a>(
     analysis: &Analysis,
     syntax: &Syntax,
     branch: &Branch,
     tonk_branch: crate::reactor::BranchReference<'a>,
     operator: &DefaultOperator,
+    transact: bool,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     // ---- Build base bindings frame from analysis-derived vars ----
     let mut base = Parameters::new();
@@ -269,11 +328,18 @@ async fn run<'a>(
         for claim in retract_claims {
             tx = tx.retract(claim);
         }
-        tx.commit().perform(operator).await.map_err(|e| {
-            log!("Transaction commit failed: {:?}", e);
-            TonkWorkerError::Internal(format!("commit failed: {e}"))
-        })?;
-        commits.claims = claim_count;
+        if transact {
+            tx.commit().perform(operator).await.map_err(|e| {
+                log!("Transaction commit failed: {:?}", e);
+                TonkWorkerError::Internal(format!("commit failed: {e}"))
+            })?;
+            commits.claims = claim_count;
+        } else {
+            // Drop the assembled transaction without committing.
+            // We still ran the plan above so any plan-level error
+            // surfaced; this just stops the writes from landing.
+            drop(tx);
+        }
     }
 
     // Render the pre-commit matches now (before we run the
@@ -282,9 +348,13 @@ async fn run<'a>(
     let matches_before = render_match_blocks(analysis, syntax, pre_results.as_ref());
 
     // ---- Re-run per-expression queries against post-commit state ----
-    // For pure-query documents the post-state equals the
-    // pre-state, so reuse `pre_results` to skip the round-trip.
-    let post_results = if analysis.mutate.statements.is_empty() {
+    // Skip the post-state query in two cases:
+    //   1. Pure-query documents — the post-state equals the
+    //      pre-state by definition.
+    //   2. `transact == false` — we deliberately did not commit,
+    //      so the branch state is unchanged and the post-results
+    //      mirror the pre-results.
+    let post_results = if analysis.mutate.statements.is_empty() || !transact {
         pre_results
     } else {
         match &analysis.query {

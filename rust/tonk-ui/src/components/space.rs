@@ -473,7 +473,9 @@ pub(super) fn BranchRow(
                     }
                     DocDispatch::Submit => {}
                 }
-                match api::evaluate(&repo, &branch_name, body, "application/yaml").await {
+                // Explicit submit (play button / Shift+Enter) is
+                // a real commit — the user asked for it.
+                match api::evaluate(&repo, &branch_name, body, "application/yaml", true).await {
                     Ok(response) => {
                         // Drop any prior squiggles from a
                         // previous failed submit — the doc is
@@ -529,6 +531,68 @@ pub(super) fn BranchRow(
         let branch_name = branch_name.clone();
         move |_ev: web_sys::CustomEvent| {
             evaluate_now(branch_name.clone());
+        }
+    };
+
+    // `<tonk-code>` fires `idle` after the user pauses for the
+    // configured idle-duration. We use that to auto-evaluate the
+    // buffer in dry-run mode (`transact=false`) so the result
+    // panel reflects what *would* happen — without actually
+    // committing anything the user hasn't confirmed via
+    // play/Shift+Enter. Skipped while errors are outstanding to
+    // avoid a flood of analyzer rejections at typing speed.
+    let on_editor_idle = {
+        let branch_name = branch_name.clone();
+        let editor_source_for_idle = editor_source.clone();
+        move |ev: web_sys::CustomEvent| {
+            let detail = ev.detail();
+            let error_count =
+                js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("errorCount"))
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .map(|n| n as u32)
+                    .unwrap_or(0);
+            if error_count > 0 {
+                return;
+            }
+            let body = js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("value"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            if body.trim().is_empty() {
+                return;
+            }
+            let Some(repo) = space_name.get_untracked() else {
+                return;
+            };
+            // Don't fire while a real submit is in flight — the
+            // play-button result is the source of truth and a
+            // dry-run racing it would clobber the panel.
+            if matches!(transact_state.get_untracked(), TransactState::Running) {
+                return;
+            }
+            let branch = branch_name.clone();
+            let editor_source = editor_source_for_idle.clone();
+            spawn_local(async move {
+                match api::evaluate(&repo, &branch, body, "application/yaml", false).await {
+                    Ok(response) => {
+                        // Reuse the same panel; clear any prior
+                        // squiggle from a previous failed submit
+                        // since the editor is now error-free.
+                        clear_pushed_diagnostics(&editor_source);
+                        last_response.set(Some(Box::new(response)));
+                    }
+                    Err(err) => {
+                        // Auto-evaluate failures still flow as
+                        // diagnostics if structured, otherwise
+                        // silently swallowed — we don't want a
+                        // banner blocking edits.
+                        if matches!(&err, TonkUiError::Analyze { .. }) {
+                            push_analyzer_diagnostic(&editor_source, &err);
+                        }
+                    }
+                }
+            });
         }
     };
 
@@ -648,6 +712,7 @@ pub(super) fn BranchRow(
                             placeholder="person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
                             on:change=on_transact_change
                             on:run=on_editor_run
+                            on:idle=on_editor_idle
                             on:diagnostics=on_diagnostics
                         ></tonk-code>
                         // Floating play button under the

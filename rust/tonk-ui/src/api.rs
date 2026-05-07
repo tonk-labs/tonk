@@ -286,19 +286,37 @@ pub async fn select_claims(
 /// worker analyzes, runs the unified query, then plans + commits
 /// every mutation against each match frame in a single
 /// transaction. Returns matches plus a commit summary.
+///
+/// `transact` controls the worker's commit step. Pass `false`
+/// to project query results without applying mutations — used
+/// by the editor's auto-evaluate (on idle) so a half-typed
+/// transaction doesn't actually land.
 pub async fn evaluate(
     repo: &str,
     branch: &str,
     body: String,
     content_type: &str,
+    transact: bool,
 ) -> Result<EvaluateResponse, TonkUiError> {
-    let response = reqwest::Client::new()
-        .post(format!(
+    // The worker's default is `transact=true`; only attach the
+    // query string when we want to override.
+    let url = if transact {
+        format!(
             "{}/api/repository/{}/branch/{}/evaluate",
             origin(),
             repo,
             branch
-        ))
+        )
+    } else {
+        format!(
+            "{}/api/repository/{}/branch/{}/evaluate?transact=false",
+            origin(),
+            repo,
+            branch
+        )
+    };
+    let response = reqwest::Client::new()
+        .post(url)
         .header("content-type", content_type)
         .body(body)
         .send()

@@ -22,6 +22,9 @@
 //   active-line — boolean attribute. Presence highlights the row
 //                 the cursor sits on. Off by default — short
 //                 embedded fields don't need the visual cue.
+//   idle-duration— milliseconds of edit-quiet time before the
+//                 `idle` event fires. Defaults to 500ms.
+//                 `idle-duration="0"` disables the event entirely.
 //
 // Dialects (e.g. `dialog-yaml`) ship as their own language packs.
 // A dialect chunk typically re-exports the parent grammar plus
@@ -67,6 +70,13 @@
 //              the subset whose severity is `error`. Lets a
 //              consumer gate run/submit affordances on
 //              "no errors outstanding."
+//   idle     — CustomEvent<IdleDetail>. Fires after the user has
+//              not edited for `idle-duration` ms. Carries the
+//              buffer plus the live diagnostic counts so a
+//              consumer can decide whether to auto-act (e.g.
+//              auto-evaluate when `errorCount === 0`). Reset on
+//              every edit; not fired for programmatic `.value`
+//              writes. `idle-duration="0"` disables the event.
 //   tonk-code-connect — CustomEvent<TonkCodeConnectDetail>. Bubbles
 //              and composes. Fires on `connectedCallback` and on
 //              `source`/`language` changes. Caught by an ancestor
@@ -133,6 +143,17 @@ export type ReadyDetail = {
  *  reaching back into the element. */
 export type RunDetail = ChangeDetail;
 
+/** Detail object dispatched on the `idle` event. Carries the
+ *  buffer plus the live diagnostic counts so consumers can
+ *  decide whether to act on the idle event (e.g. only auto-evaluate
+ *  when `errorCount === 0`). */
+export type IdleDetail = ChangeDetail & {
+  /** Total number of diagnostics on the document at idle time. */
+  count: number;
+  /** Subset whose severity is `error`. */
+  errorCount: number;
+};
+
 /** Detail object dispatched on the `diagnostics` event. */
 export type DiagnosticsDetail = {
   /** Total number of diagnostics on the document. */
@@ -172,6 +193,7 @@ const OBSERVED = [
   "line-numbers",
   "active-line",
   "source",
+  "idle-duration",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
@@ -179,6 +201,13 @@ type ObservedAttr = (typeof OBSERVED)[number];
  *  attribute is set. The LSP convention is `plaintext`; a server
  *  is free to refuse `didOpen` for it. */
 const DEFAULT_LANGUAGE_ID = "plaintext";
+
+/** How long to wait after the last edit before firing the
+ *  `idle` event. Tuned to feel reactive without thrashing the
+ *  consumer's listener on every keystroke; a deliberate pause is
+ *  what "idle" should mean. Set `idle-duration="0"` to disable
+ *  the event entirely. */
+const DEFAULT_IDLE_DURATION_MS = 500;
 
 /** Cache of in-flight / resolved language-pack module loads.
  *  Shared across instances so two `<tonk-code language="yaml">`
@@ -467,6 +496,11 @@ class TonkCodeElement extends HTMLElement {
    *  completion etc. require a provider in scope. */
   #lspClient: LSPClient | null = null;
 
+  /** Pending `idle` timer, if any. Reset on every edit;
+   *  cleared on disconnect or when the `idle-duration` attribute
+   *  changes to disable the event. */
+  #idleTimer: ReturnType<typeof setTimeout> | null = null;
+
   /** Suppress the `change` event during programmatic `.value`
    *  writes so consumers don't see their own writes echoed back. */
   #suppressChange = false;
@@ -629,6 +663,11 @@ class TonkCodeElement extends HTMLElement {
                 composed: true,
               })
             );
+            // Schedule the `idle` event for after the
+            // `idle-duration` quiet period. Programmatic `.value`
+            // writes (suppressChange) don't reset the timer —
+            // they're not user activity.
+            this.#scheduleIdle();
           }
           // Re-count diagnostics whenever the lint state plugin
           // could have changed: doc edits can shift error
@@ -690,6 +729,7 @@ class TonkCodeElement extends HTMLElement {
       // Only tear down if we're still detached. `isConnected`
       // flips back to `true` if Leptos re-inserted us.
       if (this.isConnected) return;
+      this.#cancelIdle();
       this.#announceDisconnect();
       this.#view?.destroy();
       this.#view = null;
@@ -763,6 +803,13 @@ class TonkCodeElement extends HTMLElement {
         }
         this.#announceConnect();
         break;
+      case "idle-duration":
+        // Cancel any pending fire so the new value applies on
+        // the next edit. We don't fire eagerly here — the
+        // `idle` event tracks edit activity, not attribute
+        // writes.
+        this.#cancelIdle();
+        break;
     }
   }
 
@@ -770,6 +817,64 @@ class TonkCodeElement extends HTMLElement {
    *  from the `language` attribute; falls back to `plaintext`. */
   #lspLanguageId(): string {
     return this.getAttribute("language") ?? DEFAULT_LANGUAGE_ID;
+  }
+
+  /** Schedule a `idle` event for `idle-duration` ms from now,
+   *  resetting any pending timer. Called from the
+   *  `updateListener` after every user-initiated edit. */
+  #scheduleIdle(): void {
+    const delay = this.#idleDurationMs();
+    // Cancel any pending fire so back-to-back edits coalesce.
+    if (this.#idleTimer !== null) {
+      clearTimeout(this.#idleTimer);
+      this.#idleTimer = null;
+    }
+    if (delay <= 0) return;
+    this.#idleTimer = setTimeout(() => {
+      this.#idleTimer = null;
+      this.#dispatchIdle();
+    }, delay);
+  }
+
+  /** Cancel the pending `idle` fire. Used on disconnect and
+   *  when the `idle-duration` attribute changes to disable. */
+  #cancelIdle(): void {
+    if (this.#idleTimer !== null) {
+      clearTimeout(this.#idleTimer);
+      this.#idleTimer = null;
+    }
+  }
+
+  /** Resolve the configured idle duration in milliseconds. Empty
+   *  / missing attribute → `DEFAULT_IDLE_DURATION_MS`. Negative or
+   *  unparseable → `0` (disabled). */
+  #idleDurationMs(): number {
+    const raw = this.getAttribute("idle-duration");
+    if (raw === null) return DEFAULT_IDLE_DURATION_MS;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return parsed;
+  }
+
+  /** Fire the `idle` event with the current buffer plus the
+   *  live diagnostic counts. Consumers commonly gate auto-action
+   *  on `errorCount === 0`, but the event fires regardless so a
+   *  consumer that wants to react to settling-with-errors can. */
+  #dispatchIdle(): void {
+    const view = this.#view;
+    if (!view) return;
+    this.dispatchEvent(
+      new CustomEvent<IdleDetail>("idle", {
+        detail: {
+          value: view.state.doc.toString(),
+          doc: view.state.doc,
+          count: Math.max(0, this.#lastDiagnosticTotal),
+          errorCount: Math.max(0, this.#lastDiagnosticErrors),
+        },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
   /** Bubbling, composed event the editor fires on connect (and
