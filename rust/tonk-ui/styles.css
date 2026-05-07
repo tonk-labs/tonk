@@ -287,77 +287,106 @@ wa-page:has(.space-portals)::part(navigation-footer) {
     width: 100%;
 }
 
-/* The two floating notches: top-left holds the space switcher,
-   top-right holds profile + share. Both are absolutely
-   positioned over the grid so the React app underneath fills
-   the full viewport — the notches sit *on top* via z-index. */
-.portals-notch {
+/* Corner drawer (top-left): a small chevron handle tucked into
+   the rail's corner dead-space. Sized tight to the icon (not the
+   full RAIL_PX × RAIL_PX corner) so clicking elsewhere in the
+   corner falls through to the rail underneath instead of opening
+   the drawer. The drawer panel is what bundles the profile link
+   and the space switcher list — two nav items the previous design
+   split between two pill notches. */
+.portals-drawer {
     position: absolute;
-    top: var(--wa-space-s);
+    top: 8px;
+    left: 8px;
     z-index: 30;
-    display: flex;
-    align-items: center;
-    gap: var(--wa-space-2xs);
-    padding: var(--wa-space-2xs) var(--wa-space-xs);
-    background: var(--wa-color-surface-default);
-    border: 1px solid var(--wa-color-neutral-border-quiet);
-    border-radius: var(--wa-border-radius-m, 8px);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
 }
-.portals-notch--left {
-    left: var(--wa-space-s);
-}
-.portals-notch--right {
-    right: var(--wa-space-s);
-}
-
-/* Space switcher: `<details>` opens the dropdown on click. The
-   summary shows the current space name and a chevron; the menu
-   is absolutely positioned just below so it never affects the
-   grid below. `list-style: none` strips the native disclosure
-   triangle so we can supply our own caret via wa-icon. */
-.portals-switcher {
-    position: relative;
-}
-.portals-switcher__current {
-    display: flex;
-    align-items: center;
-    gap: var(--wa-space-2xs);
-    padding: var(--wa-space-2xs) var(--wa-space-xs);
+/* `display: block` on the summary (rather than flex) is what
+   actually hides the native disclosure triangle in WebKit/Blink
+   — when summary uses flex, the marker lingers as a flex child
+   regardless of `list-style: none`. The flex centering moves to
+   the `__handle-inner` span instead. Small padding gives a
+   comfortable click target without ballooning the hit zone. */
+.portals-drawer__handle {
+    display: block;
     cursor: pointer;
-    font-size: var(--wa-font-size-s);
-    font-weight: 600;
-    color: var(--wa-color-text-normal);
     list-style: none;
-    border-radius: var(--wa-border-radius-s, 4px);
+    color: var(--wa-color-text-quiet);
     user-select: none;
+    padding: 8px;
+    border-radius: var(--wa-border-radius-s, 4px);
+    transition: color 120ms ease;
 }
-.portals-switcher__current::-webkit-details-marker {
+.portals-drawer__handle::-webkit-details-marker {
     display: none;
 }
-.portals-switcher__current:hover {
-    background: var(--wa-color-neutral-fill-quiet);
+.portals-drawer__handle::marker {
+    content: "";
 }
-.portals-switcher__caret {
-    font-size: 0.75em;
-    color: var(--wa-color-text-quiet);
-    transition: transform 120ms ease;
+.portals-drawer__handle:hover {
+    color: var(--wa-color-text-normal);
 }
-.portals-switcher[open] .portals-switcher__caret {
-    transform: rotate(180deg);
+.portals-drawer__handle-inner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
 }
-.portals-switcher__menu {
+.portals-drawer__caret {
+    font-size: 1rem;
+    transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.portals-drawer[open] .portals-drawer__caret {
+    transform: rotate(90deg);
+}
+.portals-drawer__panel {
     position: absolute;
     top: calc(100% + var(--wa-space-2xs));
     left: 0;
     min-width: 14rem;
-    max-height: 60vh;
+    max-height: 70vh;
     overflow-y: auto;
     background: var(--wa-color-surface-default);
     border: 1px solid var(--wa-color-neutral-border-quiet);
     border-radius: var(--wa-border-radius-m, 8px);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
     padding: var(--wa-space-2xs);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.portals-drawer__profile {
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+    padding: var(--wa-space-2xs) var(--wa-space-xs);
+    text-decoration: none;
+    color: var(--wa-color-text-normal);
+    border-radius: var(--wa-border-radius-s, 4px);
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+}
+.portals-drawer__profile:hover {
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.portals-drawer__profile-sigil {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+    border-radius: 50%;
+    overflow: hidden;
+}
+.portals-drawer__profile-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.portals-drawer__divider {
+    height: 1px;
+    background: var(--wa-color-neutral-border-quiet);
+    margin: var(--wa-space-2xs) 0;
+}
+.portals-drawer__spaces {
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -423,43 +452,33 @@ wa-page:has(.space-portals)::part(navigation-footer) {
     white-space: nowrap;
 }
 
-/* Right-notch chrome: profile sigil tile + share button packed
-   into the same notch pill. The profile link wraps the sigil so
-   clicking the sigil routes to /profile. */
-.portals-notch-profile {
-    display: inline-flex;
+/* Top-right corner share button. Plain `<button>` styled as a
+   bare 40px icon — no background, no border — so it blends into
+   the rail strip the same way the drawer chevron does. */
+.portals-corner-share {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 30;
+    width: 40px;
+    height: 40px;
+    display: flex;
     align-items: center;
     justify-content: center;
-    width: 1.75rem;
-    height: 1.75rem;
-    border-radius: 50%;
-    overflow: hidden;
-    transition: transform 120ms ease;
-}
-.portals-notch-profile:hover {
-    transform: scale(1.05);
-}
-.portals-notch-sigil {
-    width: 100%;
-    height: 100%;
-}
-
-/* Share button sits next to the profile sigil — match its
-   compact circular footprint so the notch reads as a single
-   pill of icon-buttons rather than a banner with a chunky CTA.
-   wa-button exposes `--wa-form-control-height-s` and inset
-   padding tokens; we drop both to zero so the button hugs the
-   icon. */
-.portals-notch wa-button {
-    --wa-form-control-height-s: 1.75rem;
-    --wa-form-control-padding-inline-s: 0;
-}
-.portals-notch wa-button::part(base) {
-    width: 1.75rem;
-    height: 1.75rem;
-    min-width: 0;
+    background: transparent;
+    border: none;
     padding: 0;
-    border-radius: 50%;
+    margin: 0;
+    color: var(--wa-color-text-quiet);
+    cursor: pointer;
+    font-family: inherit;
+    transition: color 120ms ease;
+}
+.portals-corner-share:hover {
+    color: var(--wa-color-text-normal);
+}
+.portals-corner-share wa-icon {
+    font-size: 1rem;
 }
 
 /* Branches as collapsible rows. Each row's `<wa-details>`

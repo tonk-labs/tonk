@@ -1332,7 +1332,6 @@ where
     F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
 {
     let space_title = info.name.clone();
-    let space_title_for_summary = space_title.clone();
 
     let repo_attr = Signal::derive_local(move || space_name.get().unwrap_or_default());
     let host_attr = Signal::derive_local(move || {
@@ -1383,19 +1382,38 @@ where
 
     view! {
         <main class="space-portals">
-            <div class="portals-notch portals-notch--left">
-                <details class="portals-switcher">
-                    <summary class="portals-switcher__current">
-                        <span class="portals-switcher__name">
-                            { space_title_for_summary }
-                        </span>
+            // Top-left drawer: a 40px chevron button parked in the
+            // rail's corner. Click toggles a panel containing the
+            // profile link and the space switcher list — both nav
+            // items the previous design split between two notches.
+            // The chevron sits inside a `__handle-inner` span so the
+            // native `<summary>` marker can be hidden cleanly:
+            // browsers render the disclosure triangle as a flex
+            // child of the summary unless the summary is `display:
+            // block`, so we put the flex centering on the inner span.
+            <details class="portals-drawer">
+                <summary class="portals-drawer__handle" aria-label="Open menu">
+                    <span class="portals-drawer__handle-inner">
                         <wa-icon
-                            class="portals-switcher__caret"
-                            name="chevron-down"
-                            label="Switch space"
+                            class="portals-drawer__caret"
+                            name="chevron-right"
                         ></wa-icon>
-                    </summary>
-                    <div class="portals-switcher__menu">
+                    </span>
+                </summary>
+                <div class="portals-drawer__panel">
+                    <a
+                        class="portals-drawer__profile"
+                        href="/profile"
+                        aria-label="Profile"
+                    >
+                        <tonk-sigil
+                            class="portals-drawer__profile-sigil"
+                            value=move || profile_sigil.get()
+                        ></tonk-sigil>
+                        <span class="portals-drawer__profile-label">"Profile"</span>
+                    </a>
+                    <div class="portals-drawer__divider" role="separator"></div>
+                    <div class="portals-drawer__spaces">
                         { move || space_entries.get().map(|spaces| {
                             spaces
                                 .into_iter()
@@ -1441,33 +1459,21 @@ where
                             <span class="portals-switcher__item-name">"New space"</span>
                         </button>
                     </div>
-                </details>
-            </div>
+                </div>
+            </details>
 
-            <div class="portals-notch portals-notch--right">
-                <a
-                    class="portals-notch-profile"
-                    href="/profile"
-                    aria-label="Profile"
-                >
-                    <tonk-sigil
-                        class="portals-notch-sigil"
-                        value=move || profile_sigil.get()
-                    ></tonk-sigil>
-                </a>
-                <wa-button
-                    variant="neutral"
-                    appearance="accent"
-                    size="small"
-                    on:click=on_share
-                >
-                    <wa-icon
-                        name="share-nodes"
-                        variant="solid"
-                        label="Invite someone to this space"
-                    ></wa-icon>
-                </wa-button>
-            </div>
+            // Top-right corner: bare share icon button, also sized
+            // to fit inside the 40px rail strip. Plain `<button>`
+            // (not wa-button) so it has no chrome by default —
+            // matches the drawer chevron's "icon only" feel.
+            <button
+                type="button"
+                class="portals-corner-share"
+                on:click=on_share
+                aria-label="Invite someone to this space"
+            >
+                <wa-icon name="share-nodes" variant="solid"></wa-icon>
+            </button>
 
             { move || if ready.get() {
                 Either::Left(view! {

@@ -56,19 +56,27 @@
   flex: 1;
   width: 100%;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
+  justify-content: stretch;
   overflow: hidden;
+}
+
+/* The stage is the positioning context shared by the inner grid
+ * box, the absolute-positioned tile squares, the edge rails, and
+ * the insert ghost. Everything inside uses stage-local coords. */
+.tonk-portals-root .grid-stage {
+  position: relative;
+  flex: 1;
 }
 
 .tonk-portals-root .grid {
-  position: relative;
-  cursor: crosshair;
-  overflow: hidden;
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
-.tonk-portals-root .grid--dragging {
-  cursor: crosshair;
+.tonk-portals-root .grid--empty {
+  cursor: pointer;
 }
 
 .tonk-portals-root .grid__empty {
@@ -83,30 +91,48 @@
   letter-spacing: 0.01em;
 }
 
-.tonk-portals-root .grid-overlay {
+/* Edge rails: invisible hit zones around the grid that map mouse
+ * position to (edge, target node) for the BSP insert. The faint
+ * highlight on hover is the only persistent affordance — the real
+ * preview is the post-insert tile movement plus the blue ghost. */
+.tonk-portals-root .edge-rails {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 160ms ease;
 }
 
-.tonk-portals-root .grid:hover .grid-overlay {
-  opacity: 0.35;
-}
-
-.tonk-portals-root .grid--dragging .grid-overlay {
-  opacity: 1;
-}
-
-.tonk-portals-root .grid-dot {
+.tonk-portals-root .edge-zone {
   position: absolute;
-  width: 3px;
-  height: 3px;
-  margin-left: -1.5px;
-  margin-top: -1.5px;
-  border-radius: 50%;
-  background: var(--tp-dot);
+  top: 0;
+  left: 0;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background 120ms ease;
+  border-radius: 6px;
+}
+
+.tonk-portals-root .edge-zone:hover,
+.tonk-portals-root .edge-zone--hot {
+  background: var(--tp-accent-soft);
+}
+
+.tonk-portals-root .insert-ghost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  background: var(--tp-accent-soft);
+  border: 2px dashed var(--tp-accent);
+  border-radius: 12px;
+  z-index: 6;
+  transition:
+    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .tonk-portals-root .square {
@@ -130,21 +156,14 @@
     inset 0 0 0 2px var(--tp-accent);
 }
 
-.tonk-portals-root .square--active {
-  opacity: 0.35;
-  transition: opacity 100ms ease;
-}
-
 .tonk-portals-root .square__bar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   height: 28px;
-  cursor: grab;
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
-  touch-action: none;
   z-index: 1;
 }
 
@@ -170,10 +189,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
-}
-
-.tonk-portals-root .square__bar:active {
-  cursor: grabbing;
 }
 
 .tonk-portals-root .square__minimize,
@@ -223,6 +238,10 @@
   height: 10px;
   border: 1.5px solid currentColor;
   border-radius: 2px;
+}
+
+.tonk-portals-root .square__fullscreen--on {
+  color: var(--tp-accent);
 }
 
 .tonk-portals-root .square__close::before,
@@ -336,10 +355,11 @@
   display: flex;
   flex-direction: row;
   gap: 6px;
-  z-index: 10;
+  z-index: 20;
   max-width: calc(100% - 32px);
   overflow-x: auto;
   padding: 4px;
+  pointer-events: auto;
 }
 
 .tonk-portals-root .rail__tab {
@@ -398,21 +418,21 @@
   display: block;
 }
 
-/* While *any* square is mid-drag or mid-resize, every iframe
-   must stop swallowing pointermove events — otherwise the
-   hook's window-level listeners go silent the moment the
-   cursor crosses into an iframe's box (an iframe owns its
-   own window's events; they never bubble to the host). The
-   `:has(.square--active)` scope flips this on for the whole
-   portal whenever any tile is being manipulated, so a drag
-   that crosses neighbouring tiles still gets every move. */
-.tonk-portals-root:has(.square--active) .square__iframe {
-  pointer-events: none;
-}
-
 .tonk-portals-root .square__pick {
   position: absolute;
   inset: 0;
+  /* WA's native.css sets `button { height: var(--wa-form-control-height) }`
+     plus padding / line-height / white-space defaults. Those leak into the
+     light DOM here and would collapse the button to a ~40px form-control
+     box centered near the tile top instead of letting `inset: 0` size it
+     to the whole tile. Explicitly clear those defaults. */
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  line-height: 1.2;
+  white-space: normal;
+  font-size: inherit;
+  font-weight: inherit;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -423,6 +443,7 @@
   cursor: pointer;
   font-family: inherit;
   color: var(--tp-square-fg-quiet);
+  border-radius: 12px;
   transition:
     background 120ms ease,
     color 120ms ease;
@@ -448,74 +469,6 @@
   font-size: 13px;
   font-weight: 500;
   letter-spacing: 0.01em;
-}
-
-.tonk-portals-root .square__pick-size {
-  font-size: 11px;
-  color: var(--tp-square-fg-quieter);
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-}
-
-.tonk-portals-root .square__edge {
-  position: absolute;
-  touch-action: none;
-  z-index: 3;
-}
-
-.tonk-portals-root .square__edge--t {
-  top: 0;
-  left: 14px;
-  right: 14px;
-  height: 6px;
-  cursor: ns-resize;
-}
-
-.tonk-portals-root .square__edge--b {
-  bottom: 0;
-  left: 14px;
-  right: 14px;
-  height: 6px;
-  cursor: ns-resize;
-}
-
-.tonk-portals-root .square__edge--l {
-  top: 14px;
-  bottom: 14px;
-  left: 0;
-  width: 6px;
-  cursor: ew-resize;
-}
-
-.tonk-portals-root .square__edge--r {
-  top: 14px;
-  bottom: 14px;
-  right: 0;
-  width: 6px;
-  cursor: ew-resize;
-}
-
-.tonk-portals-root .square__handle {
-  position: absolute;
-  width: 14px;
-  height: 14px;
-  touch-action: none;
-  z-index: 4;
-}
-
-.tonk-portals-root .square__handle--tl { top: 0; left: 0; cursor: nwse-resize; }
-.tonk-portals-root .square__handle--tr { top: 0; right: 0; cursor: nesw-resize; }
-.tonk-portals-root .square__handle--bl { bottom: 0; left: 0; cursor: nesw-resize; }
-.tonk-portals-root .square__handle--br { bottom: 0; right: 0; cursor: nwse-resize; }
-
-.tonk-portals-root .selection-cell {
-  position: absolute;
-  top: 0;
-  left: 0;
-  background: var(--tp-accent-soft);
-  border: 1.5px solid var(--tp-accent);
-  border-radius: 8px;
-  pointer-events: none;
 }
 
 .tonk-portals-root .picker-anchor {
