@@ -2,11 +2,10 @@
 //! Slide — a local-only CLI for reading and writing tonk facts
 //! via the asserted-notation DSL.
 //!
-//! See `RFC.md` for the full design rationale. The crate's public
-//! surface is small on purpose: it exists so integration tests
-//! (which exercise commands without spawning the binary) and a
-//! future SDK consumer can drive the same code paths the CLI
-//! does.
+//! The crate's public surface is small on purpose: it exists so
+//! integration tests (which exercise commands without spawning
+//! the binary) and a future SDK consumer can drive the same code
+//! paths the CLI does.
 //!
 //! - [`site`] — `.tonk/` discovery, repo+branch open/init.
 //! - [`identity`] — local profile management.
@@ -14,13 +13,20 @@
 //!   render output.
 //! - [`output`] — render an [`tonk_schema::evaluate::EvaluateResponse`]
 //!   as YAML notation or JSON.
+//! - [`schema`] — branch introspection: dump every named
+//!   attribute and concept as a re-submittable notation document.
+//! - [`migrate`] — copy a `.carry/` directory to `.tonk/`.
+//! - [`guide`] — the asserted-notation reference, baked in.
 
 pub mod eval;
+pub mod guide;
 pub mod identity;
+pub mod migrate;
 pub mod output;
+pub mod schema;
 pub mod site;
 
-/// CLI exit codes, matching the RFC.
+/// CLI exit codes.
 ///
 /// Each is a small u8 so a [`std::process::exit`] call lands the
 /// right value on the shell. Agents can branch on these without

@@ -5,10 +5,25 @@ version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
+# Disable auto-discovery of tests so `tests/common.rs` (a shared
+# fixtures module pulled into each integration test via
+# `mod common;`) doesn't get compiled as its own empty binary.
+autotests = false
 
 [[bin]]
 name = "slide"
 path = "src/bin/slide.rs"
+
+# `autotests = false` is set in [package] to keep
+# `tests/common.rs` from being built as its own empty test
+# binary; list the real test binaries here explicitly.
+[[test]]
+name = "site"
+path = "tests/site.rs"
+
+[[test]]
+name = "notation"
+path = "tests/notation.rs"
 
 [features]
 integration-tests = []

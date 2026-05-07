@@ -227,50 +227,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn notation_round_trips_envelope_and_matches() {
-        let out = render(&sample_response(), Format::Notation, false).unwrap();
-        // Envelope side
-        assert!(out.contains("revision-before: null"));
-        assert!(out.contains("claims: 2"));
-        assert!(out.contains("alice: did:key:zHj"));
-        // Matches side
-        assert!(out.contains("---\n"));
-        assert!(out.contains("person did:key:zHj:"));
-        assert!(out.contains("name: \"Alice\""));
-        assert!(out.contains("age: 28"));
+    mod when_rendering_notation {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_writes_an_envelope_followed_by_a_matches_section() {
+            let out = render(&sample_response(), Format::Notation, false).unwrap();
+            assert!(out.contains("revision-before: null"));
+            assert!(out.contains("claims: 2"));
+            assert!(out.contains("alice: did:key:zHj"));
+            assert!(out.contains("---\n"));
+            assert!(out.contains("person did:key:zHj:"));
+            assert!(out.contains("name: \"Alice\""));
+            assert!(out.contains("age: 28"));
+        }
+
+        #[dialog_common::test]
+        fn it_omits_the_matches_section_when_quiet() {
+            let out = render(&sample_response(), Format::Notation, true).unwrap();
+            assert!(!out.contains("---"));
+            assert!(!out.contains("person did:key:"));
+        }
+
+        #[dialog_common::test]
+        fn it_skips_blocks_with_zero_results() {
+            let mut response = sample_response();
+            response.matches_after = vec![QueryMatchBlock {
+                label: "person".into(),
+                results: vec![],
+            }];
+            let out = render(&response, Format::Notation, false).unwrap();
+            assert!(!out.contains("---"));
+            assert!(!out.contains("person"));
+        }
     }
 
-    #[test]
-    fn quiet_skips_matches() {
-        let out = render(&sample_response(), Format::Notation, true).unwrap();
-        assert!(!out.contains("---"));
-        assert!(!out.contains("person did:key:"));
-    }
+    mod when_rendering_json {
+        use super::*;
 
-    #[test]
-    fn json_serializes_full_response() {
-        let out = render(&sample_response(), Format::Json, false).unwrap();
-        assert!(out.contains("\"matches_after\""));
-        assert!(out.contains("\"claims\": 2"));
-    }
+        #[dialog_common::test]
+        fn it_serializes_the_full_response() {
+            let out = render(&sample_response(), Format::Json, false).unwrap();
+            assert!(out.contains("\"matches_after\""));
+            assert!(out.contains("\"claims\": 2"));
+        }
 
-    #[test]
-    fn json_quiet_omits_matches() {
-        let out = render(&sample_response(), Format::Json, true).unwrap();
-        assert!(!out.contains("\"matches_after\""));
-        assert!(out.contains("\"commits\""));
-    }
-
-    #[test]
-    fn empty_matches_section_skipped() {
-        let mut response = sample_response();
-        response.matches_after = vec![QueryMatchBlock {
-            label: "person".into(),
-            results: vec![],
-        }];
-        let out = render(&response, Format::Notation, false).unwrap();
-        assert!(!out.contains("---"));
-        assert!(!out.contains("person"));
+        #[dialog_common::test]
+        fn it_omits_matches_when_quiet() {
+            let out = render(&sample_response(), Format::Json, true).unwrap();
+            assert!(!out.contains("\"matches_after\""));
+            assert!(out.contains("\"commits\""));
+        }
     }
 }

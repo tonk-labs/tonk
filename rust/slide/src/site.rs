@@ -2,9 +2,9 @@
 //!
 //! A *site* is a working directory that contains a `.tonk/`
 //! sub-directory, in which a single dialog repository named
-//! `main` lives. Slide only ever reads or writes that one
+//! `main` lives. Slide only reads and writes that one
 //! repository on the `main` branch — multi-branch / multi-repo
-//! UX is intentionally out of scope at v0.
+//! UX is intentionally not exposed.
 //!
 //! [`SlideSite`] is the assembled context every command works
 //! against: profile, operator (rooted at `.tonk/`), the
@@ -25,7 +25,7 @@ use dialog_storage::provider::storage::{NativeSpace, Storage};
 /// lands.
 pub const REPO_NAME: &str = "main";
 
-/// Default branch slide reads and writes. v0 is single-branch.
+/// The single branch slide reads and writes against.
 pub const BRANCH_NAME: &str = "main";
 
 /// Profile name used for the local identity. Shared with carry

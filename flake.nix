@@ -205,12 +205,13 @@
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
+            args = "--workspace --exclude slide";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--release";
+            args = "--workspace --exclude slide --release";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''

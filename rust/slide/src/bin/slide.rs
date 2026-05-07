@@ -1,10 +1,11 @@
 //! `slide` — local-only CLI for reading and writing tonk facts
 //! via asserted-notation.
 //!
-//! Three subcommands at v0: `init`, `identity`, `eval`. The
-//! mutating verb is `eval`, which consumes a notation document
+//! The mutating verb is `eval`: it consumes a notation document
 //! and runs the analyze → query → plan → commit pipeline against
-//! the local `.tonk/` site. Everything else is plumbing.
+//! the local `.tonk/` site. The other subcommands (`init`,
+//! `identity`, `guide`, `schema`, `migrate`) are read-only or
+//! one-shot setup helpers.
 
 use std::io::{IsTerminal as _, Write as _};
 use std::path::PathBuf;
@@ -12,8 +13,9 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use slide::eval::{self, EvalError, Source};
+use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
-use slide::{ExitCode, identity, site};
+use slide::{ExitCode, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,6 +52,29 @@ enum Command {
 
     /// Evaluate commands in the current repo
     Eval(EvalArgs),
+
+    /// Print the asserted-notation guide. Useful for agent harnesses
+    /// that need to learn the syntax without repo access.
+    Guide,
+
+    /// Print the current site's schema (every named attribute and
+    /// concept) as a re-submittable notation document.
+    Schema,
+
+    /// Migrate a `.carry/` directory to `.tonk/`. Walks up from
+    /// `$PWD` to find the source unless `--from` is supplied; the
+    /// destination is always a sibling `.tonk/` of the source.
+    Migrate {
+        /// Explicit source `.carry/` directory. Default: walk up
+        /// from `$PWD`.
+        #[arg(long, value_name = "PATH")]
+        from: Option<PathBuf>,
+
+        /// Move instead of copy. Atomic rename on the same
+        /// filesystem; copy + delete fallback otherwise.
+        #[arg(long = "move")]
+        do_move: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -96,6 +121,9 @@ async fn main() {
         Command::Init { label } => init(label).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Eval(args) => eval(args).await,
+        Command::Guide => print_guide(),
+        Command::Schema => print_schema().await,
+        Command::Migrate { from, do_move } => migrate(from, do_move).await,
     };
     std::process::exit(exit.into_raw());
 }
@@ -194,6 +222,64 @@ fn resolve_source(args: &EvalArgs) -> Result<Source, String> {
                 Ok(Source::Stdin)
             }
         }
+    }
+}
+
+fn print_guide() -> ExitCode {
+    let mut stdout = std::io::stdout().lock();
+    if let Err(e) = stdout.write_all(guide::GUIDE.as_bytes()) {
+        return print_error(format!("failed to write stdout: {e}"));
+    }
+    ExitCode::Success
+}
+
+async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let mode = if do_move {
+        MigrateMode::Move
+    } else {
+        MigrateMode::Copy
+    };
+    match migrate::run(&cwd, from.as_deref(), mode).await {
+        Ok(outcome) => {
+            let verb = if outcome.moved { "Moved" } else { "Copied" };
+            println!(
+                "{verb} {} -> {}",
+                outcome.source.display(),
+                outcome.destination.display()
+            );
+            println!("DID: {}", outcome.repo_did);
+            println!(
+                "note: any sync remotes from carry's meta branch are preserved on disk; \
+                 slide doesn't read them yet."
+            );
+            ExitCode::Success
+        }
+        Err(err) => print_error(err.to_string()),
+    }
+}
+
+async fn print_schema() -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+    match schema::render(&site).await {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            if let Err(e) = stdout.write_all(text.as_bytes()) {
+                return print_error(format!("failed to write stdout: {e}"));
+            }
+            ExitCode::Success
+        }
+        Err(err) => print_error(err.to_string()),
     }
 }
 

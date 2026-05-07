@@ -61,7 +61,7 @@ impl Source {
 /// shim.
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Output format selector — RFC default is notation.
+    /// Output format selector. Default is notation.
     pub format: Format,
     /// Suppress the matches section and emit only the envelope.
     pub quiet: bool,
