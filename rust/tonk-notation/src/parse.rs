@@ -17,16 +17,10 @@ use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
 use crate::syntax::{
-    Assertion, Binding, Expression, Field, FieldValue, Head, HeadName, Query, Reference,
-    Retraction, Scalar, Syntax,
+    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Query, Scalar, Syntax,
 };
 
-/// Outcome of a parse: a [`Syntax`] tree (when the parser made it
-/// through end-to-end) plus any diagnostics raised along the way.
-///
-/// `syntax.is_some()` does not imply `diagnostics.is_empty()` — a
-/// partially-broken document yields the well-formed subset of
-/// expressions so the language server can show every issue.
+/// Outcome of a parse.
 #[derive(Clone, Debug, Default)]
 pub struct Parsed {
     /// The parsed [`Syntax`] when parsing reached the bottom.
@@ -37,8 +31,6 @@ pub struct Parsed {
 
 /// Parse `text` as a YAML document and convert it to a [`Syntax`]
 /// tree.
-///
-/// Empty input is a no-op success.
 pub fn parse(text: &str) -> Parsed {
     let documents = match parse_documents(text) {
         Ok(documents) => documents,
@@ -63,7 +55,7 @@ pub fn parse(text: &str) -> Parsed {
             None => doc_range,
             Some(existing) => extend_range(existing, doc_range),
         });
-        walk_document(doc, &mut expressions, &mut diagnostics);
+        walk_document(doc, text, &mut expressions, &mut diagnostics);
     }
 
     let range = overall_range.unwrap_or_default();
@@ -82,30 +74,30 @@ pub fn parse(text: &str) -> Parsed {
 // collapses duplicate keys (last value wins). We want the opposite:
 // two identical `head:` blocks at the document root should both
 // produce expressions, so the user can spread one query across
-// multiple blocks. Inside nested mappings we still rely on saphyr's
-// natural map semantics — duplicate field names there are not
-// meaningful.
-//
-// To preserve duplicates only at the document root we drive the
-// `saphyr-parser` event stream ourselves, capture the root mapping
-// as an ordered `Vec<(MarkedYaml, MarkedYaml)>`, and replay the
-// events for each value sub-tree into a fresh `YamlLoader` so
-// nested structure (and source spans) come back identical to what
-// `MarkedYaml::load_from_str` would have produced.
+// multiple blocks.
 
 /// One parsed YAML document with its root pairs in source order.
-/// `pairs == None` means the document root was not a mapping.
 struct TopLevelDoc<'input> {
     pairs: Option<Vec<(MarkedYaml<'input>, MarkedYaml<'input>)>>,
     span: Span,
+    /// Spans of any `Event::Alias` events seen in this document.
+    /// Aliases are not supported in this notation — saphyr's loader
+    /// resolves them silently by substituting the anchor's content,
+    /// so we have to remember the events ourselves to surface them
+    /// as diagnostics.
+    alias_spans: Vec<Span>,
 }
 
 fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
     let mut parser = Parser::new_from_str(text);
-    let mut docs = Vec::new();
+    let mut docs: Vec<TopLevelDoc<'_>> = Vec::new();
     let mut state = LoaderState::Idle;
+    let mut current_aliases: Vec<Span> = Vec::new();
     while let Some(event) = parser.next_event() {
         let (event, span) = event?;
+        if matches!(event, Event::Alias(_)) {
+            current_aliases.push(span);
+        }
         match &mut state {
             LoaderState::Idle => match event {
                 Event::DocumentStart(_) => {
@@ -126,14 +118,11 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                     docs.push(TopLevelDoc {
                         pairs: None,
                         span: Span::new(*start, span.end),
+                        alias_spans: std::mem::take(&mut current_aliases),
                     });
                     state = LoaderState::Idle;
                 }
                 _ => {
-                    // Non-mapping document root (scalar / sequence).
-                    // Drain any nested events back to DocumentEnd
-                    // so we can attach a span and report `not a
-                    // mapping` to the caller.
                     let mut depth = match &event {
                         Event::SequenceStart(_, _) | Event::MappingStart(_, _) => 1u32,
                         _ => 0,
@@ -159,6 +148,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                     docs.push(TopLevelDoc {
                         pairs: None,
                         span: Span::new(*start, document_end),
+                        alias_spans: std::mem::take(&mut current_aliases),
                     });
                     state = LoaderState::Idle;
                 }
@@ -174,6 +164,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                     docs.push(TopLevelDoc {
                         pairs: Some(pairs),
                         span: Span::new(*start, document_end),
+                        alias_spans: std::mem::take(&mut current_aliases),
                     });
                     state = LoaderState::Idle;
                 }
@@ -182,27 +173,19 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                     *pending_key = Some(key);
                 }
                 _ if pending_key.is_some() => {
-                    // The next sub-tree (scalar/mapping/sequence/
-                    // alias) is the value for the pending key.
                     let key = pending_key.take().unwrap();
-                    let value = load_subtree(&mut parser, event, span)?;
+                    let value = load_subtree(&mut parser, event, span, &mut current_aliases)?;
                     pairs.push((key, value));
                 }
                 Event::Scalar(_, _, _, _) => {
-                    // Unreachable: `pending_key.is_none()` matched above.
                     unreachable!("scalar handling covered by pending_key arms");
                 }
                 _ => {
-                    // Mapping/sequence/alias *as a key* — not
-                    // supported here. Surface as an empty pair
-                    // with a synthetic null key so the walker can
-                    // diagnose it. Consume the sub-tree to keep
-                    // state consistent.
                     let synthetic_key = MarkedYaml {
                         span,
                         data: YamlData::Value(SaphyrScalar::Null),
                     };
-                    let value = load_subtree(&mut parser, event, span)?;
+                    let value = load_subtree(&mut parser, event, span, &mut current_aliases)?;
                     pairs.push((synthetic_key, value));
                 }
             },
@@ -223,9 +206,6 @@ enum LoaderState<'input> {
     },
 }
 
-/// Build a `MarkedYaml` for a single scalar event (used for the
-/// document-root keys we capture before delegating values back to
-/// the loader).
 fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml<'input> {
     let Event::Scalar(value, style, _, tag) = event else {
         unreachable!("scalar_to_marked_yaml called on non-scalar event");
@@ -251,25 +231,24 @@ fn yaml_to_data<'input>(yaml: saphyr::Yaml<'input>) -> YamlData<'input, MarkedYa
             YamlData::Representation(text, style, tag)
         }
         saphyr::Yaml::BadValue => YamlData::BadValue,
-        // Scalars only here; mapping/sequence are not produced by
-        // value_from_cow_and_metadata.
         _ => YamlData::BadValue,
     }
 }
 
-/// Replay a single value sub-tree starting from `first_event` into
-/// a fresh `YamlLoader<MarkedYaml>` and return the loaded node.
-///
-/// Tracks nesting depth to know when the sub-tree is complete.
-/// Wraps the events in synthetic `StreamStart/DocumentStart/
-/// DocumentEnd/StreamEnd` so the loader produces exactly one
-/// document.
 fn load_subtree<'input>(
     parser: &mut Parser<'input, StrInput<'input>>,
     first_event: Event<'input>,
     first_span: Span,
+    alias_spans: &mut Vec<Span>,
 ) -> Result<MarkedYaml<'input>, ScanError> {
+    // `early_parse(false)` keeps every scalar as
+    // `YamlData::Representation(text, style, tag)` instead of
+    // collapsing it to a typed `Value`. We need the original
+    // `ScalarStyle` to tell quoted strings apart from plain
+    // scalars (the latter classify into Symbol / Variable / Uri /
+    // Blank, while the former are always literals).
     let mut loader: YamlLoader<MarkedYaml<'input>> = YamlLoader::default();
+    loader.early_parse(false);
     let stream_mark = Span::empty(first_span.start);
     loader.on_event(Event::StreamStart, stream_mark);
     loader.on_event(Event::DocumentStart(false), stream_mark);
@@ -279,11 +258,17 @@ fn load_subtree<'input>(
         _ => 0,
     };
     let mut last_end = first_span.end;
+    if matches!(first_event, Event::Alias(_)) {
+        alias_spans.push(first_span);
+    }
     loader.on_event(first_event, first_span);
     while depth > 0 {
         match parser.next_event() {
             Some(Ok((ev, sp))) => {
                 last_end = sp.end;
+                if matches!(ev, Event::Alias(_)) {
+                    alias_spans.push(sp);
+                }
                 match &ev {
                     Event::SequenceStart(_, _) | Event::MappingStart(_, _) => depth += 1,
                     Event::SequenceEnd | Event::MappingEnd => depth -= 1,
@@ -306,9 +291,6 @@ fn load_subtree<'input>(
     }))
 }
 
-/// After a document root finishes, drain events until `DocumentEnd`
-/// and return its end marker. (`StreamEnd` may follow but is not
-/// our concern.)
 fn expect_document_end<'input>(
     parser: &mut Parser<'input, StrInput<'input>>,
     fallback: Marker,
@@ -328,17 +310,21 @@ fn expect_document_end<'input>(
 // YAML walker (saphyr → Syntax)
 // -----------------------------------------------------------------
 
-/// Top-level walk of one YAML document. Each `(head, body)` pair
-/// from the document-root mapping becomes one [`Expression`].
-///
-/// Pairs are produced in source order with duplicates preserved
-/// (see [`parse_documents`]) so two `person ?alice:` blocks do not
-/// silently collapse into one.
 fn walk_document(
     doc: &TopLevelDoc<'_>,
+    source: &str,
     expressions: &mut Vec<Expression>,
     out: &mut Vec<Diagnostic>,
 ) {
+    for span in &doc.alias_spans {
+        out.push(error(
+            range_from_span(*span),
+            "YAML aliases (`*name`) are not supported in this notation. \
+             Use a `&anchor` plus the bare symbol name (`person-name`) to \
+             reference an in-document entity, or a `did:key:…` / `id:…` \
+             URI.",
+        ));
+    }
     let Some(pairs) = &doc.pairs else {
         out.push(error(
             range_from_span(doc.span),
@@ -348,7 +334,7 @@ fn walk_document(
         return;
     };
     for (head_key, body_value) in pairs {
-        if let Some(expression) = walk_expression(head_key, body_value, out) {
+        if let Some(expression) = walk_expression(head_key, body_value, source, out) {
             expressions.push(expression);
         }
     }
@@ -357,6 +343,7 @@ fn walk_document(
 fn walk_expression(
     key: &MarkedYaml<'_>,
     value: &MarkedYaml<'_>,
+    source: &str,
     out: &mut Vec<Diagnostic>,
 ) -> Option<Expression> {
     let key_text = match string_of(key) {
@@ -364,8 +351,9 @@ fn walk_expression(
         None => {
             out.push(error(
                 range_of(key),
-                "Head must be a string (a concept name like `person`, \
-                 `person!`, or a claim domain like `xyz.tonk!`).",
+                "Head must be a string (a concept name like `person` or \
+                 `person!`, a claim domain like `xyz.tonk!`, or a URI \
+                 like `db:concept!`).",
             ));
             return None;
         }
@@ -374,22 +362,22 @@ fn walk_expression(
     let key_range = range_of(key);
     let head = parse_head(key_text, key_range, out)?;
     let block_range = extend_range(key_range, range_of(value));
+    let anchor = scan_anchor(source, key.span.end, value.span.start);
 
-    // Body: `_` (retraction), null/empty (no-fields query or
-    // assertion), or a mapping of fields.
+    // Body: null/empty (no-fields query or assertion), or a
+    // mapping of fields. A bare `_` body is rejected — entity
+    // selection requires a `this:` field, which requires a
+    // mapping body. Per-field retraction lives inside the body
+    // as `field: _` or `..: _`.
     if is_blank_scalar(value) {
-        if !head.effect {
-            out.push(error(
-                range_of(value),
-                "Bare `_` body is only valid on `head!:` (assertion or \
-                 retraction). A query body cannot be `_`.",
-            ));
-            return None;
-        }
-        return Some(Expression::Retraction(Retraction {
-            head,
-            range: block_range,
-        }));
+        out.push(error(
+            range_of(value),
+            "A bare `_` body is not allowed. Retract attributes from \
+             inside the body (`field: _` for one attribute, `..: _` for \
+             the rest of the concept's `with:` map). The entity must be \
+             selected with `this:` in the same body.",
+        ));
+        return None;
     }
 
     let field_nodes = match &value.data {
@@ -402,10 +390,14 @@ fn walk_expression(
             }
             nodes
         }
-        // `head:` with no body — saphyr surfaces this as a null
-        // scalar. Treat as an empty field list (a query for any
-        // entity matching the head, or an effect-free assertion).
+        // Empty body — saphyr surfaces this as either a typed
+        // null (`Value::Null`) or, with `early_parse(false)`, a
+        // plain-scalar `Representation` whose text is empty or
+        // the YAML core-schema null token (`~`, `null`). Treat
+        // any of those as "no fields", which is a query for any
+        // entity matching the head, or an effect-free assertion.
         YamlData::Value(SaphyrScalar::Null) => Vec::new(),
+        YamlData::Representation(text, _, _) if is_null_text(text.as_ref()) => Vec::new(),
         _ => {
             out.push(error(
                 range_of(value),
@@ -419,10 +411,21 @@ fn walk_expression(
     if head.effect {
         Some(Expression::Assertion(Assertion {
             head,
+            anchor,
             fields: field_nodes,
             range: block_range,
         }))
     } else {
+        if anchor.is_some() {
+            // Anchors only make sense on assertions (one entity per
+            // expression). Reject on queries.
+            out.push(error(
+                block_range,
+                "`&anchor` is only allowed on assertion heads (`head!:`). \
+                 Queries can match many entities, so an anchor would have \
+                 no single target to point at.",
+            ));
+        }
         Some(Expression::Query(Query {
             head,
             fields: field_nodes,
@@ -431,10 +434,12 @@ fn walk_expression(
     }
 }
 
-/// Parse `"name"`, `"name!"`, `"name binding"`, `"name! binding"`
-/// into a [`Head`]. Splits on the first ASCII whitespace; the
-/// first token (with optional trailing `!`) is the name; the rest
-/// is the binding.
+/// Parse the head text — `name` or `name!`.
+///
+/// The new grammar forbids inline bindings on the head; everything
+/// about *which* entity an expression operates on lives in the
+/// body via `this:` (or, for assertions, via a `&anchor` between
+/// the colon and the body).
 fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option<Head> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -442,15 +447,23 @@ fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option
         return None;
     }
 
-    let (name_token, binding_token) = match trimmed.find(char::is_whitespace) {
-        Some(idx) => (&trimmed[..idx], trimmed[idx..].trim_start()),
-        None => (trimmed, ""),
-    };
+    // Detect old inline-binding shapes (`person ?p`, `person! alice`,
+    // `person did:key:zX`) and emit a guiding diagnostic.
+    if trimmed.contains(char::is_whitespace) {
+        out.push(error(
+            key_range,
+            "Heads carry only `name[!]`. Move the entity binding into \
+             the body's `this:` field (e.g. `person:\\n  this: ?p`) or, \
+             for assertions, use a `&anchor` between the colon and the \
+             body (e.g. `person!: &alice`).",
+        ));
+        return None;
+    }
 
-    let (name_str, effect) = if let Some(stripped) = name_token.strip_suffix('!') {
+    let (name_str, effect) = if let Some(stripped) = trimmed.strip_suffix('!') {
         (stripped, true)
     } else {
-        (name_token, false)
+        (trimmed, false)
     };
 
     if name_str.is_empty() {
@@ -461,40 +474,92 @@ fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option
         return None;
     }
 
-    // Spans for name vs binding inside the key. We only know the
-    // key's overall range, not byte offsets within it, so we
-    // attribute both to the same range. Editors will still
-    // highlight the right line; precise sub-spans can land later.
-    let name_range = key_range;
-    let binding_range = key_range;
-
-    let name = if name_str.contains('.') {
-        HeadName::Claim(name_str.to_owned())
-    } else {
-        HeadName::Concept(name_str.to_owned())
-    };
-
-    let binding = parse_binding(binding_token);
+    let name = classify_head_name(name_str);
 
     Some(Head {
         name,
-        name_range,
-        name_source: name_str.to_owned(),
+        range: key_range,
+        source: name_str.to_owned(),
         effect,
-        binding,
-        binding_range,
     })
 }
 
-fn parse_binding(text: &str) -> Binding {
-    if text.is_empty() {
-        Binding::Anonymous
-    } else if let Some(rest) = text.strip_prefix('?') {
-        Binding::Variable(rest.to_owned())
-    } else if text.contains(':') {
-        Binding::Uri(text.to_owned())
+/// Decide whether a head name is a concept, a claim domain, or a
+/// URI.
+///
+/// - `db:`, `id:`, `did:`, `xyz.tonk/foo` — anything containing `:`
+///   or `/` reads as a [`HeadName::Uri`].
+/// - Reverse-dotted (`xyz.tonk`, `io.gozala.person`) — claim domain.
+/// - Bare lowercase identifier — concept.
+fn classify_head_name(name: &str) -> HeadName {
+    if name.contains(':') || name.contains('/') {
+        HeadName::Uri(name.to_owned())
+    } else if name.contains('.') {
+        HeadName::Claim(name.to_owned())
     } else {
-        Binding::Bookmark(text.to_owned())
+        HeadName::Concept(name.to_owned())
+    }
+}
+
+/// Scan the source slice between a head's `:` (`key.span.end`) and
+/// the start of its value (`value.span.start`) for a YAML anchor
+/// (`&name`).
+///
+/// saphyr-parser registers anchors as numeric IDs and doesn't
+/// expose the literal name on events, so we recover the name by
+/// scanning the source slice ourselves. The slice contains
+/// whitespace, possibly a newline, and at most one `&anchor` token
+/// before the value's first character.
+fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<Anchor> {
+    let start = after_key.index();
+    let end = before_value.index();
+    if end <= start || end > source.len() {
+        return None;
+    }
+    let slice = &source[start..end];
+    let amp_pos = slice.find('&')?;
+    let after_amp = &slice[amp_pos + 1..];
+    let name_len = after_amp
+        .find(|c: char| !is_anchor_char(c))
+        .unwrap_or(after_amp.len());
+    if name_len == 0 {
+        return None;
+    }
+    let name = &after_amp[..name_len];
+
+    // Translate byte offsets back to LSP positions. We start from
+    // the `&`'s line/column on the source — counting newlines from
+    // the source start to the absolute offset.
+    let amp_abs = start + amp_pos;
+    let amp_pos_lsp = byte_offset_to_position(source, amp_abs);
+    let end_pos_lsp = byte_offset_to_position(source, amp_abs + 1 + name_len);
+    Some(Anchor {
+        name: name.to_owned(),
+        range: Range {
+            start: amp_pos_lsp,
+            end: end_pos_lsp,
+        },
+    })
+}
+
+/// YAML anchor character predicate — same set saphyr's
+/// `is_anchor_char` accepts: alphanumeric, `-`, `_`, `+`, `.`.
+fn is_anchor_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.')
+}
+
+/// Convert an absolute byte offset into the source into an LSP
+/// position. Linear scan; called at most once per anchor, so cost
+/// is fine.
+fn byte_offset_to_position(source: &str, offset: usize) -> Position {
+    let clamped = offset.min(source.len());
+    let prefix = &source[..clamped];
+    let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32;
+    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let column = source[line_start..clamped].chars().count() as u32;
+    Position {
+        line,
+        character: column,
     }
 }
 
@@ -519,8 +584,29 @@ fn walk_field(
 
 fn walk_field_value(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<FieldValue> {
     match &value.data {
-        YamlData::Value(SaphyrScalar::String(s)) => Some(classify_string_value(s.as_ref())),
-        YamlData::Representation(text, _, _) => Some(classify_string_value(text.as_ref())),
+        YamlData::Value(SaphyrScalar::String(s)) => {
+            // Saphyr's `Value::String` covers both quoted strings
+            // and plain scalars that look stringy. We can't tell
+            // them apart from `YamlData` alone — but the
+            // `Representation` arm below handles plain scalars,
+            // and string values reaching `Value::String` are
+            // either quoted or contain non-symbol characters
+            // (uppercase, spaces, punctuation), which means they
+            // are unambiguously string literals.
+            Some(FieldValue::Literal(Scalar::String(s.as_ref().to_owned())))
+        }
+        YamlData::Representation(text, style, _) => {
+            // A plain (unquoted) scalar can be a symbol, a
+            // variable, a URI, or a literal that the YAML core
+            // schema didn't promote to a typed value (e.g. all
+            // letters). Quoted scalars are always literals.
+            match style {
+                ScalarStyle::DoubleQuoted | ScalarStyle::SingleQuoted => Some(FieldValue::Literal(
+                    Scalar::String(text.as_ref().to_owned()),
+                )),
+                _ => Some(classify_plain_value(text.as_ref())),
+            }
+        }
         YamlData::Value(scalar) => Some(FieldValue::Literal(scalar_from_saphyr(scalar))),
         YamlData::Mapping(map) => {
             let mut nested = Vec::new();
@@ -540,40 +626,104 @@ fn walk_field_value(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option
             None
         }
         YamlData::Tagged(_, inner) => walk_field_value(inner, out),
-        YamlData::Alias(_) | YamlData::BadValue => {
+        YamlData::Alias(_) => {
+            out.push(error(
+                range_of(value),
+                "YAML aliases (`*name`) are not supported in this \
+                 notation. Use a `&anchor` plus the bare symbol name \
+                 (`person-name`) to reference an in-document entity, or \
+                 a `did:key:…` / `id:…` URI.",
+            ));
+            None
+        }
+        YamlData::BadValue => {
             out.push(error(range_of(value), "Unsupported YAML node here."));
             None
         }
     }
 }
 
-/// Classify a string value into the appropriate [`FieldValue`].
+/// Classify a plain (unquoted) scalar into the appropriate
+/// [`FieldValue`].
 ///
 /// - `_` → [`FieldValue::Blank`]
 /// - `?name` → [`FieldValue::Variable`]
-/// - `.name` (leading dot) → [`FieldValue::Reference`] (bookmark)
-/// - any text containing `:` → [`FieldValue::Reference`] (URI)
-/// - everything else (bare identifiers, sentences, etc.) →
-///   [`FieldValue::Literal`] string
+/// - URI shapes (contains `:` or `/`) → [`FieldValue::Uri`]
+/// - bare lowercase identifier → [`FieldValue::Symbol`]
+/// - everything else (uppercase, mixed case, dotted) → string
+///   literal
 ///
-/// References require an explicit sigil (`.` for bookmarks, `:`
-/// inside the value for URIs) so the parser never has to guess
-/// whether a bare token is a reference or a literal. The leading
-/// dot is unambiguous because no bare identifier begins with `.`
-/// (the dot is reserved for reverse-domain claim heads, which
-/// never appear in value position).
-fn classify_string_value(s: &str) -> FieldValue {
-    if s == "_" {
-        FieldValue::Blank
-    } else if let Some(rest) = s.strip_prefix('?') {
-        FieldValue::Variable(rest.to_owned())
-    } else if let Some(rest) = s.strip_prefix('.') {
-        FieldValue::Reference(Reference::Bookmark(rest.to_owned()))
-    } else if s.contains(':') {
-        FieldValue::Reference(Reference::Uri(s.to_owned()))
-    } else {
-        FieldValue::Literal(Scalar::String(s.to_owned()))
+/// References require an explicit shape (no leading sigil for
+/// symbols — bare lowercase is itself the marker). Quotes
+/// distinguish string literals that would otherwise look like
+/// symbols.
+fn classify_plain_value(text: &str) -> FieldValue {
+    if text == "_" {
+        return FieldValue::Blank;
     }
+    if let Some(rest) = text.strip_prefix('?') {
+        return FieldValue::Variable(rest.to_owned());
+    }
+    if text.contains(':') || text.contains('/') {
+        return FieldValue::Uri(text.to_owned());
+    }
+    // YAML core-schema typed values (numbers, booleans, null)
+    // bypass the symbol/literal classification: a plain `28` is
+    // an integer, not a symbol, even though `28` would not
+    // satisfy `is_symbol` either.
+    if let Some(scalar) = parse_typed_scalar(text) {
+        return FieldValue::Literal(scalar);
+    }
+    if is_symbol(text) {
+        return FieldValue::Symbol(text.to_owned());
+    }
+    FieldValue::Literal(Scalar::String(text.to_owned()))
+}
+
+/// Try to parse `text` as a YAML core-schema typed scalar
+/// (integer, float, bool, null). Returns `None` if the text
+/// doesn't match any of those forms.
+fn parse_typed_scalar(text: &str) -> Option<Scalar> {
+    match text {
+        "null" | "Null" | "NULL" | "~" => return Some(Scalar::Null),
+        "true" | "True" | "TRUE" => return Some(Scalar::Boolean(true)),
+        "false" | "False" | "FALSE" => return Some(Scalar::Boolean(false)),
+        _ => {}
+    }
+    if let Ok(i) = text.parse::<i128>() {
+        return Some(Scalar::Integer(i));
+    }
+    if let Ok(u) = text.parse::<u128>() {
+        return Some(Scalar::UnsignedInteger(u));
+    }
+    if let Ok(f) = text.parse::<f64>() {
+        return Some(Scalar::Float(f));
+    }
+    None
+}
+
+/// Recognise text that saphyr-parser produces for an empty or
+/// explicit-null scalar value. With `early_parse(false)` the
+/// `Yaml::value_from_cow_and_metadata` collapse never runs, so the
+/// raw text reaches us — `""` for an implicit empty scalar (`key:`
+/// with nothing after it), `"~"` / `"null"` / `"Null"` / `"NULL"`
+/// for the explicit forms.
+fn is_null_text(text: &str) -> bool {
+    matches!(text, "" | "~" | "null" | "Null" | "NULL")
+}
+
+/// Symbol charset: starts with a-z, continues with a-z 0-9 - . +.
+/// Mirrors the guide's *Symbols and strings* section.
+fn is_symbol(text: &str) -> bool {
+    let mut chars = text.chars();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '+'))
 }
 
 fn is_blank_scalar(value: &MarkedYaml<'_>) -> bool {
@@ -619,9 +769,6 @@ fn diagnostic_for_scan_error(err: &ScanError) -> Diagnostic {
     }
 }
 
-/// Convert a saphyr marker to an LSP position. Saphyr uses
-/// 1-indexed lines and 0-indexed columns; LSP uses 0-indexed for
-/// both.
 pub(crate) fn position_at(marker: &saphyr::Marker) -> Position {
     Position {
         line: (marker.line() as u32).saturating_sub(1),
@@ -629,8 +776,6 @@ pub(crate) fn position_at(marker: &saphyr::Marker) -> Position {
     }
 }
 
-/// Convert a saphyr node's span to an LSP range. Zero-width spans
-/// get widened to one column so editor squiggles render visibly.
 pub(crate) fn range_of(node: &MarkedYaml<'_>) -> Range {
     range_from_span(node.span)
 }
@@ -696,14 +841,14 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn empty_input_is_clean() {
+    fn it_returns_clean_on_empty_input() {
         let parsed = parse("");
         assert!(parsed.diagnostics.is_empty());
         assert!(parsed.syntax.is_none());
     }
 
     #[dialog_common::test]
-    fn yaml_parse_error_surfaces() {
+    fn it_surfaces_yaml_parse_errors() {
         let parsed = parse("a:\n  b: 1\n c: 2\n");
         assert!(parsed.syntax.is_none());
         assert_eq!(parsed.diagnostics.len(), 1);
@@ -711,7 +856,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn scalar_root_is_an_error() {
+    fn it_rejects_scalar_root() {
         let parsed = parse("just a string\n");
         assert_eq!(parsed.diagnostics.len(), 1);
         assert!(
@@ -722,43 +867,49 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn query_concept_no_binding() {
+    fn it_parses_concept_query_with_no_body() {
         let syntax = parse_clean("person:\n");
         assert_eq!(syntax.expressions.len(), 1);
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query, got {:?}", syntax.expressions[0]);
         };
         assert!(matches!(&q.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(matches!(q.head.binding, Binding::Anonymous));
         assert!(!q.head.effect);
         assert!(q.fields.is_empty());
     }
 
     #[dialog_common::test]
-    fn query_concept_with_variable_and_literal() {
+    fn it_parses_query_with_this_variable_and_literal() {
         let syntax = parse_clean(
-            "person ?alice:\n\
-             \x20 name: \"Alice\"\n\
-             \x20 age: ?age\n",
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+  age: ?age
+"#,
         );
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.binding, Binding::Variable(v) if v == "alice"));
-        assert_eq!(q.fields.len(), 2);
+        assert!(matches!(&q.head.name, HeadName::Concept(n) if n == "person"));
+        assert_eq!(q.fields.len(), 3);
+        assert_eq!(q.fields[0].name, "this");
+        assert!(matches!(&q.fields[0].value, FieldValue::Variable(v) if v == "alice"));
         assert!(matches!(
-            &q.fields[0].value,
+            &q.fields[1].value,
             FieldValue::Literal(Scalar::String(s)) if s == "Alice"
         ));
-        assert!(matches!(&q.fields[1].value, FieldValue::Variable(v) if v == "age"));
+        assert!(matches!(&q.fields[2].value, FieldValue::Variable(v) if v == "age"));
     }
 
     #[dialog_common::test]
-    fn query_claim_is_classified_by_dot() {
+    fn it_classifies_dotted_head_as_claim() {
         let syntax = parse_clean(
-            "xyz.tonk ?tonkee:\n\
-             \x20 name: \"Alice\"\n\
-             \x20 role: ?role\n",
+            r#"
+xyz.tonk:
+  this: ?p
+  name: "Alice"
+"#,
         );
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
@@ -767,82 +918,174 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn assertion_concept_anonymous() {
+    fn it_classifies_uri_head() {
         let syntax = parse_clean(
-            "person!:\n\
-             \x20 name: \"Nick\"\n\
-             \x20 address: \"Portland, OR\"\n",
+            r#"
+db:concept!:
+  description: "x"
+  with:
+    foo: bar
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "db:concept"));
+        assert!(a.head.effect);
+    }
+
+    #[dialog_common::test]
+    fn it_parses_assertion_without_anchor() {
+        let syntax = parse_clean(
+            r#"
+person!:
+  name: "Nick"
+  address: "Portland, OR"
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(&a.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(matches!(a.head.binding, Binding::Anonymous));
         assert!(a.head.effect);
+        assert!(a.anchor.is_none());
     }
 
     #[dialog_common::test]
-    fn assertion_with_uri_binding() {
+    fn it_captures_anchor_on_assertion() {
         let syntax = parse_clean(
-            "person! did:key:zNick:\n\
-             \x20 name: Nicholas\n",
+            r#"
+person!: &alice
+  name: "Alice"
+  age: 28
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.binding, Binding::Uri(u) if u == "did:key:zNick"));
+        let anchor = a.anchor.as_ref().expect("anchor present");
+        assert_eq!(anchor.name, "alice");
     }
 
     #[dialog_common::test]
-    fn assertion_with_bookmark_binding() {
+    fn it_captures_anchor_with_dashes() {
         let syntax = parse_clean(
-            "person! nick:\n\
-             \x20 name: \"Nick\"\n",
+            r#"
+attribute!: &person-name
+  description: "name"
+  the:         xyz.tonk.person/name
+  as:          text
+  cardinality: one
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.binding, Binding::Bookmark(b) if b == "nick"));
+        assert_eq!(a.anchor.as_ref().unwrap().name, "person-name");
     }
 
     #[dialog_common::test]
-    fn retraction_with_blank_body() {
-        let syntax = parse_clean("person! ?nick: _\n");
-        let Expression::Retraction(r) = &syntax.expressions[0] else {
-            panic!("expected Retraction, got {:?}", syntax.expressions[0]);
-        };
-        assert!(matches!(&r.head.binding, Binding::Variable(v) if v == "nick"));
+    fn it_rejects_anchor_on_query() {
+        let parsed = parse(
+            r#"
+person: &alice
+  name: "Alice"
+"#,
+        );
+        assert!(!parsed.diagnostics.is_empty());
+        assert!(parsed.diagnostics[0].message.contains("anchor"));
     }
 
     #[dialog_common::test]
-    fn field_level_blank_is_assertion() {
-        // `name: _` inside an assertion body is field-level
-        // retraction, represented as Assertion with FieldValue::Blank.
+    fn it_rejects_bare_blank_body_on_assertion() {
+        let parsed = parse("person!: _\n");
+        assert!(!parsed.diagnostics.is_empty());
+        assert!(
+            parsed.diagnostics[0]
+                .message
+                .to_lowercase()
+                .contains("bare `_` body")
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_parses_field_blank_for_field_retraction() {
+        // `field: _` inside an assertion body means "retract this
+        // field's attribute for the entity selected by `this:`".
         let syntax = parse_clean(
-            "person! did:key:zNick:\n\
-             \x20 name: _\n",
+            r#"
+person!:
+  this: ?alice
+  age: _
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert_eq!(a.fields.len(), 1);
-        assert!(matches!(a.fields[0].value, FieldValue::Blank));
+        assert_eq!(a.fields.len(), 2);
+        let age = a.fields.iter().find(|f| f.name == "age").unwrap();
+        assert!(matches!(age.value, FieldValue::Blank));
     }
 
     #[dialog_common::test]
-    fn query_body_with_blank_is_an_error() {
-        let parsed = parse("person ?alice: _\n");
+    fn it_parses_dotdot_rest_marker_with_other_fields() {
+        // `..: _` retracts every attribute in the concept's
+        // `with:` map that isn't named explicitly elsewhere.
+        let syntax = parse_clean(
+            r#"
+person!:
+  this: ?alice
+  name: ?name
+  ..: _
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let dotdot = a.fields.iter().find(|f| f.name == "..").unwrap();
+        assert!(matches!(dotdot.value, FieldValue::Blank));
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_query_body_with_bare_blank() {
+        let parsed = parse("person: _\n");
         assert!(!parsed.diagnostics.is_empty());
     }
 
     #[dialog_common::test]
-    fn nested_map_is_preserved() {
+    fn it_rejects_inline_head_binding() {
+        // Old grammar: `person ?alice:` — now belongs in body.
+        let parsed = parse(
+            r#"
+person ?alice:
+  name: "Alice"
+"#,
+        );
+        assert!(!parsed.diagnostics.is_empty());
+        assert!(parsed.diagnostics[0].message.contains("this:"));
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_inline_bookmark_binding() {
+        let parsed = parse(
+            r#"
+person! alice:
+  name: "Alice"
+"#,
+        );
+        assert!(!parsed.diagnostics.is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_preserves_nested_map_with_symbol_references() {
         let syntax = parse_clean(
-            "concept! person:\n\
-             \x20 description: A person\n\
-             \x20 with:\n\
-             \x20   name: .person-name\n\
-             \x20   age:  .person-age\n",
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    name: person-name
+    age:  person-age
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
@@ -854,18 +1097,25 @@ mod tests {
         assert_eq!(inner.len(), 2);
         assert!(matches!(
             &inner[0].value,
-            FieldValue::Reference(Reference::Bookmark(b)) if b == "person-name"
+            FieldValue::Symbol(s) if s == "person-name"
+        ));
+        assert!(matches!(
+            &inner[1].value,
+            FieldValue::Symbol(s) if s == "person-age"
         ));
     }
 
     #[dialog_common::test]
-    fn join_across_expressions() {
+    fn it_joins_across_expressions_via_this() {
         let syntax = parse_clean(
-            "person ?alice:\n\
-             \x20 name: \"Alice\"\n\
-             xyz.tonk:\n\
-             \x20 person: ?alice\n\
-             \x20 role: ?role\n",
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+xyz.tonk:
+  this: ?alice
+  role: ?role
+"#,
         );
         assert_eq!(syntax.expressions.len(), 2);
         let Expression::Query(q1) = &syntax.expressions[0] else {
@@ -874,19 +1124,17 @@ mod tests {
         let Expression::Query(q2) = &syntax.expressions[1] else {
             panic!("expected Query 2");
         };
-        assert!(matches!(&q1.head.binding, Binding::Variable(v) if v == "alice"));
+        assert!(matches!(&q1.head.name, HeadName::Concept(n) if n == "person"));
         assert!(matches!(&q2.head.name, HeadName::Claim(n) if n == "xyz.tonk"));
-        assert!(matches!(
-            &q2.fields[0].value,
-            FieldValue::Variable(v) if v == "alice"
-        ));
     }
 
     #[dialog_common::test]
-    fn assertion_with_quoted_literal_string() {
+    fn it_treats_quoted_value_as_literal_string() {
         let syntax = parse_clean(
-            "person! nick:\n\
-             \x20 address: \"Portland, OR\"\n",
+            r#"
+person!:
+  address: "Portland, OR"
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
@@ -898,14 +1146,15 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn bare_identifier_is_a_literal_not_a_reference() {
-        // A bare identifier on the right of `field:` is a literal
-        // string. References require the leading-`.` sigil
-        // (`name: .person-name`).
+    fn it_treats_bare_lowercase_value_as_symbol() {
+        // Bare lowercase is now a symbol (resolves through name
+        // table). Quotes are required for a literal string.
         let syntax = parse_clean(
-            "concept! person:\n\
-             \x20 with:\n\
-             \x20   name: person-name\n",
+            r#"
+concept!:
+  with:
+    name: person-name
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
@@ -915,105 +1164,123 @@ mod tests {
         };
         assert!(matches!(
             &inner[0].value,
-            FieldValue::Literal(Scalar::String(s)) if s == "person-name"
+            FieldValue::Symbol(s) if s == "person-name"
         ));
     }
 
     #[dialog_common::test]
-    fn dotted_value_is_a_bookmark_reference() {
+    fn it_treats_uri_value_as_uri_reference() {
         let syntax = parse_clean(
-            "concept! person:\n\
-             \x20 with:\n\
-             \x20   name: .person-name\n",
+            r#"
+name!:
+  this:   id:alice
+  entity: did:key:zHjKf
+"#,
         );
         let Expression::Assertion(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        let FieldValue::Nested(inner) = &a.fields[0].value else {
-            panic!("expected nested");
-        };
-        assert!(matches!(
-            &inner[0].value,
-            FieldValue::Reference(Reference::Bookmark(b)) if b == "person-name"
-        ));
+        let this = a.fields.iter().find(|f| f.name == "this").unwrap();
+        assert!(matches!(&this.value, FieldValue::Uri(u) if u == "id:alice"));
+        let entity = a.fields.iter().find(|f| f.name == "entity").unwrap();
+        assert!(matches!(&entity.value, FieldValue::Uri(u) if u == "did:key:zHjKf"));
     }
 
     #[dialog_common::test]
-    fn empty_head_after_bang_is_an_error() {
+    fn it_accepts_attribute_uri_in_field_position() {
+        let syntax = parse_clean(
+            r#"
+attribute!: &person-name
+  the: xyz.tonk.person/name
+  as: text
+  cardinality: one
+  description: "name"
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let the = a.fields.iter().find(|f| f.name == "the").unwrap();
+        assert!(matches!(&the.value, FieldValue::Uri(u) if u == "xyz.tonk.person/name"));
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_empty_head_after_bang() {
         let parsed = parse("!:\n  x: 1\n");
         assert!(!parsed.diagnostics.is_empty());
     }
 
     #[dialog_common::test]
-    fn integer_literal_field_value() {
+    fn it_parses_integer_field_value() {
         let syntax = parse_clean(
-            "person ?alice:\n\
-             \x20 age: 28\n",
+            r#"
+person:
+  this: ?alice
+  age: 28
+"#,
         );
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
+        let age = q.fields.iter().find(|f| f.name == "age").unwrap();
         assert!(matches!(
-            &q.fields[0].value,
+            &age.value,
             FieldValue::Literal(Scalar::Integer(28))
         ));
     }
 
     #[dialog_common::test]
-    fn duplicate_top_level_keys_are_preserved() {
-        // Two `person ?alice:` blocks at the document root must
-        // both surface as separate expressions; the analyzer fans
-        // them into one unified query so a constraint in either
-        // block applies. saphyr's high-level loader would silently
-        // collapse these into one (last-wins).
+    fn it_preserves_duplicate_top_level_keys() {
         let syntax = parse_clean(
-            "person ?alice:\n\
-             \x20 name: \"Alice\"\n\
-             person ?alice:\n\
-             \x20 age: ?age\n",
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+person:
+  this: ?alice
+  age: ?age
+"#,
         );
         assert_eq!(syntax.expressions.len(), 2);
         let Expression::Query(q1) = &syntax.expressions[0] else {
-            panic!("expected first Query, got {:?}", syntax.expressions[0]);
+            panic!("expected first Query");
         };
         let Expression::Query(q2) = &syntax.expressions[1] else {
-            panic!("expected second Query, got {:?}", syntax.expressions[1]);
+            panic!("expected second Query");
         };
-        assert!(matches!(&q1.head.binding, Binding::Variable(v) if v == "alice"));
-        assert!(matches!(&q2.head.binding, Binding::Variable(v) if v == "alice"));
-        assert_eq!(q1.fields.len(), 1);
-        assert_eq!(q1.fields[0].name, "name");
-        assert_eq!(q2.fields.len(), 1);
-        assert_eq!(q2.fields[0].name, "age");
+        assert_eq!(q1.fields.len(), 2);
+        assert_eq!(q2.fields.len(), 2);
     }
 
     #[dialog_common::test]
-    fn duplicate_field_keys_are_collapsed() {
-        // Inside a nested mapping (field body), duplicate keys
-        // still follow saphyr's natural last-wins semantics — only
-        // the document root needs the duplicate-preserving path.
+    fn it_collapses_duplicate_field_keys() {
         let syntax = parse_clean(
-            "person ?alice:\n\
-             \x20 age: 28\n\
-             \x20 age: 29\n",
+            r#"
+person:
+  this: ?alice
+  age: 28
+  age: 29
+"#,
         );
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert_eq!(q.fields.len(), 1);
+        let age = q.fields.iter().find(|f| f.name == "age").unwrap();
         assert!(matches!(
-            &q.fields[0].value,
+            &age.value,
             FieldValue::Literal(Scalar::Integer(29))
         ));
     }
 
     #[dialog_common::test]
-    fn sequence_value_is_an_error() {
+    fn it_rejects_sequence_value() {
         let parsed = parse(
-            "person! nick:\n\
-             \x20 name:\n\
-             \x20   - Alice\n\
-             \x20   - Bob\n",
+            r#"
+person!:
+  name:
+    - Alice
+    - Bob
+"#,
         );
         assert!(!parsed.diagnostics.is_empty());
         assert!(
@@ -1022,5 +1289,411 @@ mod tests {
                 .to_lowercase()
                 .contains("sequence")
         );
+    }
+
+    #[dialog_common::test]
+    fn it_rejects_yaml_alias() {
+        let parsed = parse(
+            r#"
+person!: &alice
+  name: "Alice"
+other!:
+  thing: *alice
+"#,
+        );
+        assert!(!parsed.diagnostics.is_empty());
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|d| d.message.to_lowercase().contains("alias"))
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_parses_this_mapping_for_explicit_content_derivation() {
+        let syntax = parse_clean(
+            r#"
+person!:
+  name: "Alice"
+  age: 23
+  this:
+    entropy: "Maybe Not"
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let this = a.fields.iter().find(|f| f.name == "this").unwrap();
+        let FieldValue::Nested(inner) = &this.value else {
+            panic!("expected nested mapping under `this:`");
+        };
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0].name, "entropy");
+    }
+
+    // -------- field-value classification --------
+
+    #[dialog_common::test]
+    fn it_parses_id_uri_in_head_position() {
+        let syntax = parse_clean(
+            r#"
+id:person!:
+  description: "x"
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "id:person"));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_did_key_uri_in_head_position() {
+        let syntax = parse_clean(
+            r#"
+did:key:zHjKf!:
+  ..: _
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "did:key:zHjKf"));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_this_with_did_key_value() {
+        let syntax = parse_clean(
+            r#"
+person!:
+  this: did:key:zHjKf
+  age: 30
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let this = a.fields.iter().find(|f| f.name == "this").unwrap();
+        assert!(matches!(&this.value, FieldValue::Uri(u) if u == "did:key:zHjKf"));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_this_with_id_uri() {
+        let syntax = parse_clean(
+            r#"
+name!:
+  this: id:alice
+  entity: did:key:zX
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let this = a.fields.iter().find(|f| f.name == "this").unwrap();
+        assert!(matches!(&this.value, FieldValue::Uri(u) if u == "id:alice"));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_this_with_bare_symbol_for_name_lookup() {
+        let syntax = parse_clean(
+            r#"
+person!:
+  this: alice
+  ..: _
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let this = a.fields.iter().find(|f| f.name == "this").unwrap();
+        assert!(matches!(&this.value, FieldValue::Symbol(s) if s == "alice"));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_float_literal() {
+        let syntax = parse_clean(
+            r#"
+thing!:
+  weight: 1.5
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        match &a.fields[0].value {
+            FieldValue::Literal(Scalar::Float(f)) => assert!((f - 1.5).abs() < f64::EPSILON),
+            other => panic!("expected float, got {:?}", other),
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_parses_boolean_literals() {
+        let syntax = parse_clean(
+            r#"
+thing!:
+  yes: true
+  no: false
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let yes = a.fields.iter().find(|f| f.name == "yes").unwrap();
+        let no = a.fields.iter().find(|f| f.name == "no").unwrap();
+        assert!(matches!(
+            yes.value,
+            FieldValue::Literal(Scalar::Boolean(true))
+        ));
+        assert!(matches!(
+            no.value,
+            FieldValue::Literal(Scalar::Boolean(false))
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_null_literal_value() {
+        let syntax = parse_clean(
+            r#"
+thing!:
+  nope: null
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        // Plain `null` in field-value position is a Null literal,
+        // not a blank or symbol.
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Literal(Scalar::Null)
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_treats_symbol_like_quoted_string_as_literal() {
+        // `"alice"` is a literal string even though `alice` would
+        // be a Symbol — quotes are load-bearing.
+        let syntax = parse_clean(
+            r#"
+thing!:
+  name: "alice"
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Literal(Scalar::String(s)) if s == "alice"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_treats_single_quoted_string_as_literal() {
+        let syntax = parse_clean(
+            r#"
+thing!:
+  name: 'alice'
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Literal(Scalar::String(s)) if s == "alice"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_dotted_bare_symbol() {
+        // Symbol charset includes `.` — `xyz.tonk.person` is a
+        // valid symbol (and a claim domain in head position, but
+        // here it's a field value).
+        let syntax = parse_clean(
+            r#"
+thing!:
+  ref: xyz.tonk.person
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Symbol(s) if s == "xyz.tonk.person"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_unquoted_value_with_space_as_string_literal() {
+        // A plain scalar with an internal space contains a
+        // non-symbol character (` `), so it must classify as a
+        // string literal, not a Symbol.
+        let syntax = parse_clean(
+            r#"
+thing!:
+  greeting: hello world
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Literal(Scalar::String(s)) if s == "hello world"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_unquoted_value_with_underscore_as_string_literal() {
+        // `_` is not in the symbol charset (only `-` `.` `+` are
+        // allowed). A bare `name_alt` therefore is not a Symbol;
+        // it should fall through to a string literal.
+        let syntax = parse_clean(
+            r#"
+thing!:
+  ref: name_alt
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Literal(Scalar::String(s)) if s == "name_alt"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_quoted_symbol_charset_value_is_literal_not_symbol() {
+        // Three quoted forms of values whose unquoted shapes would
+        // each be a Symbol. Quotes force a string literal.
+        let syntax = parse_clean(
+            r#"
+thing!:
+  bare:    person-name
+  double: "person-name"
+  single: 'person-name'
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let bare = a.fields.iter().find(|f| f.name == "bare").unwrap();
+        let double = a.fields.iter().find(|f| f.name == "double").unwrap();
+        let single = a.fields.iter().find(|f| f.name == "single").unwrap();
+        assert!(matches!(
+            &bare.value,
+            FieldValue::Symbol(s) if s == "person-name"
+        ));
+        assert!(matches!(
+            &double.value,
+            FieldValue::Literal(Scalar::String(s)) if s == "person-name"
+        ));
+        assert!(matches!(
+            &single.value,
+            FieldValue::Literal(Scalar::String(s)) if s == "person-name"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_uppercase_unquoted_value_as_string_literal() {
+        // Uppercase first letter doesn't match the symbol charset;
+        // saphyr keeps it as a plain scalar, and we surface it as
+        // a string literal even without quotes (the user had no
+        // way to mean a symbol with a capital).
+        let syntax = parse_clean(
+            r#"
+thing!:
+  name: Alice
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Literal(Scalar::String(s)) if s == "Alice"
+        ));
+    }
+
+    #[dialog_common::test]
+    fn it_parses_symbol_with_digits_and_plus() {
+        let syntax = parse_clean(
+            r#"
+thing!:
+  ref: a-b1.c+d
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(matches!(
+            &a.fields[0].value,
+            FieldValue::Symbol(s) if s == "a-b1.c+d"
+        ));
+    }
+
+    // -------- structural / multi-expression --------
+
+    #[dialog_common::test]
+    fn it_accepts_empty_body_assertion() {
+        // `person!:` with no fields is syntactically valid (no-op
+        // semantically; the analyzer may flag it).
+        let syntax = parse_clean("person!:\n");
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert!(a.fields.is_empty());
+        assert!(a.anchor.is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_parses_mixed_query_then_assertion() {
+        let syntax = parse_clean(
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+person!:
+  this: ?alice
+  age: 30
+"#,
+        );
+        assert_eq!(syntax.expressions.len(), 2);
+        assert!(matches!(syntax.expressions[0], Expression::Query(_)));
+        assert!(matches!(syntax.expressions[1], Expression::Assertion(_)));
+    }
+
+    #[dialog_common::test]
+    fn it_records_anchor_range_pointing_at_ampersand() {
+        let syntax = parse_clean("person!: &alice\n  name: \"Alice\"\n");
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let anchor = a.anchor.as_ref().unwrap();
+        // Anchor occupies the `&alice` token starting at column 9
+        // (after `person!: `) on line 0.
+        assert_eq!(anchor.range.start.line, 0);
+        assert_eq!(anchor.range.start.character, 9);
+        assert_eq!(anchor.range.end.character, 9 + "&alice".len() as u32);
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_xyz_attribute_uri_in_head_position() {
+        // `xyz.tonk.person/name` contains both `.` and `/` — it
+        // must classify as URI, not Claim or Concept.
+        let syntax = parse_clean(
+            r#"
+xyz.tonk.person/name:
+  this: ?x
+"#,
+        );
+        let Expression::Query(q) = &syntax.expressions[0] else {
+            panic!("expected Query");
+        };
+        assert!(matches!(&q.head.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
     }
 }
