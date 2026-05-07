@@ -14,14 +14,14 @@
 //! within their own document, so users can shadow a built-in
 //! locally for testing.
 //!
-//! [`Resolver`]: crate::interpret::Resolver
+//! [`Resolver`]: crate::analyzer::Resolver
 
 use std::sync::OnceLock;
 
 use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor;
 
-use crate::interpret::ResolvedConcept;
+use crate::analyzer::ResolvedConcept;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
 
 /// Look up a built-in concept by head-name. Returns `None` for

@@ -44,7 +44,7 @@ pub mod concept;
 
 pub mod rule;
 
-pub mod interpret;
+pub mod analyzer;
 
 pub mod builtin;
 

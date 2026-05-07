@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use async_trait::async_trait;
 use dialog_artifacts::{Entity, Value};
+use dialog_common::ConditionalSync;
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, Parameters, Term, attribute::The as AttributeThe,
     concept::query::ConceptQuery,
@@ -475,27 +476,12 @@ impl<'a, R: Resolver> Scope<'a, R> {
 /// 3. Build the mutation [`Statement`] list with `.bookmark`
 ///    substituted but `?var` left for planning time.
 ///
-/// `R: Resolver` is the public bound; on native we additionally
-/// need `R: Sync` so async-trait-generated futures stay `Send`
-/// (axum requires `Send` route handlers). On wasm the trait is
-/// `?Send` and there's no extra bound.
-#[cfg(not(target_arch = "wasm32"))]
-pub async fn analyze<R: Resolver + Sync>(
-    syntax: &Syntax,
-    resolver: &R,
-) -> Result<Analysis, AnalyzeError> {
-    analyze_impl(syntax, resolver).await
-}
-
-/// wasm-side variant of [`analyze`] — same shape minus the
-/// `Sync` bound (the wasm runtime is single-threaded and the
-/// trait is `?Send`).
-#[cfg(target_arch = "wasm32")]
-pub async fn analyze<R: Resolver>(syntax: &Syntax, resolver: &R) -> Result<Analysis, AnalyzeError> {
-    analyze_impl(syntax, resolver).await
-}
-
-async fn analyze_impl<R: Resolver>(
+/// `R: Resolver + ConditionalSync` works on both native and
+/// wasm: [`ConditionalSync`] expands to `Send + Sync` on native
+/// (so async-trait-generated futures stay `Send` for axum
+/// handlers) and to nothing on wasm (single-threaded runtime,
+/// `Resolver` itself is `?Send` there).
+pub async fn analyze<R: Resolver + ConditionalSync>(
     syntax: &Syntax,
     resolver: &R,
 ) -> Result<Analysis, AnalyzeError> {
@@ -507,12 +493,12 @@ async fn analyze_impl<R: Resolver>(
 
     // ---- Phase 1: derive declarations and variables ----
     //
-    // For meta heads (`attribute!`, `concept!`) this also parses
-    // the body so the descriptor's content-addressed entity is
-    // known up front; the parsed descriptor is stashed in
-    // `meta_cache` keyed by expression index so Phase 3 doesn't
-    // re-do the work.
-    let mut meta_cache: HashMap<usize, MetaPlan> = HashMap::new();
+    // For `attribute!` / `concept!` heads this also parses the
+    // body so the descriptor's content-addressed entity is known
+    // up front, then builds the `Application` on the spot. The
+    // built application is stashed by source-expression index
+    // so Phase 3 just emits it.
+    let mut declared: HashMap<usize, DeclaredApplication> = HashMap::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         let (head, has_effect) = match expression {
@@ -549,12 +535,12 @@ async fn analyze_impl<R: Resolver>(
                         scope.bind_variable(name, entity.clone())?;
                     }
                     scope.record_attribute(name.as_deref().or(variable.as_deref()), attribute);
-                    meta_cache.insert(
+                    let application = attribute_application(&plan.descriptor, &entity, name);
+                    declared.insert(
                         index,
-                        MetaPlan::Attribute {
-                            descriptor: plan.descriptor,
-                            entity,
-                            name,
+                        DeclaredApplication {
+                            application,
+                            inline_attributes: Vec::new(),
                         },
                     );
                     continue;
@@ -588,25 +574,20 @@ async fn analyze_impl<R: Resolver>(
                         scope.bind_variable(name, entity.clone())?;
                     }
                     scope.record_concept(name.as_deref().or(variable.as_deref()), concept);
-                    let inline_attributes = plan
+                    // Inline attrs declared inside the concept's
+                    // `with:` map publish no name — the concept's
+                    // local field key is not a global label for
+                    // the attribute entity.
+                    let inline_attributes: Vec<Application> = plan
                         .inline_attributes
                         .into_iter()
-                        .map(|attr| MetaPlan::Attribute {
-                            descriptor: attr.descriptor,
-                            entity: attr.entity,
-                            // Inline attrs publish no name — the
-                            // concept's local field key is not a
-                            // global label for the attribute
-                            // entity.
-                            name: None,
-                        })
+                        .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
                         .collect();
-                    meta_cache.insert(
+                    let application = concept_application(&plan.descriptor, &entity, name);
+                    declared.insert(
                         index,
-                        MetaPlan::Concept {
-                            descriptor: plan.descriptor,
-                            entity,
-                            name,
+                        DeclaredApplication {
+                            application,
                             inline_attributes,
                         },
                     );
@@ -653,26 +634,26 @@ async fn analyze_impl<R: Resolver>(
         match expression {
             Expression::Query(_) => {}
             Expression::Assertion(a) => {
-                // Inline attributes defined inside a `concept!`
-                // body are emitted as their own assertions before
-                // the concept itself, so the attribute facts are
-                // present on the branch (queryable via
-                // `attribute:`) by the time anything reads back.
-                if let Some(MetaPlan::Concept {
-                    inline_attributes, ..
-                }) = meta_cache.get(&index)
-                {
-                    for inline in inline_attributes {
-                        let application = meta_application(inline);
-                        collect_unbound_variables(&application, &analysis, &mut requires);
-                        statements.push(Statement::Assert(application));
+                if let Some(declaration) = declared.remove(&index) {
+                    // `attribute!` / `concept!` head — Phase 1
+                    // already built the application. Inline
+                    // attribute definitions inside a `concept!`'s
+                    // `with:` map are emitted as their own
+                    // assertions *before* the concept itself, so
+                    // the attribute facts are present on the
+                    // branch (queryable via `attribute:`) by the
+                    // time anything reads back.
+                    for inline in declaration.inline_attributes {
+                        collect_unbound_variables(&inline, &analysis, &mut requires);
+                        statements.push(Statement::Assert(inline));
                     }
+                    collect_unbound_variables(&declaration.application, &analysis, &mut requires);
+                    statements.push(Statement::Assert(declaration.application));
+                } else {
+                    let application = build_assertion_application(a, &scope, &mut analysis).await?;
+                    collect_unbound_variables(&application, &analysis, &mut requires);
+                    statements.push(Statement::Assert(application));
                 }
-                let application =
-                    build_assertion_application(index, a, &meta_cache, &scope, &mut analysis)
-                        .await?;
-                collect_unbound_variables(&application, &analysis, &mut requires);
-                statements.push(Statement::Assert(application));
             }
         }
     }
@@ -703,29 +684,24 @@ async fn analyze_impl<R: Resolver>(
 // Phase 1 helpers — meta heads                                     //
 // ---------------------------------------------------------------- //
 
-/// Cached parse of a meta head's body — keeps Phase 3 from
-/// re-parsing the body that Phase 1 already needed for the
-/// content-addressed entity.
-enum MetaPlan {
-    Attribute {
-        descriptor: AttributeDescriptor,
-        entity: Entity,
-        /// Name to publish (`&name`) for this expression, if any.
-        /// The planner emits the desugared `name!` assertion at
-        /// commit time.
-        name: Option<String>,
-    },
-    Concept {
-        descriptor: ConceptDescriptor,
-        entity: Entity,
-        /// Name to publish (`&name`) for this concept, if any.
-        name: Option<String>,
-        /// Attributes defined inline inside this concept's `with`
-        /// map. Phase 3 emits an extra `Statement::Assert` per
-        /// entry so they land as queryable `attribute:` facts
-        /// alongside the concept itself.
-        inline_attributes: Vec<MetaPlan>,
-    },
+/// Cached output of building an `attribute!` or `concept!` head
+/// into its `Application`. Phase 1 builds these so the entity
+/// URI is available early (for name registration in `scope`)
+/// and Phase 3 emits the cached values without re-parsing the
+/// body.
+///
+/// `inline_attributes` carries the anonymous attribute
+/// definitions that appeared inside a `concept!`'s `with:` map.
+/// Each is its own `Application` that Phase 3 emits *before*
+/// the concept itself, so the attribute facts are queryable on
+/// the branch by the time anything reads back. Empty for
+/// `attribute!` heads.
+struct DeclaredApplication {
+    /// The head's own `Application`, ready to commit.
+    application: Application,
+    /// Anonymous attribute applications declared inline inside
+    /// this concept's `with:` map. Empty for `attribute!` heads.
+    inline_attributes: Vec<Application>,
 }
 
 /// Parsed `attribute!` body — descriptor plus entity URI.
@@ -1114,16 +1090,10 @@ fn this_term_for_query(this: &ThisIntent) -> Term<dialog_query::Any> {
 // ---------------------------------------------------------------- //
 
 async fn build_assertion_application<R: Resolver>(
-    index: usize,
     assertion: &Assertion,
-    meta_cache: &HashMap<usize, MetaPlan>,
     scope: &Scope<'_, R>,
     analysis: &mut Analysis,
 ) -> Result<Application, AnalyzeError> {
-    if let Some(meta) = meta_cache.get(&index) {
-        return Ok(meta_application(meta));
-    }
-
     let head_label = match &assertion.head.name {
         HeadName::Concept(name) => name.clone(),
         HeadName::Claim(domain) => domain.clone(),
@@ -1264,111 +1234,108 @@ fn derive_head_intent(
     Ok((this, name))
 }
 
-fn meta_application(meta: &MetaPlan) -> Application {
-    match meta {
-        MetaPlan::Attribute {
-            descriptor,
-            entity,
-            name,
-        } => {
-            // Built-in `attribute` schema: 4 fields under
-            // dialog.attribute/* and dialog.meta/description.
-            // The published name (`dialog.meta/name` claim on
-            // `id:<name>`) is emitted by the planner from the
-            // `name` field on `ApplicationPlan`, not encoded as
-            // a parameter — same way it works for any user
-            // concept assertion.
-            let mut terms = Parameters::new();
-            terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
-            terms.insert(
-                "id".into(),
-                Term::Constant(Value::String(format!(
-                    "{}/{}",
-                    descriptor.domain(),
-                    descriptor.name()
-                ))),
-            );
-            // `AnonymousAttribute` requires all four claims to be
-            // present (id/type/cardinality/description) —
-            // ConceptByEntity reconstruction depends on the full
-            // set. Emit every field with an empty-string default
-            // so `dialog.attribute/type` and
-            // `dialog.meta/description` always exist.
-            let type_name = descriptor
-                .content_type()
-                .and_then(|ty| serde_json::to_value(ty).ok())
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_default();
-            terms.insert("type".into(), Term::Constant(Value::String(type_name)));
-            let cardinality_name = serde_json::to_value(descriptor.cardinality())
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_else(|| "one".into());
-            terms.insert(
-                "cardinality".into(),
-                Term::Constant(Value::String(cardinality_name)),
-            );
-            terms.insert(
-                "description".into(),
-                Term::Constant(Value::String(descriptor.description().to_owned())),
-            );
-            Application::Concept {
-                query: ConceptQuery {
-                    terms,
-                    predicate: attribute_schema(),
-                },
-                this: ThisIntent::Uri(entity.clone()),
-                name: name.clone(),
-            }
-        }
-        MetaPlan::Concept {
-            descriptor,
-            entity,
-            name,
-            inline_attributes: _,
-        } => {
-            // Built-in `concept` schema: one `with.<field>` per
-            // field of the user's concept, plus the
-            // `dialog.meta/concept` marker and `dialog.meta/description`.
-            // The published name is emitted by the planner via
-            // `ApplicationPlan::name`.
-            let mut terms = Parameters::new();
-            terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
-            terms.insert(
-                "concept".into(),
-                Term::Constant(Value::Entity(
-                    "db:concept"
-                        .parse()
-                        .expect("`db:concept` is a valid entity URI"),
-                )),
-            );
-            for (field_name, attr) in descriptor.with().iter() {
-                let attr_entity: Entity = attr
-                    .to_uri()
-                    .parse()
-                    .expect("AttributeDescriptor::to_uri produces a valid entity");
-                terms.insert(
-                    format!("with.{field_name}"),
-                    Term::Constant(Value::Entity(attr_entity)),
-                );
-            }
-            if let Some(desc) = descriptor.description()
-                && !desc.is_empty()
-            {
-                terms.insert(
-                    "description".into(),
-                    Term::Constant(Value::String(desc.to_owned())),
-                );
-            }
-            Application::Concept {
-                query: ConceptQuery {
-                    terms,
-                    predicate: concept_schema(descriptor),
-                },
-                this: ThisIntent::Uri(entity.clone()),
-                name: name.clone(),
-            }
-        }
+/// Build the `Application` for an `attribute!` head — the
+/// asserted predicate is the built-in `attribute` schema; the
+/// `this` slot is the descriptor-derived entity URI; the
+/// per-field terms carry the descriptor's id/type/cardinality/
+/// description. The published name (`dialog.meta/name` claim on
+/// `id:<name>`) is emitted by the planner from `Application`'s
+/// `name` slot, not as a body parameter.
+///
+/// `AnonymousAttribute` requires all four claims to be present —
+/// `ConceptByEntity` reconstruction depends on the full set —
+/// so every field is emitted with an empty-string default for
+/// `type` and `description` when the descriptor doesn't specify.
+fn attribute_application(
+    descriptor: &AttributeDescriptor,
+    entity: &Entity,
+    name: Option<String>,
+) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "id".into(),
+        Term::Constant(Value::String(format!(
+            "{}/{}",
+            descriptor.domain(),
+            descriptor.name()
+        ))),
+    );
+    let type_name = descriptor
+        .content_type()
+        .and_then(|ty| serde_json::to_value(ty).ok())
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default();
+    terms.insert("type".into(), Term::Constant(Value::String(type_name)));
+    let cardinality_name = serde_json::to_value(descriptor.cardinality())
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "one".into());
+    terms.insert(
+        "cardinality".into(),
+        Term::Constant(Value::String(cardinality_name)),
+    );
+    terms.insert(
+        "description".into(),
+        Term::Constant(Value::String(descriptor.description().to_owned())),
+    );
+    Application::Concept {
+        query: ConceptQuery {
+            terms,
+            predicate: attribute_schema(),
+        },
+        this: ThisIntent::Uri(entity.clone()),
+        name,
+    }
+}
+
+/// Build the `Application` for a `concept!` head — the asserted
+/// predicate is a synthesized concept-of-concept schema (one
+/// `with.<field>` per field of the user's concept, plus the
+/// `dialog.meta/concept` marker and `dialog.meta/description`).
+/// The `this` slot is the descriptor-derived entity URI; the
+/// published name is emitted by the planner from
+/// `Application`'s `name` slot.
+fn concept_application(
+    descriptor: &ConceptDescriptor,
+    entity: &Entity,
+    name: Option<String>,
+) -> Application {
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    terms.insert(
+        "concept".into(),
+        Term::Constant(Value::Entity(
+            "db:concept"
+                .parse()
+                .expect("`db:concept` is a valid entity URI"),
+        )),
+    );
+    for (field_name, attr) in descriptor.with().iter() {
+        let attr_entity: Entity = attr
+            .to_uri()
+            .parse()
+            .expect("AttributeDescriptor::to_uri produces a valid entity");
+        terms.insert(
+            format!("with.{field_name}"),
+            Term::Constant(Value::Entity(attr_entity)),
+        );
+    }
+    if let Some(desc) = descriptor.description()
+        && !desc.is_empty()
+    {
+        terms.insert(
+            "description".into(),
+            Term::Constant(Value::String(desc.to_owned())),
+        );
+    }
+    Application::Concept {
+        query: ConceptQuery {
+            terms,
+            predicate: concept_schema(descriptor),
+        },
+        this: ThisIntent::Uri(entity.clone()),
+        name,
     }
 }
 
@@ -2337,8 +2304,8 @@ name:
     async fn it_uses_db_concept_uri_for_concept_marker() {
         // Asserting any concept emits a marker claim
         // `(this, dialog.meta/concept, db:concept)`. We can read
-        // it back through `meta_application` by inspecting the
-        // `concept` term of the emitted concept-meta application.
+        // it back by inspecting the `concept` term of the
+        // emitted concept-head application.
         let syntax = must_parse(
             r#"
 concept!: &foo

@@ -33,7 +33,7 @@ use tonk_common::log;
 use tonk_notation::{Parsed, Syntax, parse};
 use tonk_schema::{
     concept::{AttributeByEntity, AttributeByName, Concept as ConceptLookup},
-    interpret::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError},
+    analyzer::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError},
     meta::{Name, Named},
     transact::{Analysis, ApplicationPlan, Planner as _, Statement},
 };
@@ -151,7 +151,7 @@ pub async fn evaluate(
         operator: &tonk_state.operator,
     };
 
-    let analysis = interpret::analyze(&syntax, &resolver).await.map_err(|e| {
+    let analysis = analyzer::analyze(&syntax, &resolver).await.map_err(|e| {
         log!("Analyzer rejected document: {e}");
         TonkWorkerError::Router(e.to_string())
     })?;

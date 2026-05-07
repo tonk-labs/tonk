@@ -4,7 +4,7 @@
 //! See `analysis-spec.md` (sibling to this crate) for the full
 //! design. Quick orientation:
 //!
-//! - [`Analysis`] is what [`crate::interpret::analyze`] returns —
+//! - [`Analysis`] is what [`crate::analyzer::analyze`] returns —
 //!   one struct holding both the read side ([`QueryAnalysis`]) and
 //!   the write side ([`MutationAnalysis`]) of the document.
 //! - [`Application`] captures "predicate applied to terms," shared

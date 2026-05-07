@@ -186,7 +186,7 @@ impl Server {
     ///    colon, etc.). The parser is permissive: it produces a
     ///    `Syntax` tree even when there are recoverable errors.
     /// 2. **Analyzer** — when the parser returns *no* diagnostics,
-    ///    we run `tonk_schema::interpret::analyze` with a
+    ///    we run `tonk_schema::analyzer::analyze` with a
     ///    `NoopResolver` to catch structural errors the parser
     ///    accepts (`AssertionWithoutFields`, `ClaimWithoutFields`,
     ///    etc.). Errors that need the branch (`UnknownConcept`,
@@ -227,7 +227,7 @@ impl Server {
 /// `AssertionWithoutFields` in subsequent expressions.
 ///
 /// Mirrors the structural checks in
-/// `tonk_schema::interpret::analyze`. Each check is purely
+/// `tonk_schema::analyzer::analyze`. Each check is purely
 /// syntactic — no resolver work required — so a "the branch
 /// will resolve `person`" outcome doesn't change whether
 /// `person!:` (no body) is malformed.
