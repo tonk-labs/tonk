@@ -1,10 +1,77 @@
 //! Errors raised by [`crate::analyzer::analyze`].
+//!
+//! [`AnalyzeError`] is a struct pairing a [`AnalyzeErrorKind`]
+//! payload with an optional [`lsp_types::Range`] pointing at the
+//! source text that triggered it. The range is `Option` because
+//! some failures (resolver I/O, empty document) have no obvious
+//! source location to attach to.
+//!
+//! Each kind also carries a stable `code()` like
+//! `"E_UNKNOWN_CONCEPT"` so editor integrations can key off a
+//! machine-readable identifier rather than scraping the user-facing
+//! message.
 
+use lsp_types::Range;
 use thiserror::Error;
 
-/// Errors raised while analyzing a [`tonk_notation::Syntax`] tree.
+/// Analyzer error: a [`AnalyzeErrorKind`] payload plus an
+/// optional source range. Construct from a kind via
+/// `kind.into()` (no range) or [`AnalyzeError::new`] /
+/// [`AnalyzeError::with_range`] when a range is available.
 #[derive(Debug, Error)]
-pub enum AnalyzeError {
+#[error("{kind}")]
+pub struct AnalyzeError {
+    /// What went wrong.
+    pub kind: AnalyzeErrorKind,
+    /// Source range of the offending construct, when known.
+    /// `None` for failures with no clear location (resolver I/O,
+    /// empty document).
+    pub range: Option<Range>,
+}
+
+impl AnalyzeError {
+    /// Construct from a kind with no range.
+    pub fn new(kind: AnalyzeErrorKind) -> Self {
+        Self { kind, range: None }
+    }
+
+    /// Construct from a kind with a range.
+    pub fn at(kind: AnalyzeErrorKind, range: Range) -> Self {
+        Self {
+            kind,
+            range: Some(range),
+        }
+    }
+
+    /// Builder-style: attach a range to a no-range error.
+    /// Idempotent on already-ranged errors (keeps the existing
+    /// range).
+    pub fn with_range(mut self, range: Range) -> Self {
+        if self.range.is_none() {
+            self.range = Some(range);
+        }
+        self
+    }
+
+    /// Stable, machine-readable code for the error category.
+    /// Editors and other consumers can match on this without
+    /// parsing the human-readable message.
+    pub fn code(&self) -> &'static str {
+        self.kind.code()
+    }
+}
+
+impl From<AnalyzeErrorKind> for AnalyzeError {
+    fn from(kind: AnalyzeErrorKind) -> Self {
+        Self::new(kind)
+    }
+}
+
+/// What went wrong, independent of source location. The
+/// [`AnalyzeError`] wrapper adds the `range` and is what
+/// callers actually receive.
+#[derive(Debug, Error)]
+pub enum AnalyzeErrorKind {
     /// Document has zero expressions.
     #[error("document is empty — nothing to analyze")]
     EmptyDocument,
@@ -172,4 +239,31 @@ pub enum AnalyzeError {
         /// entity)" or "`?alice` is not bound by any query").
         selector_form: String,
     },
+}
+
+impl AnalyzeErrorKind {
+    /// Stable code for this error category. Used as
+    /// `Diagnostic.code` at the LSP boundary so editors can
+    /// match without scraping the message text.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::EmptyDocument => "E_EMPTY_DOCUMENT",
+            Self::DuplicateName { .. } => "E_DUPLICATE_NAME",
+            Self::NameShadowing { .. } => "E_NAME_SHADOWING",
+            Self::UnboundMutationVariable { .. } => "E_UNBOUND_MUTATION_VARIABLE",
+            Self::InvalidSubjectUri { .. } => "E_INVALID_SUBJECT_URI",
+            Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
+            Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
+            Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
+            Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
+            Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
+            Self::UnknownBookmark { .. } => "E_UNKNOWN_BOOKMARK",
+            Self::ClaimWithoutFields { .. } => "E_CLAIM_WITHOUT_FIELDS",
+            Self::InvalidClaimAttribute { .. } => "E_INVALID_CLAIM_ATTRIBUTE",
+            Self::UnsupportedFieldValue { .. } => "E_UNSUPPORTED_FIELD_VALUE",
+            Self::ResolverFailed { .. } => "E_RESOLVER_FAILED",
+            Self::ProtectedUri { .. } => "E_PROTECTED_URI",
+            Self::IncompleteAssertion { .. } => "E_INCOMPLETE_ASSERTION",
+        }
+    }
 }

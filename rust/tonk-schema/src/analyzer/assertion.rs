@@ -8,7 +8,7 @@ use dialog_artifacts::{Entity, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use tonk_notation::{Anchor, Assertion, Field, FieldValue, HeadName, Scalar};
 
-use super::error::AnalyzeError;
+use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::resolver::Resolver;
 use super::scope::Scope;
@@ -49,16 +49,32 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
         HeadName::Uri(uri) => uri.clone(),
     };
 
+    let head_range = assertion.head.range;
+
     if assertion.fields.is_empty() {
-        return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::AssertionWithoutFields { head: head_label },
+            head_range,
+        ));
     }
 
     let (this, name) =
         derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope).await?;
     if let ThisIntent::Uri(entity) = &this {
-        check_writable(entity)?;
+        let this_range = assertion
+            .fields
+            .iter()
+            .find(|f| f.name == "this")
+            .map(|f| f.value_range)
+            .unwrap_or(head_range);
+        check_writable(entity, this_range)?;
     }
-    let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis)?;
+    let name_range = assertion
+        .anchor
+        .as_ref()
+        .map(|a| a.range)
+        .unwrap_or(head_range);
+    let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis, name_range)?;
 
     // Detect the rest-marker `..: _` once. Per-field `_`
     // blanks are handled in the per-field walk below.
@@ -72,23 +88,33 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             let resolved = scope
                 .resolve_concept(concept_name)
                 .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("concept {concept_name:?}"),
-                    reason: e.message,
+                .map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("concept {concept_name:?}"),
+                            reason: e.message,
+                        },
+                        head_range,
+                    )
                 })?
-                .ok_or_else(|| AnalyzeError::UnknownConcept {
-                    name: concept_name.clone(),
+                .ok_or_else(|| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::UnknownConcept {
+                            name: concept_name.clone(),
+                        },
+                        head_range,
+                    )
                 })?;
 
             // Walk user-supplied fields, separating asserts from
             // retracts. `..: _` and per-field `_` blanks go
             // to the retract pile; everything else asserts.
-            let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
+            let mut user_fields: BTreeMap<&str, (&FieldValue, lsp_types::Range)> = BTreeMap::new();
             for field in &assertion.fields {
                 if is_meta_field(&field.name) {
                     continue;
                 }
-                user_fields.insert(field.name.as_str(), &field.value);
+                user_fields.insert(field.name.as_str(), (&field.value, field.value_range));
             }
 
             // Reject incomplete fresh-entity assertions: when
@@ -107,6 +133,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 &user_fields,
                 has_rest_retraction,
                 analysis,
+                head_range,
             ) {
                 return Err(error);
             }
@@ -120,7 +147,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
 
             for (field_name, _attr) in resolved.descriptor.with().iter() {
                 match user_fields.remove(field_name) {
-                    Some(FieldValue::Blank) => {
+                    Some((FieldValue::Blank, _)) => {
                         // Per-field retraction: planner walks the
                         // branch to find the current value(s) and
                         // dissociates each.
@@ -130,9 +157,11 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                         // emitter skips it.
                         assert_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
                     }
-                    Some(value) => {
+                    Some((value, value_range)) => {
                         // Explicit non-blank field — asserts.
-                        let term = field_value_to_term(field_name, value, scope, analysis).await?;
+                        let term =
+                            field_value_to_term(field_name, value, value_range, scope, analysis)
+                                .await?;
                         assert_terms.insert(field_name.into(), term);
                         any_assert = true;
                         // Retract side blanks this field — the
@@ -159,10 +188,19 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             }
 
             if let Some((unknown, _)) = user_fields.into_iter().next() {
-                return Err(AnalyzeError::UnknownField {
-                    concept: concept_name.clone(),
-                    field: unknown.to_owned(),
-                });
+                let unknown_range = assertion
+                    .fields
+                    .iter()
+                    .find(|f| f.name == unknown)
+                    .map(|f| f.name_range)
+                    .unwrap_or(head_range);
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnknownField {
+                        concept: concept_name.clone(),
+                        field: unknown.to_owned(),
+                    },
+                    unknown_range,
+                ));
             }
 
             // Build the assert/retract `Application`s. Naming
@@ -231,8 +269,15 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 if is_meta_field(&field.name) {
                     continue;
                 }
-                validate_claim_attribute(domain, &field.name)?;
-                let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
+                validate_claim_attribute(domain, &field.name, field.name_range)?;
+                let term = field_value_to_term(
+                    &field.name,
+                    &field.value,
+                    field.value_range,
+                    scope,
+                    analysis,
+                )
+                .await?;
                 parameters.insert(field.name.clone(), term);
             }
             Ok(AssertionPlan {
@@ -247,10 +292,13 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 retract: None,
             })
         }
-        HeadName::Uri(uri) => Err(AnalyzeError::UnsupportedFieldValue {
-            field: uri.clone(),
-            form: "URI head in assertion (not yet implemented in Stage 2.1)",
-        }),
+        HeadName::Uri(uri) => Err(AnalyzeError::at(
+            AnalyzeErrorKind::UnsupportedFieldValue {
+                field: uri.clone(),
+                form: "URI head in assertion (not yet implemented in Stage 2.1)",
+            },
+            head_range,
+        )),
     }
 }
 
@@ -290,10 +338,13 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                 let entity: Entity =
                     uri.parse()
                         .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                            AnalyzeError::InvalidSubjectUri {
-                                subject: uri.clone(),
-                                reason: e.to_string(),
-                            }
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::InvalidSubjectUri {
+                                    subject: uri.clone(),
+                                    reason: e.to_string(),
+                                },
+                                field.value_range,
+                            )
                         })?;
                 ThisIntent::Uri(entity)
             }
@@ -305,35 +356,47 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                 let entity = if let Some(entity) = scope.lookup_entity(name) {
                     entity
                 } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
-                    AnalyzeError::ResolverFailed {
-                        context: format!("symbol {name}"),
-                        reason: e.message,
-                    }
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.message,
+                        },
+                        field.value_range,
+                    )
                 })? {
                     resolved.entity
                 } else if let Some(entity) =
                     scope.resolve_named_entity(name).await.map_err(|e| {
-                        AnalyzeError::ResolverFailed {
-                            context: format!("symbol {name}"),
-                            reason: e.message,
-                        }
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("symbol {name}"),
+                                reason: e.message,
+                            },
+                            field.value_range,
+                        )
                     })?
                 {
                     entity
                 } else {
-                    return Err(AnalyzeError::UnknownBookmark {
-                        field: "this".into(),
-                        bookmark: name.clone(),
-                    });
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::UnknownBookmark {
+                            field: "this".into(),
+                            bookmark: name.clone(),
+                        },
+                        field.value_range,
+                    ));
                 };
                 ThisIntent::Uri(entity)
             }
             FieldValue::Literal(_) | FieldValue::Blank | FieldValue::Nested(_) => {
-                return Err(AnalyzeError::UnsupportedFieldValue {
-                    field: "this".into(),
-                    form: "expected `?var`, a bare symbol, or a URI \
-                           (`did:key:…`, `id:…`, `db:…`)",
-                });
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnsupportedFieldValue {
+                        field: "this".into(),
+                        form: "expected `?var`, a bare symbol, or a URI \
+                               (`did:key:…`, `id:…`, `db:…`)",
+                    },
+                    field.value_range,
+                ));
             }
         },
     };
@@ -368,6 +431,7 @@ fn this_term_for_assertion(
     name: &Option<String>,
     fields: &[Field],
     analysis: &mut Analysis,
+    name_range: lsp_types::Range,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match this {
         ThisIntent::Derived => {
@@ -376,7 +440,10 @@ fn this_term_for_assertion(
                 if let Some(prior) = analysis.declarations.get(name)
                     && prior != &entity
                 {
-                    return Err(AnalyzeError::DuplicateName { name: name.clone() });
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::DuplicateName { name: name.clone() },
+                        name_range,
+                    ));
                 }
                 analysis.declarations.insert(name.clone(), entity.clone());
             }
@@ -474,9 +541,10 @@ fn check_complete_when_unbound(
     concept_name: &str,
     this: &ThisIntent,
     descriptor: &dialog_query::ConceptDescriptor,
-    user_fields: &BTreeMap<&str, &FieldValue>,
+    user_fields: &BTreeMap<&str, (&FieldValue, lsp_types::Range)>,
     has_rest_retraction: bool,
     analysis: &Analysis,
+    range: lsp_types::Range,
 ) -> Option<AnalyzeError> {
     // `..: _` is the user's explicit "I know what I'm doing
     // about every other field" — never trip the check.
@@ -510,7 +578,7 @@ fn check_complete_when_unbound(
     let mut missing: Vec<String> = Vec::new();
     for (field_name, _) in descriptor.with().iter() {
         match user_fields.get(field_name) {
-            Some(FieldValue::Blank) => {
+            Some((FieldValue::Blank, _)) => {
                 // Per-field `_` retraction — counts as
                 // "addressed" but not "set." Treat it like
                 // missing for the completeness check: the user
@@ -530,12 +598,15 @@ fn check_complete_when_unbound(
         // Body sets every field — intentional fresh entity.
         return None;
     }
-    Some(AnalyzeError::IncompleteAssertion {
-        concept: concept_name.to_owned(),
-        set,
-        missing,
-        selector_form,
-    })
+    Some(AnalyzeError::at(
+        AnalyzeErrorKind::IncompleteAssertion {
+            concept: concept_name.to_owned(),
+            set,
+            missing,
+            selector_form,
+        },
+        range,
+    ))
 }
 
 /// Does `analysis.query` bind `?name`? Used by
@@ -558,16 +629,19 @@ fn query_binds(analysis: &Analysis, name: &str) -> bool {
 /// The check fires on any resolved [`ThisIntent::Uri`], whether
 /// the user wrote `this: db:concept` directly or named a symbol
 /// that happens to resolve to a `db:`-prefixed entity.
-fn check_writable(entity: &Entity) -> Result<(), AnalyzeError> {
+fn check_writable(entity: &Entity, range: lsp_types::Range) -> Result<(), AnalyzeError> {
     const RESERVED_SCHEMES: &[&str] = &["db"];
     let s = entity.to_string();
     for scheme in RESERVED_SCHEMES {
         let prefix = format!("{scheme}:");
         if s.starts_with(&prefix) {
-            return Err(AnalyzeError::ProtectedUri {
-                entity: s,
-                scheme: (*scheme).to_owned(),
-            });
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::ProtectedUri {
+                    entity: s,
+                    scheme: (*scheme).to_owned(),
+                },
+                range,
+            ));
         }
     }
     Ok(())

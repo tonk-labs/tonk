@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use dialog_artifacts::Entity;
 use parking_lot::Mutex;
 
-use super::error::AnalyzeError;
+use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::resolver::{ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
 
 /// Layered name index built during analysis.
@@ -63,33 +63,55 @@ impl<'a, R: Resolver> Scope<'a, R> {
     }
 
     /// Record an anchor-form head's entity.
-    pub(crate) fn declare(&self, name: &str, entity: Entity) -> Result<(), AnalyzeError> {
+    pub(crate) fn declare(
+        &self,
+        name: &str,
+        entity: Entity,
+        range: lsp_types::Range,
+    ) -> Result<(), AnalyzeError> {
         if self.variables.lock().contains_key(name) {
-            return Err(AnalyzeError::NameShadowing {
-                name: name.to_owned(),
-            });
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::NameShadowing {
+                    name: name.to_owned(),
+                },
+                range,
+            ));
         }
         let prior = self.declarations.lock().insert(name.to_owned(), entity);
         if prior.is_some() {
-            return Err(AnalyzeError::DuplicateName {
-                name: name.to_owned(),
-            });
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::DuplicateName {
+                    name: name.to_owned(),
+                },
+                range,
+            ));
         }
         Ok(())
     }
 
     /// Record a variable-form head's entity.
-    pub(crate) fn bind_variable(&self, name: &str, entity: Entity) -> Result<(), AnalyzeError> {
+    pub(crate) fn bind_variable(
+        &self,
+        name: &str,
+        entity: Entity,
+        range: lsp_types::Range,
+    ) -> Result<(), AnalyzeError> {
         if self.declarations.lock().contains_key(name) {
-            return Err(AnalyzeError::NameShadowing {
-                name: name.to_owned(),
-            });
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::NameShadowing {
+                    name: name.to_owned(),
+                },
+                range,
+            ));
         }
         let prior = self.variables.lock().insert(name.to_owned(), entity);
         if prior.is_some() {
-            return Err(AnalyzeError::DuplicateName {
-                name: name.to_owned(),
-            });
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::DuplicateName {
+                    name: name.to_owned(),
+                },
+                range,
+            ));
         }
         Ok(())
     }

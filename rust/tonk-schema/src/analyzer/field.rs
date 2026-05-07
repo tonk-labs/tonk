@@ -7,9 +7,9 @@ use std::collections::HashSet;
 
 use dialog_artifacts::{Entity, Value};
 use dialog_query::{Term, attribute::The as AttributeThe};
-use tonk_notation::{Field, FieldValue, Scalar};
+use tonk_notation::{FieldValue, Scalar};
 
-use super::error::AnalyzeError;
+use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::transact::{Analysis, Application};
@@ -19,12 +19,6 @@ use crate::transact::{Analysis, Application};
 /// retraction marker).
 pub(crate) fn is_meta_field(name: &str) -> bool {
     matches!(name, "this" | "..")
-}
-
-/// Look up the value side of `name` among `fields`, returning
-/// `None` when no field by that name appears.
-pub(crate) fn user_field<'a>(fields: &'a [Field], name: &str) -> Option<&'a FieldValue> {
-    fields.iter().find(|f| f.name == name).map(|f| &f.value)
 }
 
 /// Translate a parsed [`FieldValue`] into the `Term<Any>` slot it
@@ -37,11 +31,14 @@ pub(crate) fn user_field<'a>(fields: &'a [Field], name: &str) -> Option<&'a Fiel
 pub(crate) async fn field_value_to_term<R: Resolver>(
     field_name: &str,
     value: &FieldValue,
+    range: lsp_types::Range,
     scope: &Scope<'_, R>,
     analysis: &Analysis,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match value {
-        FieldValue::Literal(scalar) => Term::Constant(scalar_to_value(scalar)?),
+        FieldValue::Literal(scalar) => {
+            Term::Constant(scalar_to_value(scalar).map_err(|e| e.with_range(range))?)
+        }
         FieldValue::Variable(name) => {
             // If this variable was derived in Phase 1, substitute
             // the entity now; otherwise leave it as a variable
@@ -62,47 +59,59 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
             //   3. Branch entity with `dialog.meta/name = name`.
             if let Some(entity) = scope.lookup_entity(name) {
                 Term::Constant(Value::Entity(entity))
-            } else if let Some(resolved) =
-                scope
-                    .resolve_attribute(name)
-                    .await
-                    .map_err(|e| AnalyzeError::ResolverFailed {
+            } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::ResolverFailed {
                         context: format!("symbol {name}"),
                         reason: e.message,
-                    })?
-            {
+                    },
+                    range,
+                )
+            })? {
                 Term::Constant(Value::Entity(resolved.entity))
             } else if let Some(entity) = scope.resolve_named_entity(name).await.map_err(|e| {
-                AnalyzeError::ResolverFailed {
-                    context: format!("symbol {name}"),
-                    reason: e.message,
-                }
+                AnalyzeError::at(
+                    AnalyzeErrorKind::ResolverFailed {
+                        context: format!("symbol {name}"),
+                        reason: e.message,
+                    },
+                    range,
+                )
             })? {
                 Term::Constant(Value::Entity(entity))
             } else {
-                return Err(AnalyzeError::UnknownBookmark {
-                    field: field_name.into(),
-                    bookmark: name.clone(),
-                });
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::UnknownBookmark {
+                        field: field_name.into(),
+                        bookmark: name.clone(),
+                    },
+                    range,
+                ));
             }
         }
         FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
                     .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                        AnalyzeError::InvalidSubjectUri {
-                            subject: uri.clone(),
-                            reason: e.to_string(),
-                        }
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::InvalidSubjectUri {
+                                subject: uri.clone(),
+                                reason: e.to_string(),
+                            },
+                            range,
+                        )
                     })?;
             Term::Constant(Value::Entity(entity))
         }
         FieldValue::Blank => Term::<dialog_query::Any>::blank(),
         FieldValue::Nested(_) => {
-            return Err(AnalyzeError::UnsupportedFieldValue {
-                field: field_name.into(),
-                form: "nested mapping (only `concept!`'s `with:` accepts a nested map)",
-            });
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: field_name.into(),
+                    form: "nested mapping (only `concept!`'s `with:` accepts a nested map)",
+                },
+                range,
+            ));
         }
     })
 }
@@ -115,10 +124,11 @@ pub(crate) fn scalar_to_value(scalar: &Scalar) -> Result<Value, AnalyzeError> {
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
         Scalar::Null => {
-            return Err(AnalyzeError::UnsupportedFieldValue {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
                 form: "null literal",
-            });
+            }
+            .into());
         }
     })
 }
@@ -131,23 +141,31 @@ pub(crate) fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> 
         Scalar::UnsignedInteger(u) => u.to_string(),
         Scalar::Float(f) => f.to_string(),
         Scalar::Null => {
-            return Err(AnalyzeError::UnsupportedFieldValue {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: "<scalar>".into(),
                 form: "null literal",
-            });
+            }
+            .into());
         }
     })
 }
 
-pub(crate) fn validate_claim_attribute(domain: &str, field: &str) -> Result<(), AnalyzeError> {
+pub(crate) fn validate_claim_attribute(
+    domain: &str,
+    field: &str,
+    range: lsp_types::Range,
+) -> Result<(), AnalyzeError> {
     let uri = format!("{domain}/{field}");
-    uri.parse::<AttributeThe>()
-        .map(|_| ())
-        .map_err(|e| AnalyzeError::InvalidClaimAttribute {
-            domain: domain.to_owned(),
-            field: field.to_owned(),
-            reason: format!("{e}"),
-        })
+    uri.parse::<AttributeThe>().map(|_| ()).map_err(|e| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::InvalidClaimAttribute {
+                domain: domain.to_owned(),
+                field: field.to_owned(),
+                reason: format!("{e}"),
+            },
+            range,
+        )
+    })
 }
 
 pub(crate) fn collect_unbound_variables(

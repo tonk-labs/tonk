@@ -50,7 +50,7 @@ use crate::transact::{
     Analysis, Application, MutationAnalysis, QueryAnalysis, Statement, ThisIntent,
 };
 
-pub use error::AnalyzeError;
+pub use error::{AnalyzeError, AnalyzeErrorKind};
 pub use resolver::{NoopResolver, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
 
 use crate::prelude::EntityExt;
@@ -76,7 +76,10 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     resolver: &R,
 ) -> Result<Analysis, AnalyzeError> {
     if syntax.expressions.is_empty() {
-        return Err(AnalyzeError::EmptyDocument);
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::EmptyDocument,
+            syntax.range,
+        ));
     }
 
     let scope = Scope::new(resolver);
@@ -119,11 +122,22 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
                     };
+                    let anchor_range = assertion
+                        .anchor
+                        .as_ref()
+                        .map(|a| a.range)
+                        .unwrap_or(assertion.head.range);
+                    let variable_range = assertion
+                        .fields
+                        .iter()
+                        .find(|f| f.name == "this")
+                        .map(|f| f.value_range)
+                        .unwrap_or(assertion.head.range);
                     if let Some(name) = &name {
-                        scope.declare(name, entity.clone())?;
+                        scope.declare(name, entity.clone(), anchor_range)?;
                     }
                     if let Some(name) = &variable {
-                        scope.bind_variable(name, entity.clone())?;
+                        scope.bind_variable(name, entity.clone(), variable_range)?;
                     }
                     scope.record_attribute(name.as_deref().or(variable.as_deref()), attribute);
                     let application = attribute_application(&plan.descriptor, &entity, name);
@@ -159,11 +173,22 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
                     };
+                    let anchor_range = assertion
+                        .anchor
+                        .as_ref()
+                        .map(|a| a.range)
+                        .unwrap_or(assertion.head.range);
+                    let variable_range = assertion
+                        .fields
+                        .iter()
+                        .find(|f| f.name == "this")
+                        .map(|f| f.value_range)
+                        .unwrap_or(assertion.head.range);
                     if let Some(name) = &name {
-                        scope.declare(name, entity.clone())?;
+                        scope.declare(name, entity.clone(), anchor_range)?;
                     }
                     if let Some(name) = &variable {
-                        scope.bind_variable(name, entity.clone())?;
+                        scope.bind_variable(name, entity.clone(), variable_range)?;
                     }
                     scope.record_concept(name.as_deref().or(variable.as_deref()), concept);
                     // Inline attrs declared inside the concept's
@@ -207,7 +232,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
             && let Some(anchor) = &a.anchor
         {
             let entity = Entity::of(&body_digest(&a.fields));
-            scope.declare(&anchor.name, entity)?;
+            scope.declare(&anchor.name, entity, anchor.range)?;
         }
     }
 
@@ -282,12 +307,14 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         let bindings = query.bindings();
         for name in &requires {
             if !bindings.contains(name) {
-                return Err(AnalyzeError::UnboundMutationVariable { name: name.clone() });
+                return Err(
+                    AnalyzeErrorKind::UnboundMutationVariable { name: name.clone() }.into(),
+                );
             }
         }
     } else if !requires.is_empty() {
         let name = requires.iter().next().cloned().unwrap_or_default();
-        return Err(AnalyzeError::UnboundMutationVariable { name });
+        return Err(AnalyzeErrorKind::UnboundMutationVariable { name }.into());
     }
 
     analysis.mutate = MutationAnalysis {
@@ -386,7 +413,7 @@ mod tests {
             range: lsp_types::Range::default(),
         };
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::EmptyDocument));
+        assert!(matches!(err.kind, AnalyzeErrorKind::EmptyDocument));
     }
 
     /// `attribute!: &foo` declares a content-derived attribute
@@ -554,7 +581,7 @@ attribute!: &foo
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::InvalidAttributeBody { reason } if reason.contains("description")),
+            matches!(&err.kind, AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("description")),
             "expected InvalidAttributeBody about description, got {err:?}"
         );
     }
@@ -645,7 +672,7 @@ concept!: &a
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::DuplicateName { .. }),
+            matches!(err.kind, AnalyzeErrorKind::DuplicateName { .. }),
             "expected DuplicateName, got {err:?}"
         );
     }
@@ -670,7 +697,7 @@ attribute!:
 "#,
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::NameShadowing { .. }));
+        assert!(matches!(err.kind, AnalyzeErrorKind::NameShadowing { .. }));
     }
 
     /// Pure-query document: `Analysis::query` is `Some`, no
@@ -729,7 +756,10 @@ person!:
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnboundMutationVariable { .. }));
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::UnboundMutationVariable { .. }
+        ));
     }
 
     /// Concept retraction via `..: _`: blank terms for every
@@ -785,7 +815,7 @@ nope:
 "#,
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnknownConcept { .. }));
+        assert!(matches!(err.kind, AnalyzeErrorKind::UnknownConcept { .. }));
     }
 
     /// Built-in `attribute:` resolves without a branch resolver
@@ -861,7 +891,10 @@ branch:
     async fn it_errors_on_claim_without_fields() {
         let syntax = must_parse("xyz.tonk:\n");
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::ClaimWithoutFields { .. }));
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::ClaimWithoutFields { .. }
+        ));
     }
 
     /// Claim heads build a synthesized predicate with one
@@ -1099,7 +1132,7 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::ProtectedUri { entity, scheme } if entity == "db:concept" && scheme == "db"),
+            matches!(&err.kind, AnalyzeErrorKind::ProtectedUri { entity, scheme } if entity == "db:concept" && scheme == "db"),
             "expected ProtectedUri{{entity:\"db:concept\", scheme:\"db\"}}, got {err:?}"
         );
     }
@@ -1163,7 +1196,7 @@ person!:
         );
         let err = analyze(&syntax, &DbResolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::ProtectedUri { entity, .. } if entity == "db:concept"),
+            matches!(&err.kind, AnalyzeErrorKind::ProtectedUri { entity, .. } if entity == "db:concept"),
             "expected ProtectedUri after resolving `evil` to db:concept, got {err:?}"
         );
     }
@@ -1199,7 +1232,7 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::UnknownBookmark { field, bookmark } if field == "this" && bookmark == "ghost"),
+            matches!(&err.kind, AnalyzeErrorKind::UnknownBookmark { field, bookmark } if field == "this" && bookmark == "ghost"),
             "expected UnknownBookmark on `this` with bookmark=\"ghost\", got {err:?}"
         );
     }
@@ -1415,7 +1448,7 @@ attribute!: &foo
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::DuplicateName { .. }),
+            matches!(err.kind, AnalyzeErrorKind::DuplicateName { .. }),
             "expected DuplicateName, got {err:?}"
         );
     }
@@ -1433,7 +1466,10 @@ person!:
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnsupportedFieldValue { .. }));
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::UnsupportedFieldValue { .. }
+        ));
     }
 
     /// `this: { entropy: ... }` (mapping form for explicit
@@ -1451,7 +1487,10 @@ person!:
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnsupportedFieldValue { .. }));
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::UnsupportedFieldValue { .. }
+        ));
     }
 
     // ----------------------------------------------------------- //
@@ -1566,7 +1605,10 @@ thing!:
         );
         let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
-        assert!(matches!(err, AnalyzeError::UnsupportedFieldValue { .. }));
+        assert!(matches!(
+            err.kind,
+            AnalyzeErrorKind::UnsupportedFieldValue { .. }
+        ));
     }
 
     // ----------------------------------------------------------- //
@@ -1620,7 +1662,7 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::UnknownBookmark { bookmark, .. } if bookmark == "ghost"),
+            matches!(&err.kind, AnalyzeErrorKind::UnknownBookmark { bookmark, .. } if bookmark == "ghost"),
             "expected UnknownBookmark{{bookmark:\"ghost\"}}, got {err:?}"
         );
     }
@@ -1658,7 +1700,7 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::AssertionWithoutFields { .. }),
+            matches!(err.kind, AnalyzeErrorKind::AssertionWithoutFields { .. }),
             "expected AssertionWithoutFields, got {err:?}"
         );
     }
@@ -1674,7 +1716,7 @@ concept!: &foo
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::InvalidConceptBody { .. }),
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
             "expected InvalidConceptBody, got {err:?}"
         );
     }
@@ -1693,7 +1735,7 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::UnknownField { field, .. } if field == "bogus"),
+            matches!(&err.kind, AnalyzeErrorKind::UnknownField { field, .. } if field == "bogus"),
             "expected UnknownField{{field:\"bogus\"}}, got {err:?}"
         );
     }
@@ -1710,7 +1752,7 @@ xyz.tonk:
         );
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::InvalidClaimAttribute { .. }),
+            matches!(err.kind, AnalyzeErrorKind::InvalidClaimAttribute { .. }),
             "expected InvalidClaimAttribute, got {err:?}"
         );
     }
@@ -1755,7 +1797,7 @@ person:
         );
         let err = analyze(&syntax, &FailingResolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::ResolverFailed { .. }),
+            matches!(err.kind, AnalyzeErrorKind::ResolverFailed { .. }),
             "expected ResolverFailed, got {err:?}"
         );
     }
@@ -1941,8 +1983,8 @@ attribute!: &age
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
             matches!(
-                &err,
-                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("quaternion")
+                &err.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("quaternion")
                     && reason.contains("text")
             ),
             "expected InvalidAttributeBody listing accepted types, got {err:?}"
@@ -1966,8 +2008,8 @@ attribute!: &foo
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
             matches!(
-                &err,
-                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("maybe")
+                &err.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("maybe")
             ),
             "expected InvalidAttributeBody listing accepted cardinality, got {err:?}"
         );
@@ -2154,8 +2196,8 @@ attribute!: &foo
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
             matches!(
-                &err,
-                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("recipe") && reason.contains("symbol")
+                &err.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("recipe") && reason.contains("symbol")
             ),
             "expected guidance about bare symbol in `description:`, got {err:?}"
         );
@@ -2180,8 +2222,8 @@ concept!: &thing
         let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
         assert!(
             matches!(
-                &err,
-                AnalyzeError::InvalidAttributeBody { reason } if reason.contains("recipe")
+                &err.kind,
+                AnalyzeErrorKind::InvalidAttributeBody { reason } if reason.contains("recipe")
             ),
             "expected guidance about bare symbol in `description:`, got {err:?}"
         );
@@ -2232,8 +2274,8 @@ person!:
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
             matches!(
-                &err,
-                AnalyzeError::IncompleteAssertion { concept, set, missing, selector_form }
+                &err.kind,
+                AnalyzeErrorKind::IncompleteAssertion { concept, set, missing, selector_form }
                     if concept == "person"
                        && set == &vec!["age".to_string()]
                        && missing == &vec!["name".to_string()]
@@ -2289,8 +2331,8 @@ person!:
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
             matches!(
-                &err,
-                AnalyzeError::IncompleteAssertion { selector_form, .. }
+                &err.kind,
+                AnalyzeErrorKind::IncompleteAssertion { selector_form, .. }
                     if selector_form.contains("omitted")
             ),
             "expected IncompleteAssertion for omitted `this:` + partial body, got {err:?}"
@@ -2317,7 +2359,7 @@ person!: &alice
         );
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::IncompleteAssertion { .. }),
+            matches!(err.kind, AnalyzeErrorKind::IncompleteAssertion { .. }),
             "anchor should not bypass the check, got {err:?}"
         );
     }
@@ -2409,8 +2451,57 @@ person!:
         );
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(err, AnalyzeError::IncompleteAssertion { .. }),
+            matches!(err.kind, AnalyzeErrorKind::IncompleteAssertion { .. }),
             "expected IncompleteAssertion for `age: _` on unbound entity, got {err:?}"
         );
+    }
+
+    /// AnalyzeError carries a stable code per kind that an editor
+    /// can match against without parsing the human message.
+    #[dialog_common::test]
+    async fn it_exposes_stable_codes_on_errors() {
+        let syntax = must_parse("person!:\n");
+        let resolver = NoopResolver;
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert_eq!(err.code(), "E_ASSERTION_WITHOUT_FIELDS");
+    }
+
+    /// AnalyzeError carries a source range for errors with a
+    /// clear surface-syntax origin. This lets the LSP attach the
+    /// diagnostic to the offending span instead of the whole
+    /// document.
+    #[dialog_common::test]
+    async fn it_attaches_source_ranges_to_errors() {
+        // `person!:` (empty body) — the range should land on the
+        // head, which sits on the second line of the document.
+        let syntax = must_parse("\nperson!:\n");
+        let resolver = NoopResolver;
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        let range = err
+            .range
+            .expect("AssertionWithoutFields should carry a range");
+        assert_eq!(
+            range.start.line, 1,
+            "expected the head's line, got {range:?}"
+        );
+    }
+
+    /// Unknown-field errors point at the offending field name,
+    /// not the head — squiggle on `bogus`, not on `person!`.
+    #[dialog_common::test]
+    async fn it_attaches_field_range_to_unknown_field() {
+        let syntax = must_parse(
+            r#"
+person:
+  bogus: ?value
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert_eq!(err.code(), "E_UNKNOWN_FIELD");
+        let range = err.range.expect("UnknownField should carry a range");
+        // `bogus:` is on line 2 (0-indexed) of the doc — the
+        // head is on line 1.
+        assert_eq!(range.start.line, 2, "expected `bogus:` line, got {range:?}");
     }
 }

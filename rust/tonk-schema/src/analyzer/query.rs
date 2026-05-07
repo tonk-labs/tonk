@@ -8,8 +8,8 @@ use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use tonk_notation::{Field, HeadName, Query};
 
 use super::assertion::derive_head_intent;
-use super::error::AnalyzeError;
-use super::field::{field_value_to_term, is_meta_field, user_field, validate_claim_attribute};
+use super::error::{AnalyzeError, AnalyzeErrorKind};
+use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
@@ -23,17 +23,28 @@ pub(crate) async fn build_query_application<R: Resolver>(
     // intent derivation only inspects `this:`. The returned name
     // is always `None` here.
     let (this, _name) = derive_head_intent(&query.fields, None, scope).await?;
+    let head_range = query.head.range;
     match &query.head.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
                 .resolve_concept(concept_name)
                 .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
-                    context: format!("concept {concept_name:?}"),
-                    reason: e.message,
+                .map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("concept {concept_name:?}"),
+                            reason: e.message,
+                        },
+                        head_range,
+                    )
                 })?
-                .ok_or_else(|| AnalyzeError::UnknownConcept {
-                    name: concept_name.clone(),
+                .ok_or_else(|| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::UnknownConcept {
+                            name: concept_name.clone(),
+                        },
+                        head_range,
+                    )
                 })?;
             let mut terms = Parameters::new();
             terms.insert("this".into(), this_term_for_query(&this));
@@ -44,8 +55,17 @@ pub(crate) async fn build_query_application<R: Resolver>(
                 // matches surface the value in the response —
                 // `person:` reads the same as
                 // `person:\n  name: ?name\n  age: ?age`.
-                let term = match user_field(query.fields.as_slice(), field_name) {
-                    Some(value) => field_value_to_term(field_name, value, scope, analysis).await?,
+                let term = match query.fields.iter().find(|f| f.name == *field_name) {
+                    Some(field) => {
+                        field_value_to_term(
+                            field_name,
+                            &field.value,
+                            field.value_range,
+                            scope,
+                            analysis,
+                        )
+                        .await?
+                    }
                     None => Term::<dialog_query::Any>::var(field_name),
                 };
                 terms.insert(field_name.into(), term);
@@ -64,10 +84,13 @@ pub(crate) async fn build_query_application<R: Resolver>(
                     .iter()
                     .all(|(n, _)| n != field.name)
                 {
-                    return Err(AnalyzeError::UnknownField {
-                        concept: concept_name.clone(),
-                        field: field.name.clone(),
-                    });
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::UnknownField {
+                            concept: concept_name.clone(),
+                            field: field.name.clone(),
+                        },
+                        field.name_range,
+                    ));
                 }
             }
             Ok(Application::Concept {
@@ -90,15 +113,25 @@ pub(crate) async fn build_query_application<R: Resolver>(
                 .filter(|f| !is_meta_field(&f.name))
                 .collect();
             if body_fields.is_empty() {
-                return Err(AnalyzeError::ClaimWithoutFields {
-                    domain: domain.clone(),
-                });
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::ClaimWithoutFields {
+                        domain: domain.clone(),
+                    },
+                    head_range,
+                ));
             }
             let mut parameters = Parameters::new();
             parameters.insert("this".into(), this_term_for_query(&this));
             for field in &body_fields {
-                validate_claim_attribute(domain, &field.name)?;
-                let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
+                validate_claim_attribute(domain, &field.name, field.name_range)?;
+                let term = field_value_to_term(
+                    &field.name,
+                    &field.value,
+                    field.value_range,
+                    scope,
+                    analysis,
+                )
+                .await?;
                 parameters.insert(field.name.clone(), term);
             }
             Ok(Application::Domain {
@@ -110,10 +143,13 @@ pub(crate) async fn build_query_application<R: Resolver>(
                 name: None,
             })
         }
-        HeadName::Uri(uri) => Err(AnalyzeError::UnsupportedFieldValue {
-            field: uri.clone(),
-            form: "URI head in query (not yet implemented in Stage 2.1)",
-        }),
+        HeadName::Uri(uri) => Err(AnalyzeError::at(
+            AnalyzeErrorKind::UnsupportedFieldValue {
+                field: uri.clone(),
+                form: "URI head in query (not yet implemented in Stage 2.1)",
+            },
+            head_range,
+        )),
     }
 }
 

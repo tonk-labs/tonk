@@ -9,7 +9,7 @@ use dialog_query::{
 };
 use tonk_notation::{Assertion, FieldValue, Scalar};
 
-use super::error::AnalyzeError;
+use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
 use super::resolver::{ResolvedAttribute, Resolver};
 use super::scope::Scope;
@@ -77,7 +77,7 @@ pub(crate) fn parse_attribute_fields(
             "as" => {
                 let value_str = stringify_simple_value(field)?;
                 let normalized = normalize_type_name(&value_str).ok_or_else(|| {
-                    AnalyzeError::InvalidAttributeBody {
+                    AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
                             "unknown attribute type {value_str:?} — \
                              expected one of: text, unsigned-integer, \
@@ -91,7 +91,7 @@ pub(crate) fn parse_attribute_fields(
             "cardinality" => {
                 let value_str = stringify_simple_value(field)?;
                 let normalized = normalize_cardinality_name(&value_str).ok_or_else(|| {
-                    AnalyzeError::InvalidAttributeBody {
+                    AnalyzeErrorKind::InvalidAttributeBody {
                         reason: format!(
                             "unknown cardinality {value_str:?} — \
                              expected `one` or `many`"
@@ -112,38 +112,41 @@ pub(crate) fn parse_attribute_fields(
                 shape.insert("description".into(), serde_json::Value::String(value_str));
             }
             other => {
-                return Err(AnalyzeError::UnknownField {
+                return Err(AnalyzeErrorKind::UnknownField {
                     concept: "attribute".into(),
                     field: other.into(),
-                });
+                }
+                .into());
             }
         }
     }
     if !shape.contains_key("the") {
-        return Err(AnalyzeError::InvalidAttributeBody {
+        return Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: "missing required field `the`".into(),
-        });
+        }
+        .into());
     }
     let description_present = shape
         .get("description")
         .and_then(serde_json::Value::as_str)
         .is_some_and(|s| !s.is_empty());
     if !description_present {
-        return Err(AnalyzeError::InvalidAttributeBody {
+        return Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: "missing required field `description` (attribute \
                      definitions must include a non-empty description)"
                 .into(),
-        });
+        }
+        .into());
     }
     let descriptor: AttributeDescriptor = serde_json::from_value(serde_json::Value::Object(shape))
-        .map_err(|e| AnalyzeError::InvalidAttributeBody {
+        .map_err(|e| AnalyzeErrorKind::InvalidAttributeBody {
             reason: e.to_string(),
         })?;
     let entity: Entity =
         descriptor
             .to_uri()
             .parse()
-            .map_err(|e| AnalyzeError::InvalidAttributeBody {
+            .map_err(|e| AnalyzeErrorKind::InvalidAttributeBody {
                 reason: format!("descriptor URI did not parse as entity: {e:?}"),
             })?;
     Ok(AttributeBody { descriptor, entity })
@@ -183,14 +186,15 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
             }
             "with" => {
                 let FieldValue::Nested(inner) = &field.value else {
-                    return Err(AnalyzeError::InvalidConceptBody {
+                    return Err(AnalyzeErrorKind::InvalidConceptBody {
                         reason: "`with:` must be a mapping of field name → \
                                  attribute reference (bare symbol, `?var`, \
                                  URI) or inline attribute definition \
                                  (mapping with `the`/`as`/`cardinality`/\
                                  `description`)"
                             .into(),
-                    });
+                    }
+                    .into());
                 };
                 for sub in inner {
                     if let FieldValue::Nested(attr_fields) = &sub.value {
@@ -212,17 +216,19 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
                 }
             }
             other => {
-                return Err(AnalyzeError::UnknownField {
+                return Err(AnalyzeErrorKind::UnknownField {
                     concept: "concept".into(),
                     field: other.into(),
-                });
+                }
+                .into());
             }
         }
     }
     if with_fields.is_empty() {
-        return Err(AnalyzeError::InvalidConceptBody {
+        return Err(AnalyzeErrorKind::InvalidConceptBody {
             reason: "`with:` is required and must declare at least one field".into(),
-        });
+        }
+        .into());
     }
     let mut shape = serde_json::Map::new();
     if let Some(d) = &description {
@@ -240,7 +246,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
         .collect();
     shape.insert("with".into(), serde_json::Value::Object(with_obj));
     let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::Value::Object(shape))
-        .map_err(|e| AnalyzeError::InvalidConceptBody {
+        .map_err(|e| AnalyzeErrorKind::InvalidConceptBody {
             reason: e.to_string(),
         })?;
     let entity = descriptor.this();
@@ -260,30 +266,36 @@ async fn resolve_concept_field<R: Resolver>(
         FieldValue::Variable(name) => scope
             .resolve_attribute(name)
             .await
-            .map_err(|e| AnalyzeError::ResolverFailed {
+            .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("variable ?{name}"),
                 reason: e.message,
             })?
-            .ok_or_else(|| AnalyzeError::UnknownBookmark {
-                field: field_name.into(),
-                bookmark: name.clone(),
+            .ok_or_else(|| {
+                AnalyzeErrorKind::UnknownBookmark {
+                    field: field_name.into(),
+                    bookmark: name.clone(),
+                }
+                .into()
             }),
         FieldValue::Symbol(name) => scope
             .resolve_attribute(name)
             .await
-            .map_err(|e| AnalyzeError::ResolverFailed {
+            .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("symbol {name}"),
                 reason: e.message,
             })?
-            .ok_or_else(|| AnalyzeError::UnknownBookmark {
-                field: field_name.into(),
-                bookmark: name.clone(),
+            .ok_or_else(|| {
+                AnalyzeErrorKind::UnknownBookmark {
+                    field: field_name.into(),
+                    bookmark: name.clone(),
+                }
+                .into()
             }),
         FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
                     .map_err(|e: dialog_artifacts::DialogArtifactsError| {
-                        AnalyzeError::InvalidSubjectUri {
+                        AnalyzeErrorKind::InvalidSubjectUri {
                             subject: uri.clone(),
                             reason: e.to_string(),
                         }
@@ -291,20 +303,24 @@ async fn resolve_concept_field<R: Resolver>(
             scope
                 .resolve_attribute_by_entity(&entity)
                 .await
-                .map_err(|e| AnalyzeError::ResolverFailed {
+                .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                     context: format!("attribute entity {uri}"),
                     reason: e.message,
                 })?
-                .ok_or_else(|| AnalyzeError::UnknownBookmark {
-                    field: field_name.into(),
-                    bookmark: uri.clone(),
+                .ok_or_else(|| {
+                    AnalyzeErrorKind::UnknownBookmark {
+                        field: field_name.into(),
+                        bookmark: uri.clone(),
+                    }
+                    .into()
                 })
         }
-        _ => Err(AnalyzeError::UnsupportedFieldValue {
+        _ => Err(AnalyzeErrorKind::UnsupportedFieldValue {
             field: field_name.into(),
             form: "expected a bare symbol (name lookup) or a URI \
                    (`xyz.tonk/foo`, `id:foo`, etc.)",
-        }),
+        }
+        .into()),
     }
 }
 
@@ -526,10 +542,11 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Uri(s) => s.clone(),
         FieldValue::Symbol(s) => s.clone(),
         FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
-            return Err(AnalyzeError::UnsupportedFieldValue {
+            return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: field.name.clone(),
                 form: "non-literal (attribute definitions take literals)",
-            });
+            }
+            .into());
         }
     })
 }
@@ -544,15 +561,17 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
 fn require_string_description(field: &tonk_notation::Field) -> Result<String, AnalyzeError> {
     match &field.value {
         FieldValue::Literal(Scalar::String(s)) => Ok(s.clone()),
-        FieldValue::Symbol(s) => Err(AnalyzeError::InvalidAttributeBody {
+        FieldValue::Symbol(s) => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: format!(
                 "`description:` value {s:?} looks like a bare symbol — write a \
                  quoted string explaining what the entity represents \
                  (`description: \"…\"`)"
             ),
-        }),
-        _ => Err(AnalyzeError::InvalidAttributeBody {
+        }
+        .into()),
+        _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: "`description:` must be a string".into(),
-        }),
+        }
+        .into()),
     }
 }
