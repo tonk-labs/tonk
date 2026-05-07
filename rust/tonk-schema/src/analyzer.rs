@@ -48,7 +48,8 @@ use dialog_common::ConditionalSync;
 use tonk_notation::{Expression, HeadName, Syntax};
 
 use crate::transact::{
-    Analysis, Application, MutationAnalysis, QueryAnalysis, Statement, ThisIntent,
+    Analysis, Application, DomainApplication, MutationAnalysis, QueryAnalysis, Statement,
+    ThisIntent,
 };
 
 pub use error::{
@@ -262,6 +263,12 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     // ---- Phase 3: build mutation Statements ----
     let mut statements: Vec<Statement> = Vec::new();
     let mut requires: HashSet<String> = HashSet::new();
+    // Indexes (within `statements`) of statements that came
+    // from `attribute!` / `concept!` declarations. These are
+    // excluded from auto-snapshot synthesis (Phase 4) because
+    // their state lives in the schema branch, not user-facing
+    // facts the editor wants to project.
+    let mut declaration_statement_indexes: HashSet<usize> = HashSet::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         match expression {
@@ -278,9 +285,11 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     // time anything reads back.
                     for inline in declaration.inline_attributes {
                         collect_unbound_variables(&inline, &analysis, &mut requires);
+                        declaration_statement_indexes.insert(statements.len());
                         statements.push(Statement::Assert(inline));
                     }
                     collect_unbound_variables(&declaration.application, &analysis, &mut requires);
+                    declaration_statement_indexes.insert(statements.len());
                     statements.push(Statement::Assert(declaration.application));
                 } else {
                     // An assertion expression can produce up to
@@ -327,7 +336,172 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         requires,
     };
 
+    // ---- Phase 4: synthesize implicit queries for touched entities ----
+    // For every mutation statement that targets a known entity
+    // and isn't already covered by a user-written query, mint an
+    // auto-snapshot query so the editor's before/after view
+    // surfaces the change. Skips meta-head declarations
+    // (`attribute!` / `concept!`) — their state lives in the
+    // schema branch, not in user-facing facts.
+    synthesize_implicit_queries(&mut analysis, &declaration_statement_indexes);
+
     Ok(analysis)
+}
+
+/// Add `Application` entries to `analysis.query` so that every
+/// mutation-touched entity gets read back into the response, even
+/// when the user wrote no explicit query for it.
+///
+/// Skipped entirely for `attribute!` / `concept!` declarations
+/// (the meta heads — their state is in the schema branch, not
+/// user-visible facts).
+///
+/// Entities that already appear as a `this:` constant in some
+/// existing query are skipped: the user query will pick them up.
+fn synthesize_implicit_queries(
+    analysis: &mut Analysis,
+    declaration_statement_indexes: &HashSet<usize>,
+) {
+    use dialog_artifacts::Value;
+    use dialog_query::Term;
+
+    if analysis.mutate.statements.is_empty() {
+        return;
+    }
+
+    // Existing query coverage: which entities (by their string
+    // form) does some existing query enumerate via a constant
+    // `this:` term?
+    let mut covered: HashSet<String> = HashSet::new();
+    if let Some(query) = &analysis.query {
+        for application in &query.queries {
+            if let Some(Term::Constant(Value::Entity(e))) = application.parameters().get("this") {
+                covered.insert(e.to_string());
+            }
+        }
+    }
+
+    let mut implicit: Vec<Application> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for (index, statement) in analysis.mutate.statements.iter().enumerate() {
+        if declaration_statement_indexes.contains(&index) {
+            continue;
+        }
+        let application = statement.application();
+        // Two cases of "we know which entity to snapshot":
+        //
+        // 1. **Update existing thing** — `this:` is a constant
+        //    URI (`did:key:…`, `id:foo`, or a bare symbol that
+        //    resolved to a known entity). The before-snapshot
+        //    shows prior state, the after-snapshot shows the
+        //    update.
+        //
+        // 2. **Define new (potentially redundant) thing** —
+        //    `this:` is `Derived` or an unbound `Variable`. In
+        //    both cases `this_term_for_assertion` minted a
+        //    body-content-derived entity, which is already
+        //    substituted into `application.parameters()["this"]`
+        //    as a constant. The before-snapshot shows nothing
+        //    (the entity didn't exist), the after-snapshot
+        //    shows what we just wrote — useful for catching
+        //    redundant declarations and for confirming the
+        //    expected entity URI.
+        //
+        // Variables bound by a preceding query stay as
+        // `Term::Variable` in the terms — `as_constant_entity`
+        // returns `None` for those, so they're correctly skipped
+        // (the user's query already covers them).
+        let Some(entity) = application
+            .parameters()
+            .get("this")
+            .and_then(as_constant_entity)
+        else {
+            continue;
+        };
+        let entity_key = entity.to_string();
+        if covered.contains(&entity_key) || !seen.insert(entity_key.clone()) {
+            continue;
+        }
+        // Skip meta-head writes — `db:attribute` / `db:concept`
+        // entities live behind URI heads we don't render in the
+        // user-facing snapshot.
+        if entity_key.starts_with("db:") {
+            continue;
+        }
+
+        let snapshot = match application {
+            Application::Concept { query, .. } => {
+                // Build a fresh ConceptQuery: same predicate,
+                // every field bound to a named variable so the
+                // engine reads it back.
+                let mut terms = dialog_query::Parameters::new();
+                terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+                for (field_name, _) in query.predicate.with().iter() {
+                    terms.insert(
+                        field_name.into(),
+                        Term::<dialog_query::Any>::var(field_name),
+                    );
+                }
+                Application::Concept {
+                    query: dialog_query::concept::query::ConceptQuery {
+                        terms,
+                        predicate: query.predicate.clone(),
+                    },
+                    this: ThisIntent::Uri(entity),
+                    name: None,
+                }
+            }
+            Application::Domain { application: d, .. } => {
+                // Claim heads have no schema — re-read the same
+                // attributes the user wrote, with values bound
+                // to fresh variables.
+                let mut parameters = dialog_query::Parameters::new();
+                parameters.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+                for (field_name, _) in d.parameters.iter() {
+                    if field_name == "this" {
+                        continue;
+                    }
+                    parameters.insert(
+                        field_name.clone(),
+                        Term::<dialog_query::Any>::var(field_name),
+                    );
+                }
+                Application::Domain {
+                    application: DomainApplication {
+                        domain: d.domain.clone(),
+                        parameters,
+                    },
+                    this: ThisIntent::Uri(entity),
+                    name: None,
+                }
+            }
+        };
+        implicit.push(snapshot);
+    }
+
+    if implicit.is_empty() {
+        return;
+    }
+    let mut queries = analysis
+        .query
+        .clone()
+        .map(|q| q.queries)
+        .unwrap_or_default();
+    queries.extend(implicit);
+    analysis.query = Some(QueryAnalysis { queries });
+}
+
+/// Pull a concrete `Entity` out of a `Term::Constant(Value::Entity(_))`,
+/// or `None` for any other term shape (variable, blank, non-entity
+/// constant). Used to detect when an `Application`'s `this:` slot
+/// has been resolved to a known entity at analysis time.
+fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<Entity> {
+    use dialog_artifacts::Value;
+    use dialog_query::Term;
+    match term {
+        Term::Constant(Value::Entity(e)) => Some(e.clone()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -2508,5 +2682,193 @@ person:
         // `bogus:` is on line 2 (0-indexed) of the doc — the
         // head is on line 1.
         assert_eq!(range.start.line, 2, "expected `bogus:` line, got {range:?}");
+    }
+
+    /// Category 2 from the user's classification: assertion
+    /// updates an existing entity (URI). The analyzer
+    /// synthesizes an implicit query for that URI so the editor
+    /// can render before/after — even when no explicit query
+    /// was written.
+    #[dialog_common::test]
+    async fn it_synthesizes_implicit_query_for_uri_targeted_assertion() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 30
+  ..: _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let queries = analysis
+            .query
+            .as_ref()
+            .expect("auto-snapshot should populate analysis.query")
+            .queries
+            .as_slice();
+        assert_eq!(
+            queries.len(),
+            1,
+            "expected one implicit query for the touched URI"
+        );
+    }
+
+    /// Category 1 from the user's classification: assertion
+    /// defines a new (potentially redundant) thing. The
+    /// body-derived entity is a known constant after Phase 3,
+    /// so the auto-snapshot also fires — useful for surfacing
+    /// "you re-asserted the same fields" in the after-view.
+    #[dialog_common::test]
+    async fn it_synthesizes_implicit_query_for_body_derived_assertion() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert_eq!(
+            analysis
+                .query
+                .as_ref()
+                .map(|q| q.queries.len())
+                .unwrap_or(0),
+            1,
+            "expected one implicit query for the body-derived entity"
+        );
+    }
+
+    /// When the user wrote a query covering the touched URI,
+    /// the synthesizer skips it — no duplicate snapshot.
+    #[dialog_common::test]
+    async fn it_skips_implicit_query_when_user_wrote_one() {
+        let syntax = must_parse(
+            r#"
+person:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 30
+  ..: _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        // Only the user's explicit query — no synthesized
+        // duplicate.
+        assert_eq!(
+            analysis
+                .query
+                .as_ref()
+                .map(|q| q.queries.len())
+                .unwrap_or(0),
+            1,
+        );
+    }
+
+    /// Pure-query documents skip the synthesis entirely —
+    /// nothing to snapshot if nothing's being written.
+    #[dialog_common::test]
+    async fn it_skips_synthesis_for_pure_query_documents() {
+        let syntax = must_parse(
+            r#"
+person:
+  name: ?n
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert!(analysis.mutate.statements.is_empty());
+        assert_eq!(
+            analysis
+                .query
+                .as_ref()
+                .map(|q| q.queries.len())
+                .unwrap_or(0),
+            1,
+            "only the user's query — synthesis must be a no-op"
+        );
+    }
+
+    /// Category 1 sub-case: the user wrote `this: ?alice` but
+    /// `?alice` is unbound. `this_term_for_assertion` mints a
+    /// body-derived entity for it and registers ?alice → entity,
+    /// so the implicit query targets that entity. This is the
+    /// "we know what we're about to write, so we can show what's
+    /// there before we write it" case.
+    #[dialog_common::test]
+    async fn it_synthesizes_implicit_query_for_unbound_this_variable() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: ?alice
+  name: "Alice"
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert_eq!(
+            analysis
+                .query
+                .as_ref()
+                .map(|q| q.queries.len())
+                .unwrap_or(0),
+            1,
+            "unbound `?alice` should still seed an implicit query for the body-derived entity"
+        );
+    }
+
+    /// Meta-head declarations (`attribute!` / `concept!`) don't
+    /// get auto-snapshots. Their state lives in the schema
+    /// branch; user-facing snapshots would surface schema noise.
+    #[dialog_common::test]
+    async fn it_does_not_synthesize_implicit_queries_for_meta_heads() {
+        let syntax = must_parse(
+            r#"
+attribute!:
+  the: io.gozala.person/nickname
+  as: text
+  cardinality: one
+  description: "Optional short name"
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        // The declaration produces a Statement::Assert but
+        // synthesizer skips it — no implicit query.
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        assert!(
+            analysis.query.is_none(),
+            "meta-head declarations must not seed an auto-snapshot, got {:?}",
+            analysis.query
+        );
     }
 }
