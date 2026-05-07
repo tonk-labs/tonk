@@ -91,6 +91,26 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 user_fields.insert(field.name.as_str(), &field.value);
             }
 
+            // Reject incomplete fresh-entity assertions: when
+            // `this:` doesn't reach an existing entity (omitted
+            // or unbound `?var`) and the body sets fewer than
+            // every `with:` field, the user is almost certainly
+            // missing a query — they wanted to update an
+            // existing entity but the analyzer has no way to
+            // know that. `..: _` is the explicit opt-in for
+            // "yes, I'm creating a partial," so it suppresses
+            // the check.
+            if let Some(error) = check_complete_when_unbound(
+                concept_name,
+                &this,
+                &resolved.descriptor,
+                &user_fields,
+                has_rest_retraction,
+                analysis,
+            ) {
+                return Err(error);
+            }
+
             let mut assert_terms = Parameters::new();
             assert_terms.insert("this".into(), this_term.clone());
             let mut retract_terms = Parameters::new();
@@ -436,6 +456,86 @@ impl FieldDigest {
             Scalar::Null => Self::Null,
         }
     }
+}
+
+/// Implements the "no incomplete fresh-entity assertions" rule.
+///
+/// Returns `Some(IncompleteAssertion)` when:
+/// - `this` is `Derived` (no `this:` field) OR `Variable(name)`
+///   with no preceding query binding for `name`
+/// - AND the user-set field set is a strict subset of the
+///   concept's `with:` schema
+/// - AND the body has no `..: _` rest-marker (which is the
+///   explicit opt-in for partial assertions)
+///
+/// Returns `None` otherwise (intentional update, intentional
+/// full assert, or explicit partial via `..: _`).
+fn check_complete_when_unbound(
+    concept_name: &str,
+    this: &ThisIntent,
+    descriptor: &dialog_query::ConceptDescriptor,
+    user_fields: &BTreeMap<&str, &FieldValue>,
+    has_rest_retraction: bool,
+    analysis: &Analysis,
+) -> Option<AnalyzeError> {
+    // `..: _` is the user's explicit "I know what I'm doing
+    // about every other field" — never trip the check.
+    if has_rest_retraction {
+        return None;
+    }
+
+    // Determine whether `this:` reaches an existing entity.
+    // `Uri` always does (the user wrote a concrete URI). Any
+    // other case where the entity is "fresh" or "unbound"
+    // gates the check.
+    let selector_form = match this {
+        ThisIntent::Uri(_) => return None,
+        ThisIntent::Derived => {
+            "`this:` is omitted (the body would derive a fresh entity)".to_string()
+        }
+        ThisIntent::Variable(name) => {
+            if query_binds(analysis, name) {
+                // The query binds it — partial update is fine.
+                return None;
+            }
+            format!("`?{name}` in `this:` isn't bound by any query expression")
+        }
+    };
+
+    // Compare set fields against the concept's full `with:`
+    // schema. "Set" means the user supplied a non-blank value;
+    // per-field `_` blanks (retract markers) don't count as
+    // setting.
+    let mut set: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for (field_name, _) in descriptor.with().iter() {
+        match user_fields.get(field_name) {
+            Some(FieldValue::Blank) => {
+                // Per-field `_` retraction — counts as
+                // "addressed" but not "set." Treat it like
+                // missing for the completeness check: the user
+                // is dropping a field on a fresh entity, which
+                // is meaningless.
+                missing.push(field_name.to_string());
+            }
+            Some(_) => {
+                set.push(field_name.to_string());
+            }
+            None => {
+                missing.push(field_name.to_string());
+            }
+        }
+    }
+    if missing.is_empty() {
+        // Body sets every field — intentional fresh entity.
+        return None;
+    }
+    Some(AnalyzeError::IncompleteAssertion {
+        concept: concept_name.to_owned(),
+        set,
+        missing,
+        selector_form,
+    })
 }
 
 /// Does `analysis.query` bind `?name`? Used by

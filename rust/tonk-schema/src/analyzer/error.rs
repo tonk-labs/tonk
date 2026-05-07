@@ -139,4 +139,37 @@ pub enum AnalyzeError {
         /// The reserved scheme prefix (e.g. `db`).
         scheme: String,
     },
+    /// An assertion creates or names a fresh entity but the
+    /// body sets only some of the concept's `with:` fields —
+    /// almost always a bug. Either the user meant to update an
+    /// existing entity (and forgot to query for it first) or
+    /// they meant to set every field. Pinning the partial
+    /// shape prevents accidentally creating "ghost" entities
+    /// with one or two fields set.
+    ///
+    /// The error is suppressed in two cases:
+    /// - A preceding query expression binds the `?var` in
+    ///   `this:` (the user is intentionally updating an
+    ///   existing entity, partial updates are fine).
+    /// - The body contains `..: _` (the rest-marker explicitly
+    ///   declares "I know what I'm doing about every other
+    ///   field" — the unmentioned fields get retracted).
+    #[error(
+        "`{concept}!` body sets only some of the concept's fields ({set:?}; missing: {missing:?}) but {selector_form}. \
+         Either query for an existing entity first (`{concept}:\n  this: ?var\n  …`), set every field, or add `..: _` to acknowledge the partial."
+    )]
+    IncompleteAssertion {
+        /// The concept whose schema was being asserted against.
+        concept: String,
+        /// Fields the user set in the body (with non-blank
+        /// values).
+        set: Vec<String>,
+        /// `with:` fields the user didn't set and didn't
+        /// retract.
+        missing: Vec<String>,
+        /// Human-readable form of how `this:` selected the
+        /// entity (e.g. "`this:` is omitted (body-derived
+        /// entity)" or "`?alice` is not bound by any query").
+        selector_form: String,
+    },
 }

@@ -2202,4 +2202,215 @@ attribute!: &foo
         );
         analyze(&syntax, &NoopResolver).await.unwrap();
     }
+
+    // ----------------------------------------------------------- //
+    // IncompleteAssertion check                                   //
+    // ----------------------------------------------------------- //
+
+    /// `person!:\n  this: ?alice\n  age: 29` with no preceding
+    /// query that binds `?alice` is the gotcha case — the user
+    /// almost certainly meant to update Alice but the analyzer
+    /// has no way to know that. Mints a fresh entity with only
+    /// `age` set, which is meaningless. Caught with
+    /// `IncompleteAssertion`.
+    #[dialog_common::test]
+    async fn it_rejects_partial_assertion_with_unbound_this_variable() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: ?alice
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AnalyzeError::IncompleteAssertion { concept, set, missing, selector_form }
+                    if concept == "person"
+                       && set == &vec!["age".to_string()]
+                       && missing == &vec!["name".to_string()]
+                       && selector_form.contains("?alice")
+            ),
+            "expected IncompleteAssertion for `?alice` + age-only body, got {err:?}"
+        );
+    }
+
+    /// Same body shape, but a preceding query binds `?alice`.
+    /// Now the partial assertion is intentional (update an
+    /// existing entity), so the check is suppressed.
+    #[dialog_common::test]
+    async fn it_allows_partial_assertion_when_query_binds_this() {
+        let syntax = must_parse(
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+person!:
+  this: ?alice
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        analyze(&syntax, &resolver).await.unwrap();
+    }
+
+    /// Omitted `this:` (anonymous body-derive) plus an
+    /// incomplete body — the same "ghost entity" mistake but
+    /// without the variable. Caught with the same error.
+    #[dialog_common::test]
+    async fn it_rejects_partial_assertion_with_omitted_this() {
+        let syntax = must_parse(
+            r#"
+person!:
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                AnalyzeError::IncompleteAssertion { selector_form, .. }
+                    if selector_form.contains("omitted")
+            ),
+            "expected IncompleteAssertion for omitted `this:` + partial body, got {err:?}"
+        );
+    }
+
+    /// Anchor doesn't rescue an incomplete assertion. The
+    /// anchor publishes a name *for* a body-derived entity, but
+    /// the body still has the ghost-entity problem.
+    #[dialog_common::test]
+    async fn it_rejects_partial_assertion_even_with_anchor() {
+        let syntax = must_parse(
+            r#"
+person!: &alice
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::IncompleteAssertion { .. }),
+            "anchor should not bypass the check, got {err:?}"
+        );
+    }
+
+    /// `..: _` is the explicit opt-in for "I know this is
+    /// partial." Accepted.
+    #[dialog_common::test]
+    async fn it_allows_partial_assertion_with_rest_marker() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: ?alice
+  age: 29
+  ..: _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        analyze(&syntax, &resolver).await.unwrap();
+    }
+
+    /// Setting every `with:` field is intentional — pass.
+    #[dialog_common::test]
+    async fn it_allows_full_assertion_with_unbound_this() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: ?alice
+  name: "Alice"
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        analyze(&syntax, &resolver).await.unwrap();
+    }
+
+    /// `this: did:key:…` (URI form) is always assumed
+    /// intentional — the user wrote a concrete entity URI, so
+    /// the partial-body check doesn't fire.
+    #[dialog_common::test]
+    async fn it_allows_partial_assertion_when_this_is_uri() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 29
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        analyze(&syntax, &resolver).await.unwrap();
+    }
+
+    /// Per-field `_` retraction on a body that *only* sets `_`
+    /// blanks — same as omitting fields entirely. The user is
+    /// trying to drop a field on a fresh entity, which is
+    /// nonsensical. Caught.
+    #[dialog_common::test]
+    async fn it_rejects_field_retraction_on_unbound_entity() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: ?alice
+  age: _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::IncompleteAssertion { .. }),
+            "expected IncompleteAssertion for `age: _` on unbound entity, got {err:?}"
+        );
+    }
 }
