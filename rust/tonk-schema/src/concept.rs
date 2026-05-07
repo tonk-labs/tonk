@@ -434,15 +434,19 @@ fn build_attribute_descriptor(facts: &AnonymousAttribute) -> Result<AttributeDes
 // Concepts in dialog can't *describe* themselves through
 // `#[derive(Concept)]` because their `with` map is variable-arity
 // — every concept declares a different set of fields. We
-// therefore hand-write `AnonymousConcept` and `NamedConcept`,
-// each presenting the same `Statement` interface as a derived
-// concept: assert/retract walk the wrapped descriptor, emit the
-// right `dialog.concept.with/{field}` claims plus meta claims.
+// therefore hand-write [`AnonymousConcept`], which presents the
+// same `Statement` interface as a derived concept: assert/retract
+// walk the wrapped descriptor and emit the right
+// `dialog.concept.with/{field}` claims plus the meta marker.
 //
-// The result: a `concept!` head produces one of these structs;
-// the worker's commit loop calls `.assert(update)` on it and
-// dialog writes the per-field claims. Symmetric to the typed
-// `AnonymousAttribute` / `NamedAttribute` wrappers.
+// Naming used to live on a sister `NamedConcept` wrapper that
+// also wrote a `dialog.meta/name` claim *onto the named target*.
+// That direction was wrong under the new name model — names are
+// now their own concept whose entity (`id:<n>`) carries the
+// `dialog.meta/name` claim *pointing at* the named target. The
+// analyzer's anchor desugar emits the name assertion separately
+// via `ApplicationPlan::name`, so the wrapper is no longer
+// needed; only `AnonymousConcept` remains.
 
 use dialog_artifacts::{Statement, Update, Value};
 
@@ -498,64 +502,6 @@ impl dialog_query::Predicate for AnonymousConcept {
 }
 
 impl dialog_query::Concept for AnonymousConcept {
-    type Term = ();
-    fn this(&self) -> Entity {
-        self.this.clone()
-    }
-}
-
-/// A concept stored on a branch *with* a bookmark name.
-/// Same as [`AnonymousConcept`] but also writes (and retracts)
-/// a `dialog.meta/name` claim so future documents can resolve
-/// the concept via `.name`.
-#[derive(Debug, Clone)]
-pub struct NamedConcept {
-    /// `descriptor.this()`.
-    pub this: Entity,
-    /// The full descriptor.
-    pub descriptor: ConceptDescriptor,
-    /// Bookmark name — written as `dialog.meta/name`. Not part
-    /// of the descriptor's identity hash.
-    pub name: String,
-}
-
-impl NamedConcept {
-    /// Build from a descriptor and a bookmark name.
-    pub fn new(descriptor: ConceptDescriptor, name: impl Into<String>) -> Self {
-        Self {
-            this: descriptor.this(),
-            descriptor,
-            name: name.into(),
-        }
-    }
-}
-
-impl Statement for NamedConcept {
-    fn assert(mut self, update: &mut impl Update) {
-        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
-        update.associate(
-            meta_attr("dialog.meta", "name"),
-            self.this.clone(),
-            Value::String(std::mem::take(&mut self.name)),
-        );
-    }
-    fn retract(mut self, update: &mut impl Update) {
-        emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
-        update.dissociate(
-            meta_attr("dialog.meta", "name"),
-            self.this.clone(),
-            Value::String(std::mem::take(&mut self.name)),
-        );
-    }
-}
-
-impl dialog_query::Predicate for NamedConcept {
-    type Conclusion = ConceptConclusion;
-    type Application = AnonymousConceptQuery;
-    type Descriptor = ConceptDescriptor;
-}
-
-impl dialog_query::Concept for NamedConcept {
     type Term = ();
     fn this(&self) -> Entity {
         self.this.clone()
@@ -1137,31 +1083,12 @@ mod tests {
         );
     }
 
-    /// `NamedConcept::assert` should write the same as
-    /// `AnonymousConcept::assert` plus a `dialog.meta/name`
-    /// claim.
+    /// Compile-time check: `AnonymousConcept` implements the
+    /// dialog `Concept` trait (and its `Predicate` supertrait),
+    /// so it slots into query and rule machinery the same way
+    /// `#[derive(Concept)]` types do.
     #[test]
-    fn named_concept_writes_name_in_addition() {
-        use dialog_artifacts::Changes;
-        let json = r#"{
-            "with": {
-                "title": { "the": "recipe/title", "as": "Text", "cardinality": "one" }
-            }
-        }"#;
-        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
-        let concept = NamedConcept::new(descriptor, "recipe");
-        let mut changes = Changes::new();
-        concept.assert(&mut changes);
-        assert!(!changes.is_empty());
-    }
-
-    /// Compile-time check: `AnonymousConcept` and
-    /// `NamedConcept` implement the dialog `Concept` trait
-    /// (and its `Predicate` supertrait), so they slot into
-    /// query and rule machinery the same way `#[derive(Concept)]`
-    /// types do.
-    #[test]
-    fn concept_wrappers_satisfy_concept_trait() {
+    fn concept_wrapper_satisfies_concept_trait() {
         fn requires_concept<C: dialog_query::Concept>(_: &C)
         where
             C::Conclusion: dialog_query::Conclusion,
@@ -1170,10 +1097,8 @@ mod tests {
         let descriptor: ConceptDescriptor =
             serde_json::from_str(r#"{"with":{"x":{"the":"a/b","as":"Text","cardinality":"one"}}}"#)
                 .unwrap();
-        let anon = AnonymousConcept::new(descriptor.clone());
-        let named = NamedConcept::new(descriptor, "demo");
+        let anon = AnonymousConcept::new(descriptor);
         requires_concept(&anon);
-        requires_concept(&named);
     }
 
     /// `QueryPlan::from(ConceptQuery)` dispatches to the
@@ -1229,15 +1154,21 @@ mod tests {
         // exercise.
     }
 
-    /// Round-trip a [`NamedConcept`] through a branch and
+    /// Round-trip an [`AnonymousConcept`] through a branch and
     /// recover its descriptor via [`AnonymousConceptQuery`]'s
     /// synthesised `source` field.
     ///
-    /// Asserting a named concept writes the marker claim, the
-    /// `dialog.concept.with/{field}` claims, and the
-    /// `dialog.meta/name` claim. The query enumerates the
-    /// branch via the marker, reconstructs the descriptor for
-    /// each entity, and binds it as a JSON string in `source`.
+    /// Asserting the concept writes the marker claim and the
+    /// `dialog.concept.with/{field}` claims. The query
+    /// enumerates the branch via the marker, reconstructs the
+    /// descriptor for each entity, and binds it as a JSON
+    /// string in `source`.
+    ///
+    /// (The anchor-name lookup that older versions of this test
+    /// also exercised has moved out of the planner: names are
+    /// now their own concept asserted by the analyzer's anchor
+    /// desugar against `id:<n>`. A separate test will cover the
+    /// inverted lookup once the resolver is rewired.)
     #[dialog_common::test]
     async fn it_returns_concept_with_source_from_concept_query() -> anyhow::Result<()> {
         use dialog_query::{Any, Output as _, Parameters, Term};
@@ -1261,7 +1192,8 @@ mod tests {
         // the descriptor — emit them inline alongside the concept.
         let (_, attr_descriptor) = descriptor.with().iter().next().expect("one field");
         let attr_entity: Entity = attr_descriptor.to_uri().parse()?;
-        let concept = NamedConcept::new(descriptor.clone(), "person");
+        let concept = AnonymousConcept::new(descriptor.clone());
+        let concept_entity = concept.this.clone();
         branch
             .transaction()
             .assert(
@@ -1295,7 +1227,6 @@ mod tests {
 
         let mut terms = Parameters::new();
         terms.insert("this".to_string(), Term::<Any>::var("this"));
-        terms.insert("name".to_string(), Term::<Any>::var("name"));
         terms.insert("source".to_string(), Term::<Any>::var("source"));
 
         let conclusions: Vec<ConceptConclusion> = branch
@@ -1305,17 +1236,20 @@ mod tests {
             .try_vec()
             .await?;
 
+        // Find the row whose `this` is the concept entity we
+        // just asserted. Names are no longer fetched by the
+        // concept query; the test now identifies the row by
+        // entity URI directly.
         let row = conclusions
             .iter()
             .find(|c| {
                 c.source()
-                    .lookup(&Term::<Any>::var("name"))
+                    .lookup(&Term::<Any>::var("this"))
                     .ok()
-                    .and_then(|v| String::try_from(v).ok())
-                    .as_deref()
-                    == Some("person")
+                    .and_then(|v| Entity::try_from(v).ok())
+                    == Some(concept_entity.clone())
             })
-            .expect("expected a row with name = \"person\"");
+            .expect("expected a row for the asserted concept entity");
 
         let source: String = String::try_from(row.source().lookup(&Term::<Any>::var("source"))?)
             .expect("source binding must be a string");
