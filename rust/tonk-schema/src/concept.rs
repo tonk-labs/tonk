@@ -579,7 +579,7 @@ impl dialog_query::Concept for NamedConcept {
 ///
 /// 1. **Built-ins** — every entry of [`concept_registry`].
 /// 2. **Branch** — every entity carrying the
-///    `dialog.meta/concept = concept:concept` marker claim, with
+///    `dialog.meta/concept = db:concept` marker claim, with
 ///    its descriptor reconstructed from the on-branch facts.
 ///
 /// Built-ins win on `name` collision: a branch concept whose name
@@ -943,7 +943,7 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
     op: F,
 ) {
     // Marker claim — every concept entity carries
-    // `(?this, dialog.meta/concept, "concept:concept")` so
+    // `(?this, dialog.meta/concept, "db:concept")` so
     // queries that want "all concepts on this branch" have a
     // selectable triple to start from (the engine refuses
     // selections with no bound component).
@@ -981,11 +981,12 @@ fn emit_concept_facts<U: Update, F: Fn(&mut U, ArtifactsAttribute, Entity, Value
 /// The well-known entity used as the value of the
 /// `dialog.meta/concept` marker claim. Every concept entity
 /// asserted on a branch carries
-/// `(?this, dialog.meta/concept, concept:concept)`.
+/// `(?this, dialog.meta/concept, db:concept)`. Same URI as the
+/// `concept` built-in's own entity in [`crate::builtin`].
 fn concept_marker_entity() -> Entity {
-    "concept:concept"
+    "db:concept"
         .parse()
-        .expect("`concept:concept` is a valid entity URI")
+        .expect("`db:concept` is a valid entity URI")
 }
 
 /// Build a runtime [`ArtifactsAttribute`] from a domain + local
@@ -1055,7 +1056,7 @@ mod tests {
     /// `AnonymousConcept::assert` should write one
     /// `dialog.concept.with/{field}` claim per field plus
     /// `dialog.meta/description` when set, plus the marker
-    /// claim `dialog.meta/concept = concept:concept` that lets
+    /// claim `dialog.meta/concept = db:concept` that lets
     /// branch-wide concept enumeration find this entity.
     #[test]
     fn anonymous_concept_writes_with_claims_and_description() {
@@ -1076,7 +1077,7 @@ mod tests {
     }
 
     /// Every concept assert must include the
-    /// `(?this, dialog.meta/concept, concept:concept)` marker so
+    /// `(?this, dialog.meta/concept, db:concept)` marker so
     /// `concept:` queries with `?this` unbound can drive
     /// selection from a single bound triple.
     #[test]
@@ -1102,7 +1103,7 @@ mod tests {
             });
         assert!(
             saw_marker,
-            "expected dialog.meta/concept = concept:concept marker claim",
+            "expected dialog.meta/concept = db:concept marker claim",
         );
     }
 

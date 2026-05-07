@@ -47,6 +47,7 @@ fn build_registry() -> Vec<(&'static str, ResolvedConcept)> {
     vec![
         ("attribute", attribute_descriptor()),
         ("concept", concept_descriptor()),
+        ("name", name_descriptor()),
         ("branch", concept_from_query::<BranchQuery>()),
         ("replica", concept_from_query::<ReplicaQuery>()),
         ("remote", concept_from_query::<RemoteQuery>()),
@@ -91,7 +92,7 @@ fn attribute_descriptor() -> ResolvedConcept {
 /// query time enumerates *every* concept (built-in + branch) with
 /// a synthesised `source` field.
 ///
-/// The entity is fixed at the well-known `concept:concept` URI
+/// The entity is fixed at the well-known `db:concept` URI
 /// (rather than `descriptor.this()`'s content hash) so the row
 /// for the concept-of-concept built-in is identifiable without
 /// knowing the descriptor's hash. This is the same URI used as
@@ -99,10 +100,36 @@ fn attribute_descriptor() -> ResolvedConcept {
 /// symmetry is intentional.
 fn concept_descriptor() -> ResolvedConcept {
     ResolvedConcept {
-        entity: "concept:concept"
+        entity: "db:concept"
             .parse()
-            .expect("`concept:concept` is a valid entity URI"),
+            .expect("`db:concept` is a valid entity URI"),
         descriptor: crate::concept::concept_of_concept_descriptor().clone(),
+    }
+}
+
+/// Built-in `name` view — a name entity carries an `entity:`
+/// claim pointing at the entity it currently identifies.
+///
+/// The schema is a single-field concept whose backing attribute
+/// is `dialog.meta/name` (cardinality one). User-published names
+/// live at `id:<name>` URIs; built-in names live at `db:<name>`
+/// URIs and aren't writable.
+///
+/// The concept's own entity is fixed at `db:name` (rather than a
+/// content-derived hash) so the row for the name-of-name built-in
+/// is identifiable by URI and the `db:` scheme protection covers
+/// it.
+fn name_descriptor() -> ResolvedConcept {
+    let json = serde_json::json!({
+        "with": {
+            "entity": { "the": "dialog.meta/name", "as": "Entity", "cardinality": "one" },
+        }
+    });
+    let descriptor: ConceptDescriptor =
+        serde_json::from_value(json).expect("name schema is well-formed");
+    ResolvedConcept {
+        entity: "db:name".parse().expect("`db:name` is a valid entity URI"),
+        descriptor,
     }
 }
 

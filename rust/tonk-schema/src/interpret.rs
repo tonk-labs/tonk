@@ -539,7 +539,7 @@ async fn analyze_impl<R: Resolver>(
                     let binding =
                         derive_head_binding(&assertion.fields, assertion.anchor.as_ref())?;
                     let bookmark = match &binding {
-                        HeadBinding::Bookmark(name) => Some(name.clone()),
+                        HeadBinding::Anchor(name) => Some(name.clone()),
                         _ => None,
                     };
                     let variable = match &binding {
@@ -582,7 +582,7 @@ async fn analyze_impl<R: Resolver>(
                     let binding =
                         derive_head_binding(&assertion.fields, assertion.anchor.as_ref())?;
                     let bookmark = match &binding {
-                        HeadBinding::Bookmark(name) => Some(name.clone()),
+                        HeadBinding::Anchor(name) => Some(name.clone()),
                         _ => None,
                     };
                     let variable = match &binding {
@@ -1096,7 +1096,7 @@ fn is_meta_field(name: &str) -> bool {
 fn this_term_for_query(binding: &HeadBinding) -> Term<dialog_query::Any> {
     match binding {
         HeadBinding::Variable(name) => Term::<dialog_query::Any>::var(name),
-        HeadBinding::Bookmark(_name) => {
+        HeadBinding::Anchor(_name) => {
             // Query-side bookmark resolution requires hitting
             // the branch to find the entity carrying
             // `dialog.meta/name = name`. The query path doesn't
@@ -1224,7 +1224,7 @@ async fn build_assertion_application<R: Resolver>(
 /// and (on assertions) the `&anchor` between the head's colon and
 /// the body. The mapping:
 ///
-/// - `&anchor` present → [`HeadBinding::Bookmark(anchor.name)`].
+/// - `&anchor` present → [`HeadBinding::Anchor(anchor.name)`].
 ///   The planner emits an extra `dialog.meta/name` claim per the
 ///   bookmark semantics.
 /// - `this: ?var` → [`HeadBinding::Variable(var)`].
@@ -1243,7 +1243,7 @@ fn derive_head_binding(
     anchor: Option<&Anchor>,
 ) -> Result<HeadBinding, AnalyzeError> {
     if let Some(anchor) = anchor {
-        return Ok(HeadBinding::Bookmark(anchor.name.clone()));
+        return Ok(HeadBinding::Anchor(anchor.name.clone()));
     }
     let Some(this) = fields.iter().find(|f| f.name == "this") else {
         return Ok(HeadBinding::Anonymous);
@@ -1267,7 +1267,7 @@ fn derive_head_binding(
             // branch. For now treat like the old bookmark form so
             // the planner mints a body-derived entity. Stage 2.4
             // implements proper resolution.
-            Ok(HeadBinding::Bookmark(name.clone()))
+            Ok(HeadBinding::Anchor(name.clone()))
         }
         FieldValue::Literal(_) | FieldValue::Blank | FieldValue::Nested(_) => {
             Err(AnalyzeError::UnsupportedFieldValue {
@@ -1289,7 +1289,7 @@ fn meta_application(meta: &MetaPlan) -> Application {
             // Built-in `attribute` schema: 4 fields under
             // dialog.attribute/* and dialog.meta/description.
             // The bookmark name (`dialog.meta/name` claim) is
-            // emitted by the planner via `HeadBinding::Bookmark`,
+            // emitted by the planner via `HeadBinding::Anchor`,
             // not encoded as a parameter — same way it works for
             // any user concept's bookmark binding.
             let mut terms = Parameters::new();
@@ -1344,15 +1344,15 @@ fn meta_application(meta: &MetaPlan) -> Application {
             // field of the user's concept, plus the
             // `dialog.meta/concept` marker and `dialog.meta/description`.
             // The bookmark name is emitted by the planner via
-            // `HeadBinding::Bookmark`.
+            // `HeadBinding::Anchor`.
             let mut terms = Parameters::new();
             terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
             terms.insert(
                 "concept".into(),
                 Term::Constant(Value::Entity(
-                    "concept:concept"
+                    "db:concept"
                         .parse()
-                        .expect("`concept:concept` is a valid entity URI"),
+                        .expect("`db:concept` is a valid entity URI"),
                 )),
             );
             for (name, attr) in descriptor.with().iter() {
@@ -1453,7 +1453,7 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
 /// - `Anonymous`: mint a body-content-derived entity.
 /// - `Bookmark(name)`: same — body-derived entity. The
 ///   `dialog.meta/name = name` claim is emitted by the planner
-///   from the [`HeadBinding::Bookmark`] discriminant, not a
+///   from the [`HeadBinding::Anchor`] discriminant, not a
 ///   parameter on the predicate.
 /// - `Variable(name)` already in `analysis.variables`: substitute
 ///   the registered entity (this happens when an earlier
@@ -1473,7 +1473,7 @@ fn this_term_for_assertion(
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match binding {
         HeadBinding::Anonymous => Term::Constant(Value::Entity(Entity::of(&body_digest(fields)))),
-        HeadBinding::Bookmark(name) => {
+        HeadBinding::Anchor(name) => {
             // Non-meta bookmark: body-derived entity. Register
             // the name → entity binding in `declarations` so
             // the worker can surface it in the response and
@@ -1899,7 +1899,7 @@ concept!: &person
         else {
             panic!("expected Assert(Concept) for concept");
         };
-        assert!(matches!(binding, HeadBinding::Bookmark(b) if b == "person"));
+        assert!(matches!(binding, HeadBinding::Anchor(b) if b == "person"));
     }
 
     /// A bare symbol in field-value position resolves through the
@@ -2001,7 +2001,7 @@ attribute!:
 
     /// `attribute!: &foo` (bookmark form via anchor): the head's
     /// `binding` records the bookmark string. The planner emits
-    /// the `dialog.meta/name` claim from `HeadBinding::Bookmark`,
+    /// the `dialog.meta/name` claim from `HeadBinding::Anchor`,
     /// not from a parameter.
     #[dialog_common::test]
     async fn it_carries_bookmark_binding_for_anchored_attribute() {
@@ -2021,7 +2021,7 @@ attribute!: &person-name
             panic!("expected Assert(Concept)");
         };
         assert!(query.terms.get("name").is_none());
-        assert!(matches!(binding, HeadBinding::Bookmark(s) if s == "person-name"));
+        assert!(matches!(binding, HeadBinding::Anchor(s) if s == "person-name"));
     }
 
     /// Two meta heads of different kinds (`attribute!` and
@@ -2314,5 +2314,87 @@ person:
             query.terms.get("this"),
             Some(Term::Variable { name: Some(_), .. })
         ));
+    }
+
+    /// `name` is a built-in concept resolvable without a branch
+    /// — same as `attribute` and `concept`. Backed by the single
+    /// `dialog.meta/name` attribute (cardinality one).
+    #[dialog_common::test]
+    async fn it_resolves_builtin_name_concept() {
+        let syntax = must_parse(
+            r#"
+name:
+  this: ?n
+  entity: ?e
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let q = analysis.query.as_ref().unwrap();
+        let Application::Concept { query, .. } = &q.queries[0] else {
+            panic!("expected Concept application");
+        };
+        // `entity` field comes from the `Name` concept's `with:`.
+        assert!(query.terms.contains("entity"));
+    }
+
+    /// The concept-of-concept built-in resolves to `db:concept`
+    /// — *not* the legacy `concept:concept`.
+    #[dialog_common::test]
+    async fn it_uses_db_concept_uri_for_concept_marker() {
+        // Asserting any concept emits a marker claim
+        // `(this, dialog.meta/concept, db:concept)`. We can read
+        // it back through `meta_application` by inspecting the
+        // `concept` term of the emitted concept-meta application.
+        let syntax = must_parse(
+            r#"
+concept!: &foo
+  description: "x"
+  with:
+    bar:
+      description: "y"
+      the: x.y/bar
+      as: Text
+      cardinality: one
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        // Last statement is the concept itself — its `concept`
+        // term should be the marker entity.
+        let last = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = last else {
+            panic!("expected Concept application for concept");
+        };
+        match query.terms.get("concept") {
+            Some(Term::Constant(Value::Entity(e))) => {
+                assert_eq!(
+                    e.to_string(),
+                    "db:concept",
+                    "concept marker should be db:concept"
+                );
+            }
+            other => panic!("expected concept term to be db:concept entity, got {other:?}"),
+        }
+    }
+
+    /// The anchor binding (`person!: &alice`) is recorded as
+    /// `HeadBinding::Anchor("alice")` after the rename from the
+    /// old `Bookmark` variant.
+    #[dialog_common::test]
+    async fn it_records_anchor_binding_with_anchor_variant() {
+        let syntax = must_parse(
+            r#"
+person!: &alice
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        let Statement::Assert(Application::Concept { binding, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(matches!(binding, HeadBinding::Anchor(s) if s == "alice"));
     }
 }

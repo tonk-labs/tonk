@@ -200,38 +200,46 @@ impl Application {
     }
 }
 
-/// Source-form head binding. Mirrors [`tonk_notation::Binding`]
-/// 1-to-1 so an [`Application`] round-trips back to surface
-/// syntax. The relationship between `binding` and
-/// `terms["this"]`:
+/// Source-form intent for entity selection on a head. Derived
+/// from the body's `this:` field and (on assertions) any `&anchor`
+/// between the head's colon and the body. The relationship between
+/// `binding` and `terms["this"]`:
 ///
-/// - `Anonymous` → `Term::Constant(Entity::of(&body))`
-/// - `Variable(name)` bound by query → `Term::Variable(name)`
-/// - `Variable(name)` unbound by query →
+/// - `Anonymous` (no `this:`, no `&anchor`) →
+///   `Term::Constant(Entity::of(&body))`
+/// - `Variable(name)` (`this: ?name`) bound by query →
+///   `Term::Variable(name)`
+/// - `Variable(name)` (`this: ?name`) unbound by query →
 ///   `Term::Constant(<derived entity>)`, with `name` registered
 ///   in `Analysis::variables`
-/// - `Bookmark(name)` → `Term::Constant(Entity::of(&body))`,
-///   plus a `dialog.meta/name = name` claim emitted by the
-///   planner
-/// - `Uri(entity)` → `Term::Constant(Value::Entity(entity))`
+/// - `Anchor(name)` (`&name` anchor on assertion) →
+///   `Term::Constant(Entity::of(&body))`, **plus** a desugared
+///   `name!` assertion emitted by the planner against `id:<name>`
+///   that points at the body-derived target via `dialog.meta/name`
+/// - `Uri(entity)` (`this: did:key:…` / `id:…` / `db:…`) →
+///   `Term::Constant(Value::Entity(entity))`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeadBinding {
-    /// `person!:` — no binding token. Entity is body-derived.
+    /// No `this:` field, no `&anchor`. Entity is body-derived.
     Anonymous,
-    /// `person! ?alice:` — variable. Bound by query if some
-    /// preceding query expression names `?alice`; otherwise
-    /// the analyzer mints a body-derived entity and registers
-    /// `alice` in `Analysis::variables`.
+    /// `this: ?name`. Bound by query if some preceding query
+    /// expression names `?name`; otherwise the analyzer mints a
+    /// body-derived entity and registers `name` in
+    /// `Analysis::variables`.
     Variable(String),
-    /// `person! alice:` — bookmark (git-tag semantics). The
-    /// entity is body-derived (so re-running the same body is
-    /// a no-op) and the planner emits a `dialog.meta/name`
-    /// claim so future docs can resolve `.alice` back to it.
+    /// `&name` anchor on an assertion's value side (`person!:
+    /// &alice`). The asserted entity is body-derived (so
+    /// re-running the same body is a no-op); the planner *also*
+    /// emits the implicit `name!` assertion that desugars from
+    /// the anchor: `(id:<name>, dialog.meta/name, body-entity)`.
     /// Cardinality-one on `dialog.meta/name` means re-running
-    /// with a different body retracts the prior name claim
-    /// and binds the name to the new entity.
-    Bookmark(String),
-    /// `person! did:key:zX:` — explicit entity URI.
+    /// with a different body replaces the prior `entity:` claim
+    /// on `id:<name>`, repointing the name at the new target —
+    /// same git-tag semantics, but the EAV hangs off the *name*
+    /// entity, not the named one.
+    Anchor(String),
+    /// `this:` carried a URI directly (`did:key:…`, `id:…`,
+    /// `db:…`).
     Uri(Entity),
 }
 
@@ -345,19 +353,11 @@ pub struct ApplicationPlan {
 impl ArtifactsStatement for ApplicationPlan {
     fn assert(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, true);
-        if let HeadBinding::Bookmark(name) = &self.binding
-            && let Some(this) = entity_of_this(&self.statement.terms)
-        {
-            update.associate(meta_name_attr(), this, Value::String(name.clone()));
-        }
+        emit_anchor_name_assertion(&self.binding, &self.statement.terms, update, true);
     }
     fn retract(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, false);
-        if let HeadBinding::Bookmark(name) = &self.binding
-            && let Some(this) = entity_of_this(&self.statement.terms)
-        {
-            update.dissociate(meta_name_attr(), this, Value::String(name.clone()));
-        }
+        emit_anchor_name_assertion(&self.binding, &self.statement.terms, update, false);
     }
 }
 
@@ -365,6 +365,54 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
     match terms.get("this")? {
         Term::Constant(Value::Entity(e)) => Some(e.clone()),
         _ => None,
+    }
+}
+
+/// Emit the implicit `name!` assertion that an anchored head
+/// (`person!: &alice`) desugars to.
+///
+/// The anchor name `alice` becomes the entity URI `id:alice`, and
+/// that entity carries a `dialog.meta/name` claim pointing at the
+/// body-derived target. Equivalent to:
+///
+/// ```yaml
+/// name!:
+///   this:   id:alice
+///   entity: <body-derived target>
+/// ```
+///
+/// Cardinality-one on `dialog.meta/name` means re-running with a
+/// different body retracts the prior `entity:` claim and binds the
+/// name to the new target — same git-tag semantics, but the EAV
+/// hangs off the *name* entity, not the named one.
+///
+/// Skips silently if the anchor's `id:<name>` URI doesn't parse.
+/// In practice every anchor name that survived the parser's symbol
+/// charset produces a valid `id:<name>`; the conservative skip
+/// keeps a hypothetical bad case from poisoning the surrounding
+/// transaction.
+fn emit_anchor_name_assertion<U: Update>(
+    binding: &HeadBinding,
+    terms: &Parameters,
+    update: &mut U,
+    assert: bool,
+) {
+    let HeadBinding::Anchor(name) = binding else {
+        return;
+    };
+    let Some(target) = entity_of_this(terms) else {
+        return;
+    };
+    let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
+        return;
+    };
+    let attribute = meta_name_attr();
+    let value = Value::Entity(target);
+    if assert {
+        // Cardinality-one: replace, not accumulate.
+        update.associate_unique(attribute, id_entity, value);
+    } else {
+        update.dissociate(attribute, id_entity, value);
     }
 }
 
@@ -620,5 +668,142 @@ impl DialogApplication for QueryAnalysis {
             }
         }
         Ok(QueryNotationConclusion { bindings })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dialog_artifacts::{Changes, Instruction};
+    use dialog_query::ConceptDescriptor;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Build an `ApplicationPlan` for a one-field concept whose
+    /// `this` is a constant entity. Used by the anchor-desugar
+    /// tests below.
+    fn plan_with_anchor(anchor_name: &str, target: &str) -> ApplicationPlan {
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "x.y/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let target_entity: Entity = target.parse().unwrap();
+        let mut terms = Parameters::new();
+        terms.insert("this".into(), Term::Constant(Value::Entity(target_entity)));
+        terms.insert("name".into(), Term::Constant(Value::String("x".into())));
+        ApplicationPlan {
+            statement: ConceptQuery {
+                terms,
+                predicate: descriptor,
+            },
+            binding: HeadBinding::Anchor(anchor_name.into()),
+        }
+    }
+
+    /// Asserting an anchored plan emits the desugared `name!`
+    /// claim on `id:<name>` (not on the body-derived target).
+    #[dialog_common::test]
+    fn it_emits_anchor_name_assertion_on_id_entity() {
+        let target_uri = "did:key:zHjKfTestTarget";
+        let plan = plan_with_anchor("alice", target_uri);
+        let mut changes = Changes::new();
+        plan.assert(&mut changes);
+
+        let id_alice: Entity = "id:alice".parse().unwrap();
+        let target: Entity = target_uri.parse().unwrap();
+        let meta_name = meta_name_attr();
+
+        let mut id_alice_name_claim_count = 0;
+        let mut wrong_direction_count = 0;
+        for inst in changes.into_instructions() {
+            if let Instruction::Assert(a) = &inst
+                && a.the == meta_name
+            {
+                if a.of == id_alice && a.is == Value::Entity(target.clone()) {
+                    id_alice_name_claim_count += 1;
+                }
+                if a.of == target {
+                    wrong_direction_count += 1;
+                }
+            }
+        }
+        assert_eq!(
+            id_alice_name_claim_count, 1,
+            "expected exactly one (id:alice, dialog.meta/name, target) claim"
+        );
+        assert_eq!(
+            wrong_direction_count, 0,
+            "expected no claims on the target entity (anchor name lives on id:<name>)"
+        );
+    }
+
+    /// Retracting an anchored plan dissociates the same EAV the
+    /// assert path would have written.
+    #[dialog_common::test]
+    fn it_retracts_anchor_name_assertion_on_id_entity() {
+        let target_uri = "did:key:zHjKfTestTarget";
+        let plan = plan_with_anchor("alice", target_uri);
+        let mut changes = Changes::new();
+        plan.retract(&mut changes);
+
+        let id_alice: Entity = "id:alice".parse().unwrap();
+        let target: Entity = target_uri.parse().unwrap();
+        let meta_name = meta_name_attr();
+
+        let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
+            matches!(
+                &inst,
+                Instruction::Retract(r)
+                    if r.the == meta_name && r.of == id_alice && r.is == Value::Entity(target.clone())
+            )
+        });
+        assert!(
+            saw_dissociate,
+            "expected (id:alice, dialog.meta/name, target) dissociation"
+        );
+    }
+
+    /// Anonymous binding emits no anchor-name claim at all.
+    #[dialog_common::test]
+    fn it_emits_no_anchor_name_for_anonymous_binding() {
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "x.y/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let target: Entity = "did:key:zAnon".parse().unwrap();
+        let mut terms = Parameters::new();
+        terms.insert("this".into(), Term::Constant(Value::Entity(target)));
+        terms.insert("name".into(), Term::Constant(Value::String("x".into())));
+        let plan = ApplicationPlan {
+            statement: ConceptQuery {
+                terms,
+                predicate: descriptor,
+            },
+            binding: HeadBinding::Anonymous,
+        };
+
+        let mut changes = Changes::new();
+        plan.assert(&mut changes);
+
+        let meta_name = meta_name_attr();
+        let saw_meta_name = changes
+            .into_instructions()
+            .into_iter()
+            .any(|inst| matches!(inst, Instruction::Assert(a) if a.the == meta_name));
+        assert!(
+            !saw_meta_name,
+            "anonymous bindings should not emit any dialog.meta/name claim"
+        );
     }
 }
