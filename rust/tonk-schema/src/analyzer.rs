@@ -957,4 +957,582 @@ person!: &alice
         assert_eq!(name.as_deref(), Some("alice"));
         assert!(matches!(this, ThisIntent::Derived));
     }
+
+    // ----------------------------------------------------------- //
+    // (this × name) coverage matrix                               //
+    // ----------------------------------------------------------- //
+
+    /// `&anchor` + `this: did:key:…` together — publish a name
+    /// pointing at an existing entity, no body-derivation. The
+    /// canonical Stage 2.3 case the orthogonal `(this, name)`
+    /// fields exist to express.
+    #[dialog_common::test]
+    async fn it_combines_anchor_with_this_uri_to_publish_name_for_existing_entity() {
+        let syntax = must_parse(
+            r#"
+person!: &alice
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { name, this, query }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert_eq!(name.as_deref(), Some("alice"));
+        match this {
+            ThisIntent::Uri(e) => assert!(e.to_string().starts_with("did:key:")),
+            other => panic!("expected ThisIntent::Uri, got {other:?}"),
+        }
+        // `terms["this"]` carries the URI entity verbatim, not a
+        // body-derived hash.
+        match query.terms.get("this") {
+            Some(Term::Constant(Value::Entity(e))) => {
+                assert!(e.to_string().starts_with("did:key:"));
+            }
+            other => panic!("expected this term to be the URI entity, got {other:?}"),
+        }
+    }
+
+    /// `&anchor` + `this: ?var` — anchor publishes a name
+    /// pointing at the variable's resolved entity. The `this`
+    /// intent stays `Variable(name)`; the planner's
+    /// substitute-then-emit path handles the rest.
+    #[dialog_common::test]
+    async fn it_combines_anchor_with_this_variable() {
+        let syntax = must_parse(
+            r#"
+person:
+  this: ?alice
+  name: "Alice"
+person!: &latest-alice
+  this: ?alice
+  name: "Renamed"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        // The mutation expression is the second statement.
+        let Statement::Assert(Application::Concept { name, this, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert_eq!(name.as_deref(), Some("latest-alice"));
+        assert!(matches!(this, ThisIntent::Variable(s) if s == "alice"));
+        assert!(analysis.mutate.requires.contains("alice"));
+    }
+
+    /// `this: id:foo` (Uri form, `id:` scheme). Same shape as
+    /// the `did:key:` case — analyzer treats every URI as direct.
+    #[dialog_common::test]
+    async fn it_accepts_id_uri_in_this() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: id:alice
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        match this {
+            ThisIntent::Uri(e) => assert_eq!(e.to_string(), "id:alice"),
+            other => panic!("expected ThisIntent::Uri(id:alice), got {other:?}"),
+        }
+    }
+
+    /// `this: db:foo` (Uri form, `db:` scheme).
+    #[dialog_common::test]
+    async fn it_accepts_db_uri_in_this() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: db:concept
+  name: "x"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        match this {
+            ThisIntent::Uri(e) => assert_eq!(e.to_string(), "db:concept"),
+            other => panic!("expected ThisIntent::Uri(db:concept), got {other:?}"),
+        }
+    }
+
+    /// `this: alice` (bare symbol) is a Stage 2.5 placeholder —
+    /// the analyzer rejects it for now with a guiding message.
+    /// Pin the current behavior so we notice when Stage 2.5 wires
+    /// the lookup and this test should change.
+    #[dialog_common::test]
+    async fn it_rejects_bare_symbol_in_this_pending_stage_2_5() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: alice
+  name: "x"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(&err, AnalyzeError::UnsupportedFieldValue { field, .. } if field == "this"),
+            "expected UnsupportedFieldValue on `this`, got {err:?}"
+        );
+    }
+
+    /// `this: 42` (literal) is rejected — `this:` accepts only
+    /// `?var` / URI / bare symbol per the guide.
+    #[dialog_common::test]
+    async fn it_rejects_literal_in_this() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: 42
+  name: "x"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(err, AnalyzeError::UnsupportedFieldValue { .. }));
+    }
+
+    /// `this: { entropy: ... }` (mapping form for explicit
+    /// content-derivation salt) — the parser produces it but the
+    /// analyzer doesn't yet handle it. Pin the current behavior.
+    #[dialog_common::test]
+    async fn it_rejects_nested_mapping_in_this_pending_implementation() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+  this:
+    entropy: "salt"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(err, AnalyzeError::UnsupportedFieldValue { .. }));
+    }
+
+    // ----------------------------------------------------------- //
+    // Anchor declarations land in `analysis.declarations`         //
+    // ----------------------------------------------------------- //
+
+    /// `&alice` on a non-meta head registers `alice → entity`
+    /// in `analysis.declarations` so later expressions and the
+    /// editor can reach the published entity by name.
+    #[dialog_common::test]
+    async fn it_records_non_meta_anchor_in_declarations() {
+        let syntax = must_parse(
+            r#"
+person!: &alice
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert!(
+            analysis.declarations.contains_key("alice"),
+            "expected `alice` in declarations: {:?}",
+            analysis.declarations
+        );
+    }
+
+    // ----------------------------------------------------------- //
+    // Field-value scalar types                                    //
+    // ----------------------------------------------------------- //
+
+    /// Integer field values flow through as `Value::SignedInt`.
+    #[dialog_common::test]
+    async fn it_carries_integer_field_values_through_to_terms() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+  age: 28
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(matches!(
+            query.terms.get("age"),
+            Some(Term::Constant(Value::SignedInt(28)))
+        ));
+    }
+
+    /// Boolean field values flow through as `Value::Boolean`.
+    #[dialog_common::test]
+    async fn it_carries_boolean_field_values_through_to_terms() {
+        let syntax = must_parse(
+            r#"
+thing!:
+  active: true
+"#,
+        );
+        let resolver = fixed_concept("thing", &[("active", "x.y/active")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(matches!(
+            query.terms.get("active"),
+            Some(Term::Constant(Value::Boolean(true)))
+        ));
+    }
+
+    /// Float field values flow through as `Value::Float`.
+    #[dialog_common::test]
+    async fn it_carries_float_field_values_through_to_terms() {
+        let syntax = must_parse(
+            r#"
+thing!:
+  weight: 1.5
+"#,
+        );
+        let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        match query.terms.get("weight") {
+            Some(Term::Constant(Value::Float(f))) => {
+                assert!((f - 1.5).abs() < f64::EPSILON);
+            }
+            other => panic!("expected Float(1.5), got {other:?}"),
+        }
+    }
+
+    /// `null` field value is rejected — the analyzer's
+    /// `scalar_to_value` has no mapping for null.
+    #[dialog_common::test]
+    async fn it_rejects_null_field_value() {
+        let syntax = must_parse(
+            r#"
+thing!:
+  weight: null
+"#,
+        );
+        let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(matches!(err, AnalyzeError::UnsupportedFieldValue { .. }));
+    }
+
+    // ----------------------------------------------------------- //
+    // Field-value resolution / variable substitution              //
+    // ----------------------------------------------------------- //
+
+    /// A `?var` whose value was derived in Phase 1 (e.g. by an
+    /// earlier `attribute! ?var:` head) substitutes through to a
+    /// `Term::Constant`, not a `Term::Variable`.
+    #[dialog_common::test]
+    async fn it_substitutes_known_variables_in_field_position() {
+        let syntax = must_parse(
+            r#"
+attribute!:
+  this: ?person-name
+  the:         x.y/name
+  as:          Text
+  cardinality: one
+  description: "x"
+concept!:
+  this: ?person
+  description: "p"
+  with:
+    name: ?person-name
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        // The concept assertion is the second statement.
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[1]
+        else {
+            panic!("expected Assert(Concept) for concept");
+        };
+        // `with.name` should be a constant (the attribute's
+        // entity), not a variable.
+        match query.terms.get("with.name") {
+            Some(Term::Constant(Value::Entity(_))) => {}
+            other => panic!("with.name should be Constant(Entity), got {other:?}"),
+        }
+    }
+
+    /// A bare symbol that doesn't resolve anywhere surfaces
+    /// `UnknownBookmark` (with the symbol's name in `bookmark`).
+    #[dialog_common::test]
+    async fn it_rejects_unresolvable_bare_symbol() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: ghost
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(&err, AnalyzeError::UnknownBookmark { bookmark, .. } if bookmark == "ghost"),
+            "expected UnknownBookmark{{bookmark:\"ghost\"}}, got {err:?}"
+        );
+    }
+
+    // ----------------------------------------------------------- //
+    // Reserved meta-fields                                        //
+    // ----------------------------------------------------------- //
+
+    /// `..:` inside a body isn't surfaced as an `UnknownField`.
+    /// Stage 2.7 will give it real semantics; today it's a
+    /// silently-tolerated meta-key.
+    #[dialog_common::test]
+    async fn it_does_not_treat_dotdot_as_unknown_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  ..: _
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        // Should not error with `UnknownField`.
+        analyze(&syntax, &resolver).await.unwrap();
+    }
+
+    // ----------------------------------------------------------- //
+    // Error paths                                                 //
+    // ----------------------------------------------------------- //
+
+    /// Empty assertion body (no fields, no `this:`, no anchor)
+    /// → `AssertionWithoutFields`.
+    #[dialog_common::test]
+    async fn it_errors_on_assertion_without_fields() {
+        let syntax = must_parse("person!:\n");
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::AssertionWithoutFields { .. }),
+            "expected AssertionWithoutFields, got {err:?}"
+        );
+    }
+
+    /// `concept!` body with no `with:` field → `InvalidConceptBody`.
+    #[dialog_common::test]
+    async fn it_errors_on_concept_body_missing_with_field() {
+        let syntax = must_parse(
+            r#"
+concept!: &foo
+  description: "x"
+"#,
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody, got {err:?}"
+        );
+    }
+
+    /// User-supplied field that isn't in the concept's `with:`
+    /// map → `UnknownField`.
+    #[dialog_common::test]
+    async fn it_errors_on_unknown_field_in_assertion_body() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+  bogus: "x"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let err = analyze(&syntax, &resolver).await.unwrap_err();
+        assert!(
+            matches!(&err, AnalyzeError::UnknownField { field, .. } if field == "bogus"),
+            "expected UnknownField{{field:\"bogus\"}}, got {err:?}"
+        );
+    }
+
+    /// Claim head with a malformed field name → `InvalidClaimAttribute`.
+    /// `field/with/slashes` doesn't parse as a `the:` URI.
+    #[dialog_common::test]
+    async fn it_errors_on_invalid_claim_attribute() {
+        let syntax = must_parse(
+            r#"
+xyz.tonk:
+  has/slash: "x"
+"#,
+        );
+        let err = analyze(&syntax, &NoopResolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::InvalidClaimAttribute { .. }),
+            "expected InvalidClaimAttribute, got {err:?}"
+        );
+    }
+
+    /// A failing resolver propagates as `ResolverFailed`.
+    #[dialog_common::test]
+    async fn it_surfaces_resolver_failures() {
+        struct FailingResolver;
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        impl Resolver for FailingResolver {
+            async fn resolve_concept(
+                &self,
+                _name: &str,
+            ) -> Result<Option<ResolvedConcept>, ResolverError> {
+                Err(ResolverError::new("simulated I/O failure"))
+            }
+            async fn resolve_attribute(
+                &self,
+                _name: &str,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
+            async fn resolve_attribute_by_entity(
+                &self,
+                _entity: &Entity,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
+            async fn resolve_named_entity(
+                &self,
+                _name: &str,
+            ) -> Result<Option<Entity>, ResolverError> {
+                Ok(None)
+            }
+        }
+        let syntax = must_parse(
+            r#"
+person:
+  name: "Alice"
+"#,
+        );
+        let err = analyze(&syntax, &FailingResolver).await.unwrap_err();
+        assert!(
+            matches!(err, AnalyzeError::ResolverFailed { .. }),
+            "expected ResolverFailed, got {err:?}"
+        );
+    }
+
+    // ----------------------------------------------------------- //
+    // Built-in concept registry — remaining entries               //
+    // ----------------------------------------------------------- //
+
+    /// Built-in `concept:` resolves through the registry without
+    /// a branch. Returns the concept-of-concept descriptor whose
+    /// entity is `db:concept`.
+    #[dialog_common::test]
+    async fn it_resolves_builtin_concept_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+concept:
+  this: ?c
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.query.is_some());
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_builtin_replica_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+replica:
+  this: ?r
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.query.is_some());
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_builtin_remote_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+remote:
+  this: ?r
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.query.is_some());
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_builtin_tracking_branch_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+tracking-branch:
+  this: ?t
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.query.is_some());
+    }
+
+    // ----------------------------------------------------------- //
+    // Statement order: inline attrs before their concept          //
+    // ----------------------------------------------------------- //
+
+    /// Inline attribute definitions inside a `concept!`'s
+    /// `with:` emit *before* the concept itself, so the
+    /// attribute facts are present on the branch by the time
+    /// anything reads back. Order matters: an off-by-one or
+    /// reorder would silently break runtime behavior.
+    #[dialog_common::test]
+    async fn it_orders_inline_attrs_strictly_before_concept() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "p"
+  with:
+    name:
+      description: "Name"
+      the:         x.y/name
+      as:          Text
+      cardinality: one
+    age:
+      description: "Age"
+      the:         x.y/age
+      as:          UnsignedInteger
+      cardinality: one
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        // 2 inline attrs + 1 concept = 3 statements.
+        assert_eq!(analysis.mutate.statements.len(), 3);
+
+        // The concept itself carries an anchor name `person`;
+        // inline attrs publish no name. Order: attr, attr, concept.
+        for (i, stmt) in analysis.mutate.statements.iter().enumerate() {
+            let Statement::Assert(Application::Concept { name, .. }) = stmt else {
+                panic!("statement {i} should be Assert(Concept)");
+            };
+            if i < 2 {
+                assert!(
+                    name.is_none(),
+                    "statement {i} (inline attr) should publish no name"
+                );
+            } else {
+                assert_eq!(name.as_deref(), Some("person"), "concept itself anchored");
+            }
+        }
+    }
 }

@@ -146,6 +146,12 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
     let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
     for field in &assertion.fields {
+        // `this:` and `..:` are reserved meta-keys handled by
+        // the outer assertion-binding flow; they don't
+        // contribute to the concept descriptor.
+        if is_meta_field(&field.name) {
+            continue;
+        }
         match field.name.as_str() {
             "description" => {
                 if let FieldValue::Literal(Scalar::String(s)) = &field.value {
