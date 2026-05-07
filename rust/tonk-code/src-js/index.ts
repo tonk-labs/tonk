@@ -6,17 +6,16 @@
 //   language    — language identifier (e.g. "yaml", "dialog-yaml").
 //                 Drives both syntax highlighting (loads
 //                 `tonk-code-lang-<language>.js` lazily) and the
-//                 LSP `languageId` reported to the server in
-//                 `didOpen`. When omitted the editor renders
-//                 without highlighting and reports `plaintext` to
-//                 the LSP server.
-//   language-server — opt-in to a language server. Boolean
-//                 (presence alone connects to the default
-//                 endpoint `/api/language-server`); a value
-//                 (`language-server="/some/path"` or
-//                 `language-server="https://host/path"`) is the
-//                 server URL, resolved against `document.baseURI`
-//                 the same way an `<a href>` would.
+//                 LSP `languageId` reported in `didOpen`. When
+//                 omitted the editor renders without highlighting
+//                 and reports `plaintext` to the LSP server.
+//   source      — document URI for LSP. Required to attach a
+//                 language server; the editor announces this URI
+//                 via the `tonk-code-connect` event and an
+//                 ancestor `<tonk-diagnostics-provider>` opens it
+//                 on its shared LSP client. No `source` ⇒ no
+//                 LSP attachment, period — the editor stays in
+//                 plain text-edit mode.
 //   readonly    — boolean attribute. Presence locks the editor.
 //   placeholder — ghost text shown while the document is empty.
 //   line-numbers— boolean attribute. Presence shows the gutter.
@@ -35,6 +34,16 @@
 //   .value : string                — round-trips with the buffer.
 //                                    Setting moves the cursor to
 //                                    end-of-document.
+//
+// Methods:
+//   .connect(client: LSPClient)    — attach an LSP client supplied
+//                                    by an ancestor provider. Wires
+//                                    diagnostics, hover, completion
+//                                    etc. against the editor's
+//                                    `source` URI.
+//   .disconnect()                  — detach the LSP integration.
+//                                    Editor goes back to plain
+//                                    text-edit mode.
 //
 // Events:
 //   change   — CustomEvent<{value, doc}>. Fires after every user
@@ -58,6 +67,17 @@
 //              the subset whose severity is `error`. Lets a
 //              consumer gate run/submit affordances on
 //              "no errors outstanding."
+//   tonk-code-connect — CustomEvent<TonkCodeConnectDetail>. Bubbles
+//              and composes. Fires on `connectedCallback` and on
+//              `source`/`language` changes. Caught by an ancestor
+//              `<tonk-diagnostics-provider>`, which calls
+//              `event.target.connect(client)` to attach an LSP
+//              client. No listener ⇒ no LSP integration.
+//   tonk-code-disconnect — CustomEvent<TonkCodeDisconnectDetail>.
+//              Bubbles and composes. Fires when the editor's
+//              attachment should be torn down (element removed,
+//              source/language re-announce). Provider closes the
+//              workspace document for `source`.
 //
 // Theming runs through `--tonk-code-*` CSS custom properties so
 // the element stays decoupled from any consumer's design system.
@@ -83,15 +103,13 @@ import {
   syntaxHighlighting,
   HighlightStyle,
 } from "@codemirror/language";
-import {
-  forEachDiagnostic,
-  setDiagnostics,
-  type Diagnostic as CmDiagnostic,
-} from "@codemirror/lint";
+import { forEachDiagnostic } from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
 import type { LSPClient } from "@codemirror/lsp-client";
-import { connectLsp } from "./lsp/client";
-import { httpTransport } from "./lsp/transport";
+// Side-effect import: registers the `<tonk-diagnostics-provider>`
+// custom element alongside `<tonk-code>` so a single `<script>`
+// tag wires up both elements.
+import "./diagnostics-provider";
 
 /** Detail object dispatched on the `change` event. */
 export type ChangeDetail = {
@@ -124,55 +142,27 @@ export type DiagnosticsDetail = {
   errorCount: number;
 };
 
-/** LSP-shaped diagnostic accepted by `setExternalDiagnostics`.
- *  Mirrors the relevant subset of `lsp.Diagnostic`. */
-export type ExternalDiagnostic = {
-  range: {
-    start: { line: number; character: number };
-    end: { line: number; character: number };
-  };
-  /** LSP severity numbers: 1 = Error, 2 = Warning, 3 = Info,
-   *  4 = Hint. Defaults to Error when omitted. */
-  severity?: number;
-  /** Stable code (e.g. `E_INCOMPLETE_ASSERTION`). Carried into
-   *  the CodeMirror diagnostic but not currently displayed. */
-  code?: string;
-  message: string;
-  /** Source label shown in the lint tooltip. Defaults to
-   *  `"tonk-worker"`. */
-  source?: string;
+/** Detail object dispatched on the `tonk-code-connect` event.
+ *  Bubbling and composed; an ancestor
+ *  `<tonk-diagnostics-provider>` catches it and calls
+ *  `event.target.connect(client)` to attach its `LSPClient`. */
+export type TonkCodeConnectDetail = {
+  /** Document URI — what the LSP server sees as the document
+   *  identity. Sourced from the editor's `source` attribute. */
+  source: string;
+  /** LSP `languageId` reported in `didOpen`. Derived from the
+   *  `language` attribute. */
+  language: string;
 };
 
-/** Resolve an LSP `Position` (line + UTF-16 character) into a
- *  CodeMirror document offset. Returns `null` when the position
- *  is past the end of the document (the worker may report a
- *  range that no longer exists if the buffer has been edited
- *  since the request was sent — drop those rather than crash). */
-function positionToOffset(
-  doc: import("@codemirror/state").Text,
-  position: { line: number; character: number },
-): number | null {
-  // CodeMirror lines are 1-indexed; LSP lines are 0-indexed.
-  const lineNumber = position.line + 1;
-  if (lineNumber < 1 || lineNumber > doc.lines) return null;
-  const line = doc.line(lineNumber);
-  return Math.min(line.from + position.character, line.to);
-}
-
-/** Map LSP severity numbers to CodeMirror's string literals. */
-function lspToCmSeverity(severity: number | undefined): CmDiagnostic["severity"] {
-  switch (severity) {
-    case 2:
-      return "warning";
-    case 3:
-      return "info";
-    case 4:
-      return "hint";
-    case 1:
-    default:
-      return "error";
-  }
-}
+/** Detail object dispatched on the `tonk-code-disconnect` event.
+ *  Bubbling and composed; provider tears down the workspace
+ *  document for `source` and (optionally) calls
+ *  `event.target.disconnect()`. */
+export type TonkCodeDisconnectDetail = {
+  /** Document URI being detached. */
+  source: string;
+};
 
 const OBSERVED = [
   "value",
@@ -181,30 +171,14 @@ const OBSERVED = [
   "placeholder",
   "line-numbers",
   "active-line",
-  "language-server",
+  "source",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
-
-/** Default endpoint used when the `language-server` attribute is
- *  present with no value. Same-origin and relative — so the
- *  request goes through whatever fetch handler intercepts it
- *  (a service worker, a real backend, etc.). */
-const DEFAULT_LANGUAGE_SERVER_URL = "/api/language-server";
 
 /** Default LSP `languageId` reported when no `language`
  *  attribute is set. The LSP convention is `plaintext`; a server
  *  is free to refuse `didOpen` for it. */
 const DEFAULT_LANGUAGE_ID = "plaintext";
-
-/** How long to wait before rebuilding the LSP client after the
- *  current session ends. The transport is single-shot — when its
- *  inbound stream closes the element rebuilds rather than
- *  papering over the disconnect. We start with a polite 5s delay
- *  to give the underlying server (typically a service worker
- *  being upgraded) time to come back up before reconnecting,
- *  then exponentially back off if the rebuild keeps failing. */
-const LSP_RECONNECT_INITIAL_MS = 5_000;
-const LSP_RECONNECT_MAX_MS = 30_000;
 
 /** Cache of in-flight / resolved language-pack module loads.
  *  Shared across instances so two `<tonk-code language="yaml">`
@@ -487,29 +461,11 @@ class TonkCodeElement extends HTMLElement {
   readonly #activeLine = new Compartment();
   readonly #lsp = new Compartment();
 
-  /** Active LSP client, when one exists. The element manages its
-   *  full lifecycle: build on `lsp` attribute set, destroy on
-   *  attribute removal or transport drop, rebuild after the
-   *  reconnect delay. */
+  /** Active LSP client supplied by an ancestor
+   *  `<tonk-diagnostics-provider>` via `connect()`. The element
+   *  itself never builds or owns a client — diagnostics, hover,
+   *  completion etc. require a provider in scope. */
   #lspClient: LSPClient | null = null;
-
-  /** Pending reconnect timer, if any. Cleared on
-   *  disconnect/destroy so a teardown doesn't leave a ghost
-   *  rebuild scheduled. */
-  #lspReconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /** Current reconnect backoff in milliseconds. Resets to
-   *  `LSP_RECONNECT_INITIAL_MS` on every successful connect;
-   *  doubles, capped at `LSP_RECONNECT_MAX_MS`, on each failed
-   *  rebuild attempt. */
-  #lspReconnectDelay = LSP_RECONNECT_INITIAL_MS;
-
-  /** Each editor instance gets a stable, unique LSP document URI.
-   *  The server uses this to track the document's text across
-   *  `didOpen`/`didChange`/`didClose`. We mint it lazily on first
-   *  LSP connect so editors that never enable LSP don't burn a
-   *  random number on the entropy pool. */
-  #lspUri: string | null = null;
 
   /** Suppress the `change` event during programmatic `.value`
    *  writes so consumers don't see their own writes echoed back. */
@@ -545,6 +501,14 @@ class TonkCodeElement extends HTMLElement {
    *  subscribe to the `diagnostics` event. */
   get errorCount(): number {
     return Math.max(0, this.#lastDiagnosticErrors);
+  }
+
+  /** The CodeMirror view, if mounted. Public so the diagnostics
+   *  provider can dispatch lint-state effects directly when
+   *  routing pushed diagnostics. Treat as a power-user surface —
+   *  most consumers should stick to events and attributes. */
+  get view(): EditorView | null {
+    return this.#view;
   }
 
   /** Recount diagnostics from the current state and dispatch a
@@ -693,17 +657,6 @@ class TonkCodeElement extends HTMLElement {
       void this.#applyLanguage(language);
     }
 
-    // Connect to the LSP server lazily — only on first user
-    // interaction. Editors that the user never focuses (collapsed
-    // sections, hidden tabs, etc.) don't open an SSE channel,
-    // don't burn a `didOpen`, don't show up in the server's open-
-    // documents map. The first focus is the moment the user
-    // actually cares about diagnostics; before that they're
-    // wasted bytes.
-    if (this.hasAttribute("language-server")) {
-      this.#armLazyLspConnect();
-    }
-
     this.dispatchEvent(
       new CustomEvent<ReadyDetail>("ready", {
         detail: { view: this.#view },
@@ -711,6 +664,16 @@ class TonkCodeElement extends HTMLElement {
         composed: true,
       })
     );
+
+    // Announce ourselves to any ancestor `<tonk-diagnostics-provider>`
+    // — the provider catches this bubbling event and calls
+    // `connect()` with its LSP client, wiring up diagnostics,
+    // hover, completion etc. for this editor's `source`.
+    //
+    // No provider in scope ⇒ no listener consumes the event ⇒
+    // editor stays in plain text-edit mode. There is no
+    // standalone-LSP fallback by design.
+    this.#announceConnect();
   }
 
   disconnectedCallback(): void {
@@ -727,7 +690,7 @@ class TonkCodeElement extends HTMLElement {
       // Only tear down if we're still detached. `isConnected`
       // flips back to `true` if Leptos re-inserted us.
       if (this.isConnected) return;
-      this.#tearDownLsp();
+      this.#announceDisconnect();
       this.#view?.destroy();
       this.#view = null;
     }, 0);
@@ -750,10 +713,14 @@ class TonkCodeElement extends HTMLElement {
         break;
       case "language":
         // Apply the language pack (highlighting). LSP `languageId`
-        // is also keyed off this attribute; if an LSP session is
-        // open we rebuild it so the server sees the right id.
+        // is also keyed off this attribute; if a provider has us
+        // attached we re-announce so the provider can `didOpen`
+        // the same source under the new languageId.
         void this.#applyLanguage(next);
-        if (this.#lspClient) this.#rebuildLspNow();
+        if (this.#lspClient) {
+          this.#announceDisconnect();
+          this.#announceConnect();
+        }
         break;
       case "readonly":
         this.#view.dispatch({
@@ -786,21 +753,15 @@ class TonkCodeElement extends HTMLElement {
           ),
         });
         break;
-      case "language-server":
-        // Presence enables, absence disables. When *enabling*
-        // for the first time, defer to first focus (same lazy
-        // policy as the initial mount). When *changing* a URL on
-        // an already-connected session, reconnect eagerly so the
-        // swap takes effect.
-        if (next !== null) {
-          if (this.#lspClient) {
-            this.#connectLsp(); // URL swap mid-session
-          } else {
-            this.#armLazyLspConnect();
-          }
-        } else {
-          this.#tearDownLsp();
+      case "source":
+        // The document's identity changed — tear down the
+        // previous LSP attachment (if any) and re-announce so
+        // the provider opens the new source. No-op if no
+        // provider is in scope.
+        if (this.#lspClient) {
+          this.#announceDisconnect();
         }
+        this.#announceConnect();
         break;
     }
   }
@@ -811,208 +772,73 @@ class TonkCodeElement extends HTMLElement {
     return this.getAttribute("language") ?? DEFAULT_LANGUAGE_ID;
   }
 
-  /** Generation counter for the LSP session. Each
-   *  `#connectLsp()` increments it; transport callbacks capture
-   *  the generation that owned them and ignore events after the
-   *  generation has moved on. This prevents a torn-down
-   *  transport's `onClose` from racing a fresh `#connectLsp` and
-   *  scheduling a rebuild that fights the new session. */
-  #lspGeneration = 0;
-
-  /** URL + language id of the currently connected LSP session,
-   *  if any. Used to short-circuit `#connectLsp()` when the
-   *  desired session matches what's already running — keeps
-   *  Leptos remounts from churning the connection. */
-  #lspConnectedUrl: string | null = null;
-  #lspConnectedLanguageId: string | null = null;
-
-  /** First-focus listener for lazy LSP connect. Held so we can
-   *  remove it after firing or when teardown happens before
-   *  first focus. */
-  #lazyLspListener: (() => void) | null = null;
-
-  /** Arm a one-shot focus listener that connects the LSP on
-   *  first user interaction. Editors the user never focuses
-   *  don't open an SSE channel.
+  /** Bubbling, composed event the editor fires on connect (and
+   *  on `source` / `language` changes mid-life). An ancestor
+   *  `<tonk-diagnostics-provider>` catches the event and calls
+   *  `connect()` on `event.target` with its `LSPClient`.
    *
-   *  If `attributeChangedCallback` ends up calling `#connectLsp`
-   *  directly (e.g. the consumer flips the `language-server`
-   *  value at runtime, signalling explicit intent), the
-   *  connect runs immediately and the focus listener is
-   *  cancelled by `#tearDownLsp` → `#disarmLazyLspConnect`.  */
-  #armLazyLspConnect(): void {
-    if (this.#lazyLspListener) return; // already armed
-    const fire = () => {
-      this.#disarmLazyLspConnect();
-      this.#connectLsp();
-    };
-    this.#lazyLspListener = fire;
-    // `focus` with `delegatesFocus: true` on
-    // the shadow root, the host receives the `focus` event when
-    // focus delegates into the inner contenteditable. `focusin`
-    // bubbles independently but the host listener path goes
-    // through `focus` here. `once: true` removes the listener
-    // after firing.
-    this.addEventListener("focus", fire, { once: true });
+   *  No provider in scope ⇒ no listener responds ⇒ the editor
+   *  stays in plain text-edit mode. There is no fallback.  */
+  #announceConnect(): void {
+    const source = this.getAttribute("source");
+    if (!source) return;
+    this.dispatchEvent(
+      new CustomEvent<TonkCodeConnectDetail>("tonk-code-connect", {
+        detail: { source, language: this.#lspLanguageId() },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
-  #disarmLazyLspConnect(): void {
-    if (!this.#lazyLspListener) return;
-    this.removeEventListener("focus", this.#lazyLspListener);
-    this.#lazyLspListener = null;
+  /** Bubbling, composed event the editor fires when its current
+   *  attachment should be torn down — on element removal, or
+   *  before re-announcing under a different `source` /
+   *  `language`. Provider closes the LSP document for `source`. */
+  #announceDisconnect(): void {
+    const source = this.getAttribute("source");
+    if (!source) return;
+    this.dispatchEvent(
+      new CustomEvent<TonkCodeDisconnectDetail>("tonk-code-disconnect", {
+        detail: { source },
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
-  /** Build (or rebuild) the LSP client + transport pair and wire
-   *  them into the editor. Idempotent: tears down any existing
-   *  client before connecting. Safe to call from
-   *  `attributeChangedCallback`. */
-  #connectLsp(): void {
+  /** Public API used by an ancestor `<tonk-diagnostics-provider>`
+   *  to attach an `LSPClient` to this editor. The provider supplies
+   *  the client; the editor wires it into its CodeMirror extension
+   *  set so diagnostics, hover, completion etc. start working
+   *  against the editor's `source` URI.
+   *
+   *  Idempotent: calling `connect` twice with the same client just
+   *  reconfigures the extension. Calling with a different client
+   *  swaps the attachment.  */
+  connect(client: LSPClient): void {
     if (!this.#view) return;
-    // Short-circuit if we're already connected to the same
-    // session. Belt-and-suspenders with the deferred teardown:
-    // even if the deferred teardown ran (e.g. element was truly
-    // removed and re-added later), this also catches duplicate
-    // connect calls from any other path.
-    if (this.#lspClient) {
-      const desiredUrl = new URL(
-        this.getAttribute("language-server") || DEFAULT_LANGUAGE_SERVER_URL,
-        document.baseURI,
-      ).href;
-      if (
-        desiredUrl === this.#lspConnectedUrl &&
-        this.#lspLanguageId() === this.#lspConnectedLanguageId
-      ) {
-        return;
-      }
-    }
-    this.#tearDownLsp();
-
-    if (!this.#lspUri) {
-      // Crypto-random URI so multiple editors on the same page
-      // don't collide. The path doesn't carry meaning beyond
-      // identity — the server only stores text under it.
-      this.#lspUri = `tonk-buffer:///${crypto.randomUUID()}`;
-    }
-
-    // Resolve the URL the same way the browser would resolve an
-    // `<a href>` — relative paths bind against `document.baseURI`,
-    // absolute URLs (any scheme) pass through. The boolean form
-    // (attribute present, empty value) maps to the default path.
-    const raw =
-      this.getAttribute("language-server") || DEFAULT_LANGUAGE_SERVER_URL;
-    const url = new URL(raw, document.baseURI).href;
-
-    const generation = ++this.#lspGeneration;
-    const transport = httpTransport({
-      url,
-      onClose: () => {
-        // Ignore the close event if a newer session has taken
-        // over. Without this guard, intentional teardowns
-        // (`#tearDownLsp`) cascade into a rebuild because the
-        // disconnect hits the transport's `onClose` after the
-        // new session has already started.
-        if (this.#lspGeneration !== generation) return;
-        this.#tearDownLsp();
-        // The transport is single-shot; closing means the LSP
-        // session is over. Schedule a rebuild — the server may
-        // be a service worker that briefly disappeared during
-        // an upgrade, so a polite delay before reconnecting
-        // gives it time to come back.
-        this.#scheduleLspReconnect();
-      },
-    });
-
-    const client = connectLsp(transport);
+    const source = this.getAttribute("source");
+    if (!source) return;
     this.#lspClient = client;
-    this.#lspReconnectDelay = LSP_RECONNECT_INITIAL_MS;
-    this.#lspConnectedUrl = url;
-    this.#lspConnectedLanguageId = this.#lspLanguageId();
-
     this.#view.dispatch({
       effects: this.#lsp.reconfigure(
-        client.plugin(this.#lspUri, this.#lspConnectedLanguageId),
+        client.plugin(source, this.#lspLanguageId()),
       ),
     });
   }
 
-  /** Detach the LSP plugin from the editor, destroy the client,
-   *  cancel any pending rebuild.
-   *
-   *  Bumps the generation so any `onClose` from the disconnect
-   *  recognizes itself as stale and skips the reconnect path. */
-  #tearDownLsp(): void {
-    this.#lspGeneration++;
-    this.#disarmLazyLspConnect();
-    if (this.#lspReconnectTimer !== null) {
-      clearTimeout(this.#lspReconnectTimer);
-      this.#lspReconnectTimer = null;
-    }
+  /** Detach the LSP integration. The provider calls this in
+   *  response to a `tonk-code-disconnect` event (when the editor
+   *  goes away or moves to a new source). The editor doesn't
+   *  destroy the client — that's the provider's lifecycle. */
+  disconnect(): void {
+    this.#lspClient = null;
     if (this.#view) {
       this.#view.dispatch({
         effects: this.#lsp.reconfigure([]),
       });
     }
-    if (this.#lspClient) {
-      this.#lspClient.disconnect();
-      this.#lspClient = null;
-    }
-    this.#lspConnectedUrl = null;
-    this.#lspConnectedLanguageId = null;
-  }
-
-  /** Schedule a rebuild of the LSP client after the current
-   *  reconnect delay, then double the delay (capped) for the
-   *  next failure. The delay is reset on each successful
-   *  rebuild via `#connectLsp`. */
-  #scheduleLspReconnect(): void {
-    if (!this.hasAttribute("language-server")) return; // attr removed; respect that
-    if (this.#lspReconnectTimer !== null) return; // already pending
-
-    const delay = this.#lspReconnectDelay;
-    this.#lspReconnectDelay = Math.min(delay * 2, LSP_RECONNECT_MAX_MS);
-    this.#lspReconnectTimer = setTimeout(() => {
-      this.#lspReconnectTimer = null;
-      this.#connectLsp();
-    }, delay);
-  }
-
-  /** Force an immediate rebuild — used when an attribute change
-   *  invalidates the current session (e.g. the `language` value
-   *  changed and the server needs to see a new `languageId`). */
-  #rebuildLspNow(): void {
-    this.#connectLsp();
-  }
-
-  /** Replace any externally-pushed diagnostics on the editor.
-   *  Used by callers (the Tonk UI) to surface analyzer errors
-   *  returned by the worker as squiggles on the buffer instead
-   *  of as a banner. Pass an empty array to clear.
-   *
-   *  Diagnostics are LSP-shaped (`range`, `severity`, `code`,
-   *  `message`); the editor maps them onto CodeMirror's lint
-   *  state. The LSP client's own `publishDiagnostics` flow is
-   *  separate — those go through the client extension and
-   *  aren't affected here.
-   *
-   *  Diagnostics with no `range` are silently dropped (the
-   *  lint plugin can't render them without a position). */
-  setExternalDiagnostics(diagnostics: ExternalDiagnostic[]): void {
-    const view = this.#view;
-    if (!view) return;
-    const cm: CmDiagnostic[] = [];
-    for (const d of diagnostics) {
-      const from = positionToOffset(view.state.doc, d.range.start);
-      const to = positionToOffset(view.state.doc, d.range.end);
-      if (from === null || to === null) continue;
-      cm.push({
-        from,
-        to: Math.max(from, to),
-        severity: lspToCmSeverity(d.severity),
-        message: d.message,
-        source: d.source ?? "tonk-worker",
-      });
-    }
-    view.dispatch(setDiagnostics(view.state, cm));
   }
 
   /** Current document text. */

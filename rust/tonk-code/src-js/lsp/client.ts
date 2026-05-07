@@ -1,15 +1,11 @@
 // LSP client construction.
 //
-// Each editor instance owns its own `LSPClient`. We *don't*
-// share a single client across all `<tonk-code>` editors on a
-// page because the rebuild-on-drop lifecycle is per-instance:
-// when a transport closes, we tear down only the affected
-// editor's session and rebuild against a fresh transport.
-//
-// Building per-editor is also much simpler than tracking
-// dependents on a shared client; the LSP `Workspace`
-// abstraction lets clients trivially manage one document each
-// without any coordination.
+// `<tonk-diagnostics-provider>` owns the `LSPClient` and
+// shares it across every `<tonk-code>` descendant that
+// announces itself via `tonk-code-connect`. Each editor
+// becomes one open document on the same client — diagnostics,
+// hover, completion etc. all flow through the provider's
+// single transport.
 
 import {
   LSPClient,

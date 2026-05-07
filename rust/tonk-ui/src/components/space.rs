@@ -246,6 +246,16 @@ where
                 ></wa-icon>
             </wa-button>
         </header>
+        // One LSP client per space — shared across every branch
+        // editor mounted under this provider. `<tonk-code>`
+        // descendants dispatch `tonk-code-connect` events and the
+        // provider attaches its client. Mounting the provider at
+        // the space level (rather than per-branch) means a single
+        // language-server transport carries every editor's
+        // didOpen/didChange/publishDiagnostics, which sets up the
+        // cross-branch resolution we'll want once the server is
+        // branch-aware.
+        <tonk-diagnostics-provider>
         <main class="wa-stack space-view">
             <section class="wa-stack">
                 <h2 class="space-section-title">{ format!("Branches ({branch_count})") }</h2>
@@ -268,6 +278,7 @@ where
                 } }
             </section>
         </main>
+        </tonk-diagnostics-provider>
     }
 }
 
@@ -389,6 +400,18 @@ pub(super) fn BranchRow(
     let transact_state = RwSignal::new(TransactState::Idle);
     let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
 
+    // LSP document URI for this branch's scratch editor. Stable
+    // for the editor's lifetime so the language server keeps
+    // analyzing one buffer instead of opening/closing on every
+    // keystroke. The provider opens this URI on first connect
+    // and uses it to route published diagnostics back to the
+    // editor.
+    let editor_source = format!(
+        "tonk-buffer:///{}/{}/scratch",
+        space_name.get_untracked().unwrap_or_default(),
+        branch_name,
+    );
+
     let on_transact_change = move |ev: leptos::ev::Event| {
         transact_buffer.set(read_tonk_code_value(&ev));
     };
@@ -433,6 +456,7 @@ pub(super) fn BranchRow(
     // each adapter clones the name before delegating.
     let evaluate_now = {
         let branch_template = branch_name.clone();
+        let editor_source_for_eval = editor_source.clone();
         move |branch_name: String| {
             let body = transact_buffer.get_untracked();
             if body.trim().is_empty() {
@@ -447,6 +471,7 @@ pub(super) fn BranchRow(
             }
             transact_state.set(TransactState::Running);
             let _ = &branch_template; // silence unused-capture warning
+            let editor_source = editor_source_for_eval.clone();
             spawn_local(async move {
                 match classify_for_dispatch(&body) {
                     DocDispatch::ParseError(messages) => {
@@ -464,7 +489,7 @@ pub(super) fn BranchRow(
                         // Drop any prior squiggles from a
                         // previous failed submit — the doc is
                         // good now.
-                        clear_external_diagnostics();
+                        clear_pushed_diagnostics(&editor_source);
                         last_response.set(Some(Box::new(response)));
                         transact_state.set(TransactState::Idle);
                     }
@@ -476,7 +501,7 @@ pub(super) fn BranchRow(
                         // the play button hidden until the
                         // user fixes it.
                         if matches!(&err, TonkUiError::Analyze { .. }) {
-                            push_external_diagnostic(&err);
+                            push_analyzer_diagnostic(&editor_source, &err);
                             transact_state.set(TransactState::Idle);
                         } else {
                             transact_state.set(TransactState::Failed(format!("{err}")));
@@ -619,9 +644,17 @@ pub(super) fn BranchRow(
                 >
                     <label class="hint">"Asserted-notation (query or transaction)"</label>
                     <div class="evaluate-editor">
+                        // Editor announces itself via
+                        // `tonk-code-connect` to the
+                        // `<tonk-diagnostics-provider>` mounted at
+                        // the space level. The provider owns one
+                        // LSP client shared across every branch's
+                        // editor in scope, so the language server
+                        // sees the full document set and can
+                        // resolve cross-branch references.
                         <tonk-code
                             language="dialog-yaml"
-                            language-server
+                            source=editor_source.clone()
                             active-line
                             placeholder="person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
                             on:change=on_transact_change
@@ -782,69 +815,98 @@ fn read_tonk_code_value(event: &leptos::ev::Event) -> String {
         .unwrap_or_default()
 }
 
-/// Push an analyzer diagnostic onto the live `<tonk-code>` editor
-/// so the worker's structured rejections surface as squiggles on
-/// the buffer rather than as a banner. The element exposes a
-/// `setExternalDiagnostics(diagnostics: lsp.Diagnostic[])` method
-/// (see `rust/tonk-code/src-js/index.ts`); we look it up
-/// reflectively because there's no Rust type for the custom
-/// element.
+/// Push an analyzer diagnostic onto the editor whose `source`
+/// matches `source` by dispatching a `tonk-push-diagnostics`
+/// CustomEvent on the nearest `<tonk-diagnostics-provider>` in
+/// the document. The provider routes the diagnostic into that
+/// editor's lint state.
 ///
-/// Pass an empty slice to clear externally-pushed diagnostics —
-/// the LSP client's own publishDiagnostics flow is unaffected.
-fn push_external_diagnostic(error: &TonkUiError) {
-    let document = match window().document() {
-        Some(d) => d,
-        None => return,
-    };
-    let element = match document.query_selector("tonk-code").ok().flatten() {
-        Some(el) => el,
-        None => return,
-    };
-    let setter = match js_sys::Reflect::get(
-        &element,
-        &wasm_bindgen::JsValue::from_str("setExternalDiagnostics"),
-    ) {
-        Ok(v) if v.is_function() => v,
-        _ => return,
-    };
-    let setter = match setter.dyn_into::<js_sys::Function>() {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    let diagnostics = js_sys::Array::new();
-    if let TonkUiError::Analyze {
+/// `error` must be a `TonkUiError::Analyze`; other variants are
+/// silently dropped (they don't carry the structure needed to
+/// produce a positional diagnostic).
+fn push_analyzer_diagnostic(source: &str, error: &TonkUiError) {
+    let TonkUiError::Analyze {
         code,
         message,
         range,
     } = error
-        && let Some(range) = range
+    else {
+        return;
+    };
+    let Some(range) = range else { return };
+    let diagnostics = js_sys::Array::new();
+    let entry = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &entry,
+        &wasm_bindgen::JsValue::from_str("range"),
+        &lsp_range_to_js(*range),
+    );
+    // LSP severity 1 = Error.
+    let _ = js_sys::Reflect::set(
+        &entry,
+        &wasm_bindgen::JsValue::from_str("severity"),
+        &wasm_bindgen::JsValue::from_f64(1.0),
+    );
+    let _ = js_sys::Reflect::set(
+        &entry,
+        &wasm_bindgen::JsValue::from_str("code"),
+        &wasm_bindgen::JsValue::from_str(code),
+    );
+    let _ = js_sys::Reflect::set(
+        &entry,
+        &wasm_bindgen::JsValue::from_str("message"),
+        &wasm_bindgen::JsValue::from_str(message),
+    );
+    diagnostics.push(&entry);
+    dispatch_push_diagnostics(source, &diagnostics);
+}
+
+/// Clear externally-pushed diagnostics on the editor whose
+/// `source` matches by dispatching an empty
+/// `tonk-push-diagnostics` event. Called after a successful
+/// re-submit so a stale squiggle from a previous failure doesn't
+/// linger.
+fn clear_pushed_diagnostics(source: &str) {
+    dispatch_push_diagnostics(source, &js_sys::Array::new());
+}
+
+/// Dispatch a `tonk-push-diagnostics` CustomEvent on the
+/// `<tonk-diagnostics-provider>` for `source`. The event detail
+/// is `{ source, diagnostics }`. Provider routes by `source` so
+/// multiple editors under one provider don't collide.
+fn dispatch_push_diagnostics(source: &str, diagnostics: &js_sys::Array) {
+    let document = match window().document() {
+        Some(d) => d,
+        None => return,
+    };
+    let provider = match document
+        .query_selector("tonk-diagnostics-provider")
+        .ok()
+        .flatten()
     {
-        let entry = js_sys::Object::new();
-        let _ = js_sys::Reflect::set(
-            &entry,
-            &wasm_bindgen::JsValue::from_str("range"),
-            &lsp_range_to_js(*range),
-        );
-        // LSP severity 1 = Error.
-        let _ = js_sys::Reflect::set(
-            &entry,
-            &wasm_bindgen::JsValue::from_str("severity"),
-            &wasm_bindgen::JsValue::from_f64(1.0),
-        );
-        let _ = js_sys::Reflect::set(
-            &entry,
-            &wasm_bindgen::JsValue::from_str("code"),
-            &wasm_bindgen::JsValue::from_str(code),
-        );
-        let _ = js_sys::Reflect::set(
-            &entry,
-            &wasm_bindgen::JsValue::from_str("message"),
-            &wasm_bindgen::JsValue::from_str(message),
-        );
-        diagnostics.push(&entry);
-    }
-    let _ = setter.call1(&element, &diagnostics);
+        Some(el) => el,
+        None => return,
+    };
+    let detail = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &detail,
+        &wasm_bindgen::JsValue::from_str("source"),
+        &wasm_bindgen::JsValue::from_str(source),
+    );
+    let _ = js_sys::Reflect::set(
+        &detail,
+        &wasm_bindgen::JsValue::from_str("diagnostics"),
+        diagnostics,
+    );
+    let init = web_sys::CustomEventInit::new();
+    init.set_detail(&detail);
+    init.set_bubbles(true);
+    let event = match web_sys::CustomEvent::new_with_event_init_dict("tonk-push-diagnostics", &init)
+    {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let _ = provider.dispatch_event(&event);
 }
 
 fn lsp_range_to_js(range: lsp_types::Range) -> wasm_bindgen::JsValue {
@@ -875,31 +937,6 @@ fn lsp_position_to_js(position: lsp_types::Position) -> wasm_bindgen::JsValue {
         &wasm_bindgen::JsValue::from_f64(position.character as f64),
     );
     obj.into()
-}
-
-/// Clear all externally-pushed diagnostics on the live editor.
-/// Called when the user successfully runs after a previous
-/// rejection — we don't want last submit's red squiggle hanging
-/// around once the doc is good.
-fn clear_external_diagnostics() {
-    let document = match window().document() {
-        Some(d) => d,
-        None => return,
-    };
-    let element = match document.query_selector("tonk-code").ok().flatten() {
-        Some(el) => el,
-        None => return,
-    };
-    let setter = match js_sys::Reflect::get(
-        &element,
-        &wasm_bindgen::JsValue::from_str("setExternalDiagnostics"),
-    ) {
-        Ok(v) if v.is_function() => v,
-        _ => return,
-    };
-    if let Ok(setter) = setter.dyn_into::<js_sys::Function>() {
-        let _ = setter.call1(&element, &js_sys::Array::new());
-    }
 }
 
 /// Render the status surface below the editor.
