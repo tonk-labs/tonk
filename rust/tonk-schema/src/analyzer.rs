@@ -53,11 +53,13 @@ use crate::transact::{
 pub use error::AnalyzeError;
 pub use resolver::{NoopResolver, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
 
-use assertion::{build_assertion_application, derive_head_intent};
+use crate::prelude::EntityExt;
+use assertion::{body_digest, build_assertion_application, derive_head_intent};
 use declaration::{
     DeclaredApplication, attribute_application, concept_application, parse_attribute_body,
     parse_concept_body,
 };
+use dialog_artifacts::Entity;
 use field::collect_unbound_variables;
 use query::build_query_application;
 use scope::Scope;
@@ -111,7 +113,8 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         descriptor: plan.descriptor.clone(),
                     };
                     let (this, name) =
-                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref())?;
+                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), &scope)
+                            .await?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
@@ -150,7 +153,8 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         descriptor: plan.descriptor.clone(),
                     };
                     let (this, name) =
-                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref())?;
+                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), &scope)
+                            .await?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
@@ -185,10 +189,26 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
             }
         }
 
-        // Non-meta heads: nothing to do in Phase 1.
-        // Anchor and variable forms both produce body-content-
-        // derived entities, which Phase 3 computes when it runs
-        // `this_term_for_assertion`.
+        // Non-meta heads with `&anchor`: register the
+        // declaration in `scope.declarations` so subsequent
+        // expressions in the same document can resolve
+        // `this: <anchor-name>` (or use the bare symbol in
+        // field position) to the body-derived entity.
+        //
+        // The same registration happens again in Phase 3 via
+        // `this_term_for_assertion`'s `Derived + name` branch
+        // (it's the source of truth for `analysis.declarations`),
+        // but Phase 3 runs after Phase 2's query build, which is
+        // too late for in-doc symbol resolution. Pre-registering
+        // here keeps doc-order semantics consistent. The two
+        // computations agree on the entity because `body_digest`
+        // is a pure function of the field literals.
+        if let Expression::Assertion(a) = expression
+            && let Some(anchor) = &a.anchor
+        {
+            let entity = Entity::of(&body_digest(&a.fields));
+            scope.declare(&anchor.name, entity)?;
+        }
     }
 
     // ---- Phase 2: build query Applications ----
@@ -1071,25 +1091,178 @@ person!:
         }
     }
 
-    /// `this: alice` (bare symbol) is a Stage 2.5 placeholder —
-    /// the analyzer rejects it for now with a guiding message.
-    /// Pin the current behavior so we notice when Stage 2.5 wires
-    /// the lookup and this test should change.
+    /// `this: alice` (bare symbol) resolves through the name
+    /// table — Stage 2.5. A bare symbol that doesn't match any
+    /// in-doc declaration or branch name surfaces
+    /// `UnknownBookmark` with `field: "this"`.
     #[dialog_common::test]
-    async fn it_rejects_bare_symbol_in_this_pending_stage_2_5() {
+    async fn it_rejects_unresolvable_bare_symbol_in_this() {
         let syntax = must_parse(
             r#"
 person!:
-  this: alice
+  this: ghost
   name: "x"
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err, AnalyzeError::UnsupportedFieldValue { field, .. } if field == "this"),
-            "expected UnsupportedFieldValue on `this`, got {err:?}"
+            matches!(&err, AnalyzeError::UnknownBookmark { field, bookmark } if field == "this" && bookmark == "ghost"),
+            "expected UnknownBookmark on `this` with bookmark=\"ghost\", got {err:?}"
         );
+    }
+
+    /// `this: alice` resolves through the in-doc anchor table
+    /// — `&alice` declared by an earlier expression in the same
+    /// document means a later `this: alice` lands on that
+    /// entity.
+    #[dialog_common::test]
+    async fn it_resolves_bare_symbol_in_this_via_in_doc_anchor() {
+        let syntax = must_parse(
+            r#"
+person!: &alice
+  name: "Alice"
+person!:
+  this: alice
+  name: "Renamed"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        // First expression declares `&alice`. Second uses
+        // `this: alice` — should resolve to the same body-derived
+        // entity that first expression registered.
+        let alice_entity = analysis
+            .declarations
+            .get("alice")
+            .expect("alice should be declared")
+            .clone();
+        let Statement::Assert(Application::Concept { this, query, .. }) =
+            &analysis.mutate.statements[1]
+        else {
+            panic!("expected Assert(Concept) for second expression");
+        };
+        match this {
+            ThisIntent::Uri(e) => assert_eq!(e, &alice_entity),
+            other => panic!("expected ThisIntent::Uri(<alice>), got {other:?}"),
+        }
+        // The resolved entity also flows into `terms["this"]`.
+        match query.terms.get("this") {
+            Some(Term::Constant(Value::Entity(e))) => assert_eq!(e, &alice_entity),
+            other => panic!("expected this term to be alice's entity, got {other:?}"),
+        }
+    }
+
+    /// `this: alice` resolves through the branch's name index
+    /// when no in-doc declaration matches. Uses a custom
+    /// resolver whose `resolve_named_entity` returns a fixed
+    /// entity for `"alice"`.
+    #[dialog_common::test]
+    async fn it_resolves_bare_symbol_in_this_via_branch_name_index() {
+        struct NameResolver {
+            concept_name: String,
+            concept: ConceptDescriptor,
+            named_entity: Entity,
+        }
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        impl Resolver for NameResolver {
+            async fn resolve_concept(
+                &self,
+                name: &str,
+            ) -> Result<Option<ResolvedConcept>, ResolverError> {
+                if name == self.concept_name {
+                    Ok(Some(ResolvedConcept {
+                        entity: self.concept.this(),
+                        descriptor: self.concept.clone(),
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+            async fn resolve_attribute(
+                &self,
+                _name: &str,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
+            async fn resolve_attribute_by_entity(
+                &self,
+                _entity: &Entity,
+            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+                Ok(None)
+            }
+            async fn resolve_named_entity(
+                &self,
+                name: &str,
+            ) -> Result<Option<Entity>, ResolverError> {
+                if name == "alice" {
+                    Ok(Some(self.named_entity.clone()))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+        let person_descriptor: ConceptDescriptor = serde_json::from_value(serde_json::json!({
+            "with": {
+                "name": { "the": "io.gozala.person/name", "as": "Text", "cardinality": "one" },
+            }
+        }))
+        .unwrap();
+        let alice_entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .unwrap();
+        let resolver = NameResolver {
+            concept_name: "person".into(),
+            concept: person_descriptor,
+            named_entity: alice_entity.clone(),
+        };
+        let syntax = must_parse(
+            r#"
+person!:
+  this: alice
+  name: "Renamed"
+"#,
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        match this {
+            ThisIntent::Uri(e) => assert_eq!(e, &alice_entity),
+            other => panic!("expected ThisIntent::Uri(alice), got {other:?}"),
+        }
+    }
+
+    /// `this: foo` works in queries too — same lookup as
+    /// assertions, surfaces a constant entity in `terms["this"]`.
+    #[dialog_common::test]
+    async fn it_resolves_bare_symbol_in_this_for_queries() {
+        let syntax = must_parse(
+            r#"
+person!: &alice
+  name: "Alice"
+person:
+  this: alice
+  name: ?n
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let alice_entity = analysis
+            .declarations
+            .get("alice")
+            .expect("alice declared")
+            .clone();
+        let q = analysis.query.as_ref().expect("query present");
+        let Application::Concept { query, .. } = &q.queries[0] else {
+            panic!("expected Concept query");
+        };
+        match query.terms.get("this") {
+            Some(Term::Constant(Value::Entity(e))) => assert_eq!(e, &alice_entity),
+            other => panic!("expected this to resolve to alice, got {other:?}"),
+        }
     }
 
     /// `this: 42` (literal) is rejected — `this:` accepts only

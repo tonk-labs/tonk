@@ -22,7 +22,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
     // Queries can't carry an `&anchor` (parser rejects that), so
     // intent derivation only inspects `this:`. The returned name
     // is always `None` here.
-    let (this, _name) = derive_head_intent(&query.fields, None)?;
+    let (this, _name) = derive_head_intent(&query.fields, None, scope).await?;
     match &query.head.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope

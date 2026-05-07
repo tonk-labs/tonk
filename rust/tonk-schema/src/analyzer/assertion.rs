@@ -30,7 +30,8 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
         return Err(AnalyzeError::AssertionWithoutFields { head: head_label });
     }
 
-    let (this, name) = derive_head_intent(&assertion.fields, assertion.anchor.as_ref())?;
+    let (this, name) =
+        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope).await?;
     let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis)?;
 
     match &assertion.head.name {
@@ -116,8 +117,11 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
 ///   - omitted → [`ThisIntent::Derived`]
 ///   - `?var` → [`ThisIntent::Variable(var)`]
 ///   - `did:key:…` / `id:…` / `db:…` → [`ThisIntent::Uri(entity)`]
-///   - bare symbol → name lookup; Stage 2.4 will resolve through
-///     the name table. Today: error.
+///   - bare symbol → resolved through the name table to
+///     [`ThisIntent::Uri(entity)`]. Resolution order matches
+///     [`super::field::field_value_to_term`]: doc-local
+///     declarations first, then the branch's `dialog.meta/name`
+///     index. Unresolvable symbols surface as `UnknownBookmark`.
 ///
 /// - **Naming** — the `&name` on the value side, captured by the
 ///   parser as `Anchor`. Returned as `Some(name)` when present.
@@ -125,9 +129,10 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
 /// The two are independent: every combination is meaningful
 /// (e.g. `person!: &alice\n  this: did:key:zX` → publish `id:alice`
 /// pointing at zX without producing a new entity).
-pub(crate) fn derive_head_intent(
+pub(crate) async fn derive_head_intent<R: Resolver>(
     fields: &[Field],
     anchor: Option<&Anchor>,
+    scope: &Scope<'_, R>,
 ) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
     let name = anchor.map(|a| a.name.clone());
     let this = match fields.iter().find(|f| f.name == "this") {
@@ -145,14 +150,42 @@ pub(crate) fn derive_head_intent(
                         })?;
                 ThisIntent::Uri(entity)
             }
-            FieldValue::Symbol(_)
-            | FieldValue::Literal(_)
-            | FieldValue::Blank
-            | FieldValue::Nested(_) => {
+            FieldValue::Symbol(name) => {
+                // Bare symbol in `this:` — resolve through the
+                // name table. Same order as field-value
+                // `Symbol`: doc-local declarations, then
+                // doc-local attributes, then branch lookup.
+                let entity = if let Some(entity) = scope.lookup_entity(name) {
+                    entity
+                } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
+                    AnalyzeError::ResolverFailed {
+                        context: format!("symbol {name}"),
+                        reason: e.message,
+                    }
+                })? {
+                    resolved.entity
+                } else if let Some(entity) =
+                    scope.resolve_named_entity(name).await.map_err(|e| {
+                        AnalyzeError::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.message,
+                        }
+                    })?
+                {
+                    entity
+                } else {
+                    return Err(AnalyzeError::UnknownBookmark {
+                        field: "this".into(),
+                        bookmark: name.clone(),
+                    });
+                };
+                ThisIntent::Uri(entity)
+            }
+            FieldValue::Literal(_) | FieldValue::Blank | FieldValue::Nested(_) => {
                 return Err(AnalyzeError::UnsupportedFieldValue {
                     field: "this".into(),
-                    form: "expected `?var` or a URI (`did:key:…`, `id:…`, `db:…`); \
-                           bare-symbol name lookup arrives in Stage 2.4",
+                    form: "expected `?var`, a bare symbol, or a URI \
+                           (`did:key:…`, `id:…`, `db:…`)",
                 });
             }
         },
@@ -231,7 +264,11 @@ fn this_term_for_assertion(
 /// identity (they'd reference *other* entities, and including
 /// them in the hash would defeat the deterministic-rerun
 /// property).
-fn body_digest(fields: &[Field]) -> Vec<(String, FieldDigest)> {
+///
+/// Pure function of `fields` (no scope, no resolver), so it's
+/// safe to call from Phase 1 to pre-compute the entity for an
+/// anchor declaration.
+pub(super) fn body_digest(fields: &[Field]) -> Vec<(String, FieldDigest)> {
     let mut out: Vec<(String, FieldDigest)> = Vec::new();
     for field in fields {
         let digest = match &field.value {
@@ -252,7 +289,7 @@ fn body_digest(fields: &[Field]) -> Vec<(String, FieldDigest)> {
 /// independent of any future surface-syntax changes.
 #[derive(serde::Serialize)]
 #[serde(untagged)]
-enum FieldDigest {
+pub(super) enum FieldDigest {
     String(String),
     Integer(i128),
     UnsignedInteger(u128),
