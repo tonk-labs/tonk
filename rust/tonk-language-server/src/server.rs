@@ -218,65 +218,74 @@ impl Server {
     }
 }
 
-/// Walk the syntax tree and return LSP diagnostics for the
-/// structural problems the analyzer would catch *if* it could
-/// run end-to-end without a branch resolver. We don't actually
-/// invoke the analyzer here — it short-circuits on the first
-/// error, so a single `UnknownConcept` (which needs the branch)
-/// would mask later structural errors like
-/// `AssertionWithoutFields` in subsequent expressions.
+/// Run `tonk_schema::analyzer::analyze` against the parsed
+/// syntax with a `NoopResolver` and surface the result as LSP
+/// diagnostics.
 ///
-/// Mirrors the structural checks in
-/// `tonk_schema::analyzer::analyze`. Each check is purely
-/// syntactic — no resolver work required — so a "the branch
-/// will resolve `person`" outcome doesn't change whether
-/// `person!:` (no body) is malformed.
+/// Errors that fundamentally need the branch (`UnknownConcept`,
+/// `UnknownBookmark`, `ResolverFailed`, `InvalidClaimAttribute`)
+/// are filtered out here — they trigger spuriously under the
+/// noop resolver and are the worker's responsibility once
+/// `evaluate` runs against a real branch.
 ///
-/// Stays `async` for shape symmetry with the rest of the LSP
-/// pipeline: when this function gains real branch-resolver
-/// calls (the planned multi-pass analyzer) the surrounding
-/// plumbing is already async.
+/// The analyzer short-circuits on the first error today, so
+/// callers see at most one diagnostic per pass. Multi-error
+/// reporting is a future analyzer change; once it lands, this
+/// function picks it up automatically by virtue of mapping
+/// every error in the result.
 async fn analyzer_diagnostics(syntax: &tonk_notation::Syntax) -> Vec<lsp_types::Diagnostic> {
-    use lsp_types::{Diagnostic, DiagnosticSeverity};
-    use tonk_notation::{Expression, HeadName};
+    use tonk_schema::analyzer::{NoopResolver, analyze};
 
-    let mut out = Vec::new();
-    for expression in &syntax.expressions {
-        let Expression::Assertion(assertion) = expression else {
-            continue;
-        };
-        if !assertion.fields.is_empty() {
-            continue;
-        }
-        // Skip meta heads where empty-body might mean
-        // something else; the worker's analyzer can refine
-        // these messages. For non-meta `head!:`, an empty body
-        // is unambiguously useless.
-        let is_meta = matches!(
-            &assertion.head.name,
-            HeadName::Concept(name) if matches!(name.as_str(), "attribute" | "concept")
-        );
-        if is_meta {
-            continue;
-        }
-        let head_label = match &assertion.head.name {
-            HeadName::Concept(name) => name.clone(),
-            HeadName::Claim(domain) => domain.clone(),
-            HeadName::Uri(uri) => uri.clone(),
-        };
-        out.push(Diagnostic {
-            range: assertion.head.range,
-            severity: Some(DiagnosticSeverity::ERROR),
-            code: None,
-            code_description: None,
-            source: Some("tonk-schema".into()),
-            message: format!("assertion `{head_label}!` has no fields — at least one is required"),
-            related_information: None,
-            tags: None,
-            data: None,
-        });
+    let resolver = NoopResolver;
+    match analyze(syntax, &resolver).await {
+        Ok(_) => Vec::new(),
+        Err(err) => match diagnostic_from_analyze_error(syntax, err) {
+            Some(diag) => vec![diag],
+            None => Vec::new(),
+        },
     }
-    out
+}
+
+/// Translate a single [`AnalyzeError`] into an LSP [`Diagnostic`].
+/// Returns `None` for error categories that need a real branch
+/// to evaluate accurately (and would therefore false-positive
+/// against the LSP's `NoopResolver`).
+fn diagnostic_from_analyze_error(
+    syntax: &tonk_notation::Syntax,
+    err: tonk_schema::analyzer::AnalyzeError,
+) -> Option<lsp_types::Diagnostic> {
+    use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
+    use tonk_schema::analyzer::AnalyzeErrorKind;
+
+    // Skip kinds that depend on a real branch resolver — the
+    // worker is the source of truth for those.
+    if matches!(
+        err.kind,
+        AnalyzeErrorKind::UnknownConcept { .. }
+            | AnalyzeErrorKind::UnknownBookmark { .. }
+            | AnalyzeErrorKind::ResolverFailed { .. }
+            | AnalyzeErrorKind::InvalidClaimAttribute { .. }
+    ) {
+        return None;
+    }
+
+    let code = err.code();
+    let message = err.kind.to_string();
+    // Fall back to the document range when an error has no
+    // span. Better than dropping the diagnostic — the user
+    // still sees the message.
+    let range = err.range.unwrap_or(syntax.range);
+    Some(Diagnostic {
+        range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: Some(NumberOrString::String(code.into())),
+        code_description: None,
+        source: Some("tonk-schema".into()),
+        message,
+        related_information: None,
+        tags: None,
+        data: None,
+    })
 }
 
 /// Capabilities advertised in the `initialize` response. Kept in one
@@ -360,7 +369,7 @@ mod tests {
                     "uri": "tonk-buffer:///test",
                     "languageId": "carry-asserted",
                     "version": 1,
-                    "text": "did:key:zAlice:\n  profile:\n    name: Alice\n"
+                    "text": "attribute!:\n  the: io.gozala.person/name\n  as: text\n  cardinality: one\n  description: \"The person's full name\"\n"
                 }
             }
         });
@@ -369,7 +378,7 @@ mod tests {
         assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].method, "textDocument/publishDiagnostics");
         let diags = outbound[0].params["diagnostics"].as_array().unwrap();
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "expected clean doc, got {diags:?}");
     }
 
     #[dialog_common::test]
@@ -402,5 +411,46 @@ mod tests {
         assert_eq!(outbound.len(), 1);
         let diags = outbound[0].params["diagnostics"].as_array().unwrap();
         assert_eq!(diags.len(), 1);
+    }
+
+    /// Analyzer-derived diagnostics carry a stable `code` and a
+    /// source `range` so the editor can underline the offending
+    /// span and route quickfixes by code.
+    #[dialog_common::test]
+    async fn it_publishes_diagnostic_with_code_and_range_from_analyzer() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        // `person!:` (empty body) — analyzer rejects with
+        // E_ASSERTION_WITHOUT_FIELDS, range pinned to the head.
+        let note = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": "tonk-buffer:///test",
+                    "languageId": "carry-asserted",
+                    "version": 1,
+                    "text": "person!:\n"
+                }
+            }
+        });
+        run(&mut server, &note).await;
+        let outbound = server.take_outbound();
+        let diags = outbound[0].params["diagnostics"].as_array().unwrap();
+        assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
+        let diag = &diags[0];
+        assert_eq!(diag["code"], json!("E_ASSERTION_WITHOUT_FIELDS"));
+        assert_eq!(diag["source"], json!("tonk-schema"));
+        // Range covers the head on line 0.
+        assert_eq!(diag["range"]["start"]["line"], json!(0));
     }
 }
