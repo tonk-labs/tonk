@@ -253,9 +253,24 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     collect_unbound_variables(&declaration.application, &analysis, &mut requires);
                     statements.push(Statement::Assert(declaration.application));
                 } else {
-                    let application = build_assertion_application(a, &scope, &mut analysis).await?;
-                    collect_unbound_variables(&application, &analysis, &mut requires);
-                    statements.push(Statement::Assert(application));
+                    // An assertion expression can produce up to
+                    // two statements: an assert side (explicit
+                    // non-blank fields, plus naming) and a
+                    // retract side (per-field `_` blanks plus
+                    // any `..: _` rest expansion). Either or
+                    // both can be empty; emit only what's
+                    // present, retract first so the dissociate
+                    // sees the prior state before the new
+                    // assert lands.
+                    let plan = build_assertion_application(a, &scope, &mut analysis).await?;
+                    if let Some(retract_app) = plan.retract {
+                        collect_unbound_variables(&retract_app, &analysis, &mut requires);
+                        statements.push(Statement::Retract(retract_app));
+                    }
+                    if let Some(assert_app) = plan.assert {
+                        collect_unbound_variables(&assert_app, &analysis, &mut requires);
+                        statements.push(Statement::Assert(assert_app));
+                    }
                 }
             }
         }
@@ -736,18 +751,18 @@ person!:
             ],
         );
         let analysis = analyze(&syntax, &resolver).await.unwrap();
+        // Stage 2.7: `..: _` produces a `Statement::Retract`
+        // since every field is blank and no `&anchor` publishes
+        // a name on the assert side.
         assert_eq!(analysis.mutate.statements.len(), 1);
-        // Stage 2.1: `..: _` is parsed but not yet wired to
-        // produce `Statement::Retract`. The expression goes
-        // through as `Statement::Assert` whose every field is
-        // blank because the user supplied no values. Stage 2.8
-        // turns this into a real retraction.
-        let Statement::Assert(Application::Concept { query: q, .. }) =
+        let Statement::Retract(Application::Concept { query: q, .. }) =
             &analysis.mutate.statements[0]
         else {
-            panic!("expected Assert(Concept) — Stage 2.1 placeholder");
+            panic!("expected Retract(Concept) for `..: _` body");
         };
-        // `this` is bound; all other fields are blank.
+        // `this` is the URI-resolved entity; every with: field
+        // is blank (the planner walks the branch to find values
+        // to dissociate).
         assert!(matches!(
             q.terms.get("this"),
             Some(Term::Constant(Value::Entity(_)))
@@ -1956,5 +1971,127 @@ attribute!: &foo
             ),
             "expected InvalidAttributeBody listing accepted cardinality, got {err:?}"
         );
+    }
+
+    // ----------------------------------------------------------- //
+    // Stage 2.7 / 2.8 — retraction emission                       //
+    // ----------------------------------------------------------- //
+
+    /// `field: _` (per-field blank) routes the affected field
+    /// to the retract side. The other fields the user wrote
+    /// continue to assert. One expression → two statements.
+    #[dialog_common::test]
+    async fn it_splits_field_blank_into_assert_and_retract() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  name: "Alice"
+  age:  _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        // Two statements: retract first (drop age), then assert
+        // (set name).
+        assert_eq!(analysis.mutate.statements.len(), 2);
+        assert!(matches!(
+            &analysis.mutate.statements[0],
+            Statement::Retract(_)
+        ));
+        assert!(matches!(
+            &analysis.mutate.statements[1],
+            Statement::Assert(_)
+        ));
+    }
+
+    /// `..: _` plus an explicit field — the explicit field
+    /// asserts; every other `with:` attribute retracts.
+    #[dialog_common::test]
+    async fn it_splits_dotdot_rest_marker_into_assert_and_retract() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  name: "Alice"
+  ..: _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        // Two statements — retract (drop age, the unmentioned
+        // field), assert (set name).
+        assert_eq!(analysis.mutate.statements.len(), 2);
+        let Statement::Retract(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Retract first");
+        };
+        // Retract side: name is blank (not retracted because
+        // user set it), age is blank (slated for retraction).
+        // The planner walks the branch to find concrete values.
+        assert!(matches!(
+            q.terms.get("age"),
+            Some(Term::Variable { name: None, .. })
+        ));
+    }
+
+    /// Pure-retract body (no explicit asserted fields) → only
+    /// `Statement::Retract`. No `&anchor`, so no name to
+    /// publish either.
+    #[dialog_common::test]
+    async fn it_emits_only_retract_for_pure_retraction_body() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  ..: _
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        assert!(matches!(
+            &analysis.mutate.statements[0],
+            Statement::Retract(_)
+        ));
+    }
+
+    /// Pure-assert body (no blanks, no `..: _`) → only
+    /// `Statement::Assert`. Confirms the new logic doesn't
+    /// regress the common case.
+    #[dialog_common::test]
+    async fn it_emits_only_assert_for_pure_assertion_body() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        assert!(matches!(
+            &analysis.mutate.statements[0],
+            Statement::Assert(_)
+        ));
     }
 }

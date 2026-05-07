@@ -15,11 +15,34 @@ use super::scope::Scope;
 use crate::prelude::EntityExt;
 use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
 
+/// Output of analyzing a single `head!:` expression. An
+/// expression can produce up to two statements:
+///
+/// - `assert` — the explicit non-blank fields the user wrote.
+///   Carries the published `&name` if any.
+/// - `retract` — fields whose value was `_` (per-field
+///   retraction) plus, if `..: _` is present, every other
+///   `with:` attribute on the concept that wasn't mentioned
+///   explicitly. No `name` here — naming is an additive
+///   operation, only the assert side carries it.
+///
+/// `None` for either side means "no work on this side." A
+/// simple `person!: &alice\n  name: "Alice"` produces
+/// `(Some(assert), None)`. A `person!:\n  this: ?p\n  ..: _`
+/// produces `(None, Some(retract))`. The mixed form
+/// `person!:\n  this: ?p\n  name: ?name\n  ..: _` produces
+/// `(Some(assert), Some(retract))`.
+#[derive(Debug, Clone)]
+pub(crate) struct AssertionPlan {
+    pub assert: Option<Application>,
+    pub retract: Option<Application>,
+}
+
 pub(crate) async fn build_assertion_application<R: Resolver>(
     assertion: &Assertion,
     scope: &Scope<'_, R>,
     analysis: &mut Analysis,
-) -> Result<Application, AnalyzeError> {
+) -> Result<AssertionPlan, AnalyzeError> {
     let head_label = match &assertion.head.name {
         HeadName::Concept(name) => name.clone(),
         HeadName::Claim(domain) => domain.clone(),
@@ -37,6 +60,13 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
     }
     let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis)?;
 
+    // Detect the rest-marker `..: _` once. Per-field `_`
+    // blanks are handled in the per-field walk below.
+    let has_rest_retraction = assertion
+        .fields
+        .iter()
+        .any(|f| f.name == ".." && matches!(f.value, FieldValue::Blank));
+
     match &assertion.head.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
@@ -49,8 +79,10 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 .ok_or_else(|| AnalyzeError::UnknownConcept {
                     name: concept_name.clone(),
                 })?;
-            let mut terms = Parameters::new();
-            terms.insert("this".into(), this_term);
+
+            // Walk user-supplied fields, separating asserts from
+            // retracts. `..: _` and per-field `_` blanks go
+            // to the retract pile; everything else asserts.
             let mut user_fields: BTreeMap<&str, &FieldValue> = BTreeMap::new();
             for field in &assertion.fields {
                 if is_meta_field(&field.name) {
@@ -58,32 +90,121 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 }
                 user_fields.insert(field.name.as_str(), &field.value);
             }
+
+            let mut assert_terms = Parameters::new();
+            assert_terms.insert("this".into(), this_term.clone());
+            let mut retract_terms = Parameters::new();
+            retract_terms.insert("this".into(), this_term.clone());
+            let mut any_assert = false;
+            let mut any_retract = false;
+
             for (field_name, _attr) in resolved.descriptor.with().iter() {
-                let Some(value) = user_fields.remove(field_name) else {
-                    // Field omitted — leave a blank so the
-                    // emitter skips it on assert.
-                    terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
-                    continue;
-                };
-                let term = field_value_to_term(field_name, value, scope, analysis).await?;
-                terms.insert(field_name.into(), term);
+                match user_fields.remove(field_name) {
+                    Some(FieldValue::Blank) => {
+                        // Per-field retraction: planner walks the
+                        // branch to find the current value(s) and
+                        // dissociates each.
+                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                        any_retract = true;
+                        // Assert side gets a blank so the
+                        // emitter skips it.
+                        assert_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                    }
+                    Some(value) => {
+                        // Explicit non-blank field — asserts.
+                        let term = field_value_to_term(field_name, value, scope, analysis).await?;
+                        assert_terms.insert(field_name.into(), term);
+                        any_assert = true;
+                        // Retract side blanks this field — the
+                        // emitter skips blanks on retract, so
+                        // an asserted field never gets
+                        // accidentally dropped on the same pass.
+                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                    }
+                    None => {
+                        // Field not mentioned. Behavior depends
+                        // on the rest-marker:
+                        //   - With `..: _`: retract (alongside
+                        //     other unnamed fields)
+                        //   - Without: leave blank on assert
+                        //     side, blank on retract side
+                        let blank = Term::<dialog_query::Any>::blank();
+                        assert_terms.insert(field_name.into(), blank.clone());
+                        retract_terms.insert(field_name.into(), blank);
+                        if has_rest_retraction {
+                            any_retract = true;
+                        }
+                    }
+                }
             }
+
             if let Some((unknown, _)) = user_fields.into_iter().next() {
                 return Err(AnalyzeError::UnknownField {
                     concept: concept_name.clone(),
                     field: unknown.to_owned(),
                 });
             }
-            Ok(Application::Concept {
-                query: ConceptQuery {
-                    terms,
-                    predicate: resolved.descriptor,
-                },
-                this,
-                name,
+
+            // Build the assert/retract `Application`s. Naming
+            // (`name: Some(...)`) only attaches to the assert
+            // side — the planner emits the desugared `name!`
+            // assertion on `id:<name>` which is itself an
+            // additive write. Putting `name` on the retract
+            // side would erase the published name.
+            let assert_app = if any_assert || (name.is_some() && !has_rest_retraction) {
+                Some(Application::Concept {
+                    query: ConceptQuery {
+                        terms: assert_terms,
+                        predicate: resolved.descriptor.clone(),
+                    },
+                    this: this.clone(),
+                    name: name.clone(),
+                })
+            } else if name.is_some() {
+                // `&name` published, but every field is being
+                // retracted (`..: _` with no other set fields).
+                // Still need an assert pass to publish the name.
+                Some(Application::Concept {
+                    query: ConceptQuery {
+                        terms: {
+                            let mut t = Parameters::new();
+                            t.insert("this".into(), this_term.clone());
+                            for (field_name, _) in resolved.descriptor.with().iter() {
+                                t.insert(field_name.into(), Term::<dialog_query::Any>::blank());
+                            }
+                            t
+                        },
+                        predicate: resolved.descriptor.clone(),
+                    },
+                    this: this.clone(),
+                    name: name.clone(),
+                })
+            } else {
+                None
+            };
+            let retract_app = if any_retract {
+                Some(Application::Concept {
+                    query: ConceptQuery {
+                        terms: retract_terms,
+                        predicate: resolved.descriptor,
+                    },
+                    this,
+                    name: None,
+                })
+            } else {
+                None
+            };
+            Ok(AssertionPlan {
+                assert: assert_app,
+                retract: retract_app,
             })
         }
         HeadName::Claim(domain) => {
+            // Claim heads don't yet support retraction
+            // semantics — they have no schema to enumerate, so
+            // `..: _` doesn't have a closed set of attributes
+            // to expand into. Field-level `_` is also not
+            // wired here (Stage 2.7+ extension).
             let mut parameters = Parameters::new();
             parameters.insert("this".into(), this_term);
             for field in &assertion.fields {
@@ -94,13 +215,16 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 let term = field_value_to_term(&field.name, &field.value, scope, analysis).await?;
                 parameters.insert(field.name.clone(), term);
             }
-            Ok(Application::Domain {
-                application: DomainApplication {
-                    domain: domain.clone(),
-                    parameters,
-                },
-                this,
-                name,
+            Ok(AssertionPlan {
+                assert: Some(Application::Domain {
+                    application: DomainApplication {
+                        domain: domain.clone(),
+                        parameters,
+                    },
+                    this,
+                    name,
+                }),
+                retract: None,
             })
         }
         HeadName::Uri(uri) => Err(AnalyzeError::UnsupportedFieldValue {
