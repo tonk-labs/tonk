@@ -671,7 +671,7 @@ fn classify_plain_value(text: &str) -> FieldValue {
     if let Some(rest) = text.strip_prefix('?') {
         return FieldValue::Variable(rest.to_owned());
     }
-    if text.contains(':') || text.contains('/') {
+    if looks_like_uri(text) {
         return FieldValue::Uri(text.to_owned());
     }
     // YAML core-schema typed values (numbers, booleans, null)
@@ -685,6 +685,68 @@ fn classify_plain_value(text: &str) -> FieldValue {
         return FieldValue::Symbol(text.to_owned());
     }
     FieldValue::Literal(Scalar::String(text.to_owned()))
+}
+
+/// Does `text` look like a notation URI?
+///
+/// Two accepted shapes:
+///
+/// 1. `<scheme>:<rest>` — `did:key:…`, `id:foo`, `db:concept`,
+///    `tonk-buffer:///x`. The scheme is a bare lowercase
+///    identifier (letters / digits / `-` / `+`, starting with a
+///    letter); everything before the first `:` must look like a
+///    scheme so common values like `text/html` (no `:` at all)
+///    or `12:34` (digit-leading) don't get hijacked.
+///
+/// 2. `<reverse-dotted-domain>/<name>` — claim attribute URIs
+///    (`xyz.tonk/foo`, `io.gozala.person/name`). Requires at
+///    least one `.` *before* the first `/` so MIME-type-shaped
+///    values (`text/html`, `application/json`) classify as
+///    string literals instead.
+///
+/// Anything else — `text/html`, `Hello, World!`, `28` —
+/// falls through to the symbol / typed-scalar / literal-string
+/// rules.
+fn looks_like_uri(text: &str) -> bool {
+    if let Some((scheme, _)) = text.split_once(':')
+        && is_uri_scheme(scheme)
+    {
+        return true;
+    }
+    if let Some((domain, rest)) = text.split_once('/')
+        && !rest.is_empty()
+        && is_reverse_dotted_domain(domain)
+    {
+        return true;
+    }
+    false
+}
+
+/// Bare lowercase identifier — letters / digits / `-` / `+`,
+/// starting with a letter. Mirrors the URI-scheme shape from
+/// RFC 3986 minus `.` (we use `.` to mean "domain segment
+/// separator" in the reverse-dotted form).
+fn is_uri_scheme(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_lowercase() {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '+')
+}
+
+/// Reverse-dotted domain — at least two segments separated by
+/// `.`, each segment a bare lowercase identifier. Used to
+/// recognize claim-attribute URIs like `xyz.tonk` or
+/// `io.gozala.person`.
+fn is_reverse_dotted_domain(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts.iter().all(|p| is_uri_scheme(p))
 }
 
 /// Try to parse `text` as a YAML core-schema typed scalar
@@ -1735,6 +1797,86 @@ page!:
                 assert!(s.contains("<h1>Hi</h1>"), "got: {s:?}");
             }
             other => panic!("expected literal string, got {other:?}"),
+        }
+    }
+
+    /// MIME-type-shaped plain scalars (`text/html`,
+    /// `application/json`) classify as string literals, not
+    /// URIs. The reverse-dotted-domain rule requires at least
+    /// one `.` before the `/`; `text/` doesn't have one.
+    #[dialog_common::test]
+    fn it_parses_mime_type_as_string_literal() {
+        let syntax = parse_clean(
+            r#"
+page!:
+  type: text/html
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let ty = a
+            .fields
+            .iter()
+            .find(|f| f.name == "type")
+            .expect("type field");
+        match &ty.value {
+            FieldValue::Literal(Scalar::String(s)) => assert_eq!(s, "text/html"),
+            other => panic!("expected literal string, got {other:?}"),
+        }
+    }
+
+    /// Reverse-dotted-domain forms (`xyz.tonk/foo`) still
+    /// classify as URIs — that's the claim-attribute shape we
+    /// need to keep working.
+    #[dialog_common::test]
+    fn it_parses_claim_attribute_path_as_uri() {
+        let syntax = parse_clean(
+            r#"
+attribute!:
+  the: xyz.tonk.person/name
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let the = a
+            .fields
+            .iter()
+            .find(|f| f.name == "the")
+            .expect("the field");
+        match &the.value {
+            FieldValue::Uri(u) => assert_eq!(u, "xyz.tonk.person/name"),
+            other => panic!("expected URI, got {other:?}"),
+        }
+    }
+
+    /// Scheme-prefixed URIs (`did:key:…`, `id:foo`,
+    /// `db:concept`) classify as URIs.
+    #[dialog_common::test]
+    fn it_parses_scheme_prefixed_values_as_uri() {
+        let syntax = parse_clean(
+            r#"
+person!:
+  this: did:key:zMkAlice
+  ref: id:foo
+  scheme: db:concept
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        for name in ["this", "ref", "scheme"] {
+            let f = a
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("expected field {name}"));
+            assert!(
+                matches!(&f.value, FieldValue::Uri(_)),
+                "field {name} should be URI, got {:?}",
+                f.value,
+            );
         }
     }
 
