@@ -44,6 +44,45 @@ use tonk_schema::evaluate::{self, EvaluateResponse, QueryMatchBlock};
 
 use crate::site::SlideSite;
 
+/// Slim summary of one named concept on the branch — just enough
+/// for `slide concepts` to print and for `slide share concept`
+/// to verify existence. The full descriptor stays internal to
+/// [`render`] (which needs it to re-emit the `with:` map as
+/// notation).
+#[derive(Debug, Clone)]
+pub struct ConceptSummary {
+    /// Bookmark name carried by `dialog.meta/name`.
+    pub name: String,
+    /// Human description claim (`dialog.meta/description`), if
+    /// asserted. Concept descriptions are optional in the
+    /// analyzer.
+    pub description: Option<String>,
+    /// Field names from the concept's `with:` map, in the order
+    /// the descriptor yields them.
+    pub fields: Vec<String>,
+}
+
+/// Enumerate every user-defined concept on the meta branch,
+/// returning a slim per-concept summary. Built-in concepts
+/// (`attribute`, `concept`, etc.) are filtered out — see
+/// [`is_builtin_concept`].
+pub async fn list_concepts(site: &SlideSite) -> Result<Vec<ConceptSummary>> {
+    let infos = enumerate_concepts(site).await?;
+    Ok(infos
+        .into_iter()
+        .map(|info| ConceptSummary {
+            name: info.name,
+            description: info.description,
+            fields: info
+                .descriptor
+                .with()
+                .iter()
+                .map(|(field, _)| field.to_string())
+                .collect(),
+        })
+        .collect())
+}
+
 /// Render the site's full schema as a re-submittable notation
 /// document. Output is a sequence of `attribute! …:` heads
 /// followed by `concept! …:` heads — attributes first so concept

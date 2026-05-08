@@ -68,6 +68,36 @@ fn suggested_name_from_url(href: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Post-claim navigation suffix extracted from a `?then=...`
+/// query param on the current URL.
+///
+/// The value is treated as a path *under the recipient's
+/// `/space/<name>/` root* — it must not start with `/` (no
+/// absolute paths) and must not contain a URL scheme (no
+/// `http://...`). The caller composes the final destination
+/// as `/space/<recipient-name>/<suffix>` once the actual local
+/// name is known. This keeps the share URL valid regardless of
+/// whether the recipient renamed the space on the join form or
+/// already had the subject mounted under a different name.
+fn then_suffix_from_url(href: &str) -> Option<String> {
+    Url::parse(href)
+        .ok()?
+        .query_pairs()
+        .find(|(key, _)| key == "then")
+        .map(|(_, value)| value.into_owned())
+        .filter(|value| !value.is_empty() && !value.starts_with('/') && !value.contains("://"))
+}
+
+/// Build the post-claim destination from the recipient's local
+/// space name and an optional `then=` suffix. Falls back to the
+/// space root (`/space/<name>`) when no suffix is present.
+fn compose_destination(space_name: &str, then_suffix: Option<&str>) -> String {
+    match then_suffix {
+        Some(suffix) => format!("/space/{}/{}", space_name, suffix),
+        None => format!("/space/{}", space_name),
+    }
+}
+
 /// Sigil hex string for a DID, suitable for `<tonk-sigil value=...>`.
 /// Matches the helper used in [`super::space`] so a space's sigil
 /// is consistent across the join page and the space view.
@@ -108,6 +138,14 @@ pub fn TonkJoin() -> impl IntoView {
     let invite_url = window().location().href().unwrap_or_else(|_| String::new());
 
     let suggested = suggested_name_from_url(&invite_url).unwrap_or_default();
+    // Optional post-claim navigation suffix. Lets the inviter
+    // (e.g. `slide share concept`) drop the recipient on a
+    // specific page within the joined space — e.g. a concept
+    // view — instead of the default space root. The value is a
+    // path suffix under `/space/<name>/`; the actual local
+    // name (resolved post-claim) gets prefixed at navigation
+    // time. Absent or malformed values fall through.
+    let then_suffix = then_suffix_from_url(&invite_url);
     let name = RwSignal::new(suggested);
     let error = RwSignal::new(Option::<String>::None);
     let submitting = RwSignal::new(false);
@@ -194,6 +232,7 @@ pub fn TonkJoin() -> impl IntoView {
     {
         let navigate = navigate.clone();
         let invite_url = invite_url.clone();
+        let then_suffix = then_suffix.clone();
         Effect::new(move |_| {
             if auto_joined.get() {
                 return;
@@ -210,6 +249,7 @@ pub fn TonkJoin() -> impl IntoView {
             let url = invite_url.clone();
             let target = name.clone();
             let navigate = navigate.clone();
+            let then_suffix = then_suffix.clone();
             spawn_local(async move {
                 match api::join(&url, &target).await {
                     Ok(response) => {
@@ -219,7 +259,8 @@ pub fn TonkJoin() -> impl IntoView {
                         };
                         last_join_outcome.set(Some(outcome));
                         profile_resource.refetch();
-                        navigate(&format!("/space/{}", target), NavigateOptions::default());
+                        let destination = compose_destination(&target, then_suffix.as_deref());
+                        navigate(&destination, NavigateOptions::default());
                     }
                     Err(e) => {
                         // The chain save failed (network, 5xx, or
@@ -265,6 +306,7 @@ pub fn TonkJoin() -> impl IntoView {
     let submit = {
         let navigate = navigate.clone();
         let invite_url = invite_url.clone();
+        let then_suffix = then_suffix.clone();
         move |event: SubmitEvent| {
             event.prevent_default();
 
@@ -289,6 +331,7 @@ pub fn TonkJoin() -> impl IntoView {
             submitting.set(true);
             let navigate = navigate.clone();
             let url = invite_url.clone();
+            let then_suffix = then_suffix.clone();
             spawn_local(async move {
                 match api::join(&url, &requested).await {
                     Ok(response) => {
@@ -303,10 +346,8 @@ pub fn TonkJoin() -> impl IntoView {
                             }
                         };
                         last_join_outcome.set(Some(outcome));
-                        navigate(
-                            &format!("/space/{}", target_name),
-                            NavigateOptions::default(),
-                        );
+                        let destination = compose_destination(&target_name, then_suffix.as_deref());
+                        navigate(&destination, NavigateOptions::default());
                     }
                     Err(JoinError::NameTaken) => {
                         submitting.set(false);
@@ -478,5 +519,63 @@ where
                 </form>
             })
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::{compose_destination, suggested_name_from_url, then_suffix_from_url};
+
+    #[test]
+    fn it_extracts_a_then_suffix_from_a_well_formed_url() {
+        let url = "https://ui.example.test/join?access=abc&then=branch/main/concept/task#seed";
+        assert_eq!(
+            then_suffix_from_url(url).as_deref(),
+            Some("branch/main/concept/task"),
+        );
+    }
+
+    #[test]
+    fn it_drops_a_then_value_that_is_absolute_or_off_site() {
+        // Absolute paths, full URLs, and missing values are
+        // silently dropped — the suffix model assumes the value
+        // is a path *under* `/space/<name>/`, so anything else
+        // would compose into a broken navigation target.
+        for href in [
+            "https://ui.example.test/join?access=abc&then=/space/shared/foo",
+            "https://ui.example.test/join?access=abc&then=https://evil.test/x",
+            "https://ui.example.test/join?access=abc",
+        ] {
+            assert!(
+                then_suffix_from_url(href).is_none(),
+                "expected None for {href}",
+            );
+        }
+    }
+
+    #[test]
+    fn it_keeps_then_and_name_independent() {
+        // Both parameters can coexist and are read independently.
+        let url =
+            "https://ui.example.test/join?name=tasks&access=abc&then=branch/main/concept/task";
+        assert_eq!(suggested_name_from_url(url).as_deref(), Some("tasks"));
+        assert_eq!(
+            then_suffix_from_url(url).as_deref(),
+            Some("branch/main/concept/task"),
+        );
+    }
+
+    #[test]
+    fn it_composes_a_destination_from_the_recipient_local_name() {
+        // The crucial property: the actual space name (whatever
+        // the recipient ended up with) is what shows up in the
+        // composed URL — *not* the inviter's suggestion. This
+        // is what keeps the share working when the recipient
+        // already had the subject mounted under another name.
+        assert_eq!(
+            compose_destination("home", Some("branch/main/concept/task")),
+            "/space/home/branch/main/concept/task",
+        );
+        assert_eq!(compose_destination("home", None), "/space/home");
     }
 }

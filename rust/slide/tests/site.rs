@@ -469,6 +469,290 @@ mod when_syncing_with_an_upstream {
     }
 }
 
+mod when_listing_concepts {
+    use anyhow::Result;
+    use slide::schema;
+
+    use crate::common::{self, ATTRIBUTE_DECL, CONCEPT_DECL};
+
+    #[dialog_common::test]
+    async fn it_returns_user_defined_concepts_only() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+
+        let concepts = schema::list_concepts(&test.site).await?;
+        assert_eq!(concepts.len(), 1);
+        assert_eq!(concepts[0].name, "task");
+        // Concept descriptions don't round-trip through the
+        // anonymous-concept dispatch path the listing uses; see
+        // the fidelity-gap note on `slide::schema`. Asserting
+        // `None` pins that behaviour so a future fix lights up
+        // the test as a reminder to revisit.
+        assert!(concepts[0].description.is_none());
+        let mut fields = concepts[0].fields.clone();
+        fields.sort();
+        assert_eq!(fields, vec!["done", "title"]);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_empty_when_only_builtins_are_present() -> Result<()> {
+        // A fresh site has no user-defined concepts; built-in
+        // `attribute` and `concept` are filtered out by the
+        // listing.
+        let test = common::TestSite::new().await?;
+        let concepts = schema::list_concepts(&test.site).await?;
+        assert!(concepts.is_empty());
+        Ok(())
+    }
+}
+
+mod when_sharing_a_concept {
+    use anyhow::Result;
+    use dialog_repository::Branch;
+    use slide::remote;
+    use slide::share::{self, ShareError, ShareOptions};
+    use url::Url;
+
+    use crate::common::{self, ATTRIBUTE_DECL, CONCEPT_DECL};
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+
+    /// Open a sibling branch as the dialog upstream so
+    /// `slide push` resolves locally without needing a real
+    /// access service.
+    async fn wire_local_upstream(test: &common::TestSite) -> Result<Branch> {
+        let upstream = test
+            .site
+            .repository
+            .branch("upstream")
+            .open()
+            .perform(&test.site.operator)
+            .await?;
+        test.site
+            .branch
+            .set_upstream(&upstream)
+            .perform(&test.site.operator)
+            .await?;
+        Ok(upstream)
+    }
+
+    /// Build a test site with a `task` concept defined, one
+    /// registered remote, and an in-process upstream wired up —
+    /// the minimum viable setup for `share_concept`.
+    async fn shareable_site() -> Result<common::TestSite> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        wire_local_upstream(&test).await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        Ok(test)
+    }
+
+    #[dialog_common::test]
+    async fn it_produces_a_launcher_url_with_all_expected_pieces() -> Result<()> {
+        let test = shareable_site().await?;
+        let outcome = share::share_concept(
+            &test.site,
+            "task",
+            ShareOptions {
+                ui_base: Some("https://ui.example.test/join".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(outcome.concept_name, "task");
+        assert_eq!(outcome.space_name, share::DEFAULT_SPACE_NAME);
+        assert_eq!(outcome.remote_name, "origin");
+        assert_eq!(outcome.remote_endpoint, ENDPOINT);
+
+        let url = Url::parse(&outcome.url)?;
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("ui.example.test"));
+        assert_eq!(url.path(), "/join");
+        // Audience-open invites carry the seed in the fragment;
+        // `share` builds on `invite::mint` so this should
+        // round-trip as well.
+        assert!(
+            url.fragment().is_some(),
+            "expected ephemeral seed in URL fragment, got: {}",
+            outcome.url,
+        );
+
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert!(pairs.contains_key("access"), "missing access= param");
+        assert_eq!(pairs.get("remote").map(String::as_str), Some(ENDPOINT));
+        assert_eq!(
+            pairs.get("name").map(String::as_str),
+            Some(share::DEFAULT_SPACE_NAME),
+        );
+        // `then` is a path suffix relative to /space/<name>/, not
+        // an absolute URL — tonk-ui composes the prefix using the
+        // recipient's actual local name (which may differ from
+        // `name=` when they already have the subject mounted).
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some("branch/main/concept/task"),
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_honours_an_explicit_space_name() -> Result<()> {
+        let test = shareable_site().await?;
+        let outcome = share::share_concept(
+            &test.site,
+            "task",
+            ShareOptions {
+                space_name: Some("tasks".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        assert_eq!(outcome.space_name, "tasks");
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert_eq!(pairs.get("name").map(String::as_str), Some("tasks"));
+        // `then` is independent of the suggested `name=` — it
+        // names a path under whichever local space the recipient
+        // ends up in.
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some("branch/main/concept/task"),
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_the_concept_is_not_defined() -> Result<()> {
+        let test = shareable_site().await?;
+        let result = share::share_concept(&test.site, "nope", ShareOptions::default()).await;
+        match result {
+            Err(ShareError::ConceptNotFound { name }) => {
+                assert_eq!(name, "nope");
+            }
+            other => panic!("expected ConceptNotFound, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_no_upstream_is_configured() -> Result<()> {
+        // Schema + remote, but no `branch.set_upstream` call.
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        let result = share::share_concept(&test.site, "task", ShareOptions::default()).await;
+        match result {
+            Err(ShareError::UpstreamNotConfigured { branch }) => {
+                assert_eq!(branch, "main");
+            }
+            other => panic!("expected UpstreamNotConfigured, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_no_remote_is_registered() -> Result<()> {
+        // Schema present but no remote at all — share refuses
+        // before even checking the upstream, since a remote-less
+        // share would mint a URL the recipient can't pull from.
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        wire_local_upstream(&test).await?;
+
+        let result = share::share_concept(&test.site, "task", ShareOptions::default()).await;
+        assert!(
+            matches!(result, Err(ShareError::NoRemote)),
+            "expected NoRemote, got: {result:?}",
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_multiple_remotes_lack_an_explicit_choice() -> Result<()> {
+        let test = shareable_site().await?;
+        // Add a second remote so auto-selection is ambiguous.
+        remote::add(
+            &test.site,
+            "backup",
+            "https://backup.example.test/ucan/",
+            None,
+        )
+        .await?;
+
+        let result = share::share_concept(&test.site, "task", ShareOptions::default()).await;
+        match result {
+            Err(ShareError::AmbiguousRemote(names)) => {
+                // List ordering tracks the meta branch — sort to
+                // make the assertion stable regardless.
+                let mut split: Vec<&str> = names.split(", ").collect();
+                split.sort();
+                assert_eq!(split, vec!["backup", "origin"]);
+            }
+            other => panic!("expected AmbiguousRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_picks_an_explicit_remote_among_several() -> Result<()> {
+        let test = shareable_site().await?;
+        remote::add(
+            &test.site,
+            "backup",
+            "https://backup.example.test/ucan/",
+            None,
+        )
+        .await?;
+
+        let outcome = share::share_concept(
+            &test.site,
+            "task",
+            ShareOptions {
+                remote: Some("backup".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        assert_eq!(outcome.remote_name, "backup");
+        assert_eq!(outcome.remote_endpoint, "https://backup.example.test/ucan/");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_an_explicit_remote_is_unknown() -> Result<()> {
+        let test = shareable_site().await?;
+        let result = share::share_concept(
+            &test.site,
+            "task",
+            ShareOptions {
+                remote: Some("missing".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        match result {
+            Err(ShareError::UnknownRemote(name)) => {
+                assert_eq!(name, "missing");
+            }
+            other => panic!("expected UnknownRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+}
+
 mod when_migrating_from_carry {
     use anyhow::Result;
     use slide::migrate::{self, Mode};

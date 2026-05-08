@@ -17,6 +17,7 @@ use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
 use slide::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
+use slide::share::{self, ShareOptions, ShareOutcome};
 use slide::sync::{self, SyncOutcome};
 use slide::{ExitCode, guide, identity, schema, site};
 
@@ -63,6 +64,12 @@ enum Command {
     /// Print the current site's schema (every named attribute and
     /// concept) as a re-submittable notation document.
     Schema,
+
+    /// List user-defined concepts on the local branch. One row
+    /// per concept, tab-separated `name<TAB>description`. Built-in
+    /// concepts (`attribute`, `concept`, …) are omitted — they're
+    /// resolvable everywhere and would just be noise.
+    Concepts,
 
     /// Migrate a `.carry/` directory to `.tonk/`. Walks up from
     /// `$PWD` to find the source unless `--from` is supplied; the
@@ -116,6 +123,39 @@ enum Command {
     Remote {
         #[command(subcommand)]
         command: RemoteCommand,
+    },
+
+    /// Push to the upstream and produce a launcher URL that
+    /// lands the recipient on a live view of local data.
+    Share {
+        #[command(subcommand)]
+        command: ShareCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ShareCommand {
+    /// Share a named concept. The recipient lands on the
+    /// auto-rendered concept view at
+    /// `/space/<space-name>/branch/main/concept/<name>`.
+    Concept {
+        /// Local name of the concept to share.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Override the URL prefix the launcher is built
+        /// against. Default: the standard `slide invite` base.
+        #[arg(long, value_name = "URL")]
+        ui_base: Option<String>,
+        /// Suggested local name for the recipient's space —
+        /// pre-fills the join form's "Local name" input. The
+        /// recipient can rename before joining.
+        #[arg(long, value_name = "NAME")]
+        space_name: Option<String>,
+        /// Embed an explicit remote's endpoint as the invite's
+        /// `remote=` parameter. Defaults to the only registered
+        /// remote when there's exactly one.
+        #[arg(long, value_name = "NAME")]
+        remote: Option<String>,
     },
 }
 
@@ -196,12 +236,14 @@ async fn main() {
         Command::Eval(args) => eval(args).await,
         Command::Guide => print_guide(),
         Command::Schema => print_schema().await,
+        Command::Concepts => print_concepts().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Push => sync_op(SyncOp::Push).await,
         Command::Pull => sync_op(SyncOp::Pull).await,
         Command::Invite { base_url, remote } => mint_invite(base_url, remote).await,
         Command::Join { url } => claim_invite(url).await,
         Command::Remote { command } => remote_op(command).await,
+        Command::Share { command } => share_op(command).await,
     };
     std::process::exit(exit.into_raw());
 }
@@ -449,6 +491,52 @@ fn print_remote_list(records: &[RemoteRecord]) {
     }
 }
 
+async fn share_op(command: ShareCommand) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match command {
+        ShareCommand::Concept {
+            name,
+            ui_base,
+            space_name,
+            remote,
+        } => {
+            let options = ShareOptions {
+                ui_base,
+                remote,
+                space_name,
+            };
+            match share::share_concept(&site, &name, options).await {
+                Ok(outcome) => {
+                    print_share_outcome(&outcome);
+                    ExitCode::Success
+                }
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
+        }
+    }
+}
+
+fn print_share_outcome(outcome: &ShareOutcome) {
+    println!("{}", outcome.url);
+    eprintln!("concept: {}", outcome.concept_name);
+    eprintln!("space:   {}", outcome.space_name);
+    eprintln!(
+        "remote:  {} -> {}",
+        outcome.remote_name, outcome.remote_endpoint,
+    );
+}
+
 fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
     println!(
         "Set upstream: {local} -> {remote}/{remote_branch}",
@@ -525,9 +613,10 @@ fn print_claim_outcome(parent: &std::path::Path, outcome: &ClaimOutcome) {
     println!("Joined .tonk in {}", parent.display());
     println!("subject: {}", outcome.subject);
     if let Some(name) = &outcome.auto_configured_remote
-        && let Some(url) = &outcome.remote_url {
-            println!("remote:  {name} -> {url}");
-        }
+        && let Some(url) = &outcome.remote_url
+    {
+        println!("remote:  {name} -> {url}");
+    }
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
@@ -557,6 +646,29 @@ async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {
         }
         Err(err) => print_error(err.to_string()),
     }
+}
+
+async fn print_concepts() -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+    let concepts = match schema::list_concepts(&site).await {
+        Ok(c) => c,
+        Err(err) => return print_error(err.to_string()),
+    };
+    let mut stdout = std::io::stdout().lock();
+    for concept in &concepts {
+        let description = concept.description.as_deref().unwrap_or("");
+        if let Err(e) = writeln!(stdout, "{}\t{}", concept.name, description) {
+            return print_error(format!("failed to write stdout: {e}"));
+        }
+    }
+    ExitCode::Success
 }
 
 async fn print_schema() -> ExitCode {
