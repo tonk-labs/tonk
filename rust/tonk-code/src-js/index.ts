@@ -194,6 +194,7 @@ const OBSERVED = [
   "active-line",
   "source",
   "idle-duration",
+  "auto-focus",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
@@ -731,42 +732,11 @@ class TonkCodeElement extends HTMLElement {
     //
     // Standard HTML autofocus only honors the *first* element
     // with the attribute on a page — later autofocus targets
-    // are ignored. Mirror that here so two simultaneous mounts
-    // (e.g. one editor per branch row) don't fight: the second
-    // would steal focus from the first and then fail to land
-    // because its host isn't laid out yet, leaving nothing
-    // focused.
-    // `auto-focus` (deliberately *not* the standard `autofocus`
-    // attribute) focuses the editor on mount. The standard name
-    // can't be reused because the browser parses it on the host
-    // element, calling `host.focus()` directly. With
-    // `delegatesFocus: true`, that delegation targets the *first
-    // focusable* descendant — which inside CodeMirror's DOM is
-    // the `cm-scroller` (it has `tabindex`), not the `cm-content`
-    // contenteditable. So focus would land on the wrong child
-    // and the user wouldn't have a caret.
-    //
-    // Standard HTML autofocus only honors the *first* element
-    // with the attribute on a page — later autofocus targets
-    // are ignored. Mirror that here so two simultaneous mounts
-    // don't fight: the second would steal focus from the first
-    // and leave nothing useful focused.
-    // `auto-focus` waits for any ancestor `<wa-details>` to
-    // finish opening before claiming focus. Without this wait,
-    // the details element's own open animation completes after
-    // the editor focuses and then resets focus to the body —
-    // we'd appear to focus and then immediately lose it. The
-    // `wa-after-show` event bubbles, so a one-shot listener on
-    // the host catches the parent's animation completion. When
-    // the editor isn't inside a details, or the details is
-    // already open at mount, no event ever fires and the
-    // initial `setTimeout` deferral handles the focus.
-
     // Announce first so any ancestor `<tonk-diagnostics-provider>`
     // hands us its LSP client — `connect()` reconfigures the
     // editor's lsp compartment, which can clear focus on the
-    // contenteditable. Firing `ready` *after* lets `on:ready`
-    // focus handlers land focus that won't get clobbered by the
+    // contenteditable. Firing `ready` *after* lets focus
+    // handlers land focus that won't get clobbered by the
     // ensuing LSP attach.
     //
     // No provider in scope ⇒ no listener consumes the event ⇒
@@ -781,6 +751,21 @@ class TonkCodeElement extends HTMLElement {
         composed: true,
       })
     );
+
+    // `auto-focus` is a non-standard attribute (the standard
+    // `autofocus` would be parsed by the browser on the host,
+    // delegating focus through `delegatesFocus: true` to the
+    // first focusable shadow descendant — `cm-scroller` rather
+    // than the contenteditable, which is the wrong target).
+    //
+    // The setTimeout(0) defers focus to the next macrotask. Any
+    // sibling editor's mount + sync LSP attach finishes before
+    // our focus call lands, so the contenteditable focus
+    // doesn't get clobbered by a sibling's reconfigure.
+    if (!isReadOnly && this.hasAttribute("auto-focus")) {
+      const view = this.#view;
+      setTimeout(() => view.focus(), 0);
+    }
   }
 
   disconnectedCallback(): void {
@@ -875,6 +860,11 @@ class TonkCodeElement extends HTMLElement {
         // `idle` event tracks edit activity, not attribute
         // writes.
         this.#cancelIdle();
+        break;
+      case "auto-focus":
+        // Applied at mount only. Post-mount writes are no-op —
+        // adding it via JS later is uncommon enough that we'd
+        // rather not steal focus from wherever the user has it.
         break;
     }
   }

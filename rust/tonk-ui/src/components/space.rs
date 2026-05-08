@@ -801,27 +801,12 @@ where
                     source=editor_source.clone()
                     active-line
                     placeholder=placeholder
+                    auto-focus=auto_focus.then_some("")
                     readonly=move || (!is_active.get()).then_some("")
                     on:change=on_transact_change
                     on:run=on_editor_run
                     on:idle=on_editor_idle
                     on:diagnostics=on_diagnostics
-                    on:ready=move |ev: web_sys::CustomEvent| {
-                        // Focus the editor when this cell is the
-                        // active focus target. `<tonk-code>` has
-                        // a host-focus → view.focus() listener,
-                        // so calling `host.focus()` reliably lands
-                        // focus on the contenteditable rather than
-                        // delegating to the wrong shadow descendant.
-                        if !auto_focus {
-                            return;
-                        }
-                        if let Some(target) = ev.target()
-                            && let Ok(host) = target.dyn_into::<web_sys::HtmlElement>()
-                        {
-                            let _ = host.focus();
-                        }
-                    }
                 ></tonk-code>
                 <wa-button
                     class="evaluate-play"
