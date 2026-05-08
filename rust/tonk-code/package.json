@@ -14,6 +14,8 @@
   },
   "dependencies": {
     "@codemirror/commands": "^6.6.0",
+    "@codemirror/lang-html": "6.4.11",
+    "@codemirror/lang-markdown": "6.5.0",
     "@codemirror/lang-yaml": "^6.1.1",
     "@codemirror/language": "^6.10.2",
     "@codemirror/lint": "^6.0.0",

@@ -44,7 +44,12 @@
 // regex pass over visible ranges is correct without false
 // positives in any reasonable document.
 
-import { yaml } from "@codemirror/lang-yaml";
+import { yamlLanguage } from "@codemirror/lang-yaml";
+import { htmlLanguage } from "@codemirror/lang-html";
+import { markdownLanguage } from "@codemirror/lang-markdown";
+import { LanguageSupport, LRLanguage } from "@codemirror/language";
+import { parseMixed } from "@lezer/common";
+import type { Parser, SyntaxNodeRef, Input } from "@lezer/common";
 import {
   Decoration,
   type DecorationSet,
@@ -293,4 +298,104 @@ const dialectTheme = EditorView.theme({
   },
 });
 
-export default [yaml(), dialectDecorations, dialectTheme];
+/** Map of YAML tags to the lezer parser to apply to the tagged
+ *  scalar's content. Two flavors of tag are accepted:
+ *
+ *  - **Short forms** — `!html`, `!css`, `!js`, `!md`, etc.
+ *  - **MIME-type forms** — `!text/html`, `!text/css`,
+ *    `!application/javascript`, `!text/markdown`. These mirror
+ *    the `type: text/html` shape used elsewhere in the data
+ *    model so users don't have to remember a separate vocabulary.
+ *
+ *  The HTML parser handles embedded `<style>` and `<script>` itself
+ *  via its own `parseMixed`, so a single `!html` tag picks up
+ *  CSS/JS coloring inside the document automatically. CSS-only and
+ *  JS-only tags still route through the HTML parser today — it's
+ *  what we have bundled and the highlighting works correctly for
+ *  pure CSS/JS content embedded as the document body too. */
+const TAG_PARSERS: Record<string, Parser> = {
+  "!html": htmlLanguage.parser,
+  "!text/html": htmlLanguage.parser,
+  "!text/xml": htmlLanguage.parser,
+  "!css": htmlLanguage.parser,
+  "!text/css": htmlLanguage.parser,
+  "!js": htmlLanguage.parser,
+  "!javascript": htmlLanguage.parser,
+  "!application/javascript": htmlLanguage.parser,
+  "!text/javascript": htmlLanguage.parser,
+  "!md": markdownLanguage.parser as Parser,
+  "!markdown": markdownLanguage.parser as Parser,
+  "!text/markdown": markdownLanguage.parser as Parser,
+};
+
+/** Resolve the parser to apply to a YAML scalar's content range,
+ *  given the scalar node's location in the tree and the editor's
+ *  current input. Two dispatch sources, in priority order:
+ *
+ *  1. A sibling `Tag` node — `template: !html |\n  …` forces
+ *     HTML highlighting regardless of the content shape.
+ *  2. A heuristic on the content's first non-whitespace char —
+ *     `<` → HTML. (Markdown has no reliable single-char marker;
+ *     we don't auto-dispatch it.)
+ *
+ *  Returns the parser to use, or `null` to leave the scalar as
+ *  plain YAML text. */
+function resolveEmbeddedParser(
+  node: SyntaxNodeRef,
+  input: Input,
+): Parser | null {
+  // Walk up past BlockLiteral to find a Tagged ancestor that
+  // wraps it — that's where the `!html`-style tag lives.
+  let cursor = node.node.parent;
+  while (cursor && cursor.name !== "Tagged" && cursor.name !== "BlockMapping") {
+    cursor = cursor.parent;
+  }
+  if (cursor && cursor.name === "Tagged") {
+    const tagNode = cursor.firstChild;
+    if (tagNode && tagNode.name === "Tag") {
+      const tagText = input.read(tagNode.from, tagNode.to).trim();
+      const parser = TAG_PARSERS[tagText];
+      if (parser) return parser;
+    }
+  }
+
+  // Heuristic fallback: inspect the first non-whitespace char of
+  // the scalar's content. We only auto-dispatch HTML — its `<`
+  // sigil is unambiguous; markdown / css / js have no single-char
+  // marker that wouldn't false-positive on prose.
+  const content = input.read(node.from, node.to);
+  const firstNonWs = content.match(/\S/);
+  if (firstNonWs && firstNonWs[0] === "<") {
+    return htmlLanguage.parser;
+  }
+  return null;
+}
+
+/** lezer-yaml parser wrapped to dispatch embedded languages
+ *  inside `BlockLiteralContent` ranges. */
+const mixedYamlParser = yamlLanguage.parser.configure({
+  wrap: parseMixed((node, input) => {
+    if (node.name !== "BlockLiteralContent") return null;
+    const parser = resolveEmbeddedParser(node, input);
+    if (!parser) return null;
+    return { parser };
+  }),
+});
+
+/** dialog-yaml language: same data as `yamlLanguage` (style tags,
+ *  indentation, folding) but with the mixed-parser wrap layered
+ *  on. We reach across `LRLanguage`'s API by passing the wrapped
+ *  parser to `LRLanguage.define` — that re-applies the existing
+ *  parser configuration (style tags etc. survive because they're
+ *  attached to the underlying parser via `parser.configure`,
+ *  which `wrap` preserves). */
+const dialogYamlLanguage = LRLanguage.define({
+  name: "dialog-yaml",
+  parser: mixedYamlParser,
+});
+
+export default [
+  new LanguageSupport(dialogYamlLanguage),
+  dialectDecorations,
+  dialectTheme,
+];
