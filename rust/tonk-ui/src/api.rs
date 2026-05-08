@@ -85,6 +85,37 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
     }
 }
 
+/// Fetch [`RepositoryInfo`] for the profile-as-repository via
+/// `GET /api/profile/repository`. The profile lives outside the
+/// named-repo namespace, so its `RepositoryInfo` has its own
+/// endpoint instead of `/api/repository/{name}`.
+pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError> {
+    log!("Fetching profile repository...");
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/profile/repository", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    match response.status() {
+        StatusCode::OK => {
+            let info = response
+                .json::<RepositoryInfo>()
+                .await
+                .map_err(into_api_error)?;
+            Ok(Some(info))
+        }
+        StatusCode::NOT_FOUND => Ok(None),
+        status => {
+            let text = response.text().await.unwrap_or_default();
+            Err(TonkUiError::ApiError(format!(
+                "GET /api/profile/repository returned {}: {}",
+                status, text
+            )))
+        }
+    }
+}
+
 /// Ensures the default repository exists via
 /// `PUT /api/repository/{name}` with `If-None-Match: *`, and
 /// returns the hosting document's service-worker Client ID as
@@ -298,25 +329,42 @@ pub async fn evaluate(
     content_type: &str,
     transact: bool,
 ) -> Result<EvaluateResponse, TonkUiError> {
+    let path = format!("/api/repository/{repo}/branch/{branch}/evaluate");
+    evaluate_at(&path, body, content_type, transact).await
+}
+
+/// Profile-side counterpart to [`evaluate`] — POSTs to
+/// `/api/profile/branch/{branch}/evaluate`. Used by the profile
+/// view's editor so its requests don't get mis-routed through
+/// the named-repo namespace.
+pub async fn evaluate_profile(
+    branch: &str,
+    body: String,
+    content_type: &str,
+    transact: bool,
+) -> Result<EvaluateResponse, TonkUiError> {
+    let path = format!("/api/profile/branch/{branch}/evaluate");
+    evaluate_at(&path, body, content_type, transact).await
+}
+
+/// Shared body for [`evaluate`] / [`evaluate_profile`]. `path`
+/// is the URL path (no query string, no origin); `transact=false`
+/// appends `?transact=false`.
+async fn evaluate_at(
+    path: &str,
+    body: String,
+    content_type: &str,
+    transact: bool,
+) -> Result<EvaluateResponse, TonkUiError> {
     // The worker's default is `transact=true`; only attach the
     // query string when we want to override.
     let url = if transact {
-        format!(
-            "{}/api/repository/{}/branch/{}/evaluate",
-            origin(),
-            repo,
-            branch
-        )
+        format!("{}{}", origin(), path)
     } else {
-        format!(
-            "{}/api/repository/{}/branch/{}/evaluate?transact=false",
-            origin(),
-            repo,
-            branch
-        )
+        format!("{}{}?transact=false", origin(), path)
     };
     let response = reqwest::Client::new()
-        .post(url)
+        .post(&url)
         .header("content-type", content_type)
         .body(body)
         .send()
@@ -325,10 +373,7 @@ pub async fn evaluate(
 
     match response.status() {
         StatusCode::OK => response.json::<EvaluateResponse>().await.map_err(|e| {
-            TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/evaluate: failed to decode response body: {e}",
-                repo, branch
-            ))
+            TonkUiError::ApiError(format!("POST {path}: failed to decode response body: {e}",))
         }),
         StatusCode::BAD_REQUEST => {
             let text = response.text().await.unwrap_or_default();
@@ -352,16 +397,14 @@ pub async fn evaluate(
                     range,
                 }),
                 _ => Err(TonkUiError::ApiError(format!(
-                    "POST /api/repository/{}/branch/{}/evaluate returned 400: {}",
-                    repo, branch, text
+                    "POST {path} returned 400: {text}",
                 ))),
             }
         }
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/branch/{}/evaluate returned {}: {}",
-                repo, branch, status, text
+                "POST {path} returned {status}: {text}",
             )))
         }
     }

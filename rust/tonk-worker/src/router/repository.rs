@@ -628,6 +628,27 @@ pub async fn get_repository(
     Ok(Json(info))
 }
 
+/// Return [`RepositoryInfo`] for the profile-as-repository.
+///
+/// Handler for `GET /api/profile/repository`. The profile lives
+/// outside the named-repo namespace, so it has its own route.
+/// Mirrors the data the `info.profile` field of
+/// `GET /api/profile` carries — exposed separately so the UI can
+/// `.refetch()` just the profile-as-repository view after
+/// branch-level operations without re-fetching the full profile
+/// payload (with its replica list).
+#[wasm_compat]
+pub async fn get_profile_repository(
+    State(state): State<AppState>,
+) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
+    log!("GET /api/profile/repository");
+
+    let tonk = state.read().await;
+    let repository = Repository::from(&tonk.profile);
+    let info = build_repository_info(&tonk, &tonk.profile_name, &repository).await;
+    Ok(Json(info))
+}
+
 /// Construct [`RepositoryInfo`] for an open repository by
 /// reading the schema concepts off its `meta` branch.
 ///

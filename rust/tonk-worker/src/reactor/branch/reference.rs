@@ -57,7 +57,7 @@ impl<'a> BranchReference<'a> {
             .perform(env)
             .await
             .map_err(|e| ReactorError::BranchNotFound {
-                repo: self.repository.name.to_owned(),
+                repo: self.repository.name().to_owned(),
                 branch: name.to_owned(),
                 reason: e.to_string(),
             })?;

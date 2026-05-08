@@ -85,6 +85,19 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
         .route("/api/profile", get(profile::get_profile))
+        // Profile-as-repository routes. The profile is its own
+        // repository but lives outside the named-repo namespace
+        // (no `repo` segment), so it gets a parallel route
+        // surface here rather than nesting under
+        // `/api/repository/{repo}/...`.
+        .route(
+            "/api/profile/repository",
+            get(repository::get_profile_repository),
+        )
+        .route(
+            "/api/profile/branch/{branch}/evaluate",
+            post(evaluate::evaluate_profile),
+        )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))

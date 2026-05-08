@@ -54,6 +54,11 @@ pub use transaction::{Commit, TransactionBuilder};
 pub struct TonkReactor {
     profile: Profile,
     repos: Mutex<HashMap<String, Arc<RepositoryState>>>,
+    /// Cached `RepositoryState` for the profile-as-repository.
+    /// Lazily populated on first `profile_repository().acquire()`
+    /// call; lives outside `repos` because the profile is a
+    /// singleton with no name in the routing namespace.
+    profile_repo: Mutex<Option<Arc<RepositoryState>>>,
 }
 
 impl TonkReactor {
@@ -64,6 +69,7 @@ impl TonkReactor {
         Self {
             profile,
             repos: Mutex::new(HashMap::new()),
+            profile_repo: Mutex::new(None),
         }
     }
 
@@ -98,10 +104,18 @@ impl TonkReactor {
 
     /// Begin a chain scoped to the named repository.
     pub fn repository<'a>(&'a self, name: &'a str) -> RepositoryReference<'a> {
-        RepositoryReference {
+        RepositoryReference::Named {
             reactor: self,
             name,
         }
+    }
+
+    /// Begin a chain scoped to the profile-as-repository. The
+    /// profile lives outside the named-repo namespace; everything
+    /// downstream (branch/transaction/sync) reuses the same chain
+    /// surface as a named repository.
+    pub fn profile_repository(&self) -> RepositoryReference<'_> {
+        RepositoryReference::Profile { reactor: self }
     }
 
     /// Borrow the cache map. Public so the chain handles
@@ -110,6 +124,26 @@ impl TonkReactor {
     /// indirecting through helper methods.
     pub fn repos(&self) -> &Mutex<HashMap<String, Arc<RepositoryState>>> {
         &self.repos
+    }
+
+    /// Snapshot the cached profile-as-repository state, if any.
+    /// Used by `RepositoryReference::Profile::acquire` for the
+    /// fast-path branch.
+    pub fn profile_repo_state(&self) -> Option<Arc<RepositoryState>> {
+        self.profile_repo.lock().clone()
+    }
+
+    /// Install the profile-as-repository state into the cache.
+    /// Returns the resident value — if another caller raced and
+    /// installed first, theirs wins (state is fungible).
+    pub fn set_profile_repo_state(&self, state: Arc<RepositoryState>) -> Arc<RepositoryState> {
+        let mut slot = self.profile_repo.lock();
+        if let Some(existing) = slot.clone() {
+            existing
+        } else {
+            *slot = Some(Arc::clone(&state));
+            state
+        }
     }
 
     /// Borrow the profile so chain handles can open

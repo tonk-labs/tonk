@@ -49,6 +49,14 @@ pub struct EvaluatePath {
     pub branch: String,
 }
 
+/// Path parameters for the profile-side evaluate route. The
+/// profile is a singleton — no `repo` segment.
+#[derive(Debug, Deserialize)]
+pub struct ProfileEvaluatePath {
+    /// The branch name.
+    pub branch: String,
+}
+
 /// Query-string parameters for the evaluate route. Today the only
 /// option is `transact`, which lets the caller suppress the
 /// commit step so auto-fire evaluates (e.g. when the editor
@@ -167,28 +175,56 @@ pub async fn evaluate(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    log!("evaluate repo={}, branch={}", path.repo, path.branch);
+    let tonk_state = state.write().await;
+    let tonk_branch = tonk_state
+        .reactor
+        .repository(&path.repo)
+        .branch(&path.branch);
+    evaluate_on_branch(&tonk_state, tonk_branch, body, query).await
+}
+
+/// `POST /api/profile/branch/{branch}/evaluate`
+///
+/// Profile-side counterpart to [`evaluate`]. The profile is its
+/// own repository but lives outside the named-repo namespace, so
+/// the route surface is parallel to the repository routes rather
+/// than nested under one. Same body / query-string / response
+/// contract.
+#[wasm_compat]
+pub async fn evaluate_profile(
+    State(state): State<AppState>,
+    Path(path): Path<ProfileEvaluatePath>,
+    axum::extract::Query(query): axum::extract::Query<EvaluateQuery>,
+    _headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
+    log!("evaluate profile branch={}", path.branch);
+    let tonk_state = state.write().await;
+    let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
+    evaluate_on_branch(&tonk_state, tonk_branch, body, query).await
+}
+
+/// Shared body for [`evaluate`] and [`evaluate_profile`]. Takes a
+/// [`crate::reactor::BranchReference`] so the URL extraction is
+/// the only difference between the two routes.
+async fn evaluate_on_branch<'a>(
+    tonk_state: &'a crate::worker::TonkState,
+    tonk_branch: crate::reactor::BranchReference<'a>,
+    body: Bytes,
+    query: EvaluateQuery,
+) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
 
     let parsed = parse(text);
     let syntax = surface_parse_diagnostics(parsed)?;
 
-    log!(
-        "Evaluating {} expression(s) on repo={}, branch={}",
-        syntax.expressions.len(),
-        path.repo,
-        path.branch,
-    );
-
-    let tonk_state = state.write().await;
+    log!("Evaluating {} expression(s)", syntax.expressions.len());
 
     // Acquire the cached branch via the reactor so the same
     // handle is reused across requests and subscription polling
     // sees commits emitted below.
-    let tonk_branch = tonk_state
-        .reactor
-        .repository(&path.repo)
-        .branch(&path.branch);
     let branch = tonk_branch
         .acquire(&tonk_state.operator)
         .await

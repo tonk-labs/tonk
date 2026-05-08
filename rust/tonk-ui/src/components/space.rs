@@ -203,7 +203,7 @@ where
                 <BranchRow
                     name=name
                     config=config
-                    space_name=space_name
+                    owner=BranchOwner::Repository(space_name)
                     repository=repository
                     force_open=force_open_solo
                 />
@@ -282,11 +282,42 @@ where
 /// Per-branch local state — each row owns its own `SyncState`
 /// and claim-query signals so concurrent operations on different
 /// branches stay isolated.
+/// Which side of the routing namespace a [`BranchRow`] belongs
+/// to. Drives whether API calls go through the named-repo
+/// routes (`/api/repository/{repo}/...`) or the
+/// profile-as-repository routes (`/api/profile/...`).
+#[derive(Clone, Debug)]
+pub(super) enum BranchOwner {
+    /// A user-created space, identified by its name. Subscribes
+    /// to `space_name.get()` so the row reacts to URL changes.
+    Repository(Signal<Option<String>, LocalStorage>),
+    /// The profile-as-repository — singleton, no name needed.
+    Profile,
+}
+
+impl BranchOwner {
+    /// Editor `source` URI for this owner's branch. Includes the
+    /// owner's identity so the LSP server (when it becomes
+    /// branch-aware) can route correctly.
+    fn editor_source(&self, branch: &str) -> String {
+        match self {
+            Self::Repository(name) => format!(
+                "tonk-buffer:///{}/{}/scratch",
+                name.get_untracked().unwrap_or_default(),
+                branch,
+            ),
+            Self::Profile => format!("tonk-buffer:///<profile>/{branch}/scratch"),
+        }
+    }
+}
+
 #[component]
 pub(super) fn BranchRow(
     name: String,
     config: BranchConfiguration,
-    space_name: Signal<Option<String>, LocalStorage>,
+    /// Identifies which routing namespace this branch belongs
+    /// to — see [`BranchOwner`].
+    owner: BranchOwner,
     repository: LocalResource<Result<Option<RepositoryInfo>, crate::error::TonkUiError>>,
     /// Caller may force the row to render expanded — used by the
     /// space view when there's only one branch, so a solo `meta`
@@ -316,7 +347,16 @@ pub(super) fn BranchRow(
 
     let trigger_sync = {
         let branch_name = branch_name.clone();
+        let owner = owner.clone();
         move |op: SyncOp| {
+            // Sync routes are repository-scoped today — profile
+            // branches have no upstream, so the affordance never
+            // surfaces for them. Treat this as a no-op rather
+            // than wiring profile-side sync routes that don't
+            // exist yet.
+            let BranchOwner::Repository(space_name) = &owner else {
+                return;
+            };
             let Some(repo) = space_name.get() else {
                 return;
             };
@@ -395,11 +435,7 @@ pub(super) fn BranchRow(
     // keystroke. The provider opens this URI on first connect
     // and uses it to route published diagnostics back to the
     // editor.
-    let editor_source = format!(
-        "tonk-buffer:///{}/{}/scratch",
-        space_name.get_untracked().unwrap_or_default(),
-        branch_name,
-    );
+    let editor_source = owner.editor_source(&branch_name);
 
     let on_transact_change = move |ev: leptos::ev::Event| {
         transact_buffer.set(read_tonk_code_value(&ev));
@@ -453,14 +489,18 @@ pub(super) fn BranchRow(
     let evaluate_now = {
         let branch_template = branch_name.clone();
         let editor_source_for_eval = editor_source.clone();
+        let owner = owner.clone();
         move |branch_name: String| {
             let body = transact_buffer.get_untracked();
             if body.trim().is_empty() {
                 return;
             }
-            let Some(repo) = space_name.get_untracked() else {
-                transact_state.set(TransactState::Failed("no repository in scope".to_owned()));
-                return;
+            let target = match resolve_evaluate_target(&owner, &branch_name) {
+                Some(t) => t,
+                None => {
+                    transact_state.set(TransactState::Failed("no repository in scope".to_owned()));
+                    return;
+                }
             };
             if matches!(transact_state.get_untracked(), TransactState::Running) {
                 return;
@@ -482,7 +522,7 @@ pub(super) fn BranchRow(
                 }
                 // Explicit submit (play button / Shift+Enter) is
                 // a real commit — the user asked for it.
-                match api::evaluate(&repo, &branch_name, body, "application/yaml", true).await {
+                match target.evaluate(body, "application/yaml", true).await {
                     Ok(response) => {
                         // Drop any prior squiggles from a
                         // previous failed submit — the doc is
@@ -551,6 +591,7 @@ pub(super) fn BranchRow(
     let on_editor_idle = {
         let branch_name = branch_name.clone();
         let editor_source_for_idle = editor_source.clone();
+        let owner = owner.clone();
         move |ev: web_sys::CustomEvent| {
             let detail = ev.detail();
             let error_count =
@@ -569,8 +610,9 @@ pub(super) fn BranchRow(
             if body.trim().is_empty() {
                 return;
             }
-            let Some(repo) = space_name.get_untracked() else {
-                return;
+            let target = match resolve_evaluate_target(&owner, &branch_name) {
+                Some(t) => t,
+                None => return,
             };
             // Don't fire while a real submit is in flight — the
             // play-button result is the source of truth and a
@@ -578,10 +620,9 @@ pub(super) fn BranchRow(
             if matches!(transact_state.get_untracked(), TransactState::Running) {
                 return;
             }
-            let branch = branch_name.clone();
             let editor_source = editor_source_for_idle.clone();
             spawn_local(async move {
-                match api::evaluate(&repo, &branch, body, "application/yaml", false).await {
+                match target.evaluate(body, "application/yaml", false).await {
                     Ok(response) => {
                         // Reuse the same panel; clear any prior
                         // squiggle from a previous failed submit
@@ -837,6 +878,61 @@ enum DocDispatch {
     Empty,
     /// Parser raised diagnostics.
     ParseError(String),
+}
+
+/// Resolved target for an evaluate call — captures the branch's
+/// owner identity at the moment a submit / auto-evaluate fires
+/// so the spawned task can dispatch to the right route without
+/// re-reading reactive signals from inside `spawn_local`.
+enum EvaluateTarget {
+    /// User-created repository — `/api/repository/{repo}/...`.
+    Repository {
+        /// Repository name (cloned from the parent space's signal).
+        repo: String,
+        /// Branch name within the repository.
+        branch: String,
+    },
+    /// Profile-as-repository — `/api/profile/...`.
+    Profile {
+        /// Branch name within the profile-as-repository.
+        branch: String,
+    },
+}
+
+impl EvaluateTarget {
+    /// POST the body to the appropriate evaluate route. Same
+    /// `transact` flag as [`api::evaluate`].
+    async fn evaluate(
+        self,
+        body: String,
+        content_type: &str,
+        transact: bool,
+    ) -> Result<EvaluateResponse, TonkUiError> {
+        match self {
+            Self::Repository { repo, branch } => {
+                api::evaluate(&repo, &branch, body, content_type, transact).await
+            }
+            Self::Profile { branch } => {
+                api::evaluate_profile(&branch, body, content_type, transact).await
+            }
+        }
+    }
+}
+
+/// Resolve a [`BranchOwner`] + branch name into an
+/// [`EvaluateTarget`]. Returns `None` only when the owner is a
+/// repository whose name signal is empty (`space_name` not yet
+/// resolved); the profile owner always resolves.
+fn resolve_evaluate_target(owner: &BranchOwner, branch: &str) -> Option<EvaluateTarget> {
+    match owner {
+        BranchOwner::Repository(name) => Some(EvaluateTarget::Repository {
+            repo: name.get_untracked()?,
+            branch: branch.to_owned(),
+        }),
+        BranchOwner::Profile => Some(EvaluateTarget::Profile {
+            branch: branch.to_owned(),
+        }),
+    }
 }
 
 fn classify_for_dispatch(body: &str) -> DocDispatch {
