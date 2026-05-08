@@ -47,6 +47,9 @@ dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-storage = { workspace = true }
+dialog-ucan = { workspace = true }
+dialog-ucan-core = { workspace = true }
+dialog-varsig = { workspace = true }
 dirs = { workspace = true }
 lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -54,12 +57,15 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util"] }
+tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
+futures-util = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }

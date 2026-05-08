@@ -222,7 +222,12 @@ task! ax:
             )
             .await?;
         let split: Vec<&str> = outcome.stdout.splitn(2, "---\n").collect();
-        assert_eq!(split.len(), 2, "expected matches section in: {}", outcome.stdout);
+        assert_eq!(
+            split.len(),
+            2,
+            "expected matches section in: {}",
+            outcome.stdout
+        );
         let matches_section = split[1];
 
         let resubmitted = test.eval_inline(matches_section).await?;

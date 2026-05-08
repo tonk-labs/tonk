@@ -13,8 +13,10 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 use slide::eval::{self, EvalError, Source};
+use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
+use slide::sync::{self, SyncOutcome};
 use slide::{ExitCode, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
@@ -75,6 +77,32 @@ enum Command {
         #[arg(long = "move")]
         do_move: bool,
     },
+
+    /// Push the local main branch to its upstream.
+    Push,
+
+    /// Pull the local main branch from its upstream.
+    Pull,
+
+    /// Mint a UCAN delegation chain over the local repo and
+    /// print a paste-able invite URL. The default form is
+    /// audience-open: anyone holding the URL can claim by
+    /// redelegating from the embedded ephemeral key.
+    Invite {
+        /// Override the URL prefix the invite is built against.
+        /// Default: `tonk_invite::DEFAULT_BASE_URL`.
+        #[arg(long, value_name = "URL")]
+        base_url: Option<String>,
+    },
+
+    /// Claim an invite URL into a fresh `.tonk/` under the
+    /// current directory. Refuses if a site already exists.
+    Join {
+        /// Invite URL produced by `slide invite` or
+        /// tonk-ui's invite flow.
+        #[arg(value_name = "URL")]
+        url: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -124,6 +152,10 @@ async fn main() {
         Command::Guide => print_guide(),
         Command::Schema => print_schema().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
+        Command::Push => sync_op(SyncOp::Push).await,
+        Command::Pull => sync_op(SyncOp::Pull).await,
+        Command::Invite { base_url } => mint_invite(base_url).await,
+        Command::Join { url } => claim_invite(url).await,
     };
     std::process::exit(exit.into_raw());
 }
@@ -231,6 +263,125 @@ fn print_guide() -> ExitCode {
         return print_error(format!("failed to write stdout: {e}"));
     }
     ExitCode::Success
+}
+
+/// Selector for the [`sync_op`] handler. Both `slide push` and
+/// `slide pull` follow the same site-discovery + dispatch path;
+/// the only thing that differs is which dialog primitive they
+/// call and the verb they print on success.
+#[derive(Debug, Clone, Copy)]
+enum SyncOp {
+    Push,
+    Pull,
+}
+
+async fn sync_op(op: SyncOp) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    let result = match op {
+        SyncOp::Push => sync::push(&site).await,
+        SyncOp::Pull => sync::pull(&site).await,
+    };
+
+    match result {
+        Ok(outcome) => {
+            print_sync_outcome(op, &outcome);
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
+    let verb = match op {
+        SyncOp::Push if outcome.advanced => "Pushed",
+        SyncOp::Push => "Nothing to push",
+        SyncOp::Pull if outcome.advanced => "Pulled",
+        SyncOp::Pull => "Already up to date",
+    };
+    if outcome.advanced {
+        println!(
+            "{verb}\nbefore: {before}\nafter:  {after}",
+            before = render_revision(outcome.before.as_ref()),
+            after = render_revision(outcome.after.as_ref()),
+        );
+    } else {
+        println!("{verb}");
+    }
+}
+
+fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
+    match revision {
+        Some(rev) => rev.tree.to_string(),
+        None => "~".to_string(),
+    }
+}
+
+async fn mint_invite(base_url: Option<String>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+    match invite::mint(&site, base_url.as_deref()).await {
+        Ok(outcome) => {
+            print_invite_outcome(&outcome);
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+fn print_invite_outcome(outcome: &InviteOutcome) {
+    println!("{url}", url = outcome.url);
+    eprintln!("subject:  {}", outcome.subject);
+    eprintln!("audience: {} (ephemeral)", outcome.audience);
+}
+
+async fn claim_invite(url: String) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    // Use the same default site config slide init writes against,
+    // so the joined site picks up the user's normal profile.
+    match invite::claim(&cwd, &url, site::default_config()).await {
+        Ok(outcome) => {
+            print_claim_outcome(&cwd, &outcome);
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+fn print_claim_outcome(parent: &std::path::Path, outcome: &ClaimOutcome) {
+    println!("Joined .tonk in {}", parent.display());
+    println!("subject: {}", outcome.subject);
+    if let Some(remote) = &outcome.remote_url {
+        eprintln!(
+            "note: invite carried remote URL '{remote}'; \
+             slide doesn't wire it up yet — will be in `slide remote add`"
+        );
+    }
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {

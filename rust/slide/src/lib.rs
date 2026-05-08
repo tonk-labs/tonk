@@ -21,10 +21,12 @@
 pub mod eval;
 pub mod guide;
 pub mod identity;
+pub mod invite;
 pub mod migrate;
 pub mod output;
 pub mod schema;
 pub mod site;
+pub mod sync;
 
 /// CLI exit codes.
 ///

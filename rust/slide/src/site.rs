@@ -131,15 +131,23 @@ impl SlideSite {
 
         let (profile, operator) = build_profile_and_operator(&root, &config).await?;
 
-        // `repository(...).open()` creates if missing, loads
-        // otherwise — exactly the semantics we want for a
-        // defensive `slide init`.
-        let repository = profile
+        // Try to load first. If absent, create + persist a
+        // repo→profile delegation chain so the profile can later
+        // mint further delegations (invites, etc.) over this
+        // repo. Without that root chain `profile.access().claim`
+        // fails with "no delegation chain found" the moment we
+        // try to mint an invite.
+        let repository = match profile
             .repository(REPO_NAME)
-            .open()
+            .load()
             .perform(&operator)
             .await
-            .with_context(|| format!("failed to open repository '{REPO_NAME}'"))?;
+        {
+            Ok(repository) => repository,
+            Err(_) => bootstrap_repository(&profile, &operator)
+                .await
+                .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
+        };
 
         let branch = repository
             .branch(BRANCH_NAME)
@@ -156,6 +164,51 @@ impl SlideSite {
             branch,
         })
     }
+}
+
+/// Create the repository, mint a self → profile delegation, and
+/// persist it so the profile holds the root of a chain it can
+/// extend. This mirrors the worker's `create_repository`
+/// startup; without it, slide can write to the repo through the
+/// operator's blanket `Subject::any()` delegation but can't
+/// delegate to anyone *else* (which is what `slide invite`
+/// needs).
+///
+/// Returns the verifier-only `Repository<Credential>` form
+/// because the rest of slide treats every repo handle uniformly,
+/// regardless of how it was bootstrapped.
+async fn bootstrap_repository(
+    profile: &Profile,
+    operator: &Operator<NativeSpace>,
+) -> Result<Repository> {
+    let signer_repo = profile
+        .repository(REPO_NAME)
+        .create()
+        .perform(operator)
+        .await
+        .context("failed to create repository")?;
+
+    let delegation = signer_repo
+        .access()
+        .claim(&signer_repo)
+        .delegate(profile.did())
+        .perform(operator)
+        .await
+        .context("failed to mint repo→profile delegation")?;
+
+    profile
+        .access()
+        .save(delegation)
+        .perform(operator)
+        .await
+        .context("failed to persist repo→profile delegation")?;
+
+    profile
+        .repository(REPO_NAME)
+        .load()
+        .perform(operator)
+        .await
+        .context("failed to reload repository after bootstrap")
 }
 
 /// Knobs for [`SlideSite::open_with`] / [`SlideSite::init_with`].
@@ -184,7 +237,12 @@ impl SiteConfig {
     }
 }
 
-fn default_config() -> SiteConfig {
+/// The site config slide uses out of the box — profile named
+/// [`PROFILE_NAME`] in the platform profile directory. Exposed
+/// so the binary and other crate modules can pass it to
+/// `*_with` constructors without reaching into `dialog-effects`
+/// for [`Directory::Profile`].
+pub fn default_config() -> SiteConfig {
     SiteConfig {
         profile_name: PROFILE_NAME.to_string(),
         profile_directory: Directory::Profile,
@@ -214,7 +272,13 @@ fn find_site_root(start: &Path) -> Option<PathBuf> {
 /// operator rooted at `.tonk/` for repository data. Identity
 /// lives at `config.profile_directory`; only the dialog-repo
 /// blocks live under `.tonk/`.
-async fn build_profile_and_operator(
+///
+/// Exposed as `pub(crate)` so the [`crate::invite`] module can
+/// reuse the same wiring when claiming an invite into a fresh
+/// `.tonk/` (the join path provisions the space from a verifier
+/// credential rather than via `profile.repository(...).open()`,
+/// but the profile + operator setup is the same).
+pub(crate) async fn build_profile_and_operator(
     root: &Path,
     config: &SiteConfig,
 ) -> Result<(Profile, Operator<NativeSpace>)> {
