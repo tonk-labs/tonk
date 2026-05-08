@@ -539,12 +539,25 @@ pub(super) fn BranchRow(
                                 let is_active = Signal::derive(move || {
                                     cells.with(|list| list.last().copied() == Some(id))
                                 });
+                                // Take focus on mount when:
+                                //  - this is a freshly spawned
+                                //    cell (id > 0 means the user
+                                //    just submitted, focus the
+                                //    new editable cell), or
+                                //  - this is the very first cell
+                                //    (id == 0) and we're inside
+                                //    the row that opens by
+                                //    default — so on initial
+                                //    page load only one row
+                                //    grabs focus.
+                                let auto_focus = id > 0 || is_default;
                                 view! {
                                     <BranchCell
                                         id=id
                                         owner=owner
                                         branch_name=branch_name
                                         is_active=is_active
+                                        auto_focus=auto_focus
                                         on_sealed=on_cell_sealed
                                     />
                                 }
@@ -571,6 +584,11 @@ fn BranchCell<F>(
     owner: BranchOwner,
     branch_name: String,
     is_active: Signal<bool>,
+    /// When true, the cell focuses its editor on mount. Used
+    /// for the very first cell in the default branch (so the
+    /// page lands ready to type) and for cells freshly spawned
+    /// after a submit.
+    auto_focus: bool,
     on_sealed: F,
 ) -> impl IntoView
 where
@@ -761,7 +779,15 @@ where
         }
     };
 
-    let placeholder = "person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\"";
+    // First cell on page load shows the placeholder hint;
+    // spawned cells (after a submit) start blank — by then the
+    // user knows what they're doing and the prompt would just
+    // be visual noise.
+    let placeholder = if id == 0 {
+        "person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
+    } else {
+        ""
+    };
 
     view! {
         <form
@@ -775,11 +801,27 @@ where
                     source=editor_source.clone()
                     active-line
                     placeholder=placeholder
-                    attr:readonly=Signal::derive(move || (!is_active.get()).then_some(""))
+                    readonly=move || (!is_active.get()).then_some("")
                     on:change=on_transact_change
                     on:run=on_editor_run
                     on:idle=on_editor_idle
                     on:diagnostics=on_diagnostics
+                    on:ready=move |ev: web_sys::CustomEvent| {
+                        // Focus the editor when this cell is the
+                        // active focus target. `<tonk-code>` has
+                        // a host-focus → view.focus() listener,
+                        // so calling `host.focus()` reliably lands
+                        // focus on the contenteditable rather than
+                        // delegating to the wrong shadow descendant.
+                        if !auto_focus {
+                            return;
+                        }
+                        if let Some(target) = ev.target()
+                            && let Ok(host) = target.dyn_into::<web_sys::HtmlElement>()
+                        {
+                            let _ = host.focus();
+                        }
+                    }
                 ></tonk-code>
                 <wa-button
                     class="evaluate-play"

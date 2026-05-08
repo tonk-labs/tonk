@@ -439,6 +439,17 @@ function activeLineExtensions(): Extension[] {
   return [highlightActiveLine(), highlightActiveLineGutter()];
 }
 
+/** Build the read-only stack. `EditorState.readOnly` alone leaves
+ *  the caret visible and the user can still navigate with arrow
+ *  keys; pairing it with `EditorView.editable.of(false)` strips
+ *  the contenteditable affordance entirely so sealed cells render
+ *  as plain text (no caret, no insertion point on click). Text
+ *  selection still works for copy. */
+function readOnlyExtensions(readOnly: boolean): Extension[] {
+  if (!readOnly) return [];
+  return [EditorState.readOnly.of(true), EditorView.editable.of(false)];
+}
+
 class TonkCodeElement extends HTMLElement {
   static get observedAttributes(): readonly string[] {
     return OBSERVED;
@@ -545,6 +556,7 @@ class TonkCodeElement extends HTMLElement {
     return this.#view;
   }
 
+
   /** Recount diagnostics from the current state and dispatch a
    *  `diagnostics` event if the totals changed. Cheap to call —
    *  `forEachDiagnostic` walks a small in-memory range tree. */
@@ -644,7 +656,7 @@ class TonkCodeElement extends HTMLElement {
         submitKeymap,
         ...baseExtensions(),
         this.#language.of([]),
-        this.#readOnly.of(EditorState.readOnly.of(isReadOnly)),
+        this.#readOnly.of(readOnlyExtensions(isReadOnly)),
         this.#placeholder.of(
           placeholderText ? placeholderExt(placeholderText) : []
         ),
@@ -689,12 +701,78 @@ class TonkCodeElement extends HTMLElement {
       parent: this.#shadow,
     });
 
+    // Bridge host focus → contenteditable focus. With
+    // `delegatesFocus: true`, focusing the host normally
+    // delegates to the *first focusable* shadow descendant —
+    // which inside CodeMirror's DOM is `cm-scroller` (it has
+    // tabindex), not the `cm-content` contenteditable. Listen
+    // for `focus` on the host and explicitly call
+    // `view.focus()`, so however the host gains focus (Tab key,
+    // programmatic `host.focus()`, a click anywhere in the
+    // editor frame), focus reliably lands on the contenteditable.
+    //
+    // Bonus: also recovers from any sync-mount blur (e.g. an LSP
+    // plugin reconfigure later in the same `connectedCallback`
+    // run) — the next time anything re-focuses the host, we end
+    // up in the right place.
+    const view = this.#view;
+    this.addEventListener("focus", () => view.focus());
+
     // Apply language pack after construction so the failure path
     // (chunk missing, network blip) doesn't block element insertion.
     const language = this.getAttribute("language");
     if (language) {
       void this.#applyLanguage(language);
     }
+
+    // `autofocus` mirrors the standard HTML attribute — focus
+    // the editor on mount when present. Skipped for read-only
+    // editors — they don't need a caret.
+    //
+    // Standard HTML autofocus only honors the *first* element
+    // with the attribute on a page — later autofocus targets
+    // are ignored. Mirror that here so two simultaneous mounts
+    // (e.g. one editor per branch row) don't fight: the second
+    // would steal focus from the first and then fail to land
+    // because its host isn't laid out yet, leaving nothing
+    // focused.
+    // `auto-focus` (deliberately *not* the standard `autofocus`
+    // attribute) focuses the editor on mount. The standard name
+    // can't be reused because the browser parses it on the host
+    // element, calling `host.focus()` directly. With
+    // `delegatesFocus: true`, that delegation targets the *first
+    // focusable* descendant — which inside CodeMirror's DOM is
+    // the `cm-scroller` (it has `tabindex`), not the `cm-content`
+    // contenteditable. So focus would land on the wrong child
+    // and the user wouldn't have a caret.
+    //
+    // Standard HTML autofocus only honors the *first* element
+    // with the attribute on a page — later autofocus targets
+    // are ignored. Mirror that here so two simultaneous mounts
+    // don't fight: the second would steal focus from the first
+    // and leave nothing useful focused.
+    // `auto-focus` waits for any ancestor `<wa-details>` to
+    // finish opening before claiming focus. Without this wait,
+    // the details element's own open animation completes after
+    // the editor focuses and then resets focus to the body —
+    // we'd appear to focus and then immediately lose it. The
+    // `wa-after-show` event bubbles, so a one-shot listener on
+    // the host catches the parent's animation completion. When
+    // the editor isn't inside a details, or the details is
+    // already open at mount, no event ever fires and the
+    // initial `setTimeout` deferral handles the focus.
+
+    // Announce first so any ancestor `<tonk-diagnostics-provider>`
+    // hands us its LSP client — `connect()` reconfigures the
+    // editor's lsp compartment, which can clear focus on the
+    // contenteditable. Firing `ready` *after* lets `on:ready`
+    // focus handlers land focus that won't get clobbered by the
+    // ensuing LSP attach.
+    //
+    // No provider in scope ⇒ no listener consumes the event ⇒
+    // editor stays in plain text-edit mode. There is no
+    // standalone-LSP fallback by design.
+    this.#announceConnect();
 
     this.dispatchEvent(
       new CustomEvent<ReadyDetail>("ready", {
@@ -703,16 +781,6 @@ class TonkCodeElement extends HTMLElement {
         composed: true,
       })
     );
-
-    // Announce ourselves to any ancestor `<tonk-diagnostics-provider>`
-    // — the provider catches this bubbling event and calls
-    // `connect()` with its LSP client, wiring up diagnostics,
-    // hover, completion etc. for this editor's `source`.
-    //
-    // No provider in scope ⇒ no listener consumes the event ⇒
-    // editor stays in plain text-edit mode. There is no
-    // standalone-LSP fallback by design.
-    this.#announceConnect();
   }
 
   disconnectedCallback(): void {
@@ -764,9 +832,7 @@ class TonkCodeElement extends HTMLElement {
         break;
       case "readonly":
         this.#view.dispatch({
-          effects: this.#readOnly.reconfigure(
-            EditorState.readOnly.of(next !== null)
-          ),
+          effects: this.#readOnly.reconfigure(readOnlyExtensions(next !== null)),
         });
         break;
       case "placeholder":
