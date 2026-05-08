@@ -16,6 +16,7 @@ use slide::eval::{self, EvalError, Source};
 use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
+use slide::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
 use slide::sync::{self, SyncOutcome};
 use slide::{ExitCode, guide, identity, schema, site};
 
@@ -93,6 +94,13 @@ enum Command {
         /// Default: `tonk_invite::DEFAULT_BASE_URL`.
         #[arg(long, value_name = "URL")]
         base_url: Option<String>,
+
+        /// Embed a registered remote's URL in the invite so
+        /// the claimer auto-configures the same access service
+        /// after redeeming. Argument is the remote's local
+        /// name (as registered with `slide remote add`).
+        #[arg(long, value_name = "NAME")]
+        remote: Option<String>,
     },
 
     /// Claim an invite URL into a fresh `.tonk/` under the
@@ -102,6 +110,43 @@ enum Command {
         /// tonk-ui's invite flow.
         #[arg(value_name = "URL")]
         url: String,
+    },
+
+    /// Manage remotes attached to the local repository.
+    Remote {
+        #[command(subcommand)]
+        command: RemoteCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RemoteCommand {
+    /// Register a UCAN-S3 access-service remote on the local
+    /// site. Writes the dialog remote handle and the
+    /// meta-branch `Remote` concept browsers read.
+    Add {
+        /// Local name for the remote.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// UCAN access-service endpoint URL.
+        #[arg(value_name = "URL")]
+        url: String,
+        /// Override the remote's subject DID. Defaults to the
+        /// local repository's DID — matches the worker's
+        /// convention.
+        #[arg(long, value_name = "DID")]
+        subject: Option<String>,
+    },
+
+    /// Print every remote registered on the meta branch.
+    List,
+
+    /// Wire the local `main` branch's upstream to
+    /// `<remote>/main`.
+    SetUpstream {
+        /// Name of the remote to track.
+        #[arg(value_name = "REMOTE")]
+        remote: String,
     },
 }
 
@@ -154,8 +199,9 @@ async fn main() {
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Push => sync_op(SyncOp::Push).await,
         Command::Pull => sync_op(SyncOp::Pull).await,
-        Command::Invite { base_url } => mint_invite(base_url).await,
+        Command::Invite { base_url, remote } => mint_invite(base_url, remote).await,
         Command::Join { url } => claim_invite(url).await,
+        Command::Remote { command } => remote_op(command).await,
     };
     std::process::exit(exit.into_raw());
 }
@@ -327,7 +373,7 @@ fn render_revision(revision: Option<&dialog_repository::Revision>) -> String {
     }
 }
 
-async fn mint_invite(base_url: Option<String>) -> ExitCode {
+async fn remote_op(command: RemoteCommand) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => return print_error(format!("could not determine current directory: {e}")),
@@ -336,7 +382,109 @@ async fn mint_invite(base_url: Option<String>) -> ExitCode {
         Ok(s) => s,
         Err(err) => return print_error(err.to_string()),
     };
-    match invite::mint(&site, base_url.as_deref()).await {
+
+    match command {
+        RemoteCommand::Add { name, url, subject } => {
+            let subject = match subject.as_deref() {
+                Some(raw) => match raw.parse() {
+                    Ok(did) => Some(did),
+                    Err(e) => return print_error(format!("invalid --subject DID '{raw}': {e:?}")),
+                },
+                None => None,
+            };
+            match remote::add(&site, &name, &url, subject).await {
+                Ok(outcome) => {
+                    print_remote_add_outcome(&outcome);
+                    ExitCode::Success
+                }
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
+        }
+        RemoteCommand::List => match remote::list(&site).await {
+            Ok(records) => {
+                print_remote_list(&records);
+                ExitCode::Success
+            }
+            Err(err) => {
+                eprintln!("error: {err}");
+                err.exit_code()
+            }
+        },
+        RemoteCommand::SetUpstream { remote: name } => {
+            match remote::set_upstream(&site, &name).await {
+                Ok(outcome) => {
+                    print_set_upstream_outcome(&outcome);
+                    ExitCode::Success
+                }
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
+        }
+    }
+}
+
+fn print_remote_add_outcome(outcome: &AddOutcome) {
+    println!("Added remote '{name}'", name = outcome.name);
+    println!("  endpoint: {}", outcome.endpoint);
+    println!("  subject:  {}", outcome.subject);
+}
+
+fn print_remote_list(records: &[RemoteRecord]) {
+    if records.is_empty() {
+        println!("(no remotes registered)");
+        return;
+    }
+    for record in records {
+        println!(
+            "{name}\t{endpoint}\t{subject}",
+            name = record.name,
+            endpoint = record.endpoint,
+            subject = record.subject,
+        );
+    }
+}
+
+fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
+    println!(
+        "Set upstream: {local} -> {remote}/{remote_branch}",
+        local = outcome.local_branch,
+        remote = outcome.remote,
+        remote_branch = outcome.remote_branch,
+    );
+}
+
+async fn mint_invite(base_url: Option<String>, remote_name: Option<String>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    // Resolve `--remote <name>` to its endpoint URL by reading
+    // the meta branch. An unknown name surfaces as a friendly
+    // error before any keys are generated.
+    let remote_url = match remote_name.as_deref() {
+        Some(name) => match remote::find(&site, name).await {
+            Ok(Some(record)) => Some(record.endpoint),
+            Ok(None) => {
+                return print_error(format!(
+                    "no remote registered as '{name}'; run `slide remote list` to see what's there"
+                ));
+            }
+            Err(err) => return print_error(err.to_string()),
+        },
+        None => None,
+    };
+
+    match invite::mint(&site, base_url.as_deref(), remote_url.as_deref()).await {
         Ok(outcome) => {
             print_invite_outcome(&outcome);
             ExitCode::Success
@@ -376,12 +524,10 @@ async fn claim_invite(url: String) -> ExitCode {
 fn print_claim_outcome(parent: &std::path::Path, outcome: &ClaimOutcome) {
     println!("Joined .tonk in {}", parent.display());
     println!("subject: {}", outcome.subject);
-    if let Some(remote) = &outcome.remote_url {
-        eprintln!(
-            "note: invite carried remote URL '{remote}'; \
-             slide doesn't wire it up yet — will be in `slide remote add`"
-        );
-    }
+    if let Some(name) = &outcome.auto_configured_remote
+        && let Some(url) = &outcome.remote_url {
+            println!("remote:  {name} -> {url}");
+        }
 }
 
 async fn migrate(from: Option<PathBuf>, do_move: bool) -> ExitCode {

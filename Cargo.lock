@@ -4292,6 +4292,8 @@ dependencies = [
  "dialog-effects",
  "dialog-operator",
  "dialog-query",
+ "dialog-remote-s3",
+ "dialog-remote-ucan-s3",
  "dialog-repository",
  "dialog-storage",
  "dialog-ucan",

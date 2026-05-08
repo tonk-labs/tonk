@@ -37,6 +37,152 @@ mod when_initializing_a_site {
     }
 }
 
+mod when_managing_remotes {
+    use anyhow::Result;
+    use slide::remote::{self, RemoteError};
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_registers_a_remote_and_lists_it_back() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let outcome = remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        assert_eq!(outcome.name, "origin");
+        assert_eq!(outcome.endpoint, ENDPOINT);
+        // Default subject == local repo's DID.
+        assert_eq!(outcome.subject, test.site.repository.did());
+
+        let listed = remote::list(&test.site).await?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "origin");
+        assert_eq!(listed[0].endpoint, ENDPOINT);
+        assert_eq!(listed[0].subject, test.site.repository.did());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_finds_a_remote_by_name() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        let found = remote::find(&test.site, "origin").await?;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().endpoint, ENDPOINT);
+
+        let missing = remote::find(&test.site, "nope").await?;
+        assert!(missing.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_sets_main_upstream_to_the_remote_branch() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+
+        let outcome = remote::set_upstream(&test.site, "origin").await?;
+        assert_eq!(outcome.local_branch, "main");
+        assert_eq!(outcome.remote, "origin");
+        assert_eq!(outcome.remote_branch, "main");
+
+        // Dialog now reports an upstream on the local main.
+        assert!(test.site.branch.upstream().is_some());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_setting_upstream_for_an_unknown_remote() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let result = remote::set_upstream(&test.site, "missing").await;
+        match result {
+            Err(RemoteError::UnknownRemote(name)) => {
+                assert_eq!(name, "missing");
+            }
+            other => panic!("expected UnknownRemote, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_lists_nothing_on_a_fresh_site() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let listed = remote::list(&test.site).await?;
+        assert!(listed.is_empty());
+        Ok(())
+    }
+}
+
+mod when_claiming_an_invite_with_a_remote {
+    use anyhow::Result;
+    use slide::invite;
+    use slide::remote;
+    use slide::site::{SITE_DIRNAME, SlideSite};
+
+    use crate::common;
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+
+    #[dialog_common::test]
+    async fn it_auto_configures_the_embedded_remote_on_the_joined_site() -> Result<()> {
+        // Inviter site has a remote registered, mints an invite
+        // referencing it.
+        let inviter = common::TestSite::new().await?;
+        remote::add(&inviter.site, "origin", ENDPOINT, None).await?;
+        let invite_outcome = invite::mint(&inviter.site, None, Some(ENDPOINT)).await?;
+        assert!(invite_outcome.url.contains("remote="));
+
+        // Claimer joins into a fresh tempdir.
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_config = common::isolated_config(&claimer_parent)?;
+        let claim_outcome =
+            invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
+
+        // Claim returned the embedded URL and surfaced the
+        // auto-configured remote name.
+        assert!(claim_outcome.remote_url.is_some());
+        assert_eq!(
+            claim_outcome.auto_configured_remote.as_deref(),
+            Some("origin")
+        );
+
+        // Open the joined site and assert the remote landed in
+        // its meta branch and main's upstream is wired.
+        let joined =
+            SlideSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+        let listed = remote::list(&joined).await?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "origin");
+        assert_eq!(listed[0].endpoint, ENDPOINT);
+        // Subject is the inviter's DID — slide holds delegated
+        // authority on the inviter's repo.
+        assert_eq!(listed[0].subject, inviter.site.repository.did());
+        assert!(joined.branch.upstream().is_some());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_skips_remote_setup_when_invite_has_no_remote() -> Result<()> {
+        let inviter = common::TestSite::new().await?;
+        let invite_outcome = invite::mint(&inviter.site, None, None).await?;
+        assert!(!invite_outcome.url.contains("remote="));
+
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_config = common::isolated_config(&claimer_parent)?;
+        let claim_outcome =
+            invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
+
+        assert!(claim_outcome.auto_configured_remote.is_none());
+        let joined =
+            SlideSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+        let listed = remote::list(&joined).await?;
+        assert!(listed.is_empty());
+        Ok(())
+    }
+}
+
 mod when_minting_and_claiming_an_invite {
     use anyhow::Result;
     use slide::invite::{self, InviteError};
@@ -48,7 +194,7 @@ mod when_minting_and_claiming_an_invite {
     async fn it_round_trips_an_invite_between_two_sites() -> Result<()> {
         // Inviter: a fully initialised slide site.
         let inviter = common::TestSite::new().await?;
-        let invite_outcome = invite::mint(&inviter.site, None).await?;
+        let invite_outcome = invite::mint(&inviter.site, None, None).await?;
         // Subject DID matches the inviter's repo, audience DID
         // is the freshly minted ephemeral signer's.
         assert_eq!(invite_outcome.subject, inviter.site.repository.did());
@@ -82,7 +228,7 @@ mod when_minting_and_claiming_an_invite {
     #[dialog_common::test]
     async fn it_refuses_to_join_when_a_site_already_exists() -> Result<()> {
         let inviter = common::TestSite::new().await?;
-        let invite_outcome = invite::mint(&inviter.site, None).await?;
+        let invite_outcome = invite::mint(&inviter.site, None, None).await?;
 
         // Stand up a claimer site, then try to join into the
         // same parent — the existing `.tonk/` should block.
@@ -116,7 +262,7 @@ mod when_minting_and_claiming_an_invite {
     #[dialog_common::test]
     async fn it_uses_the_default_base_url_when_unspecified() -> Result<()> {
         let inviter = common::TestSite::new().await?;
-        let outcome = invite::mint(&inviter.site, None).await?;
+        let outcome = invite::mint(&inviter.site, None, None).await?;
         assert!(
             outcome.url.starts_with(invite::DEFAULT_BASE_URL),
             "expected URL to start with {}, got {}",
@@ -129,7 +275,7 @@ mod when_minting_and_claiming_an_invite {
     #[dialog_common::test]
     async fn it_honors_a_custom_base_url() -> Result<()> {
         let inviter = common::TestSite::new().await?;
-        let outcome = invite::mint(&inviter.site, Some("https://example.test/join")).await?;
+        let outcome = invite::mint(&inviter.site, Some("https://example.test/join"), None).await?;
         assert!(outcome.url.starts_with("https://example.test/join"));
         Ok(())
     }

@@ -24,6 +24,7 @@ use tonk_invite::{Invite, InviteAudience};
 use url::Url;
 
 use crate::ExitCode;
+use crate::remote::{self, DEFAULT_REMOTE};
 use crate::site::{self, SITE_DIRNAME, SiteConfig, SlideSite};
 
 /// Default base URL for minted invites. Mirrors
@@ -56,10 +57,16 @@ pub struct ClaimOutcome {
     /// holds a verifier-only credential, with mutating authority
     /// flowing through the persisted delegation chain.
     pub subject: Did,
-    /// Sync remote URL the inviter attached, if any. Phase 2b
-    /// will translate this into a registered remote + upstream;
-    /// for now it's surfaced unchanged so the CLI can echo it.
+    /// Sync remote URL the inviter attached, if any. When
+    /// present, [`claim`] also auto-registered it under
+    /// [`auto_configured_remote`](Self::auto_configured_remote).
     pub remote_url: Option<Url>,
+    /// Local name of the auto-registered remote (always
+    /// [`crate::remote::DEFAULT_REMOTE`] when set), or `None` if
+    /// the invite carried no `remote=` URL. Slide's normal
+    /// post-join `slide pull` resolves this remote implicitly
+    /// because it's the only one configured.
+    pub auto_configured_remote: Option<String>,
 }
 
 /// Failure modes for [`mint`] / [`claim`].
@@ -92,7 +99,14 @@ impl InviteError {
 ///
 /// `base_url` overrides [`DEFAULT_BASE_URL`] for the URL prefix —
 /// useful when minting against a local tonk-ui dev deployment.
-pub async fn mint(site: &SlideSite, base_url: Option<&str>) -> Result<InviteOutcome, InviteError> {
+/// `remote_url`, when supplied, is embedded as the invite's
+/// `remote=` parameter so the claimer auto-configures the same
+/// access service after redeeming.
+pub async fn mint(
+    site: &SlideSite,
+    base_url: Option<&str>,
+    remote_url: Option<&str>,
+) -> Result<InviteOutcome, InviteError> {
     let (signer, seed) = generate_ephemeral().await?;
     let audience = signer.did();
 
@@ -105,9 +119,21 @@ pub async fn mint(site: &SlideSite, base_url: Option<&str>) -> Result<InviteOutc
         .await
         .map_err(|e| InviteError::Io(format!("failed to build delegation: {e}")))?;
 
-    let invite = Invite::new(delegation.into_chain(), InviteAudience::Open { seed }, None)
-        .await
-        .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?;
+    let parsed_remote = match remote_url {
+        Some(raw) => Some(
+            Url::parse(raw)
+                .map_err(|e| InviteError::Io(format!("invalid remote URL '{raw}': {e}")))?,
+        ),
+        None => None,
+    };
+
+    let invite = Invite::new(
+        delegation.into_chain(),
+        InviteAudience::Open { seed },
+        parsed_remote,
+    )
+    .await
+    .map_err(|e| InviteError::Io(format!("failed to assemble invite: {e}")))?;
 
     let url = invite
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
@@ -202,13 +228,32 @@ pub async fn claim(
     // Errors here would mean the create succeeded but the open
     // failed — surfaced as Io so the user sees the underlying
     // dialog message.
-    let _site = SlideSite::open_with(&root, config)
+    let joined = SlideSite::open_with(&root, config)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open joined site: {e}")))?;
+
+    // Wire the embedded remote (if any) onto the freshly
+    // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so
+    // a single human-readable label flows across both
+    // surfaces; the remote's subject is the inviter's DID
+    // (carried through on the claim chain), not the joiner's.
+    let mut auto_configured_remote: Option<String> = None;
+    if let Some(url) = &remote_url {
+        remote::add(&joined, DEFAULT_REMOTE, url.as_str(), Some(subject.clone()))
+            .await
+            .map_err(|e| {
+                InviteError::Io(format!("failed to auto-register remote from invite: {e}"))
+            })?;
+        remote::set_upstream(&joined, DEFAULT_REMOTE)
+            .await
+            .map_err(|e| InviteError::Io(format!("failed to wire upstream from invite: {e}")))?;
+        auto_configured_remote = Some(DEFAULT_REMOTE.to_owned());
+    }
 
     Ok(ClaimOutcome {
         subject,
         remote_url,
+        auto_configured_remote,
     })
 }
 
