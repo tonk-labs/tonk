@@ -599,11 +599,18 @@ fn walk_field_value(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option
             // A plain (unquoted) scalar can be a symbol, a
             // variable, a URI, or a literal that the YAML core
             // schema didn't promote to a typed value (e.g. all
-            // letters). Quoted scalars are always literals.
+            // letters). Quoted and block-style scalars are
+            // unambiguously string literals — `"x"`, `'x'`,
+            // `|`-literal, `>`-folded all signal "this is text,"
+            // never a symbol or URI. Plain scalars run through
+            // the classifier.
             match style {
-                ScalarStyle::DoubleQuoted | ScalarStyle::SingleQuoted => Some(FieldValue::Literal(
-                    Scalar::String(text.as_ref().to_owned()),
-                )),
+                ScalarStyle::DoubleQuoted
+                | ScalarStyle::SingleQuoted
+                | ScalarStyle::Literal
+                | ScalarStyle::Folded => Some(FieldValue::Literal(Scalar::String(
+                    text.as_ref().to_owned(),
+                ))),
                 _ => Some(classify_plain_value(text.as_ref())),
             }
         }
@@ -1695,5 +1702,65 @@ xyz.tonk.person/name:
             panic!("expected Query");
         };
         assert!(matches!(&q.head.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
+    }
+
+    /// `|`-style block scalars are unambiguously string literals,
+    /// even when their content contains `:` or `/` (e.g.
+    /// embedded HTML). They must not run through the
+    /// classifier and end up as `FieldValue::Uri`.
+    #[dialog_common::test]
+    fn it_parses_literal_block_scalar_as_string() {
+        let syntax = parse_clean(
+            r#"
+page!:
+  content: |
+    <html>
+      <body>
+        <h1>Hi</h1>
+      </body>
+    </html>
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let content = a
+            .fields
+            .iter()
+            .find(|f| f.name == "content")
+            .expect("content field");
+        match &content.value {
+            FieldValue::Literal(Scalar::String(s)) => {
+                assert!(s.contains("<html>"), "got: {s:?}");
+                assert!(s.contains("<h1>Hi</h1>"), "got: {s:?}");
+            }
+            other => panic!("expected literal string, got {other:?}"),
+        }
+    }
+
+    /// `>`-style folded block scalars are also string literals.
+    #[dialog_common::test]
+    fn it_parses_folded_block_scalar_as_string() {
+        let syntax = parse_clean(
+            r#"
+page!:
+  description: >
+    a long
+    multi-line
+    description
+"#,
+        );
+        let Expression::Assertion(a) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        let desc = a
+            .fields
+            .iter()
+            .find(|f| f.name == "description")
+            .expect("description field");
+        assert!(matches!(
+            &desc.value,
+            FieldValue::Literal(Scalar::String(_))
+        ));
     }
 }
