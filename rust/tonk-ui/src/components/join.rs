@@ -1,5 +1,6 @@
 use leptos::{
     ev::{Event, SubmitEvent},
+    logging::log,
     prelude::*,
     task::spawn_local,
     web_sys,
@@ -95,6 +96,26 @@ fn compose_destination(space_name: &str, then_suffix: Option<&str>) -> String {
     match then_suffix {
         Some(suffix) => format!("/space/{}/{}", space_name, suffix),
         None => format!("/space/{}", space_name),
+    }
+}
+
+/// Best-effort pull on the joined replica's `main` branch.
+///
+/// The join handler only persists the delegation chain — it does
+/// not pull. Without this call, the recipient lands on the post-
+/// claim destination with whatever IndexedDB already had: an
+/// empty replica on the [`JoinResponse::Joined`] path, or stale
+/// data on the [`JoinResponse::Renewed`] path. Pulling here
+/// makes "agent pushes, share URL is opened, recipient sees
+/// fresh data" actually true.
+///
+/// Errors are logged and swallowed: a missing upstream (invites
+/// without `remote=`), a 5xx, or a network blip should not block
+/// the navigation. The user can re-sync from the space view if
+/// the page renders stale.
+async fn refresh_after_join(repo: &str) {
+    if let Err(e) = api::pull(repo, "main").await {
+        log!("post-join pull on '{}' failed (continuing): {:?}", repo, e);
     }
 }
 
@@ -259,6 +280,7 @@ pub fn TonkJoin() -> impl IntoView {
                         };
                         last_join_outcome.set(Some(outcome));
                         profile_resource.refetch();
+                        refresh_after_join(&target).await;
                         let destination = compose_destination(&target, then_suffix.as_deref());
                         navigate(&destination, NavigateOptions::default());
                     }
@@ -346,6 +368,7 @@ pub fn TonkJoin() -> impl IntoView {
                             }
                         };
                         last_join_outcome.set(Some(outcome));
+                        refresh_after_join(&target_name).await;
                         let destination = compose_destination(&target_name, then_suffix.as_deref());
                         navigate(&destination, NavigateOptions::default());
                     }
