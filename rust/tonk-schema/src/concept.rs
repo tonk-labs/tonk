@@ -1348,4 +1348,170 @@ mod tests {
         assert!(resolved.is_none());
         Ok(())
     }
+
+    /// Cardinality-one supersession via `derive(Concept)` — does
+    /// dialog automatically retract a prior single-cardinality
+    /// claim when a new one for the same `(this, the)` is
+    /// asserted in a *separate* transaction?
+    ///
+    /// Models the page-disambiguation bug from user feedback:
+    /// when the analyzer's name publication writes
+    /// `(id:page, dialog.meta/name, page-v1)` in tx1 and
+    /// `(id:page, dialog.meta/name, page-v2)` in tx2, querying
+    /// for "page" via `dialog.meta/name` should return only
+    /// `page-v2` — the previous pointer should have been
+    /// superseded by the cardinality-one constraint.
+    ///
+    /// If this test passes, dialog handles supersession across
+    /// transactions natively and the worker's manual
+    /// `resolve_supersession_targets` pre-pass can be deleted
+    /// from the name-publication path.
+    ///
+    /// If this test fails, dialog only de-dupes within a single
+    /// transaction (additive across transactions), and the bug
+    /// is in `dialog` itself.
+    #[dialog_common::test]
+    async fn it_supersedes_cardinality_one_across_transactions() -> anyhow::Result<()> {
+        use dialog_query::Output as _;
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        // A minimal one-attribute concept whose only field is
+        // cardinality-one. `Pointer` mirrors the shape of the
+        // `dialog.meta/name` claim — id-shaped `this`, single
+        // entity-typed value.
+        mod pointer {
+            use dialog_artifacts::Entity;
+            #[derive(dialog_query::Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("test.supersession")]
+            pub struct Target(pub Entity);
+        }
+
+        #[derive(dialog_query::Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        pub struct Pointer {
+            pub this: Entity,
+            pub target: pointer::Target,
+        }
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // The shared `this` — same entity across both
+        // transactions. Different targets, same pointer.
+        let id_page: Entity = "id:page".parse()?;
+        let page_v1: Entity = "id:page-v1".parse()?;
+        let page_v2: Entity = "id:page-v2".parse()?;
+
+        // tx1 — point at page-v1.
+        branch
+            .transaction()
+            .assert(Pointer {
+                this: id_page.clone(),
+                target: pointer::Target(page_v1.clone()),
+            })
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // tx2 — point at page-v2. If dialog handles
+        // cardinality-one, the page-v1 pointer should be
+        // superseded.
+        branch
+            .transaction()
+            .assert(Pointer {
+                this: id_page.clone(),
+                target: pointer::Target(page_v2.clone()),
+            })
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Query for every Pointer whose `this` is id_page.
+        let results: Vec<Pointer> = branch
+            .query()
+            .select(PointerQuery {
+                this: dialog_query::Term::from(id_page.clone()),
+                target: dialog_query::Term::var("target"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "expected exactly one Pointer for id:page after supersession, got {results:?}",
+        );
+        assert_eq!(
+            results[0].target.0, page_v2,
+            "expected the latest target (page-v2) to win; got {:?}",
+            results[0].target.0,
+        );
+        Ok(())
+    }
+
+    /// Same as [`it_supersedes_cardinality_one_across_transactions`]
+    /// but with both asserts in a *single* transaction. The
+    /// `associate_unique` semantic is "this transaction emits at
+    /// most one value for this `(of, the)` pair" — when called
+    /// twice in the same batch, the second call should win.
+    #[dialog_common::test]
+    async fn it_supersedes_cardinality_one_within_transaction() -> anyhow::Result<()> {
+        use dialog_query::Output as _;
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        mod pointer {
+            use dialog_artifacts::Entity;
+            #[derive(dialog_query::Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+            #[domain("test.supersession.same-tx")]
+            pub struct Target(pub Entity);
+        }
+
+        #[derive(dialog_query::Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        pub struct Pointer {
+            pub this: Entity,
+            pub target: pointer::Target,
+        }
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let id_page: Entity = "id:page".parse()?;
+        let page_v1: Entity = "id:page-v1".parse()?;
+        let page_v2: Entity = "id:page-v2".parse()?;
+
+        // Both assertions land in the same transaction.
+        branch
+            .transaction()
+            .assert(Pointer {
+                this: id_page.clone(),
+                target: pointer::Target(page_v1.clone()),
+            })
+            .assert(Pointer {
+                this: id_page.clone(),
+                target: pointer::Target(page_v2.clone()),
+            })
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let results: Vec<Pointer> = branch
+            .query()
+            .select(PointerQuery {
+                this: dialog_query::Term::from(id_page.clone()),
+                target: dialog_query::Term::var("target"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(
+            results.len(),
+            1,
+            "expected one Pointer after same-tx supersession, got {results:?}",
+        );
+        assert_eq!(results[0].target.0, page_v2);
+        Ok(())
+    }
 }
