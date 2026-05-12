@@ -1,0 +1,285 @@
+//! Render an [`EvaluateResponse`] in either notation (default)
+//! or JSON form.
+//!
+//! Notation output is the default surface — every successful
+//! call produces a re-submittable asserted-notation document
+//! with the envelope (revisions, claim count, entity bindings)
+//! emitted as a YAML mapping prefix and the matches as
+//! per-expression query expressions, separated by `---` YAML
+//! document markers.
+
+use std::fmt::Write as _;
+
+use anyhow::{Context, Result};
+use serde::Serialize;
+use tonk_schema::evaluate::{EvaluateResponse, QueryMatchBlock, QueryResult};
+
+/// Output format selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// Re-submittable asserted-notation. Envelope as a YAML
+    /// mapping document, then `---`, then per-expression query
+    /// expressions.
+    Notation,
+    /// `EvaluateResponse` serialized as pretty JSON.
+    Json,
+}
+
+/// Render `response` into stdout-ready bytes. `quiet` suppresses
+/// the matches section, leaving only the envelope (notation) or
+/// the structured commits-only response (JSON).
+pub fn render(response: &EvaluateResponse, format: Format, quiet: bool) -> Result<String> {
+    match format {
+        Format::Notation => render_notation(response, quiet),
+        Format::Json => render_json(response, quiet),
+    }
+}
+
+// ---------------------------------------------------------------- //
+// Notation renderer                                                //
+// ---------------------------------------------------------------- //
+
+fn render_notation(response: &EvaluateResponse, quiet: bool) -> Result<String> {
+    let envelope = render_envelope(response).context("failed to render envelope")?;
+
+    if quiet {
+        return Ok(envelope);
+    }
+
+    let matches = render_matches(&response.matches_after);
+    if matches.is_empty() {
+        return Ok(envelope);
+    }
+
+    let mut out = envelope;
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("---\n");
+    out.push_str(&matches);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// YAML envelope: `revision-before`, `revision-after`, `claims`,
+/// `entities`. Built directly as a [`serde_yaml::Mapping`] so
+/// keys land in declaration order rather than serde_yaml's
+/// alphabetical default.
+fn render_envelope(response: &EvaluateResponse) -> Result<String> {
+    use serde_yaml::Value;
+
+    let mut envelope = serde_yaml::Mapping::new();
+
+    envelope.insert(
+        "revision-before".into(),
+        revision_to_yaml(response.revision_before.as_ref()),
+    );
+    envelope.insert(
+        "revision-after".into(),
+        revision_to_yaml(response.revision_after.as_ref()),
+    );
+    envelope.insert("claims".into(), Value::from(response.commits.claims));
+
+    if !response.commits.entities.is_empty() {
+        let mut entities = serde_yaml::Mapping::new();
+        for (key, did) in &response.commits.entities {
+            entities.insert(Value::from(key.clone()), Value::from(did.clone()));
+        }
+        envelope.insert("entities".into(), Value::Mapping(entities));
+    }
+
+    serde_yaml::to_string(&Value::Mapping(envelope)).context("envelope YAML serialization failed")
+}
+
+/// `Some(rev)` → its display form (a `#<base58>` tree-hash).
+/// `None` → YAML `null`, which serializes as `~` and is the
+/// signal for a freshly-initialized branch.
+fn revision_to_yaml(revision: Option<&dialog_repository::Revision>) -> serde_yaml::Value {
+    match revision {
+        Some(rev) => serde_yaml::Value::from(rev.tree.to_string()),
+        None => serde_yaml::Value::Null,
+    }
+}
+
+/// Render every non-empty [`QueryMatchBlock`] as a stack of
+/// notation expressions, joined with `---` document markers.
+/// Empty blocks (zero results for a source expression) are
+/// skipped — emitting an empty section would land an unparseable
+/// document in front of the agent.
+fn render_matches(blocks: &[QueryMatchBlock]) -> String {
+    let mut sections: Vec<String> = Vec::new();
+    for block in blocks {
+        if block.results.is_empty() {
+            continue;
+        }
+        let mut section = String::new();
+        for result in &block.results {
+            render_one(&mut section, &block.label, result);
+        }
+        sections.push(section.trim_end_matches('\n').to_string());
+    }
+    sections.join("\n---\n")
+}
+
+/// One match — `<label>:` head followed by a body whose first
+/// entry is `this: <entity>` and the rest is `<field>: <value>`
+/// pairs. Matches the head/body grammar so the output is a
+/// re-submittable notation document.
+fn render_one(out: &mut String, label: &str, result: &QueryResult) {
+    let _ = writeln!(out, "{label}:");
+    let _ = writeln!(out, "  this: {this}", this = result.this);
+    for (field, value) in &result.fields {
+        let _ = writeln!(out, "  {field}: {rendered}", rendered = render_value(value));
+    }
+}
+
+/// Render a JSON-shaped attribute value as an asserted-notation
+/// scalar literal.
+///
+/// Strings are always double-quoted so the output round-trips
+/// unambiguously through saphyr — bare strings work too in most
+/// cases, but a value like `"true"` would otherwise reparse as a
+/// boolean.
+fn render_value(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "~".into(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => quote_string(s),
+        // Arrays / objects shouldn't normally appear here —
+        // dialog attribute values are scalars — but fall back to
+        // JSON if they do, so the output is at least lossless.
+        other => other.to_string(),
+    }
+}
+
+fn quote_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+// ---------------------------------------------------------------- //
+// JSON renderer                                                    //
+// ---------------------------------------------------------------- //
+
+#[derive(Serialize)]
+struct QuietJson<'a> {
+    revision_before: Option<&'a dialog_repository::Revision>,
+    revision_after: Option<&'a dialog_repository::Revision>,
+    commits: &'a tonk_schema::evaluate::CommitSummary,
+}
+
+fn render_json(response: &EvaluateResponse, quiet: bool) -> Result<String> {
+    if quiet {
+        let projected = QuietJson {
+            revision_before: response.revision_before.as_ref(),
+            revision_after: response.revision_after.as_ref(),
+            commits: &response.commits,
+        };
+        return serde_json::to_string_pretty(&projected).context("JSON serialization failed");
+    }
+    serde_json::to_string_pretty(response).context("JSON serialization failed")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use tonk_schema::evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
+
+    use super::*;
+
+    fn sample_response() -> EvaluateResponse {
+        let mut entities = BTreeMap::new();
+        entities.insert("alice".into(), "did:key:zHj".into());
+        entities.insert("?p".into(), "did:key:zHj".into());
+        EvaluateResponse {
+            revision_before: None,
+            revision_after: None,
+            matches_before: Vec::new(),
+            matches_after: vec![QueryMatchBlock {
+                label: "person".into(),
+                results: vec![QueryResult {
+                    this: "did:key:zHj".into(),
+                    fields: {
+                        let mut m = BTreeMap::new();
+                        m.insert("name".into(), serde_json::json!("Alice"));
+                        m.insert("age".into(), serde_json::json!(28));
+                        m
+                    },
+                }],
+            }],
+            commits: CommitSummary {
+                claims: 2,
+                entities,
+            },
+        }
+    }
+
+    mod when_rendering_notation {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_writes_an_envelope_followed_by_a_matches_section() {
+            let out = render(&sample_response(), Format::Notation, false).unwrap();
+            assert!(out.contains("revision-before: null"));
+            assert!(out.contains("claims: 2"));
+            assert!(out.contains("alice: did:key:zHj"));
+            assert!(out.contains("---\n"));
+            assert!(out.contains("person:\n  this: did:key:zHj"));
+            assert!(out.contains("name: \"Alice\""));
+            assert!(out.contains("age: 28"));
+        }
+
+        #[dialog_common::test]
+        fn it_omits_the_matches_section_when_quiet() {
+            let out = render(&sample_response(), Format::Notation, true).unwrap();
+            assert!(!out.contains("---"));
+            assert!(!out.contains("this: did:key:"));
+        }
+
+        #[dialog_common::test]
+        fn it_skips_blocks_with_zero_results() {
+            let mut response = sample_response();
+            response.matches_after = vec![QueryMatchBlock {
+                label: "person".into(),
+                results: vec![],
+            }];
+            let out = render(&response, Format::Notation, false).unwrap();
+            assert!(!out.contains("---"));
+            assert!(!out.contains("person"));
+        }
+    }
+
+    mod when_rendering_json {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_serializes_the_full_response() {
+            let out = render(&sample_response(), Format::Json, false).unwrap();
+            assert!(out.contains("\"matches_after\""));
+            assert!(out.contains("\"claims\": 2"));
+        }
+
+        #[dialog_common::test]
+        fn it_omits_matches_when_quiet() {
+            let out = render(&sample_response(), Format::Json, true).unwrap();
+            assert!(!out.contains("\"matches_after\""));
+            assert!(out.contains("\"commits\""));
+        }
+    }
+}

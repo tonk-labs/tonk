@@ -50,6 +50,8 @@ pub mod builtin;
 
 pub mod transact;
 
+pub mod evaluate;
+
 pub mod query;
 
 pub mod conclusion;
