@@ -5,7 +5,7 @@
 //!
 //! 1. The built-in `attribute` concept enumerates every attribute
 //!    (named or not). For each, a separate lookup against
-//!    `dialog.meta/name` recovers the bookmark name where one
+//!    `dialog.name/referent` recovers the bookmark name where one
 //!    exists.
 //! 2. The built-in `concept` concept enumerates every concept
 //!    *with* a name claim — the concept-of-concept descriptor
@@ -51,7 +51,8 @@ use crate::site::SlideSite;
 /// notation).
 #[derive(Debug, Clone)]
 pub struct ConceptSummary {
-    /// Bookmark name carried by `dialog.meta/name`.
+    /// Bookmark name published via `dialog.name/referent` on
+    /// the matching `id:<name>` entity.
     pub name: String,
     /// Human description claim (`dialog.meta/description`), if
     /// asserted. Concept descriptions are optional in the
@@ -91,8 +92,8 @@ pub async fn render(site: &SlideSite) -> Result<String> {
     let attrs = enumerate_attributes(site).await?;
     let concepts = enumerate_concepts(site).await?;
 
-    // URI → bookmark name, used to render `with: { field: .name }`
-    // when a referenced attribute carries a `dialog.meta/name`.
+    // URI → bookmark name, used to render `with: { field: name }`
+    // when a referenced attribute has a published name.
     let uri_to_name: HashMap<String, String> = attrs
         .iter()
         .filter_map(|a| a.name.as_ref().map(|n| (a.the.clone(), n.clone())))
@@ -114,7 +115,8 @@ pub async fn render(site: &SlideSite) -> Result<String> {
 
 #[derive(Debug)]
 struct AttributeInfo {
-    /// `dialog.meta/name`, when one is asserted on the entity.
+    /// Bookmark name (the `<n>` from an `id:<n>` `dialog.name/referent`
+    /// claim pointing at this entity), when one is published.
     name: Option<String>,
     /// Attribute URI (`xyz.tonk.task/title`).
     the: String,
@@ -185,13 +187,21 @@ attribute:
     Ok(out)
 }
 
-/// Pull every `dialog.meta/name` claim and return an entity-to-
-/// name map. Used to recover bookmark names for attributes (the
-/// built-in `attribute` concept descriptor doesn't carry `name`).
+/// Pull every name-publication claim and return a `target →
+/// name` map. Used to recover bookmark names for attributes
+/// (the built-in `attribute` concept descriptor doesn't carry
+/// `name`).
+///
+/// Names are stored inverted under `dialog.name/referent`: each
+/// anchor `&foo` publishes `(dialog.name/referent, id:foo,
+/// <target-entity>)`. The *name* lives in the claim's subject as
+/// `id:<name>`; the *target* is the value. We invert that mapping
+/// here so callers can ask "what's this entity's display name?"
+/// in one lookup.
 async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: dialog_artifacts::Attribute = "dialog.meta/name"
+    let name_attr: dialog_artifacts::Attribute = "dialog.name/referent"
         .parse()
-        .context("dialog.meta/name should be a valid attribute URI")?;
+        .context("dialog.name/referent should be a valid attribute URI")?;
     let the_term: attribute::The = name_attr.into();
     let claims: Vec<dialog_query::Claim> = site
         .branch
@@ -206,12 +216,15 @@ async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, Strin
         .perform(&site.operator)
         .try_vec()
         .await
-        .map_err(|e| anyhow!("dialog.meta/name query failed: {e:?}"))?;
+        .map_err(|e| anyhow!("dialog.name/referent query failed: {e:?}"))?;
 
     let mut out = HashMap::with_capacity(claims.len());
     for claim in claims {
-        if let dialog_artifacts::Value::String(s) = claim.is {
-            out.insert(claim.of, s);
+        let Some(name) = claim.of.to_string().strip_prefix("id:").map(str::to_owned) else {
+            continue;
+        };
+        if let dialog_artifacts::Value::Entity(target) = claim.is {
+            out.insert(target, name);
         }
     }
     Ok(out)

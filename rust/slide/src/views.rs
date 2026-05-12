@@ -144,20 +144,21 @@ fn body_byte_len(value: &Value) -> usize {
     }
 }
 
-/// Pull every `dialog.meta/name` claim and return a `target →
+/// Pull every name-publication claim and return a `target →
 /// name` map. Done as one branch query — bulk faster than
 /// per-entity lookups and avoids N+1 round trips against a large
 /// branch.
 ///
-/// Naming after PR #447 is stored inverted: each anchor `&foo`
-/// publishes `(dialog.meta/name, id:foo, <target-entity>)`.
-/// The *name* lives in the claim's subject as `id:<name>`; the
-/// *target* is the value. We invert that mapping here so callers
-/// can ask "what's this entity's display name?" with one lookup.
+/// Names are stored inverted under the `dialog.name/referent`
+/// relation: each anchor `&foo` publishes
+/// `(dialog.name/referent, id:foo, <target-entity>)`. The *name*
+/// lives in the claim's subject as `id:<name>`; the *target* is
+/// the value. We invert that mapping here so callers can ask
+/// "what's this entity's display name?" with one lookup.
 async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, String>> {
-    let name_attr: Attribute = "dialog.meta/name"
+    let name_attr: Attribute = "dialog.name/referent"
         .parse()
-        .context("dialog.meta/name should be a valid attribute URI")?;
+        .context("dialog.name/referent should be a valid attribute URI")?;
     let the_term: attribute::The = name_attr.into();
     let claims: Vec<dialog_query::Claim> = site
         .branch
@@ -172,7 +173,7 @@ async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, Strin
         .perform(&site.operator)
         .try_vec()
         .await
-        .map_err(|e| anyhow!("dialog.meta/name query failed: {e:?}"))?;
+        .map_err(|e| anyhow!("dialog.name/referent query failed: {e:?}"))?;
     let mut out = HashMap::with_capacity(claims.len());
     for claim in claims {
         let Some(name) = name_from_id_entity(&claim.of) else {
