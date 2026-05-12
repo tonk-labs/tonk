@@ -104,7 +104,7 @@ have many in one document; they all commit in one transaction.
 
 ```yaml
 attribute!: &person-age
-  description: "The person's age in years"
+  description: The person's age in years
   the:         xyz.tonk.person/age
   as:          unsigned-integer
   cardinality: one
@@ -118,13 +118,13 @@ as bare symbols, which resolve through the name table.
 
 ```yaml
 attribute!: &person-name
-  description: "The person's name"
+  description: The person's name
   the:         xyz.tonk.person/name
   as:          text
   cardinality: one
 
 attribute!: &person-age
-  description: "The person's age"
+  description: The person's age
   the:         xyz.tonk.person/age
   as:          unsigned-integer
   cardinality: one
@@ -142,12 +142,11 @@ document.
 
 ### 4. Add a person
 
-`person!:` is asserts the `person` concept. Use `&alice` to name
-the resulting entity `alice`:
+`person!:` is asserts the `person` concept. Use `&maintainer` to name the resulting entity `maintainer`:
 
 ```yaml
-person!: &alice
-  name: "Alice"
+person!: &maintainer
+  name: Alice
   age:  28
 ```
 
@@ -175,7 +174,7 @@ Constrain the match by giving fields literal values:
 
 ```yaml
 person:
-  name: "Alice"
+  name: Alice
 ```
 
 Bind the matched entity to a variable using `this:`, and captures it under a
@@ -184,13 +183,13 @@ variable so it could be used in other expressions.
 ```yaml
 person:
   this: ?p
-  name: "Alice"
+  name: Alice
   age:  ?age
 ```
 
 `?p` and `?age` come back in the result frame.
 
-### 6. Update Alice
+### 6. Update Maintainer
 
 Two distinct operations, syntactically different.
 
@@ -198,13 +197,13 @@ Two distinct operations, syntactically different.
 target). Reuse the anchor with a different body:
 
 ```yaml
-person!: &alice
-  name: "Alice"
-  age:  29
+person!: &maintainer
+  name: Bob
+  age:  40
 ```
 
 This produces a *new* entity (different body hash). The name
-`id:alice` is re-pointed to it.
+`id:maintainer` is re-pointed to it.
 
 **Update the same entity**. Use a query to bind the entity to
 a variable, then assert against the variable:
@@ -212,11 +211,11 @@ a variable, then assert against the variable:
 ```yaml
 person:
   this: ?alice
-  name: "Alice"
+  name: Alice
 
 person!:
   this: ?alice
-  age:  30
+  age:  29
 ```
 
 The query binds `?alice` to every entity currently named
