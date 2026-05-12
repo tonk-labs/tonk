@@ -171,10 +171,9 @@ impl Server {
                 if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
                     let uri = p.text_document.uri;
                     let text = p.text_document.text;
-                    let version = Some(p.text_document.version);
                     self.documents
                         .insert(uri.clone(), Document { text: text.clone() });
-                    self.publish(uri, &text, version).await;
+                    self.publish(uri, &text).await;
                 }
             }
             "textDocument/didChange" => {
@@ -188,14 +187,13 @@ impl Server {
                         return;
                     };
                     let uri = p.text_document.uri;
-                    let version = Some(p.text_document.version);
                     self.documents.insert(
                         uri.clone(),
                         Document {
                             text: last.text.clone(),
                         },
                     );
-                    self.publish(uri, &last.text, version).await;
+                    self.publish(uri, &last.text).await;
                 }
             }
             "textDocument/didClose" => {
@@ -261,7 +259,7 @@ impl Server {
     ///    `UnknownBookmark`, `ResolverFailed`) are filtered out —
     ///    they need a real branch resolver and the worker's
     ///    evaluate route is the source of truth for those.
-    async fn publish(&mut self, uri: Uri, text: &str, version: Option<i32>) {
+    async fn publish(&mut self, uri: Uri, text: &str) {
         let parsed = tonk_notation::parse(text);
         let mut diagnostics = parsed.diagnostics.clone();
         // Only run the analyzer when the parser is happy — its
@@ -280,10 +278,22 @@ impl Server {
         for diagnostic in &mut diagnostics {
             diagnostic.range = clamp_range_to_text(diagnostic.range, text);
         }
+        // Intentionally omit `version`: `publishDiagnostics` is
+        // queued and dispatched asynchronously from
+        // `take_outbound`, so by the time the client sees the
+        // frame its tracked file version may have advanced past
+        // the version that produced this frame.
+        // `@codemirror/lsp-client` drops mismatched-version
+        // frames outright (per LSP spec), which silently stalls
+        // any consumer that gates auto-evaluation on the live
+        // diagnostic count. Sending `version: None` keeps the
+        // client applying every frame; the clamping above is
+        // what guards against the stale-range crash that
+        // motivated touching this in the first place.
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics,
-            version,
+            version: None,
         };
         let value = match serde_json::to_value(params) {
             Ok(v) => v,
@@ -1104,6 +1114,114 @@ mod tests {
         assert!(
             labels.contains(&"maintainer"),
             "expected `maintainer` from prior `&maintainer`; got {labels:?}",
+        );
+    }
+
+    /// `publishDiagnostics` must not carry a `version` field even
+    /// when the originating `didOpen` / `didChange` did. The
+    /// notification is queued through `take_outbound` and may
+    /// reach the client after the client's tracked file version
+    /// has advanced past the version that produced this frame —
+    /// `@codemirror/lsp-client` then drops the frame outright per
+    /// LSP spec and any consumer gating auto-evaluation on the
+    /// live diagnostic count silently stalls.
+    ///
+    /// Regression test for the auto-evaluate stall reported when
+    /// the server briefly echoed the client-supplied version.
+    #[dialog_common::test]
+    async fn it_omits_version_from_publish_diagnostics() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/no-version",
+                        "languageId": "carry-asserted",
+                        "version": 7,
+                        "text": "person:\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let outbound = server.take_outbound();
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound[0].method, "textDocument/publishDiagnostics");
+        // The `version` field on `PublishDiagnosticsParams` is
+        // optional; we want it absent (or `null`), not the v7
+        // we received on `didOpen`.
+        let version = &outbound[0].params["version"];
+        assert!(
+            version.is_null(),
+            "publishDiagnostics must not echo the document version; \
+             got {version}",
+        );
+    }
+
+    /// Likewise on `didChange` — the bug surfaced primarily on
+    /// rapid edits where the client's file version had advanced
+    /// past the `version` the server echoed.
+    #[dialog_common::test]
+    async fn it_omits_version_from_publish_diagnostics_on_change() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        let uri = "tonk-buffer:///test/no-version-change";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": uri, "languageId": "carry-asserted",
+                        "version": 1, "text": "person:\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": { "uri": uri, "version": 42 },
+                    "contentChanges": [{ "text": "person:\n  name: \"Alice\"\n" }]
+                }
+            }),
+        )
+        .await;
+        let outbound = server.take_outbound();
+        assert_eq!(outbound.len(), 1);
+        let version = &outbound[0].params["version"];
+        assert!(
+            version.is_null(),
+            "publishDiagnostics on didChange must not echo the document version; \
+             got {version}",
         );
     }
 }

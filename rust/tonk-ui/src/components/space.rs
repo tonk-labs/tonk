@@ -606,8 +606,20 @@ where
     // server even when they all share the same (repo, branch).
     let editor_source = format!("{}-{}", owner.editor_source(&branch_name), id);
 
-    let on_transact_change = move |ev: leptos::ev::Event| {
-        transact_buffer.set(read_tonk_code_value(&ev));
+    let on_transact_change = {
+        let editor_source = editor_source.clone();
+        move |ev: leptos::ev::Event| {
+            transact_buffer.set(read_tonk_code_value(&ev));
+            // Pushed diagnostics — the analyze-error squiggle a
+            // failed eval emits — are stale by construction the
+            // moment the user touches the buffer they were
+            // emitted for. Clear them on every edit so the
+            // cell's `errorCount` doesn't carry the previous
+            // eval's verdict into the next idle check.
+            // (`<tonk-code>`'s staleness gate handles the LSP
+            // side independently.)
+            clear_pushed_diagnostics(&editor_source);
+        }
     };
 
     let editor_error_count = RwSignal::new(0_u32);

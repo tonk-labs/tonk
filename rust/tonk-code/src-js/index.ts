@@ -114,7 +114,7 @@ import {
   syntaxHighlighting,
   HighlightStyle,
 } from "@codemirror/language";
-import { forEachDiagnostic } from "@codemirror/lint";
+import { forEachDiagnostic, setDiagnosticsEffect } from "@codemirror/lint";
 import { tags as t } from "@lezer/highlight";
 import type { LSPClient } from "@codemirror/lsp-client";
 // Side-effect import: registers the `<tonk-diagnostics-provider>`
@@ -552,6 +552,37 @@ class TonkCodeElement extends HTMLElement {
   #lastDiagnosticTotal = -1;
   #lastDiagnosticErrors = -1;
 
+  /** Monotonic counter bumped on every user-initiated edit.
+   *  The `idle` event uses this to gate firing on
+   *  diagnostic-snapshot freshness: idle won't fire until the
+   *  diagnostic state has been re-evaluated for the current
+   *  edit epoch. Without this, a `diagnostics` frame from a
+   *  prior buffer can leak through as the basis for an `idle`
+   *  decision — consumers gating auto-actions on `errorCount`
+   *  end up reading a stale count for the buffer they're about
+   *  to act on.
+   *
+   *  The check is "did we receive any diagnostic frame after
+   *  the most recent edit," not "is the frame's content
+   *  correct" — those are separate concerns. The LSP layer is
+   *  responsible for sending diagnostics that reflect the
+   *  current text; this flag just makes sure we wait for
+   *  *something* fresh before letting `idle` fire. */
+  #editEpoch = 0;
+
+  /** The `#editEpoch` value at the most recent
+   *  `#maybeDispatchDiagnostics` call. When this matches
+   *  `#editEpoch`, the diagnostic snapshot is considered fresh
+   *  for the current buffer. */
+  #diagnosticsEpoch = 0;
+
+  /** True when the idle timer fired but staleness blocked the
+   *  dispatch. Re-checked on every fresh diagnostic frame so
+   *  the deferred idle fires as soon as diagnostics catch up.
+   *  Cleared when the idle event finally dispatches, or when a
+   *  new user edit re-arms the timer. */
+  #idleAwaitingDiagnostics = false;
+
   /** Public getter — total diagnostic count on the current
    *  document. Surfaces to consumers who'd rather poll than
    *  subscribe to the `diagnostics` event. */
@@ -570,8 +601,17 @@ class TonkCodeElement extends HTMLElement {
 
   /** Recount diagnostics from the current state and dispatch a
    *  `diagnostics` event if the totals changed. Cheap to call —
-   *  `forEachDiagnostic` walks a small in-memory range tree. */
-  #maybeDispatchDiagnostics(): void {
+   *  `forEachDiagnostic` walks a small in-memory range tree.
+   *
+   *  When `freshFrameLanded` is true, marks the diagnostic
+   *  snapshot fresh for the current `#editEpoch` and fires any
+   *  deferred `idle` event that was waiting on it. Plain
+   *  doc-edit calls pass `false`: those re-counts reflect
+   *  whatever the lint state held *before* the edit, not a
+   *  server response to the edit, so stamping the epoch on
+   *  them would leak the previous diagnostic state into the
+   *  freshness check and idle would fire on stale verdicts. */
+  #maybeDispatchDiagnostics(freshFrameLanded: boolean): void {
     const view = this.#view;
     if (!view) return;
     let total = 0;
@@ -580,21 +620,34 @@ class TonkCodeElement extends HTMLElement {
       total += 1;
       if (d.severity === "error") errors += 1;
     });
-    if (
-      total === this.#lastDiagnosticTotal &&
-      errors === this.#lastDiagnosticErrors
-    ) {
-      return;
+    if (freshFrameLanded) {
+      // Stamp the epoch even when the count hasn't changed —
+      // the *fact* that diagnostics ran for this epoch is
+      // what unblocks a deferred idle. A buffer with no
+      // errors that stays at no errors would otherwise never
+      // see a count change and never refresh the epoch.
+      this.#diagnosticsEpoch = this.#editEpoch;
     }
-    this.#lastDiagnosticTotal = total;
-    this.#lastDiagnosticErrors = errors;
-    this.dispatchEvent(
-      new CustomEvent<DiagnosticsDetail>("diagnostics", {
-        detail: { count: total, errorCount: errors },
-        bubbles: true,
-        composed: true,
-      })
-    );
+    const changed =
+      total !== this.#lastDiagnosticTotal ||
+      errors !== this.#lastDiagnosticErrors;
+    if (changed) {
+      this.#lastDiagnosticTotal = total;
+      this.#lastDiagnosticErrors = errors;
+      this.dispatchEvent(
+        new CustomEvent<DiagnosticsDetail>("diagnostics", {
+          detail: { count: total, errorCount: errors },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
+    // Diagnostics are now fresh for the current edit epoch —
+    // dispatch any idle event that was waiting on this.
+    if (freshFrameLanded && this.#idleAwaitingDiagnostics) {
+      this.#idleAwaitingDiagnostics = false;
+      this.#dispatchIdle();
+    }
   }
 
   /** Most-recently-requested language — used to ignore stale
@@ -676,6 +729,17 @@ class TonkCodeElement extends HTMLElement {
         this.#lsp.of([]),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !this.#suppressChange) {
+            // Bump the edit epoch *before* dispatching change.
+            // Anything that runs synchronously off `change` (or
+            // schedules an idle) sees the new epoch and the
+            // freshness check naturally blocks `idle` from
+            // firing on the previous frame's diagnostic state.
+            this.#editEpoch += 1;
+            // A still-pending awaiting-fresh-diagnostics idle
+            // is now obsolete: a newer edit invalidated the
+            // buffer it was waiting to see fresh diagnostics
+            // for. The reschedule below resets the timer.
+            this.#idleAwaitingDiagnostics = false;
             this.dispatchEvent(
               new CustomEvent<ChangeDetail>("change", {
                 detail: {
@@ -693,14 +757,22 @@ class TonkCodeElement extends HTMLElement {
             this.#scheduleIdle();
           }
           // Re-count diagnostics whenever the lint state plugin
-          // could have changed: doc edits can shift error
-          // ranges, and `setDiagnosticsEffect` (the LSP client
-          // applies it on every `publishDiagnostics`) is a
-          // state-only transaction. `update.transactions` covers
-          // both — only emit when the count actually changed to
-          // keep the event channel quiet during typing.
+          // could have changed. Two cases:
+          //   1. `setDiagnosticsEffect` — the LSP client (or
+          //      our pushed-diagnostics provider) committed a
+          //      fresh frame. This is what unblocks a deferred
+          //      idle waiting on staleness.
+          //   2. doc edits — diagnostic ranges shift; the
+          //      counts stay the same but we still need to
+          //      emit a refreshed event so consumers can
+          //      re-render markers. These are *not* fresh
+          //      frames — they reflect the previous frame's
+          //      verdicts on the new buffer.
           if (update.transactions.length > 0) {
-            this.#maybeDispatchDiagnostics();
+            const freshFrameLanded = update.transactions.some((tr) =>
+              tr.effects.some((e) => e.is(setDiagnosticsEffect))
+            );
+            this.#maybeDispatchDiagnostics(freshFrameLanded);
           }
         }),
       ],
@@ -925,10 +997,24 @@ class TonkCodeElement extends HTMLElement {
   /** Fire the `idle` event with the current buffer plus the
    *  live diagnostic counts. Consumers commonly gate auto-action
    *  on `errorCount === 0`, but the event fires regardless so a
-   *  consumer that wants to react to settling-with-errors can. */
+   *  consumer that wants to react to settling-with-errors can.
+   *
+   *  Defers when the diagnostic snapshot is stale relative to
+   *  the most recent edit. Without that gate, the buffer's
+   *  `errorCount` reflects whatever the last frame said about
+   *  the *previous* text — so an in-progress edit that briefly
+   *  invalidates the document leaves a stale error in place
+   *  and the consumer's "no errors → auto-act" check reads
+   *  wrong. The deferred idle fires from
+   *  [`#maybeDispatchDiagnostics`] as soon as a fresh frame
+   *  lands. A new edit before then invalidates the deferral. */
   #dispatchIdle(): void {
     const view = this.#view;
     if (!view) return;
+    if (this.#diagnosticsEpoch !== this.#editEpoch) {
+      this.#idleAwaitingDiagnostics = true;
+      return;
+    }
     this.dispatchEvent(
       new CustomEvent<IdleDetail>("idle", {
         detail: {
