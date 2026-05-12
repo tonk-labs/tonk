@@ -102,7 +102,7 @@ let
   # Build WASM dependencies separately (different target)
   # Exclude native-only crates that can't compile for wasm32-unknown-unknown.
   # If you add a new native-only crate, add it to the --exclude list here.
-  wasmCargoExcludeArgs = "--workspace";
+  wasmCargoExcludeArgs = "--workspace --exclude slide";
 
   wasmAttributes = commonAttributes // {
     CARGO_BUILD_TARGET = "wasm32-unknown-unknown";
@@ -182,7 +182,6 @@ let
         buildPhaseCargoCommand = ''
           cargo nextest archive \
             ${args} \
-            ${if target == "wasm32-unknown-unknown" then wasmCargoExcludeArgs else ""} \
             --archive-file ./tests-${name}.tar.zst
         '';
 
