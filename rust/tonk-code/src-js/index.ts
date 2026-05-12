@@ -107,6 +107,7 @@ import {
   historyKeymap,
   indentWithTab,
 } from "@codemirror/commands";
+import { acceptCompletion } from "@codemirror/autocomplete";
 import {
   bracketMatching,
   indentOnInput,
@@ -423,7 +424,16 @@ function baseExtensions(): Extension[] {
     bracketMatching(),
     indentOnInput(),
     syntaxHighlighting(highlightStyle, { fallback: true }),
-    keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+    // Tab accepts the active autocompletion popup (LSP-driven via
+    // `@codemirror/lsp-client`). `acceptCompletion` returns false
+    // when no completion is open, so the binding falls through to
+    // `indentWithTab` and Tab still indents.
+    keymap.of([
+      { key: "Tab", run: acceptCompletion },
+      ...defaultKeymap,
+      ...historyKeymap,
+      indentWithTab,
+    ]),
     baseTheme,
   ];
 }
