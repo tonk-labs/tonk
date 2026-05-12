@@ -403,29 +403,27 @@ fn emit_name_assertion<U: Update>(
     update: &mut U,
     assert: bool,
 ) {
-    let Some(name) = name else {
+    use crate::meta::{Name, name};
+    use dialog_artifacts::Statement as _;
+
+    let Some(name_str) = name else {
         return;
     };
     let Some(target) = entity_of_this(terms) else {
         return;
     };
-    let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
+    let Ok(id_entity) = format!("id:{name_str}").parse::<Entity>() else {
         return;
     };
-    let attribute = meta_name_attr();
-    let value = Value::Entity(target);
+    let claim = Name {
+        this: id_entity,
+        entity: name::Referent(target),
+    };
     if assert {
-        // Cardinality-one: replace, not accumulate.
-        update.associate_unique(attribute, id_entity, value);
+        claim.assert(update);
     } else {
-        update.dissociate(attribute, id_entity, value);
+        claim.retract(update);
     }
-}
-
-fn meta_name_attr() -> dialog_artifacts::Attribute {
-    "dialog.meta/name"
-        .parse()
-        .expect("dialog.meta/name is a valid attribute URI")
 }
 
 // ---------------------------------------------------------------- //
@@ -724,18 +722,25 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name = meta_name_attr();
+        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
 
         let mut id_alice_name_claim_count = 0;
         let mut wrong_direction_count = 0;
         for inst in changes.into_instructions() {
-            if let Instruction::Assert(a) = &inst
-                && a.the == meta_name
-            {
-                if a.of == id_alice && a.is == Value::Entity(target.clone()) {
+            // Cardinality-one fields use `Instruction::Replace`
+            // (added in dialog tonk-2026-05-11). The anchor name
+            // is `dialog.name/referent` with cardinality one, so
+            // the desugared `name!` lands as a Replace, not an
+            // Assert.
+            let artifact = match &inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => a,
+                Instruction::Retract(_) => continue,
+            };
+            if artifact.the == meta_name {
+                if artifact.of == id_alice && artifact.is == Value::Entity(target.clone()) {
                     id_alice_name_claim_count += 1;
                 }
-                if a.of == target {
+                if artifact.of == target {
                     wrong_direction_count += 1;
                 }
             }
@@ -761,7 +766,7 @@ mod tests {
 
         let id_alice: Entity = "id:alice".parse().unwrap();
         let target: Entity = target_uri.parse().unwrap();
-        let meta_name = meta_name_attr();
+        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
 
         let saw_dissociate = changes.into_instructions().into_iter().any(|inst| {
             matches!(
@@ -802,7 +807,7 @@ mod tests {
         let mut changes = Changes::new();
         plan.assert(&mut changes);
 
-        let meta_name = meta_name_attr();
+        let meta_name: dialog_artifacts::Attribute = "dialog.name/referent".parse().unwrap();
         let saw_meta_name = changes
             .into_instructions()
             .into_iter()

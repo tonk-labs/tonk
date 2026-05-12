@@ -8,6 +8,10 @@ edition.workspace = true
 [features]
 integration-tests = []
 web-integration-tests = []
+# Test helpers — wire-query builders and seeding fixtures.
+# Auto-enabled in this crate's own test builds via `cfg(test)`;
+# opt-in for downstream crates that want the same fixtures.
+helpers = []
 
 [dependencies]
 async-trait = { workspace = true }

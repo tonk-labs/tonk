@@ -1822,30 +1822,7 @@ employee:
     // Reactor: /api/repository/{repo}/branch/{branch}/query      //
     // ---------------------------------------------------------- //
 
-    /// A wire `Query` over the `Named` view — `this` plus
-    /// `dialog.meta/name`. Matches every entity on the branch
-    /// that carries a `dialog.meta/name` claim. Tests below seed
-    /// at least one such entity via `/evaluate` before querying.
-    /// Binds both `this` and `name` so the projected
-    /// [`Conclusion::fields`] carries the entity URI and the
-    /// concept's display name.
-    fn named_concept_wire_query() -> serde_json::Value {
-        serde_json::json!({
-            "terms": {
-                "this": { "?": { "name": "this" } },
-                "name": { "?": { "name": "name" } },
-            },
-            "predicate": {
-                "with": {
-                    "name": {
-                        "the": "dialog.meta/name",
-                        "as": "Text",
-                        "cardinality": "one",
-                    },
-                },
-            },
-        })
-    }
+    use crate::helpers::named_concept_wire_query;
 
     /// Seed one named entity on `main` so the reactor tests have
     /// something to query.
@@ -2160,8 +2137,9 @@ attribute!: &{name}
 
     /// One-shot `/query` projects every term named in the
     /// query's `terms` map into [`Conclusion::fields`]. The
-    /// `Named` view binds `this` and `name`, so each row must
-    /// carry both — the entity URI and the display name string.
+    /// `Name` view binds `this` (the `id:<n>` name entity) and
+    /// `entity` (its current target), so each row must carry
+    /// both.
     #[dialog_common::test]
     async fn it_projects_query_terms_into_conclusion_fields() {
         let state = test_state().await;
@@ -2177,15 +2155,19 @@ attribute!: &{name}
         for row in arr {
             let fields = row.get("fields").and_then(|f| f.as_object());
             let fields = fields.unwrap_or_else(|| panic!("row missing fields object: {row}"));
-            assert!(
-                fields.contains_key("this"),
-                "fields must include `this`: {row}",
-            );
-            let name = fields
-                .get("name")
+            let this = fields
+                .get("this")
                 .and_then(|v| v.as_str())
-                .unwrap_or_else(|| panic!("fields[\"name\"] must be a string: {row}"));
-            assert!(!name.is_empty(), "name binding must be non-empty: {row}");
+                .unwrap_or_else(|| panic!("fields[\"this\"] must be a string: {row}"));
+            assert!(
+                this.starts_with("id:"),
+                "name entity `this` must be an `id:<n>` URI: {row}",
+            );
+            let entity = fields
+                .get("entity")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| panic!("fields[\"entity\"] must be a string: {row}"));
+            assert!(!entity.is_empty(), "entity target must be non-empty: {row}");
         }
     }
 
