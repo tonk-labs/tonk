@@ -35,6 +35,7 @@ serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
+tonk-introspect = { workspace = true }
 tonk-notation = { workspace = true }
 
 [dev-dependencies]

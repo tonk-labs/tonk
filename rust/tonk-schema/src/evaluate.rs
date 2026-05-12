@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
 
-use crate::analyzer::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
+use crate::analyzer;
 use crate::concept::{
     AttributeByEntity, AttributeByName, Concept as ConceptLookup, lookup_named_entity,
 };
@@ -192,56 +192,194 @@ pub struct BranchResolver<'a, Env> {
     pub env: &'a Env,
 }
 
+// `BranchResolver` no longer implements `Resolver` directly —
+// the blanket `impl<T: BranchIntrospection> Resolver for T` in
+// `analyzer::resolver` provides it via the introspection
+// implementation below.
+
+// ---------------------------------------------------------------- //
+// Branch-backed BranchIntrospection                                //
+// ---------------------------------------------------------------- //
+//
+// Same lookups as the `Resolver` impl above plus enumeration —
+// `list_concepts` and `list_named_entities`. Both rely on
+// branch-side helpers in `crate::concept`. The blanket
+// `Resolver`-from-`BranchIntrospection` impl below means a
+// downstream type only needs to implement this trait once and
+// gets the legacy `Resolver` interface for free.
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<'a, Env: EvaluateEnv> Resolver for BranchResolver<'a, Env> {
-    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolver<'a, Env> {
+    async fn lookup_concept(
+        &self,
+        name: &str,
+    ) -> Result<Option<tonk_introspect::ResolvedConcept>, tonk_introspect::IntrospectionError> {
         let resolved = ConceptLookup::by_name(name)
             .resolve(self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(e.to_string()))?;
-        Ok(resolved.map(|c| ResolvedConcept {
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
+        Ok(resolved.map(|c| tonk_introspect::ResolvedConcept {
             entity: c.entity,
             descriptor: c.descriptor,
         }))
     }
 
-    async fn resolve_attribute(
+    async fn lookup_attribute(
         &self,
         name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+    ) -> Result<Option<tonk_introspect::ResolvedAttribute>, tonk_introspect::IntrospectionError>
+    {
         let resolved = AttributeByName::new(name)
             .resolve(self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(e.to_string()))?;
-        Ok(resolved.map(|a| ResolvedAttribute {
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
+        Ok(resolved.map(|a| tonk_introspect::ResolvedAttribute {
             entity: a.entity,
             descriptor: a.descriptor,
         }))
     }
 
-    async fn resolve_attribute_by_entity(
+    async fn lookup_attribute_by_entity(
         &self,
         entity: &Entity,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+    ) -> Result<Option<tonk_introspect::ResolvedAttribute>, tonk_introspect::IntrospectionError>
+    {
         let resolved = AttributeByEntity::new(entity.clone())
             .resolve(self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(e.to_string()))?;
-        Ok(resolved.map(|a| ResolvedAttribute {
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
+        Ok(resolved.map(|a| tonk_introspect::ResolvedAttribute {
             entity: a.entity,
             descriptor: a.descriptor,
         }))
     }
 
-    /// Find the entity that the user-published name `<name>`
-    /// points at via [`lookup_named_entity`]. Delegates to the
-    /// shared helper so both this and the analyzer's own name
-    /// table use the same lookup path.
-    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+    async fn lookup_named_entity(
+        &self,
+        name: &str,
+    ) -> Result<Option<Entity>, tonk_introspect::IntrospectionError> {
         lookup_named_entity(name, self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(format!("name lookup failed: {e:?}")))
+            .map_err(|e| {
+                tonk_introspect::IntrospectionError::new(format!("name lookup failed: {e:?}"))
+            })
+    }
+
+    /// Enumerate every concept on the branch. Built-ins from
+    /// [`crate::builtin::concept_registry`] always lead the list;
+    /// branch-published concepts (entities carrying the
+    /// `dialog.meta/concept = db:concept` marker) follow with
+    /// their reconstructed descriptors. Filtering by published
+    /// name happens at the call site — the introspection trait
+    /// returns the full set so the consumer can decide what to
+    /// surface (e.g. completion may want both built-in and
+    /// branch concepts; docs generation may want only branch).
+    async fn list_concepts(
+        &self,
+    ) -> Result<Vec<tonk_introspect::ResolvedConcept>, tonk_introspect::IntrospectionError> {
+        use crate::builtin::concept_registry;
+        use dialog_query::Output as _;
+
+        let mut out: Vec<tonk_introspect::ResolvedConcept> = Vec::new();
+
+        for (_name, resolved) in concept_registry().iter() {
+            out.push(tonk_introspect::ResolvedConcept {
+                entity: resolved.entity.clone(),
+                descriptor: resolved.descriptor.clone(),
+            });
+        }
+
+        // Find every entity carrying the concept marker —
+        // `(?of, dialog.meta/concept, db:concept)`.
+        let marker_attr: dialog_query::attribute::The = "dialog.meta/concept"
+            .parse()
+            .expect("dialog.meta/concept is a valid attribute URI");
+        let marker_target: Entity = "db:concept"
+            .parse()
+            .expect("`db:concept` is a valid entity URI");
+        let claims = self
+            .branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(marker_attr)
+                    .of(Term::<Entity>::var("__list_concepts_of"))
+                    .is(Term::from(marker_target)),
+            ))
+            .perform(self.env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                tonk_introspect::IntrospectionError::new(format!(
+                    "concept marker query failed: {e:?}",
+                ))
+            })?;
+
+        for claim in claims {
+            let entity = claim.of.clone();
+            // Reuse the existing branch-side builder rather
+            // than reaching into `concept.rs` private helpers.
+            let resolved = ConceptLookup::by_entity(entity.clone())
+                .resolve(self.branch, self.env)
+                .await
+                .map_err(|e| {
+                    tonk_introspect::IntrospectionError::new(format!(
+                        "descriptor reconstruction failed: {e:?}",
+                    ))
+                })?;
+            if let Some(c) = resolved {
+                out.push(tonk_introspect::ResolvedConcept {
+                    entity: c.entity,
+                    descriptor: c.descriptor,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Enumerate every published name on the branch — `(id:<n>,
+    /// dialog.name/referent, ?target)` claims projected into
+    /// `(name, target)` pairs. Reuses the [`crate::meta::Name`]
+    /// concept's derived query for the actual fetch.
+    async fn list_named_entities(
+        &self,
+    ) -> Result<Vec<tonk_introspect::NamedEntity>, tonk_introspect::IntrospectionError> {
+        use crate::meta::Name;
+        use dialog_query::{Output as _, Query};
+
+        let rows: Vec<Name> = self
+            .branch
+            .query()
+            .select(Query::<Name> {
+                this: Term::<Entity>::var("__list_names_this"),
+                entity: Term::<Entity>::var("__list_names_target"),
+            })
+            .perform(self.env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                tonk_introspect::IntrospectionError::new(format!("name enumeration failed: {e:?}",))
+            })?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let uri = row.this.to_string();
+            // `id:<name>` is the user-published-name shape;
+            // skip anything else (built-in `db:<name>` URIs,
+            // direct DIDs that happen to carry a referent
+            // claim, etc.) — those aren't reachable through the
+            // bare-symbol notation, so suggesting them as
+            // completion targets would mislead.
+            let Some(name) = uri.strip_prefix("id:") else {
+                continue;
+            };
+            out.push(tonk_introspect::NamedEntity {
+                name: name.to_owned(),
+                entity: row.entity.0,
+            });
+        }
+        Ok(out)
     }
 }
 

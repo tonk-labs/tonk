@@ -33,6 +33,15 @@
 //! - [`field`] — field-value translation, scalar coercion,
 //!   small utilities
 
+// The analyzer's own consumers reference the `Resolver` trait by
+// name — that trait is now deprecated in favour of
+// `tonk_introspect::BranchIntrospection` (with a blanket impl
+// supplying `Resolver`), but it stays as the analyzer's
+// internal vocabulary. Silencing the warning crate-side keeps
+// downstream consumers seeing the deprecation while not flooding
+// our own build.
+#![allow(deprecated)]
+
 mod assertion;
 mod declaration;
 mod error;

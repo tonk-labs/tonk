@@ -36,6 +36,18 @@ pub struct ResolvedConcept {
 /// The analyzer calls this when it encounters a concept name in
 /// head position or a bare-symbol reference in field-value
 /// position.
+///
+/// **Deprecated.** Implement
+/// [`tonk_introspect::BranchIntrospection`] instead — this trait
+/// has a blanket impl over any `BranchIntrospection`, so the
+/// analyzer call sites keep working. New code that needs more
+/// than four point lookups (e.g. enumeration for completion
+/// surfaces) should use the introspection trait directly.
+#[deprecated(
+    since = "0.1.0",
+    note = "implement `tonk_introspect::BranchIntrospection` instead; \
+            `Resolver` is provided via blanket impl"
+)]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Resolver {
@@ -82,6 +94,101 @@ impl ResolverError {
         Self {
             message: message.into(),
         }
+    }
+}
+
+/// Convert from the introspection trait's resolved-concept
+/// type. Both structs hold the same `(entity, descriptor)`
+/// pair; the duplication exists so each crate can name its
+/// result types without pulling the other in as a dependency
+/// (the analyzer used to predate `tonk-introspect`).
+impl From<tonk_introspect::ResolvedConcept> for ResolvedConcept {
+    fn from(c: tonk_introspect::ResolvedConcept) -> Self {
+        Self {
+            entity: c.entity,
+            descriptor: c.descriptor,
+        }
+    }
+}
+
+/// Convert from the introspection trait's resolved-attribute
+/// type. See [`From<tonk_introspect::ResolvedConcept>`].
+impl From<tonk_introspect::ResolvedAttribute> for ResolvedAttribute {
+    fn from(a: tonk_introspect::ResolvedAttribute) -> Self {
+        Self {
+            entity: a.entity,
+            descriptor: a.descriptor,
+        }
+    }
+}
+
+impl From<tonk_introspect::IntrospectionError> for ResolverError {
+    fn from(e: tonk_introspect::IntrospectionError) -> Self {
+        Self { message: e.message }
+    }
+}
+
+/// Blanket impl: every [`tonk_introspect::BranchIntrospection`]
+/// is also a [`Resolver`]. The four `resolve_*` methods forward
+/// to their `lookup_*` counterparts on the introspection trait,
+/// converting the result types at the boundary.
+#[allow(deprecated)]
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl<T> Resolver for T
+where
+    T: tonk_introspect::BranchIntrospection + ?Sized + Sync,
+{
+    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        Ok(self.lookup_concept(name).await?.map(Into::into))
+    }
+    async fn resolve_attribute(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(self.lookup_attribute(name).await?.map(Into::into))
+    }
+    async fn resolve_attribute_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(self
+            .lookup_attribute_by_entity(entity)
+            .await?
+            .map(Into::into))
+    }
+    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+        Ok(self.lookup_named_entity(name).await?)
+    }
+}
+
+#[allow(deprecated)]
+#[cfg(target_arch = "wasm32")]
+#[async_trait(?Send)]
+impl<T> Resolver for T
+where
+    T: tonk_introspect::BranchIntrospection + ?Sized,
+{
+    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+        Ok(self.lookup_concept(name).await?.map(Into::into))
+    }
+    async fn resolve_attribute(
+        &self,
+        name: &str,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(self.lookup_attribute(name).await?.map(Into::into))
+    }
+    async fn resolve_attribute_by_entity(
+        &self,
+        entity: &Entity,
+    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        Ok(self
+            .lookup_attribute_by_entity(entity)
+            .await?
+            .map(Into::into))
+    }
+    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+        Ok(self.lookup_named_entity(name).await?)
     }
 }
 

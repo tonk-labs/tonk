@@ -4840,6 +4840,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-introspect"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dialog-artifacts",
+ "dialog-query",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tonk-invite"
 version = "0.1.0"
 dependencies = [
@@ -4909,6 +4919,7 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-introspect",
  "tonk-notation",
  "wasm-bindgen-test",
 ]
