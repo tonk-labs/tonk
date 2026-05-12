@@ -259,14 +259,16 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     };
 
     let mut queries: Vec<Application> = Vec::new();
+    let mut labels: Vec<String> = Vec::new();
     for expression in &syntax.expressions {
         if let Expression::Query(q) = expression {
             let application = build_query_application(q, &scope, &analysis).await?;
             queries.push(application);
+            labels.push(q.head.source.clone());
         }
     }
     if !queries.is_empty() {
-        analysis.query = Some(QueryAnalysis { queries });
+        analysis.query = Some(QueryAnalysis { queries, labels });
     }
 
     // ---- Phase 3: build mutation Statements ----
@@ -278,6 +280,11 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     // their state lives in the schema branch, not user-facing
     // facts the editor wants to project.
     let mut declaration_statement_indexes: HashSet<usize> = HashSet::new();
+    // Per-statement display label, populated from the assertion's
+    // head source name. `None` for statements derived from a
+    // declaration head (`attribute!` / `concept!`) — those are
+    // skipped by the implicit-query synthesizer anyway.
+    let mut statement_labels: Vec<Option<String>> = Vec::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         match expression {
@@ -296,10 +303,12 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         collect_unbound_variables(&inline, &analysis, &mut requires);
                         declaration_statement_indexes.insert(statements.len());
                         statements.push(Statement::Assert(inline));
+                        statement_labels.push(None);
                     }
                     collect_unbound_variables(&declaration.application, &analysis, &mut requires);
                     declaration_statement_indexes.insert(statements.len());
                     statements.push(Statement::Assert(declaration.application));
+                    statement_labels.push(None);
                 } else {
                     // An assertion expression can produce up to
                     // two statements: an assert side (explicit
@@ -314,10 +323,12 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     if let Some(retract_app) = plan.retract {
                         collect_unbound_variables(&retract_app, &analysis, &mut requires);
                         statements.push(Statement::Retract(retract_app));
+                        statement_labels.push(Some(a.head.source.clone()));
                     }
                     if let Some(assert_app) = plan.assert {
                         collect_unbound_variables(&assert_app, &analysis, &mut requires);
                         statements.push(Statement::Assert(assert_app));
+                        statement_labels.push(Some(a.head.source.clone()));
                     }
                 }
             }
@@ -352,7 +363,11 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     // surfaces the change. Skips meta-head declarations
     // (`attribute!` / `concept!`) — their state lives in the
     // schema branch, not in user-facing facts.
-    synthesize_implicit_queries(&mut analysis, &declaration_statement_indexes);
+    synthesize_implicit_queries(
+        &mut analysis,
+        &statement_labels,
+        &declaration_statement_indexes,
+    );
 
     Ok(analysis)
 }
@@ -369,6 +384,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
 /// existing query are skipped: the user query will pick them up.
 fn synthesize_implicit_queries(
     analysis: &mut Analysis,
+    statement_labels: &[Option<String>],
     declaration_statement_indexes: &HashSet<usize>,
 ) {
     use dialog_artifacts::Value;
@@ -391,6 +407,7 @@ fn synthesize_implicit_queries(
     }
 
     let mut implicit: Vec<Application> = Vec::new();
+    let mut implicit_labels: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for (index, statement) in analysis.mutate.statements.iter().enumerate() {
         if declaration_statement_indexes.contains(&index) {
@@ -486,18 +503,31 @@ fn synthesize_implicit_queries(
             }
         };
         implicit.push(snapshot);
+        // Reuse the assertion's head name so the rendered
+        // result block carries `person` (or whatever) instead
+        // of the `?` fallback. `entity_key` (a URI) is the
+        // worst-case fallback; the assertion's head should
+        // always be present, but the `unwrap_or_else` keeps
+        // the synthesizer from panicking if a future caller
+        // forgets to populate `statement_labels`.
+        let label = statement_labels
+            .get(index)
+            .and_then(|l| l.clone())
+            .unwrap_or(entity_key);
+        implicit_labels.push(label);
     }
 
     if implicit.is_empty() {
         return;
     }
-    let mut queries = analysis
+    let (mut queries, mut labels) = analysis
         .query
         .clone()
-        .map(|q| q.queries)
+        .map(|q| (q.queries, q.labels))
         .unwrap_or_default();
     queries.extend(implicit);
-    analysis.query = Some(QueryAnalysis { queries });
+    labels.extend(implicit_labels);
+    analysis.query = Some(QueryAnalysis { queries, labels });
 }
 
 /// Pull a concrete `Entity` out of a `Term::Constant(Value::Entity(_))`,

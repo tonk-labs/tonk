@@ -418,7 +418,7 @@ pub async fn run<Env: EvaluateEnv>(
         .map_err(EvaluateError::Analyze)?;
 
     let revision_before = branch.revision();
-    let (response, committed) = run_pipeline(&analysis, syntax, branch, env, transact).await?;
+    let (response, committed) = run_pipeline(&analysis, branch, env, transact).await?;
     let revision_after = branch.revision();
 
     Ok(EvaluateOutcome {
@@ -441,7 +441,6 @@ pub async fn run<Env: EvaluateEnv>(
 /// before/after revisions.
 async fn run_pipeline<Env: EvaluateEnv>(
     analysis: &Analysis,
-    syntax: &Syntax,
     branch: &Branch,
     env: &Env,
     transact: bool,
@@ -535,7 +534,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
     // Render the pre-commit matches now (before we run the
     // post-commit query) so the response carries both shapes
     // and the editor can show a before/after comparison.
-    let matches_before = render_match_blocks(analysis, syntax, pre_results.as_ref());
+    let matches_before = render_match_blocks(analysis, pre_results.as_ref());
 
     // ---- Re-run per-expression queries against post-commit state ----
     // For pure-query documents the post-state equals the
@@ -548,7 +547,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
             None => pre_results,
         }
     };
-    let matches_after = render_match_blocks(analysis, syntax, post_results.as_ref());
+    let matches_after = render_match_blocks(analysis, post_results.as_ref());
 
     Ok((
         EvaluateResponse {
@@ -813,7 +812,6 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// expression's cross-product introduces duplicates.
 fn render_match_blocks(
     analysis: &Analysis,
-    syntax: &Syntax,
     results: Option<&QueryResults>,
 ) -> Vec<QueryMatchBlock> {
     let Some(query) = &analysis.query else {
@@ -823,19 +821,20 @@ fn render_match_blocks(
         return Vec::new();
     };
 
-    // Source-expression labels in document order.
-    let mut labels: Vec<String> = Vec::new();
-    for expression in &syntax.expressions {
-        if let tonk_notation::Expression::Query(q) = expression {
-            labels.push(q.head.source.clone());
-        }
-    }
-
     // For each expression, collect the user-named variables it
     // binds. We project the joined frame onto these to dedupe.
+    // Labels come from `analysis.query.labels` — populated by
+    // the analyzer for both explicit query expressions and the
+    // implicit queries it synthesizes for assertions, so the
+    // assertion path's result block is titled by the head name
+    // (`person`) instead of the legacy `?` fallback.
     let mut blocks = Vec::with_capacity(query.queries.len());
     for (i, application) in query.queries.iter().enumerate() {
-        let label = labels.get(i).cloned().unwrap_or_else(|| "?".to_owned());
+        let label = query
+            .labels
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| "?".to_owned());
         let descriptor = match application {
             Application::Concept { query: q, .. } => q.predicate.clone(),
             Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,

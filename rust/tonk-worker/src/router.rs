@@ -2396,4 +2396,92 @@ attribute!: &person-name
             "expected a `range` object so the editor can position the squiggle; got {body}",
         );
     }
+
+    /// `person!:` (an assertion with no explicit query) should
+    /// produce a result block labelled `person`, not `?`. The
+    /// implicit-query synthesizer mints a snapshot query for
+    /// the touched entity; previously the renderer fell back to
+    /// `?` because it only collected labels from explicit query
+    /// expressions. The label now flows through
+    /// `QueryAnalysis::labels`, populated by the analyzer for
+    /// both explicit and implicit queries.
+    #[dialog_common::test]
+    async fn it_labels_implicit_query_block_with_assertion_head_name() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-implicit-query-label";
+        put_repo(&app, repo).await;
+
+        // First seed `person-name` and `person-age` attributes
+        // so `person:` resolves; then assert `person!: …` on
+        // its own (no explicit query expression) and check the
+        // matches block label.
+        let seed = "\
+attribute!: &person-name
+  the:         xyz.tonk.person/name
+  as:          text
+  cardinality: one
+  description: \"name\"
+
+attribute!: &person-age
+  the:         xyz.tonk.person/age
+  as:          unsigned-integer
+  cardinality: one
+  description: \"age\"
+
+concept!: &person
+  description: \"a person\"
+  with:
+    name: person-name
+    age:  person-age
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(seed))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let assertion = "\
+person!:
+  name: \"Bob\"
+  age: 2
+";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(assertion))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let labels: Vec<&str> = resp
+            .matches_after
+            .iter()
+            .map(|b| b.label.as_str())
+            .collect();
+        assert!(
+            labels.iter().any(|l| *l == "person"),
+            "expected a result block labelled `person` for the implicit query; got {labels:?}",
+        );
+        assert!(
+            !labels.iter().any(|l| *l == "?"),
+            "result block must not fall back to `?` for an assertion with a known head; got {labels:?}",
+        );
+    }
 }
