@@ -194,6 +194,7 @@ const OBSERVED = [
   "active-line",
   "source",
   "idle-duration",
+  "auto-focus",
 ] as const;
 type ObservedAttr = (typeof OBSERVED)[number];
 
@@ -439,6 +440,17 @@ function activeLineExtensions(): Extension[] {
   return [highlightActiveLine(), highlightActiveLineGutter()];
 }
 
+/** Build the read-only stack. `EditorState.readOnly` alone leaves
+ *  the caret visible and the user can still navigate with arrow
+ *  keys; pairing it with `EditorView.editable.of(false)` strips
+ *  the contenteditable affordance entirely so sealed cells render
+ *  as plain text (no caret, no insertion point on click). Text
+ *  selection still works for copy. */
+function readOnlyExtensions(readOnly: boolean): Extension[] {
+  if (!readOnly) return [];
+  return [EditorState.readOnly.of(true), EditorView.editable.of(false)];
+}
+
 class TonkCodeElement extends HTMLElement {
   static get observedAttributes(): readonly string[] {
     return OBSERVED;
@@ -545,6 +557,7 @@ class TonkCodeElement extends HTMLElement {
     return this.#view;
   }
 
+
   /** Recount diagnostics from the current state and dispatch a
    *  `diagnostics` event if the totals changed. Cheap to call —
    *  `forEachDiagnostic` walks a small in-memory range tree. */
@@ -644,7 +657,7 @@ class TonkCodeElement extends HTMLElement {
         submitKeymap,
         ...baseExtensions(),
         this.#language.of([]),
-        this.#readOnly.of(EditorState.readOnly.of(isReadOnly)),
+        this.#readOnly.of(readOnlyExtensions(isReadOnly)),
         this.#placeholder.of(
           placeholderText ? placeholderExt(placeholderText) : []
         ),
@@ -689,12 +702,47 @@ class TonkCodeElement extends HTMLElement {
       parent: this.#shadow,
     });
 
+    // Bridge host focus → contenteditable focus. With
+    // `delegatesFocus: true`, focusing the host normally
+    // delegates to the *first focusable* shadow descendant —
+    // which inside CodeMirror's DOM is `cm-scroller` (it has
+    // tabindex), not the `cm-content` contenteditable. Listen
+    // for `focus` on the host and explicitly call
+    // `view.focus()`, so however the host gains focus (Tab key,
+    // programmatic `host.focus()`, a click anywhere in the
+    // editor frame), focus reliably lands on the contenteditable.
+    //
+    // Bonus: also recovers from any sync-mount blur (e.g. an LSP
+    // plugin reconfigure later in the same `connectedCallback`
+    // run) — the next time anything re-focuses the host, we end
+    // up in the right place.
+    const view = this.#view;
+    this.addEventListener("focus", () => view.focus());
+
     // Apply language pack after construction so the failure path
     // (chunk missing, network blip) doesn't block element insertion.
     const language = this.getAttribute("language");
     if (language) {
       void this.#applyLanguage(language);
     }
+
+    // `autofocus` mirrors the standard HTML attribute — focus
+    // the editor on mount when present. Skipped for read-only
+    // editors — they don't need a caret.
+    //
+    // Standard HTML autofocus only honors the *first* element
+    // with the attribute on a page — later autofocus targets
+    // Announce first so any ancestor `<tonk-diagnostics-provider>`
+    // hands us its LSP client — `connect()` reconfigures the
+    // editor's lsp compartment, which can clear focus on the
+    // contenteditable. Firing `ready` *after* lets focus
+    // handlers land focus that won't get clobbered by the
+    // ensuing LSP attach.
+    //
+    // No provider in scope ⇒ no listener consumes the event ⇒
+    // editor stays in plain text-edit mode. There is no
+    // standalone-LSP fallback by design.
+    this.#announceConnect();
 
     this.dispatchEvent(
       new CustomEvent<ReadyDetail>("ready", {
@@ -704,15 +752,20 @@ class TonkCodeElement extends HTMLElement {
       })
     );
 
-    // Announce ourselves to any ancestor `<tonk-diagnostics-provider>`
-    // — the provider catches this bubbling event and calls
-    // `connect()` with its LSP client, wiring up diagnostics,
-    // hover, completion etc. for this editor's `source`.
+    // `auto-focus` is a non-standard attribute (the standard
+    // `autofocus` would be parsed by the browser on the host,
+    // delegating focus through `delegatesFocus: true` to the
+    // first focusable shadow descendant — `cm-scroller` rather
+    // than the contenteditable, which is the wrong target).
     //
-    // No provider in scope ⇒ no listener consumes the event ⇒
-    // editor stays in plain text-edit mode. There is no
-    // standalone-LSP fallback by design.
-    this.#announceConnect();
+    // The setTimeout(0) defers focus to the next macrotask. Any
+    // sibling editor's mount + sync LSP attach finishes before
+    // our focus call lands, so the contenteditable focus
+    // doesn't get clobbered by a sibling's reconfigure.
+    if (!isReadOnly && this.hasAttribute("auto-focus")) {
+      const view = this.#view;
+      setTimeout(() => view.focus(), 0);
+    }
   }
 
   disconnectedCallback(): void {
@@ -764,9 +817,7 @@ class TonkCodeElement extends HTMLElement {
         break;
       case "readonly":
         this.#view.dispatch({
-          effects: this.#readOnly.reconfigure(
-            EditorState.readOnly.of(next !== null)
-          ),
+          effects: this.#readOnly.reconfigure(readOnlyExtensions(next !== null)),
         });
         break;
       case "placeholder":
@@ -809,6 +860,11 @@ class TonkCodeElement extends HTMLElement {
         // `idle` event tracks edit activity, not attribute
         // writes.
         this.#cancelIdle();
+        break;
+      case "auto-focus":
+        // Applied at mount only. Post-mount writes are no-op —
+        // adding it via JS later is uncommon enough that we'd
+        // rather not steal focus from wherever the user has it.
         break;
     }
   }

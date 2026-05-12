@@ -414,234 +414,22 @@ pub(super) fn BranchRow(
         }
     };
 
-    // Per-branch transaction state. The buffer lives in the
-    // editor's DOM property — we only mirror it on `change` so
-    // we can submit it without reaching into the element on every
-    // keystroke. `transact_state` drives the status surface below
-    // the editor.
+    // Notebook-style cell list. Each cell is its own
+    // <tonk-code> editor + result panel; the active cell is
+    // editable, sealed cells are read-only history. When the
+    // active cell submits successfully it transitions to sealed
+    // and a fresh active cell appends below — Observable-style.
     //
-    // `last_response` is sticky across submits — it only updates
-    // on a successful `DoneEvaluate`. The result panel reads from
-    // it and stays mounted with the *previous* response while a
-    // new request is in flight, so the form doesn't shrink/grow
-    // mid-request and the page doesn't reflow.
-    let transact_buffer = RwSignal::new(String::new());
-    let transact_state = RwSignal::new(TransactState::Idle);
-    let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
-
-    // LSP document URI for this branch's scratch editor. Stable
-    // for the editor's lifetime so the language server keeps
-    // analyzing one buffer instead of opening/closing on every
-    // keystroke. The provider opens this URI on first connect
-    // and uses it to route published diagnostics back to the
-    // editor.
-    let editor_source = owner.editor_source(&branch_name);
-
-    let on_transact_change = move |ev: leptos::ev::Event| {
-        transact_buffer.set(read_tonk_code_value(&ev));
-    };
-
-    // Number of *error*-severity diagnostics the editor's
-    // LSP/lint plugins currently show. The `<tonk-code>`
-    // element fires a `diagnostics` event whenever the count
-    // changes; we mirror it into a signal so the play button
-    // can hide while errors are outstanding.
-    let editor_error_count = RwSignal::new(0_u32);
-    let on_diagnostics = move |ev: web_sys::CustomEvent| {
-        let count =
-            js_sys::Reflect::get(&ev.detail(), &wasm_bindgen::JsValue::from_str("errorCount"))
-                .ok()
-                .and_then(|v| v.as_f64())
-                .map(|n| n as u32)
-                .unwrap_or(0);
-        editor_error_count.set(count);
-    };
-
-    // The play button is shown when:
-    //  - the buffer is non-empty,
-    //  - the parser accepts it,
-    //  - the LSP isn't showing any error-severity diagnostics, *and*
-    //  - the document has at least one assertion (`head!:`).
-    // Pure-query documents auto-evaluate on idle so the play
-    // affordance only needs to surface when there's actually
-    // something to commit. Structural errors
-    // (`AssertionWithoutFields` etc.) come back as LSP
-    // diagnostics; we use that count as the source of truth for
-    // "this won't run."
-    let is_runnable = Signal::derive(move || {
-        let body = transact_buffer.get();
-        if body.trim().is_empty() {
-            return false;
-        }
-        if editor_error_count.get() > 0 {
-            return false;
-        }
-        matches!(
-            classify_for_dispatch(&body),
-            DocDispatch::Submit { has_mutation: true }
-        )
-    });
-
-    // The actual evaluate call, fired from both the floating
-    // play button and Shift+Enter on the editor. Defined as a
-    // helper that takes the captured branch name and fires;
-    // each adapter clones the name before delegating.
-    let evaluate_now = {
-        let branch_template = branch_name.clone();
-        let editor_source_for_eval = editor_source.clone();
-        let owner = owner.clone();
-        move |branch_name: String| {
-            let body = transact_buffer.get_untracked();
-            if body.trim().is_empty() {
-                return;
-            }
-            let target = match resolve_evaluate_target(&owner, &branch_name) {
-                Some(t) => t,
-                None => {
-                    transact_state.set(TransactState::Failed("no repository in scope".to_owned()));
-                    return;
-                }
-            };
-            if matches!(transact_state.get_untracked(), TransactState::Running) {
-                return;
-            }
-            transact_state.set(TransactState::Running);
-            let _ = &branch_template; // silence unused-capture warning
-            let editor_source = editor_source_for_eval.clone();
-            spawn_local(async move {
-                match classify_for_dispatch(&body) {
-                    DocDispatch::ParseError(messages) => {
-                        transact_state.set(TransactState::Failed(messages));
-                        return;
-                    }
-                    DocDispatch::Empty => {
-                        transact_state.set(TransactState::Idle);
-                        return;
-                    }
-                    DocDispatch::Submit { .. } => {}
-                }
-                // Explicit submit (play button / Shift+Enter) is
-                // a real commit — the user asked for it.
-                match target.evaluate(body, "application/yaml", true).await {
-                    Ok(response) => {
-                        // Drop any prior squiggles from a
-                        // previous failed submit — the doc is
-                        // good now.
-                        clear_pushed_diagnostics(&editor_source);
-                        last_response.set(Some(Box::new(response)));
-                        transact_state.set(TransactState::Idle);
-                    }
-                    Err(err) => {
-                        // Structured analyzer rejection: push
-                        // it onto the editor as a squiggle,
-                        // not a banner. The editor's own
-                        // `diagnostics` event will then keep
-                        // the play button hidden until the
-                        // user fixes it.
-                        if matches!(&err, TonkUiError::Analyze { .. }) {
-                            push_analyzer_diagnostic(&editor_source, &err);
-                            transact_state.set(TransactState::Idle);
-                        } else {
-                            transact_state.set(TransactState::Failed(format!("{err}")));
-                        }
-                    }
-                }
-            });
-        }
-    };
-
-    let on_play_click = {
-        let branch_name = branch_name.clone();
-        let evaluate_now = evaluate_now.clone();
-        move |ev: leptos::ev::MouseEvent| {
-            // Belt-and-braces: prevent any default action and
-            // stop the click from bubbling out of the editor's
-            // form. `<wa-button>` defaults to `type="button"`
-            // (opposite of native), but we pin both sides so a
-            // future change to the button's defaults can't
-            // sneak a form submit back in (which scrolls the
-            // page to the top via the browser's GET-current-url
-            // default).
-            ev.prevent_default();
-            ev.stop_propagation();
-            evaluate_now(branch_name.clone())
-        }
-    };
-    // `<tonk-code>` fires a `run` CustomEvent on
-    // Shift+Enter / Mod+Enter (consuming the key in the
-    // editor's keymap so no line break is inserted). We
-    // listen for it and forward to the same evaluate path as
-    // the play button. The event name is `run` rather than
-    // `submit` to avoid colliding with the form's native
-    // `submit` event.
-    let on_editor_run = {
-        let branch_name = branch_name.clone();
-        move |_ev: web_sys::CustomEvent| {
-            evaluate_now(branch_name.clone());
-        }
-    };
-
-    // `<tonk-code>` fires `idle` after the user pauses for the
-    // configured idle-duration. We use that to auto-evaluate the
-    // buffer in dry-run mode (`transact=false`) so the result
-    // panel reflects what *would* happen — without actually
-    // committing anything the user hasn't confirmed via
-    // play/Shift+Enter. Skipped while errors are outstanding to
-    // avoid a flood of analyzer rejections at typing speed.
-    let on_editor_idle = {
-        let branch_name = branch_name.clone();
-        let editor_source_for_idle = editor_source.clone();
-        let owner = owner.clone();
-        move |ev: web_sys::CustomEvent| {
-            let detail = ev.detail();
-            let error_count =
-                js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("errorCount"))
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .map(|n| n as u32)
-                    .unwrap_or(0);
-            if error_count > 0 {
-                return;
-            }
-            let body = js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("value"))
-                .ok()
-                .and_then(|v| v.as_string())
-                .unwrap_or_default();
-            if body.trim().is_empty() {
-                return;
-            }
-            let target = match resolve_evaluate_target(&owner, &branch_name) {
-                Some(t) => t,
-                None => return,
-            };
-            // Don't fire while a real submit is in flight — the
-            // play-button result is the source of truth and a
-            // dry-run racing it would clobber the panel.
-            if matches!(transact_state.get_untracked(), TransactState::Running) {
-                return;
-            }
-            let editor_source = editor_source_for_idle.clone();
-            spawn_local(async move {
-                match target.evaluate(body, "application/yaml", false).await {
-                    Ok(response) => {
-                        // Reuse the same panel; clear any prior
-                        // squiggle from a previous failed submit
-                        // since the editor is now error-free.
-                        clear_pushed_diagnostics(&editor_source);
-                        last_response.set(Some(Box::new(response)));
-                    }
-                    Err(err) => {
-                        // Auto-evaluate failures still flow as
-                        // diagnostics if structured, otherwise
-                        // silently swallowed — we don't want a
-                        // banner blocking edits.
-                        if matches!(&err, TonkUiError::Analyze { .. }) {
-                            push_analyzer_diagnostic(&editor_source, &err);
-                        }
-                    }
-                }
-            });
-        }
+    // Cell IDs are monotonic so the source URIs we hand the LSP
+    // are unique and stable for the cell's lifetime, even after
+    // reorderings or deletions (neither of which we do today
+    // but the IDs survive them for free).
+    let cells: RwSignal<Vec<u32>> = RwSignal::new(vec![0]);
+    let next_cell_id = RwSignal::new(1_u32);
+    let on_cell_sealed = move || {
+        let id = next_cell_id.get_untracked();
+        next_cell_id.set(id + 1);
+        cells.update(|list| list.push(id));
     };
 
     view! {
@@ -730,78 +518,314 @@ pub(super) fn BranchRow(
                         None => Either::Right(view! { <span>"none"</span> }),
                     } }</dd>
                 </dl>
-                // Asserted-notation editor. The submit handler
-                // pre-classifies the document (query vs assertion)
-                // and posts to `/query` or `/transact` accordingly.
-                <form
-                    class="branch-yaml-query wa-stack wa-gap-xs"
-                    // Form submission on click anywhere in the
-                    // form (e.g., the floating play button) was
-                    // navigating to the page top because the
-                    // browser default is GET on the current URL.
-                    // Swallow it; the play button's own click
-                    // handler runs the evaluator.
-                    on:submit=|ev: leptos::ev::SubmitEvent| ev.prevent_default()
-                >
-                    <label class="hint">"Asserted-notation (query or transaction)"</label>
-                    <div class="evaluate-editor">
-                        // Editor announces itself via
-                        // `tonk-code-connect` to the
-                        // `<tonk-diagnostics-provider>` mounted at
-                        // the space level. The provider owns one
-                        // LSP client shared across every branch's
-                        // editor in scope, so the language server
-                        // sees the full document set and can
-                        // resolve cross-branch references.
-                        <tonk-code
-                            language="dialog-yaml"
-                            source=editor_source.clone()
-                            active-line
-                            placeholder="person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
-                            on:change=on_transact_change
-                            on:run=on_editor_run
-                            on:idle=on_editor_idle
-                            on:diagnostics=on_diagnostics
-                        ></tonk-code>
-                        // Floating play button under the
-                        // editor — Observable-style. Visible
-                        // only when the buffer is runnable
-                        // (parses cleanly + non-empty); click
-                        // or Shift+Enter triggers evaluation.
-                        // The `type="button"` prevents the
-                        // browser from treating the click as a
-                        // form-submit (which would scroll the
-                        // page to the top).
-                        // No `prop:disabled` here on purpose:
-                        // disabling a *focused* button forces
-                        // browsers to drop focus to `<body>`,
-                        // which scrolls the page to the top.
-                        // The `loading` state gives visual
-                        // feedback while in flight, and
-                        // `evaluate_now`'s own re-entry guard
-                        // (the `Running` early return) prevents
-                        // double-submit if the user clicks
-                        // again.
-                        <wa-button
-                            class="evaluate-play"
-                            class:is-visible=move || is_runnable.get()
-                            type="button"
-                            variant="neutral"
-                            appearance="filled"
-                            size="small"
-                            pill
-                            title="Submit transaction (Shift+Enter)"
-                            prop:loading=move ||
-                                matches!(transact_state.get(), TransactState::Running)
-                            on:click=on_play_click
-                        >
-                            <wa-icon name="bolt" variant="solid"></wa-icon>
-                        </wa-button>
-                    </div>
-                    { move || render_transact_state(transact_state.get(), last_response.get()) }
-                </form>
+                // Notebook of cells. The active cell is the
+                // editable one at the bottom; everything above
+                // it is sealed history (read-only editor + the
+                // result panel its submit produced).
+                <div class="branch-cells wa-stack wa-gap-s">
+                    <For
+                        each=move || cells.get()
+                        key=|id| *id
+                        children={
+                            let owner = owner.clone();
+                            let branch_name = branch_name.clone();
+                            move |id| {
+                                let owner = owner.clone();
+                                let branch_name = branch_name.clone();
+                                // The newest cell — the one at
+                                // the tail of the list — is the
+                                // active editor. Everything above
+                                // it is sealed.
+                                let is_active = Signal::derive(move || {
+                                    cells.with(|list| list.last().copied() == Some(id))
+                                });
+                                // Take focus on mount when:
+                                //  - this is a freshly spawned
+                                //    cell (id > 0 means the user
+                                //    just submitted, focus the
+                                //    new editable cell), or
+                                //  - this is the very first cell
+                                //    (id == 0) and we're inside
+                                //    the row that opens by
+                                //    default — so on initial
+                                //    page load only one row
+                                //    grabs focus.
+                                let auto_focus = id > 0 || is_default;
+                                view! {
+                                    <BranchCell
+                                        id=id
+                                        owner=owner
+                                        branch_name=branch_name
+                                        is_active=is_active
+                                        auto_focus=auto_focus
+                                        on_sealed=on_cell_sealed
+                                    />
+                                }
+                            }
+                        }
+                    />
+                </div>
             </div>
         </wa-details>
+    }
+}
+
+/// One cell in a branch's notebook. Owns its own editor +
+/// transaction state. The active cell (newest in the list) is
+/// editable; sealed cells are locked read-only history with
+/// the result panel their submit produced still mounted below.
+///
+/// On a successful explicit submit, the cell calls
+/// `on_sealed()` so the parent row appends a fresh active cell
+/// below — Observable-style.
+#[component]
+fn BranchCell<F>(
+    id: u32,
+    owner: BranchOwner,
+    branch_name: String,
+    is_active: Signal<bool>,
+    /// When true, the cell focuses its editor on mount. Used
+    /// for the very first cell in the default branch (so the
+    /// page lands ready to type) and for cells freshly spawned
+    /// after a submit.
+    auto_focus: bool,
+    on_sealed: F,
+) -> impl IntoView
+where
+    F: Fn() + Clone + 'static,
+{
+    // Buffer lives in the editor's DOM property — we mirror it
+    // on `change` so we can submit it without reaching into the
+    // element on every keystroke.
+    let transact_buffer = RwSignal::new(String::new());
+    let transact_state = RwSignal::new(TransactState::Idle);
+    let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
+
+    // LSP document URI for this specific cell. Including the
+    // numeric cell ID keeps every cell distinct on the LSP
+    // server even when they all share the same (repo, branch).
+    let editor_source = format!("{}-{}", owner.editor_source(&branch_name), id);
+
+    let on_transact_change = move |ev: leptos::ev::Event| {
+        transact_buffer.set(read_tonk_code_value(&ev));
+    };
+
+    let editor_error_count = RwSignal::new(0_u32);
+    let on_diagnostics = move |ev: web_sys::CustomEvent| {
+        let count =
+            js_sys::Reflect::get(&ev.detail(), &wasm_bindgen::JsValue::from_str("errorCount"))
+                .ok()
+                .and_then(|v| v.as_f64())
+                .map(|n| n as u32)
+                .unwrap_or(0);
+        editor_error_count.set(count);
+    };
+
+    // Submit is allowed when:
+    //  - the cell is still active (sealed cells are read-only),
+    //  - the buffer is non-empty,
+    //  - the parser accepts it,
+    //  - the LSP isn't showing any error-severity diagnostics, *and*
+    //  - the document has at least one assertion (`head!:`).
+    // Pure-query documents auto-evaluate on idle so the play
+    // affordance only needs to surface when there's actually
+    // something to commit.
+    let is_runnable = Signal::derive(move || {
+        if !is_active.get() {
+            return false;
+        }
+        let body = transact_buffer.get();
+        if body.trim().is_empty() {
+            return false;
+        }
+        if editor_error_count.get() > 0 {
+            return false;
+        }
+        matches!(
+            classify_for_dispatch(&body),
+            DocDispatch::Submit { has_mutation: true }
+        )
+    });
+
+    let evaluate_now = {
+        let editor_source_for_eval = editor_source.clone();
+        let owner = owner.clone();
+        let branch_name = branch_name.clone();
+        let on_sealed = on_sealed.clone();
+        move || {
+            // Sealed cells can't submit — even if the keymap
+            // somehow fires (shouldn't, since the editor is
+            // readonly).
+            if !is_active.get_untracked() {
+                return;
+            }
+            let body = transact_buffer.get_untracked();
+            if body.trim().is_empty() {
+                return;
+            }
+            let target = match resolve_evaluate_target(&owner, &branch_name) {
+                Some(t) => t,
+                None => {
+                    transact_state.set(TransactState::Failed("no repository in scope".to_owned()));
+                    return;
+                }
+            };
+            if matches!(transact_state.get_untracked(), TransactState::Running) {
+                return;
+            }
+            transact_state.set(TransactState::Running);
+            let editor_source = editor_source_for_eval.clone();
+            let on_sealed = on_sealed.clone();
+            spawn_local(async move {
+                match classify_for_dispatch(&body) {
+                    DocDispatch::ParseError(messages) => {
+                        transact_state.set(TransactState::Failed(messages));
+                        return;
+                    }
+                    DocDispatch::Empty => {
+                        transact_state.set(TransactState::Idle);
+                        return;
+                    }
+                    DocDispatch::Submit { .. } => {}
+                }
+                // Explicit submit (play button / Shift+Enter) is
+                // a real commit — the user asked for it.
+                match target.evaluate(body, "application/yaml", true).await {
+                    Ok(response) => {
+                        clear_pushed_diagnostics(&editor_source);
+                        last_response.set(Some(Box::new(response)));
+                        transact_state.set(TransactState::Idle);
+                        // Seal this cell and spawn a fresh one
+                        // below — the user is moving on.
+                        on_sealed();
+                    }
+                    Err(err) => {
+                        if matches!(&err, TonkUiError::Analyze { .. }) {
+                            push_analyzer_diagnostic(&editor_source, &err);
+                            transact_state.set(TransactState::Idle);
+                        } else {
+                            transact_state.set(TransactState::Failed(format!("{err}")));
+                        }
+                    }
+                }
+            });
+        }
+    };
+
+    let on_play_click = {
+        let evaluate_now = evaluate_now.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+            ev.stop_propagation();
+            evaluate_now();
+        }
+    };
+    let on_editor_run = {
+        let evaluate_now = evaluate_now.clone();
+        move |_ev: web_sys::CustomEvent| {
+            evaluate_now();
+        }
+    };
+
+    // Auto-evaluate (transact=false) on idle so the result
+    // panel reflects what *would* happen without committing.
+    // Sealed cells skip this — their last_response is frozen.
+    let on_editor_idle = {
+        let editor_source_for_idle = editor_source.clone();
+        let owner = owner.clone();
+        let branch_name = branch_name.clone();
+        move |ev: web_sys::CustomEvent| {
+            if !is_active.get_untracked() {
+                return;
+            }
+            let detail = ev.detail();
+            let error_count =
+                js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("errorCount"))
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .map(|n| n as u32)
+                    .unwrap_or(0);
+            if error_count > 0 {
+                return;
+            }
+            let body = js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("value"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            if body.trim().is_empty() {
+                return;
+            }
+            let target = match resolve_evaluate_target(&owner, &branch_name) {
+                Some(t) => t,
+                None => return,
+            };
+            if matches!(transact_state.get_untracked(), TransactState::Running) {
+                return;
+            }
+            let editor_source = editor_source_for_idle.clone();
+            spawn_local(async move {
+                match target.evaluate(body, "application/yaml", false).await {
+                    Ok(response) => {
+                        clear_pushed_diagnostics(&editor_source);
+                        last_response.set(Some(Box::new(response)));
+                    }
+                    Err(err) => {
+                        if matches!(&err, TonkUiError::Analyze { .. }) {
+                            push_analyzer_diagnostic(&editor_source, &err);
+                        }
+                    }
+                }
+            });
+        }
+    };
+
+    // First cell on page load shows the placeholder hint;
+    // spawned cells (after a submit) start blank — by then the
+    // user knows what they're doing and the prompt would just
+    // be visual noise.
+    let placeholder = if id == 0 {
+        "person:\n  this: ?alice\n  name: \"Alice\"\n\n# or assert with `!`:\n# person!: &alice\n#   name: \"Alice\""
+    } else {
+        ""
+    };
+
+    view! {
+        <form
+            class="branch-yaml-query wa-stack wa-gap-xs"
+            class:cell-sealed=move || !is_active.get()
+            on:submit=|ev: leptos::ev::SubmitEvent| ev.prevent_default()
+        >
+            <div class="evaluate-editor">
+                <tonk-code
+                    language="dialog-yaml"
+                    source=editor_source.clone()
+                    active-line
+                    placeholder=placeholder
+                    auto-focus=auto_focus.then_some("")
+                    readonly=move || (!is_active.get()).then_some("")
+                    on:change=on_transact_change
+                    on:run=on_editor_run
+                    on:idle=on_editor_idle
+                    on:diagnostics=on_diagnostics
+                ></tonk-code>
+                <wa-button
+                    class="evaluate-play"
+                    class:is-visible=move || is_runnable.get()
+                    type="button"
+                    variant="neutral"
+                    appearance="filled"
+                    size="small"
+                    pill
+                    title="Submit transaction (Shift+Enter)"
+                    prop:loading=move ||
+                        matches!(transact_state.get(), TransactState::Running)
+                    on:click=on_play_click
+                >
+                    <wa-icon name="bolt" variant="solid"></wa-icon>
+                </wa-button>
+            </div>
+            { move || render_transact_state(transact_state.get(), last_response.get()) }
+        </form>
     }
 }
 

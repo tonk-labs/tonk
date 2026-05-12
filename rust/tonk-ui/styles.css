@@ -950,6 +950,25 @@ tonk-code:focus-within {
    `is-visible` class is toggled by Leptos when the buffer parses
    cleanly; we animate opacity so the button doesn't pop in/out
    abruptly while the user types. */
+/* Notebook cells live in a vertical stack. Each cell is its
+   own `<form>` (`.branch-yaml-query`); sealed cells dim back
+   so the eye lands on the active one at the bottom — same idea
+   as Observable's notebook layout. */
+.branch-cells {
+    display: flex;
+    flex-direction: column;
+}
+.branch-yaml-query.cell-sealed {
+    /* Sealed cells visually recede — they're history, not
+       affordance. Active cell stays at full contrast. */
+    opacity: 0.7;
+}
+.branch-yaml-query.cell-sealed:hover {
+    /* Restore on hover so the user can read the source clearly
+       when reviewing past commits. */
+    opacity: 1;
+}
+
 .evaluate-editor {
     position: relative;
     /* Reserve space so the floating button doesn't overlap

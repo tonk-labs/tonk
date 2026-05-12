@@ -12,6 +12,13 @@ port = 8080
 # server or the schema analyzer wouldn't trigger a
 # rebuild and the dev server would silently serve a stale
 # binary.
+#
+# `../tonk-code/assets` is also watched: tonk-code's
+# `<tonk-code>` element bundle is copied into the dist via
+# `<link data-trunk rel="copy-dir">`, but `copy-dir` only
+# re-copies when trunk's watcher fires. Without this entry,
+# a fresh `npm run build` in tonk-code wouldn't reach the
+# served dist and the browser would see stale JS.
 watch = [
     "./",
     "../tonk-common",
@@ -19,6 +26,7 @@ watch = [
     "../tonk-language-server",
     "../tonk-schema",
     "../tonk-notation",
+    "../tonk-code/assets",
 ]
 
 # Proxy for /ucan/ is configured via dev:web command.
