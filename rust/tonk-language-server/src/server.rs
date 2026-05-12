@@ -10,12 +10,25 @@
 
 use std::collections::HashMap;
 
+/// Per-URI document state. Today only the latest text is
+/// retained; the version that the client tagged the
+/// `didOpen` / `didChange` with flows straight to the
+/// matching `publishDiagnostics` and isn't stored. Carrying
+/// the version through is what lets `@codemirror/lsp-client`
+/// discard diagnostic frames whose ranges no longer match the
+/// buffer it's editing.
+#[derive(Debug, Clone, Default)]
+struct Document {
+    text: String,
+}
+
 use lsp_types::{
+    CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
     ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     notification::{Notification as LspNotificationTrait, PublishDiagnostics},
-    request::{Initialize, Request as LspRequestTrait},
+    request::{Completion, Initialize, Request as LspRequestTrait},
 };
 use serde_json::Value;
 
@@ -33,7 +46,7 @@ pub struct Server {
     /// Open documents, keyed by their LSP `Uri`. The sync model
     /// is "full" — every `didChange` carries the new text, so we
     /// just replace the value.
-    documents: HashMap<Uri, String>,
+    documents: HashMap<Uri, Document>,
     /// Server-initiated notifications waiting for the host to forward.
     /// Drained by [`Server::take_outbound`].
     outbound: Vec<OutboundNotification>,
@@ -122,6 +135,20 @@ impl Server {
                 }
                 Err(err) => Response::error(id, ResponseError::invalid_params(err.to_string())),
             },
+            Completion::METHOD => match serde_json::from_value::<CompletionParams>(params) {
+                Ok(p) => {
+                    let items = self.complete(&p);
+                    let response = CompletionResponse::List(CompletionList {
+                        is_incomplete: false,
+                        items,
+                    });
+                    match serde_json::to_value(response) {
+                        Ok(v) => Response::success(id, v),
+                        Err(err) => Response::error(id, ResponseError::internal(err.to_string())),
+                    }
+                }
+                Err(err) => Response::error(id, ResponseError::invalid_params(err.to_string())),
+            },
             "shutdown" => {
                 self.shutting_down = true;
                 Response::success(id, Value::Null)
@@ -144,8 +171,10 @@ impl Server {
                 if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
                     let uri = p.text_document.uri;
                     let text = p.text_document.text;
-                    self.documents.insert(uri.clone(), text.clone());
-                    self.publish(uri, &text).await;
+                    let version = Some(p.text_document.version);
+                    self.documents
+                        .insert(uri.clone(), Document { text: text.clone() });
+                    self.publish(uri, &text, version).await;
                 }
             }
             "textDocument/didChange" => {
@@ -159,8 +188,14 @@ impl Server {
                         return;
                     };
                     let uri = p.text_document.uri;
-                    self.documents.insert(uri.clone(), last.text.clone());
-                    self.publish(uri, &last.text).await;
+                    let version = Some(p.text_document.version);
+                    self.documents.insert(
+                        uri.clone(),
+                        Document {
+                            text: last.text.clone(),
+                        },
+                    );
+                    self.publish(uri, &last.text, version).await;
                 }
             }
             "textDocument/didClose" => {
@@ -172,6 +207,39 @@ impl Server {
                 // Unknown notification — spec says ignore.
             }
         }
+    }
+
+    /// Compute completion items for a `textDocument/completion`
+    /// request. Position-driven dispatch: the trigger character
+    /// is a hint, not the contract — what we return is decided
+    /// by where the cursor actually sits in the parse tree.
+    /// See `docs/auto-completion.md` for the full source taxonomy.
+    fn complete(&self, params: &CompletionParams) -> Vec<CompletionItem> {
+        let uri = &params.text_document_position.text_document.uri;
+        let Some(doc) = self.documents.get(uri) else {
+            return Vec::new();
+        };
+        let text = doc.text.as_str();
+        let position = params.text_document_position.position;
+        let Some(line_prefix) = line_prefix_at(text, position) else {
+            return Vec::new();
+        };
+
+        if is_head_position(&line_prefix) {
+            return head_completions();
+        }
+
+        if is_variable_position(&line_prefix) {
+            return variable_completions(text, position);
+        }
+
+        if let Some(head) = enclosing_head(text, position)
+            && is_body_position(&line_prefix)
+        {
+            return field_completions(&head);
+        }
+
+        Vec::new()
     }
 
     /// Run validators against `text` and queue a `publishDiagnostics`
@@ -193,7 +261,7 @@ impl Server {
     ///    `UnknownBookmark`, `ResolverFailed`) are filtered out —
     ///    they need a real branch resolver and the worker's
     ///    evaluate route is the source of truth for those.
-    async fn publish(&mut self, uri: Uri, text: &str) {
+    async fn publish(&mut self, uri: Uri, text: &str, version: Option<i32>) {
         let parsed = tonk_notation::parse(text);
         let mut diagnostics = parsed.diagnostics.clone();
         // Only run the analyzer when the parser is happy — its
@@ -204,10 +272,18 @@ impl Server {
         {
             diagnostics.extend(analyzer_diagnostics(syntax).await);
         }
+        // Clamp every range against the live text. The parser
+        // already clamps its own emissions, but analyzer
+        // diagnostics propagate spans from the syntax tree
+        // unchanged — and the same `(line_count, 0)` saphyr
+        // edge case lurks there too.
+        for diagnostic in &mut diagnostics {
+            diagnostic.range = clamp_range_to_text(diagnostic.range, text);
+        }
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics,
-            version: None,
+            version,
         };
         let value = match serde_json::to_value(params) {
             Ok(v) => v,
@@ -339,6 +415,286 @@ fn diagnostic_from_analyze_error(
     })
 }
 
+/// Clamp `range`'s endpoints so neither one points past the
+/// last line of `text`. Mirrors the same clamp the parser
+/// applies to its own emissions; we re-do it here for
+/// analyzer-derived diagnostics, which propagate spans
+/// straight from the syntax tree.
+fn clamp_range_to_text(range: lsp_types::Range, text: &str) -> lsp_types::Range {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let last_line = lines.len().saturating_sub(1) as u32;
+    let last_col = lines.last().map(|l| l.len() as u32).unwrap_or(0);
+    let clamp = |p: lsp_types::Position| -> lsp_types::Position {
+        if (p.line as usize) < lines.len() {
+            return p;
+        }
+        lsp_types::Position {
+            line: last_line,
+            character: last_col,
+        }
+    };
+    lsp_types::Range {
+        start: clamp(range.start),
+        end: clamp(range.end),
+    }
+}
+
+/// Slice of a single line from the document text up to (but
+/// not including) `position.character` UTF-16 code units. Returns
+/// `None` when the position points past the end of the document
+/// or past the end of its line.
+///
+/// LSP positions are zero-based and use UTF-16 code units, but
+/// the carry-asserted documents we serve today are ASCII-clean
+/// — every character is one UTF-16 unit — so we treat the
+/// `character` field as a byte offset into the line. Switch to
+/// UTF-16 stepping when documents start carrying non-BMP text.
+fn line_prefix_at(text: &str, position: lsp_types::Position) -> Option<String> {
+    // `str::lines` swallows a trailing empty line, so an empty
+    // document or one ending in `\n` doesn't yield the line the
+    // cursor is on. Splitting on `\n` keeps every line including
+    // the trailing empty one.
+    let line = text.split('\n').nth(position.line as usize)?;
+    // Strip a trailing `\r` so `\r\n` files don't include the
+    // carriage return in the prefix.
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let col = position.character as usize;
+    if col > line.len() {
+        return None;
+    }
+    Some(line[..col].to_owned())
+}
+
+/// True when `line_prefix` is consistent with the user typing a
+/// fresh head: empty, or only the leading characters of an
+/// identifier with no preceding indent or `:` separator.
+///
+/// Heads in carry-asserted notation live at column zero. An
+/// indented prefix is body, a prefix containing `:` is a value,
+/// and anything with a `?` or `&` is a value-position token.
+fn is_head_position(line_prefix: &str) -> bool {
+    // Disqualify if any character above is present.
+    if line_prefix
+        .chars()
+        .any(|c| matches!(c, ':' | '?' | '&' | '!'))
+    {
+        return false;
+    }
+    // Disqualify if the line is indented (column > 0 and the
+    // prefix starts with whitespace) — that's body position.
+    if line_prefix.starts_with(|c: char| c.is_whitespace()) {
+        return false;
+    }
+    true
+}
+
+/// True when `line_prefix` is consistent with the user typing a
+/// fresh field name in body position: leading indent followed by
+/// at most an identifier prefix, no `:` (we'd be past it),
+/// no `?` (variable), no `&` (anchor only attaches to head).
+fn is_body_position(line_prefix: &str) -> bool {
+    if !line_prefix.starts_with(|c: char| c.is_whitespace()) {
+        return false;
+    }
+    if line_prefix
+        .chars()
+        .any(|c| matches!(c, ':' | '?' | '&' | '!'))
+    {
+        return false;
+    }
+    true
+}
+
+/// True when the user has typed a `?` and the cursor is sitting
+/// at the start of (or inside) the variable name that follows
+/// it. Matches `?` and `?ali`, rejects `? ` and `name: ?alice ` —
+/// the latter has whitespace between the `?` and the cursor, so
+/// it's no longer the active variable token.
+fn is_variable_position(line_prefix: &str) -> bool {
+    let Some(idx) = line_prefix.rfind('?') else {
+        return false;
+    };
+    let after = &line_prefix[idx + 1..];
+    after.chars().all(is_symbol_char)
+}
+
+/// Symbol-charset predicate matching the carry-asserted notation:
+/// lowercase ASCII letters, digits, `-`, `.`, `+`. No `/` because
+/// the variable / anchor namespace forbids namespace separators.
+fn is_symbol_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '+')
+}
+
+/// Collect every named logic variable (`?<name>`) and anchor
+/// (`&<name>`) that appears in `text` strictly *before*
+/// `position` and surface each as a completion item. Branch-free.
+fn variable_completions(text: &str, position: lsp_types::Position) -> Vec<CompletionItem> {
+    use lsp_types::CompletionItemKind;
+    use std::collections::BTreeSet;
+
+    let cutoff = byte_offset_of(text, position);
+    let scope = &text[..cutoff];
+    let mut names: BTreeSet<String> = BTreeSet::new();
+
+    for sigil in ['?', '&'] {
+        for (idx, _) in scope.match_indices(sigil) {
+            let rest = &scope[idx + 1..];
+            let name: String = rest.chars().take_while(|c| is_symbol_char(*c)).collect();
+            if name.is_empty() {
+                continue;
+            }
+            // `&` only attaches to head anchors — i.e. the
+            // sigil sits between a head's `:` and its body's
+            // `\n`. We don't enforce that strictly; the
+            // anchor's name still binds a document-scoped
+            // variable everywhere we'd care, and surfacing a
+            // false positive (e.g. text containing `&foo`
+            // inside a string literal) is benign in a
+            // suggestion menu.
+            names.insert(name);
+        }
+    }
+
+    // Drop the in-flight token the user is currently typing so
+    // it doesn't show up as its own completion.
+    if let Some(line) = text.split('\n').nth(position.line as usize) {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let col = (position.character as usize).min(line.len());
+        let prefix = &line[..col];
+        if let Some(idx) = prefix.rfind('?') {
+            let active: String = prefix[idx + 1..]
+                .chars()
+                .take_while(|c| is_symbol_char(*c))
+                .collect();
+            if !active.is_empty() {
+                names.remove(&active);
+            }
+        }
+    }
+
+    names
+        .into_iter()
+        .map(|name| CompletionItem {
+            label: name.clone(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            insert_text: Some(name),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+/// Convert an LSP `Position` into a byte offset in `text`. UTF-16
+/// caveat from `line_prefix_at` applies — ASCII-clean documents
+/// only.
+fn byte_offset_of(text: &str, position: lsp_types::Position) -> usize {
+    let mut offset = 0usize;
+    for (idx, line) in text.split('\n').enumerate() {
+        if idx == position.line as usize {
+            let line_no_cr = line.strip_suffix('\r').unwrap_or(line);
+            let col = (position.character as usize).min(line_no_cr.len());
+            return offset + col;
+        }
+        offset += line.len() + 1; // `+ 1` for the `\n`
+    }
+    text.len()
+}
+
+/// Walk *backwards* from `position` looking for the nearest
+/// column-zero head line — `<head>:` or `<head>!:` — and return
+/// the head's identifier. Stops at a blank line (interpreted as
+/// the prior expression's end).
+///
+/// Cheap structural scan; we don't reparse the document. The
+/// parser's `Syntax` could give a more accurate answer once we
+/// teach the analyzer to surface partial trees, but for the
+/// common case ("user is typing inside the obvious enclosing
+/// body") prefix matching on `\n<ident>:` is enough.
+fn enclosing_head(text: &str, position: lsp_types::Position) -> Option<String> {
+    let line_index = position.line as usize;
+    let prior: Vec<&str> = text.split('\n').take(line_index).collect();
+    for line in prior.into_iter().rev() {
+        let trimmed = line.strip_suffix('\r').unwrap_or(line);
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed.starts_with(|c: char| c.is_whitespace()) {
+            // Still inside a body; keep walking up.
+            continue;
+        }
+        // Column-zero line. Strip the optional `!` and require
+        // an `:` somewhere; everything before that is the head.
+        let head = trimmed.split(':').next().unwrap_or("");
+        let head = head.strip_suffix('!').unwrap_or(head);
+        if head.is_empty() {
+            return None;
+        }
+        return Some(head.to_owned());
+    }
+    None
+}
+
+/// Field names declared by the head's concept descriptor, plus
+/// the always-available `this:` meta-key. Branch-published
+/// concepts are added later via the resolver path; for now we
+/// only consult the built-in registry.
+fn field_completions(head: &str) -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_schema::builtin::lookup_concept;
+
+    let Some(resolved) = lookup_concept(head) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<CompletionItem> = Vec::new();
+    // `this:` is always valid — meta-key, not a concept field.
+    out.push(CompletionItem {
+        label: "this".to_owned(),
+        kind: Some(CompletionItemKind::KEYWORD),
+        documentation: Some(Documentation::String(
+            "Selects the entity the expression operates on.".to_owned(),
+        )),
+        insert_text: Some("this: ".to_owned()),
+        ..CompletionItem::default()
+    });
+    for (field, attr) in resolved.descriptor.with().iter() {
+        let description = attr.description();
+        out.push(CompletionItem {
+            label: field.to_owned(),
+            kind: Some(CompletionItemKind::FIELD),
+            documentation: if description.is_empty() {
+                None
+            } else {
+                Some(Documentation::String(description.to_owned()))
+            },
+            insert_text: Some(format!("{field}: ")),
+            ..CompletionItem::default()
+        });
+    }
+    out
+}
+
+/// Built-in concept names plus their descriptions, served as a
+/// completion list for head position. Branch-published concepts
+/// are layered on later via the resolver path.
+fn head_completions() -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_schema::builtin::concept_registry;
+
+    concept_registry()
+        .iter()
+        .map(|(name, resolved)| CompletionItem {
+            label: (*name).to_owned(),
+            kind: Some(CompletionItemKind::CLASS),
+            documentation: resolved
+                .descriptor
+                .description()
+                .map(|d| Documentation::String(d.to_owned())),
+            insert_text: Some((*name).to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 /// Capabilities advertised in the `initialize` response. Kept in one
 /// place so future features (completion, hover, etc.) extend a single
 /// constant rather than scattering capability flags across handlers.
@@ -356,6 +712,17 @@ fn server_capabilities() -> ServerCapabilities {
         // what `@codemirror/lsp-client` sends. Documenting it here
         // makes the assumption visible.
         position_encoding: Some(PositionEncodingKind::UTF16),
+        // Trigger on newline (concept-name / field-name surfaces
+        // depending on cursor indent) and `?` (variables only).
+        // `:` is intentionally not a trigger — value position can
+        // hold a variable, a reference, or a constant; auto-firing
+        // would surface the wrong thing more often than the right.
+        // See `docs/auto-completion.md`.
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec!["\n".into(), "?".into()]),
+            resolve_provider: Some(false),
+            ..CompletionOptions::default()
+        }),
         // Required by `ServerCapabilities` even for unsupported
         // features — `OneOf::Left(false)` is the canonical
         // "explicitly not supported" form.
@@ -546,5 +913,197 @@ mod tests {
         assert_eq!(diag["source"], json!("tonk-schema"));
         // Range covers the head on line 0.
         assert_eq!(diag["range"]["start"]["line"], json!(0));
+    }
+
+    /// Open an empty document, ask for completions at column 0
+    /// — the head position should surface every built-in
+    /// concept (`attribute`, `concept`, `name`, `branch`,
+    /// `replica`, `remote`, `tracking-branch`).
+    #[dialog_common::test]
+    async fn it_offers_builtin_concepts_at_head_position() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": ""
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test" },
+                "position": { "line": 0, "character": 0 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default())
+            .collect();
+        for builtin in ["attribute", "concept", "name", "branch"] {
+            assert!(
+                labels.contains(&builtin),
+                "expected `{builtin}` in completion list, got {labels:?}",
+            );
+        }
+    }
+
+    /// Inside a body (line indented, cursor past the indent)
+    /// the head-set is suppressed. Field completions for the
+    /// enclosing concept fire instead — `attribute:` is a
+    /// built-in whose descriptor declares `id`, `type`,
+    /// `cardinality`, `description`. Plus the always-available
+    /// `this:` meta-key.
+    #[dialog_common::test]
+    async fn it_offers_concept_fields_inside_body() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": "attribute!:\n  "
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test" },
+                "position": { "line": 1, "character": 2 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default())
+            .collect();
+        // Built-in `attribute` concept declares these fields.
+        for field in ["this", "id", "type", "cardinality", "description"] {
+            assert!(
+                labels.contains(&field),
+                "expected `{field}` in field completions, got {labels:?}",
+            );
+        }
+        // No concept names should leak through.
+        assert!(
+            !labels.contains(&"attribute"),
+            "head set must not surface inside body; got {labels:?}",
+        );
+    }
+
+    /// Typing `?` after introducing a few variables earlier in
+    /// the document offers them as completions. The active
+    /// in-flight token (the variable the user is typing right
+    /// now) must not surface as its own completion.
+    #[dialog_common::test]
+    async fn it_offers_prior_variables_after_question_mark() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        // First expression introduces ?alice and the &maintainer
+        // anchor. Second expression's body is being typed —
+        // cursor sits right after `?` on its `this:` line.
+        let text = "person:\n  this: ?alice\n  name: \"Alice\"\n\nattribute!: &maintainer\n  the: x.y/role\n  as: text\n  cardinality: one\n  description: ok\n\nperson!:\n  this: ?";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": text,
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        // Cursor sits right after `this: ?` on the last line.
+        let last_line = text.split('\n').count() - 1;
+        let last_col = text
+            .split('\n')
+            .next_back()
+            .map(str::len)
+            .unwrap_or_default();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test" },
+                "position": { "line": last_line as u32, "character": last_col as u32 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            labels.contains(&"alice"),
+            "expected `alice` from prior `?alice`; got {labels:?}",
+        );
+        assert!(
+            labels.contains(&"maintainer"),
+            "expected `maintainer` from prior `&maintainer`; got {labels:?}",
+        );
     }
 }

@@ -58,7 +58,17 @@ pub fn parse(text: &str) -> Parsed {
         walk_document(doc, text, &mut expressions, &mut diagnostics);
     }
 
-    let range = overall_range.unwrap_or_default();
+    let range = overall_range
+        .map(|r| clamp_range(r, text))
+        .unwrap_or_default();
+    // Clamp every diagnostic so its range stays inside the
+    // document — saphyr can hand us spans that point at
+    // `(line_count, 0)`, one past the last real line, and that
+    // crashes LSP clients that index into the buffer before
+    // they consult the document version.
+    for diagnostic in &mut diagnostics {
+        diagnostic.range = clamp_range(diagnostic.range, text);
+    }
     Parsed {
         syntax: Some(Syntax { expressions, range }),
         diagnostics,
@@ -856,6 +866,37 @@ pub(crate) fn range_from_span(span: Span) -> Range {
         end.character = end.character.saturating_add(1);
     }
     Range { start, end }
+}
+
+/// Clamp `range` so neither endpoint points past the last line
+/// of `source`. Saphyr happily reports document-level spans that
+/// end at `(line_count, 0)` — one past the final line — which is
+/// a valid LSP `Position` per the spec but trips up clients
+/// (notably `@codemirror/lsp-client`) that index into a `Text`
+/// before they look at the version.
+///
+/// Conservative: when the end is past the last line we back it
+/// up to the end of the last real line. When start is past the
+/// last line (degenerate case) it gets the same treatment.
+pub(crate) fn clamp_range(range: Range, source: &str) -> Range {
+    // Same convention as `line_count`: split on `\n`, count
+    // segments. `"a"` → 1 line, `"a\n"` → 2 lines (the trailing
+    // empty line counts).
+    let lines: Vec<&str> = source.split('\n').collect();
+    let last_line = lines.len().saturating_sub(1) as u32;
+    let clamp = |p: Position| -> Position {
+        if (p.line as usize) < lines.len() {
+            return p;
+        }
+        Position {
+            line: last_line,
+            character: lines.last().map(|l| l.len() as u32).unwrap_or(0),
+        }
+    };
+    Range {
+        start: clamp(range.start),
+        end: clamp(range.end),
+    }
 }
 
 fn extend_range(start: Range, end: Range) -> Range {
@@ -1904,5 +1945,25 @@ page!:
             &desc.value,
             FieldValue::Literal(Scalar::String(_))
         ));
+    }
+
+    /// Saphyr reports document-level spans that end at
+    /// `(line_count, 0)` — one past the final line — when the
+    /// source has no trailing newline. Without clamping, an LSP
+    /// client decoding the diagnostic indexes a `line_count`
+    /// row that doesn't exist and crashes
+    /// (`@codemirror/lsp-client` throws `Invalid line number N
+    /// in M-line document`). The fix clamps the parser's own
+    /// emissions; this test pins the bare-string single-line
+    /// case that surfaced it.
+    #[dialog_common::test]
+    fn it_clamps_document_root_diagnostic_to_one_line_input() {
+        let parsed = parse("a");
+        assert_eq!(parsed.diagnostics.len(), 1);
+        let range = &parsed.diagnostics[0].range;
+        assert!(
+            range.end.line == 0,
+            "diagnostic end must stay on the only line, got {range:?}",
+        );
     }
 }
