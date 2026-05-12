@@ -855,16 +855,20 @@ async fn lookup_entity_name<'a, Env>(
 where
     Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
 {
-    let claims: Vec<Claim> = the!("dialog.meta/name")
-        .of(Term::<Entity>::var("__concept_query_id"))
-        .is(Term::from(entity.clone()))
-        .perform(env)
-        .try_vec()
-        .await?;
-    Ok(claims
+    use crate::meta::Name;
+    use dialog_query::Output as _;
+
+    let rows: Vec<Name> = Query::<Name> {
+        this: Term::<Entity>::var("__concept_query_id"),
+        entity: Term::from(entity.clone()),
+    }
+    .perform(env)
+    .try_vec()
+    .await?;
+    Ok(rows
         .into_iter()
         .next()
-        .and_then(|claim| name_from_id_uri(&claim.of)))
+        .and_then(|row| name_from_id_uri(&row.this)))
 }
 
 /// Strip the `id:` scheme prefix from a name URI to recover the
@@ -891,28 +895,23 @@ pub async fn lookup_named_entity<Env: QueryEnv>(
     branch: &Branch,
     env: &Env,
 ) -> Result<Option<Entity>, ConceptLookupError> {
+    use crate::meta::Name;
+    use dialog_query::Output as _;
+
     let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
         return Ok(None);
     };
-    let claims: Vec<Claim> = branch
+    let rows: Vec<Name> = branch
         .query()
-        .select(dialog_query::AttributeQuery::from(
-            Term::<dialog_query::attribute::The>::from(
-                "dialog.meta/name"
-                    .parse::<dialog_query::attribute::The>()
-                    .expect("dialog.meta/name is a valid attribute URI"),
-            )
-            .of(Term::from(id_entity))
-            .is(Term::<Entity>::var("__concept_query_target")),
-        ))
+        .select(Query::<Name> {
+            this: Term::from(id_entity),
+            entity: Term::<Entity>::var("__concept_query_target"),
+        })
         .perform(env)
         .try_vec()
         .await
         .map_err(|e| ConceptLookupError::query(format!("name lookup failed: {e:?}")))?;
-    Ok(claims
-        .into_iter()
-        .next()
-        .and_then(|claim| Entity::try_from(claim.is).ok()))
+    Ok(rows.into_iter().next().map(|row| row.entity.0))
 }
 
 /// Walk a [`ConceptDescriptor`] and call `op` (either
@@ -1307,8 +1306,8 @@ mod tests {
     }
 
     /// `lookup_named_entity("alice")` reads the
-    /// `(id:alice, dialog.meta/name, ?target)` claim and
-    /// returns the target entity. Round-trip a hand-written
+    /// `(id:alice, dialog.name/referent, ?target)` claim
+    /// and returns the target entity. Round-trip a hand-written
     /// claim through a branch and confirm the lookup recovers
     /// the target.
     #[dialog_common::test]
@@ -1323,7 +1322,7 @@ mod tests {
         let target: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv".parse()?;
         branch
             .transaction()
-            .assert(the!("dialog.meta/name").of(id_alice).is(target.clone()))
+            .assert(the!("dialog.name/referent").of(id_alice).is(target.clone()))
             .commit()
             .perform(&operator)
             .await?;
@@ -1512,6 +1511,81 @@ mod tests {
             "expected one Pointer after same-tx supersession, got {results:?}",
         );
         assert_eq!(results[0].target.0, page_v2);
+        Ok(())
+    }
+
+    /// End-to-end check on the real `Name` concept: assert two
+    /// successive `Name` claims for `id:page` (v1 then v2) via
+    /// the same code path the analyzer uses
+    /// (`emit_name_assertion`), then verify both lookup
+    /// directions return only v2.
+    ///
+    /// This is the regression test for the page-disambiguation
+    /// bug. Before the rewrite, `lookup_entity_name` used a raw
+    /// `the!("dialog.meta/name").of(?).is(value)` query that
+    /// surfaces the superseded v1 claim from the EAV log. Going
+    /// through the `Name` concept's derived `Query` runs the
+    /// same cardinality-one filter dialog applies to the forward
+    /// direction, so v1 disappears.
+    #[dialog_common::test]
+    async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
+        use crate::meta::{Name, name};
+        use dialog_query::Output as _;
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Use the `concept:` scheme for targets — this matches
+        // the real-world case where `concept!: &page` derives a
+        // content-hashed `concept:…` entity URI for each body.
+        // Same supersession path, different value scheme; this
+        // catches a bug where the cardinality-one filter was
+        // sensitive to the value's URI scheme.
+        let id_page: Entity = "id:page".parse()?;
+        let page_v1: Entity = "concept:Fx8sv1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".parse()?;
+        let page_v2: Entity = "concept:AfmLeBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".parse()?;
+
+        // tx1 — point id:page at v1.
+        branch
+            .transaction()
+            .assert(Name {
+                this: id_page.clone(),
+                entity: name::Referent(page_v1.clone()),
+            })
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // tx2 — point id:page at v2. Cardinality-one supersedes v1.
+        branch
+            .transaction()
+            .assert(Name {
+                this: id_page.clone(),
+                entity: name::Referent(page_v2.clone()),
+            })
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let lookup = branch
+            .select(Query::<Name> {
+                this: id_page.clone().into(),
+                entity: Term::var("entity"),
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(lookup.iter().len(), 1);
+        assert_eq!(
+            lookup,
+            vec![Name {
+                this: id_page.clone(),
+                entity: name::Referent(page_v2.clone())
+            }]
+        );
         Ok(())
     }
 }

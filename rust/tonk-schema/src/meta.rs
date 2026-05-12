@@ -15,21 +15,39 @@
 use dialog_artifacts::Entity;
 use dialog_query::{Attribute, Concept};
 
-/// The `dialog.meta/name` attribute — the published target a
-/// name URI points at.
+/// Newtype for the attribute backing the [`Name`] concept's
+/// `entity` field. Submodule so the struct name `Referent`
+/// kebab-cases into `referent` (yielding the relation
+/// `dialog.name/referent`) without colliding with [`Name`].
+pub mod name {
+    use super::{Attribute, Entity};
+
+    /// The `dialog.name/referent` attribute — the entity a name
+    /// currently points at. Cardinality `one` (the derive
+    /// default), so re-pointing a name supersedes the prior
+    /// claim instead of accumulating.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("dialog.name")]
+    pub struct Referent(pub Entity);
+}
+
+/// A user-published name — an `id:<n>` entity carrying a
+/// single `entity` claim that points at the target the name
+/// currently identifies.
 ///
-/// Cardinality `one`. Lives on the *name entity* (an `id:<n>`
-/// URI), not on the named target. The value is the entity the
-/// name currently identifies. Re-pointing a name to a different
-/// entity is a cardinality-one supersession on this attribute.
-///
-/// This is the inverted shape of the pre-Stage-2 model, where
-/// `dialog.meta/name` lived on the target with a string value
-/// — see `transact::emit_name_assertion` for how the analyzer
-/// emits the new direction from anchor-form heads.
-#[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-#[domain("dialog.meta")]
-pub struct Name(pub Entity);
+/// `this` is derived from the name string by prefixing `id:`.
+/// `entity` is the target. Asserting two `Name` claims for the
+/// same `this` with different `entity` values supersedes the
+/// prior claim because the backing attribute is cardinality
+/// one.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Name {
+    /// The name entity — `id:<n>` for user-published names,
+    /// `db:<n>` for built-ins.
+    pub this: Entity,
+    /// The target this name currently identifies.
+    pub entity: name::Referent,
+}
 
 /// Human-readable description for any entity.
 ///

@@ -22,6 +22,7 @@ use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor;
 
 use crate::analyzer::ResolvedConcept;
+use crate::meta::{AnonymousAttributeQuery, NameQuery};
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
 
 /// Look up a built-in concept by head-name. Returns `None` for
@@ -45,43 +46,17 @@ static REGISTRY: OnceLock<Vec<(&'static str, ResolvedConcept)>> = OnceLock::new(
 
 fn build_registry() -> Vec<(&'static str, ResolvedConcept)> {
     vec![
-        ("attribute", attribute_descriptor()),
+        ("attribute", builtin::<AnonymousAttributeQuery>("attribute")),
         ("concept", concept_descriptor()),
-        ("name", name_descriptor()),
-        ("branch", concept_from_query::<BranchQuery>()),
-        ("replica", concept_from_query::<ReplicaQuery>()),
-        ("remote", concept_from_query::<RemoteQuery>()),
+        ("name", builtin::<NameQuery>("name")),
+        ("branch", builtin::<BranchQuery>("branch")),
+        ("replica", builtin::<ReplicaQuery>("replica")),
+        ("remote", builtin::<RemoteQuery>("remote")),
         (
             "tracking-branch",
-            concept_from_query::<TrackingBranchQuery>(),
+            builtin::<TrackingBranchQuery>("tracking-branch"),
         ),
     ]
-}
-
-/// Built-in `attribute` view — anonymous attribute shape:
-/// `id`, `type`, `cardinality`, `description`. Every attribute
-/// (bookmark, variable, or inline in `concept!`'s `with:`) carries
-/// these four claims with non-empty defaults, so the descriptor's
-/// match-all-fields semantics surfaces every defined attribute.
-///
-/// `dialog.meta/name` is *not* part of this view: only bookmark-
-/// form attributes carry that claim, and dialog's
-/// [`ConceptDescriptor::maybe`] is parsed but not yet consulted
-/// by the engine — moving `name` to `maybe:` would make every
-/// query miss anonymous attrs. To recover the name when needed,
-/// join with `dialog.meta/name` separately.
-fn attribute_descriptor() -> ResolvedConcept {
-    let json = serde_json::json!({
-        "with": {
-            "id":          { "the": "dialog.attribute/id",          "as": "Text", "cardinality": "one" },
-            "type":        { "the": "dialog.attribute/type",        "as": "Text", "cardinality": "one" },
-            "cardinality": { "the": "dialog.attribute/cardinality", "as": "Text", "cardinality": "one" },
-            "description": { "the": "dialog.meta/description",      "as": "Text", "cardinality": "one" },
-        }
-    });
-    let descriptor: ConceptDescriptor =
-        serde_json::from_value(json).expect("attribute schema is well-formed");
-    descriptor_to_resolved(descriptor)
 }
 
 /// Built-in `concept` view — the concept-of-concept descriptor.
@@ -92,12 +67,11 @@ fn attribute_descriptor() -> ResolvedConcept {
 /// query time enumerates *every* concept (built-in + branch) with
 /// a synthesised `source` field.
 ///
-/// The entity is fixed at the well-known `db:concept` URI
-/// (rather than `descriptor.this()`'s content hash) so the row
-/// for the concept-of-concept built-in is identifiable without
-/// knowing the descriptor's hash. This is the same URI used as
-/// the value of every `dialog.meta/concept` marker claim — the
-/// symmetry is intentional.
+/// Kept as a hand-built [`ConceptDescriptor`] (rather than
+/// `derive(Concept)`) because the concept-of-concept's `with:` is
+/// a dictionary — an arbitrary map of names to attribute
+/// references — not a fixed record of named fields. Rust struct
+/// derives can't express that shape, so this one stays JSON.
 fn concept_descriptor() -> ResolvedConcept {
     ResolvedConcept {
         entity: "db:concept"
@@ -107,45 +81,25 @@ fn concept_descriptor() -> ResolvedConcept {
     }
 }
 
-/// Built-in `name` view — a name entity carries an `entity:`
-/// claim pointing at the entity it currently identifies.
+/// Build a built-in `ResolvedConcept` from a
+/// `#[derive(Concept)]` Rust type's `Query` newtype.
 ///
-/// The schema is a single-field concept whose backing attribute
-/// is `dialog.meta/name` (cardinality one). User-published names
-/// live at `id:<name>` URIs; built-in names live at `db:<name>`
-/// URIs and aren't writable.
-///
-/// The concept's own entity is fixed at `db:name` (rather than a
-/// content-derived hash) so the row for the name-of-name built-in
-/// is identifiable by URI and the `db:` scheme protection covers
-/// it.
-fn name_descriptor() -> ResolvedConcept {
-    let json = serde_json::json!({
-        "with": {
-            "entity": { "the": "dialog.meta/name", "as": "Entity", "cardinality": "one" },
-        }
-    });
-    let descriptor: ConceptDescriptor =
-        serde_json::from_value(json).expect("name schema is well-formed");
-    ResolvedConcept {
-        entity: "db:name".parse().expect("`db:name` is a valid entity URI"),
-        descriptor,
-    }
-}
-
-/// Build a `ResolvedConcept` from a `#[derive(Concept)]` Rust
-/// type's `Query` newtype. The `Query` type's `Default` impl is
-/// generated by the derive and the `From<Query>` conversion drops
-/// values, so this is a pure schema-only path.
-fn concept_from_query<Q>() -> ResolvedConcept
+/// The `Query` type's `Default` impl is generated by the derive
+/// and the `From<Query>` conversion drops values, so this is a
+/// pure schema-only path. The descriptor's `this()` would be a
+/// content-derived hash; built-ins instead live at the stable
+/// `db:<name>` URI so the `db:` scheme protection covers them
+/// and the row remains identifiable without knowing the hash.
+fn builtin<Q>(name: &str) -> ResolvedConcept
 where
     Q: Default,
     ConceptDescriptor: From<Q>,
 {
-    descriptor_to_resolved(ConceptDescriptor::from(Q::default()))
-}
-
-fn descriptor_to_resolved(descriptor: ConceptDescriptor) -> ResolvedConcept {
-    let entity: Entity = descriptor.this();
-    ResolvedConcept { entity, descriptor }
+    let entity: Entity = format!("db:{name}")
+        .parse()
+        .expect("`db:<builtin>` is a valid entity URI");
+    ResolvedConcept {
+        entity,
+        descriptor: ConceptDescriptor::from(Q::default()),
+    }
 }
