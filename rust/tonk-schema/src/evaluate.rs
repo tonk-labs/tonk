@@ -125,10 +125,14 @@ pub struct EvaluateOutcome {
 #[derive(Debug, Error)]
 pub enum EvaluateError {
     /// The analyzer rejected the document (unknown name, type
-    /// mismatch, scope violation, etc.). Caller should treat this
-    /// as a 400 / parse-error class failure.
+    /// mismatch, scope violation, etc.). Caller should treat
+    /// this as a 400 / parse-error class failure. Carrying the
+    /// full [`analyzer::AnalyzeError`] (rather than a flattened
+    /// string) lets HTTP callers surface the source range and
+    /// stable error code as a structured response — the editor
+    /// uses both to position a squiggle and route quickfixes.
     #[error("{0}")]
-    Analyze(String),
+    Analyze(#[from] analyzer::AnalyzeError),
     /// A query against the branch failed (storage / engine).
     #[error("{0}")]
     Query(String),
@@ -391,6 +395,13 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
 /// open dialog branch. Captures the branch revision before and
 /// after the commit so the response carries a snapshot pair.
 ///
+/// `transact` controls whether mutation statements actually
+/// commit. With `transact = false` the planner runs (so
+/// plan-time errors still surface) but the dialog transaction
+/// is dropped instead of committed — used by the editor's
+/// auto-evaluate to project what *would* happen after a
+/// keystroke without applying it.
+///
 /// Caller is responsible for parsing the source text into
 /// [`Syntax`] (callers want different parse-diagnostic surfaces
 /// — HTTP 400 body vs. CLI `<source>:<line>:<col>:` lines — and
@@ -399,14 +410,15 @@ pub async fn run<Env: EvaluateEnv>(
     syntax: &Syntax,
     branch: &Branch,
     env: &Env,
+    transact: bool,
 ) -> Result<EvaluateOutcome, EvaluateError> {
     let resolver = BranchResolver { branch, env };
     let analysis = analyzer::analyze(syntax, &resolver)
         .await
-        .map_err(|e| EvaluateError::Analyze(e.to_string()))?;
+        .map_err(EvaluateError::Analyze)?;
 
     let revision_before = branch.revision();
-    let (response, committed) = run_pipeline(&analysis, syntax, branch, env).await?;
+    let (response, committed) = run_pipeline(&analysis, syntax, branch, env, transact).await?;
     let revision_after = branch.revision();
 
     Ok(EvaluateOutcome {
@@ -432,6 +444,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
     syntax: &Syntax,
     branch: &Branch,
     env: &Env,
+    transact: bool,
 ) -> Result<(EvaluateResponse, bool), EvaluateError> {
     // ---- Build base bindings frame from analysis-derived vars ----
     let mut base = Parameters::new();
@@ -467,7 +480,13 @@ async fn run_pipeline<Env: EvaluateEnv>(
             .entities
             .insert(format!("?{key}"), entity.to_string());
     }
-    let committed = !analysis.mutate.statements.is_empty();
+    // We only build a transaction at all when there are
+    // mutation statements *and* the caller wants them
+    // committed. `committed` reports whether a commit was
+    // actually attempted — `transact = false` callers (the
+    // editor's auto-evaluate) get the rendered matches without
+    // any branch state change.
+    let committed = transact && !analysis.mutate.statements.is_empty();
     if committed {
         let mut tx = branch.transaction();
         let mut claim_count = 0usize;
@@ -489,17 +508,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
                     .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
                 match statement {
                     Statement::Assert(_) => {
-                        // Cardinality-one fields need prior
-                        // values dissociated so the new value
-                        // replaces rather than accumulates with
-                        // them. Dialog's storage layer is
-                        // additive — `associate_unique` only
-                        // de-dupes within the current batch, not
-                        // against committed state. So query the
-                        // branch first.
-                        let supersedes = resolve_supersession_targets(&plan, branch, env).await?;
                         claim_count += count_emitted_claims(&plan);
-                        retract_claims.extend(supersedes);
                         tx = tx.assert(plan);
                     }
                     Statement::Retract(_) => {
@@ -654,82 +663,6 @@ impl dialog_artifacts::Statement for RawClaim {
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
         update.dissociate(self.the, self.of, self.is);
     }
-}
-
-/// For an *assert* plan: find prior values of every
-/// cardinality-one field on the plan's `this` entity and emit
-/// them as `RawClaim`s ready for `tx.retract`. Dialog's storage
-/// is additive — without this, re-asserting `age = 30` on Alice
-/// leaves `age = 28` and `age = 30` both present, and the
-/// engine returns whichever it finds first.
-///
-/// Cardinality-many fields are skipped (the whole point is
-/// multiple values per entity).
-async fn resolve_supersession_targets<Env: EvaluateEnv>(
-    plan: &ApplicationPlan,
-    branch: &Branch,
-    env: &Env,
-) -> Result<Vec<RawClaim>, EvaluateError> {
-    use dialog_query::Cardinality;
-
-    let Some(this_term) = plan.statement.terms.get("this") else {
-        return Ok(Vec::new());
-    };
-    let this_entity = match this_term {
-        Term::Constant(Value::Entity(e)) => e.clone(),
-        _ => return Ok(Vec::new()),
-    };
-
-    let mut out = Vec::new();
-    for (field_name, attribute) in plan.statement.predicate.with().iter() {
-        if attribute.cardinality() != Cardinality::One {
-            continue;
-        }
-        // Only supersede when the new assert *would* write a
-        // concrete value — leaving a blank is an "unset" /
-        // "skip" signal, not "retract whatever's there".
-        let new_value = match plan.statement.terms.get(field_name) {
-            Some(Term::Constant(value)) => value.clone(),
-            _ => continue,
-        };
-
-        let the_term: dialog_query::attribute::The = attribute.the().clone();
-        let query = dialog_query::AttributeQuery::new(
-            Term::from(the_term),
-            Term::from(this_entity.clone()),
-            Term::<dialog_query::Any>::var("v"),
-            Term::<dialog_query::attribute::Cause>::blank(),
-            None,
-        );
-        let claims: Vec<dialog_query::Claim> = branch
-            .query()
-            .select(query)
-            .perform(env)
-            .try_vec()
-            .await
-            .map_err(|e| {
-                EvaluateError::Query(format!(
-                    "supersession query failed for ({:?}, {of}): {e:?}",
-                    attribute.the(),
-                    of = this_entity
-                ))
-            })?;
-        for claim in claims {
-            // Skip retracting the value we're about to write —
-            // re-asserting the same value is a no-op, and
-            // emitting a retract+assert pair for the same
-            // (the, of, is) would be churn.
-            if claim.is == new_value {
-                continue;
-            }
-            out.push(RawClaim {
-                the: claim.the.into(),
-                of: this_entity.clone(),
-                is: claim.is,
-            });
-        }
-    }
-    Ok(out)
 }
 
 /// Resolve a retraction `ApplicationPlan` to concrete

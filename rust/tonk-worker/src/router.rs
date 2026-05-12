@@ -2285,4 +2285,115 @@ attribute!: &{name}
             _ = timeout => panic!("subscription body did not end after shutdown"),
         }
     }
+
+    // ---------------------------------------------------------- //
+    // Regression tests pinning behaviours we've broken once
+    // already and don't intend to break again.
+    // ---------------------------------------------------------- //
+
+    /// `transact=false` must not commit. Earlier the query
+    /// parameter was parsed but ignored, so auto-evaluate from
+    /// the editor was secretly applying every keystroke.
+    /// Verify by counting commits before vs after a
+    /// `transact=false` request.
+    #[dialog_common::test]
+    async fn it_does_not_commit_when_transact_false() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-no-commit-transact-false";
+        put_repo(&app, repo).await;
+
+        let body = "\
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          text
+  cardinality: one
+  description: \"name\"
+";
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{}/branch/main/evaluate?transact=false",
+                        repo
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "expected 200; got {status}: {}",
+            String::from_utf8_lossy(&body_bytes),
+        );
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            resp.commits.claims,
+            0,
+            "transact=false must not commit any claims; got {} (response: {})",
+            resp.commits.claims,
+            String::from_utf8_lossy(&body_bytes),
+        );
+        assert_eq!(
+            resp.revision_before, resp.revision_after,
+            "transact=false must leave the branch revision unchanged",
+        );
+    }
+
+    /// Worker rejections from the parser/analyzer must surface
+    /// as a structured `kind: "analyze"` body with a `code` and
+    /// `range` so the editor can position a squiggle. Previously
+    /// they flattened to `kind: "router"` with neither, leaving
+    /// the editor to silently drop the diagnostic.
+    #[dialog_common::test]
+    async fn it_returns_structured_analyze_error_for_malformed_body() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-analyze-error-shape";
+        put_repo(&app, repo).await;
+
+        // `name: x` is a head with a non-mapping body — the
+        // parser rejects it.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{}/branch/main/evaluate?transact=false",
+                        repo
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from("name: x"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            body["error"]["kind"], "analyze",
+            "expected kind=analyze for editor squiggle routing; got {body}",
+        );
+        assert!(
+            body["error"]["code"].is_string(),
+            "expected a string `code` field for stable diagnostic routing; got {body}",
+        );
+        assert!(
+            body["error"]["range"].is_object(),
+            "expected a `range` object so the editor can position the squiggle; got {body}",
+        );
+    }
 }
