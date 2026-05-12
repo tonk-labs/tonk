@@ -37,9 +37,9 @@ use url::Url;
 
 /// Canonical base URL for tonk invite links. Callers serializing an
 /// [`Invite`] can pass this to [`Invite::to_url`] to mint a link rooted at
-/// tonk.xyz. Changing this value is a breaking change for any outstanding
+/// hub.tonk.xyz. Changing this value is a breaking change for any outstanding
 /// invite URLs that embed it.
-pub const DEFAULT_BASE_URL: &str = "https://tonk.xyz/join";
+pub const DEFAULT_BASE_URL: &str = "https://hub.tonk.xyz/join";
 
 /// Length in bytes of the Ed25519 seed embedded in the URL fragment for
 /// audience-open invites.
@@ -459,7 +459,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_missing_access_parameter() {
-        let err = Invite::parse_url("https://tonk.xyz/join")
+        let err = Invite::parse_url("https://hub.tonk.xyz/join")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("`access`"), "{err}");
@@ -467,7 +467,7 @@ mod tests {
 
     #[dialog_common::test]
     async fn it_rejects_invalid_base58_in_access() {
-        let err = Invite::parse_url("https://tonk.xyz/join?access=!!!not-b58!!!")
+        let err = Invite::parse_url("https://hub.tonk.xyz/join?access=!!!not-b58!!!")
             .await
             .unwrap_err();
         assert!(err.to_string().contains("valid base58"), "{err}");
@@ -501,7 +501,7 @@ mod tests {
         let audience_signer = signer(&AUDIENCE_SEED).await;
         let audience = audience_signer.did();
         let chain = make_chain(&ISSUER_SEED, &audience, &subject).await;
-        let remote = Url::parse("https://access.tonk.xyz/ucan").unwrap();
+        let remote = Url::parse("https://hub.tonk.xyz/ucan/").unwrap();
 
         // Scoped, with remote
         let invite = Invite::new(chain.clone(), InviteAudience::Scoped, Some(remote.clone()))

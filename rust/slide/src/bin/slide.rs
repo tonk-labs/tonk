@@ -106,9 +106,8 @@ enum Command {
     /// redelegating from the embedded ephemeral key.
     Invite {
         /// Override the URL prefix the invite is built against.
-        /// Default: `tonk_invite::DEFAULT_BASE_URL`.
-        #[arg(long, value_name = "URL")]
-        base_url: Option<String>,
+        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
+        base_url: String,
 
         /// Embed a registered remote's URL in the invite so
         /// the claimer auto-configures the same access service
@@ -150,10 +149,9 @@ enum ShareCommand {
         /// Local name of the concept to share.
         #[arg(value_name = "NAME")]
         name: String,
-        /// Override the URL prefix the launcher is built
-        /// against. Default: the standard `slide invite` base.
-        #[arg(long, value_name = "URL")]
-        ui_base: Option<String>,
+        /// Override the URL prefix the launcher is built against.
+        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
+        ui_base: String,
         /// Suggested local name for the recipient's space —
         /// pre-fills the join form's "Local name" input. The
         /// recipient can rename before joining.
@@ -175,8 +173,8 @@ enum ShareCommand {
         #[arg(value_name = "NAME_OR_ENTITY")]
         target: String,
         /// Override the URL prefix the launcher is built against.
-        #[arg(long, value_name = "URL")]
-        ui_base: Option<String>,
+        #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
+        ui_base: String,
         /// Suggested local name for the recipient's space.
         #[arg(long, value_name = "NAME")]
         space_name: Option<String>,
@@ -537,7 +535,7 @@ async fn share_op(command: ShareCommand) -> ExitCode {
             remote,
         } => {
             let options = ShareOptions {
-                ui_base,
+                ui_base: Some(ui_base),
                 remote,
                 space_name,
             };
@@ -559,7 +557,7 @@ async fn share_op(command: ShareCommand) -> ExitCode {
             remote,
         } => {
             let options = ShareOptions {
-                ui_base,
+                ui_base: Some(ui_base),
                 remote,
                 space_name,
             };
@@ -610,7 +608,7 @@ fn print_set_upstream_outcome(outcome: &UpstreamOutcome) {
     );
 }
 
-async fn mint_invite(base_url: Option<String>, remote_name: Option<String>) -> ExitCode {
+async fn mint_invite(base_url: String, remote_name: Option<String>) -> ExitCode {
     let cwd = match std::env::current_dir() {
         Ok(p) => p,
         Err(e) => return print_error(format!("could not determine current directory: {e}")),
@@ -636,7 +634,7 @@ async fn mint_invite(base_url: Option<String>, remote_name: Option<String>) -> E
         None => None,
     };
 
-    match invite::mint(&site, base_url.as_deref(), remote_url.as_deref()).await {
+    match invite::mint(&site, Some(&base_url), remote_url.as_deref()).await {
         Ok(outcome) => {
             print_invite_outcome(&outcome);
             ExitCode::Success
