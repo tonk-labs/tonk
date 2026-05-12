@@ -29,6 +29,7 @@ pub mod schema;
 pub mod share;
 pub mod site;
 pub mod sync;
+pub mod views;
 
 /// CLI exit codes.
 ///

@@ -8,7 +8,10 @@
 //! 2. Open a streaming `/query` subscription and diff each frame
 //!    into the live DOM.
 //!
-//! See `tonk-concept-spec.md` (sibling crate spec) for details.
+//! See `SPEC.md` at the crate root for the author-facing
+//! reference: source-attribute syntax, template detection,
+//! `{field}` substitution rules, update behaviour, and the
+//! custom events the element fires.
 
 #![warn(missing_docs)]
 

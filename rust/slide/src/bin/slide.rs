@@ -17,8 +17,9 @@ use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
 use slide::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
-use slide::share::{self, ShareOptions, ShareOutcome};
+use slide::share::{self, ShareOptions, ShareOutcome, ShareViewOutcome};
 use slide::sync::{self, SyncOutcome};
+use slide::views::{self, ViewSummary};
 use slide::{ExitCode, guide, identity, schema, site};
 
 #[derive(Parser, Debug)]
@@ -70,6 +71,13 @@ enum Command {
     /// concepts (`attribute`, `concept`, …) are omitted — they're
     /// resolvable everywhere and would just be noise.
     Concepts,
+
+    /// List entities that carry a `text/html` claim on the local
+    /// branch. One row per entity, tab-separated
+    /// `name<TAB>entity<TAB>bytes`. Claim-driven: surfaces
+    /// anything the host route would serve, regardless of how
+    /// the claim was asserted.
+    Views,
 
     /// Migrate a `.carry/` directory to `.tonk/`. Walks up from
     /// `$PWD` to find the source unless `--from` is supplied; the
@@ -157,6 +165,25 @@ enum ShareCommand {
         #[arg(long, value_name = "NAME")]
         remote: Option<String>,
     },
+
+    /// Share an HTML view. The recipient lands on the iframe
+    /// viewer at `/space/<space-name>/branch/main/view/<entity>`
+    /// with the body served from the entity's `text/html` claim.
+    View {
+        /// Bookmark name or `did:key:…` entity URI for the view.
+        /// `slide views` lists what's available.
+        #[arg(value_name = "NAME_OR_ENTITY")]
+        target: String,
+        /// Override the URL prefix the launcher is built against.
+        #[arg(long, value_name = "URL")]
+        ui_base: Option<String>,
+        /// Suggested local name for the recipient's space.
+        #[arg(long, value_name = "NAME")]
+        space_name: Option<String>,
+        /// Embed an explicit remote's endpoint.
+        #[arg(long, value_name = "NAME")]
+        remote: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -237,6 +264,7 @@ async fn main() {
         Command::Guide => print_guide(),
         Command::Schema => print_schema().await,
         Command::Concepts => print_concepts().await,
+        Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Push => sync_op(SyncOp::Push).await,
         Command::Pull => sync_op(SyncOp::Pull).await,
@@ -524,12 +552,48 @@ async fn share_op(command: ShareCommand) -> ExitCode {
                 }
             }
         }
+        ShareCommand::View {
+            target,
+            ui_base,
+            space_name,
+            remote,
+        } => {
+            let options = ShareOptions {
+                ui_base,
+                remote,
+                space_name,
+            };
+            match share::share_view(&site, &target, options).await {
+                Ok(outcome) => {
+                    print_share_view_outcome(&outcome);
+                    ExitCode::Success
+                }
+                Err(err) => {
+                    eprintln!("error: {err}");
+                    err.exit_code()
+                }
+            }
+        }
     }
 }
 
 fn print_share_outcome(outcome: &ShareOutcome) {
     println!("{}", outcome.url);
     eprintln!("concept: {}", outcome.concept_name);
+    eprintln!("space:   {}", outcome.space_name);
+    eprintln!(
+        "remote:  {} -> {}",
+        outcome.remote_name, outcome.remote_endpoint,
+    );
+}
+
+fn print_share_view_outcome(outcome: &ShareViewOutcome) {
+    println!("{}", outcome.url);
+    if let Some(name) = &outcome.view_name {
+        eprintln!("view:    {} ({})", name, outcome.entity);
+    } else {
+        eprintln!("view:    {}", outcome.entity);
+    }
     eprintln!("space:   {}", outcome.space_name);
     eprintln!(
         "remote:  {} -> {}",
@@ -669,6 +733,34 @@ async fn print_concepts() -> ExitCode {
         }
     }
     ExitCode::Success
+}
+
+async fn print_views() -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+    let listed = match views::list(&site).await {
+        Ok(v) => v,
+        Err(err) => return print_error(err.to_string()),
+    };
+    let mut stdout = std::io::stdout().lock();
+    for row in &listed {
+        let result = print_view_row(&mut stdout, row);
+        if let Err(e) = result {
+            return print_error(format!("failed to write stdout: {e}"));
+        }
+    }
+    ExitCode::Success
+}
+
+fn print_view_row(out: &mut impl std::io::Write, row: &ViewSummary) -> std::io::Result<()> {
+    let name = row.name.as_deref().unwrap_or("-");
+    writeln!(out, "{}\t{}\t{}", name, row.entity, row.body_bytes)
 }
 
 async fn print_schema() -> ExitCode {

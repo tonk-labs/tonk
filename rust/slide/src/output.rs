@@ -123,10 +123,13 @@ fn render_matches(blocks: &[QueryMatchBlock]) -> String {
     sections.join("\n---\n")
 }
 
-/// One match — `<label> <this>:` head followed by indented
-/// `<field>: <value>` lines.
+/// One match — `<label>:` head followed by a body whose first
+/// entry is `this: <entity>` and the rest is `<field>: <value>`
+/// pairs. Matches the head/body grammar so the output is a
+/// re-submittable notation document.
 fn render_one(out: &mut String, label: &str, result: &QueryResult) {
-    let _ = writeln!(out, "{label} {this}:", this = result.this);
+    let _ = writeln!(out, "{label}:");
+    let _ = writeln!(out, "  this: {this}", this = result.this);
     for (field, value) in &result.fields {
         let _ = writeln!(out, "  {field}: {rendered}", rendered = render_value(value));
     }
@@ -237,7 +240,7 @@ mod tests {
             assert!(out.contains("claims: 2"));
             assert!(out.contains("alice: did:key:zHj"));
             assert!(out.contains("---\n"));
-            assert!(out.contains("person did:key:zHj:"));
+            assert!(out.contains("person:\n  this: did:key:zHj"));
             assert!(out.contains("name: \"Alice\""));
             assert!(out.contains("age: 28"));
         }
@@ -246,7 +249,7 @@ mod tests {
         fn it_omits_the_matches_section_when_quiet() {
             let out = render(&sample_response(), Format::Notation, true).unwrap();
             assert!(!out.contains("---"));
-            assert!(!out.contains("person did:key:"));
+            assert!(!out.contains("this: did:key:"));
         }
 
         #[dialog_common::test]

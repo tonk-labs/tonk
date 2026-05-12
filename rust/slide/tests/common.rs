@@ -67,25 +67,42 @@ pub fn isolated_config(parent: &std::path::Path) -> Result<SiteConfig> {
 /// Notation declaration of the `task-title` and `task-done`
 /// attributes — used by every test that needs a task schema.
 pub const ATTRIBUTE_DECL: &str = r#"
-attribute! task-title:
+attribute!: &task-title
   description: "task title"
   the:         xyz.tonk.task/title
-  as:          Text
+  as:          text
   cardinality: one
 
-attribute! task-done:
+attribute!: &task-done
   description: "task done flag"
   the:         xyz.tonk.task/done
-  as:          Boolean
+  as:          boolean
   cardinality: one
 "#;
 
 /// Notation declaration of a `task` concept referencing the
 /// attributes above.
 pub const CONCEPT_DECL: &str = r#"
-concept! task:
+concept!: &task
   description: "a task"
   with:
-    title: .task-title
-    done:  .task-done
+    title: task-title
+    done:  task-done
+"#;
+
+/// Seed schema for HTML views: a `text/html`-bound attribute and
+/// a `view` concept that uses it. Pasted at the top of any test
+/// that needs `view!` heads. Shared with [`slide::guide`] so the
+/// agent-facing reference matches what the tests exercise.
+pub const VIEW_DECL: &str = r#"
+attribute!: &html-body
+  description: "HTML body of a slide-authored view"
+  the:         text/html
+  as:          text
+  cardinality: many
+
+concept!: &view
+  description: "An HTML view, served via the host route"
+  with:
+    body: html-body
 "#;

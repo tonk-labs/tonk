@@ -22,13 +22,13 @@
 //!
 //! Known fidelity gap: `dialog.meta/description` claims on
 //! *concepts* are not surfaced. The dialog query engine's
-//! anonymous-concept dispatch path (which the `concept ?c:` head
+//! anonymous-concept dispatch path (which the `concept:` head
 //! lands on) only binds `this`, `name`, and a synthesised
 //! `source`; reconstructed descriptors set `description: None`.
 //! Concept descriptions are optional in the analyzer, so the
 //! emitted schema still re-submits cleanly — only the prose is
 //! lost. Attribute descriptions round-trip because the
-//! `attribute ?a:` query returns the underlying claim directly.
+//! `attribute:` query returns the underlying claim directly.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
@@ -144,11 +144,12 @@ struct ConceptInfo {
 // Attribute enumeration                                            //
 // ---------------------------------------------------------------- //
 
-/// Run the built-in `attribute ?a:` query plus a name-claim lookup
+/// Run the built-in `attribute` query plus a name-claim lookup
 /// and merge the two by entity.
 async fn enumerate_attributes(site: &SlideSite) -> Result<Vec<AttributeInfo>> {
     const QUERY: &str = "\
-attribute ?a:
+attribute:
+  this:        ?a
   id:          ?the
   type:        ?type
   cardinality: ?card
@@ -222,7 +223,8 @@ async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, Strin
 
 async fn enumerate_concepts(site: &SlideSite) -> Result<Vec<ConceptInfo>> {
     const QUERY: &str = "\
-concept ?c:
+concept:
+  this:        ?c
   concept:     ?cc
   name:        ?name
   description: ?desc
@@ -278,7 +280,13 @@ concept ?c:
 fn is_builtin_concept(name: &str) -> bool {
     matches!(
         name,
-        "attribute" | "concept" | "branch" | "replica" | "remote" | "tracking-branch"
+        "attribute"
+            | "concept"
+            | "name"
+            | "branch"
+            | "replica"
+            | "remote"
+            | "tracking-branch"
     )
 }
 
@@ -288,7 +296,7 @@ fn is_builtin_concept(name: &str) -> bool {
 
 fn render_attribute(out: &mut String, attr: &AttributeInfo) {
     let head = match &attr.name {
-        Some(name) => format!("attribute! {name}:"),
+        Some(name) => format!("attribute!: &{name}"),
         None => "attribute!:".to_string(),
     };
     let _ = writeln!(out, "{head}");
@@ -308,7 +316,7 @@ fn render_attribute(out: &mut String, attr: &AttributeInfo) {
 }
 
 fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap<String, String>) {
-    let _ = writeln!(out, "concept! {name}:", name = concept.name);
+    let _ = writeln!(out, "concept!: &{name}", name = concept.name);
     if let Some(desc) = &concept.description {
         let _ = writeln!(out, "  description: {}", quote_string(desc));
     }
@@ -316,10 +324,11 @@ fn render_concept(out: &mut String, concept: &ConceptInfo, uri_to_name: &HashMap
     for (field, attr_descriptor) in concept.descriptor.with().iter() {
         let uri = attr_descriptor.the().to_string();
         match uri_to_name.get(&uri) {
-            // Named — use the bookmark reference. `.name` resolves
-            // by the analyzer.
+            // Named — use the bare-symbol reference; the
+            // analyzer resolves it through the published name
+            // table on the branch.
             Some(name) => {
-                let _ = writeln!(out, "    {field}: .{name}");
+                let _ = writeln!(out, "    {field}: {name}");
             }
             // Anonymous — emit the inline definition so the
             // re-submitted document carries enough information to

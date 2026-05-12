@@ -469,6 +469,91 @@ mod when_syncing_with_an_upstream {
     }
 }
 
+mod when_authoring_an_html_view {
+    use anyhow::{Result, anyhow};
+    use dialog_artifacts::{Attribute, Value};
+    use dialog_query::{AttributeQuery, Output as _, Term, attribute};
+
+    use crate::common::{self, VIEW_DECL};
+
+    /// Pull every `(text/html, ?of, ?is)` claim on `main`.
+    async fn select_text_html_claims(
+        site: &slide::site::SlideSite,
+    ) -> Result<Vec<dialog_query::Claim>> {
+        let the: Attribute = "text/html"
+            .parse()
+            .map_err(|e| anyhow!("text/html should be a valid attribute URI: {e:?}"))?;
+        let the_term: attribute::The = the.into();
+        site.branch
+            .query()
+            .select(AttributeQuery::new(
+                Term::from(the_term),
+                Term::<dialog_artifacts::Entity>::var("of"),
+                Term::<dialog_query::Any>::var("is"),
+                Term::<attribute::Cause>::blank(),
+                None,
+            ))
+            .perform(&site.operator)
+            .try_vec()
+            .await
+            .map_err(|e| anyhow!("text/html query failed: {e:?}"))
+    }
+
+    /// De-risk the Phase-2 design. Confirms three properties:
+    /// 1. `attribute! the: text/html` is accepted by parse +
+    ///    analyzer (the dialog layer permits `text/html` even
+    ///    though the domain is dotless).
+    /// 2. A `view!` head whose body field references that
+    ///    attribute lands as a literal `(text/html, ?, body)`
+    ///    claim — i.e. the URI on the wire really is `text/html`,
+    ///    not a synthesised concept-namespace URI.
+    /// 3. Re-asserting the same body is idempotent (Phase-2's
+    ///    "git-tag" semantics).
+    #[dialog_common::test]
+    async fn it_round_trips_a_view_through_the_seed_schema() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(VIEW_DECL).await?;
+        test.eval_inline(
+            r#"view!: &my-view
+  body: "<h1>hi</h1>"
+"#,
+        )
+        .await?;
+
+        let claims = select_text_html_claims(&test.site).await?;
+        assert_eq!(
+            claims.len(),
+            1,
+            "expected exactly one text/html claim, got: {claims:?}",
+        );
+        let claim = &claims[0];
+        // The wire-format attribute really is `text/html` — the
+        // host route's `(the=text/html, of=<entity>)` selector
+        // will match this row.
+        assert_eq!(claim.the.to_string(), "text/html");
+        match &claim.is {
+            Value::String(s) => assert_eq!(s, "<h1>hi</h1>"),
+            other => panic!("expected String body, got: {other:?}"),
+        }
+
+        // Re-asserting the same body is a no-op: same content →
+        // same entity, same claim. The claim count must stay 1.
+        test.eval_inline(
+            r#"view!: &my-view
+  body: "<h1>hi</h1>"
+"#,
+        )
+        .await?;
+        let claims = select_text_html_claims(&test.site).await?;
+        assert_eq!(
+            claims.len(),
+            1,
+            "re-asserting identical body should be idempotent",
+        );
+        Ok(())
+    }
+}
+
 mod when_listing_concepts {
     use anyhow::Result;
     use slide::schema;
@@ -504,6 +589,242 @@ mod when_listing_concepts {
         let test = common::TestSite::new().await?;
         let concepts = schema::list_concepts(&test.site).await?;
         assert!(concepts.is_empty());
+        Ok(())
+    }
+}
+
+mod when_listing_views {
+    use anyhow::Result;
+    use slide::views;
+
+    use crate::common::{self, VIEW_DECL};
+
+    #[dialog_common::test]
+    async fn it_returns_empty_on_a_branch_with_no_text_html_claims() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        let listed = views::list(&test.site).await?;
+        assert!(listed.is_empty());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_surfaces_every_bookmarked_view() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(VIEW_DECL).await?;
+        test.eval_inline(
+            r#"view!: &todo-list
+  body: "<ul><li>buy milk</li></ul>"
+"#,
+        )
+        .await?;
+        test.eval_inline(
+            r#"view!: &welcome
+  body: "<h1>hi</h1>"
+"#,
+        )
+        .await?;
+
+        let listed = views::list(&test.site).await?;
+        assert_eq!(listed.len(), 2);
+        // Alphabetical by name (matches the listing's sort).
+        assert_eq!(listed[0].name.as_deref(), Some("todo-list"));
+        assert_eq!(listed[1].name.as_deref(), Some("welcome"));
+        assert_eq!(listed[0].body_bytes, "<ul><li>buy milk</li></ul>".len());
+        assert_eq!(listed[1].body_bytes, "<h1>hi</h1>".len());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_resolves_a_bookmark_to_an_entity() -> Result<()> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(VIEW_DECL).await?;
+        test.eval_inline(
+            r#"view!: &welcome
+  body: "<h1>hi</h1>"
+"#,
+        )
+        .await?;
+
+        let entity = views::entity_for_name(&test.site, "welcome")
+            .await?
+            .expect("welcome should resolve");
+        assert!(views::entity_has_text_html(&test.site, &entity).await?);
+
+        // Unknown bookmark returns None rather than erroring.
+        assert!(views::entity_for_name(&test.site, "nope").await?.is_none());
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_no_text_html_for_unrelated_entities() -> Result<()> {
+        // A `task!` head produces an entity without a
+        // `text/html` claim — `entity_has_text_html` should
+        // return false for it.
+        let test = common::TestSite::new().await?;
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        test.eval_inline(
+            r#"task!: &buy-milk
+  title: "Buy milk"
+  done:  false
+"#,
+        )
+        .await?;
+        let task_entity = views::entity_for_name(&test.site, "buy-milk")
+            .await?
+            .expect("buy-milk should resolve");
+        assert!(!views::entity_has_text_html(&test.site, &task_entity).await?);
+        Ok(())
+    }
+}
+
+mod when_sharing_a_view {
+    use anyhow::Result;
+    use dialog_repository::Branch;
+    use slide::remote;
+    use slide::share::{self, ShareError, ShareOptions};
+    use slide::views;
+    use url::Url;
+
+    use crate::common::{self, VIEW_DECL};
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+
+    async fn wire_local_upstream(test: &common::TestSite) -> Result<Branch> {
+        let upstream = test
+            .site
+            .repository
+            .branch("upstream")
+            .open()
+            .perform(&test.site.operator)
+            .await?;
+        test.site
+            .branch
+            .set_upstream(&upstream)
+            .perform(&test.site.operator)
+            .await?;
+        Ok(upstream)
+    }
+
+    /// Setup mirroring `when_sharing_a_concept::shareable_site`
+    /// but seeded with a `view!: &my-view …` assertion.
+    async fn shareable_view_site() -> Result<common::TestSite> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(VIEW_DECL).await?;
+        test.eval_inline(
+            r#"view!: &my-view
+  body: "<h1>hello</h1>"
+"#,
+        )
+        .await?;
+        wire_local_upstream(&test).await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        Ok(test)
+    }
+
+    #[dialog_common::test]
+    async fn it_produces_a_launcher_url_targeting_the_view_route() -> Result<()> {
+        let test = shareable_view_site().await?;
+        let outcome = share::share_view(
+            &test.site,
+            "my-view",
+            ShareOptions {
+                ui_base: Some("https://ui.example.test/join".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(outcome.view_name.as_deref(), Some("my-view"));
+        assert_eq!(outcome.remote_name, "origin");
+        // Entity resolved through the bookmark — confirm it
+        // really does have a text/html claim, so a downstream
+        // host-route fetch would resolve.
+        assert!(views::entity_has_text_html(&test.site, &outcome.entity).await?);
+
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some(format!("branch/main/view/{}", outcome.entity).as_str()),
+        );
+        assert_eq!(pairs.get("remote").map(String::as_str), Some(ENDPOINT));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_raw_entity_uri_target() -> Result<()> {
+        let test = shareable_view_site().await?;
+        let entity = views::entity_for_name(&test.site, "my-view")
+            .await?
+            .expect("seed asserted my-view");
+
+        let outcome =
+            share::share_view(&test.site, &entity.to_string(), ShareOptions::default()).await?;
+        // Direct URI input → no bookmark name surfaced.
+        assert!(outcome.view_name.is_none());
+        assert_eq!(outcome.entity, entity);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_the_bookmark_does_not_resolve() -> Result<()> {
+        let test = shareable_view_site().await?;
+        let result = share::share_view(&test.site, "missing", ShareOptions::default()).await;
+        match result {
+            Err(ShareError::ViewNotFound { target }) => assert_eq!(target, "missing"),
+            other => panic!("expected ViewNotFound, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_the_resolved_entity_has_no_text_html_claim() -> Result<()> {
+        // Seed a task fixture alongside the view fixture; sharing
+        // the task bookmark should fail because the task entity
+        // doesn't carry a text/html claim — even though it does
+        // resolve through the same `dialog.meta/name` index.
+        let test = shareable_view_site().await?;
+        test.eval_inline(common::ATTRIBUTE_DECL).await?;
+        test.eval_inline(common::CONCEPT_DECL).await?;
+        test.eval_inline(
+            r#"task!: &buy-milk
+  title: "Buy milk"
+  done:  false
+"#,
+        )
+        .await?;
+
+        let result = share::share_view(&test.site, "buy-milk", ShareOptions::default()).await;
+        assert!(
+            matches!(result, Err(ShareError::NotAView { .. })),
+            "expected NotAView, got: {result:?}",
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_no_text_html_claim_exists_under_a_did_target() -> Result<()> {
+        // Pass a syntactically valid did:key that doesn't
+        // correspond to any view on the branch. Entity::from_str
+        // is permissive enough to accept arbitrary did:foo:bar
+        // shapes, so the guard that catches the typo is the
+        // text/html presence check — surface that path here so
+        // a regression in the guard light up the test.
+        let test = shareable_view_site().await?;
+        let result = share::share_view(
+            &test.site,
+            "did:key:z6MkfakeEntityForViewShareTest1111111111",
+            ShareOptions::default(),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(ShareError::NotAView { .. })),
+            "expected NotAView, got: {result:?}",
+        );
         Ok(())
     }
 }
