@@ -3,8 +3,7 @@
 //! The profile is the user's persistent identity. It lives in
 //! the platform-specific data directory (`~/Library/Application
 //! Support/dialog/` on macOS, `~/.local/share/dialog/` on
-//! Linux), under the subdirectory named [`PROFILE_NAME`] —
-//! shared with carry, so a user with both CLIs sees the same DID.
+//! Linux), under the subdirectory named [`PROFILE_NAME`].
 
 use std::path::PathBuf;
 

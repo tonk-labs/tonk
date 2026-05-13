@@ -1,6 +1,6 @@
 //! `slide invite` / `slide join` — UCAN-delegation-chain mint
-//! and claim, on the same wire format `tonk-ui` and `carry`
-//! already speak via the [`tonk_invite`] crate.
+//! and claim, on the same wire format `tonk-ui` already speaks
+//! via the [`tonk_invite`] crate.
 //!
 //! `mint` builds an audience-open delegation from the local
 //! repo's subject DID to a freshly generated ephemeral signer,
