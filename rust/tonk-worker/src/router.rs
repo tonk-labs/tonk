@@ -2487,4 +2487,100 @@ person!:
             "result block must not fall back to `?` for an assertion with a known head; got {labels:?}",
         );
     }
+
+    /// `field: _` in a query body means "match any value, don't
+    /// bind it as a join key" — but the renderer should still
+    /// project the matched value so the user sees it. The
+    /// analyzer mints an auto-named variable for `_`; the
+    /// renderer projects that under the user-facing field name.
+    #[dialog_common::test]
+    async fn it_renders_blank_query_field_with_matched_value() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-blank-field-render";
+        put_repo(&app, repo).await;
+
+        // Seed person concept + an instance.
+        let seed = "\
+attribute!: &person-name
+  the:         xyz.tonk.person/name
+  as:          text
+  cardinality: one
+  description: \"name\"
+
+attribute!: &person-age
+  the:         xyz.tonk.person/age
+  as:          unsigned-integer
+  cardinality: one
+  description: \"age\"
+
+concept!: &person
+  description: \"a person\"
+  with:
+    name: person-name
+    age:  person-age
+
+person!:
+  name: \"Alice\"
+  age:  29
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(seed))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Query with `name: _` — blank — and `age: _`. Expect
+        // both fields to appear in the result with their
+        // matched values.
+        let query = "\
+person:
+  name: _
+  age:  _
+";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(query))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let block = resp
+            .matches_after
+            .iter()
+            .find(|b| b.label == "person")
+            .expect("person result block");
+        assert!(
+            !block.results.is_empty(),
+            "expected at least one match for the seeded person",
+        );
+        let row = &block.results[0];
+        assert!(
+            row.fields.contains_key("name"),
+            "blank `name: _` field must still surface the matched value; got {:?}",
+            row.fields,
+        );
+        assert!(
+            row.fields.contains_key("age"),
+            "blank `age: _` field must still surface the matched value; got {:?}",
+            row.fields,
+        );
+    }
 }

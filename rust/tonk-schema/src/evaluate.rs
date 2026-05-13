@@ -925,6 +925,12 @@ fn render_one_result(
         };
         let value = match term {
             Term::Constant(value) => value_to_json(value),
+            // Named variables — user `?var` and analyzer-minted
+            // `__N` from `_` blanks both land here. The frame
+            // binds them either way, so the same lookup works
+            // for both. The auto name leaks into nothing
+            // user-visible because we project under
+            // `field_name`, not the variable name.
             Term::Variable {
                 name: Some(name), ..
             } => match frame.get(name) {
