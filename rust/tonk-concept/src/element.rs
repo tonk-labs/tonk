@@ -158,6 +158,16 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     }
     let parsed: ParsedSource = parse_source(&source_attr);
 
+    // TODO: when neither `space` nor `branch` is set, use a relative
+    // `/query` URL so the service worker's virtual-root rewrite
+    // resolves it to the host's actual branch. The current `home`/
+    // `main` fallback is wrong inside an iframe (the iframe is rooted
+    // under whatever branch the host route bound it to, which is
+    // rarely `home`). See `rust/tonk-worker/assets/tonk-concept.js`
+    // for the JS port that already does this — both impls should
+    // agree on the override semantics: relative URL when no attrs;
+    // absolute `/api/repository/{space}/branch/{branch}/query` when
+    // either is set.
     let space = host
         .get_attribute("space")
         .unwrap_or_else(|| "home".to_owned());

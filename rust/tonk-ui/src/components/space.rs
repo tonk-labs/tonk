@@ -1551,9 +1551,15 @@ where
         <main class="wa-stack space-view space-viewer">
             { move || match iframe_src.get() {
                 Some(src) => Either::Left(view! {
+                    // `allow-forms` is granted because `allow-scripts`
+                    // already lets in-iframe JS POST anywhere same-origin
+                    // via `fetch()`; forms are a strict subset of that
+                    // capability. Top navigation, popups, modals, and
+                    // downloads stay blocked — those gate behavior JS
+                    // alone can't reach.
                     <iframe
                         class="space-viewer-frame"
-                        sandbox="allow-scripts allow-same-origin"
+                        sandbox="allow-scripts allow-same-origin allow-forms"
                         src=src
                     />
                 }),
