@@ -14,11 +14,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lsp_types::{
     CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    MarkupContent, MarkupKind, PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
     notification::{Notification as LspNotificationTrait, PublishDiagnostics},
-    request::{Completion, Initialize, Request as LspRequestTrait},
+    request::{Completion, HoverRequest, Initialize, Request as LspRequestTrait},
 };
 use serde_json::Value;
 use tonk_introspect::BranchIntrospection;
@@ -189,6 +190,20 @@ impl Server {
                 }
                 Err(err) => Response::error(id, ResponseError::invalid_params(err.to_string())),
             },
+            HoverRequest::METHOD => match serde_json::from_value::<HoverParams>(params) {
+                Ok(p) => {
+                    let hover = self.hover(&p).await;
+                    let value = match hover {
+                        Some(h) => serde_json::to_value(h),
+                        None => Ok(Value::Null),
+                    };
+                    match value {
+                        Ok(v) => Response::success(id, v),
+                        Err(err) => Response::error(id, ResponseError::internal(err.to_string())),
+                    }
+                }
+                Err(err) => Response::error(id, ResponseError::invalid_params(err.to_string())),
+            },
             "shutdown" => {
                 self.shutting_down = true;
                 Response::success(id, Value::Null)
@@ -287,6 +302,83 @@ impl Server {
         }
 
         Vec::new()
+    }
+
+    /// Compute hover contents for a `textDocument/hover`
+    /// request. Position-driven dispatch:
+    ///
+    /// - Cursor on a head identifier → concept description
+    ///   (built-in registry first, then introspection lookup).
+    /// - Cursor on a body field name → backing attribute's
+    ///   description, type, cardinality.
+    /// - Anywhere else → `None` (the editor renders no
+    ///   tooltip).
+    async fn hover(&self, params: &HoverParams) -> Option<Hover> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let doc = self.documents.get(uri)?;
+        let text = doc.text.as_str();
+        let position = params.text_document_position_params.position;
+
+        // Identify the identifier under the cursor by widening
+        // from the cursor in both directions over symbol chars.
+        let line = text.split('\n').nth(position.line as usize)?;
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let col = (position.character as usize).min(line.len());
+        let word = identifier_at(line, col)?;
+        let (start_col, end_col, name) = word;
+
+        let range = Some(lsp_types::Range {
+            start: lsp_types::Position {
+                line: position.line,
+                character: start_col as u32,
+            },
+            end: lsp_types::Position {
+                line: position.line,
+                character: end_col as u32,
+            },
+        });
+
+        // Resolve introspection once; head + field hovers both
+        // need it to find branch-published concepts.
+        let introspection = match &self.introspection {
+            Some(factory) => factory.for_uri(uri).await,
+            None => None,
+        };
+
+        // Decide head vs field by indent: any leading whitespace
+        // means we're inside a body. Mirrors the completion
+        // dispatch — same cursor-position model.
+        let line_prefix = &line[..start_col];
+        let inside_body = line_prefix.starts_with(|c: char| c.is_whitespace());
+
+        if !inside_body {
+            // Head position. The cursor sits on a concept name.
+            let descriptor = lookup_concept_descriptor(&name, introspection.as_deref()).await?;
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: render_concept_hover(&name, &descriptor),
+                }),
+                range,
+            });
+        }
+
+        // Body position. Need the enclosing head's name to look
+        // up the concept's field set.
+        let head = enclosing_head(text, position)?;
+        let descriptor = lookup_concept_descriptor(&head, introspection.as_deref()).await?;
+        let attr = descriptor
+            .with()
+            .iter()
+            .find(|(field, _)| *field == name.as_str())?
+            .1;
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: render_field_hover(&name, attr),
+            }),
+            range,
+        })
     }
 
     /// Run validators against `text` and queue a `publishDiagnostics`
@@ -814,6 +906,120 @@ async fn head_completions(
     out
 }
 
+/// Find the identifier surrounding `col` on a single line. Returns
+/// `(start_col, end_col, name)` widened in both directions over
+/// [`is_symbol_char`]. `None` when the cursor isn't sitting on an
+/// identifier character (or one immediately to its left, which is
+/// the usual hover position when the cursor is just past a word).
+fn identifier_at(line: &str, col: usize) -> Option<(usize, usize, String)> {
+    if line.is_empty() {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    // Anchor inside the word: prefer the byte at `col`, fall back
+    // to `col - 1` when the cursor sits right after the word.
+    let anchor = if col < bytes.len() && is_symbol_char(bytes[col] as char) {
+        col
+    } else if col > 0 && is_symbol_char(bytes[col - 1] as char) {
+        col - 1
+    } else {
+        return None;
+    };
+
+    let mut start = anchor;
+    while start > 0 && is_symbol_char(bytes[start - 1] as char) {
+        start -= 1;
+    }
+    let mut end = anchor;
+    while end < bytes.len() && is_symbol_char(bytes[end] as char) {
+        end += 1;
+    }
+    let name = line[start..end].to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    Some((start, end, name))
+}
+
+/// Resolve a concept name to its descriptor — built-in registry
+/// first, then branch-published via introspection. Returns the
+/// descriptor (without the surrounding `ResolvedConcept` envelope)
+/// since hover only needs description and field set.
+async fn lookup_concept_descriptor(
+    name: &str,
+    introspection: Option<&(dyn BranchIntrospection + Send + Sync)>,
+) -> Option<tonk_introspect::ConceptDescriptor> {
+    use tonk_schema::builtin::lookup_concept;
+    if let Some(resolved) = lookup_concept(name) {
+        return Some(resolved.descriptor);
+    }
+    let intro = introspection?;
+    match intro.lookup_concept(name).await {
+        Ok(Some(resolved)) => Some(resolved.descriptor),
+        _ => None,
+    }
+}
+
+/// Render a Markdown hover body for a concept: the bold name, then
+/// the description (if any) and the field list. The field list is
+/// useful even when there's no description — it documents the
+/// shape the head accepts.
+fn render_concept_hover(name: &str, descriptor: &tonk_introspect::ConceptDescriptor) -> String {
+    let mut out = format!("**{name}** _(concept)_");
+    if let Some(desc) = descriptor.description() {
+        out.push_str("\n\n");
+        out.push_str(desc);
+    }
+    let fields = descriptor.with();
+    if fields.iter().len() > 0 {
+        out.push_str("\n\n**Fields**");
+        for (field, attr) in fields.iter() {
+            let card = format!("{:?}", attr.cardinality()).to_lowercase();
+            let ty = match attr.content_type() {
+                Some(t) => format!(" : {}", format_type(&t)),
+                None => String::new(),
+            };
+            out.push_str(&format!("\n- `{field}`{ty} — {card}"));
+            let d = attr.description();
+            if !d.is_empty() {
+                out.push_str(" — ");
+                out.push_str(d);
+            }
+        }
+    }
+    out
+}
+
+/// Render a Markdown hover body for a body-position field: the
+/// backing attribute's qualified name, type, cardinality, and
+/// description.
+fn render_field_hover(field: &str, attr: &tonk_introspect::AttributeDescriptor) -> String {
+    let card = format!("{:?}", attr.cardinality()).to_lowercase();
+    let ty = match attr.content_type() {
+        Some(t) => format_type(&t),
+        None => "any".to_owned(),
+    };
+    let mut out = format!(
+        "**{field}** _(field)_\n\n`{}/{}` : {ty} — {card}",
+        attr.domain(),
+        attr.name(),
+    );
+    let d = attr.description();
+    if !d.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(d);
+    }
+    out
+}
+
+/// JSON-shaped rendering of a [`tonk_introspect::Type`]. The type
+/// enum has no `Display`; serializing through serde gives the same
+/// shape used in concept descriptors elsewhere, which is the form
+/// the user already sees in error messages.
+fn format_type(ty: &tonk_introspect::Type) -> String {
+    serde_json::to_string(ty).unwrap_or_else(|_| format!("{ty:?}"))
+}
+
 /// Capabilities advertised in the `initialize` response. Kept in one
 /// place so future features (completion, hover, etc.) extend a single
 /// constant rather than scattering capability flags across handlers.
@@ -842,6 +1048,12 @@ fn server_capabilities() -> ServerCapabilities {
             resolve_provider: Some(false),
             ..CompletionOptions::default()
         }),
+        // Hover surfaces concept descriptions in head position
+        // and the backing attribute's description / type /
+        // cardinality for fields inside a body. Variables get
+        // a one-liner pointing back at the introducing
+        // expression. See `Server::hover`.
+        hover_provider: Some(HoverProviderCapability::Simple(true)),
         // Required by `ServerCapabilities` even for unsupported
         // features — `OneOf::Left(false)` is the canonical
         // "explicitly not supported" form.
@@ -1331,6 +1543,168 @@ mod tests {
             version.is_null(),
             "publishDiagnostics on didChange must not echo the document version; \
              got {version}",
+        );
+    }
+
+    /// Hovering on a built-in concept name in head position
+    /// returns a Markdown body that names the concept and at
+    /// least one of its declared fields. We don't pin the exact
+    /// text — only that hover resolves and surfaces the
+    /// descriptor.
+    #[dialog_common::test]
+    async fn it_hovers_builtin_concept_in_head() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/hover-head",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": "attribute:\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test/hover-head" },
+                "position": { "line": 0, "character": 3 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let value = reply["result"]["contents"]["value"]
+            .as_str()
+            .expect("markdown body");
+        assert!(
+            value.contains("**attribute**"),
+            "expected concept name in hover body; got {value}",
+        );
+        assert!(
+            value.contains("`id`"),
+            "expected `id` field in hover body; got {value}",
+        );
+    }
+
+    /// Hovering on a body-position field name returns the
+    /// backing attribute's qualified name and cardinality.
+    #[dialog_common::test]
+    async fn it_hovers_concept_field_in_body() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/hover-field",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": "attribute:\n  id\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test/hover-field" },
+                "position": { "line": 1, "character": 3 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let value = reply["result"]["contents"]["value"]
+            .as_str()
+            .expect("markdown body");
+        assert!(
+            value.contains("**id**"),
+            "expected field name in hover body; got {value}",
+        );
+        assert!(
+            value.to_lowercase().contains("one") || value.to_lowercase().contains("many"),
+            "expected cardinality in hover body; got {value}",
+        );
+    }
+
+    /// Hovering off any identifier returns no hover (`result:
+    /// null`), not an error.
+    #[dialog_common::test]
+    async fn it_returns_null_hover_off_identifier() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test/hover-empty",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": "\n"
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test/hover-empty" },
+                "position": { "line": 0, "character": 0 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        assert!(
+            reply["result"].is_null(),
+            "expected null hover off identifier; got {}",
+            reply["result"],
         );
     }
 }

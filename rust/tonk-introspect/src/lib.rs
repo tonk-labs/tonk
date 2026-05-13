@@ -26,8 +26,12 @@
 
 use async_trait::async_trait;
 use dialog_artifacts::Entity;
-use dialog_query::{AttributeDescriptor, ConceptDescriptor};
 use thiserror::Error;
+
+// Re-export the descriptor surface so consumers don't need a
+// direct `dialog_query` dependency just to read what `lookup_*`
+// returns.
+pub use dialog_query::{AttributeDescriptor, Cardinality, ConceptDescriptor, Type};
 
 /// An attribute resolved from a branch — its entity URI plus the
 /// reconstructed descriptor.
