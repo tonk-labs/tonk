@@ -615,23 +615,14 @@ where
             // moment the user touches the buffer they were
             // emitted for. Clear them on every edit so the
             // cell's `errorCount` doesn't carry the previous
-            // eval's verdict into the next idle check.
-            // (`<tonk-code>`'s staleness gate handles the LSP
-            // side independently.)
+            // eval's verdict into the next auto-eval. (LSP-side
+            // diagnostics get replaced by the next server frame,
+            // which fires the `diagnostics` event.)
             clear_pushed_diagnostics(&editor_source);
         }
     };
 
     let editor_error_count = RwSignal::new(0_u32);
-    let on_diagnostics = move |ev: web_sys::CustomEvent| {
-        let count =
-            js_sys::Reflect::get(&ev.detail(), &wasm_bindgen::JsValue::from_str("errorCount"))
-                .ok()
-                .and_then(|v| v.as_f64())
-                .map(|n| n as u32)
-                .unwrap_or(0);
-        editor_error_count.set(count);
-    };
 
     // Submit is allowed when:
     //  - the cell is still active (sealed cells are read-only),
@@ -639,9 +630,9 @@ where
     //  - the parser accepts it,
     //  - the LSP isn't showing any error-severity diagnostics, *and*
     //  - the document has at least one assertion (`head!:`).
-    // Pure-query documents auto-evaluate on idle so the play
-    // affordance only needs to surface when there's actually
-    // something to commit.
+    // Pure-query documents auto-evaluate on every fresh
+    // diagnostics frame, so the play affordance only needs to
+    // surface when there's actually something to commit.
     let is_runnable = Signal::derive(move || {
         if !is_active.get() {
             return false;
@@ -739,17 +730,18 @@ where
         }
     };
 
-    // Auto-evaluate (transact=false) on idle so the result
-    // panel reflects what *would* happen without committing.
-    // Sealed cells skip this — their last_response is frozen.
-    let on_editor_idle = {
-        let editor_source_for_idle = editor_source.clone();
+    // Diagnostics arriving from the server are our cue to
+    // auto-evaluate (transact=false) — the LSP told us the
+    // buffer is clean, so the eval will succeed and surface
+    // the would-be result. The handler also keeps
+    // `editor_error_count` in sync for the submit button's
+    // disabled state. Sealed cells skip the eval — their
+    // last_response is frozen — but still update the signal.
+    let on_editor_diagnostics = {
+        let editor_source_for_eval = editor_source.clone();
         let owner = owner.clone();
         let branch_name = branch_name.clone();
         move |ev: web_sys::CustomEvent| {
-            if !is_active.get_untracked() {
-                return;
-            }
             let detail = ev.detail();
             let error_count =
                 js_sys::Reflect::get(&detail, &wasm_bindgen::JsValue::from_str("errorCount"))
@@ -757,6 +749,11 @@ where
                     .and_then(|v| v.as_f64())
                     .map(|n| n as u32)
                     .unwrap_or(0);
+            editor_error_count.set(error_count);
+
+            if !is_active.get_untracked() {
+                return;
+            }
             if error_count > 0 {
                 return;
             }
@@ -774,7 +771,7 @@ where
             if matches!(transact_state.get_untracked(), TransactState::Running) {
                 return;
             }
-            let editor_source = editor_source_for_idle.clone();
+            let editor_source = editor_source_for_eval.clone();
             spawn_local(async move {
                 match target.evaluate(body, "application/yaml", false).await {
                     Ok(response) => {
@@ -817,8 +814,7 @@ where
                     readonly=move || (!is_active.get()).then_some("")
                     on:change=on_transact_change
                     on:run=on_editor_run
-                    on:idle=on_editor_idle
-                    on:diagnostics=on_diagnostics
+                    on:diagnostics=on_editor_diagnostics
                 ></tonk-code>
                 <wa-button
                     class="evaluate-play"
@@ -908,7 +904,8 @@ enum DocDispatch {
     /// expression. `has_mutation` is true if any expression is
     /// an assertion (`head!:`) — the play button only surfaces
     /// when there's something to commit; pure-query documents
-    /// auto-evaluate on idle and don't need the affordance.
+    /// auto-evaluate on every fresh diagnostics frame and don't
+    /// need the affordance.
     Submit { has_mutation: bool },
     /// Empty / whitespace-only document.
     Empty,
