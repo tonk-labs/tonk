@@ -40,4 +40,4 @@
 mod jsonrpc;
 mod server;
 
-pub use server::Server;
+pub use server::{IntrospectionFactory, Server};

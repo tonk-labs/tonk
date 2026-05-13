@@ -9,6 +9,21 @@
 //! in a tokio host.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use lsp_types::{
+    CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
+    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    notification::{Notification as LspNotificationTrait, PublishDiagnostics},
+    request::{Completion, Initialize, Request as LspRequestTrait},
+};
+use serde_json::Value;
+use tonk_introspect::BranchIntrospection;
+
+use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 
 /// Per-URI document state. Today only the latest text is
 /// retained; the version that the client tagged the
@@ -22,17 +37,24 @@ struct Document {
     text: String,
 }
 
-use lsp_types::{
-    CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    InitializeParams, InitializeResult, PositionEncodingKind, PublishDiagnosticsParams,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
-    notification::{Notification as LspNotificationTrait, PublishDiagnostics},
-    request::{Completion, Initialize, Request as LspRequestTrait},
-};
-use serde_json::Value;
-
-use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
+/// Hook the host implements so the LSP can ask for a
+/// branch-bound [`BranchIntrospection`] keyed off a document
+/// URI. The factory is responsible for parsing the URI to
+/// recover whatever it needs (typically `(repo, branch)` from
+/// `tonk-buffer:///<repo>/<branch>/<cell>`) and acquiring the
+/// reactor handle. Returning `None` is fine — completion
+/// gracefully degrades to the document-local sources.
+///
+/// `?Send` because the wasm host runs single-threaded and the
+/// returned introspection often borrows a non-`Send` reactor
+/// session.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait IntrospectionFactory: Send + Sync {
+    /// Build a branch-bound introspection for `uri`, or `None`
+    /// when the URI doesn't map to a branch this host knows.
+    async fn for_uri(&self, uri: &Uri) -> Option<Arc<dyn BranchIntrospection + Send + Sync>>;
+}
 
 /// LSP language server for `tonk-notation` documents.
 ///
@@ -57,11 +79,27 @@ pub struct Server {
     initialized: bool,
     /// Set after `shutdown`. Subsequent requests must error per spec.
     shutting_down: bool,
+    /// Factory the host plugs in to surface branch-published
+    /// concepts (and references) in completion. `None` ⇒
+    /// document-local sources only — tests and the standalone
+    /// CLI surface use that path.
+    introspection: Option<Arc<dyn IntrospectionFactory>>,
 }
 
 impl Server {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Variant of [`Server::new`] that takes a host-supplied
+    /// [`IntrospectionFactory`]. The completion handler uses it
+    /// to surface branch-published concepts alongside the
+    /// built-in registry.
+    pub fn with_introspection(factory: Arc<dyn IntrospectionFactory>) -> Self {
+        Self {
+            introspection: Some(factory),
+            ..Self::default()
+        }
     }
 
     /// Drain queued server-to-client notifications. The host calls
@@ -96,7 +134,9 @@ impl Server {
 
         match parsed {
             Incoming::Request(req) => {
-                let response = self.handle_request(req.id.clone(), &req.method, req.params);
+                let response = self
+                    .handle_request(req.id.clone(), &req.method, req.params)
+                    .await;
                 serde_json::to_vec(&response).ok()
             }
             Incoming::Notification(note) => {
@@ -112,7 +152,7 @@ impl Server {
         }
     }
 
-    fn handle_request(&mut self, id: Value, method: &str, params: Value) -> Response {
+    async fn handle_request(&mut self, id: Value, method: &str, params: Value) -> Response {
         if self.shutting_down && method != "exit" {
             return Response::error(id, ResponseError::internal("server is shutting down"));
         }
@@ -137,7 +177,7 @@ impl Server {
             },
             Completion::METHOD => match serde_json::from_value::<CompletionParams>(params) {
                 Ok(p) => {
-                    let items = self.complete(&p);
+                    let items = self.complete(&p).await;
                     let response = CompletionResponse::List(CompletionList {
                         is_incomplete: false,
                         items,
@@ -212,7 +252,7 @@ impl Server {
     /// is a hint, not the contract — what we return is decided
     /// by where the cursor actually sits in the parse tree.
     /// See `docs/auto-completion.md` for the full source taxonomy.
-    fn complete(&self, params: &CompletionParams) -> Vec<CompletionItem> {
+    async fn complete(&self, params: &CompletionParams) -> Vec<CompletionItem> {
         let uri = &params.text_document_position.text_document.uri;
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
@@ -223,8 +263,17 @@ impl Server {
             return Vec::new();
         };
 
+        // Resolve the host's introspection for this document
+        // once. Built-in completion always works; branch-side
+        // sources only fire when the factory hands us an
+        // introspection.
+        let introspection = match &self.introspection {
+            Some(factory) => factory.for_uri(uri).await,
+            None => None,
+        };
+
         if is_head_position(&line_prefix) {
-            return head_completions();
+            return head_completions(introspection.as_deref()).await;
         }
 
         if is_variable_position(&line_prefix) {
@@ -234,7 +283,7 @@ impl Server {
         if let Some(head) = enclosing_head(text, position)
             && is_body_position(&line_prefix)
         {
-            return field_completions(&head);
+            return field_completions(&head, introspection.as_deref()).await;
         }
 
         Vec::new()
@@ -644,15 +693,31 @@ fn enclosing_head(text: &str, position: lsp_types::Position) -> Option<String> {
 }
 
 /// Field names declared by the head's concept descriptor, plus
-/// the always-available `this:` meta-key. Branch-published
-/// concepts are added later via the resolver path; for now we
-/// only consult the built-in registry.
-fn field_completions(head: &str) -> Vec<CompletionItem> {
+/// the always-available `this:` meta-key. Looks up the concept
+/// in the built-in registry first; falls back to
+/// `introspection.lookup_concept(head)` so branch-published
+/// concepts contribute their fields too.
+async fn field_completions(
+    head: &str,
+    introspection: Option<&(dyn BranchIntrospection + Send + Sync)>,
+) -> Vec<CompletionItem> {
     use lsp_types::{CompletionItemKind, Documentation};
     use tonk_schema::builtin::lookup_concept;
 
-    let Some(resolved) = lookup_concept(head) else {
-        return Vec::new();
+    // Built-in registry first. When it misses, ask the host's
+    // introspection — that's where branch-published concepts
+    // resolve from.
+    let descriptor = match lookup_concept(head) {
+        Some(resolved) => resolved.descriptor,
+        None => {
+            let Some(intro) = introspection else {
+                return Vec::new();
+            };
+            match intro.lookup_concept(head).await {
+                Ok(Some(resolved)) => resolved.descriptor,
+                _ => return Vec::new(),
+            }
+        }
     };
 
     let mut out: Vec<CompletionItem> = Vec::new();
@@ -666,7 +731,7 @@ fn field_completions(head: &str) -> Vec<CompletionItem> {
         insert_text: Some("this: ".to_owned()),
         ..CompletionItem::default()
     });
-    for (field, attr) in resolved.descriptor.with().iter() {
+    for (field, attr) in descriptor.with().iter() {
         let description = attr.description();
         out.push(CompletionItem {
             label: field.to_owned(),
@@ -683,16 +748,24 @@ fn field_completions(head: &str) -> Vec<CompletionItem> {
     out
 }
 
-/// Built-in concept names plus their descriptions, served as a
-/// completion list for head position. Branch-published concepts
-/// are layered on later via the resolver path.
-fn head_completions() -> Vec<CompletionItem> {
+/// Concept names available in head position — built-ins plus
+/// every branch-published concept the host's introspection
+/// surfaces. The branch source is folded in only when the
+/// host plugged in an [`IntrospectionFactory`]; tests and
+/// document-only runs stay on built-ins.
+async fn head_completions(
+    introspection: Option<&(dyn BranchIntrospection + Send + Sync)>,
+) -> Vec<CompletionItem> {
     use lsp_types::{CompletionItemKind, Documentation};
+    use std::collections::HashSet;
     use tonk_schema::builtin::concept_registry;
 
-    concept_registry()
-        .iter()
-        .map(|(name, resolved)| CompletionItem {
+    let mut emitted: HashSet<String> = HashSet::new();
+    let mut out: Vec<CompletionItem> = Vec::new();
+
+    for (name, resolved) in concept_registry().iter() {
+        emitted.insert((*name).to_owned());
+        out.push(CompletionItem {
             label: (*name).to_owned(),
             kind: Some(CompletionItemKind::CLASS),
             documentation: resolved
@@ -701,8 +774,44 @@ fn head_completions() -> Vec<CompletionItem> {
                 .map(|d| Documentation::String(d.to_owned())),
             insert_text: Some((*name).to_owned()),
             ..CompletionItem::default()
-        })
-        .collect()
+        });
+    }
+
+    if let Some(intro) = introspection {
+        // Branch concepts come back via `list_named_entities`
+        // joined with `list_concepts` — only published names
+        // make sense as head-position completions, since the
+        // user types the name, not the entity URI. Built-in
+        // names take precedence on collision (matches the
+        // analyzer's resolution order).
+        let names = intro.list_named_entities().await.unwrap_or_default();
+        let concepts = intro.list_concepts().await.unwrap_or_default();
+        let concept_entities: HashSet<_> = concepts.iter().map(|c| c.entity.to_string()).collect();
+        for named in names {
+            if !concept_entities.contains(&named.entity.to_string()) {
+                continue;
+            }
+            if !emitted.insert(named.name.clone()) {
+                continue;
+            }
+            // The concept's own description (when set) makes
+            // a better hover than the bare name alone.
+            let description = concepts
+                .iter()
+                .find(|c| c.entity == named.entity)
+                .and_then(|c| c.descriptor.description())
+                .map(|d| Documentation::String(d.to_owned()));
+            out.push(CompletionItem {
+                label: named.name.clone(),
+                kind: Some(CompletionItemKind::CLASS),
+                documentation: description,
+                insert_text: Some(named.name),
+                ..CompletionItem::default()
+            });
+        }
+    }
+
+    out
 }
 
 /// Capabilities advertised in the `initialize` response. Kept in one

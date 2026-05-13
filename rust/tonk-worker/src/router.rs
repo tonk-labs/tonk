@@ -35,6 +35,8 @@ pub use identify::IdentifyResponse;
 pub mod lsp;
 pub use lsp::LspHub;
 
+mod lsp_introspection;
+
 mod profile;
 pub use profile::ProfileInfo;
 
@@ -80,7 +82,8 @@ pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>
 /// [`AppState`]. Useful in tests that need to keep an `Arc`
 /// handle to the state for poking the reactor directly.
 pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
-    let (lsp_routes, lsp_hub) = lsp::lsp_router();
+    let factory = lsp_introspection::ReactorIntrospectionFactory::new(state.clone());
+    let (lsp_routes, lsp_hub) = lsp::lsp_router_with_introspection(factory);
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
