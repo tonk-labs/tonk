@@ -47,7 +47,12 @@
 import { yamlLanguage } from "@codemirror/lang-yaml";
 import { htmlLanguage } from "@codemirror/lang-html";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { LanguageSupport, LRLanguage } from "@codemirror/language";
+import {
+  LanguageSupport,
+  LRLanguage,
+  getIndentUnit,
+  indentService,
+} from "@codemirror/language";
 import { parseMixed } from "@lezer/common";
 import type { Parser, SyntaxNodeRef, Input } from "@lezer/common";
 import {
@@ -394,8 +399,39 @@ const dialogYamlLanguage = LRLanguage.define({
   parser: mixedYamlParser,
 });
 
+/** Indent service that fixes the one ergonomic miss in
+ *  `lang-yaml`: pressing Enter after a header line like `person:`
+ *  (a key with no inline value) leaves the new line at column
+ *  zero. The lezer-yaml indent prop walks up to the enclosing
+ *  `BlockMapping` and returns the column of its first key, which
+ *  for a top-level header is 0.
+ *
+ *  `insertNewlineAndIndent` calls this service with `pos` set to
+ *  the cursor *before* the newline (it builds an `IndentContext`
+ *  with `simulateBreak: pos`), so we look at the line containing
+ *  `pos` — the line that's about to be split. If that line's
+ *  text up to the cursor ends with `:` (header form, no inline
+ *  value), the freshly opened body lives one indent unit deeper.
+ *
+ *  Returning `undefined` for any other shape defers to the next
+ *  service and ultimately to the language's own indent prop, so
+ *  list-item / nested-mapping indentation keeps working. */
+const dialogYamlIndentService = indentService.of((cx, pos) => {
+  const line = cx.state.doc.lineAt(pos);
+  // Slice up to `pos` so we react to the *typed* prefix, not
+  // anything that might trail the cursor on the same line. A
+  // header line is "<text>:" — we accept `person:`, `with:`,
+  // `foo!:`. `name: alice` ends in a value, not `:`, so this
+  // won't match.
+  const prefix = line.text.slice(0, pos - line.from).replace(/\s+$/, "");
+  if (!prefix.endsWith(":")) return undefined;
+  const baseIndent = line.text.length - line.text.trimStart().length;
+  return baseIndent + getIndentUnit(cx.state);
+});
+
 export default [
   new LanguageSupport(dialogYamlLanguage),
+  dialogYamlIndentService,
   dialectDecorations,
   dialectTheme,
 ];
