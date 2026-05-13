@@ -103,7 +103,18 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
                     })?;
             Term::Constant(Value::Entity(entity))
         }
-        FieldValue::Blank => Term::<dialog_query::Any>::blank(),
+        FieldValue::Blank => {
+            // Mint an auto-named variable rather than a true
+            // blank so the engine binds the matched value into
+            // the frame. The renderer detects the `__`-prefixed
+            // name [`Term::unique`] uses and projects the value
+            // back under the user-facing field name. Without
+            // this the result block silently omits `_`-marked
+            // fields, which is confusing — the user wrote `_`
+            // to opt out of *binding* (joining), not to opt out
+            // of *seeing* the value.
+            Term::<dialog_query::Any>::unique()
+        }
         FieldValue::Nested(_) => {
             return Err(AnalyzeError::at(
                 AnalyzeErrorKind::UnsupportedFieldValue {

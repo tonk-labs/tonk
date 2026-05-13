@@ -149,7 +149,7 @@ pub async fn run_against_site(
     let text = source.read().await?;
     let syntax = parse_or_diagnose(&label, &text)?;
 
-    let outcome = evaluate::run(&syntax, &site.branch, &site.operator)
+    let outcome = evaluate::run(&syntax, &site.branch, &site.operator, true)
         .await
         .map_err(map_evaluate_error)?;
 
@@ -199,7 +199,10 @@ fn format_diagnostic(source: &str, diagnostic: &lsp_types::Diagnostic) -> String
 
 fn map_evaluate_error(error: EvaluateError) -> EvalError {
     match error {
-        EvaluateError::Analyze(message) => EvalError::Analyze(message),
+        // Slide just renders to stderr, so flatten back to a
+        // string here. The structured `code`/`range` only
+        // matters for editor consumers.
+        EvaluateError::Analyze(analyze_error) => EvalError::Analyze(analyze_error.to_string()),
         EvaluateError::Plan(message) => EvalError::Commit(format!("plan failed: {message}")),
         EvaluateError::Query(message) => EvalError::Commit(message),
         EvaluateError::Commit(message) => EvalError::Commit(message),

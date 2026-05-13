@@ -409,7 +409,7 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
                 .collect::<Vec<_>>()
         ));
     }
-    let outcome = evaluate::run(&syntax, &site.branch, &site.operator)
+    let outcome = evaluate::run(&syntax, &site.branch, &site.operator, true)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
     Ok(outcome.response)

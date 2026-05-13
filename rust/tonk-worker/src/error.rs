@@ -36,8 +36,13 @@ pub enum TonkWorkerError {
     /// Always returned with HTTP 400.
     #[error("Analyzer error: {message}")]
     Analyze {
-        /// Stable error code (`E_INCOMPLETE_ASSERTION`, etc).
-        code: &'static str,
+        /// Stable error code (`E_INCOMPLETE_ASSERTION`,
+        /// `E_PARSE`, etc). Parser diagnostics carry owned
+        /// strings; analyzer diagnostics carry `&'static str`s
+        /// that get copied into the owned shape at conversion
+        /// time. Either way the editor reads it as the routing
+        /// key for the squiggle.
+        code: String,
         /// Human-readable message.
         message: String,
         /// Source range in the submitted document, when known.
@@ -48,7 +53,7 @@ pub enum TonkWorkerError {
 impl From<AnalyzeError> for TonkWorkerError {
     fn from(error: AnalyzeError) -> Self {
         Self::Analyze {
-            code: error.code(),
+            code: error.code().to_owned(),
             message: error.kind.to_string(),
             range: error.range,
         }
@@ -121,11 +126,12 @@ struct ErrorBody {
 struct ErrorDetail {
     kind: &'static str,
     message: String,
-    /// Stable error code, when the kind carries one. Today only
-    /// the `analyze` kind populates this with codes like
-    /// `E_INCOMPLETE_ASSERTION`.
+    /// Stable error code, when the kind carries one. Today the
+    /// `analyze` kind populates this with codes like
+    /// `E_INCOMPLETE_ASSERTION` (analyzer-emitted) and
+    /// `E_PARSE` (parser-emitted).
     #[serde(skip_serializing_if = "Option::is_none")]
-    code: Option<&'static str>,
+    code: Option<String>,
     /// Source range in the submitted document, when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     range: Option<lsp_types::Range>,
@@ -141,7 +147,7 @@ impl IntoResponse for TonkWorkerError {
             TonkWorkerError::PreconditionFailed(_) => StatusCode::PRECONDITION_FAILED,
         };
         let (code, range) = match &self {
-            TonkWorkerError::Analyze { code, range, .. } => (Some(*code), *range),
+            TonkWorkerError::Analyze { code, range, .. } => (Some(code.clone()), *range),
             _ => (None, None),
         };
         let body = ErrorBody {

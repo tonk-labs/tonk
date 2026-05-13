@@ -86,6 +86,14 @@ pub struct Analysis {
 pub struct QueryAnalysis {
     /// One [`Application`] per source expression.
     pub queries: Vec<Application>,
+    /// Display label for each query, parallel to `queries`. For
+    /// explicit `Expression::Query`s this is the head's source
+    /// name (`person`, `attribute`, …). For implicit queries
+    /// synthesized from an assertion to project the post-commit
+    /// snapshot, this is the assertion's head name. Renderers
+    /// surface the label as the result block's title; without
+    /// it the assertion path falls back to `?`.
+    pub labels: Vec<String>,
 }
 
 impl QueryAnalysis {

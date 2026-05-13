@@ -37,7 +37,11 @@
 //                     `document.baseURI` the same way an
 //                     `<a href>` would.
 
-import { setDiagnostics, type Diagnostic as CmDiagnostic } from "@codemirror/lint";
+import {
+  forEachDiagnostic,
+  setDiagnostics,
+  type Diagnostic as CmDiagnostic,
+} from "@codemirror/lint";
 import { type LSPClient } from "@codemirror/lsp-client";
 import type { EditorView } from "@codemirror/view";
 import { connectLsp } from "./lsp/client";
@@ -48,6 +52,12 @@ import type {
 } from "./index";
 
 const DEFAULT_LANGUAGE_SERVER_URL = "/api/language-server";
+
+/** Diagnostic `source` we tag every pushed diagnostic with so a
+ *  subsequent push (including an empty one for "clear") can
+ *  identify and replace only the entries we own — leaving
+ *  LSP-routed diagnostics alone. */
+const PUSH_DIAGNOSTIC_SOURCE = "tonk-push";
 
 /** Detail object accepted by the `tonk-push-diagnostics` event.
  *  Lets external code (e.g. a UI route handler) inject
@@ -177,20 +187,33 @@ class TonkDiagnosticsProvider extends HTMLElement {
     const editor = this.#attached.get(detail.source);
     if (!editor || !editor.view) return;
     const view = editor.view;
-    const cm: CmDiagnostic[] = [];
+    // Preserve diagnostics from other sources (LSP, etc.) by
+    // walking the current set and dropping only the ones we
+    // ourselves pushed previously. Without this, pushing a new
+    // (or empty) batch via `setDiagnostics` would wipe the
+    // LSP-side warnings the user is actively reading.
+    const merged: CmDiagnostic[] = [];
+    forEachDiagnostic(view.state, (d) => {
+      if (d.source === PUSH_DIAGNOSTIC_SOURCE) return;
+      merged.push(d);
+    });
     for (const d of detail.diagnostics) {
       const from = positionToOffset(view.state.doc, d.range.start);
       const to = positionToOffset(view.state.doc, d.range.end);
       if (from === null || to === null) continue;
-      cm.push({
+      merged.push({
         from,
         to: Math.max(from, to),
         severity: lspToCmSeverity(d.severity),
         message: d.message,
-        source: d.source ?? "tonk-worker",
+        // Always tag with the sentinel so the next push can
+        // identify and replace just our own contributions. The
+        // caller-provided `d.source` is dropped intentionally —
+        // mixing it would defeat the filter.
+        source: PUSH_DIAGNOSTIC_SOURCE,
       });
     }
-    view.dispatch(setDiagnostics(view.state, cm));
+    view.dispatch(setDiagnostics(view.state, merged));
   };
 
   #ensureClient(): void {

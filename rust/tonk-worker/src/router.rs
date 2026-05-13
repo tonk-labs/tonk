@@ -35,6 +35,8 @@ pub use identify::IdentifyResponse;
 pub mod lsp;
 pub use lsp::LspHub;
 
+mod lsp_introspection;
+
 mod profile;
 pub use profile::ProfileInfo;
 
@@ -80,7 +82,8 @@ pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>
 /// [`AppState`]. Useful in tests that need to keep an `Arc`
 /// handle to the state for poking the reactor directly.
 pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
-    let (lsp_routes, lsp_hub) = lsp::lsp_router();
+    let factory = lsp_introspection::ReactorIntrospectionFactory::new(state.clone());
+    let (lsp_routes, lsp_hub) = lsp::lsp_router_with_introspection(factory);
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
@@ -2284,5 +2287,300 @@ attribute!: &{name}
             ),
             _ = timeout => panic!("subscription body did not end after shutdown"),
         }
+    }
+
+    // ---------------------------------------------------------- //
+    // Regression tests pinning behaviours we've broken once
+    // already and don't intend to break again.
+    // ---------------------------------------------------------- //
+
+    /// `transact=false` must not commit. Earlier the query
+    /// parameter was parsed but ignored, so auto-evaluate from
+    /// the editor was secretly applying every keystroke.
+    /// Verify by counting commits before vs after a
+    /// `transact=false` request.
+    #[dialog_common::test]
+    async fn it_does_not_commit_when_transact_false() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-no-commit-transact-false";
+        put_repo(&app, repo).await;
+
+        let body = "\
+attribute!: &person-name
+  the:         io.gozala.person/name
+  as:          text
+  cardinality: one
+  description: \"name\"
+";
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{}/branch/main/evaluate?transact=false",
+                        repo
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "expected 200; got {status}: {}",
+            String::from_utf8_lossy(&body_bytes),
+        );
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            resp.commits.claims,
+            0,
+            "transact=false must not commit any claims; got {} (response: {})",
+            resp.commits.claims,
+            String::from_utf8_lossy(&body_bytes),
+        );
+        assert_eq!(
+            resp.revision_before, resp.revision_after,
+            "transact=false must leave the branch revision unchanged",
+        );
+    }
+
+    /// Worker rejections from the parser/analyzer must surface
+    /// as a structured `kind: "analyze"` body with a `code` and
+    /// `range` so the editor can position a squiggle. Previously
+    /// they flattened to `kind: "router"` with neither, leaving
+    /// the editor to silently drop the diagnostic.
+    #[dialog_common::test]
+    async fn it_returns_structured_analyze_error_for_malformed_body() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-analyze-error-shape";
+        put_repo(&app, repo).await;
+
+        // `name: x` is a head with a non-mapping body — the
+        // parser rejects it.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{}/branch/main/evaluate?transact=false",
+                        repo
+                    ))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from("name: x"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            body["error"]["kind"], "analyze",
+            "expected kind=analyze for editor squiggle routing; got {body}",
+        );
+        assert!(
+            body["error"]["code"].is_string(),
+            "expected a string `code` field for stable diagnostic routing; got {body}",
+        );
+        assert!(
+            body["error"]["range"].is_object(),
+            "expected a `range` object so the editor can position the squiggle; got {body}",
+        );
+    }
+
+    /// `person!:` (an assertion with no explicit query) should
+    /// produce a result block labelled `person`, not `?`. The
+    /// implicit-query synthesizer mints a snapshot query for
+    /// the touched entity; previously the renderer fell back to
+    /// `?` because it only collected labels from explicit query
+    /// expressions. The label now flows through
+    /// `QueryAnalysis::labels`, populated by the analyzer for
+    /// both explicit and implicit queries.
+    #[dialog_common::test]
+    async fn it_labels_implicit_query_block_with_assertion_head_name() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-implicit-query-label";
+        put_repo(&app, repo).await;
+
+        // First seed `person-name` and `person-age` attributes
+        // so `person:` resolves; then assert `person!: …` on
+        // its own (no explicit query expression) and check the
+        // matches block label.
+        let seed = "\
+attribute!: &person-name
+  the:         xyz.tonk.person/name
+  as:          text
+  cardinality: one
+  description: \"name\"
+
+attribute!: &person-age
+  the:         xyz.tonk.person/age
+  as:          unsigned-integer
+  cardinality: one
+  description: \"age\"
+
+concept!: &person
+  description: \"a person\"
+  with:
+    name: person-name
+    age:  person-age
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(seed))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let assertion = "\
+person!:
+  name: \"Bob\"
+  age: 2
+";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(assertion))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let labels: Vec<&str> = resp
+            .matches_after
+            .iter()
+            .map(|b| b.label.as_str())
+            .collect();
+        assert!(
+            labels.iter().any(|l| *l == "person"),
+            "expected a result block labelled `person` for the implicit query; got {labels:?}",
+        );
+        assert!(
+            !labels.iter().any(|l| *l == "?"),
+            "result block must not fall back to `?` for an assertion with a known head; got {labels:?}",
+        );
+    }
+
+    /// `field: _` in a query body means "match any value, don't
+    /// bind it as a join key" — but the renderer should still
+    /// project the matched value so the user sees it. The
+    /// analyzer mints an auto-named variable for `_`; the
+    /// renderer projects that under the user-facing field name.
+    #[dialog_common::test]
+    async fn it_renders_blank_query_field_with_matched_value() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-blank-field-render";
+        put_repo(&app, repo).await;
+
+        // Seed person concept + an instance.
+        let seed = "\
+attribute!: &person-name
+  the:         xyz.tonk.person/name
+  as:          text
+  cardinality: one
+  description: \"name\"
+
+attribute!: &person-age
+  the:         xyz.tonk.person/age
+  as:          unsigned-integer
+  cardinality: one
+  description: \"age\"
+
+concept!: &person
+  description: \"a person\"
+  with:
+    name: person-name
+    age:  person-age
+
+person!:
+  name: \"Alice\"
+  age:  29
+";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(seed))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Query with `name: _` — blank — and `age: _`. Expect
+        // both fields to appear in the result with their
+        // matched values.
+        let query = "\
+person:
+  name: _
+  age:  _
+";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/evaluate", repo))
+                    .method("POST")
+                    .header("content-type", "application/yaml")
+                    .body(Body::from(query))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::EvaluateResponse = serde_json::from_slice(&body_bytes).unwrap();
+        let block = resp
+            .matches_after
+            .iter()
+            .find(|b| b.label == "person")
+            .expect("person result block");
+        assert!(
+            !block.results.is_empty(),
+            "expected at least one match for the seeded person",
+        );
+        let row = &block.results[0];
+        assert!(
+            row.fields.contains_key("name"),
+            "blank `name: _` field must still surface the matched value; got {:?}",
+            row.fields,
+        );
+        assert!(
+            row.fields.contains_key("age"),
+            "blank `age: _` field must still surface the matched value; got {:?}",
+            row.fields,
+        );
     }
 }

@@ -47,7 +47,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::BroadcastStream;
 use tonk_common::log;
-use tonk_language_server::Server;
+use tonk_language_server::{IntrospectionFactory, Server};
 
 /// Channel capacity for outbound LSP notifications.
 ///
@@ -96,6 +96,20 @@ impl LspHub {
         let (outbound, _drop) = broadcast::channel(OUTBOUND_BUFFER);
         Arc::new(Self {
             server: Mutex::new(Server::new()),
+            outbound: Mutex::new(Some(outbound)),
+        })
+    }
+
+    /// Variant of [`LspHub::new`] that wires a host-supplied
+    /// [`IntrospectionFactory`] into the server. The factory
+    /// turns a document URI into a branch-bound
+    /// [`tonk_introspect::BranchIntrospection`], which the
+    /// completion handler uses to surface branch-published
+    /// concepts.
+    pub fn with_introspection(factory: Arc<dyn IntrospectionFactory>) -> Arc<Self> {
+        let (outbound, _drop) = broadcast::channel(OUTBOUND_BUFFER);
+        Arc::new(Self {
+            server: Mutex::new(Server::with_introspection(factory)),
             outbound: Mutex::new(Some(outbound)),
         })
     }
@@ -171,7 +185,19 @@ impl LspHub {
 /// point can call [`LspHub::shutdown`] when a newer service worker
 /// version begins installing.
 pub fn lsp_router() -> (axum::Router, Arc<LspHub>) {
-    let hub = LspHub::new();
+    mount(LspHub::new())
+}
+
+/// Variant of [`lsp_router`] that wires a host-supplied
+/// [`IntrospectionFactory`] into the underlying [`Server`] so
+/// completion can surface branch-published concepts.
+pub fn lsp_router_with_introspection(
+    factory: Arc<dyn IntrospectionFactory>,
+) -> (axum::Router, Arc<LspHub>) {
+    mount(LspHub::with_introspection(factory))
+}
+
+fn mount(hub: Arc<LspHub>) -> (axum::Router, Arc<LspHub>) {
     let router = axum::Router::new()
         .route("/api/language-server", get(handle_events).post(handle_post))
         .layer(Extension(hub.clone()));

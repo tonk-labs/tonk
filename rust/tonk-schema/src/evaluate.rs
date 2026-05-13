@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
 
-use crate::analyzer::{self, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
+use crate::analyzer;
 use crate::concept::{
     AttributeByEntity, AttributeByName, Concept as ConceptLookup, lookup_named_entity,
 };
@@ -125,10 +125,14 @@ pub struct EvaluateOutcome {
 #[derive(Debug, Error)]
 pub enum EvaluateError {
     /// The analyzer rejected the document (unknown name, type
-    /// mismatch, scope violation, etc.). Caller should treat this
-    /// as a 400 / parse-error class failure.
+    /// mismatch, scope violation, etc.). Caller should treat
+    /// this as a 400 / parse-error class failure. Carrying the
+    /// full [`analyzer::AnalyzeError`] (rather than a flattened
+    /// string) lets HTTP callers surface the source range and
+    /// stable error code as a structured response — the editor
+    /// uses both to position a squiggle and route quickfixes.
     #[error("{0}")]
-    Analyze(String),
+    Analyze(#[from] analyzer::AnalyzeError),
     /// A query against the branch failed (storage / engine).
     #[error("{0}")]
     Query(String),
@@ -192,56 +196,194 @@ pub struct BranchResolver<'a, Env> {
     pub env: &'a Env,
 }
 
+// `BranchResolver` no longer implements `Resolver` directly —
+// the blanket `impl<T: BranchIntrospection> Resolver for T` in
+// `analyzer::resolver` provides it via the introspection
+// implementation below.
+
+// ---------------------------------------------------------------- //
+// Branch-backed BranchIntrospection                                //
+// ---------------------------------------------------------------- //
+//
+// Same lookups as the `Resolver` impl above plus enumeration —
+// `list_concepts` and `list_named_entities`. Both rely on
+// branch-side helpers in `crate::concept`. The blanket
+// `Resolver`-from-`BranchIntrospection` impl below means a
+// downstream type only needs to implement this trait once and
+// gets the legacy `Resolver` interface for free.
+
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<'a, Env: EvaluateEnv> Resolver for BranchResolver<'a, Env> {
-    async fn resolve_concept(&self, name: &str) -> Result<Option<ResolvedConcept>, ResolverError> {
+impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolver<'a, Env> {
+    async fn lookup_concept(
+        &self,
+        name: &str,
+    ) -> Result<Option<tonk_introspect::ResolvedConcept>, tonk_introspect::IntrospectionError> {
         let resolved = ConceptLookup::by_name(name)
             .resolve(self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(e.to_string()))?;
-        Ok(resolved.map(|c| ResolvedConcept {
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
+        Ok(resolved.map(|c| tonk_introspect::ResolvedConcept {
             entity: c.entity,
             descriptor: c.descriptor,
         }))
     }
 
-    async fn resolve_attribute(
+    async fn lookup_attribute(
         &self,
         name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+    ) -> Result<Option<tonk_introspect::ResolvedAttribute>, tonk_introspect::IntrospectionError>
+    {
         let resolved = AttributeByName::new(name)
             .resolve(self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(e.to_string()))?;
-        Ok(resolved.map(|a| ResolvedAttribute {
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
+        Ok(resolved.map(|a| tonk_introspect::ResolvedAttribute {
             entity: a.entity,
             descriptor: a.descriptor,
         }))
     }
 
-    async fn resolve_attribute_by_entity(
+    async fn lookup_attribute_by_entity(
         &self,
         entity: &Entity,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+    ) -> Result<Option<tonk_introspect::ResolvedAttribute>, tonk_introspect::IntrospectionError>
+    {
         let resolved = AttributeByEntity::new(entity.clone())
             .resolve(self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(e.to_string()))?;
-        Ok(resolved.map(|a| ResolvedAttribute {
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
+        Ok(resolved.map(|a| tonk_introspect::ResolvedAttribute {
             entity: a.entity,
             descriptor: a.descriptor,
         }))
     }
 
-    /// Find the entity that the user-published name `<name>`
-    /// points at via [`lookup_named_entity`]. Delegates to the
-    /// shared helper so both this and the analyzer's own name
-    /// table use the same lookup path.
-    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolverError> {
+    async fn lookup_named_entity(
+        &self,
+        name: &str,
+    ) -> Result<Option<Entity>, tonk_introspect::IntrospectionError> {
         lookup_named_entity(name, self.branch, self.env)
             .await
-            .map_err(|e| ResolverError::new(format!("name lookup failed: {e:?}")))
+            .map_err(|e| {
+                tonk_introspect::IntrospectionError::new(format!("name lookup failed: {e:?}"))
+            })
+    }
+
+    /// Enumerate every concept on the branch. Built-ins from
+    /// [`crate::builtin::concept_registry`] always lead the list;
+    /// branch-published concepts (entities carrying the
+    /// `dialog.meta/concept = db:concept` marker) follow with
+    /// their reconstructed descriptors. Filtering by published
+    /// name happens at the call site — the introspection trait
+    /// returns the full set so the consumer can decide what to
+    /// surface (e.g. completion may want both built-in and
+    /// branch concepts; docs generation may want only branch).
+    async fn list_concepts(
+        &self,
+    ) -> Result<Vec<tonk_introspect::ResolvedConcept>, tonk_introspect::IntrospectionError> {
+        use crate::builtin::concept_registry;
+        use dialog_query::Output as _;
+
+        let mut out: Vec<tonk_introspect::ResolvedConcept> = Vec::new();
+
+        for (_name, resolved) in concept_registry().iter() {
+            out.push(tonk_introspect::ResolvedConcept {
+                entity: resolved.entity.clone(),
+                descriptor: resolved.descriptor.clone(),
+            });
+        }
+
+        // Find every entity carrying the concept marker —
+        // `(?of, dialog.meta/concept, db:concept)`.
+        let marker_attr: dialog_query::attribute::The = "dialog.meta/concept"
+            .parse()
+            .expect("dialog.meta/concept is a valid attribute URI");
+        let marker_target: Entity = "db:concept"
+            .parse()
+            .expect("`db:concept` is a valid entity URI");
+        let claims = self
+            .branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(marker_attr)
+                    .of(Term::<Entity>::var("__list_concepts_of"))
+                    .is(Term::from(marker_target)),
+            ))
+            .perform(self.env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                tonk_introspect::IntrospectionError::new(format!(
+                    "concept marker query failed: {e:?}",
+                ))
+            })?;
+
+        for claim in claims {
+            let entity = claim.of.clone();
+            // Reuse the existing branch-side builder rather
+            // than reaching into `concept.rs` private helpers.
+            let resolved = ConceptLookup::by_entity(entity.clone())
+                .resolve(self.branch, self.env)
+                .await
+                .map_err(|e| {
+                    tonk_introspect::IntrospectionError::new(format!(
+                        "descriptor reconstruction failed: {e:?}",
+                    ))
+                })?;
+            if let Some(c) = resolved {
+                out.push(tonk_introspect::ResolvedConcept {
+                    entity: c.entity,
+                    descriptor: c.descriptor,
+                });
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Enumerate every published name on the branch — `(id:<n>,
+    /// dialog.name/referent, ?target)` claims projected into
+    /// `(name, target)` pairs. Reuses the [`crate::meta::Name`]
+    /// concept's derived query for the actual fetch.
+    async fn list_named_entities(
+        &self,
+    ) -> Result<Vec<tonk_introspect::NamedEntity>, tonk_introspect::IntrospectionError> {
+        use crate::meta::Name;
+        use dialog_query::{Output as _, Query};
+
+        let rows: Vec<Name> = self
+            .branch
+            .query()
+            .select(Query::<Name> {
+                this: Term::<Entity>::var("__list_names_this"),
+                entity: Term::<Entity>::var("__list_names_target"),
+            })
+            .perform(self.env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                tonk_introspect::IntrospectionError::new(format!("name enumeration failed: {e:?}",))
+            })?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let uri = row.this.to_string();
+            // `id:<name>` is the user-published-name shape;
+            // skip anything else (built-in `db:<name>` URIs,
+            // direct DIDs that happen to carry a referent
+            // claim, etc.) — those aren't reachable through the
+            // bare-symbol notation, so suggesting them as
+            // completion targets would mislead.
+            let Some(name) = uri.strip_prefix("id:") else {
+                continue;
+            };
+            out.push(tonk_introspect::NamedEntity {
+                name: name.to_owned(),
+                entity: row.entity.0,
+            });
+        }
+        Ok(out)
     }
 }
 
@@ -253,6 +395,13 @@ impl<'a, Env: EvaluateEnv> Resolver for BranchResolver<'a, Env> {
 /// open dialog branch. Captures the branch revision before and
 /// after the commit so the response carries a snapshot pair.
 ///
+/// `transact` controls whether mutation statements actually
+/// commit. With `transact = false` the planner runs (so
+/// plan-time errors still surface) but the dialog transaction
+/// is dropped instead of committed — used by the editor's
+/// auto-evaluate to project what *would* happen after a
+/// keystroke without applying it.
+///
 /// Caller is responsible for parsing the source text into
 /// [`Syntax`] (callers want different parse-diagnostic surfaces
 /// — HTTP 400 body vs. CLI `<source>:<line>:<col>:` lines — and
@@ -261,14 +410,15 @@ pub async fn run<Env: EvaluateEnv>(
     syntax: &Syntax,
     branch: &Branch,
     env: &Env,
+    transact: bool,
 ) -> Result<EvaluateOutcome, EvaluateError> {
     let resolver = BranchResolver { branch, env };
     let analysis = analyzer::analyze(syntax, &resolver)
         .await
-        .map_err(|e| EvaluateError::Analyze(e.to_string()))?;
+        .map_err(EvaluateError::Analyze)?;
 
     let revision_before = branch.revision();
-    let (response, committed) = run_pipeline(&analysis, syntax, branch, env).await?;
+    let (response, committed) = run_pipeline(&analysis, branch, env, transact).await?;
     let revision_after = branch.revision();
 
     Ok(EvaluateOutcome {
@@ -291,9 +441,9 @@ pub async fn run<Env: EvaluateEnv>(
 /// before/after revisions.
 async fn run_pipeline<Env: EvaluateEnv>(
     analysis: &Analysis,
-    syntax: &Syntax,
     branch: &Branch,
     env: &Env,
+    transact: bool,
 ) -> Result<(EvaluateResponse, bool), EvaluateError> {
     // ---- Build base bindings frame from analysis-derived vars ----
     let mut base = Parameters::new();
@@ -329,7 +479,13 @@ async fn run_pipeline<Env: EvaluateEnv>(
             .entities
             .insert(format!("?{key}"), entity.to_string());
     }
-    let committed = !analysis.mutate.statements.is_empty();
+    // We only build a transaction at all when there are
+    // mutation statements *and* the caller wants them
+    // committed. `committed` reports whether a commit was
+    // actually attempted — `transact = false` callers (the
+    // editor's auto-evaluate) get the rendered matches without
+    // any branch state change.
+    let committed = transact && !analysis.mutate.statements.is_empty();
     if committed {
         let mut tx = branch.transaction();
         let mut claim_count = 0usize;
@@ -351,17 +507,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
                     .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
                 match statement {
                     Statement::Assert(_) => {
-                        // Cardinality-one fields need prior
-                        // values dissociated so the new value
-                        // replaces rather than accumulates with
-                        // them. Dialog's storage layer is
-                        // additive — `associate_unique` only
-                        // de-dupes within the current batch, not
-                        // against committed state. So query the
-                        // branch first.
-                        let supersedes = resolve_supersession_targets(&plan, branch, env).await?;
                         claim_count += count_emitted_claims(&plan);
-                        retract_claims.extend(supersedes);
                         tx = tx.assert(plan);
                     }
                     Statement::Retract(_) => {
@@ -388,7 +534,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
     // Render the pre-commit matches now (before we run the
     // post-commit query) so the response carries both shapes
     // and the editor can show a before/after comparison.
-    let matches_before = render_match_blocks(analysis, syntax, pre_results.as_ref());
+    let matches_before = render_match_blocks(analysis, pre_results.as_ref());
 
     // ---- Re-run per-expression queries against post-commit state ----
     // For pure-query documents the post-state equals the
@@ -401,7 +547,7 @@ async fn run_pipeline<Env: EvaluateEnv>(
             None => pre_results,
         }
     };
-    let matches_after = render_match_blocks(analysis, syntax, post_results.as_ref());
+    let matches_after = render_match_blocks(analysis, post_results.as_ref());
 
     Ok((
         EvaluateResponse {
@@ -516,82 +662,6 @@ impl dialog_artifacts::Statement for RawClaim {
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
         update.dissociate(self.the, self.of, self.is);
     }
-}
-
-/// For an *assert* plan: find prior values of every
-/// cardinality-one field on the plan's `this` entity and emit
-/// them as `RawClaim`s ready for `tx.retract`. Dialog's storage
-/// is additive — without this, re-asserting `age = 30` on Alice
-/// leaves `age = 28` and `age = 30` both present, and the
-/// engine returns whichever it finds first.
-///
-/// Cardinality-many fields are skipped (the whole point is
-/// multiple values per entity).
-async fn resolve_supersession_targets<Env: EvaluateEnv>(
-    plan: &ApplicationPlan,
-    branch: &Branch,
-    env: &Env,
-) -> Result<Vec<RawClaim>, EvaluateError> {
-    use dialog_query::Cardinality;
-
-    let Some(this_term) = plan.statement.terms.get("this") else {
-        return Ok(Vec::new());
-    };
-    let this_entity = match this_term {
-        Term::Constant(Value::Entity(e)) => e.clone(),
-        _ => return Ok(Vec::new()),
-    };
-
-    let mut out = Vec::new();
-    for (field_name, attribute) in plan.statement.predicate.with().iter() {
-        if attribute.cardinality() != Cardinality::One {
-            continue;
-        }
-        // Only supersede when the new assert *would* write a
-        // concrete value — leaving a blank is an "unset" /
-        // "skip" signal, not "retract whatever's there".
-        let new_value = match plan.statement.terms.get(field_name) {
-            Some(Term::Constant(value)) => value.clone(),
-            _ => continue,
-        };
-
-        let the_term: dialog_query::attribute::The = attribute.the().clone();
-        let query = dialog_query::AttributeQuery::new(
-            Term::from(the_term),
-            Term::from(this_entity.clone()),
-            Term::<dialog_query::Any>::var("v"),
-            Term::<dialog_query::attribute::Cause>::blank(),
-            None,
-        );
-        let claims: Vec<dialog_query::Claim> = branch
-            .query()
-            .select(query)
-            .perform(env)
-            .try_vec()
-            .await
-            .map_err(|e| {
-                EvaluateError::Query(format!(
-                    "supersession query failed for ({:?}, {of}): {e:?}",
-                    attribute.the(),
-                    of = this_entity
-                ))
-            })?;
-        for claim in claims {
-            // Skip retracting the value we're about to write —
-            // re-asserting the same value is a no-op, and
-            // emitting a retract+assert pair for the same
-            // (the, of, is) would be churn.
-            if claim.is == new_value {
-                continue;
-            }
-            out.push(RawClaim {
-                the: claim.the.into(),
-                of: this_entity.clone(),
-                is: claim.is,
-            });
-        }
-    }
-    Ok(out)
 }
 
 /// Resolve a retraction `ApplicationPlan` to concrete
@@ -742,7 +812,6 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// expression's cross-product introduces duplicates.
 fn render_match_blocks(
     analysis: &Analysis,
-    syntax: &Syntax,
     results: Option<&QueryResults>,
 ) -> Vec<QueryMatchBlock> {
     let Some(query) = &analysis.query else {
@@ -752,19 +821,20 @@ fn render_match_blocks(
         return Vec::new();
     };
 
-    // Source-expression labels in document order.
-    let mut labels: Vec<String> = Vec::new();
-    for expression in &syntax.expressions {
-        if let tonk_notation::Expression::Query(q) = expression {
-            labels.push(q.head.source.clone());
-        }
-    }
-
     // For each expression, collect the user-named variables it
     // binds. We project the joined frame onto these to dedupe.
+    // Labels come from `analysis.query.labels` — populated by
+    // the analyzer for both explicit query expressions and the
+    // implicit queries it synthesizes for assertions, so the
+    // assertion path's result block is titled by the head name
+    // (`person`) instead of the legacy `?` fallback.
     let mut blocks = Vec::with_capacity(query.queries.len());
     for (i, application) in query.queries.iter().enumerate() {
-        let label = labels.get(i).cloned().unwrap_or_else(|| "?".to_owned());
+        let label = query
+            .labels
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| "?".to_owned());
         let descriptor = match application {
             Application::Concept { query: q, .. } => q.predicate.clone(),
             Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
@@ -855,6 +925,12 @@ fn render_one_result(
         };
         let value = match term {
             Term::Constant(value) => value_to_json(value),
+            // Named variables — user `?var` and analyzer-minted
+            // `__N` from `_` blanks both land here. The frame
+            // binds them either way, so the same lookup works
+            // for both. The auto name leaks into nothing
+            // user-visible because we project under
+            // `field_name`, not the variable name.
             Term::Variable {
                 name: Some(name), ..
             } => match frame.get(name) {

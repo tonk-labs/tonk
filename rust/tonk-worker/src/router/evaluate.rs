@@ -49,23 +49,18 @@ pub struct ProfileEvaluatePath {
 /// commit step so auto-fire evaluates (e.g. when the editor
 /// settles after an edit) can project what *would* happen
 /// without applying mutations the user hasn't confirmed.
-///
-/// Note: after the `tonk_schema::evaluate` extraction, the
-/// shared pipeline does not yet accept a `transact` toggle.
-/// The query parameter is still parsed (so callers keep their
-/// existing URL surface) but is currently ignored — every
-/// invocation commits. Threading `transact` back through
-/// `evaluate::run` is a follow-up in `tonk-schema`.
 #[derive(Debug, Deserialize)]
 pub struct EvaluateQuery {
-    /// When `false`, the caller wants analysis + queries only,
-    /// without applying mutations. Currently ignored — see the
-    /// note on the type.
+    /// When `false`, run analysis + queries + planning but
+    /// drop the dialog transaction instead of committing.
+    /// `commits.claims` will be `0` and `revision_after ==
+    /// revision_before`. The editor's auto-evaluate uses this
+    /// so an in-progress edit can project results without
+    /// applying mutations the user hasn't confirmed.
     ///
     /// Defaults to `true` so existing callers keep today's
     /// behavior. Accepts `true`/`false`, `1`/`0`, `yes`/`no`.
     #[serde(default = "default_true", deserialize_with = "deserialize_bool")]
-    #[allow(dead_code)]
     pub transact: bool,
 }
 
@@ -141,7 +136,7 @@ async fn evaluate_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: crate::reactor::BranchReference<'a>,
     body: Bytes,
-    _query: EvaluateQuery,
+    query: EvaluateQuery,
 ) -> Result<Json<EvaluateResponse>, TonkWorkerError> {
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
@@ -159,9 +154,14 @@ async fn evaluate_on_branch<'a>(
         .await
         .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
 
-    let outcome = evaluate::run(&syntax, session.handle(), &tonk_state.operator)
-        .await
-        .map_err(map_evaluate_error)?;
+    let outcome = evaluate::run(
+        &syntax,
+        session.handle(),
+        &tonk_state.operator,
+        query.transact,
+    )
+    .await
+    .map_err(map_evaluate_error)?;
 
     // Subscriptions on this branch only need re-polling when the
     // document committed — pure-query docs leave branch state
@@ -175,16 +175,32 @@ async fn evaluate_on_branch<'a>(
 }
 
 /// Project [`Parsed`] onto a successful syntax or a 400 error
-/// carrying the diagnostic messages.
+/// carrying the first diagnostic's structure (code + range +
+/// message) so the editor can route it to a positioned
+/// squiggle. Subsequent diagnostics are dropped: the parser
+/// can produce a cascade from a single root cause and surfacing
+/// them all confuses more than helps. The first one is
+/// generally the proximate cause.
 fn surface_parse_diagnostics(parsed: Parsed) -> Result<Syntax, TonkWorkerError> {
-    if !parsed.diagnostics.is_empty() {
-        let messages = parsed
-            .diagnostics
-            .iter()
-            .map(|d| d.message.clone())
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(TonkWorkerError::Router(messages));
+    if let Some(first) = parsed.diagnostics.first() {
+        let code = first
+            .code
+            .as_ref()
+            .and_then(|c| match c {
+                lsp_types::NumberOrString::String(s) => Some(s.clone()),
+                lsp_types::NumberOrString::Number(_) => None,
+            })
+            // Stable fallback so the client always has something
+            // to switch on. Parser diagnostics from
+            // `tonk-notation` carry codes today; this default
+            // keeps the contract honest if a future emitter
+            // forgets to set one.
+            .unwrap_or_else(|| "E_PARSE".to_owned());
+        return Err(TonkWorkerError::Analyze {
+            code,
+            message: first.message.clone(),
+            range: Some(first.range),
+        });
     }
     parsed
         .syntax
@@ -196,9 +212,13 @@ fn surface_parse_diagnostics(parsed: Parsed) -> Result<Syntax, TonkWorkerError> 
 /// and commit failures are internal (500).
 fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
     match error {
-        EvaluateError::Analyze(message) => {
-            log!("Analyzer rejected document: {message}");
-            TonkWorkerError::Router(message)
+        EvaluateError::Analyze(analyze_error) => {
+            log!("Analyzer rejected document: {analyze_error}");
+            // `From<AnalyzeError>` carries `code` and `range`
+            // through to the structured response body the
+            // editor decodes into a `TonkUiError::Analyze`
+            // diagnostic — that's what positions the squiggle.
+            TonkWorkerError::from(analyze_error)
         }
         EvaluateError::Query(message) => TonkWorkerError::Internal(message),
         EvaluateError::Plan(message) => {

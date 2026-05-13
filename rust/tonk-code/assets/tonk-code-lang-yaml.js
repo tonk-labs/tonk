@@ -1,2 +1,2 @@
-import{f as m}from"./chunk-RQ4FSYJ5.js";import"./chunk-5UYTQQO4.js";var r=m();export{r as default};
+import{f as m}from"./chunk-ID6Z2J45.js";import"./chunk-LP2GRDY2.js";var r=m();export{r as default};
 //# sourceMappingURL=tonk-code-lang-yaml.js.map
