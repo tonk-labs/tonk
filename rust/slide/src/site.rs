@@ -20,21 +20,17 @@ use dialog_repository::{Branch, Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 
 /// Name of the dialog repository slide uses inside `.tonk/`.
-/// Mirrors carry's choice so a `.carry/` directory can be
-/// migrated to `.tonk/` byte-for-byte once the migration command
-/// lands.
 pub const REPO_NAME: &str = "main";
 
 /// The single branch slide reads and writes against.
 pub const BRANCH_NAME: &str = "main";
 
-/// Profile name used for the local identity. Shared with carry
-/// so a user who has both CLIs sees the same DID.
+/// Profile name used for the local identity.
 pub const PROFILE_NAME: &str = "tonk";
 
 /// Operator derivation context — distinguishes the slide-derived
 /// operator key from operator keys derived by other tools sharing
-/// the same profile (e.g. carry, the worker).
+/// the same profile (e.g. the worker).
 const OPERATOR_CONTEXT: &[u8] = b"slide";
 
 /// Name of the `.tonk/` sub-directory holding repository data.

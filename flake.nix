@@ -80,6 +80,20 @@
           wasm-bindgen-cli
           ;
 
+        # Rewrite Nix store libiconv to the macOS system equivalent
+        # so the binary works on machines without Nix installed
+        darwinBinaryFixup = pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
+          for bin in $out/bin/*; do
+            if [ -f "$bin" ]; then
+              NIX_ICONV=$(otool -L "$bin" | grep '/nix/store.*libiconv' | awk '{print $1}' || true)
+              if [ -n "$NIX_ICONV" ]; then
+                install_name_tool -change "$NIX_ICONV" /usr/lib/libiconv.2.dylib "$bin"
+              fi
+              /usr/bin/codesign --force --sign - "$bin"
+            fi
+          done
+        '';
+
         # Include the Rust toolchain in build inputs for dev shells
         devShellBuildInputs = commonBuildInputs ++ [
           pkgs.cachix
@@ -221,6 +235,12 @@
             cp ${self.packages.${system}.tests-web-debug}/*.tar.zst $out/
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
+
+          slide = buildCrate {
+            pname = "slide";
+            cargoExtraArgs = "--package slide";
+            fixupPhase = darwinBinaryFixup;
+          };
 
           tonk-ui = buildTrunkCrate {
             pname = "tonk-ui";
