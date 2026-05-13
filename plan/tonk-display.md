@@ -19,6 +19,61 @@ Target usage:
 
 After v1 lands, we likely refactor `<tonk-concept>` to delegate per-row rendering to `<tonk-display>` — but that is out of scope here.
 
+## The `view` concept
+
+The element resolves its template by querying a `view` concept on the
+branch. The concept must exist before any `<tonk-display>` can find a
+matching template — declare it once per repository, alongside any other
+domain concepts:
+
+```yaml
+concept!: &view
+  description: HTML template used for displaying a concept
+  with:
+    name:
+      description: Name of the view
+      the: xyz.tonk.view/name
+      as: text
+    model:
+      description: Concept being displayed
+      the: xyz.tonk.view/model
+      as: entity
+    display:
+      description: HTML template used for displaying source entity
+      the: xyz.tonk.view/display
+      as: text
+```
+
+A concrete view is then an assertion against that concept — one assertion
+per `(model, name)` pair:
+
+```yaml
+# Define the concept being displayed.
+concept!: &greeting
+  with:
+    message:
+      description: Message to be displayed
+      the: xyz.tonk.greeting/message
+      as: text
+
+# Publish a "basic" view for greetings.
+view!:
+  model: greeting
+  name: "basic"
+  display: !text/html |
+    <p class="greeting">{message}</p>
+```
+
+The element finds this view by querying for the `view` row whose
+`model` equals the resolved `greeting` concept entity and whose `name`
+equals `"basic"`. The `display` field carries the template HTML, which
+the element parses and renders with the matched entity's fields
+interpolated for `{message}` (and any other `{field}` references).
+
+Authoring multiple views for the same concept — e.g. `name: "card"`,
+`name: "tile"` — lets pages pick a presentation by passing a different
+`view` attribute, with no element or schema changes.
+
 ## Element shape
 
 ```html
@@ -43,6 +98,49 @@ Attributes (all observed; changing any restarts the relevant flows):
 
 No children — the template comes from the branch (or fallback), not the
 page.
+
+## URL route
+
+`<tonk-display>` is exposed as a route in the Tonk UI shell:
+
+```
+/space/{space}/branch/{branch}/display/{subject}?view=<name>&model=<concept>
+```
+
+Path parameters become element attributes; query parameters become the
+optional `view` and `model` attributes. The shell does the name → entity
+resolution *before* mounting the element, so the route can 404 cleanly
+when the bookmark doesn't resolve.
+
+| Segment | Meaning |
+|---|---|
+| `{space}` | Repository space name. Forwarded as `space`. |
+| `{branch}` | Branch name. Forwarded as `branch`. |
+| `{subject}` | Either an entity URI (anything containing `:`) or a bookmark name. URIs pass through verbatim. Bookmark names are resolved by the route via a `Name` query (`this = id:<subject>`, read `entity` claim backed by `dialog.name/referent`). A bookmark that doesn't resolve renders a 404 section instead of mounting the element. |
+| `?view=<name>` | View name. Forwarded as `view`. |
+| `?model=<concept>` | Concept name or URI. Forwarded as `model`. |
+
+Examples (assume the branch contains `name!: demo` → `did:key:zGreeting…`
+and a `greeting` concept with a `basic` view):
+
+```
+# Resolve "demo" via Name, render with the "basic" view of "greeting":
+/space/home/branch/main/display/demo?model=greeting&view=basic
+
+# Same target, but the URI is given directly — no Name lookup:
+/space/home/branch/main/display/did:key:zGreeting…?model=greeting&view=basic
+
+# Bookmark exists, no view/model — falls back to generic <dl> rendering:
+/space/home/branch/main/display/demo
+
+# Bookmark doesn't exist — 404:
+/space/home/branch/main/display/unknown
+```
+
+Resolving the name at the route rather than inside `<tonk-display>` keeps
+the element decoupled from URL semantics, and gives us a place to render
+a "not found" page when the lookup fails — something the element, by
+design a live subscription, couldn't express cleanly.
 
 ## DOM state signalling
 

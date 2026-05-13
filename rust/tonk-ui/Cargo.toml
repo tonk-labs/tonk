@@ -41,6 +41,7 @@ tokio = { workspace = true, features = ["sync", "time"] }
 bs58 = { workspace = true }
 tonk-code = { workspace = true, features = ["web"] }
 tonk-concept = { workspace = true }
+tonk-display = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-sigil = { workspace = true, features = ["web"] }
