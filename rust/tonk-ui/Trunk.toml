@@ -26,6 +26,8 @@ watch = [
     "../tonk-language-server",
     "../tonk-schema",
     "../tonk-notation",
+    "../tonk-concept",
+    "../tonk-display",
     "../tonk-code/assets",
 ]
 

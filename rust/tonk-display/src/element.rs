@@ -139,13 +139,44 @@ fn already_registered() -> bool {
 }
 
 fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
-    let host = host.clone();
+    let host_clone = host.clone();
+    let state_clone = state.clone();
     spawn_local(async move {
-        if let Err(err) = run(&host, state).await {
-            state::set(&host, State::Error);
-            dispatch_error(&host, err);
+        if let Err(err) = run(&host_clone, state_clone.clone()).await {
+            fail(&host_clone, &state_clone, err);
         }
     });
+}
+
+/// Transition the host into the error state: clear any mounted
+/// row from the renderer (so the error callout isn't sitting next
+/// to a half-rendered template), render the message as a visible
+/// `<wa-callout>` inside the host, and dispatch the
+/// `tonk-display:error` event so listeners (page-level
+/// diagnostics, analytics, etc.) still get the structured detail.
+fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
+    {
+        let mut inner = state.borrow_mut();
+        if let Some(renderer) = inner.renderer.as_mut() {
+            renderer.clear();
+        }
+        inner.renderer = None;
+    }
+    state::set_error(host, error_title(err.kind), &err.message);
+    dispatch_error(host, err);
+}
+
+/// Short label shown as the callout's `<strong>` heading. The
+/// detail message is rendered below; the title's job is to name
+/// the *kind* of failure so the user can act on it without parsing
+/// the full message.
+fn error_title(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::UnknownSource => "Not found",
+        ErrorKind::Network => "Connection failed",
+        ErrorKind::Parse => "Couldn't read response",
+        ErrorKind::Descriptor => "Invalid configuration",
+    }
 }
 
 async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetail> {
@@ -237,8 +268,9 @@ async fn open_view_stream(
             let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
                 Ok(v) => v,
                 Err(e) => {
-                    dispatch_error(
+                    fail(
                         &host_for_frame,
+                        &state,
                         ErrorDetail::new(ErrorKind::Parse, format!("view frame: {e}")),
                     );
                     return;
@@ -247,9 +279,7 @@ async fn open_view_stream(
             handle_view_frame(&host_for_frame, &state, conclusions);
         },
         move |err: ErrorDetail| {
-            state::set(&host_for_err, State::Error);
-            dispatch_error(&host_for_err, err);
-            state_for_err.borrow_mut().renderer = None;
+            fail(&host_for_err, &state_for_err, err);
         },
     )
     .await
@@ -271,8 +301,9 @@ async fn open_entity_stream(
             let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
                 Ok(v) => v,
                 Err(e) => {
-                    dispatch_error(
+                    fail(
                         &host_for_frame,
+                        &state,
                         ErrorDetail::new(ErrorKind::Parse, format!("entity frame: {e}")),
                     );
                     return;
@@ -281,9 +312,7 @@ async fn open_entity_stream(
             handle_entity_frame(&host_for_frame, &state, conclusions);
         },
         move |err: ErrorDetail| {
-            state::set(&host_for_err, State::Error);
-            dispatch_error(&host_for_err, err);
-            state_for_err.borrow_mut().renderer = None;
+            fail(&host_for_err, &state_for_err, err);
         },
     )
     .await
