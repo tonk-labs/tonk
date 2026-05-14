@@ -306,3 +306,133 @@ fn append_span(document: &Document, parent: &Element, decoration: Decoration, te
     span.set_text_content(Some(text));
     let _ = parent.append_child(&span);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Mount a fresh `<tonk-notation>` with the given source notation
+    /// already inside a `text/tonk-notation` script. Attaching to the
+    /// body triggers `connected_callback`, which paints synchronously
+    /// before this function returns.
+    fn mount(source: &str) -> Element {
+        register();
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document
+            .create_element("tonk-notation")
+            .expect("create tonk-notation");
+        if !source.is_empty() {
+            let script = document.create_element("script").expect("create script");
+            let _ = script.set_attribute("type", SOURCE_MIME);
+            script.set_text_content(Some(source));
+            let _ = host.append_child(&script);
+        }
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    #[dialog_common::test]
+    fn it_renders_a_pre_block_when_a_source_script_is_present() {
+        let host = mount("greeting!:\n  this: did:key:zX\n");
+        let pre = host
+            .query_selector(&format!(".{}", PRE_CLASS))
+            .expect("query pre")
+            .expect("pre mounted");
+        // Source text should round-trip through the spans.
+        let text = pre.text_content().unwrap_or_default();
+        assert!(text.contains("greeting"), "no greeting in: {text}");
+        assert!(text.contains("did:key:zX"), "no entity in: {text}");
+    }
+
+    #[dialog_common::test]
+    fn it_skips_rendering_when_no_source_script_is_present() {
+        let host = mount("");
+        assert!(
+            host.query_selector(&format!(".{}", PRE_CLASS))
+                .unwrap()
+                .is_none(),
+            "expected no pre block without a source script",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_tags_decoration_spans_with_dialog_yaml_class_names() {
+        let host = mount("greeting!: &demo\n  this: did:key:zX\n  message: ?msg\n");
+        let pre = host
+            .query_selector(&format!(".{}", PRE_CLASS))
+            .unwrap()
+            .expect("pre mounted");
+
+        // The decoration classes are the public contract with the
+        // editor pack — pin every one that should show up for this
+        // input so a tokenizer regression here is loud.
+        let effect = pre
+            .query_selector(".tonk-cm-effect")
+            .unwrap()
+            .expect("effect span");
+        assert_eq!(effect.text_content().as_deref(), Some("greeting!"));
+
+        let sigil = pre
+            .query_selector(".tonk-cm-name-sigil")
+            .unwrap()
+            .expect("name-sigil span");
+        assert_eq!(sigil.text_content().as_deref(), Some("&"));
+
+        let name = pre
+            .query_selector(".tonk-cm-name")
+            .unwrap()
+            .expect("name span");
+        assert_eq!(name.text_content().as_deref(), Some("demo"));
+
+        let entity = pre
+            .query_selector(".tonk-cm-entity")
+            .unwrap()
+            .expect("entity span");
+        assert_eq!(entity.text_content().as_deref(), Some("did:key:zX"));
+
+        let variable = pre
+            .query_selector(".tonk-cm-variable")
+            .unwrap()
+            .expect("variable span");
+        assert_eq!(variable.text_content().as_deref(), Some("?msg"));
+
+        // Keys are emitted for every field name.
+        let keys: Vec<String> = (0..pre.query_selector_all(".tonk-cm-key").unwrap().length())
+            .filter_map(|i| {
+                pre.query_selector_all(".tonk-cm-key")
+                    .unwrap()
+                    .item(i)?
+                    .text_content()
+            })
+            .collect();
+        assert!(
+            keys.contains(&"this".to_owned()),
+            "missing this in {keys:?}"
+        );
+        assert!(
+            keys.contains(&"message".to_owned()),
+            "missing message in {keys:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renders_only_one_pre_block_at_a_time() {
+        // Mounts a host with two consecutive scripts — the renderer
+        // reads the first one and never emits more than one `<pre>`,
+        // regardless of how many times the host observer fires
+        // during the initial paint.
+        let host = mount("greeting!:\n  this: did:key:zX\n");
+        let count = host
+            .query_selector_all(&format!(".{}", PRE_CLASS))
+            .unwrap()
+            .length();
+        assert_eq!(count, 1, "expected one pre, got {count}");
+    }
+}

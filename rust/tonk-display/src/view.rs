@@ -162,3 +162,124 @@ fn install_render_method() {
     );
     let _ = Reflect::set(&proto, &"render".into(), &render_fn);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Mount a `<tonk-view>` with the given template HTML as
+    /// children and attach it to the body. `register()` runs at the
+    /// top so the custom-element prototype is set up before the
+    /// element connects.
+    fn mount(template_html: &str) -> Element {
+        register();
+        let document = web_sys::window().expect("window").document().expect("doc");
+        let host = document
+            .create_element("tonk-view")
+            .expect("create tonk-view");
+        host.set_inner_html(template_html);
+        document
+            .body()
+            .expect("body")
+            .append_child(&host)
+            .expect("attach");
+        host
+    }
+
+    /// Build a serialized `{ this, fields }` JsValue conclusion the
+    /// way `<tonk-display>` would pass it into `el.render(detail)`.
+    fn detail(this: &str, fields: &[(&str, &str)]) -> JsValue {
+        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for (k, v) in fields {
+            map.insert((*k).to_owned(), serde_json::Value::String((*v).to_owned()));
+        }
+        let conclusion = Conclusion {
+            this: this.to_owned(),
+            fields: map,
+        };
+        serde_wasm_bindgen::to_value(&conclusion).expect("serialize conclusion")
+    }
+
+    /// Pull the `draw` closure off the element and call it
+    /// directly. Mirrors how `<tonk-display>::call_render` invokes
+    /// the per-instance closure; using the prototype `render`
+    /// method would also work but adds an indirection that's not
+    /// what we're testing here.
+    fn call_draw(el: &Element, detail: &JsValue) {
+        let draw = Reflect::get(el.as_ref(), &"draw".into()).expect("draw");
+        let func: Function = draw.dyn_into().expect("draw is a function");
+        func.call1(&JsValue::NULL, detail).expect("call draw");
+    }
+
+    #[dialog_common::test]
+    fn it_installs_a_per_instance_draw_closure_on_connect() {
+        let host = mount("<p>{name}</p>");
+        // `draw` is the per-instance shim the prototype `render`
+        // method delegates to. Without it, callers couldn't drive
+        // the element at all.
+        let draw = Reflect::get(host.as_ref(), &"draw".into()).expect("draw present");
+        assert!(
+            draw.dyn_into::<Function>().is_ok(),
+            "expected draw to be a JS Function",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renders_the_template_when_draw_is_called() {
+        let host = mount("<article><h1>{name}</h1></article>");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        let html = host.inner_html();
+        assert!(html.contains("Alice"), "expected Alice in {html}");
+    }
+
+    #[dialog_common::test]
+    fn it_updates_in_place_on_subsequent_draws() {
+        let host = mount("<article><h1>{name}</h1></article>");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        let first = host
+            .query_selector("article")
+            .unwrap()
+            .expect("first article");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alicia")])); // same `this`
+        let second = host
+            .query_selector("article")
+            .unwrap()
+            .expect("second article");
+        // Same node — patched in place rather than swapped — so
+        // downstream listeners on the rendered DOM survive updates.
+        assert!(first.is_same_node(Some(second.unchecked_ref())));
+        assert!(host.inner_html().contains("Alicia"));
+    }
+
+    #[dialog_common::test]
+    fn it_exposes_a_prototype_render_method_that_delegates_to_draw() {
+        let host = mount("<p>{name}</p>");
+        // Call `render` through the prototype the way external JS
+        // would: `host.render(detail)`. This proves the `this`
+        // binding works — without it, `render` would invoke the
+        // closure with `this = detail`, which silently no-ops.
+        let render = Reflect::get(host.as_ref(), &"render".into()).expect("render present");
+        let render_fn: Function = render.dyn_into().expect("render is a Function");
+        render_fn
+            .call1(host.as_ref(), &detail("did:key:zX", &[("name", "Bob")]))
+            .expect("call render");
+        assert!(
+            host.inner_html().contains("Bob"),
+            "got: {}",
+            host.inner_html()
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_silently_drops_draws_when_no_template_was_supplied() {
+        let host = mount("");
+        // No template → no renderer → calling draw is a no-op.
+        // Just checking that we don't panic and the host stays empty.
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        assert_eq!(host.inner_html(), "");
+    }
+}

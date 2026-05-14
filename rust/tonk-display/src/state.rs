@@ -137,6 +137,12 @@ fn remove_error_callout(host: &Element) {
 mod tests {
     use super::*;
 
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
     #[test]
     fn it_maps_states_to_data_state_attribute_values() {
         // CSS rules in `styles.css` (e.g. `tonk-display[data-state="loading"]`)
@@ -157,5 +163,107 @@ mod tests {
         assert_eq!(error_title(ErrorKind::Network), "Connection failed");
         assert_eq!(error_title(ErrorKind::Parse), "Couldn't read response");
         assert_eq!(error_title(ErrorKind::Descriptor), "Invalid configuration");
+    }
+
+    /// Build a fresh detached host element so tests don't interact
+    /// across runs. Wasm-only — `web_sys::window()` is `None` on
+    /// native test builds.
+    #[cfg(target_arch = "wasm32")]
+    fn host() -> Element {
+        web_sys::window()
+            .expect("window")
+            .document()
+            .expect("document")
+            .create_element("tonk-display")
+            .expect("create tonk-display")
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_reflects_state_as_a_data_state_attribute() {
+        let host = host();
+        set(&host, State::Loading);
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("loading"));
+        set(&host, State::Ready);
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("ready"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_renders_the_danger_callout_on_set_error() {
+        let host = host();
+        set_error(&host, "Not found", "no entity matched");
+
+        // `data-state` flips to "error".
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("error"));
+
+        // Exactly one callout, marked danger, carrying our sentinel.
+        let callout = host
+            .query_selector("wa-callout")
+            .expect("query")
+            .expect("callout mounted");
+        assert_eq!(callout.get_attribute("variant").as_deref(), Some("danger"));
+        assert!(callout.has_attribute("data-tonk-display-error"));
+
+        // Icon, title, and message body are all present in that
+        // order. The callout's text content is the concatenated
+        // text of every child node; checking it covers both the
+        // <strong> title and the trailing text node.
+        let strong = callout
+            .query_selector("strong")
+            .expect("query strong")
+            .expect("title present");
+        assert_eq!(strong.text_content().as_deref(), Some("Not found"));
+        let icon = callout
+            .query_selector("wa-icon")
+            .expect("query icon")
+            .expect("icon present");
+        assert_eq!(icon.get_attribute("slot").as_deref(), Some("icon"));
+        assert_eq!(
+            icon.get_attribute("name").as_deref(),
+            Some("circle-exclamation"),
+        );
+        assert!(
+            callout
+                .text_content()
+                .unwrap()
+                .contains("no entity matched")
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_replaces_a_prior_callout_when_set_error_runs_again() {
+        let host = host();
+        set_error(&host, "Not found", "first");
+        set_error(&host, "Connection failed", "second");
+
+        // Only one callout should remain — the most recent.
+        let count = host
+            .query_selector_all("wa-callout")
+            .expect("query")
+            .length();
+        assert_eq!(count, 1, "expected exactly one callout, got {count}");
+        let text = host
+            .query_selector("wa-callout")
+            .unwrap()
+            .unwrap()
+            .text_content()
+            .unwrap();
+        assert!(text.contains("Connection failed"), "stale title: {text}");
+        assert!(text.contains("second"), "stale message: {text}");
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_removes_the_callout_when_transitioning_away_from_error() {
+        let host = host();
+        set_error(&host, "Not found", "boom");
+        assert!(host.query_selector("wa-callout").unwrap().is_some());
+
+        set(&host, State::Loading);
+        // The callout is gone now that we're no longer in Error.
+        assert!(host.query_selector("wa-callout").unwrap().is_none());
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("loading"));
     }
 }
