@@ -80,8 +80,16 @@ struct Inner {
     /// Slides keyed by view name. In single mode there's exactly
     /// one entry with whatever name the `view` attribute holds.
     slides: BTreeMap<String, Slide>,
-    /// `<tonk-inspector>` element, only present in carousel mode.
-    inspector: Option<Element>,
+    /// The trailing carousel slide's source `<script
+    /// type="text/tonk-notation">` element. We update its
+    /// `textContent` on every entity frame; the enclosing
+    /// `<tonk-notation>` re-renders via its MutationObserver. Only
+    /// present in carousel mode.
+    notation_source: Option<Element>,
+    /// The `<wa-carousel-item>` that wraps the `<tonk-notation>`
+    /// slide, kept so `mount_view_slide` can insert new view slides
+    /// before it.
+    notation_item: Option<Element>,
 }
 
 impl Inner {
@@ -92,7 +100,8 @@ impl Inner {
             last_conclusion: None,
             carousel: None,
             slides: BTreeMap::new(),
-            inspector: None,
+            notation_source: None,
+            notation_item: None,
         }
     }
 
@@ -216,7 +225,8 @@ fn error_title(kind: ErrorKind) -> &'static str {
 fn clear_host(host: &Element, inner: &mut Inner) {
     inner.slides.clear();
     inner.carousel = None;
-    inner.inspector = None;
+    inner.notation_source = None;
+    inner.notation_item = None;
     host.set_inner_html("");
 }
 
@@ -451,12 +461,12 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 
     // In single mode, mark Ready once the slide is mounted (with
     // or without an entity frame yet — empty content is fine).
-    // In carousel mode, ensure the inspector is fed.
+    // In carousel mode, ensure the notation slide is fed.
     if cached.is_some() && !s.slides.is_empty() {
         state::set(host, State::Ready);
     }
-    if let (Some(inspector), Some(c)) = (s.inspector.as_ref(), cached.as_ref()) {
-        call_render(inspector, &serialize_conclusion(c));
+    if let Some(c) = cached.as_ref() {
+        update_notation(host, &s, c);
     }
 
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
@@ -479,30 +489,44 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
     for slide in s.slides.values() {
         call_render(&slide.view_el, &detail);
     }
-    if let Some(inspector) = s.inspector.as_ref() {
-        call_render(inspector, &detail);
-    }
-    if !s.slides.is_empty() || s.inspector.is_some() {
+    update_notation(host, &s, &conclusion);
+    if !s.slides.is_empty() || s.notation_source.is_some() {
         state::set(host, State::Ready);
     }
     let event_detail = serde_wasm_bindgen::to_value(&conclusion).unwrap_or(JsValue::NULL);
     dispatch_event(host, "tonk-display:result", Some(event_detail));
 }
 
+/// Refresh the trailing notation slide's source `<script>` with
+/// `conclusion` formatted as dialog-yaml notation. No-op in
+/// single mode (where `notation_source` is `None`).
+fn update_notation(host: &Element, inner: &Inner, conclusion: &Conclusion) {
+    let Some(script) = inner.notation_source.as_ref() else {
+        return;
+    };
+    let head = host
+        .get_attribute("model")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "concept".to_owned());
+    let text = crate::notation_format::format(conclusion, &head, None);
+    script.set_text_content(Some(&text));
+}
+
 /// Ensure the `<wa-carousel>` chrome is mounted. Idempotent —
 /// does nothing if the carousel is already set up.
 ///
 /// `single_mode` selects between the two presentation modes:
-/// - `true` (when `view` attribute is set): no navigation
-///   arrows, no trailing inspector slide. The user sees exactly
-///   one view rendering.
+/// - `true` (when `view` attribute is set): no navigation arrows,
+///   no trailing notation slide. The user sees exactly one view
+///   rendering.
 /// - `false`: navigation arrows enabled, and a trailing
-///   `<tonk-inspector>` slide so the user can flip to the raw
-///   entity dump.
+///   `<tonk-notation>` slide so the user can flip to a
+///   syntax-highlighted dump of the entity in dialog-yaml
+///   notation form.
 ///
 /// The carousel host is mounted either way so the slot geometry
 /// is identical between the modes — the only user-visible
-/// difference is whether arrows + the inspector slide are
+/// difference is whether arrows + the notation slide are
 /// present.
 fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool) {
     let mut s = state.borrow_mut();
@@ -518,16 +542,23 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
     if !single_mode {
         let _ = carousel.set_attribute("navigation", "");
 
-        // Trailing inspector slide — only present in carousel
-        // mode. Lets the user fall back to a raw entity dump
-        // regardless of how many views the model has published.
-        if let (Ok(inspector_item), Ok(inspector)) = (
+        // Trailing notation slide — only present in carousel
+        // mode. Lets the user fall back to a syntax-highlighted
+        // entity dump regardless of how many views the model has
+        // published. The `<script type="text/tonk-notation">`
+        // child carries the source; updating its `textContent` is
+        // what `<tonk-notation>` watches via its MutationObserver.
+        if let (Ok(item), Ok(notation), Ok(script)) = (
             document.create_element("wa-carousel-item"),
-            document.create_element("tonk-inspector"),
+            document.create_element("tonk-notation"),
+            document.create_element("script"),
         ) {
-            let _ = inspector_item.append_child(&inspector);
-            let _ = carousel.append_child(&inspector_item);
-            s.inspector = Some(inspector);
+            let _ = script.set_attribute("type", "text/tonk-notation");
+            let _ = notation.append_child(&script);
+            let _ = item.append_child(&notation);
+            let _ = carousel.append_child(&item);
+            s.notation_source = Some(script);
+            s.notation_item = Some(item);
         }
     }
 
@@ -550,8 +581,8 @@ fn mount_view_slide(_host: &Element, inner: &mut Inner, display: &str) -> Option
 
     let item = document.create_element("wa-carousel-item").ok()?;
     let _ = item.append_child(&view_el);
-    if let Some(inspector_item) = inner.inspector.as_ref().and_then(|i| i.parent_element()) {
-        let _ = carousel.insert_before(&item, Some(&inspector_item));
+    if let Some(trailing) = inner.notation_item.as_ref() {
+        let _ = carousel.insert_before(&item, Some(trailing));
     } else {
         let _ = carousel.append_child(&item);
     }
