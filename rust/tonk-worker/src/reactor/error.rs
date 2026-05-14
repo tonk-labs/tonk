@@ -29,9 +29,4 @@ pub enum ReactorError {
     /// A push to upstream failed.
     #[error("push failed: {0}")]
     Push(#[from] PushError),
-    /// Two distinct queries produced the same blake3 hash. The
-    /// second subscribe attempt is rejected so the colliding
-    /// queries don't share a subscription.
-    #[error("query hash collision (extremely unlikely — please report)")]
-    QueryHashCollision,
 }
