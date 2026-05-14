@@ -511,10 +511,48 @@
   color: var(--tp-square-fg-faint);
 }
 
-.tonk-portals-root .picker__input--secondary {
-  font-size: 12px;
+.tonk-portals-root .picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--tp-square-border);
+}
+
+.tonk-portals-root .picker__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.tonk-portals-root .picker__item--highlighted {
+  background: var(--tp-square-hover);
+}
+
+.tonk-portals-root .picker__item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .picker__item-entity {
+  font-size: 11px;
+  color: var(--tp-square-fg-quieter);
+  font-family: var(--wa-font-family-code, ui-monospace, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tonk-portals-root .picker__empty {
   padding: 10px 14px;
-  color: var(--tp-square-fg-quiet);
+  font-size: 12px;
+  color: var(--tp-square-fg-quieter);
+  border-bottom: 1px solid var(--tp-square-border);
 }
 
 .tonk-portals-root .picker__error {

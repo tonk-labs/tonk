@@ -337,7 +337,6 @@ export function Grid() {
           ? updateLeaf(cur, id, {
               entity: payload.entity,
               name: payload.name,
-              branch: payload.branch,
             })
           : cur,
       );

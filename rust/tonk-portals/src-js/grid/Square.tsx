@@ -135,7 +135,6 @@ export function Square({
         <div className="picker-anchor">
           <EntityPicker
             initialEntity={leaf.entity}
-            initialBranch={leaf.branch}
             onPick={onPick}
             onClose={onClosePicker}
           />
