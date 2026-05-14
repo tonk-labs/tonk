@@ -117,7 +117,9 @@ impl CustomElement for TonkConcept {
             if let Some(abort) = s.abort.take() {
                 abort.abort();
             }
-            s.renderer = None;
+            if let Some(mut renderer) = s.renderer.take() {
+                renderer.clear();
+            }
         }
         start_subscription(&host_element, state);
     }
@@ -158,23 +160,23 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     }
     let parsed: ParsedSource = parse_source(&source_attr);
 
-    // TODO: when neither `space` nor `branch` is set, use a relative
-    // `/query` URL so the service worker's virtual-root rewrite
-    // resolves it to the host's actual branch. The current `home`/
-    // `main` fallback is wrong inside an iframe (the iframe is rooted
-    // under whatever branch the host route bound it to, which is
-    // rarely `home`). See `rust/tonk-worker/assets/tonk-concept.js`
-    // for the JS port that already does this — both impls should
-    // agree on the override semantics: relative URL when no attrs;
-    // absolute `/api/repository/{space}/branch/{branch}/query` when
-    // either is set.
-    let space = host
-        .get_attribute("space")
-        .unwrap_or_else(|| "home".to_owned());
-    let branch = host
-        .get_attribute("branch")
-        .unwrap_or_else(|| "main".to_owned());
-    let url = format!("/api/repository/{space}/branch/{branch}/query");
+    // Either-or override: if the author sets `space` or `branch`,
+    // build an absolute `/api/repository/{space}/branch/{branch}/query`
+    // URL — missing half defaults to `home`/`main`. With neither
+    // attribute set, a relative `/query` URL lets the service
+    // worker's guest-iframe rewrite resolve the request under
+    // whatever branch the iframe is actually rooted at, which is
+    // rarely `home`/`main`.
+    let space_attr = host.get_attribute("space");
+    let branch_attr = host.get_attribute("branch");
+    let url = match (&space_attr, &branch_attr) {
+        (None, None) => "/query".to_owned(),
+        _ => format!(
+            "/api/repository/{}/branch/{}/query",
+            space_attr.as_deref().unwrap_or("home"),
+            branch_attr.as_deref().unwrap_or("main"),
+        ),
+    };
 
     // Phase 1 — one-shot resolve via plain JSON request.
     let phase1_body = serde_json::to_string(&phase1_query(&parsed))

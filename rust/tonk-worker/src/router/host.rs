@@ -159,29 +159,34 @@ fn body_for(value: Value) -> Body {
     }
 }
 
-/// Vanilla-JS `<tonk-concept>` runtime, inlined into every served
-/// `text/html` body via [`wrap_html_body`]. The script registers
-/// the element in the iframe's own `customElements` registry —
-/// the parent shell's registration doesn't reach across documents.
-const CONCEPT_RUNTIME: &str = include_str!("../../assets/tonk-concept.js");
-
 /// Wrap an agent-authored body fragment in a fixed shell that
 /// hydrates `<tonk-concept>` elements. The agent writes only the
 /// `<body>` content; we provide the doctype, the script, and the
 /// `<body>` boundary.
+///
+/// The script imports the standalone `<tonk-concept>` web-target
+/// build from `/tonk-concept.js`. `init()` instantiates the wasm
+/// module and the bin shim's `main` registers the element in the
+/// iframe's own `customElements` registry — the parent shell's
+/// registration doesn't reach across documents. The path is
+/// exempted from the iframe-branch rewrite in the worker's fetch
+/// router so the request reaches the dist-root asset rather than
+/// a guest entity lookup.
 fn wrap_html_body(body: &str) -> String {
     format!(
         "<!doctype html>\n\
          <html>\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
-         <script>{runtime}</script>\n\
+         <script type=\"module\">\n\
+         import init from '/tonk-concept.js';\n\
+         await init();\n\
+         </script>\n\
          </head>\n\
          <body>\n\
          {body}\n\
          </body>\n\
          </html>\n",
-        runtime = CONCEPT_RUNTIME,
         body = body,
     )
 }
