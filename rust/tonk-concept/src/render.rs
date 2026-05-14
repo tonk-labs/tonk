@@ -40,6 +40,19 @@ impl Renderer {
         }
     }
 
+    /// Remove every currently-rendered row from the DOM. Used when
+    /// an attribute change tears the subscription down and the
+    /// caller wants a clean slate before the next frame arrives.
+    pub fn clear(&mut self) {
+        for (_, row) in std::mem::take(&mut self.rows) {
+            for n in row.nodes {
+                if let Some(parent) = n.parent_node() {
+                    let _ = parent.remove_child(&n);
+                }
+            }
+        }
+    }
+
     /// Apply one wire frame. Adds, updates, and removes rows so
     /// the live DOM reflects exactly the conclusions in `frame`.
     pub fn apply(&mut self, frame: &[Conclusion]) {
@@ -338,6 +351,22 @@ mod tests {
         renderer.apply(&[conclusion("did:key:zAlice", &[("name", "Alice")])]);
         let article = host.query_selector("article").unwrap().expect("article");
         assert_eq!(article.text_content().as_deref(), Some("Alice"));
+    }
+
+    #[dialog_common::test]
+    fn it_clears_every_row_from_the_dom() {
+        let (host, mut renderer) = mount("<article><h1>{name}</h1></article>");
+        renderer.apply(&[
+            conclusion("did:key:zAlice", &[("name", "Alice")]),
+            conclusion("did:key:zBob", &[("name", "Bob")]),
+        ]);
+        assert_eq!(host.query_selector_all("article").unwrap().length(), 2);
+        renderer.clear();
+        assert_eq!(
+            host.query_selector_all("article").unwrap().length(),
+            0,
+            "clear() must remove every row's nodes from the DOM",
+        );
     }
 
     #[dialog_common::test]
