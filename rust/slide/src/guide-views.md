@@ -28,12 +28,37 @@ field on `attribute!`) are validated at the dialog layer, which
 accepts any `<domain>/<name>` shape — including MIME-style strings
 like `text/html`. Once that attribute is declared, `view` is a normal
 concept and you write views the way you write any other concept
-assertion:
+assertion.
+
+## You are writing a body fragment, not a full document
+
+A view body is the **inside of `<body>`**, nothing more. The host
+wraps it at serve time with a fixed shell that provides the
+doctype, a `<meta charset>`, and the `<tonk-concept>` runtime script
+that hydrates live data into your templates. Write content, not
+chrome:
 
 ```yaml
 view!: &my-task-list
-  body: "<tonk-concept source=\"task\">…</tonk-concept>"
+  body: |
+    <h1>Tasks</h1>
+    <tonk-concept source="task">
+      <ul>
+        <template>
+          <li>{title} — {status}</li>
+        </template>
+      </ul>
+    </tonk-concept>
 ```
+
+Do **not** write `<!doctype>`, `<html>`, `<head>`, `<body>`, `<title>`,
+or `<script>` tags yourself. They will either be stripped or
+double-wrapped — neither does what you want. If you need page-level
+styling, put a `<style>` tag at the top of the body fragment.
+
+The runtime that activates `<tonk-concept>` is provided by the host
+and ships with every served view. You don't import it, link to it,
+or include it — assume it's there.
 
 Git-tag semantics apply: re-asserting the same body is idempotent
 (same content → same content-derived entity), a different body

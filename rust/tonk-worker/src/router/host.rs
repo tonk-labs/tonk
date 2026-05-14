@@ -159,6 +159,33 @@ fn body_for(value: Value) -> Body {
     }
 }
 
+/// Vanilla-JS `<tonk-concept>` runtime, inlined into every served
+/// `text/html` body via [`wrap_html_body`]. The script registers
+/// the element in the iframe's own `customElements` registry —
+/// the parent shell's registration doesn't reach across documents.
+const CONCEPT_RUNTIME: &str = include_str!("../../assets/tonk-concept.js");
+
+/// Wrap an agent-authored body fragment in a fixed shell that
+/// hydrates `<tonk-concept>` elements. The agent writes only the
+/// `<body>` content; we provide the doctype, the script, and the
+/// `<body>` boundary.
+fn wrap_html_body(body: &str) -> String {
+    format!(
+        "<!doctype html>\n\
+         <html>\n\
+         <head>\n\
+         <meta charset=\"utf-8\">\n\
+         <script>{runtime}</script>\n\
+         </head>\n\
+         <body>\n\
+         {body}\n\
+         </body>\n\
+         </html>\n",
+        runtime = CONCEPT_RUNTIME,
+        body = body,
+    )
+}
+
 /// Handler for `GET /api/repository/{repo}/branch/{branch}/host/{host}/{entity}`.
 ///
 /// Registers a guest binding for the requesting client and
@@ -241,7 +268,19 @@ pub async fn guest(
     while let Some(result) = stream.next().await {
         match result {
             Ok(artifact) => {
-                let body = body_for(artifact.is);
+                // Agent-authored HTML is treated as a body
+                // fragment: wrap it with the doctype, the
+                // `<tonk-concept>` runtime, and the `<body>`
+                // boundary before serving. The agent never sees
+                // these — it writes the body of a layout and the
+                // host hydrates it.
+                let body = if attribute_str == "text/html"
+                    && let Value::String(s) = &artifact.is
+                {
+                    Body::from(wrap_html_body(s))
+                } else {
+                    body_for(artifact.is)
+                };
                 let mut response = (StatusCode::OK, body).into_response();
                 if let Ok(value) = HeaderValue::from_str(&attribute_str) {
                     response.headers_mut().insert(header::CONTENT_TYPE, value);
