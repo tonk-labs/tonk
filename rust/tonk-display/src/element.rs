@@ -207,18 +207,8 @@ fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
         let mut inner = state.borrow_mut();
         clear_host(host, &mut inner);
     }
-    state::set_error(host, error_title(err.kind), &err.message);
+    state::set_error(host, state::error_title(err.kind), &err.message);
     dispatch_error(host, err);
-}
-
-/// Short label shown as the error callout's `<strong>` heading.
-fn error_title(kind: ErrorKind) -> &'static str {
-    match kind {
-        ErrorKind::UnknownSource => "Not found",
-        ErrorKind::Network => "Connection failed",
-        ErrorKind::Parse => "Couldn't read response",
-        ErrorKind::Descriptor => "Invalid configuration",
-    }
 }
 
 /// Empty the host's DOM and forget every mounted slide / chrome.

@@ -195,6 +195,63 @@ mod tests {
     }
 
     #[test]
+    fn it_emits_null_as_blank() {
+        // `null` round-trips to `_` so the rendered notation matches
+        // a hand-typed retraction. Other JSON-null sources (missing
+        // attribute, explicit null) all collapse to the same shape.
+        let c = make_conclusion("did:key:zX", &[("message", Value::Null)]);
+        let out = format(&c, "greeting", None);
+        assert!(out.contains("message: _\n"), "unexpected output: {out}");
+    }
+
+    #[test]
+    fn it_preserves_field_order_alphabetically() {
+        // `Conclusion.fields` is a `BTreeMap`, so iteration order is
+        // alphabetical by key. Pin that so the rendered notation is
+        // deterministic regardless of insertion order at the source.
+        let c = make_conclusion(
+            "did:key:zX",
+            &[
+                ("zebra", json!("z")),
+                ("apple", json!("a")),
+                ("mango", json!("m")),
+            ],
+        );
+        let out = format(&c, "fruit", None);
+        let apple = out.find("apple:").expect("apple field present");
+        let mango = out.find("mango:").expect("mango field present");
+        let zebra = out.find("zebra:").expect("zebra field present");
+        assert!(apple < mango && mango < zebra, "out of order:\n{out}");
+    }
+
+    #[test]
+    fn it_emits_no_extra_fields_for_an_empty_conclusion() {
+        // Just `head!:` + `this:` — nothing else. The trailing
+        // newline after `this:` is the document terminator.
+        let c = make_conclusion("did:key:zX", &[]);
+        let out = format(&c, "greeting", None);
+        assert_eq!(out.lines().count(), 2);
+        assert!(out.ends_with('\n'));
+    }
+
+    #[test]
+    fn it_handles_id_uris_as_unquoted_values() {
+        // `id:` and `db:` URIs come back from the worker for
+        // built-in concept references — they need to render as
+        // bare URIs, not strings.
+        let c = make_conclusion(
+            "did:key:zX",
+            &[
+                ("kind", json!("id:greeting")),
+                ("schema", json!("db:concept")),
+            ],
+        );
+        let out = format(&c, "thing", None);
+        assert!(out.contains("kind: id:greeting\n"), "got: {out}");
+        assert!(out.contains("schema: db:concept\n"), "got: {out}");
+    }
+
+    #[test]
     fn it_escapes_quotes_in_strings() {
         let c = make_conclusion("did:key:zX", &[("message", json!("She said \"hi\""))]);
         let out = format(&c, "greeting", None);

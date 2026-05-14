@@ -320,6 +320,76 @@ mod tests {
     }
 
     #[test]
+    fn it_leaves_a_query_head_undecorated() {
+        // Queries (`head:` without `!`) are reads, not effects —
+        // the editor doesn't paint them with the alarm-red effect
+        // decoration, and neither do we.
+        let text = "greeting:\n  message: ?msg\n";
+        let marks = collect_marks(text);
+        assert!(
+            !marks.iter().any(|m| m.decoration == Decoration::Effect),
+            "no Effect decoration expected for a query head, got {marks:?}",
+        );
+    }
+
+    #[test]
+    fn it_decorates_a_retraction_blank_as_variable() {
+        // `_` in field-value position is a retraction in an
+        // assertion. The editor paints it with the variable
+        // decoration (italic blue); we mirror that.
+        let text = "greeting!:\n  message: _\n";
+        let marks = collect_marks(text);
+        assert!(
+            marks
+                .iter()
+                .any(|m| m.decoration == Decoration::Variable && &text[m.from..m.to] == "_")
+        );
+    }
+
+    #[test]
+    fn it_recurses_into_nested_fields() {
+        // Nested maps appear as `concept!.with` definitions and
+        // similar — the tokenizer needs to descend so inner keys
+        // and values get their own decorations.
+        let text = "concept!:\n  with:\n    message: ?inner\n";
+        let marks = collect_marks(text);
+        assert!(
+            marks
+                .iter()
+                .any(|m| m.decoration == Decoration::Variable && &text[m.from..m.to] == "?inner"),
+            "expected Variable on nested `?inner`, got {marks:?}",
+        );
+        // Outer + inner keys both surface.
+        let keys: Vec<&str> = marks
+            .iter()
+            .filter(|m| m.decoration == Decoration::Key)
+            .map(|m| &text[m.from..m.to])
+            .collect();
+        assert!(keys.contains(&"with"), "expected `with` key, got {keys:?}");
+        assert!(
+            keys.contains(&"message"),
+            "expected nested `message` key, got {keys:?}",
+        );
+    }
+
+    #[test]
+    fn it_yields_sorted_non_overlapping_marks() {
+        // Renderer relies on `from <= cursor` invariant to slice
+        // text without overlap; pin the contract.
+        let text = "greeting!: &demo\n  this: did:key:zX\n  message: \"Hi\"\n";
+        let marks = collect_marks(text);
+        let mut last_to = 0usize;
+        for m in &marks {
+            assert!(
+                m.from >= last_to,
+                "overlap: mark {m:?} starts before previous end {last_to}",
+            );
+            assert!(m.from <= m.to, "inverted mark: {m:?}");
+            last_to = m.to;
+        }
+    }
+
+    #[test]
     fn it_decorates_field_names_as_keys() {
         let text = "greeting!:\n  this: did:key:zX\n  message: \"Hi\"\n";
         let marks = collect_marks(text);

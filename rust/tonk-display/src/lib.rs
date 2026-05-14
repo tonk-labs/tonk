@@ -33,7 +33,10 @@ mod element;
 mod notation;
 #[cfg(target_arch = "wasm32")]
 mod render;
-#[cfg(target_arch = "wasm32")]
+// `state::State` and its `as_str` mapping are target-independent
+// — DOM-touching helpers in this module are individually gated
+// to wasm32 so native test builds can still exercise the enum.
+#[cfg(any(target_arch = "wasm32", test))]
 mod state;
 #[cfg(target_arch = "wasm32")]
 mod view;
