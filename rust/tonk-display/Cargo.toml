@@ -1,0 +1,62 @@
+[package]
+name = "tonk-display"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "<tonk-display> custom element — renders a single entity using a view template stored on the branch."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bytes = { workspace = true }
+custom-elements = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+js-sys = { workspace = true }
+lsp-types = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde-wasm-bindgen = { workspace = true }
+serde_json = { workspace = true }
+tonk-concept = { workspace = true }
+tonk-notation = { workspace = true }
+tonk-schema = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "AbortController",
+    "AbortSignal",
+    "Attr",
+    "CustomElementRegistry",
+    "CustomEvent",
+    "CustomEventInit",
+    "Document",
+    "DocumentFragment",
+    "Element",
+    "Headers",
+    "HtmlElement",
+    "HtmlTemplateElement",
+    "MutationObserver",
+    "MutationObserverInit",
+    "NamedNodeMap",
+    "Node",
+    "NodeList",
+    "Request",
+    "RequestInit",
+    "Response",
+    "Text",
+    "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

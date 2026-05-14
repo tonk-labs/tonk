@@ -22,6 +22,9 @@ use space::*;
 mod concept;
 use concept::*;
 
+mod display;
+use display::*;
+
 mod profile;
 use profile::*;
 

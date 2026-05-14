@@ -152,11 +152,81 @@ body {
    through, no shadow so they read as flat outlined boxes. The
    default top/bottom *and* left/right borders are kept so cards
    look like proper containers. `appearance="plain"` opts out
-   entirely. */
+   entirely. Danger callouts are exempt — they need the loud
+   filled appearance Web Awesome ships by default so an error
+   surface reads as an alert, not just another bordered card. */
 wa-card:not([appearance="plain"]),
-wa-callout:not([appearance="plain"]) {
+wa-callout:not([appearance="plain"]):not([variant="danger"]) {
     background: transparent;
     box-shadow: none;
+}
+
+/* `<tonk-display>` mounts dumb-renderer slides inside a
+   `<wa-carousel>`. The renderers are custom elements that default
+   to inline display, so they collapse to zero size unless we ask
+   them to fill the slide. Block + full width/height keeps the
+   slot occupied; the WA carousel handles its own layout
+   internals (aspect ratio, scroll-snap, gap). */
+tonk-display {
+    display: block;
+}
+tonk-view,
+tonk-notation {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* `<tonk-notation>`'s rendered `<pre>` reuses the dialog-yaml
+   editor palette so the read-only carousel slide visually
+   matches what users see when authoring the same notation in a
+   `<tonk-code>` cell. Class names mirror the editor's decoration
+   names; colors come from the `--tonk-code-*` palette declared
+   further down. The block fills the carousel slide and scrolls
+   on overflow so long entities don't spill into adjacent
+   slides. */
+tonk-notation .tonk-notation-pre {
+    margin: 0;
+    padding: var(--wa-space-m);
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    overflow: auto;
+    background: transparent;
+    color: var(--tonk-code-fg);
+    font-family: var(--tonk-code-font);
+    font-size: var(--tonk-code-font-size);
+    line-height: 1.5;
+    white-space: pre;
+}
+/* Mirror the typography rules in `dialog-yaml.ts`'s `dialectTheme`
+   so the read-only render matches the editor character-for-character.
+   Anything changed in that file (bold/italic/underline thickness)
+   should be reflected here. */
+tonk-notation .tonk-cm-key {
+    color: var(--tonk-code-key);
+}
+tonk-notation .tonk-cm-effect {
+    color: var(--tonk-code-effect);
+    font-weight: bold;
+}
+tonk-notation .tonk-cm-name-sigil {
+    color: var(--tonk-code-name-sigil);
+}
+tonk-notation .tonk-cm-name {
+    color: var(--tonk-code-name);
+}
+tonk-notation .tonk-cm-entity {
+    color: var(--tonk-code-entity);
+    text-decoration: underline;
+    text-decoration-color: var(--tonk-code-entity);
+    text-decoration-style: solid;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+tonk-notation .tonk-cm-variable {
+    color: var(--tonk-code-variable);
+    font-style: italic;
 }
 
 /* Banner header: the space name as a large display title, sized
@@ -812,7 +882,15 @@ wa-page::part(drawer) {
    based on `prefers-color-scheme`, and its semantic tokens
    redefine themselves under each mode, so a single mapping is
    sufficient — no per-mode override needed here. */
-tonk-code {
+/* `tonk-notation` shares this palette — it renders a read-only
+   view of dialog-yaml notation with the same class-tagged spans
+   the editor uses, so the colors have to come from the same
+   variables. Listing it here (rather than re-declaring the
+   palette on `:root`) keeps the contract tight: the palette
+   lives where the editor expects it, and consumers opt in by
+   adding their selector to this group. */
+tonk-code,
+tonk-notation {
     /* Match `wa-input` so the editor reads as a form field rather
        than a panel. The form-control tokens are the right
        semantic — they describe "what an input surface looks like"

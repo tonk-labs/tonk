@@ -4840,6 +4840,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-display"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "custom-elements",
+ "dialog-common",
+ "futures",
+ "indexmap",
+ "js-sys",
+ "lsp-types",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tokio",
+ "tonk-concept",
+ "tonk-notation",
+ "tonk-schema",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-introspect"
 version = "0.1.0"
 dependencies = [
@@ -4971,6 +4995,7 @@ dependencies = [
  "tonk-access-service",
  "tonk-code",
  "tonk-concept",
+ "tonk-display",
  "tonk-invite",
  "tonk-notation",
  "tonk-sigil",

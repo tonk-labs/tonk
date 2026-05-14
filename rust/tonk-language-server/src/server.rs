@@ -226,9 +226,10 @@ impl Server {
                 if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(params) {
                     let uri = p.text_document.uri;
                     let text = p.text_document.text;
+                    let version = p.text_document.version;
                     self.documents
                         .insert(uri.clone(), Document { text: text.clone() });
-                    self.publish(uri, &text).await;
+                    self.publish(uri, &text, Some(version)).await;
                 }
             }
             "textDocument/didChange" => {
@@ -242,13 +243,14 @@ impl Server {
                         return;
                     };
                     let uri = p.text_document.uri;
+                    let version = p.text_document.version;
                     self.documents.insert(
                         uri.clone(),
                         Document {
                             text: last.text.clone(),
                         },
                     );
-                    self.publish(uri, &last.text).await;
+                    self.publish(uri, &last.text, Some(version)).await;
                 }
             }
             "textDocument/didClose" => {
@@ -400,7 +402,7 @@ impl Server {
     ///    `UnknownBookmark`, `ResolverFailed`) are filtered out —
     ///    they need a real branch resolver and the worker's
     ///    evaluate route is the source of truth for those.
-    async fn publish(&mut self, uri: Uri, text: &str) {
+    async fn publish(&mut self, uri: Uri, text: &str, version: Option<i32>) {
         let parsed = tonk_notation::parse(text);
         let mut diagnostics = parsed.diagnostics.clone();
         // Only run the analyzer when the parser is happy — its
@@ -419,22 +421,19 @@ impl Server {
         for diagnostic in &mut diagnostics {
             diagnostic.range = clamp_range_to_text(diagnostic.range, text);
         }
-        // Intentionally omit `version`: `publishDiagnostics` is
-        // queued and dispatched asynchronously from
-        // `take_outbound`, so by the time the client sees the
-        // frame its tracked file version may have advanced past
-        // the version that produced this frame.
-        // `@codemirror/lsp-client` drops mismatched-version
-        // frames outright (per LSP spec), which silently stalls
-        // any consumer that gates auto-evaluation on the live
-        // diagnostic count. Sending `version: None` keeps the
-        // client applying every frame; the clamping above is
-        // what guards against the stale-range crash that
-        // motivated touching this in the first place.
+        // Echo the version we just analyzed. `@codemirror/lsp-client`
+        // (line 34 of its `diagnostics.ts`) drops frames whose
+        // version doesn't match its tracked file version — which is
+        // exactly what we want: stale frames must not poison the
+        // client's diagnostic state. Omitting the version (which we
+        // used to do) made the client apply every frame, including
+        // ones whose verdict reflected a prior keystroke — leading
+        // to auto-eval skipping the current buffer because
+        // `errorCount` was the previous buffer's verdict.
         let params = PublishDiagnosticsParams {
             uri,
             diagnostics,
-            version: None,
+            version,
         };
         let value = match serde_json::to_value(params) {
             Ok(v) => v,
@@ -1438,19 +1437,15 @@ mod tests {
         );
     }
 
-    /// `publishDiagnostics` must not carry a `version` field even
-    /// when the originating `didOpen` / `didChange` did. The
-    /// notification is queued through `take_outbound` and may
-    /// reach the client after the client's tracked file version
-    /// has advanced past the version that produced this frame —
-    /// `@codemirror/lsp-client` then drops the frame outright per
-    /// LSP spec and any consumer gating auto-evaluation on the
-    /// live diagnostic count silently stalls.
-    ///
-    /// Regression test for the auto-evaluate stall reported when
-    /// the server briefly echoed the client-supplied version.
+    /// `publishDiagnostics` must echo the version of the document
+    /// the verdict was computed against. Without it,
+    /// `@codemirror/lsp-client` cannot drop frames that arrive out
+    /// of order — and a stale frame's `errorCount` would then poison
+    /// the editor's freshness gate, blocking auto-evaluate on the
+    /// *current* buffer because the previous buffer's verdict is
+    /// still believed to be live.
     #[dialog_common::test]
-    async fn it_omits_version_from_publish_diagnostics() {
+    async fn it_echoes_version_in_publish_diagnostics() {
         let mut server = Server::new();
         let _ = run(
             &mut server,
@@ -1481,22 +1476,20 @@ mod tests {
         let outbound = server.take_outbound();
         assert_eq!(outbound.len(), 1);
         assert_eq!(outbound[0].method, "textDocument/publishDiagnostics");
-        // The `version` field on `PublishDiagnosticsParams` is
-        // optional; we want it absent (or `null`), not the v7
-        // we received on `didOpen`.
+        // The frame must carry the version we received on `didOpen`.
         let version = &outbound[0].params["version"];
-        assert!(
-            version.is_null(),
-            "publishDiagnostics must not echo the document version; \
-             got {version}",
+        assert_eq!(
+            version,
+            &json!(7),
+            "publishDiagnostics must echo the document version",
         );
     }
 
-    /// Likewise on `didChange` — the bug surfaced primarily on
-    /// rapid edits where the client's file version had advanced
-    /// past the `version` the server echoed.
+    /// Likewise on `didChange` — every frame carries the
+    /// `didChange`'s version so the client can drop frames that
+    /// arrive after the buffer has moved on.
     #[dialog_common::test]
-    async fn it_omits_version_from_publish_diagnostics_on_change() {
+    async fn it_echoes_version_in_publish_diagnostics_on_change() {
         let mut server = Server::new();
         let _ = run(
             &mut server,
@@ -1539,10 +1532,10 @@ mod tests {
         let outbound = server.take_outbound();
         assert_eq!(outbound.len(), 1);
         let version = &outbound[0].params["version"];
-        assert!(
-            version.is_null(),
-            "publishDiagnostics on didChange must not echo the document version; \
-             got {version}",
+        assert_eq!(
+            version,
+            &json!(42),
+            "publishDiagnostics on didChange must echo the didChange version",
         );
     }
 
