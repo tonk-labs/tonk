@@ -1,18 +1,33 @@
 //! `<tonk-display>` custom-element implementation.
 //!
-//! Coordinates three live flows for one rendered entity:
-//! 1. One-shot resolve of the `model` concept descriptor + entity.
-//! 2. SSE subscription on the matching `view` row → template HTML.
-//! 3. SSE subscription on the entity → field conclusion.
+//! Coordinates live data flows for a single rendered entity and
+//! mounts dumb-renderer children (`<tonk-view>`, `<tonk-inspector>`)
+//! as slides. Two modes:
 //!
-//! Both subscriptions feed the [`crate::render::Renderer`], which
-//! caches the last entity conclusion so either input can fire
-//! first or change later without losing the other.
+//! - **Single mode** (when the `view` attribute is set): one
+//!   `<tonk-view>` is mounted with the resolved view's `display`
+//!   HTML as its children. Every entity frame calls `.render(conclusion)`
+//!   on it. View-text edits replace the `<tonk-view>` with a fresh
+//!   one carrying the new children.
+//!
+//! - **Carousel mode** (when no `view` attribute is set): a
+//!   `<wa-carousel>` hosts one slide per view (each containing a
+//!   `<tonk-view>`) plus a final `<tonk-inspector>` slide. The view
+//!   subscription becomes a "views for model" query whose frames
+//!   carry every view row; we diff by name. Every entity frame
+//!   walks all slides and calls `.render(...)` on each.
+//!
+//! Subscriptions live in `<tonk-display>` only — slide elements
+//! never open their own. One model resolution + one views
+//! subscription + one entity subscription per attribute set,
+//! regardless of slide count.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use js_sys::{Function, Reflect};
 use tonk_concept::error::{ErrorDetail, ErrorKind};
 use tonk_concept::resolve::{ParsedSource, parse_source, phase1_query};
 use tonk_concept::sse::open_sse;
@@ -21,40 +36,63 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
-    AbortController, CustomEvent, CustomEventInit, Element, Headers, HtmlElement, Request,
+    AbortController, CustomEvent, CustomEventInit, Element, Headers, HtmlElement, Node, Request,
     RequestInit, Response, window,
 };
 
-use crate::render::Renderer;
-use crate::resolve::{entity_query, looks_like_uri, view_query};
+use crate::resolve::{entity_query, looks_like_uri, view_query, views_for_model_query};
 use crate::state::{self, State};
+
+/// One mounted slide in carousel mode (or the sole slide in
+/// single mode). Keyed by view name; `display` is the template
+/// HTML the slide's `<tonk-view>` was built with so we can detect
+/// content changes and rebuild.
+struct Slide {
+    /// The `display` HTML the slide's `<tonk-view>` was built
+    /// with. Used to detect template-content changes so we rebuild
+    /// the slide instead of just re-rendering the conclusion.
+    display: String,
+    /// The `<wa-carousel-item>` (carousel mode) or container `<div>`
+    /// (single mode) that wraps the `<tonk-view>`. Carousel-item
+    /// kept here so we can remove the slide cleanly when its view
+    /// vanishes.
+    item: Element,
+    /// The `<tonk-view>` instance inside `item`. Receives
+    /// `.render(conclusion)` on every entity frame.
+    view_el: Element,
+}
 
 /// Internal lifecycle state shared across async closures.
 struct Inner {
-    /// Renderer, once the initial `display` HTML has been resolved.
-    renderer: Option<Renderer>,
-    /// Aborts the view subscription on disconnect / attribute
-    /// change.
+    /// Aborts the view (or views-for-model) subscription on
+    /// disconnect / attribute change.
     view_abort: Option<AbortController>,
     /// Aborts the entity subscription on disconnect / attribute
     /// change.
     entity_abort: Option<AbortController>,
-    /// Last entity conclusion seen; replayed when the template
-    /// arrives or swaps.
+    /// Last entity conclusion seen; replayed when a fresh slide
+    /// is mounted so it picks up the current data without waiting
+    /// for the next entity frame.
     last_conclusion: Option<Conclusion>,
-    /// Last template HTML seen; held in case the entity stream
-    /// races ahead of the view stream.
-    pending_template: Option<String>,
+    /// `<wa-carousel>` element when in carousel mode, `None` in
+    /// single mode.
+    carousel: Option<Element>,
+    /// Slides keyed by view name. In single mode there's exactly
+    /// one entry with whatever name the `view` attribute holds.
+    slides: BTreeMap<String, Slide>,
+    /// `<tonk-inspector>` element, only present in carousel mode.
+    inspector: Option<Element>,
 }
 
 impl Inner {
     fn new() -> Self {
         Self {
-            renderer: None,
             view_abort: None,
             entity_abort: None,
             last_conclusion: None,
-            pending_template: None,
+            carousel: None,
+            slides: BTreeMap::new(),
+            inspector: None,
         }
     }
 
@@ -114,9 +152,10 @@ impl CustomElement for TonkDisplay {
         {
             let mut s = state.borrow_mut();
             s.abort_all();
-            s.renderer = None;
             s.last_conclusion = None;
-            s.pending_template = None;
+            // Tear down any mounted slide / carousel chrome so the
+            // restart starts from a clean host.
+            clear_host(&host, &mut s);
         }
         state::set(&host, State::Loading);
         start_flows(&host, state);
@@ -148,28 +187,22 @@ fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
     });
 }
 
-/// Transition the host into the error state: clear any mounted
-/// row from the renderer (so the error callout isn't sitting next
-/// to a half-rendered template), render the message as a visible
-/// `<wa-callout>` inside the host, and dispatch the
-/// `tonk-display:error` event so listeners (page-level
-/// diagnostics, analytics, etc.) still get the structured detail.
+/// Transition the host into the error state: tear down any mounted
+/// slides (so the error callout isn't sitting beside a half-rendered
+/// template), surface the failure as a `<wa-callout>` inside the
+/// host, and dispatch the `tonk-display:error` event so listeners
+/// (page-level diagnostics, analytics, etc.) still get the
+/// structured detail.
 fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
     {
         let mut inner = state.borrow_mut();
-        if let Some(renderer) = inner.renderer.as_mut() {
-            renderer.clear();
-        }
-        inner.renderer = None;
+        clear_host(host, &mut inner);
     }
     state::set_error(host, error_title(err.kind), &err.message);
     dispatch_error(host, err);
 }
 
-/// Short label shown as the callout's `<strong>` heading. The
-/// detail message is rendered below; the title's job is to name
-/// the *kind* of failure so the user can act on it without parsing
-/// the full message.
+/// Short label shown as the error callout's `<strong>` heading.
 fn error_title(kind: ErrorKind) -> &'static str {
     match kind {
         ErrorKind::UnknownSource => "Not found",
@@ -177,6 +210,14 @@ fn error_title(kind: ErrorKind) -> &'static str {
         ErrorKind::Parse => "Couldn't read response",
         ErrorKind::Descriptor => "Invalid configuration",
     }
+}
+
+/// Empty the host's DOM and forget every mounted slide / chrome.
+fn clear_host(host: &Element, inner: &mut Inner) {
+    inner.slides.clear();
+    inner.carousel = None;
+    inner.inspector = None;
+    host.set_inner_html("");
 }
 
 async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetail> {
@@ -193,27 +234,21 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
         ));
     }
 
-    // v1 requires both `model` and `view`. Fallback rendering for
-    // omitted attributes is tracked in plan/tonk-display.md and
-    // lands as a follow-up.
+    // `model` is still required for v1 — without a concept
+    // descriptor we don't know which fields to project on the
+    // entity. A future fallback could query every claim on the
+    // entity directly; for now, require it.
     let model = host
         .get_attribute("model")
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             ErrorDetail::new(
                 ErrorKind::Descriptor,
-                "<tonk-display> requires `model` (fallback rendering deferred)",
+                "<tonk-display> requires `model` (fallback for missing model is deferred)",
             )
         })?;
-    let view = host
-        .get_attribute("view")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ErrorDetail::new(
-                ErrorKind::Descriptor,
-                "<tonk-display> requires `view` (fallback rendering deferred)",
-            )
-        })?;
+    // `view` is optional — its absence triggers carousel mode.
+    let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
     let space = host
         .get_attribute("space")
@@ -229,9 +264,15 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
     let (model_entity, descriptor_json) = phase1_lookup(&url, &phase1_body).await?;
 
-    // Open both subscriptions.
-    let view_q = view_query(&model_entity, &view)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("view query: {e}")))?;
+    // Build the view subscription query: pin-by-name in single
+    // mode, all-views-for-model in carousel mode.
+    let view_q = match view.as_deref() {
+        Some(name) => view_query(&model_entity, name)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("view query: {e}")))?,
+        None => views_for_model_query(&model_entity).map_err(|e| {
+            ErrorDetail::new(ErrorKind::Descriptor, format!("views-for-model query: {e}"))
+        })?,
+    };
     let view_body = serde_json::to_string(&view_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body: {e}")))?;
 
@@ -239,6 +280,14 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = serde_json::to_string(&entity_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body: {e}")))?;
+
+    // Always mount the `<wa-carousel>` so the slot geometry is
+    // identical regardless of mode. The only user-visible
+    // difference is whether navigation arrows show and whether
+    // the trailing inspector slide is present — both controlled
+    // by whether `view` is set.
+    let single_mode = view.is_some();
+    ensure_carousel(host, &state, single_mode);
 
     let view_abort = open_view_stream(&url, &view_body, host.clone(), state.clone()).await?;
     let entity_abort = open_entity_stream(&url, &entity_body, host.clone(), state.clone()).await?;
@@ -318,66 +367,223 @@ async fn open_entity_stream(
     .await
 }
 
-/// Apply a view frame: pick out `display`, build/swap the renderer,
-/// and re-apply the cached entity conclusion if one is held.
+/// Diff the incoming view frame against currently mounted slides.
+/// Slides are keyed by view name; we add/remove/replace as needed,
+/// then push the cached entity conclusion into any fresh slide so
+/// it has data to render right away.
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
-    let display = conclusions.into_iter().next().and_then(|c| {
-        c.fields
-            .get("display")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-    });
-    let Some(display) = display else {
-        // View row vanished or has no `display` text. Leave the
-        // current DOM in place; subsequent entity frames keep
-        // patching against it. Authors can react by removing the
-        // view assertion entirely → entity stream will continue to
-        // fire if the entity is still on the branch.
-        return;
-    };
-
     let mut s = state.borrow_mut();
-    let cached = s.last_conclusion.clone();
-    if let Some(r) = s.renderer.as_mut() {
-        r.swap_template(&display);
-    } else if let Some(r) = Renderer::new(host.clone(), &display) {
-        s.renderer = Some(r);
-        if let Some(c) = cached.as_ref() {
-            if let Some(r) = s.renderer.as_mut() {
-                r.apply(c);
+
+    // Extract (name, display) pairs from the incoming frame. When
+    // the `view` attribute is set, the subscription pinned `name`
+    // as a constant — so the server doesn't project it back. Fall
+    // back to the attribute value for that case. When `view` is
+    // absent, the views-for-model query left `name` as a variable
+    // and the server fills it.
+    let view_attr = host.get_attribute("view").unwrap_or_default();
+    let incoming: BTreeMap<String, String> = conclusions
+        .into_iter()
+        .filter_map(|c| {
+            let display = c
+                .fields
+                .get("display")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)?;
+            let name = c
+                .fields
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| view_attr.clone());
+            if name.is_empty() {
+                None
+            } else {
+                Some((name, display))
             }
-            state::set(host, State::Ready);
+        })
+        .collect();
+
+    // Remove vanished slides.
+    let stale: Vec<String> = s
+        .slides
+        .keys()
+        .filter(|k| !incoming.contains_key(*k))
+        .cloned()
+        .collect();
+    for name in stale {
+        if let Some(slide) = s.slides.remove(&name)
+            && let Some(parent) = slide.item.parent_node()
+        {
+            let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
-    } else {
-        s.pending_template = Some(display);
-        return;
     }
+
+    // Add or replace slides.
+    let cached = s.last_conclusion.clone();
+    for (name, display) in incoming {
+        let existing_matches = s
+            .slides
+            .get(&name)
+            .map(|slide| slide.display == display)
+            .unwrap_or(false);
+        if existing_matches {
+            continue;
+        }
+        // Drop the prior slide for this name if its template
+        // changed — we replace whole `<tonk-view>` rather than
+        // template-swap-in-place, per the design.
+        if let Some(slide) = s.slides.remove(&name)
+            && let Some(parent) = slide.item.parent_node()
+        {
+            let _: Result<Node, _> = parent.remove_child(&slide.item);
+        }
+        if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
+            // Push the cached entity conclusion if we have one,
+            // so the new slide renders immediately rather than
+            // waiting for the next entity frame.
+            if let Some(c) = cached.as_ref() {
+                call_render(&new_slide.view_el, &serialize_conclusion(c));
+            }
+            s.slides.insert(name, new_slide);
+        }
+    }
+
+    // In single mode, mark Ready once the slide is mounted (with
+    // or without an entity frame yet — empty content is fine).
+    // In carousel mode, ensure the inspector is fed.
+    if cached.is_some() && !s.slides.is_empty() {
+        state::set(host, State::Ready);
+    }
+    if let (Some(inspector), Some(c)) = (s.inspector.as_ref(), cached.as_ref()) {
+        call_render(inspector, &serialize_conclusion(c));
+    }
+
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
 }
 
-/// Apply an entity frame: empty → empty state + clear; non-empty →
-/// cache + apply (if renderer exists yet) and mark ready.
+/// Apply an entity frame: empty → empty state + clear slides;
+/// non-empty → cache + render on every slide.
 fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let Some(conclusion) = conclusions.into_iter().next() else {
         let mut s = state.borrow_mut();
         s.last_conclusion = None;
-        if let Some(r) = s.renderer.as_mut() {
-            r.clear();
-        }
+        clear_host(host, &mut s);
         state::set(host, State::Empty);
         return;
     };
 
     let mut s = state.borrow_mut();
     s.last_conclusion = Some(conclusion.clone());
-    if let Some(r) = s.renderer.as_mut() {
-        r.apply(&conclusion);
-        state::set(host, State::Ready);
-        let detail = serde_wasm_bindgen::to_value(&conclusion).unwrap_or(JsValue::NULL);
-        dispatch_event(host, "tonk-display:result", Some(detail));
+    let detail = serialize_conclusion(&conclusion);
+    for slide in s.slides.values() {
+        call_render(&slide.view_el, &detail);
     }
-    // If renderer isn't built yet, the view stream will pick up the
-    // cached conclusion when it arrives.
+    if let Some(inspector) = s.inspector.as_ref() {
+        call_render(inspector, &detail);
+    }
+    if !s.slides.is_empty() || s.inspector.is_some() {
+        state::set(host, State::Ready);
+    }
+    let event_detail = serde_wasm_bindgen::to_value(&conclusion).unwrap_or(JsValue::NULL);
+    dispatch_event(host, "tonk-display:result", Some(event_detail));
+}
+
+/// Ensure the `<wa-carousel>` chrome is mounted. Idempotent —
+/// does nothing if the carousel is already set up.
+///
+/// `single_mode` selects between the two presentation modes:
+/// - `true` (when `view` attribute is set): no navigation
+///   arrows, no trailing inspector slide. The user sees exactly
+///   one view rendering.
+/// - `false`: navigation arrows enabled, and a trailing
+///   `<tonk-inspector>` slide so the user can flip to the raw
+///   entity dump.
+///
+/// The carousel host is mounted either way so the slot geometry
+/// is identical between the modes — the only user-visible
+/// difference is whether arrows + the inspector slide are
+/// present.
+fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool) {
+    let mut s = state.borrow_mut();
+    if s.carousel.is_some() {
+        return;
+    }
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(carousel) = document.create_element("wa-carousel") else {
+        return;
+    };
+    if !single_mode {
+        let _ = carousel.set_attribute("navigation", "");
+
+        // Trailing inspector slide — only present in carousel
+        // mode. Lets the user fall back to a raw entity dump
+        // regardless of how many views the model has published.
+        if let (Ok(inspector_item), Ok(inspector)) = (
+            document.create_element("wa-carousel-item"),
+            document.create_element("tonk-inspector"),
+        ) {
+            let _ = inspector_item.append_child(&inspector);
+            let _ = carousel.append_child(&inspector_item);
+            s.inspector = Some(inspector);
+        }
+    }
+
+    let _ = host.append_child(&carousel);
+    s.carousel = Some(carousel);
+}
+
+/// Create a `<wa-carousel-item>` wrapping a fresh `<tonk-view>`
+/// (initialized with `display` as inner HTML) and insert it into
+/// the carousel. In carousel mode it lands *before* the trailing
+/// inspector slide so the inspector stays last; in single-view
+/// mode there's no inspector to keep behind, so the item just
+/// gets appended.
+fn mount_view_slide(_host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
+    let document = window()?.document()?;
+    let carousel = inner.carousel.as_ref()?;
+
+    let view_el = document.create_element("tonk-view").ok()?;
+    view_el.set_inner_html(display);
+
+    let item = document.create_element("wa-carousel-item").ok()?;
+    let _ = item.append_child(&view_el);
+    if let Some(inspector_item) = inner.inspector.as_ref().and_then(|i| i.parent_element()) {
+        let _ = carousel.insert_before(&item, Some(&inspector_item));
+    } else {
+        let _ = carousel.append_child(&item);
+    }
+
+    Some(Slide {
+        display: display.to_owned(),
+        item,
+        view_el,
+    })
+}
+
+/// Call the per-instance `draw` closure each slide element
+/// installs in its `connected_callback`. We invoke `draw` directly
+/// rather than going through the prototype `render` method —
+/// `wasm_bindgen::Closure::wrap` produces a plain JS function with
+/// no `this` binding, so when JS calls `el.render(detail)` the
+/// closure sees `(this=detail, detail=undefined)` and silently
+/// no-ops. Going straight to `draw` sidesteps that.
+fn call_render(el: &Element, detail: &JsValue) {
+    let Ok(draw) = Reflect::get(el.as_ref(), &"draw".into()) else {
+        return;
+    };
+    let Ok(func) = draw.dyn_into::<Function>() else {
+        return;
+    };
+    let _ = func.call1(&JsValue::NULL, detail);
+}
+
+/// Serialize a `Conclusion` into a JsValue with the shape
+/// `<tonk-view>` / `<tonk-inspector>` expect.
+fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
+    serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
 }
 
 /// One-shot Phase-1 lookup. Returns `(this, source)` from the first

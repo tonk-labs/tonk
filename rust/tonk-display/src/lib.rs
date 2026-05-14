@@ -18,13 +18,22 @@ pub mod resolve;
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
+mod inspector;
+#[cfg(target_arch = "wasm32")]
 mod render;
 #[cfg(target_arch = "wasm32")]
 mod state;
+#[cfg(target_arch = "wasm32")]
+mod view;
 
-/// Register the `<tonk-display>` custom element with the page.
-/// Idempotent — calling more than once is harmless.
+/// Register every custom element this crate ships:
+/// `<tonk-display>` (the orchestrator with subscriptions),
+/// `<tonk-view>` (the dumb single-template renderer driven by
+/// `<tonk-display>` or any other consumer), and `<tonk-inspector>`
+/// (Observable-style value renderer). Idempotent.
 #[cfg(target_arch = "wasm32")]
 pub fn register() {
+    view::register();
+    inspector::register();
     element::register();
 }

@@ -161,6 +161,22 @@ wa-callout:not([appearance="plain"]):not([variant="danger"]) {
     box-shadow: none;
 }
 
+/* `<tonk-display>` mounts dumb-renderer slides inside a
+   `<wa-carousel>`. The renderers are custom elements that default
+   to inline display, so they collapse to zero size unless we ask
+   them to fill the slide. Block + full width/height keeps the
+   slot occupied; the WA carousel handles its own layout
+   internals (aspect ratio, scroll-snap, gap). */
+tonk-display {
+    display: block;
+}
+tonk-view,
+tonk-inspector {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
 /* Banner header: the space name as a large display title, sized
    to match the sidebar column. Transparent background so the banner
    and the main body read as one continuous surface — the name

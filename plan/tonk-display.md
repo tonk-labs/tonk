@@ -62,6 +62,10 @@ view!:
   name: "basic"
   display: !text/html |
     <p class="greeting">{message}</p>
+
+# Example instance of the greeting concept.
+greeting!: &demo
+  message: Hello, world!
 ```
 
 The element finds this view by querying for the `view` row whose
@@ -73,6 +77,28 @@ interpolated for `{message}` (and any other `{field}` references).
 Authoring multiple views for the same concept — e.g. `name: "card"`,
 `name: "tile"` — lets pages pick a presentation by passing a different
 `view` attribute, with no element or schema changes.
+
+## Three elements, one orchestrator
+
+The crate ships three custom elements that compose:
+
+- **`<tonk-display>`** — the orchestrator. Owns *all* subscriptions
+  for the entity it's been pointed at. Mounts children as
+  presentation slides; never paints anything itself.
+- **`<tonk-view>`** — a dumb single-template renderer. Snapshots
+  its child markup as a binding-plan template at
+  `connectedCallback`, exposes a `.render(conclusion)` method that
+  patches the cloned template in place. No network, no
+  subscriptions.
+- **`<tonk-inspector>`** — a Observable-style value renderer.
+  Exposes a `.render(value)` method that walks any JS value and
+  paints it (quoted strings, bare numbers, italic null/undefined,
+  collapsible nested objects/arrays). No network, no
+  subscriptions.
+
+`<tonk-display>` decides what slides to mount based on its `view`
+attribute and pushes data into them via property method calls. The
+slide elements never reach upward; they're pure presentation.
 
 ## Element shape
 
@@ -91,8 +117,8 @@ Attributes (all observed; changing any restarts the relevant flows):
 | Attribute | Required | Meaning |
 |---|---|---|
 | `entity` | yes | URI of the thing to display. |
-| `model` | no | Concept name or URI. If omitted, we use a generic "all attributes of this entity" query (see fallbacks). |
-| `view` | no | View name. If omitted, render a built-in fallback template (see fallbacks). |
+| `model` | yes (v1) | Concept name or URI. Used to resolve the descriptor + drive view lookups. Optional `model` is deferred. |
+| `view` | no | View name. If omitted, the element opens a "views for this model" subscription and mounts every available view as a slide in a `<wa-carousel>` (see "Carousel mode" below). |
 | `space` | no | Defaults to `"home"`. |
 | `branch` | no | Defaults to `"main"`. |
 

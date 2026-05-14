@@ -113,7 +113,66 @@ pub fn TonkDisplayView() -> impl IntoView {
         }
     });
 
+    // The mount node + a single Effect that reads every signal it
+    // cares about. When any of (entity-resolution, view, model)
+    // updates, the effect re-runs and rebuilds the `<tonk-display>`
+    // host with current attribute values. Creating an Effect inside
+    // `view!` (the previous shape) racey-mounted multiple hosts as
+    // signals settled at different times.
+    let mount: NodeRef<leptos::html::Div> = NodeRef::new();
+    Effect::new(move |_| {
+        let Some(slot) = mount.get() else {
+            return;
+        };
+        // Wait for the entity resolution to land before mounting.
+        let Some(result) = resolved_entity.get() else {
+            return;
+        };
+        let document = leptos::prelude::document();
+        slot.set_inner_html("");
+        match result {
+            Ok(Some(uri)) => {
+                let host = match document.create_element("tonk-display") {
+                    Ok(el) => el,
+                    Err(_) => return,
+                };
+                let space = space_name.get().unwrap_or_default();
+                let branch = branch_name.get().unwrap_or_default();
+                let _ = host.set_attribute("space", &space);
+                let _ = host.set_attribute("branch", &branch);
+                let _ = host.set_attribute("entity", &uri);
+                if let Some(v) = view_name.get() {
+                    let _ = host.set_attribute("view", &v);
+                }
+                if let Some(m) = model_name.get() {
+                    let _ = host.set_attribute("model", &m);
+                }
+                let _ = slot.append_child(&host);
+            }
+            Ok(None) => {
+                // Unresolved bookmark — render a 404 inline.
+                if let Ok(section) = document.create_element("section") {
+                    let _ = section.set_attribute("class", "not-found");
+                    let label = format!("No entity is named {}", subject.get().unwrap_or_default());
+                    section.set_text_content(Some(&label));
+                    let _ = slot.append_child(&section);
+                }
+            }
+            Err(_) => {
+                // Resolution error — let the ErrorBoundary surface
+                // it. The Effect runs after resource resolution, so
+                // an error here is shown by re-reading the resource
+                // in the ErrorBoundary branch below.
+            }
+        }
+    });
+
     view! {
+        <header slot="main-header" class="space-banner">
+            <h1 class="space-banner-title" title=move || subject.get().unwrap_or_default()>
+                { move || subject.get().unwrap_or_default() }
+            </h1>
+        </header>
         <Suspense fallback=|| view! { <wa-spinner></wa-spinner> }>
             <ErrorBoundary fallback=|errors| view! {
                 <wa-callout variant="danger">
@@ -121,21 +180,10 @@ pub fn TonkDisplayView() -> impl IntoView {
                     { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
                 </wa-callout>
             }>
-                { move || resolved_entity.get().map(|result| result.map(|maybe_uri| match maybe_uri {
-                    Some(uri) => render_display_view(
-                        space_name.get().unwrap_or_default(),
-                        branch_name.get().unwrap_or_default(),
-                        uri,
-                        view_name.get(),
-                        model_name.get(),
-                        subject.get().unwrap_or_default(),
-                    ).into_any(),
-                    None => view! {
-                        <section class="not-found">
-                            "No entity is named " { move || subject.get().unwrap_or_default() }
-                        </section>
-                    }.into_any(),
-                })) }
+                { move || resolved_entity.get().map(|result| result.map(|_| ())) }
+                <main class="wa-stack display-view">
+                    <div class="display-view-slot" node_ref=mount></div>
+                </main>
             </ErrorBoundary>
         </Suspense>
     }
@@ -208,52 +256,4 @@ async fn resolve_name(
         .and_then(|v| v.as_str())
         .map(str::to_owned);
     Ok(entity)
-}
-
-/// Mount the `<tonk-display>` host imperatively (so custom-element
-/// attributes land verbatim, the way `concept.rs` does it).
-/// `banner_subject` is what the user typed — bookmark name or
-/// URI — used as the page banner. `entity` is the resolved URI.
-fn render_display_view(
-    space: String,
-    branch: String,
-    entity: String,
-    view: Option<String>,
-    model: Option<String>,
-    banner_subject: String,
-) -> impl IntoView {
-    let mount: NodeRef<leptos::html::Div> = NodeRef::new();
-    Effect::new(move |_| {
-        let Some(slot) = mount.get() else {
-            return;
-        };
-        let document = leptos::prelude::document();
-        slot.set_inner_html("");
-        let host = match document.create_element("tonk-display") {
-            Ok(el) => el,
-            Err(_) => return,
-        };
-        let _ = host.set_attribute("space", &space);
-        let _ = host.set_attribute("branch", &branch);
-        let _ = host.set_attribute("entity", &entity);
-        if let Some(v) = view.as_deref() {
-            let _ = host.set_attribute("view", v);
-        }
-        if let Some(m) = model.as_deref() {
-            let _ = host.set_attribute("model", m);
-        }
-        let _ = slot.append_child(&host);
-    });
-
-    let banner_for_title = banner_subject.clone();
-    view! {
-        <header slot="main-header" class="space-banner">
-            <h1 class="space-banner-title" title=banner_for_title>
-                { banner_subject }
-            </h1>
-        </header>
-        <main class="wa-stack display-view">
-            <div class="display-view-slot" node_ref=mount></div>
-        </main>
-    }
 }

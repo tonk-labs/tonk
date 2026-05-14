@@ -34,6 +34,23 @@ pub fn view_query(model_entity: &str, view_name: &str) -> Result<Query, serde_js
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
 
+/// Build the live "all views for this model" subscription query:
+/// find every `view` row whose `model` field equals `model_entity`,
+/// projecting `name` and `display` as variables.
+///
+/// Used by `<tonk-display>`'s carousel fallback (when no `view`
+/// attribute is set) to enumerate the available presentations for
+/// a given concept.
+pub fn views_for_model_query(model_entity: &str) -> Result<Query, serde_json::Error> {
+    let predicate = view_predicate();
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!({ "?": { "name": "view" } }));
+    terms.insert("model".into(), json!(model_entity));
+    terms.insert("name".into(), json!({ "?": { "name": "name" } }));
+    terms.insert("display".into(), json!({ "?": { "name": "display" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
+}
+
 /// Build the live entity subscription query: given the model
 /// concept's `descriptor_json` (raw JSON from a Phase-1 resolve)
 /// and the target `entity` URI, return a query that pins `this` to
@@ -133,5 +150,27 @@ mod tests {
         assert!(looks_like_uri("did:key:zAlice"));
         assert!(looks_like_uri("concept:abc"));
         assert!(!looks_like_uri("greeting"));
+    }
+
+    #[test]
+    fn it_builds_views_for_model_pinning_model_only() {
+        let q = views_for_model_query("concept:zGreeting").expect("views_for_model_query");
+        let model = q.terms.get("model").expect("model term");
+        assert_eq!(
+            serde_json::to_value(model).unwrap(),
+            json!("concept:zGreeting"),
+        );
+        // `name` and `display` must remain variables so the frame
+        // delivers one row per available view.
+        let name = q.terms.get("name").expect("name term");
+        assert_eq!(
+            serde_json::to_value(name).unwrap(),
+            json!({ "?": { "name": "name" } }),
+        );
+        let display = q.terms.get("display").expect("display term");
+        assert_eq!(
+            serde_json::to_value(display).unwrap(),
+            json!({ "?": { "name": "display" } }),
+        );
     }
 }

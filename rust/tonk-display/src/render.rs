@@ -1,21 +1,15 @@
-//! Single-row DOM renderer for `<tonk-display>`.
-//!
-//! Mirrors the diffing strategy of `tonk-concept`'s `Renderer`, but
-//! collapsed to one row: there is at most one mounted instance of
-//! the cloned template at a time, identified implicitly (no `this`
-//! key needed). Two inputs drive it:
-//!
-//! - [`Renderer::apply`] — a new entity conclusion arrived. Insert
-//!   if no row is mounted, otherwise patch the existing row's
-//!   bindings whose rendered value changed.
-//! - [`Renderer::swap_template`] — the view's `display` text
-//!   changed. Drop the mounted DOM, parse the new HTML, rebuild
-//!   the binding plan, re-apply the cached conclusion (if any).
+//! Single-row DOM renderer used by `<tonk-view>`. Mirrors the
+//! diffing strategy of `tonk-concept`'s renderer, but collapsed to
+//! one row: there is at most one mounted instance of the cloned
+//! template at a time. `<tonk-view>` builds one from its snapshotted
+//! children-as-template and feeds conclusions through `apply`.
 
-use tonk_concept::template::{Binding, BindingKind, BindingPlan, extract_plan, render_segments};
+use tonk_concept::template::{
+    Binding, BindingKind, BindingPlan, Snapshot, extract_plan, render_segments,
+};
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
-use web_sys::{DocumentFragment, Element, HtmlTemplateElement, Node, window};
+use web_sys::{DocumentFragment, Element, Node};
 
 /// One mounted row.
 struct Row {
@@ -30,69 +24,40 @@ struct Row {
 pub struct Renderer {
     /// Where rows get appended.
     host: Element,
-    /// Cloneable template fragment built from the view's `display`
-    /// text. Replaced on `swap_template`.
+    /// Cloneable template fragment captured from the host's
+    /// children at construction time.
     template: DocumentFragment,
-    /// Binding plan for `template`. Rebuilt on `swap_template`.
+    /// Binding plan extracted from `template` at construction time.
     plan: BindingPlan,
     /// Currently mounted row (if any).
     row: Option<Row>,
-    /// Last conclusion successfully applied — replayed when the
-    /// template swaps so the new DOM picks up immediately.
-    last_conclusion: Option<Conclusion>,
 }
 
 impl Renderer {
-    /// Construct a renderer from a host element and the view's
-    /// initial `display` HTML.
-    pub fn new(host: Element, display_html: &str) -> Option<Self> {
-        let (template, plan) = build_template(display_html)?;
-        Some(Self {
-            host,
-            template,
+    /// Construct a renderer from a pre-snapshotted template +
+    /// container pair. Used by `<tonk-view>` after it pulls the
+    /// host's children into a `DocumentFragment` at
+    /// `connectedCallback`. `snapshot.container` becomes the
+    /// renderer's append target.
+    pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        let plan = extract_plan(&snapshot.fragment);
+        Self {
+            host: snapshot.container,
+            template: snapshot.fragment,
             plan,
             row: None,
-            last_conclusion: None,
-        })
-    }
-
-    /// Drop the mounted DOM and rebuild from a new template.
-    /// Re-applies the last conclusion if one was cached.
-    pub fn swap_template(&mut self, display_html: &str) -> bool {
-        let Some((template, plan)) = build_template(display_html) else {
-            return false;
-        };
-        self.clear();
-        self.template = template;
-        self.plan = plan;
-        if let Some(conclusion) = self.last_conclusion.clone() {
-            self.apply(&conclusion);
         }
-        true
     }
 
     /// Apply an entity conclusion: insert if no row, else update
-    /// in place. The conclusion is cached so a subsequent
-    /// [`Renderer::swap_template`] can replay it without waiting
-    /// for the next entity frame.
+    /// in place. Per-binding write-deduping inside `update_row`
+    /// avoids touching DOM nodes whose rendered value didn't
+    /// change since the last frame.
     pub fn apply(&mut self, conclusion: &Conclusion) {
-        self.last_conclusion = Some(conclusion.clone());
         if self.row.is_some() {
             self.update_row(conclusion);
         } else {
             self.insert_row(conclusion);
-        }
-    }
-
-    /// Remove any mounted DOM. Keeps the cached conclusion so
-    /// re-`apply`ing after a `swap_template` Just Works.
-    pub fn clear(&mut self) {
-        if let Some(row) = self.row.take() {
-            for n in row.nodes {
-                if let Some(parent) = n.parent_node() {
-                    let _ = parent.remove_child(&n);
-                }
-            }
         }
     }
 
@@ -150,18 +115,6 @@ impl Renderer {
     }
 }
 
-/// Parse `html` into an off-document `DocumentFragment` and extract
-/// a binding plan. Returns `None` if there is no `window`.
-fn build_template(html: &str) -> Option<(DocumentFragment, BindingPlan)> {
-    let document = window()?.document()?;
-    let tpl = document.create_element("template").ok()?;
-    let tpl: HtmlTemplateElement = tpl.dyn_into().ok()?;
-    tpl.set_inner_html(html);
-    let fragment = tpl.content();
-    let plan = extract_plan(&fragment);
-    Some((fragment, plan))
-}
-
 fn render_binding(binding: &Binding, conclusion: &Conclusion) -> String {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -202,104 +155,5 @@ fn write_binding(target: &Node, binding: &Binding, rendered: &str) {
                 let _ = el.set_attribute(attr_name, rendered);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    wasm_bindgen_test_configure!(run_in_browser);
-
-    fn mount() -> Element {
-        let document = window().expect("window").document().expect("document");
-        let host: Element = document.create_element("div").expect("create div");
-        document
-            .body()
-            .expect("body")
-            .append_child(&host)
-            .expect("attach host");
-        host
-    }
-
-    fn conclusion(this: &str, fields: &[(&str, &str)]) -> Conclusion {
-        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-        for (k, v) in fields {
-            map.insert((*k).into(), serde_json::Value::String((*v).into()));
-        }
-        Conclusion {
-            this: this.into(),
-            fields: map,
-        }
-    }
-
-    #[dialog_common::test]
-    fn it_renders_a_single_entity_template() {
-        let host = mount();
-        let mut r =
-            Renderer::new(host.clone(), "<p class=\"greeting\">{message}</p>").expect("renderer");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hello")]));
-        assert!(host.inner_html().contains("Hello"));
-        assert_eq!(
-            host.query_selector_all("p").unwrap().length(),
-            1,
-            "exactly one paragraph",
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_updates_fields_in_place_on_state_frame() {
-        let host = mount();
-        let mut r = Renderer::new(host.clone(), "<p>{message}</p>").expect("renderer");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hello")]));
-        let p_before = host.query_selector("p").unwrap().expect("p");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hi")]));
-        let p_after = host.query_selector("p").unwrap().expect("p");
-        assert!(p_before.is_same_node(Some(p_after.unchecked_ref())));
-        assert!(host.inner_html().contains("Hi"));
-    }
-
-    #[dialog_common::test]
-    fn it_swaps_dom_wholesale_on_template_frame() {
-        let host = mount();
-        let mut r = Renderer::new(host.clone(), "<p>{message}</p>").expect("renderer");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hello")]));
-        assert!(host.query_selector("p").unwrap().is_some());
-
-        let swapped = r.swap_template("<h1>{message}</h1>");
-        assert!(swapped, "swap_template should succeed");
-        assert!(
-            host.query_selector("p").unwrap().is_none(),
-            "old <p> should be gone",
-        );
-        assert!(
-            host.query_selector("h1").unwrap().is_some(),
-            "new <h1> should be mounted with cached conclusion",
-        );
-        assert!(host.inner_html().contains("Hello"));
-    }
-
-    #[dialog_common::test]
-    fn it_dedupes_writes_when_field_value_unchanged() {
-        let host = mount();
-        let mut r = Renderer::new(host.clone(), "<p>{message}</p>").expect("renderer");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hello")]));
-        let p = host.query_selector("p").unwrap().expect("p");
-        let text_node_before = p.first_child().expect("text node");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hello")]));
-        let p_again = host.query_selector("p").unwrap().expect("p");
-        let text_node_after = p_again.first_child().expect("text node again");
-        assert!(text_node_before.is_same_node(Some(text_node_after.unchecked_ref())));
-    }
-
-    #[dialog_common::test]
-    fn it_clears_dom_on_clear() {
-        let host = mount();
-        let mut r = Renderer::new(host.clone(), "<p>{message}</p>").expect("renderer");
-        r.apply(&conclusion("did:key:zG", &[("message", "Hello")]));
-        r.clear();
-        assert!(host.query_selector("p").unwrap().is_none());
     }
 }
