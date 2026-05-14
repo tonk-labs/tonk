@@ -237,22 +237,24 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_updates_in_place_on_subsequent_draws() {
+    fn it_reflects_the_latest_draw_payload() {
         let host = mount("<article><h1>{name}</h1></article>");
         call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
-        let first = host
-            .query_selector("article")
-            .unwrap()
-            .expect("first article");
-        call_draw(&host, &detail("did:key:zX", &[("name", "Alicia")])); // same `this`
-        let second = host
-            .query_selector("article")
-            .unwrap()
-            .expect("second article");
-        // Same node — patched in place rather than swapped — so
-        // downstream listeners on the rendered DOM survive updates.
-        assert!(first.is_same_node(Some(second.unchecked_ref())));
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alicia")]));
+        // Re-renders happen wholesale (no in-place node patching),
+        // so node identity is *not* preserved across draws. What
+        // matters is that the latest payload is what shows.
         assert!(host.inner_html().contains("Alicia"));
+        assert!(
+            !host.inner_html().contains("Alice<"),
+            "stale name leaked into: {}",
+            host.inner_html(),
+        );
+        assert_eq!(
+            host.query_selector_all("article").unwrap().length(),
+            1,
+            "expected exactly one article after second draw",
+        );
     }
 
     #[dialog_common::test]
@@ -281,5 +283,138 @@ mod tests {
         // Just checking that we don't panic and the host stays empty.
         call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
         assert_eq!(host.inner_html(), "");
+    }
+
+    // --- Iteration / cardinality-many tests ----------------------------
+
+    /// Like [`detail`], but lets callers mix scalar and array
+    /// field values. Used to drive the iteration-aware renderer
+    /// with a folded conclusion (the shape `<tonk-display>::fold_rows`
+    /// produces from a cardinality-many SSE frame).
+    fn detail_json(this: &str, fields: &[(&str, serde_json::Value)]) -> JsValue {
+        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for (k, v) in fields {
+            map.insert((*k).to_owned(), v.clone());
+        }
+        let conclusion = Conclusion {
+            this: this.to_owned(),
+            fields: map,
+        };
+        serde_wasm_bindgen::to_value(&conclusion).expect("serialize conclusion")
+    }
+
+    #[dialog_common::test]
+    fn it_repeats_the_iteration_root_once_per_value_in_an_array_field() {
+        // The marker (`subject={item}`) lifts the iteration root
+        // to the <li> — without it, the LCA of the two `{item}`
+        // occurrences would be the inner <tonk-display> and only
+        // that would repeat, leaving a single <li> wrapping every
+        // clone (which is what the `<li>` direct-child-of-<ul>
+        // rule effectively forbids in semantic terms).
+        let host = mount(
+            "<ul><li subject={item}><tonk-display entity={item}>{item}</tonk-display></li></ul>",
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[(
+                    "item",
+                    serde_json::json!(["did:key:zA", "did:key:zB", "did:key:zC"]),
+                )],
+            ),
+        );
+        let items = host.query_selector_all("li").unwrap();
+        assert_eq!(items.length(), 3, "got: {}", host.inner_html());
+        let texts: Vec<String> = (0..items.length())
+            .filter_map(|i| items.item(i).and_then(|n| n.text_content()))
+            .collect();
+        assert!(texts.contains(&"did:key:zA".to_owned()));
+        assert!(texts.contains(&"did:key:zB".to_owned()));
+        assert!(texts.contains(&"did:key:zC".to_owned()));
+    }
+
+    #[dialog_common::test]
+    fn it_substitutes_per_iteration_value_into_attributes_inside_the_root() {
+        // The inner <tonk-display>'s `entity` attribute should
+        // resolve to the current iteration's value — that's the
+        // mechanism that makes the nested element subscribe to
+        // the right entity. The `subject={item}` marker on <li>
+        // raises the iteration root above the inner element so
+        // each value gets its own <li> wrapper.
+        let host = mount(
+            "<ul><li subject={item}><tonk-display entity={item} model=todo></tonk-display></li></ul>",
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["did:key:zA", "did:key:zB"]))],
+            ),
+        );
+        let displays = host.query_selector_all("tonk-display").unwrap();
+        assert_eq!(displays.length(), 2);
+        let entities: Vec<String> = (0..displays.length())
+            .filter_map(|i| {
+                displays
+                    .item(i)
+                    .and_then(|n| n.dyn_into::<Element>().ok())
+                    .and_then(|el| el.get_attribute("entity"))
+            })
+            .collect();
+        assert_eq!(
+            entities,
+            vec!["did:key:zA".to_owned(), "did:key:zB".to_owned()]
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_removes_the_iteration_root_when_the_array_is_empty() {
+        // No values → no `<li>` mounted. The empty list is the
+        // result, not a stray template node.
+        let host = mount("<ul><li>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zList", &[("item", serde_json::json!([]))]),
+        );
+        let items = host.query_selector_all("li").unwrap();
+        assert_eq!(items.length(), 0, "got: {}", host.inner_html());
+        // The <ul> chrome stays — only the iteration root vanishes.
+        assert!(host.query_selector("ul").unwrap().is_some());
+    }
+
+    #[dialog_common::test]
+    fn it_renders_independent_iteration_roots_for_sibling_placeholders() {
+        // <p>{item}</p> and <li>{item}</li> share no inner ancestor
+        // — each becomes its own iteration root, each repeats per
+        // value of `item`.
+        let host = mount("<section><p>{item}</p><ul><li>{item}</li></ul></section>");
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["one", "two"]))],
+            ),
+        );
+        assert_eq!(host.query_selector_all("p").unwrap().length(), 2);
+        assert_eq!(host.query_selector_all("li").unwrap().length(), 2);
+    }
+
+    #[dialog_common::test]
+    fn it_treats_a_scalar_field_value_as_a_single_iteration() {
+        // A folded conclusion keeps a scalar when every row
+        // agreed; the renderer treats that as a one-element list
+        // so the iteration root is mounted exactly once.
+        let host = mount("<p>{name}</p>");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        assert_eq!(host.query_selector_all("p").unwrap().length(), 1);
+        assert_eq!(
+            host.query_selector("p")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Alice"),
+        );
     }
 }

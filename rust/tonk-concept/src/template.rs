@@ -104,8 +104,274 @@ pub enum BindingKind {
 /// the renderer can short-circuit when no field actually changed.
 #[derive(Debug, Clone, Default)]
 pub struct BindingPlan {
-    /// Every text- and attribute-binding in the fragment.
-    pub bindings: Vec<Binding>,
+    /// Top-level plan nodes — a tree, because iteration roots
+    /// (introduced for cardinality-many fields) contain nested
+    /// bindings whose paths are relative to the root.
+    pub nodes: Vec<PlanNode>,
+}
+
+/// One node in the binding tree. Plain `Binding` nodes are
+/// substituted once per render; `Iteration` nodes mark an element
+/// that gets cloned per value of a multi-valued field, with each
+/// clone running its own nested body.
+#[derive(Debug, Clone)]
+pub enum PlanNode {
+    /// A leaf binding — a `{field}` reference in text content or
+    /// an attribute value. Path is from the fragment root, or
+    /// from the enclosing iteration root if nested.
+    Binding(Binding),
+    /// An iteration over a field's values. The element at `path`
+    /// (relative to its enclosing scope) is cloned once per value
+    /// of `field`; `body` is rendered against each clone with
+    /// `field` shadowed to the current iteration's value.
+    Iteration {
+        /// Field whose values drive the iteration.
+        field: String,
+        /// Path to the iteration-root element, relative to the
+        /// enclosing scope (fragment root or parent iteration).
+        path: Vec<usize>,
+        /// Nested plan applied inside each clone of the root.
+        /// Paths in `body` are relative to the iteration root.
+        body: Vec<PlanNode>,
+    },
+}
+
+/// Find the longest common prefix among a non-empty slice of
+/// paths. Returns the prefix as a fresh `Vec`. Empty input
+/// returns the empty prefix.
+///
+/// Used to locate the **lowest common ancestor** of every
+/// occurrence of a single field in the template: each placeholder
+/// records the DOM path to its containing node, and the LCA is
+/// the longest path prefix all of those share. That LCA is the
+/// element we mount as the iteration root for the field.
+pub fn longest_common_path_prefix(paths: &[Vec<usize>]) -> Vec<usize> {
+    let mut iter = paths.iter();
+    let Some(first) = iter.next() else {
+        return Vec::new();
+    };
+    let mut max_len = first.len();
+    for p in iter {
+        let common = first
+            .iter()
+            .zip(p.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        if common < max_len {
+            max_len = common;
+        }
+        if max_len == 0 {
+            break;
+        }
+    }
+    first[..max_len].to_vec()
+}
+
+/// Distinct field names referenced by a binding. A text binding
+/// has exactly one field (the splitting pass in `extract_plan`
+/// ensures one field per text node); an attribute binding can
+/// mix multiple `{X}` placeholders, all collected here.
+///
+/// `{this}` is **not** a real field — it's a reserved placeholder
+/// for the entity URI, always scalar, always single. Exclude it
+/// from iteration-root discovery so a template like
+/// `<a href="/entity/{this}">` doesn't get treated as a
+/// cardinality-many iteration target. The substituter still
+/// resolves `{this}` directly off the conclusion.
+pub fn binding_fields(binding: &Binding) -> Vec<String> {
+    let segments = match &binding.kind {
+        BindingKind::Text { segments } => segments,
+        BindingKind::Attribute { segments, .. } => segments,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for seg in segments {
+        if let Segment::Field(name) = seg
+            && name != "this"
+            && !out.contains(name)
+        {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
+/// The path of the smallest enclosing element containing a
+/// binding's placeholder. For text bindings the binding's `path`
+/// points at the text node, so the enclosing element is `path[..-1]`.
+/// For attribute bindings the path is already on the element itself.
+fn host_element_path(binding: &Binding) -> Vec<usize> {
+    match binding.kind {
+        BindingKind::Text { .. } => binding.path[..binding.path.len().saturating_sub(1)].to_vec(),
+        BindingKind::Attribute { .. } => binding.path.clone(),
+    }
+}
+
+/// Walk a flat binding vec and produce the iteration-aware plan
+/// tree.
+///
+/// Algorithm:
+///
+/// 1. For every distinct field name referenced, collect the
+///    *host element paths* of every binding that mentions it
+///    (the smallest element containing the placeholder).
+/// 2. Compute the LCA of those host paths via
+///    [`longest_common_path_prefix`].
+///    - **Non-empty LCA**: the bindings live under a shared
+///      enclosing element. Use that LCA as the field's single
+///      iteration root; every binding gets pulled into its body.
+///    - **Empty LCA but only one host path**: lift that host
+///      element as the iteration root. (Single-occurrence
+///      placeholders still need to be inside an iteration so
+///      empty / many-cardinality values render correctly.)
+///    - **Empty LCA with multiple host paths**: the placeholders
+///      are siblings under the fragment root with no shared
+///      inner ancestor. Each host element becomes its own
+///      iteration root for the field — they repeat independently.
+/// 3. Sort iteration roots by ascending path length so outer
+///    roots are placed first, then walked inside-out when
+///    closing scopes.
+/// 4. Iteration roots build a scope stack; bindings get attached
+///    to the deepest enclosing scope with paths re-rooted
+///    relative to that scope.
+///
+/// Pure — no DOM access — so unit tests run natively.
+pub fn build_plan_nodes(bindings: Vec<Binding>) -> Vec<PlanNode> {
+    // Group bindings by every field they reference. A binding
+    // that mentions two fields appears in two groups. Use the
+    // *host element path* (smallest containing element), not the
+    // raw binding path, so siblings-under-fragment-root don't
+    // accidentally share an LCA at a text node level.
+    let mut field_hosts: std::collections::BTreeMap<String, Vec<Vec<usize>>> =
+        std::collections::BTreeMap::new();
+    for b in &bindings {
+        let host = host_element_path(b);
+        for field in binding_fields(b) {
+            field_hosts.entry(field).or_default().push(host.clone());
+        }
+    }
+
+    // Iteration root determination per field.
+    let mut iter_roots: Vec<(String, Vec<usize>)> = Vec::new();
+    for (field, hosts) in field_hosts {
+        let lca = longest_common_path_prefix(&hosts);
+        if !lca.is_empty() {
+            // Shared inner ancestor — single iteration root.
+            iter_roots.push((field, lca));
+        } else {
+            // No shared inner ancestor. Each distinct host path
+            // becomes its own iteration root (a placeholder at
+            // the fragment root itself — empty host path — falls
+            // through as a flat binding instead).
+            let mut seen: std::collections::BTreeSet<Vec<usize>> =
+                std::collections::BTreeSet::new();
+            for host in hosts {
+                if host.is_empty() || !seen.insert(host.clone()) {
+                    continue;
+                }
+                iter_roots.push((field.clone(), host));
+            }
+        }
+    }
+
+    // Outer-first ordering, then deterministic on path content.
+    iter_roots.sort_by(|a, b| a.1.len().cmp(&b.1.len()).then_with(|| a.1.cmp(&b.1)));
+
+    // Scope: an iteration's accumulating body. The first scope
+    // (path = []) is the top level — its `body` is what we
+    // ultimately return.
+    let mut scopes: Vec<Scope> = vec![Scope {
+        path: Vec::new(),
+        field: String::new(),
+        body: Vec::new(),
+    }];
+
+    // Open one new scope per iteration root, nested by absolute
+    // path. Order is outer-first per the sort above.
+    for (field, lca) in iter_roots {
+        scopes.push(Scope {
+            path: lca,
+            field,
+            body: Vec::new(),
+        });
+    }
+
+    // Place each binding into the deepest open scope whose path
+    // is a prefix of the binding's path. Re-root the binding's
+    // path against the chosen scope.
+    for b in bindings {
+        let idx = deepest_enclosing(&scopes, &b.path);
+        let parent_len = scopes[idx].path.len();
+        let mut rerooted = b;
+        rerooted.path = rerooted.path[parent_len..].to_vec();
+        scopes[idx].body.push(PlanNode::Binding(rerooted));
+    }
+
+    // Close scopes inside-out: pop the innermost, wrap its body
+    // in an Iteration node with path re-rooted against its
+    // parent, push the Iteration into the parent's body.
+    while scopes.len() > 1 {
+        let inner = scopes.pop().expect("scope present");
+        let parent_idx = deepest_enclosing(&scopes, &inner.path);
+        let parent_len = scopes[parent_idx].path.len();
+        let rel_path = inner.path[parent_len..].to_vec();
+        // Sort the iteration's own body by path so siblings come
+        // out in document order even though we built the tree
+        // inside-out.
+        let mut sorted_body = inner.body;
+        sort_nodes_by_path(&mut sorted_body);
+        scopes[parent_idx].body.push(PlanNode::Iteration {
+            field: inner.field,
+            path: rel_path,
+            body: sorted_body,
+        });
+    }
+
+    let mut top = scopes
+        .into_iter()
+        .next()
+        .map(|s| s.body)
+        .unwrap_or_default();
+    sort_nodes_by_path(&mut top);
+    top
+}
+
+/// Sort a list of plan nodes by their template-source path so
+/// the rendered output matches source order. Iteration node
+/// paths take precedence over their bodies; bindings sort by
+/// their own path.
+fn sort_nodes_by_path(nodes: &mut [PlanNode]) {
+    nodes.sort_by(|a, b| node_path(a).cmp(node_path(b)));
+}
+
+fn node_path(node: &PlanNode) -> &[usize] {
+    match node {
+        PlanNode::Binding(b) => &b.path,
+        PlanNode::Iteration { path, .. } => path,
+    }
+}
+
+/// Internal: one accumulating iteration scope inside
+/// [`build_plan_nodes`]. Defined at module scope (rather than
+/// inside the function) so `deepest_enclosing` can take a
+/// `&[Scope]` reference.
+struct Scope {
+    path: Vec<usize>,
+    field: String,
+    body: Vec<PlanNode>,
+}
+
+/// Index of the deepest scope whose path is a (possibly equal)
+/// prefix of `target`. The top-level scope's path is `[]`, which
+/// is a prefix of every path, so the result is always defined.
+/// Internal helper for `build_plan_nodes`.
+fn deepest_enclosing(scopes: &[Scope], target: &[usize]) -> usize {
+    let mut best = 0;
+    for (i, scope) in scopes.iter().enumerate() {
+        if target.starts_with(&scope.path) && scope.path.len() > scopes[best].path.len() {
+            best = i;
+        }
+    }
+    best
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -324,7 +590,18 @@ mod dom {
             }
         }
 
-        BindingPlan { bindings }
+        // Fold flat bindings into the iteration-aware plan tree.
+        // Iteration roots are discovered by finding the LCA of
+        // every binding that references the same field — if that
+        // LCA sits strictly inside the fragment (not at the root),
+        // the element there becomes the iteration root and every
+        // binding under it is pulled into its body. The fold is
+        // pure (operates on the collected `bindings` vec), which
+        // is why the helper lives outside the wasm-only `dom`
+        // module and gets unit-tested natively.
+        BindingPlan {
+            nodes: super::build_plan_nodes(bindings),
+        }
     }
 
     /// Walk a node and its descendants, calling `visit(path, node)`
@@ -361,6 +638,20 @@ mod dom {
         row_this: &str,
         row_fields: &BTreeMap<String, serde_json::Value>,
     ) -> String {
+        render_segments_with_shadow(segments, row_this, row_fields, &BTreeMap::new())
+    }
+
+    /// Like [`render_segments`] but consults `shadow` first for
+    /// each `{field}` lookup, falling back to `row_fields` on
+    /// miss. Used by the iteration renderer so a per-iteration
+    /// value can override the conclusion's full field set inside
+    /// the iterated subtree.
+    pub fn render_segments_with_shadow(
+        segments: &[Segment],
+        row_this: &str,
+        row_fields: &BTreeMap<String, serde_json::Value>,
+        shadow: &BTreeMap<String, serde_json::Value>,
+    ) -> String {
         let mut out = String::new();
         for seg in segments {
             match seg {
@@ -368,6 +659,8 @@ mod dom {
                 Segment::Field(name) => {
                     if name == "this" {
                         out.push_str(row_this);
+                    } else if let Some(v) = shadow.get(name) {
+                        push_json_value(&mut out, v);
                     } else if let Some(v) = row_fields.get(name) {
                         push_json_value(&mut out, v);
                     }
@@ -389,7 +682,10 @@ mod dom {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use dom::{Snapshot, extract_plan, navigate, render_segments, snapshot_template};
+pub use dom::{
+    Snapshot, extract_plan, navigate, render_segments, render_segments_with_shadow,
+    snapshot_template,
+};
 
 #[cfg(test)]
 mod tests {
@@ -460,5 +756,189 @@ mod tests {
     fn it_detects_field_segments() {
         assert!(!has_field(&parse_segments("plain text")));
         assert!(has_field(&parse_segments("hello {name}")));
+    }
+
+    // --- LCA + plan-tree tests -------------------------------------------
+
+    /// Helper: build a text binding referencing one field at the
+    /// given path. The renderer treats a single-field text binding
+    /// as `[Field(name)]`, mirroring what the splitting pass in
+    /// `extract_plan` produces.
+    fn text_binding(path: &[usize], field: &str) -> Binding {
+        Binding {
+            path: path.to_vec(),
+            kind: BindingKind::Text {
+                segments: vec![Segment::Field(field.into())],
+            },
+        }
+    }
+
+    /// Helper: build an attribute binding with one `{field}`
+    /// placeholder in its value, at the given element path.
+    fn attr_binding(path: &[usize], attr: &str, field: &str) -> Binding {
+        Binding {
+            path: path.to_vec(),
+            kind: BindingKind::Attribute {
+                attr_name: attr.into(),
+                segments: vec![Segment::Field(field.into())],
+            },
+        }
+    }
+
+    #[test]
+    fn it_returns_empty_lca_for_disjoint_paths() {
+        let lca = longest_common_path_prefix(&[vec![0, 1, 2], vec![1, 2, 3]]);
+        assert!(lca.is_empty());
+    }
+
+    #[test]
+    fn it_returns_full_path_lca_when_paths_share_a_prefix() {
+        let lca = longest_common_path_prefix(&[vec![0, 1, 2], vec![0, 1, 5, 7]]);
+        assert_eq!(lca, vec![0, 1]);
+    }
+
+    #[test]
+    fn it_returns_the_path_itself_for_a_single_path() {
+        let lca = longest_common_path_prefix(&[vec![0, 1, 2]]);
+        assert_eq!(lca, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn it_returns_empty_lca_for_no_paths() {
+        assert!(longest_common_path_prefix(&[]).is_empty());
+    }
+
+    #[test]
+    fn it_lifts_a_single_text_placeholder_to_its_host_element() {
+        // <p>{name}</p> — text binding at path [0, 0]. Its host
+        // element is the <p> at [0]. The iteration root is the
+        // <p>, not the text node, so empty / multi-valued data
+        // can repeat the <p> wholesale.
+        let nodes = build_plan_nodes(vec![text_binding(&[0, 0], "name")]);
+        match &nodes[..] {
+            [PlanNode::Iteration { field, path, body }] => {
+                assert_eq!(field, "name");
+                assert_eq!(path, &vec![0]);
+                assert_eq!(body.len(), 1);
+                match &body[0] {
+                    PlanNode::Binding(b) => assert_eq!(b.path, vec![0]),
+                    _ => panic!("expected Binding, got {:?}", body[0]),
+                }
+            }
+            other => panic!("expected single Iteration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn it_creates_independent_iteration_roots_for_sibling_placeholders() {
+        // Mirrors the todo-list case:
+        //   <p>You have {item} items.</p>  text at [0, 0], host <p> = [0]
+        //   <li>{item}</li>                text at [1, 0], host <li> = [1]
+        // LCA of host paths [0] and [1] is [] — no shared inner
+        // ancestor — so each becomes its own iteration root and
+        // both elements repeat independently.
+        let nodes = build_plan_nodes(vec![
+            text_binding(&[0, 0], "item"),
+            text_binding(&[1, 0], "item"),
+        ]);
+
+        let iters: Vec<_> = nodes
+            .iter()
+            .filter_map(|n| match n {
+                PlanNode::Iteration { field, path, .. } => Some((field.clone(), path.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            iters,
+            vec![("item".to_owned(), vec![0]), ("item".to_owned(), vec![1]),],
+            "expected two independent iteration roots, got {iters:?}",
+        );
+    }
+
+    #[test]
+    fn it_groups_multiple_occurrences_of_same_field_under_their_lca() {
+        // <dl for={title}>          path [0]    attribute
+        //   <dt>{title}</dt>        path [0, 0, 0]  text
+        //   <dd>{title}</dd>        path [0, 1, 0]  text
+        // </dl>
+        // LCA = [0] — the <dl>. One iteration root.
+        let nodes = build_plan_nodes(vec![
+            attr_binding(&[0], "for", "title"),
+            text_binding(&[0, 0, 0], "title"),
+            text_binding(&[0, 1, 0], "title"),
+        ]);
+
+        match &nodes[..] {
+            [PlanNode::Iteration { field, path, body }] => {
+                assert_eq!(field, "title");
+                assert_eq!(path, &vec![0]);
+                // Three bindings inside, each with path
+                // re-rooted relative to the <dl>.
+                assert_eq!(body.len(), 3);
+                let rerooted_paths: Vec<_> = body
+                    .iter()
+                    .filter_map(|n| match n {
+                        PlanNode::Binding(b) => Some(b.path.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(rerooted_paths.contains(&Vec::<usize>::new()));
+                assert!(rerooted_paths.contains(&vec![0, 0]));
+                assert!(rerooted_paths.contains(&vec![1, 0]));
+            }
+            other => panic!("expected single Iteration, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn it_nests_iteration_roots_for_distinct_fields() {
+        // <ul for={list}>           path [0]    attr
+        //   <li for={item}>         path [0, 0] attr
+        //     <span>{item}</span>   path [0, 0, 0, 0] text
+        //   </li>
+        // </ul>
+        let nodes = build_plan_nodes(vec![
+            attr_binding(&[0], "for", "list"),
+            attr_binding(&[0, 0], "for", "item"),
+            text_binding(&[0, 0, 0, 0], "item"),
+        ]);
+
+        // Outermost: list-iteration at [0]. Its body should
+        // contain an item-iteration at relative [0] holding the
+        // marker + the text binding.
+        match &nodes[..] {
+            [PlanNode::Iteration { field, path, body }] => {
+                assert_eq!(field, "list");
+                assert_eq!(path, &vec![0]);
+                // Inside <ul>: one marker binding on the <ul>
+                // itself (`for={list}`) at relative path [], plus
+                // a nested item iteration at relative path [0].
+                let inner_iter = body
+                    .iter()
+                    .find_map(|n| match n {
+                        PlanNode::Iteration { field, path, body } => {
+                            Some((field.clone(), path.clone(), body.clone()))
+                        }
+                        _ => None,
+                    })
+                    .expect("nested iteration present");
+                assert_eq!(inner_iter.0, "item");
+                assert_eq!(inner_iter.1, vec![0]);
+                // Inside <li>: marker on <li> at relative []
+                // plus the span text at relative [0, 0].
+                let inner_paths: Vec<_> = inner_iter
+                    .2
+                    .iter()
+                    .filter_map(|n| match n {
+                        PlanNode::Binding(b) => Some(b.path.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                assert!(inner_paths.contains(&Vec::<usize>::new()));
+                assert!(inner_paths.contains(&vec![0, 0]));
+            }
+            other => panic!("expected outer list iteration, got {other:?}"),
+        }
     }
 }

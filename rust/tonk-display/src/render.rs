@@ -1,24 +1,23 @@
-//! Single-row DOM renderer used by `<tonk-view>`. Mirrors the
-//! diffing strategy of `tonk-concept`'s renderer, but collapsed to
-//! one row: there is at most one mounted instance of the cloned
-//! template at a time. `<tonk-view>` builds one from its snapshotted
-//! children-as-template and feeds conclusions through `apply`.
+//! Single-row DOM renderer used by `<tonk-view>`. Clones the
+//! template fragment on each `apply`, walks the [`BindingPlan`]
+//! tree, and applies bindings + iteration roots against the
+//! conclusion. Iteration roots clone their sub-element once per
+//! value of the bound field; the original root is then removed.
+//!
+//! Each `apply` re-renders from scratch — there is no in-place
+//! diffing today. For a single-entity element this is cheap;
+//! when we have evidence that update latency matters we can add
+//! it back behind the existing `last_values` machinery.
+
+use std::collections::BTreeMap;
 
 use tonk_concept::template::{
-    Binding, BindingKind, BindingPlan, Snapshot, extract_plan, render_segments,
+    Binding, BindingKind, BindingPlan, PlanNode, Snapshot, extract_plan, navigate,
+    render_segments_with_shadow,
 };
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use web_sys::{DocumentFragment, Element, Node};
-
-/// One mounted row.
-struct Row {
-    /// Top-level cloned nodes (a template can have multiple roots).
-    nodes: Vec<Node>,
-    /// Per-binding rendered string from the last applied
-    /// conclusion. Used to skip writes when nothing changed.
-    last_values: Vec<String>,
-}
 
 /// Stateful renderer for one entity.
 pub struct Renderer {
@@ -29,8 +28,9 @@ pub struct Renderer {
     template: DocumentFragment,
     /// Binding plan extracted from `template` at construction time.
     plan: BindingPlan,
-    /// Currently mounted row (if any).
-    row: Option<Row>,
+    /// Top-level nodes of the currently mounted clone (if any),
+    /// kept so we can remove them on the next `apply`.
+    mounted: Vec<Node>,
 }
 
 impl Renderer {
@@ -45,23 +45,23 @@ impl Renderer {
             host: snapshot.container,
             template: snapshot.fragment,
             plan,
-            row: None,
+            mounted: Vec::new(),
         }
     }
 
-    /// Apply an entity conclusion: insert if no row, else update
-    /// in place. Per-binding write-deduping inside `update_row`
-    /// avoids touching DOM nodes whose rendered value didn't
-    /// change since the last frame.
+    /// Apply an entity conclusion: remove any previously rendered
+    /// clone, deep-clone the template, walk the plan tree
+    /// against `conclusion`, mount the result. The
+    /// iteration-tree walk handles cardinality-many fields by
+    /// cloning the iteration root once per value.
     pub fn apply(&mut self, conclusion: &Conclusion) {
-        if self.row.is_some() {
-            self.update_row(conclusion);
-        } else {
-            self.insert_row(conclusion);
+        // Remove prior mount.
+        for node in self.mounted.drain(..) {
+            if let Some(parent) = node.parent_node() {
+                let _: Result<Node, _> = parent.remove_child(&node);
+            }
         }
-    }
 
-    fn insert_row(&mut self, conclusion: &Conclusion) {
         let Some(clone) = self
             .template
             .clone_node_with_deep(true)
@@ -71,89 +71,134 @@ impl Renderer {
             return;
         };
 
-        let mut values: Vec<String> = Vec::with_capacity(self.plan.bindings.len());
-        for binding in &self.plan.bindings {
-            let rendered = render_binding(binding, conclusion);
-            apply_binding(&clone, binding, &rendered);
-            values.push(rendered);
-        }
+        // Walk the plan tree against the cloned fragment.
+        let root_node: Node = clone.clone().into();
+        apply_nodes(&root_node, &self.plan.nodes, conclusion, &BTreeMap::new());
 
-        let mut nodes: Vec<Node> = Vec::new();
+        // Tag the first top-level element with `data-this` for
+        // CSS/consumer hooks, matching prior behaviour.
         let children = clone.child_nodes();
+        let mut top: Vec<Node> = Vec::new();
         for i in 0..children.length() {
             if let Some(n) = children.item(i) {
-                nodes.push(n);
+                top.push(n);
             }
         }
-        if let Some(first) = nodes.first().and_then(|n| n.dyn_ref::<Element>()) {
+        if let Some(first) = top.first().and_then(|n| n.dyn_ref::<Element>()) {
             let _ = first.set_attribute("data-this", &conclusion.this);
         }
 
         let _ = self.host.append_child(&clone);
-        self.row = Some(Row {
-            nodes,
-            last_values: values,
-        });
+        self.mounted = top;
     }
+}
 
-    fn update_row(&mut self, conclusion: &Conclusion) {
-        let Some(row) = self.row.as_mut() else {
-            return;
-        };
-        for (i, binding) in self.plan.bindings.iter().enumerate() {
-            let rendered = render_binding(binding, conclusion);
-            if let Some(prev) = row.last_values.get(i)
-                && *prev == rendered
-            {
-                continue;
-            }
-            patch_row(row, binding, &rendered);
-            if let Some(slot) = row.last_values.get_mut(i) {
-                *slot = rendered;
+/// Apply every plan node in `nodes` to the subtree rooted at
+/// `root` (a real `Node`, not a fragment, so we can navigate from
+/// it and mutate its children). `shadow` carries per-iteration
+/// values overriding the conclusion's field lookups.
+fn apply_nodes(
+    root: &Node,
+    nodes: &[PlanNode],
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
+    for node in nodes {
+        match node {
+            PlanNode::Binding(b) => apply_binding(root, b, conclusion, shadow),
+            PlanNode::Iteration { field, path, body } => {
+                apply_iteration(root, field, path, body, conclusion, shadow);
             }
         }
     }
 }
 
-fn render_binding(binding: &Binding, conclusion: &Conclusion) -> String {
+/// Render a leaf binding against the conclusion (+ shadow) and
+/// write its value to the target DOM node.
+fn apply_binding(
+    root: &Node,
+    binding: &Binding,
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
         BindingKind::Attribute { segments, .. } => segments,
     };
-    render_segments(segments, &conclusion.this, &conclusion.fields)
-}
-
-fn apply_binding(fragment: &DocumentFragment, binding: &Binding, rendered: &str) {
-    let root: Node = fragment.clone().into();
-    let Some(target) = tonk_concept::template::navigate(&root, &binding.path) else {
+    let rendered =
+        render_segments_with_shadow(segments, &conclusion.this, &conclusion.fields, shadow);
+    let Some(target) = navigate(root, &binding.path) else {
         return;
     };
-    write_binding(&target, binding, rendered);
-}
-
-fn patch_row(row: &Row, binding: &Binding, rendered: &str) {
-    let Some(&first) = binding.path.first() else {
-        return;
-    };
-    let Some(root) = row.nodes.get(first) else {
-        return;
-    };
-    let rest = &binding.path[1..];
-    let Some(target) = tonk_concept::template::navigate(root, rest) else {
-        return;
-    };
-    write_binding(&target, binding, rendered);
-}
-
-fn write_binding(target: &Node, binding: &Binding, rendered: &str) {
     match &binding.kind {
         BindingKind::Text { .. } => {
-            target.set_text_content(Some(rendered));
+            target.set_text_content(Some(&rendered));
         }
         BindingKind::Attribute { attr_name, .. } => {
             if let Some(el) = target.dyn_ref::<Element>() {
-                let _ = el.set_attribute(attr_name, rendered);
+                let _ = el.set_attribute(attr_name, &rendered);
             }
         }
+    }
+}
+
+/// Clone the iteration root once per value of `field`, applying
+/// `body` against each clone with `field` shadowed to the
+/// iteration's value. The original root is removed; if the
+/// resolved value list is empty the iteration root vanishes
+/// entirely, which is the right behaviour for an empty
+/// cardinality-many field.
+fn apply_iteration(
+    root: &Node,
+    field: &str,
+    path: &[usize],
+    body: &[PlanNode],
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
+    let Some(iter_root) = navigate(root, path) else {
+        return;
+    };
+    let Some(parent) = iter_root.parent_node() else {
+        return;
+    };
+
+    // Compute the value list for this iteration. The shadow
+    // takes precedence (nested iterations see their parent's
+    // current value); fall back to the conclusion's fields.
+    let raw_value = shadow
+        .get(field)
+        .or_else(|| conclusion.fields.get(field))
+        .cloned();
+    let values = collect_values(raw_value);
+
+    // Anchor for insertion — the original iter_root stays put
+    // until we've inserted all clones before it, then we remove it.
+    for value in &values {
+        let Some(clone) = iter_root.clone_node_with_deep(true).ok() else {
+            continue;
+        };
+        let mut nested_shadow = shadow.clone();
+        nested_shadow.insert(field.to_owned(), value.clone());
+        apply_nodes(&clone, body, conclusion, &nested_shadow);
+        let _ = parent.insert_before(&clone, Some(&iter_root));
+    }
+
+    // Remove the original template node — it served only as the
+    // location anchor. If `values` was empty, the iteration root
+    // disappears entirely, which is the empty-list behaviour the
+    // spec asks for.
+    let _: Result<Node, _> = parent.remove_child(&iter_root);
+}
+
+/// Resolve a JSON value into the list of per-iteration values:
+/// `Array` flattens to its elements; `Null` / missing becomes
+/// empty; anything else is a single-element list. The renderer
+/// uses this to decide how many times to clone an iteration root.
+fn collect_values(value: Option<serde_json::Value>) -> Vec<serde_json::Value> {
+    match value {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => items,
+        Some(v) => vec![v],
     }
 }

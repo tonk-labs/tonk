@@ -9,15 +9,14 @@ use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use web_sys::{DocumentFragment, Element, Node};
 
-use crate::template::{Binding, BindingKind, BindingPlan, Segment, navigate, render_segments};
+use crate::template::{
+    Binding, BindingKind, BindingPlan, PlanNode, navigate, render_segments_with_shadow,
+};
 
 /// One rendered row of the live view.
 struct Row {
     /// Top-level cloned nodes (a template can have multiple roots).
     nodes: Vec<Node>,
-    /// Per-binding rendered string from the last frame, keyed by
-    /// binding index. Used to skip writes when nothing changed.
-    last_values: Vec<String>,
 }
 
 /// Stateful renderer — owns the template + plan and tracks which
@@ -55,15 +54,22 @@ impl Renderer {
 
     /// Apply one wire frame. Adds, updates, and removes rows so
     /// the live DOM reflects exactly the conclusions in `frame`.
+    ///
+    /// Existing rows are torn down and re-rendered on update so
+    /// the iteration-tree walk handles cardinality-many fields
+    /// without an in-place diff. The previous per-binding
+    /// `last_values` dedupe is gone — re-add behind a flag if
+    /// repaint cost becomes a problem.
     pub fn apply(&mut self, frame: &[Conclusion]) {
         let mut seen: indexmap::IndexSet<String> = indexmap::IndexSet::new();
         for conclusion in frame {
             seen.insert(conclusion.this.clone());
-            if self.rows.contains_key(&conclusion.this) {
-                self.update_row(conclusion);
-            } else {
-                self.insert_row(conclusion);
+            // Remove any prior render for this `this`; a fresh
+            // clone applies the plan tree against the new state.
+            if let Some(row) = self.rows.shift_remove(&conclusion.this) {
+                drop_row(row);
             }
+            self.insert_row(conclusion);
         }
         // Remove rows that vanished from the frame.
         let stale: Vec<String> = self
@@ -74,11 +80,7 @@ impl Renderer {
             .collect();
         for key in stale {
             if let Some(row) = self.rows.shift_remove(&key) {
-                for n in row.nodes {
-                    if let Some(parent) = n.parent_node() {
-                        let _ = parent.remove_child(&n);
-                    }
-                }
+                drop_row(row);
             }
         }
     }
@@ -91,16 +93,12 @@ impl Renderer {
             .and_then(|n| n.dyn_into::<DocumentFragment>().ok())
             .expect("template fragment clones to a fragment");
 
-        // Render every binding into the clone, recording values.
-        let mut values: Vec<String> = Vec::with_capacity(self.plan.bindings.len());
-        for binding in &self.plan.bindings {
-            let rendered = render_binding(binding, conclusion);
-            apply_binding(&clone, binding, &rendered);
-            values.push(rendered);
-        }
+        // Walk the plan tree against the clone.
+        let root_node: Node = clone.clone().into();
+        apply_nodes(&root_node, &self.plan.nodes, conclusion, &BTreeMap::new());
 
         // Snapshot the top-level nodes before appending so we can
-        // remove them later.
+        // remove them on stale-cleanup.
         let mut nodes: Vec<Node> = Vec::new();
         let children = clone.child_nodes();
         for i in 0..children.length() {
@@ -108,7 +106,6 @@ impl Renderer {
                 nodes.push(n);
             }
         }
-        // Mark the first root with data-this for diff visibility.
         if let Some(first) = nodes.first().and_then(|n| n.dyn_ref::<Element>())
             && first.set_attribute("data-this", &conclusion.this).is_err()
         {
@@ -116,91 +113,105 @@ impl Renderer {
         }
 
         let _ = self.container.append_child(&clone);
-        self.rows.insert(
-            conclusion.this.clone(),
-            Row {
-                nodes,
-                last_values: values,
-            },
-        );
+        self.rows.insert(conclusion.this.clone(), Row { nodes });
     }
+}
 
-    fn update_row(&mut self, conclusion: &Conclusion) {
-        // Walk every binding; for those whose value changed, find
-        // the target node within the row's roots and patch it.
-        let row = match self.rows.get_mut(&conclusion.this) {
-            Some(r) => r,
-            None => return,
-        };
-        for (i, binding) in self.plan.bindings.iter().enumerate() {
-            let rendered = render_binding(binding, conclusion);
-            if let Some(prev) = row.last_values.get(i)
-                && *prev == rendered
-            {
-                continue;
-            }
-            patch_row(row, binding, &rendered);
-            if let Some(slot) = row.last_values.get_mut(i) {
-                *slot = rendered;
+fn drop_row(row: Row) {
+    for n in row.nodes {
+        if let Some(parent) = n.parent_node() {
+            let _ = parent.remove_child(&n);
+        }
+    }
+}
+
+/// Apply every plan node in `nodes` to the subtree rooted at
+/// `root`. `shadow` carries per-iteration values overriding the
+/// conclusion's field lookups.
+fn apply_nodes(
+    root: &Node,
+    nodes: &[PlanNode],
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
+    for node in nodes {
+        match node {
+            PlanNode::Binding(b) => apply_binding_at(root, b, conclusion, shadow),
+            PlanNode::Iteration { field, path, body } => {
+                apply_iteration_at(root, field, path, body, conclusion, shadow);
             }
         }
     }
 }
 
-fn render_binding(binding: &Binding, conclusion: &Conclusion) -> String {
+fn apply_binding_at(
+    root: &Node,
+    binding: &Binding,
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
         BindingKind::Attribute { segments, .. } => segments,
     };
-    render_segments(segments, &conclusion.this, &conclusion.fields)
-}
-
-/// Apply a binding inside a freshly-cloned fragment. The binding's
-/// `path` is rooted at the fragment.
-fn apply_binding(fragment: &DocumentFragment, binding: &Binding, rendered: &str) {
-    let root: Node = fragment.clone().into();
-    let Some(target) = navigate(&root, &binding.path) else {
+    let rendered =
+        render_segments_with_shadow(segments, &conclusion.this, &conclusion.fields, shadow);
+    let Some(target) = navigate(root, &binding.path) else {
         return;
     };
-    write_binding(&target, binding, rendered);
-}
-
-/// Apply a binding inside an already-mounted row. The binding's
-/// `path[0]` indexes into `row.nodes` (the row's roots), and the
-/// rest of the path walks down through that root's children.
-fn patch_row(row: &Row, binding: &Binding, rendered: &str) {
-    let Some(&first) = binding.path.first() else {
-        return;
-    };
-    let Some(root) = row.nodes.get(first) else {
-        return;
-    };
-    let rest = &binding.path[1..];
-    let Some(target) = navigate(root, rest) else {
-        return;
-    };
-    write_binding(&target, binding, rendered);
-}
-
-fn write_binding(target: &Node, binding: &Binding, rendered: &str) {
     match &binding.kind {
         BindingKind::Text { .. } => {
-            target.set_text_content(Some(rendered));
+            target.set_text_content(Some(&rendered));
         }
         BindingKind::Attribute { attr_name, .. } => {
             if let Some(el) = target.dyn_ref::<Element>() {
-                let _ = el.set_attribute(attr_name, rendered);
+                let _ = el.set_attribute(attr_name, &rendered);
             }
         }
     }
 }
 
-// Silence unused-import warning when `Segment` and `BTreeMap` are
-// only used through the public `render_segments` re-export above.
-const _: fn() = || {
-    let _: Option<Segment> = None;
-    let _: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-};
+fn apply_iteration_at(
+    root: &Node,
+    field: &str,
+    path: &[usize],
+    body: &[PlanNode],
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
+    let Some(iter_root) = navigate(root, path) else {
+        return;
+    };
+    let Some(parent) = iter_root.parent_node() else {
+        return;
+    };
+
+    let raw_value = shadow
+        .get(field)
+        .or_else(|| conclusion.fields.get(field))
+        .cloned();
+    let values = collect_values(raw_value);
+
+    for value in &values {
+        let Some(clone) = iter_root.clone_node_with_deep(true).ok() else {
+            continue;
+        };
+        let mut nested_shadow = shadow.clone();
+        nested_shadow.insert(field.to_owned(), value.clone());
+        apply_nodes(&clone, body, conclusion, &nested_shadow);
+        let _ = parent.insert_before(&clone, Some(&iter_root));
+    }
+
+    let _: Result<Node, _> = parent.remove_child(&iter_root);
+}
+
+fn collect_values(value: Option<serde_json::Value>) -> Vec<serde_json::Value> {
+    match value {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => items,
+        Some(v) => vec![v],
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -267,21 +278,27 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_updates_in_place_on_change() {
+    fn it_reflects_field_changes_on_subsequent_frames() {
+        // The renderer re-clones the template on every frame, so
+        // node identity is *not* preserved across updates — only
+        // the latest payload's content is required to surface.
+        // (If we add per-binding diffing back, this test should
+        // tighten to assert identity preservation again.)
         let (host, mut renderer) = mount("<article><h1>{name}</h1></article>");
         renderer.apply(&[conclusion("did:key:zAlice", &[("name", "Alice")])]);
-        let article_before = host
-            .query_selector("article")
-            .unwrap()
-            .expect("first article");
         renderer.apply(&[conclusion("did:key:zAlice", &[("name", "Alicia")])]);
-        let article_after = host
-            .query_selector("article")
-            .unwrap()
-            .expect("second article");
-        assert!(article_before.is_same_node(Some(article_after.unchecked_ref())));
         assert!(host.inner_html().contains("Alicia"));
-        assert!(!host.inner_html().contains("Alice<"));
+        assert!(
+            !host.inner_html().contains("Alice<"),
+            "stale row leaked into: {}",
+            host.inner_html(),
+        );
+        assert_eq!(
+            host.query_selector_all("article").unwrap().length(),
+            1,
+            "expected one row, got: {}",
+            host.inner_html(),
+        );
     }
 
     #[dialog_common::test]
@@ -370,17 +387,21 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_dedupes_writes_when_field_value_unchanged() {
+    fn it_handles_identical_frames_idempotently() {
+        // The renderer re-clones on every frame; applying the
+        // same conclusion twice leaves the DOM in the same shape
+        // and content. Per-binding write-deduping (which would
+        // preserve node identity) was dropped with the move to
+        // iteration-aware rendering — re-add behind a flag if
+        // repaint cost matters.
         let (host, mut renderer) = mount("<article><h1>{name}</h1></article>");
         renderer.apply(&[conclusion("did:key:zAlice", &[("name", "Alice")])]);
-        let h1 = host.query_selector("h1").unwrap().expect("h1");
-        let text_node_before = h1.first_child().expect("h1 text node");
         renderer.apply(&[conclusion("did:key:zAlice", &[("name", "Alice")])]);
-        let h1_again = host.query_selector("h1").unwrap().expect("h1");
-        let text_node_after = h1_again.first_child().expect("h1 text node 2");
-        assert!(
-            text_node_before.is_same_node(Some(text_node_after.unchecked_ref())),
-            "unchanged frame should not touch the DOM",
+        assert_eq!(
+            host.query_selector_all("article").unwrap().length(),
+            1,
+            "expected exactly one row after a repeat frame",
         );
+        assert!(host.inner_html().contains("Alice"));
     }
 }

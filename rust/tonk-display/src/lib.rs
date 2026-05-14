@@ -17,11 +17,14 @@ pub mod resolve;
 
 // `notation_tokens` and `notation_format` are the tokenizer and
 // Conclusion-to-source formatter driving the wasm-only `notation`
-// element and `<tonk-display>`'s carousel inspector slide. Both
-// are target-independent so their tests run under `cargo test`,
-// but their non-test consumers live behind the wasm cfg — gate
-// them so a plain `cargo build` for the host doesn't flag every
-// internal helper dead.
+// element and `<tonk-display>`'s carousel inspector slide. `fold`
+// is the multi-row → single-conclusion collapser that handles
+// cardinality-many fields. All three are target-independent so
+// their tests run under `cargo test`, but their non-test consumers
+// live behind the wasm cfg — gate them so a plain `cargo build`
+// for the host doesn't flag every internal helper dead.
+#[cfg(any(target_arch = "wasm32", test))]
+mod fold;
 #[cfg(any(target_arch = "wasm32", test))]
 mod notation_format;
 #[cfg(any(target_arch = "wasm32", test))]
