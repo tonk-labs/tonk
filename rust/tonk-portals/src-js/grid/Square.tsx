@@ -7,6 +7,7 @@ import { useDrag } from "../lib/useDrag";
 import { useDragReorder } from "../lib/useDragReorder";
 import { useResize, type Corner, type Edge } from "../lib/useResize";
 import { HostContext, RepoContext } from "../context";
+import { builtinSrc, isBuiltin } from "../lib/builtins";
 
 type Props = {
   tile: Tile;
@@ -167,8 +168,12 @@ export function Square({
   const color = colorForArtifact(tile);
   const branch = tile.branch ?? "main";
   const titleLabel = tile.name ?? tile.entity;
-  const canRender = !!repo && !!host && !!tile.entity;
-  const src = canRender ? tileSrc(repo!, host!, tile.entity!, branch) : null;
+  const canRender = !!tile.entity && (isBuiltin(tile.entity) || (!!repo && !!host));
+  const src = canRender
+    ? isBuiltin(tile.entity!)
+      ? builtinSrc(tile.entity!)
+      : tileSrc(repo!, host!, tile.entity!, branch)
+    : null;
 
   const handleCopyLink = (e: React.MouseEvent) => {
     e.stopPropagation();

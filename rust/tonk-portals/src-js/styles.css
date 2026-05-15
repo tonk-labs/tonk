@@ -646,6 +646,26 @@
   text-overflow: ellipsis;
 }
 
+.tonk-portals-root .picker__list--builtins {
+  border-bottom: 1px solid var(--tp-square-border);
+}
+
+.tonk-portals-root .picker__list--builtins::before {
+  content: "Built-in";
+  display: block;
+  padding: 6px 14px 2px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tp-square-fg-quieter);
+}
+
+.tonk-portals-root .picker__item--builtin .picker__item-entity {
+  color: var(--tp-square-fg-quieter);
+  font-family: inherit;
+}
+
 .tonk-portals-root .picker__empty {
   padding: 10px 14px;
   font-size: 12px;

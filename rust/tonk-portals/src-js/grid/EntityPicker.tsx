@@ -2,6 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { RepoContext } from "../context";
 import { resolveName } from "../lib/resolveName";
 import { listArtifacts, type Artifact } from "../lib/artifacts";
+import { BUILTIN_ARTIFACTS } from "../lib/builtins";
 
 export type PickPayload = {
   // The resolved entity DID. Always a `did:key:…` once committed
@@ -164,6 +165,7 @@ export function EntityPicker({ initialEntity, onPick, onClose }: Props) {
   }, [onClose]);
 
   const showLoadButton = looksLikeDid || suggestions.length === 0;
+  const showBuiltins = !trimmed && !looksLikeDid;
 
   return (
     <div
@@ -182,6 +184,25 @@ export function EntityPicker({ initialEntity, onPick, onClose }: Props) {
         placeholder="search artifacts or paste did:key:…"
         disabled={busy}
       />
+      {showBuiltins && (
+        <ul className="picker__list picker__list--builtins" role="listbox">
+          {BUILTIN_ARTIFACTS.map((b) => (
+            <li
+              key={b.entity}
+              role="option"
+              aria-selected={false}
+              className="picker__item picker__item--builtin"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onPick({ entity: b.entity, name: b.name });
+              }}
+            >
+              <span className="picker__item-name">{b.name}</span>
+              <span className="picker__item-entity">{b.description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {error && <div className="picker__error">{error}</div>}
       {!looksLikeDid && suggestions.length > 0 && (
         <ul className="picker__list" role="listbox">
