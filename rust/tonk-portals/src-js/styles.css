@@ -36,9 +36,29 @@
   --tp-square-hover: color-mix(in oklab, var(--tp-square-fg) 8%, transparent);
   --tp-accent: var(--wa-color-brand-fill-loud, #0a84ff);
   --tp-accent-soft: color-mix(in oklab, var(--tp-accent) 12%, transparent);
-  --tp-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --tp-shadow-strong: 0 10px 24px rgba(0, 0, 0, 0.14);
+  --tp-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+  --tp-shadow-strong: 0 8px 24px rgba(0, 0, 0, 0.10);
   --tp-dot: color-mix(in oklab, var(--tp-square-fg) 22%, transparent);
+
+  /* Typography scale — two body sizes only. Tile chrome adopts
+     the same WA tokens as the Leptos shell so the chrome reads
+     as one continuous UI; the iframe content inside each tile
+     is intentionally its own world (its own bundle, its own
+     styles — we do not touch it). */
+  --tp-font-size-body: var(--wa-font-size-s, 13px);
+  --tp-font-size-small: var(--wa-font-size-2xs, 11px);
+  --tp-font-size-hint: var(--wa-font-size-xs, 12px);
+
+  /* Radius scale — only three steps. Icon buttons get 6px,
+     medium buttons / cards get 8px, tile windows get 12px, and
+     full pills use 999px. */
+  --tp-radius-button: 4px;
+  --tp-radius-card: 6px;
+  --tp-radius-tile: 8px;
+
+  /* Motion — two durations cover state changes vs. layout shifts. */
+  --tp-motion-quick: 120ms ease;
+  --tp-motion-settle: 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
   background: var(--tp-bg);
   color: var(--tp-square-fg);
   user-select: none;
@@ -91,7 +111,7 @@
   justify-content: center;
   pointer-events: none;
   color: var(--tp-square-fg-quieter);
-  font-size: 14px;
+  font-size: var(--tp-font-size-body);
   letter-spacing: 0.01em;
 }
 
@@ -130,7 +150,7 @@
   left: 0;
   background: var(--tp-accent-soft);
   border: 1.5px solid var(--tp-accent);
-  border-radius: 8px;
+  border-radius: var(--tp-radius-card);
   pointer-events: none;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
 }
@@ -140,7 +160,7 @@
   top: 0;
   left: 0;
   background: var(--tp-square-bg);
-  border-radius: 12px;
+  border-radius: var(--tp-radius-tile);
   box-shadow: var(--tp-shadow);
   cursor: pointer;
   /* No transform/size transition: the tile snaps to its committed
@@ -162,8 +182,8 @@
   right: 0;
   height: 28px;
   cursor: grab;
-  border-top-left-radius: 12px;
-  border-top-right-radius: 12px;
+  border-top-left-radius: var(--tp-radius-tile);
+  border-top-right-radius: var(--tp-radius-tile);
   touch-action: none;
   z-index: 1;
 }
@@ -241,7 +261,7 @@
   height: 24px;
   border: none;
   background: transparent;
-  border-radius: 6px;
+  border-radius: var(--tp-radius-button);
   cursor: pointer;
   padding: 0;
   color: var(--tp-square-fg-quieter);
@@ -278,7 +298,7 @@
 }
 
 .tonk-portals-root .square__name > span {
-  font-size: 12px;
+  font-size: var(--tp-font-size-body);
   font-weight: 500;
   color: var(--tp-square-fg-quiet);
   letter-spacing: -0.005em;
@@ -301,7 +321,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--tp-radius-button);
   color: var(--tp-square-fg-quieter);
   padding: 0;
   z-index: 5;
@@ -374,7 +394,7 @@
   gap: 2px;
   cursor: pointer;
   padding: 0;
-  border-radius: 4px;
+  border-radius: var(--tp-radius-button);
   color: var(--tp-square-fg-quieter);
   transition:
     background 120ms ease,
@@ -399,7 +419,7 @@
   right: 0;
   min-width: 140px;
   background: var(--tp-square-bg);
-  border-radius: 8px;
+  border-radius: var(--tp-radius-card);
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.18),
     0 0 0 1px rgba(0, 0, 0, 0.04);
@@ -415,11 +435,11 @@
   background: transparent;
   border: none;
   padding: 7px 10px;
-  font-size: 12px;
+  font-size: var(--tp-font-size-body);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--tp-radius-button);
   color: var(--tp-square-fg);
   white-space: nowrap;
   transition: background 80ms ease;
@@ -435,10 +455,10 @@
   right: 0;
   background: rgba(29, 29, 31, 0.92);
   color: white;
-  font-size: 11px;
+  font-size: var(--tp-font-size-small);
   font-weight: 500;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--tp-radius-button);
   white-space: nowrap;
   z-index: 51;
   letter-spacing: 0.02em;
@@ -460,12 +480,33 @@
   pointer-events: auto;
 }
 
+/* Vertical rail variant — used in doc mode where minimised tiles
+   stack on the bottom-left edge so they don't obscure the
+   reading column. */
+.tonk-portals-root .rail--vertical {
+  left: 12px;
+  bottom: 12px;
+  transform: none;
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 200px;
+  max-height: calc(100% - 24px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.tonk-portals-root .rail__tab--dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+  box-shadow: var(--tp-shadow-strong);
+}
+
 .tonk-portals-root .rail__tab {
   height: 36px;
   min-width: 100px;
   max-width: 180px;
   padding: 0 14px;
-  border-radius: 10px;
+  border-radius: var(--tp-radius-card);
   background: var(--tp-square-bg);
   box-shadow: var(--tp-shadow);
   border: 1px solid var(--tp-square-border);
@@ -473,7 +514,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--tp-font-size-body);
   font-family: inherit;
   color: var(--tp-square-fg-quiet);
   letter-spacing: 0.01em;
@@ -504,8 +545,8 @@
   right: 0;
   bottom: 0;
   overflow: hidden;
-  border-bottom-left-radius: 12px;
-  border-bottom-right-radius: 12px;
+  border-bottom-left-radius: var(--tp-radius-tile);
+  border-bottom-right-radius: var(--tp-radius-tile);
 }
 
 .tonk-portals-root .square__iframe {
@@ -541,7 +582,7 @@
   cursor: pointer;
   font-family: inherit;
   color: var(--tp-square-fg-quiet);
-  border-radius: 12px;
+  border-radius: var(--tp-radius-tile);
   transition:
     background 120ms ease,
     color 120ms ease;
@@ -564,9 +605,58 @@
 }
 
 .tonk-portals-root .square__pick-label {
-  font-size: 13px;
+  font-size: var(--tp-font-size-body);
   font-weight: 500;
   letter-spacing: 0.01em;
+}
+
+.tonk-portals-root .square__copy-scrim {
+  position: absolute;
+  inset: 0;
+  border-radius: 12px;
+  z-index: 20;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  animation: tp-scrim-in 180ms ease;
+}
+
+@keyframes tp-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.tonk-portals-root .square__copy-toast {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 20px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 12px;
+  text-align: center;
+  animation: tp-toast-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes tp-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tonk-portals-root .square__copy-toast-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.tonk-portals-root .square__copy-toast-sub {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .tonk-portals-root .picker-anchor {
@@ -580,12 +670,12 @@
 
 .tonk-portals-root .picker {
   pointer-events: auto;
-  width: 320px;
+  width: 280px;
   background: var(--tp-square-bg);
-  border-radius: 12px;
+  border-radius: var(--tp-radius-card);
   box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.18),
-    0 0 0 1px rgba(0, 0, 0, 0.04);
+    0 8px 24px rgba(0, 0, 0, 0.14),
+    0 0 0 1px rgba(0, 0, 0, 0.06);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -597,12 +687,11 @@
   width: 100%;
   border: none;
   outline: none;
-  padding: 12px 14px;
-  font-size: 13px;
+  padding: 8px 12px;
+  font-size: var(--tp-font-size-body);
   font-family: inherit;
   background: transparent;
   color: var(--tp-square-fg);
-  border-bottom: 1px solid var(--tp-square-border);
 }
 
 .tonk-portals-root .picker__input::placeholder {
@@ -612,48 +701,53 @@
 .tonk-portals-root .picker__list {
   list-style: none;
   margin: 0;
-  padding: 4px 0;
-  max-height: 220px;
+  padding: 3px 0;
+  max-height: 240px;
   overflow-y: auto;
-  border-bottom: 1px solid var(--tp-square-border);
+  border-top: 1px solid var(--tp-square-border);
 }
 
+/* Single-line row: name left, description right */
 .tonk-portals-root .picker__item {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px 14px;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
   cursor: pointer;
   transition: background 80ms ease;
 }
 
-.tonk-portals-root .picker__item--highlighted {
+.tonk-portals-root .picker__item--highlighted,
+.tonk-portals-root .picker__item:hover {
   background: var(--tp-square-hover);
 }
 
 .tonk-portals-root .picker__item-name {
-  font-size: 13px;
+  font-size: var(--tp-font-size-body);
   font-weight: 500;
   color: var(--tp-square-fg);
+  flex-shrink: 0;
 }
 
 .tonk-portals-root .picker__item-entity {
-  font-size: 11px;
+  font-size: var(--tp-font-size-small);
   color: var(--tp-square-fg-quieter);
   font-family: var(--wa-font-family-code, ui-monospace, monospace);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  margin-left: auto;
 }
 
 .tonk-portals-root .picker__list--builtins {
-  border-bottom: 1px solid var(--tp-square-border);
+  border-top: none;
 }
 
 .tonk-portals-root .picker__list--builtins::before {
   content: "Built-in";
   display: block;
-  padding: 6px 14px 2px;
+  padding: 5px 12px 2px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -666,16 +760,44 @@
   font-family: inherit;
 }
 
-.tonk-portals-root .picker__empty {
-  padding: 10px 14px;
-  font-size: 12px;
+.tonk-portals-root .picker__agent-link {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 12px 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.tonk-portals-root .picker__agent-link:hover {
+  background: var(--tp-square-hover);
+}
+
+.tonk-portals-root .picker__agent-link {
+  font-size: var(--tp-font-size-body);
+  font-weight: 500;
+  color: var(--tp-accent);
+}
+
+.tonk-portals-root .picker__agent-link-sub {
+  font-size: var(--tp-font-size-small);
+  font-weight: 400;
   color: var(--tp-square-fg-quieter);
-  border-bottom: 1px solid var(--tp-square-border);
+}
+
+.tonk-portals-root .picker__empty {
+  padding: 7px 12px;
+  font-size: var(--tp-font-size-body);
+  color: var(--tp-square-fg-quieter);
 }
 
 .tonk-portals-root .picker__error {
-  padding: 8px 14px;
-  font-size: 12px;
+  padding: 6px 12px;
+  font-size: var(--tp-font-size-body);
   color: var(--wa-color-danger-fill-loud, #e03131);
   background: color-mix(in oklab, var(--wa-color-danger-fill-loud, #e03131) 10%, transparent);
   border-bottom: 1px solid var(--tp-square-border);
@@ -683,17 +805,17 @@
 
 .tonk-portals-root .picker__actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   justify-content: flex-end;
-  padding: 10px 12px 4px;
+  padding: 6px 8px 5px;
 }
 
 .tonk-portals-root .picker__action {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--tp-font-size-small);
   font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 6px;
+  padding: 4px 10px;
+  border-radius: var(--tp-radius-button);
   border: 1px solid var(--tp-square-border);
   background: transparent;
   color: var(--tp-square-fg);
@@ -725,20 +847,89 @@
 }
 
 .tonk-portals-root .picker__hint {
-  padding: 8px 14px 12px;
-  font-size: 11px;
+  padding: 5px 10px 8px;
+  font-size: 10px;
   color: var(--tp-square-fg-quieter);
   letter-spacing: 0.01em;
 }
 
 .tonk-portals-root .picker__hint kbd {
   display: inline-block;
-  padding: 1px 5px;
+  padding: 1px 4px;
   background: var(--tp-square-hover);
   border-radius: 3px;
   font-family: inherit;
   font-size: 10px;
   color: var(--tp-square-fg-quiet);
+}
+
+/* Source panel — overlays the iframe inside square__body */
+.tonk-portals-root .source-panel {
+  position: absolute;
+  inset: 0;
+  background: var(--tp-square-bg);
+  display: flex;
+  flex-direction: column;
+  z-index: 5;
+  border-radius: 0 0 var(--tp-radius-tile) var(--tp-radius-tile);
+}
+
+.tonk-portals-root .source-panel__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--tp-square-border);
+  flex-shrink: 0;
+}
+
+.tonk-portals-root .source-panel__title {
+  font-size: var(--tp-font-size-small);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--tp-square-fg-quieter);
+}
+
+.tonk-portals-root .source-panel__close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: var(--tp-font-size-body);
+  color: var(--tp-square-fg-quieter);
+  padding: 2px 4px;
+  border-radius: var(--tp-radius-button);
+  line-height: 1;
+}
+
+.tonk-portals-root .source-panel__close:hover {
+  background: var(--tp-square-hover);
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .source-panel__body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+}
+
+.tonk-portals-root .source-panel__pre {
+  font-family: 'Inconsolata', Menlo, 'Courier New', monospace;
+  font-size: var(--tp-font-size-body);
+  line-height: 1.6;
+  color: var(--tp-square-fg);
+  white-space: pre;
+  margin: 0;
+}
+
+.tonk-portals-root .source-panel__loading,
+.tonk-portals-root .source-panel__error {
+  font-size: var(--tp-font-size-body);
+  color: var(--tp-square-fg-quieter);
+}
+
+.tonk-portals-root .source-panel__error {
+  color: var(--wa-color-danger-fill-loud, #e03131);
 }
 
 /* Resize handles */
@@ -833,28 +1024,34 @@
   justify-content: center;
   padding: 10px 12px;
   z-index: 30;
+  /* The header strip spans the full width of the portals root as a
+     flex item, sitting over the host page's top-left drawer chevron
+     and top-right share button. Let clicks fall through everywhere
+     except the actual mode-switch pill. */
+  pointer-events: none;
 }
 
 .tonk-portals-root .tp-mode-switch {
+  pointer-events: auto;
   display: inline-flex;
   background: var(--tp-square-bg);
-  border-radius: 999px;
+  border-radius: var(--tp-radius-card);
   box-shadow:
     0 2px 8px rgba(0, 0, 0, 0.08),
     0 0 0 1px var(--tp-square-border);
-  padding: 3px;
+  padding: 2px;
 }
 
 .tonk-portals-root .tp-mode-switch__btn {
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--tp-font-size-small);
   font-weight: 500;
   letter-spacing: 0.01em;
-  padding: 6px 14px;
+  padding: 3px 10px;
   border: none;
   background: transparent;
   color: var(--tp-square-fg-quiet);
-  border-radius: 999px;
+  border-radius: var(--tp-radius-button);
   cursor: pointer;
   transition: background 100ms ease, color 100ms ease;
 }
@@ -953,13 +1150,9 @@
   box-shadow: var(--tp-shadow-strong);
 }
 
-/* Rail repositioning for doc mode: bottom-left on desktop. */
-.tonk-portals-root .grid-wrapper--doc .rail {
-  left: 12px;
-  bottom: 12px;
-  transform: none;
-  max-width: calc(100% - 24px);
-}
+/* Doc-mode rail positioning is now handled by `.rail--vertical`
+   (bottom-left, column flow). Left intentionally empty here so the
+   selector still exists for any future doc-specific overrides. */
 
 /* Doc-mode inserter — notebook-style add-block divider between
    blocks. Spans both columns of the doc grid so it always breaks
@@ -1049,9 +1242,17 @@
   .tonk-portals-root .square--doc .square__name {
     padding-left: 32px;
   }
-  .tonk-portals-root .grid-wrapper--doc .rail {
+  /* On mobile the vertical rail would crowd a narrow viewport;
+     collapse it back to a horizontal row centered at the bottom. */
+  .tonk-portals-root .rail--vertical {
     left: 50%;
-    transform: translateX(-50%);
     bottom: 8px;
+    transform: translateX(-50%);
+    flex-direction: row;
+    align-items: center;
+    max-width: calc(100% - 32px);
+    max-height: none;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 }

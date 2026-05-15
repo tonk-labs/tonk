@@ -8,6 +8,7 @@ import { useDragReorder } from "../lib/useDragReorder";
 import { useResize, type Corner, type Edge } from "../lib/useResize";
 import { HostContext, RepoContext } from "../context";
 import { builtinSrc, isBuiltin } from "../lib/builtins";
+import { SourcePanel } from "./SourcePanel";
 
 type Props = {
   tile: Tile;
@@ -129,6 +130,9 @@ export function Square({
   const host = useContext(HostContext);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [locked, setLocked] = useState(false);
+  const [showSource, setShowSource] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { ghost: resizeGhost, beginResize } = useResize({
     cellSize,
@@ -179,6 +183,9 @@ export function Square({
     e.stopPropagation();
     const text = src ?? window.location.href;
     void navigator.clipboard.writeText(text);
+    setCopied(true);
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2500);
   };
 
   const handleRefresh = (e: React.MouseEvent) => {
@@ -190,7 +197,7 @@ export function Square({
 
   const handleViewSource = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (src) window.open(`view-source:${window.location.origin}${src}`, "_blank");
+    if (tile.entity) setShowSource((s) => !s);
   };
 
   const handleLock = (e: React.MouseEvent) => {
@@ -344,7 +351,23 @@ export function Square({
               title={titleLabel ?? tile.entity}
             />
           )}
+          {showSource && tile.entity && (
+            <SourcePanel
+              entity={tile.entity}
+              branch={branch}
+              onClose={() => setShowSource(false)}
+            />
+          )}
         </div>
+
+        {copied && (
+          <div className="square__copy-scrim">
+            <div className="square__copy-toast">
+              <span className="square__copy-toast-title">Link to this artifact copied</span>
+              <span className="square__copy-toast-sub">paste into your agent to make changes</span>
+            </div>
+          </div>
+        )}
 
         {!canRender && (
           <button

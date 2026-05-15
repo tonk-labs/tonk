@@ -171,6 +171,20 @@ export function Grid() {
     setPickerForId(newId);
   }, []);
 
+  const handleRailReorder = useCallback((from: number, to: number) => {
+    setTiles((prev) => {
+      const minPart = prev.filter((t) => t.minimized);
+      const activePart = prev.filter((t) => !t.minimized);
+      if (from < 0 || from >= minPart.length) return prev;
+      const clampedTo = Math.max(0, Math.min(minPart.length - 1, to));
+      if (clampedTo === from) return prev;
+      const next = [...minPart];
+      const [moved] = next.splice(from, 1);
+      next.splice(clampedTo, 0, moved!);
+      return [...next, ...activePart];
+    });
+  }, []);
+
   const handleToggleDocWidth = useCallback((id: string) => {
     setTiles((prev) =>
       prev.map((t) =>
@@ -336,7 +350,12 @@ export function Grid() {
             </Fragment>
           ))}
         </div>
-        <Rail tiles={minimized} onRestore={handleRestore} />
+        <Rail
+          tiles={minimized}
+          vertical
+          onRestore={handleRestore}
+          onReorder={handleRailReorder}
+        />
       </div>
     );
   }
@@ -417,7 +436,11 @@ export function Grid() {
             <div className="grid__empty">Drag anywhere to create a tile</div>
           )}
         </div>
-        <Rail tiles={minimized} onRestore={handleRestore} />
+        <Rail
+          tiles={minimized}
+          onRestore={handleRestore}
+          onReorder={handleRailReorder}
+        />
       </div>
     </div>
   );

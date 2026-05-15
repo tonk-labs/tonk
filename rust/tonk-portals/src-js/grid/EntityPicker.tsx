@@ -166,6 +166,17 @@ export function EntityPicker({ initialEntity, onPick, onClose }: Props) {
 
   const showLoadButton = looksLikeDid || suggestions.length === 0;
   const showBuiltins = !trimmed && !looksLikeDid;
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  const handleCopyAgentLink = (e: React.MouseEvent) => {
+    e.preventDefault();
+    void navigator.clipboard.writeText(window.location.href).then(() => {
+      setLinkCopied(true);
+      setTimeout(() => {
+        setLinkCopied(false);
+      }, 1800);
+    });
+  };
 
   return (
     <div
@@ -185,23 +196,34 @@ export function EntityPicker({ initialEntity, onPick, onClose }: Props) {
         disabled={busy}
       />
       {showBuiltins && (
-        <ul className="picker__list picker__list--builtins" role="listbox">
-          {BUILTIN_ARTIFACTS.map((b) => (
-            <li
-              key={b.entity}
-              role="option"
-              aria-selected={false}
-              className="picker__item picker__item--builtin"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                onPick({ entity: b.entity, name: b.name });
-              }}
-            >
-              <span className="picker__item-name">{b.name}</span>
-              <span className="picker__item-entity">{b.description}</span>
-            </li>
-          ))}
-        </ul>
+        <>
+          <ul className="picker__list picker__list--builtins" role="listbox">
+            {BUILTIN_ARTIFACTS.map((b) => (
+              <li
+                key={b.entity}
+                role="option"
+                aria-selected={false}
+                className="picker__item picker__item--builtin"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onPick({ entity: b.entity, name: b.name });
+                }}
+              >
+                <span className="picker__item-name">{b.name}</span>
+                <span className="picker__item-entity">{b.description}</span>
+              </li>
+            ))}
+          </ul>
+          <button
+            className="picker__agent-link"
+            onMouseDown={handleCopyAgentLink}
+          >
+            {linkCopied ? "Copied!" : "make your own"}
+            <span className="picker__agent-link-sub">
+              paste into your agent to build
+            </span>
+          </button>
+        </>
       )}
       {error && <div className="picker__error">{error}</div>}
       {!looksLikeDid && suggestions.length > 0 && (
@@ -227,9 +249,12 @@ export function EntityPicker({ initialEntity, onPick, onClose }: Props) {
           ))}
         </ul>
       )}
-      {!looksLikeDid && trimmed && suggestions.length === 0 && artifacts.length > 0 && (
-        <div className="picker__empty">No artifact matches "{trimmed}"</div>
-      )}
+      {!looksLikeDid &&
+        trimmed &&
+        suggestions.length === 0 &&
+        artifacts.length > 0 && (
+          <div className="picker__empty">No artifact matches "{trimmed}"</div>
+        )}
       {showLoadButton && (
         <div className="picker__actions">
           <button

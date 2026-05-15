@@ -100,7 +100,7 @@ pub fn TonkCreateSpace() -> impl IntoView {
 
     view! {
         <wa-dialog
-            label="Create space"
+            label="Create repo"
             prop:open=move || open.get()
             on:wa-after-hide=on_after_hide
         >
@@ -108,7 +108,7 @@ pub fn TonkCreateSpace() -> impl IntoView {
                 <div class="wa-stack wa-gap-s">
                     <wa-input
                         name="space-name"
-                        label="Space name"
+                        label="Repo name"
                         placeholder="e.g. pictures"
                         autocomplete="off"
                         autofocus

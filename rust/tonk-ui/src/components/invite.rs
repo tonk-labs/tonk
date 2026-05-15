@@ -126,7 +126,7 @@ pub fn TonkInviteDialog() -> impl IntoView {
 
     view! {
         <wa-dialog
-            label="Invite to space"
+            label="Invite to repo"
             prop:open=move || invite_space.get().is_some()
             on:wa-after-hide=on_after_hide
         >

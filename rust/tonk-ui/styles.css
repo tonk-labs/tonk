@@ -128,7 +128,12 @@ body {
     --wa-font-family-heading: "IBM Plex Sans Condensed", sans-serif;
     --wa-font-family-code: "Space Mono", monospace;
 
-    --wa-border-radius-scale: 0;
+    /* Light, consistent rounding across all chrome. Scale of 1
+       reproduces the WA default (s=3 / m=6 / l=12); we then pull
+       the panel/dialog radius back to 8px so modals don't look
+       softer than the floating bars they share the canvas with. */
+    --wa-border-radius-scale: 1;
+    --wa-panel-border-radius: 0.5rem;
 
     /* tldraw's 11-color palette (minus black and white), solid
        values from the editor's light-mode `DEFAULT_THEME`. Named
@@ -305,61 +310,127 @@ body:has(.space-portals) {
    split between two pill notches. */
 .portals-drawer {
     position: absolute;
-    top: 8px;
-    left: 8px;
+    top: 12px;
+    left: 12px;
     z-index: 30;
+    /* Lock the handle and the panel to the same width so the
+       notch reads as a single column whether open or closed.
+       The panel inherits via `width: 100%` below; the summary
+       (display: block) fills automatically. */
+    width: 16rem;
+    /* WA's native.css styles <details> directly: surface background,
+       border, border-radius, and `padding: 0 16px 16px 16px` when
+       open. That padding is what was producing the empty space
+       below the closed-handle's content when the drawer opened.
+       Reset all of it — our summary provides its own chrome and the
+       panel is absolutely positioned, so `<details>` needs to be
+       just a positioned container. */
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
 }
 /* `display: block` on the summary (rather than flex) is what
    actually hides the native disclosure triangle in WebKit/Blink
    — when summary uses flex, the marker lingers as a flex child
-   regardless of `list-style: none`. The flex centering moves to
-   the `__handle-inner` span instead. Small padding gives a
-   comfortable click target without ballooning the hit zone. */
-.portals-drawer__handle {
+   regardless of `list-style: none`. Inner rows handle their own
+   layout. */
+/* WA's native.css gives every <details>'s <summary> `padding:
+   var(--wa-space-m); justify-content: space-between;` and an
+   `::after` chevron rendered via SVG mask. Override all of them
+   so our handle just shows the row we wrote. The compound
+   selector below (`.portals-drawer > summary.portals-drawer__handle`)
+   has high enough specificity to beat WA's `details summary` rule. */
+.portals-drawer > summary.portals-drawer__handle {
     display: block;
+    padding: 0;
+    margin: 0;
+    justify-content: flex-start;
     cursor: pointer;
     list-style: none;
-    color: var(--wa-color-text-quiet);
     user-select: none;
-    padding: 8px;
-    border-radius: var(--wa-border-radius-s, 4px);
-    transition: color 120ms ease;
+    background: var(--wa-color-surface-default);
+    border: 1px solid var(--wa-color-neutral-border-quiet);
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    transition: box-shadow 120ms ease, border-color 120ms ease;
 }
-.portals-drawer__handle::-webkit-details-marker {
+.portals-drawer > summary.portals-drawer__handle::-webkit-details-marker,
+.portals-drawer > summary.portals-drawer__handle::marker {
     display: none;
-}
-.portals-drawer__handle::marker {
     content: "";
 }
-.portals-drawer__handle:hover {
-    color: var(--wa-color-text-normal);
+/* Suppress WA's `details summary::after` chevron — we render our
+   own caret inside the row markup. */
+.portals-drawer > summary.portals-drawer__handle::after {
+    display: none !important;
+    content: none !important;
 }
-.portals-drawer__handle-inner {
+.portals-drawer > summary.portals-drawer__handle:hover {
+    border-color: var(--wa-color-neutral-border-loud, #d0d0d0);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Pill content row: repo sigil + name + dropdown caret + status
+   badge. Sized larger than its 36px-tall content so the notch
+   carries enough physical weight to balance the high-contrast
+   blue Share button on the opposite corner — without colour to
+   anchor it, the neutral notch needs the extra mass. */
+.portals-drawer__row {
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 1rem;
-    height: 1rem;
+    gap: var(--wa-space-2xs);
+    min-height: 46px;
+    padding: 0 14px;
+    color: var(--wa-color-text-normal);
+}
+.portals-drawer__sigil {
+    width: 1.25rem;
+    height: 1.25rem;
+    flex: none;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-right: 2px;
+}
+.portals-drawer__title {
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 14rem;
 }
 .portals-drawer__caret {
-    font-size: 1rem;
+    font-size: 0.75rem;
+    color: var(--wa-color-text-quiet);
     transition: transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .portals-drawer[open] .portals-drawer__caret {
-    transform: rotate(90deg);
+    transform: rotate(180deg);
+}
+.portals-drawer__status {
+    margin-left: auto;
+    font-size: var(--wa-font-size-2xs, 11px);
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--wa-color-neutral-fill-quiet);
+    color: var(--wa-color-text-quiet);
+    letter-spacing: 0.01em;
 }
 .portals-drawer__panel {
     position: absolute;
-    top: calc(100% + var(--wa-space-2xs));
+    top: 100%;
     left: 0;
-    min-width: 14rem;
+    width: 100%;
     max-height: 70vh;
     overflow-y: auto;
     background: var(--wa-color-surface-default);
     border: 1px solid var(--wa-color-neutral-border-quiet);
     border-radius: var(--wa-border-radius-m, 8px);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-    padding: var(--wa-space-2xs);
+    padding: 4px;
     display: flex;
     flex-direction: column;
     gap: 1px;
@@ -390,47 +461,52 @@ body:has(.space-portals) {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.portals-drawer__divider {
-    height: 1px;
-    background: var(--wa-color-neutral-border-quiet);
-    margin: var(--wa-space-2xs) 0;
-}
 .portals-drawer__spaces {
     display: flex;
     flex-direction: column;
     gap: 1px;
 }
-.portals-switcher__item {
+/* Margin-top on the first sub-menu row visually separates the
+   action group (Back to hub, New repo) from the space list above,
+   without inserting an extra element that adds gap on both sides. */
+.portals-drawer__spaces .portals-switcher__item--hub {
+    margin-top: var(--wa-space-xs);
+}
+/* Single unified rule for every menu row inside the drawer
+   panel — space links (<a>), Back-to-hub (<a>), New repo
+   (<button>). Selector specificity (0,0,2,0) beats WebAwesome's
+   `button:not(input[type='file']) { ... }` block (0,0,1,2) so
+   the <button> doesn't inherit WA's form-control height,
+   padding, or center-justify, which previously made the New
+   repo row taller than its neighbours. */
+.portals-drawer__panel .portals-switcher__item {
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     gap: var(--wa-space-xs);
+    width: 100%;
+    height: auto;
+    min-height: 0;
     padding: var(--wa-space-2xs) var(--wa-space-xs);
-    text-decoration: none;
-    color: var(--wa-color-text-normal);
-    border-radius: var(--wa-border-radius-s, 4px);
-    font-size: var(--wa-font-size-s);
-}
-.portals-switcher__item:hover {
-    background: var(--wa-color-neutral-fill-quiet);
-}
-.portals-switcher__item--current {
-    background: var(--wa-color-neutral-fill-quiet);
-    font-weight: 600;
-}
-
-/* "Create new space" row at the bottom of the menu — same
-   visual rhythm as the space links (sigil-sized leading
-   glyph, then label) so it reads as part of the same list. */
-.portals-switcher__item--create {
     background: transparent;
     border: none;
-    border-top: 1px solid var(--wa-color-neutral-border-quiet);
-    margin-top: var(--wa-space-2xs);
-    padding-top: var(--wa-space-xs);
-    cursor: pointer;
-    font-family: inherit;
-    text-align: left;
+    border-radius: var(--wa-border-radius-s, 4px);
     color: var(--wa-color-text-normal);
+    text-decoration: none;
+    font-family: inherit;
+    font-size: var(--wa-font-size-s);
+    font-weight: inherit;
+    line-height: 1.4;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.portals-drawer__panel .portals-switcher__item:hover {
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.portals-drawer__panel .portals-switcher__item--current {
+    background: var(--wa-color-neutral-fill-quiet);
+    font-weight: 600;
 }
 .portals-switcher__plus {
     display: inline-flex;
@@ -443,10 +519,17 @@ body:has(.space-portals) {
     line-height: 1;
     font-weight: 400;
     color: var(--wa-color-text-quiet);
+}
+/* Both action rows carry the same dashed-circle glyph treatment
+   (a "+" for create, "←" for back) so they read as a coherent
+   sub-menu group with consistent visual weight. */
+.portals-switcher__item--create .portals-switcher__plus,
+.portals-switcher__item--hub .portals-switcher__plus {
     border: 1px dashed var(--wa-color-neutral-border-quiet);
     border-radius: 50%;
 }
-.portals-switcher__item--create:hover .portals-switcher__plus {
+.portals-switcher__item--create:hover .portals-switcher__plus,
+.portals-switcher__item--hub:hover .portals-switcher__plus {
     color: var(--wa-color-brand-fill-loud);
     border-color: var(--wa-color-brand-fill-loud);
 }
@@ -461,33 +544,37 @@ body:has(.space-portals) {
     white-space: nowrap;
 }
 
-/* Top-right corner share button. Plain `<button>` styled as a
-   bare 40px icon — no background, no border — so it blends into
-   the rail strip the same way the drawer chevron does. */
+/* Top-right corner share button — filled brand-blue pill,
+   matches the single highlight colour used across the shell.
+   Same border-radius / padding as the drawer handle for symmetry. */
 .portals-corner-share {
     position: absolute;
-    top: 0;
-    right: 0;
+    top: 12px;
+    right: 12px;
     z-index: 30;
-    width: 40px;
-    height: 40px;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: transparent;
+    min-height: 38px; /* drawer handle: 36px content + 2px border */
+    padding: 0 16px;
+    background: var(--wa-color-brand-fill-loud);
     border: none;
-    padding: 0;
-    margin: 0;
-    color: var(--wa-color-text-quiet);
-    cursor: pointer;
+    border-radius: 8px;
+    color: var(--wa-color-brand-on-loud, #ffffff);
     font-family: inherit;
-    transition: color 120ms ease;
+    font-size: var(--wa-font-size-s);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
+    transition: filter 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 }
 .portals-corner-share:hover {
-    color: var(--wa-color-text-normal);
+    filter: brightness(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
 }
-.portals-corner-share wa-icon {
-    font-size: 1rem;
+.portals-corner-share:active {
+    transform: translateY(1px);
 }
 
 /* Branches as collapsible rows. Each row's `<wa-details>`

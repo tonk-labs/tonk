@@ -1332,6 +1332,10 @@ where
     F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
 {
     let space_title = info.name.clone();
+    let space_sigil = did::did_key_prefix(info.subject.as_ref()).map(|bytes| {
+        let n = u32::from_be_bytes(bytes);
+        format!("0x{n:08x}")
+    });
 
     let repo_attr = Signal::derive_local(move || space_name.get().unwrap_or_default());
     let host_attr = Signal::derive_local(move || {
@@ -1344,24 +1348,15 @@ where
         !repo_attr.get().is_empty() && !host_attr.get().is_empty()
     });
 
-    // Profile data drives both the space-switcher dropdown
-    // (top-left notch) and the profile sigil (top-right notch).
-    // Provided by `TonkShell`; refetched on `/api/profile`
-    // broadcasts so a newly-created space appears without a
-    // reload.
+    // Profile data drives the space-switcher dropdown in the
+    // top-left notch. Provided by `TonkShell`; refetched on
+    // `/api/profile` broadcasts so a newly-created space appears
+    // without a reload.
     let profile_resource =
         use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
     let create_space_open =
         use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
     let open_create_space = move |_| create_space_open.set(true);
-
-    let profile_sigil = Signal::derive_local(move || {
-        let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
-        did::did_key_prefix(info.profile.subject.as_ref()).map(|bytes| {
-            let n = u32::from_be_bytes(bytes);
-            format!("0x{n:08x}")
-        })
-    });
 
     // Sorted list of (name, did:key:...) pairs for the
     // dropdown. Same shape and sort order as the sidebar
@@ -1393,26 +1388,20 @@ where
             // block`, so we put the flex centering on the inner span.
             <details class="portals-drawer">
                 <summary class="portals-drawer__handle" aria-label="Open menu">
-                    <span class="portals-drawer__handle-inner">
+                    <div class="portals-drawer__row">
+                        <tonk-sigil
+                            class="portals-drawer__sigil"
+                            value=space_sigil.clone().unwrap_or_default()
+                        ></tonk-sigil>
+                        <span class="portals-drawer__title">{ space_title_for_compare.clone() }</span>
                         <wa-icon
                             class="portals-drawer__caret"
-                            name="chevron-right"
+                            name="chevron-down"
                         ></wa-icon>
-                    </span>
+                        <span class="portals-drawer__status">"synced"</span>
+                    </div>
                 </summary>
                 <div class="portals-drawer__panel">
-                    <a
-                        class="portals-drawer__profile"
-                        href="/profile"
-                        aria-label="Profile"
-                    >
-                        <tonk-sigil
-                            class="portals-drawer__profile-sigil"
-                            value=move || profile_sigil.get()
-                        ></tonk-sigil>
-                        <span class="portals-drawer__profile-label">"Profile"</span>
-                    </a>
-                    <div class="portals-drawer__divider" role="separator"></div>
                     <div class="portals-drawer__spaces">
                         { move || space_entries.get().map(|spaces| {
                             spaces
@@ -1449,30 +1438,50 @@ where
                                 })
                                 .collect_view()
                         }) }
+                        {
+                            let title = space_title.clone();
+                            let hub_href = format!(
+                                "/space/{}",
+                                encode_uri_component(&title)
+                                    .as_string()
+                                    .unwrap_or(title),
+                            );
+                            view! {
+                                <a
+                                    class="portals-switcher__item portals-switcher__item--hub"
+                                    href=hub_href
+                                    aria-label="Back to repo hub"
+                                >
+                                    <span class="portals-switcher__plus" aria-hidden="true">"←"</span>
+                                    <span class="portals-switcher__item-name">"Back to hub"</span>
+                                </a>
+                            }
+                        }
                         <button
                             type="button"
                             class="portals-switcher__item portals-switcher__item--create"
                             on:click=open_create_space
-                            aria-label="Create new space"
+                            aria-label="Create new repo"
                         >
                             <span class="portals-switcher__plus" aria-hidden="true">"+"</span>
-                            <span class="portals-switcher__item-name">"New space"</span>
+                            <span class="portals-switcher__item-name">"New repo"</span>
                         </button>
                     </div>
                 </div>
             </details>
 
-            // Top-right corner: bare share icon button, also sized
-            // to fit inside the 40px rail strip. Plain `<button>`
-            // (not wa-button) so it has no chrome by default —
-            // matches the drawer chevron's "icon only" feel.
+            // Top-right corner: a filled pink "Share" pill — bigger
+            // hit target and clearer label than the previous bare
+            // icon. Plain `<button>` for full control of the pill
+            // chrome (wa-button's variant tokens don't quite match
+            // the hot-pink fill in the design).
             <button
                 type="button"
                 class="portals-corner-share"
                 on:click=on_share
                 aria-label="Invite someone to this space"
             >
-                <wa-icon name="share-nodes" variant="solid"></wa-icon>
+                "Share"
             </button>
 
             { move || if ready.get() {
