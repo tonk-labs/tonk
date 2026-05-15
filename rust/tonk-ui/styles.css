@@ -266,6 +266,15 @@ wa-page:has(.space-portals)::part(navigation-footer) {
     display: none;
 }
 
+/* The body's graph-paper dot grid (16px pitch) clashes with the
+   portals overlay's widget-pitch dot grid — two superimposed
+   lattices at different sizes read as visual noise. Suppress the
+   page-wide pattern on the portals page so only the portal grid
+   shows through (and only on hover/drag at that). */
+body:has(.space-portals) {
+    background-image: none;
+}
+
 /* Portals page: full-bleed grid with two floating "notch"
    controls (Figma-style) instead of a horizontal banner. The
    grid claims every vertical pixel; chrome lives in the
