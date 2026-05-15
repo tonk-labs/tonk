@@ -417,4 +417,264 @@ mod tests {
             Some("Alice"),
         );
     }
+
+    // --- Incremental update / DOM stability tests ---------------------
+    //
+    // The renderer's contract: subsequent applies reconcile in
+    // place. Existing iteration rows keep their node identity;
+    // new rows are added; vanished rows are removed; bindings
+    // whose rendered value didn't change don't touch the DOM. The
+    // tests below pin that contract — node identity preservation
+    // is what authors who attach imperative state (focus, event
+    // listeners, animation timelines) depend on.
+
+    #[dialog_common::test]
+    fn it_preserves_node_identity_for_unchanged_bindings_across_applies() {
+        let host = mount("<p>{name}</p>");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        let text_before = host
+            .query_selector("p")
+            .unwrap()
+            .expect("p mounted")
+            .first_child()
+            .expect("p has text child");
+
+        // Same payload → no DOM mutation expected.
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        let text_after = host
+            .query_selector("p")
+            .unwrap()
+            .expect("p still mounted")
+            .first_child()
+            .expect("p still has text child");
+
+        assert!(
+            text_before.is_same_node(Some(text_after.unchecked_ref())),
+            "text node identity should survive an unchanged apply",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_rewrites_only_changed_bindings_on_subsequent_apply() {
+        let host = mount("<article><h1>{name}</h1><p>{bio}</p></article>");
+        call_draw(
+            &host,
+            &detail("did:key:zX", &[("name", "Alice"), ("bio", "Hi")]),
+        );
+        let bio_text_before = host
+            .query_selector("p")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .expect("bio text node");
+
+        // Update only `name`; bio stays the same.
+        call_draw(
+            &host,
+            &detail("did:key:zX", &[("name", "Alicia"), ("bio", "Hi")]),
+        );
+
+        // The name change is reflected.
+        assert_eq!(
+            host.query_selector("h1")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Alicia"),
+        );
+        // Bio's text node was not rewritten — identity preserved.
+        let bio_text_after = host
+            .query_selector("p")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .expect("bio text node still present");
+        assert!(
+            bio_text_before.is_same_node(Some(bio_text_after.unchecked_ref())),
+            "unchanged bindings should not touch the DOM",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_appends_a_new_row_without_disturbing_existing_rows() {
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["did:key:zA", "did:key:zB"]))],
+            ),
+        );
+        let li_a_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(0)
+            .expect("first li mounted");
+        let li_b_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(1)
+            .expect("second li mounted");
+
+        // Add a third item — sorts last (zC > zB > zA).
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[(
+                    "item",
+                    serde_json::json!(["did:key:zA", "did:key:zB", "did:key:zC"]),
+                )],
+            ),
+        );
+
+        let after = host.query_selector_all("li").unwrap();
+        assert_eq!(after.length(), 3, "after apply: {}", host.inner_html());
+
+        // Existing rows kept their node identity. New row mounted
+        // in sorted position (last, since `zC` > `zB`).
+        let li_a_after = after.item(0).expect("first li");
+        let li_b_after = after.item(1).expect("second li");
+        assert!(
+            li_a_before.is_same_node(Some(li_a_after.unchecked_ref())),
+            "row for zA should be the same node before and after",
+        );
+        assert!(
+            li_b_before.is_same_node(Some(li_b_after.unchecked_ref())),
+            "row for zB should be the same node before and after",
+        );
+
+        let li_c = after.item(2).expect("third li");
+        let li_c_el = li_c.dyn_ref::<Element>().expect("li element");
+        assert_eq!(
+            li_c_el.text_content().as_deref(),
+            Some("did:key:zC"),
+            "new row's text",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_removes_a_row_for_a_vanished_key_without_touching_others() {
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[(
+                    "item",
+                    serde_json::json!(["did:key:zA", "did:key:zB", "did:key:zC"]),
+                )],
+            ),
+        );
+        let li_a_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(0)
+            .expect("zA row");
+        let li_c_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(2)
+            .expect("zC row");
+
+        // Drop zB.
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["did:key:zA", "did:key:zC"]))],
+            ),
+        );
+
+        let after = host.query_selector_all("li").unwrap();
+        assert_eq!(after.length(), 2);
+        let li_a_after = after.item(0).expect("first li");
+        let li_c_after = after.item(1).expect("second li");
+        assert!(
+            li_a_before.is_same_node(Some(li_a_after.unchecked_ref())),
+            "zA row identity preserved",
+        );
+        assert!(
+            li_c_before.is_same_node(Some(li_c_after.unchecked_ref())),
+            "zC row identity preserved",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_handles_successive_appends_without_duplicating_existing_rows() {
+        // Simulates the user-reported bug shape: list starts with
+        // one item, items get appended over multiple applies.
+        // After three appends we should have four distinct rows
+        // with no duplication or content bleed.
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zList", &[("item", serde_json::json!(["zA"]))]),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zA", "zB"]))],
+            ),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zA", "zB", "zC"]))],
+            ),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zA", "zB", "zC", "zD"]))],
+            ),
+        );
+
+        let items = host.query_selector_all("li").unwrap();
+        let texts: Vec<String> = (0..items.length())
+            .filter_map(|i| items.item(i).and_then(|n| n.text_content()))
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["zA", "zB", "zC", "zD"],
+            "expected four distinct rows in sorted order, got: {}",
+            host.inner_html(),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_inserts_new_rows_in_sorted_key_order() {
+        // Start with the middle key; add a key that sorts before
+        // it and one that sorts after.
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zList", &[("item", serde_json::json!(["zB"]))]),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zB", "zA", "zC"]))],
+            ),
+        );
+
+        let items: Vec<String> = (0..host.query_selector_all("li").unwrap().length())
+            .filter_map(|i| {
+                host.query_selector_all("li")
+                    .unwrap()
+                    .item(i)
+                    .and_then(|n| n.text_content())
+            })
+            .collect();
+        assert_eq!(
+            items,
+            vec!["zA".to_owned(), "zB".to_owned(), "zC".to_owned()],
+            "rows should appear in sorted-key order regardless of input array order",
+        );
+    }
 }

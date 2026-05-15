@@ -64,6 +64,23 @@ struct Slide {
 
 /// Internal lifecycle state shared across async closures.
 struct Inner {
+    /// Set to true by `disconnected_callback` so any async
+    /// chain still running against this state (typically one
+    /// blocked on phase-1 fetch when the element detached) can
+    /// bail before mutating the host. Without this guard a
+    /// stale chain's view-frame handler can mount a slide into
+    /// a host whose `<tonk-display>` instance has since been
+    /// re-attached and is running a *different* state — yielding
+    /// duplicated `<tonk-view>` children under one host.
+    disposed: bool,
+    /// Monotonic counter incremented every time `start_flows`
+    /// kicks off a new lifecycle on the *current* state. Each
+    /// spawned async chain captures the value at spawn time and
+    /// bails on any step that runs after the generation has
+    /// moved on. Generation is per-`Inner`; the disposed flag
+    /// covers the cross-`Inner` race where a custom element
+    /// detaches and re-attaches.
+    generation: u64,
     /// Aborts the view (or views-for-model) subscription on
     /// disconnect / attribute change.
     view_abort: Option<AbortController>,
@@ -95,6 +112,8 @@ struct Inner {
 impl Inner {
     fn new() -> Self {
         Self {
+            disposed: false,
+            generation: 0,
             view_abort: None,
             entity_abort: None,
             last_conclusion: None,
@@ -143,7 +162,9 @@ impl CustomElement for TonkDisplay {
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
-            state.borrow_mut().abort_all();
+            let mut inner = state.borrow_mut();
+            inner.disposed = true;
+            inner.abort_all();
         }
     }
 
@@ -187,11 +208,25 @@ fn already_registered() -> bool {
 }
 
 fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
+    // Bump the generation so any already-spawned flow chains
+    // running concurrently bail at their next generation check
+    // instead of overwriting our state.
+    let generation = {
+        let mut s = state.borrow_mut();
+        s.generation = s.generation.wrapping_add(1);
+        s.generation
+    };
     let host_clone = host.clone();
     let state_clone = state.clone();
     spawn_local(async move {
-        if let Err(err) = run(&host_clone, state_clone.clone()).await {
-            fail(&host_clone, &state_clone, err);
+        if let Err(err) = run(&host_clone, state_clone.clone(), generation).await {
+            // Only surface the error if we're still the current
+            // generation — a stale flow's failure (e.g. aborted
+            // fetch) shouldn't overwrite a healthy newer flow's
+            // state.
+            if state_clone.borrow().generation == generation {
+                fail(&host_clone, &state_clone, err);
+            }
         }
     });
 }
@@ -220,7 +255,26 @@ fn clear_host(host: &Element, inner: &mut Inner) {
     host.set_inner_html("");
 }
 
-async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetail> {
+/// Bail if this flow's generation has been superseded or the
+/// element this state belongs to has been disconnected. Either
+/// condition means our async chain has lost the right to mutate
+/// the host — a newer flow is in charge (or no flow is, if the
+/// element is gone). Returning Err here causes the caller to
+/// short-circuit without touching the DOM.
+fn check_generation(state: &Rc<RefCell<Inner>>, generation: u64) -> Result<(), ErrorDetail> {
+    let s = state.borrow();
+    if s.disposed || s.generation != generation {
+        Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"))
+    } else {
+        Ok(())
+    }
+}
+
+async fn run(
+    host: &Element,
+    state: Rc<RefCell<Inner>>,
+    generation: u64,
+) -> Result<(), ErrorDetail> {
     let entity = host
         .get_attribute("entity")
         .filter(|s| !s.is_empty())
@@ -263,6 +317,7 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
     let phase1_body = serde_json::to_string(&phase1_query(&parsed))
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
     let (model_entity, descriptor_json) = phase1_lookup(&url, &phase1_body).await?;
+    check_generation(&state, generation)?;
 
     // Build the view subscription query: pin-by-name in single
     // mode, all-views-for-model in carousel mode.
@@ -289,11 +344,30 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
     let single_mode = view.is_some();
     ensure_carousel(host, &state, single_mode);
 
-    let view_abort = open_view_stream(&url, &view_body, host.clone(), state.clone()).await?;
-    let entity_abort = open_entity_stream(&url, &entity_body, host.clone(), state.clone()).await?;
+    let view_abort =
+        open_view_stream(&url, &view_body, host.clone(), state.clone(), generation).await?;
+    // Check generation again — between opening view and entity
+    // streams, attribute_changed_callback may have fired and
+    // superseded us. If so, abort the view stream we just opened
+    // (otherwise its handler keeps pushing slides), and bail.
+    if check_generation(&state, generation).is_err() {
+        view_abort.abort();
+        return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
+    }
+    let entity_abort =
+        open_entity_stream(&url, &entity_body, host.clone(), state.clone(), generation).await?;
 
     {
         let mut s = state.borrow_mut();
+        // Final generation check — if a newer flow ran between
+        // opening entity_stream and storing the controllers,
+        // abort what we just opened so we don't orphan them
+        // (the newer flow's controllers are already stored).
+        if s.generation != generation {
+            view_abort.abort();
+            entity_abort.abort();
+            return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
+        }
         s.view_abort = Some(view_abort);
         s.entity_abort = Some(entity_abort);
     }
@@ -306,14 +380,28 @@ async fn open_view_stream(
     body: &str,
     host: Element,
     state: Rc<RefCell<Inner>>,
+    generation: u64,
 ) -> Result<AbortController, ErrorDetail> {
     let host_for_frame = host.clone();
     let host_for_err = host.clone();
     let state_for_err = state.clone();
+    let state_for_frame = state.clone();
     open_sse(
         url,
         body,
         move |frame: &str| {
+            // Discard frames from a superseded or disposed flow
+            // — a stale reader can have a queued chunk in flight
+            // when the element detaches or `attribute_changed_callback`
+            // aborts us. Without this guard the stale frame
+            // pushes a slide into a state whose host is no longer
+            // ours, yielding duplicated `<tonk-view>` children.
+            {
+                let s = state_for_frame.borrow();
+                if s.disposed || s.generation != generation {
+                    return;
+                }
+            }
             let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
                 Ok(v) => v,
                 Err(e) => {
@@ -328,6 +416,11 @@ async fn open_view_stream(
             handle_view_frame(&host_for_frame, &state, conclusions);
         },
         move |err: ErrorDetail| {
+            let s = state_for_err.borrow();
+            if s.disposed || s.generation != generation {
+                return;
+            }
+            drop(s);
             fail(&host_for_err, &state_for_err, err);
         },
     )
@@ -339,14 +432,23 @@ async fn open_entity_stream(
     body: &str,
     host: Element,
     state: Rc<RefCell<Inner>>,
+    generation: u64,
 ) -> Result<AbortController, ErrorDetail> {
     let host_for_frame = host.clone();
     let host_for_err = host.clone();
     let state_for_err = state.clone();
+    let state_for_frame = state.clone();
     open_sse(
         url,
         body,
         move |frame: &str| {
+            // Same stale-frame guard as in `open_view_stream`.
+            {
+                let s = state_for_frame.borrow();
+                if s.disposed || s.generation != generation {
+                    return;
+                }
+            }
             let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
                 Ok(v) => v,
                 Err(e) => {
@@ -361,6 +463,11 @@ async fn open_entity_stream(
             handle_entity_frame(&host_for_frame, &state, conclusions);
         },
         move |err: ErrorDetail| {
+            let s = state_for_err.borrow();
+            if s.disposed || s.generation != generation {
+                return;
+            }
+            drop(s);
             fail(&host_for_err, &state_for_err, err);
         },
     )
