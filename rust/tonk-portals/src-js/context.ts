@@ -5,3 +5,6 @@ import { createContext } from "react";
 // branch context — that's per-tile (see types.ts).
 export const RepoContext = createContext<string>("");
 export const HostContext = createContext<string>("");
+
+export type ViewMode = "canvas" | "doc";
+export const ViewModeContext = createContext<ViewMode>("canvas");

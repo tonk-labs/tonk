@@ -221,17 +221,6 @@ export function EntityPicker({ initialEntity, onPick, onClose }: Props) {
           </button>
         </div>
       )}
-      <div className="picker__hint">
-        {suggestions.length > 0 ? (
-          <>
-            <kbd>↑↓</kbd> select · <kbd>Enter</kbd> open · <kbd>Esc</kbd> cancel
-          </>
-        ) : (
-          <>
-            <kbd>Enter</kbd> to load · <kbd>Esc</kbd> to cancel
-          </>
-        )}
-      </div>
     </div>
   );
 }

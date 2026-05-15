@@ -19,6 +19,7 @@
   flex: 1;
   min-height: 0;
   display: flex;
+  flex-direction: column;
   /* Theme-aware tokens. We deliberately *don't* hard-code light
      colours here — the host page picks the WA theme (default is
      fairly dark/brutalist on this site), so the tile chrome and
@@ -71,12 +72,15 @@
 
 .tonk-portals-root .grid {
   position: absolute;
-  top: 0;
-  left: 0;
+  cursor: crosshair;
+}
+
+.tonk-portals-root .grid--dragging {
+  cursor: crosshair;
 }
 
 .tonk-portals-root .grid--empty {
-  cursor: pointer;
+  cursor: crosshair;
 }
 
 .tonk-portals-root .grid__empty {
@@ -91,48 +95,44 @@
   letter-spacing: 0.01em;
 }
 
-/* Edge rails: invisible hit zones around the grid that map mouse
- * position to (edge, target node) for the BSP insert. The faint
- * highlight on hover is the only persistent affordance — the real
- * preview is the post-insert tile movement plus the blue ghost. */
-.tonk-portals-root .edge-rails {
+/* Dot grid overlay — fades in on hover / during drag or resize */
+.tonk-portals-root .grid-overlay {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
 }
 
-.tonk-portals-root .edge-zone {
+.tonk-portals-root .grid:hover .grid-overlay {
+  opacity: 0.35;
+}
+
+.tonk-portals-root .grid--dragging .grid-overlay,
+.tonk-portals-root .grid:has(.square--active) .grid-overlay {
+  opacity: 1;
+}
+
+.tonk-portals-root .grid-dot {
+  position: absolute;
+  width: 3px;
+  height: 3px;
+  margin-left: -1.5px;
+  margin-top: -1.5px;
+  border-radius: 50%;
+  background: var(--tp-dot);
+}
+
+/* Selection cell — shown during draw-to-create and during drag/resize ghost */
+.tonk-portals-root .selection-cell {
   position: absolute;
   top: 0;
   left: 0;
-  background: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-  pointer-events: auto;
-  transition: background 120ms ease;
-  border-radius: 6px;
-}
-
-.tonk-portals-root .edge-zone:hover,
-.tonk-portals-root .edge-zone--hot {
   background: var(--tp-accent-soft);
-}
-
-.tonk-portals-root .insert-ghost {
-  position: absolute;
-  top: 0;
-  left: 0;
+  border: 1.5px solid var(--tp-accent);
+  border-radius: 8px;
   pointer-events: none;
-  background: var(--tp-accent-soft);
-  border: 2px dashed var(--tp-accent);
-  border-radius: 12px;
-  z-index: 6;
-  transition:
-    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    width 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    height 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
 }
 
 .tonk-portals-root .square {
@@ -143,11 +143,10 @@
   border-radius: 12px;
   box-shadow: var(--tp-shadow);
   cursor: pointer;
-  transition:
-    transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    width 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    height 200ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    box-shadow 150ms ease;
+  /* No transform/size transition: the tile snaps to its committed
+     position the instant the drag/resize ends — no post-drop glide.
+     Only box-shadow still eases (for hover/selected states). */
+  transition: box-shadow 180ms ease;
 }
 
 .tonk-portals-root .square--selected {
@@ -162,9 +161,106 @@
   left: 0;
   right: 0;
   height: 28px;
+  cursor: grab;
   border-top-left-radius: 12px;
   border-top-right-radius: 12px;
+  touch-action: none;
   z-index: 1;
+}
+
+.tonk-portals-root .square__bar:active {
+  cursor: grabbing;
+}
+
+/* Drag-handle dots — 2 cols × 3 rows, floating outside the square to the left.
+   padding-right bridges the gap back to the square so hover doesn't drop out. */
+.tonk-portals-root .square__drag-dots {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 7px;
+  display: grid;
+  grid-template-columns: repeat(2, 3px);
+  grid-template-rows: repeat(3, 3px);
+  gap: 3px;
+  padding: 6px;
+  padding-right: 16px; /* bridge the gap to the square edge */
+  margin: -6px;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.tonk-portals-root .square__drag-dots:active {
+  cursor: grabbing;
+}
+
+.tonk-portals-root .square:hover .square__drag-dots,
+.tonk-portals-root .square__drag-dots:hover {
+  opacity: 1;
+}
+
+.tonk-portals-root .square__drag-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--tp-square-fg-quieter);
+}
+
+/* Pill menu — top-left of the window, half above */
+.tonk-portals-root .tile-pill {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  transform: translateY(-50%);
+  z-index: 8;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  background: var(--tp-square-bg);
+  border-radius: 999px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.12),
+    0 0 0 1px var(--tp-square-border);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.tonk-portals-root .square:hover .tile-pill {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tonk-portals-root .tile-pill__btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  color: var(--tp-square-fg-quieter);
+  transition: background 100ms ease, color 100ms ease;
+}
+
+.tonk-portals-root .tile-pill__btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.tonk-portals-root .tile-pill__btn:hover {
+  background: var(--tp-square-hover);
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .tile-pill__btn--active {
+  color: var(--tp-accent);
 }
 
 .tonk-portals-root .square__name {
@@ -177,7 +273,8 @@
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  padding: 0 96px;
+  /* right: room for 3 window buttons */
+  padding: 0 80px 0 12px;
 }
 
 .tonk-portals-root .square__name > span {
@@ -213,9 +310,10 @@
     color 120ms ease;
 }
 
-.tonk-portals-root .square__close { left: 18px; }
-.tonk-portals-root .square__minimize { left: 44px; }
-.tonk-portals-root .square__fullscreen { left: 70px; }
+/* Window controls — right-aligned */
+.tonk-portals-root .square__close    { right: 4px;  left: auto; }
+.tonk-portals-root .square__fullscreen { right: 28px; left: auto; }
+.tonk-portals-root .square__minimize { right: 52px; left: auto; }
 
 .tonk-portals-root .square__minimize:hover,
 .tonk-portals-root .square__fullscreen:hover,
@@ -623,6 +721,78 @@
   color: var(--tp-square-fg-quiet);
 }
 
+/* Resize handles */
+.tonk-portals-root .square__edge {
+  position: absolute;
+  touch-action: none;
+  z-index: 3;
+}
+
+.tonk-portals-root .square__edge--t {
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.tonk-portals-root .square__edge--b {
+  bottom: 0;
+  left: 14px;
+  right: 14px;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+.tonk-portals-root .square__edge--l {
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.tonk-portals-root .square__edge--r {
+  top: 14px;
+  bottom: 14px;
+  right: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+
+.tonk-portals-root .square__handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  touch-action: none;
+  z-index: 4;
+}
+
+.tonk-portals-root .square__handle--tl { top: 0; left: 0; cursor: nwse-resize; }
+.tonk-portals-root .square__handle--tr { top: 0; right: 0; cursor: nesw-resize; }
+.tonk-portals-root .square__handle--bl { bottom: 0; left: 0; cursor: nesw-resize; }
+.tonk-portals-root .square__handle--br { bottom: 0; right: 0; cursor: nwse-resize; }
+
+/* square--active: tile being dragged/resized fades back so ghost is legible */
+.tonk-portals-root .square--active {
+  opacity: 0.35;
+  transition: opacity 100ms ease;
+}
+
+/* View-transition timing for the canvas ↔ doc mode swap. Each tile
+   carries `view-transition-name: tp-sq-<id>` so the browser morphs
+   it between modes; everything else falls under the `root` group
+   and just cross-fades. */
+::view-transition-group(*) {
+  animation-duration: 480ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+}
+
 @keyframes tp-pop {
   from {
     opacity: 0;
@@ -631,5 +801,237 @@
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+/* ---------------- View-mode header ---------------- */
+
+.tonk-portals-root .tp-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  z-index: 30;
+}
+
+.tonk-portals-root .tp-mode-switch {
+  display: inline-flex;
+  background: var(--tp-square-bg);
+  border-radius: 999px;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    0 0 0 1px var(--tp-square-border);
+  padding: 3px;
+}
+
+.tonk-portals-root .tp-mode-switch__btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  color: var(--tp-square-fg-quiet);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+.tonk-portals-root .tp-mode-switch__btn:hover {
+  color: var(--tp-square-fg);
+}
+
+.tonk-portals-root .tp-mode-switch__btn--active {
+  background: var(--tp-accent);
+  color: white;
+}
+
+.tonk-portals-root .tp-mode-switch__btn--active:hover {
+  color: white;
+}
+
+/* ---------------- Doc mode ---------------- */
+
+.tonk-portals-root .grid-wrapper--doc {
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: block;
+}
+
+.tonk-portals-root .grid--doc {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 18px;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 12px 24px 80px;
+}
+
+.tonk-portals-root .grid__empty--doc {
+  position: static;
+  grid-column: 1 / -1;
+  padding: 80px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tonk-portals-root .square--doc {
+  position: relative;
+  top: auto;
+  left: auto;
+  transition:
+    box-shadow 150ms ease,
+    opacity 120ms ease;
+}
+
+.tonk-portals-root .square--doc-full {
+  grid-column: 1 / -1;
+  height: 480px;
+}
+
+.tonk-portals-root .square--doc-half {
+  grid-column: span 1;
+  height: 360px;
+}
+
+/* In doc mode, drag dots stay outside the block to the left (same
+   anchor as canvas mode) but are always visible — they're the only
+   reorder affordance. */
+.tonk-portals-root .square--doc .square__drag-dots {
+  opacity: 0.55;
+}
+
+.tonk-portals-root .square--doc:hover .square__drag-dots,
+.tonk-portals-root .square--doc .square__drag-dots:hover {
+  opacity: 1;
+}
+
+/* In doc mode, the top-right window controls collapse to a single
+   minimize button (it sends the block to the Rail). Close/fullscreen
+   live in canvas only. */
+.tonk-portals-root .square--doc .square__close,
+.tonk-portals-root .square--doc .square__fullscreen {
+  display: none;
+}
+
+.tonk-portals-root .square--doc .square__minimize {
+  right: 4px;
+}
+
+/* Title-bar right padding shrinks since only one button lives there. */
+.tonk-portals-root .square--doc .square__name {
+  padding-right: 36px;
+}
+
+/* Reorder visual — the block being dragged dims so the resting
+   stack remains the reference frame. */
+.tonk-portals-root .square--reorder-active {
+  opacity: 0.45;
+  box-shadow: var(--tp-shadow-strong);
+}
+
+/* Rail repositioning for doc mode: bottom-left on desktop. */
+.tonk-portals-root .grid-wrapper--doc .rail {
+  left: 12px;
+  bottom: 12px;
+  transform: none;
+  max-width: calc(100% - 24px);
+}
+
+/* Doc-mode inserter — notebook-style add-block divider between
+   blocks. Spans both columns of the doc grid so it always breaks
+   row flow (intentional: half blocks adjacent to an inserter no
+   longer share a row). */
+.tonk-portals-root .doc-inserter {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin: -6px 0;
+}
+
+.tonk-portals-root .doc-inserter::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--tp-square-border);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.tonk-portals-root .doc-inserter:hover::before {
+  opacity: 1;
+}
+
+.tonk-portals-root .doc-inserter__btn {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--tp-square-bg);
+  border: 1px solid var(--tp-square-border);
+  color: var(--tp-square-fg-quieter);
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.tonk-portals-root .doc-inserter:hover .doc-inserter__btn {
+  opacity: 1;
+}
+
+.tonk-portals-root .doc-inserter__btn:hover {
+  color: var(--tp-accent);
+  border-color: var(--tp-accent);
+}
+
+/* Mobile: doc mode collapses to a single column so half-width
+   blocks stack like full-width ones. Drag dots tuck inside the
+   block (no room to the left); Rail spans the bottom. */
+@media (max-width: 768px) {
+  .tonk-portals-root .grid--doc {
+    grid-template-columns: 1fr;
+    padding: 8px 12px 80px;
+    gap: 12px;
+  }
+  .tonk-portals-root .square--doc-half {
+    height: 360px;
+  }
+  .tonk-portals-root .tp-header {
+    padding: 8px;
+  }
+  .tonk-portals-root .square--doc .square__drag-dots {
+    right: auto;
+    left: 8px;
+    top: 8px;
+    opacity: 0.8;
+  }
+  .tonk-portals-root .square--doc .square__name {
+    padding-left: 32px;
+  }
+  .tonk-portals-root .grid-wrapper--doc .rail {
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 8px;
   }
 }
