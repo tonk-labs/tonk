@@ -26,6 +26,7 @@ web-sys = { workspace = true, features = [
     "AbortController",
     "AbortSignal",
     "Attr",
+    "Comment",
     "CustomElementRegistry",
     "CustomEvent",
     "CustomEventInit",

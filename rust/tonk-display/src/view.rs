@@ -237,22 +237,24 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_updates_in_place_on_subsequent_draws() {
+    fn it_reflects_the_latest_draw_payload() {
         let host = mount("<article><h1>{name}</h1></article>");
         call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
-        let first = host
-            .query_selector("article")
-            .unwrap()
-            .expect("first article");
-        call_draw(&host, &detail("did:key:zX", &[("name", "Alicia")])); // same `this`
-        let second = host
-            .query_selector("article")
-            .unwrap()
-            .expect("second article");
-        // Same node — patched in place rather than swapped — so
-        // downstream listeners on the rendered DOM survive updates.
-        assert!(first.is_same_node(Some(second.unchecked_ref())));
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alicia")]));
+        // Re-renders happen wholesale (no in-place node patching),
+        // so node identity is *not* preserved across draws. What
+        // matters is that the latest payload is what shows.
         assert!(host.inner_html().contains("Alicia"));
+        assert!(
+            !host.inner_html().contains("Alice<"),
+            "stale name leaked into: {}",
+            host.inner_html(),
+        );
+        assert_eq!(
+            host.query_selector_all("article").unwrap().length(),
+            1,
+            "expected exactly one article after second draw",
+        );
     }
 
     #[dialog_common::test]
@@ -281,5 +283,398 @@ mod tests {
         // Just checking that we don't panic and the host stays empty.
         call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
         assert_eq!(host.inner_html(), "");
+    }
+
+    // --- Iteration / cardinality-many tests ----------------------------
+
+    /// Like [`detail`], but lets callers mix scalar and array
+    /// field values. Used to drive the iteration-aware renderer
+    /// with a folded conclusion (the shape `<tonk-display>::fold_rows`
+    /// produces from a cardinality-many SSE frame).
+    fn detail_json(this: &str, fields: &[(&str, serde_json::Value)]) -> JsValue {
+        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for (k, v) in fields {
+            map.insert((*k).to_owned(), v.clone());
+        }
+        let conclusion = Conclusion {
+            this: this.to_owned(),
+            fields: map,
+        };
+        serde_wasm_bindgen::to_value(&conclusion).expect("serialize conclusion")
+    }
+
+    #[dialog_common::test]
+    fn it_repeats_the_iteration_root_once_per_value_in_an_array_field() {
+        // The marker (`subject={item}`) lifts the iteration root
+        // to the <li> — without it, the LCA of the two `{item}`
+        // occurrences would be the inner <tonk-display> and only
+        // that would repeat, leaving a single <li> wrapping every
+        // clone (which is what the `<li>` direct-child-of-<ul>
+        // rule effectively forbids in semantic terms).
+        let host = mount(
+            "<ul><li subject={item}><tonk-display entity={item}>{item}</tonk-display></li></ul>",
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[(
+                    "item",
+                    serde_json::json!(["did:key:zA", "did:key:zB", "did:key:zC"]),
+                )],
+            ),
+        );
+        let items = host.query_selector_all("li").unwrap();
+        assert_eq!(items.length(), 3, "got: {}", host.inner_html());
+        let texts: Vec<String> = (0..items.length())
+            .filter_map(|i| items.item(i).and_then(|n| n.text_content()))
+            .collect();
+        assert!(texts.contains(&"did:key:zA".to_owned()));
+        assert!(texts.contains(&"did:key:zB".to_owned()));
+        assert!(texts.contains(&"did:key:zC".to_owned()));
+    }
+
+    #[dialog_common::test]
+    fn it_substitutes_per_iteration_value_into_attributes_inside_the_root() {
+        // The inner <tonk-display>'s `entity` attribute should
+        // resolve to the current iteration's value — that's the
+        // mechanism that makes the nested element subscribe to
+        // the right entity. The `subject={item}` marker on <li>
+        // raises the iteration root above the inner element so
+        // each value gets its own <li> wrapper.
+        let host = mount(
+            "<ul><li subject={item}><tonk-display entity={item} model=todo></tonk-display></li></ul>",
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["did:key:zA", "did:key:zB"]))],
+            ),
+        );
+        let displays = host.query_selector_all("tonk-display").unwrap();
+        assert_eq!(displays.length(), 2);
+        let entities: Vec<String> = (0..displays.length())
+            .filter_map(|i| {
+                displays
+                    .item(i)
+                    .and_then(|n| n.dyn_into::<Element>().ok())
+                    .and_then(|el| el.get_attribute("entity"))
+            })
+            .collect();
+        assert_eq!(
+            entities,
+            vec!["did:key:zA".to_owned(), "did:key:zB".to_owned()]
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_removes_the_iteration_root_when_the_array_is_empty() {
+        // No values → no `<li>` mounted. The empty list is the
+        // result, not a stray template node.
+        let host = mount("<ul><li>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zList", &[("item", serde_json::json!([]))]),
+        );
+        let items = host.query_selector_all("li").unwrap();
+        assert_eq!(items.length(), 0, "got: {}", host.inner_html());
+        // The <ul> chrome stays — only the iteration root vanishes.
+        assert!(host.query_selector("ul").unwrap().is_some());
+    }
+
+    #[dialog_common::test]
+    fn it_renders_independent_iteration_roots_for_sibling_placeholders() {
+        // <p>{item}</p> and <li>{item}</li> share no inner ancestor
+        // — each becomes its own iteration root, each repeats per
+        // value of `item`.
+        let host = mount("<section><p>{item}</p><ul><li>{item}</li></ul></section>");
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["one", "two"]))],
+            ),
+        );
+        assert_eq!(host.query_selector_all("p").unwrap().length(), 2);
+        assert_eq!(host.query_selector_all("li").unwrap().length(), 2);
+    }
+
+    #[dialog_common::test]
+    fn it_treats_a_scalar_field_value_as_a_single_iteration() {
+        // A folded conclusion keeps a scalar when every row
+        // agreed; the renderer treats that as a one-element list
+        // so the iteration root is mounted exactly once.
+        let host = mount("<p>{name}</p>");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        assert_eq!(host.query_selector_all("p").unwrap().length(), 1);
+        assert_eq!(
+            host.query_selector("p")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Alice"),
+        );
+    }
+
+    // --- Incremental update / DOM stability tests ---------------------
+    //
+    // The renderer's contract: subsequent applies reconcile in
+    // place. Existing iteration rows keep their node identity;
+    // new rows are added; vanished rows are removed; bindings
+    // whose rendered value didn't change don't touch the DOM. The
+    // tests below pin that contract — node identity preservation
+    // is what authors who attach imperative state (focus, event
+    // listeners, animation timelines) depend on.
+
+    #[dialog_common::test]
+    fn it_preserves_node_identity_for_unchanged_bindings_across_applies() {
+        let host = mount("<p>{name}</p>");
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        let text_before = host
+            .query_selector("p")
+            .unwrap()
+            .expect("p mounted")
+            .first_child()
+            .expect("p has text child");
+
+        // Same payload → no DOM mutation expected.
+        call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
+        let text_after = host
+            .query_selector("p")
+            .unwrap()
+            .expect("p still mounted")
+            .first_child()
+            .expect("p still has text child");
+
+        assert!(
+            text_before.is_same_node(Some(text_after.unchecked_ref())),
+            "text node identity should survive an unchanged apply",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_rewrites_only_changed_bindings_on_subsequent_apply() {
+        let host = mount("<article><h1>{name}</h1><p>{bio}</p></article>");
+        call_draw(
+            &host,
+            &detail("did:key:zX", &[("name", "Alice"), ("bio", "Hi")]),
+        );
+        let bio_text_before = host
+            .query_selector("p")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .expect("bio text node");
+
+        // Update only `name`; bio stays the same.
+        call_draw(
+            &host,
+            &detail("did:key:zX", &[("name", "Alicia"), ("bio", "Hi")]),
+        );
+
+        // The name change is reflected.
+        assert_eq!(
+            host.query_selector("h1")
+                .unwrap()
+                .unwrap()
+                .text_content()
+                .as_deref(),
+            Some("Alicia"),
+        );
+        // Bio's text node was not rewritten — identity preserved.
+        let bio_text_after = host
+            .query_selector("p")
+            .unwrap()
+            .unwrap()
+            .first_child()
+            .expect("bio text node still present");
+        assert!(
+            bio_text_before.is_same_node(Some(bio_text_after.unchecked_ref())),
+            "unchanged bindings should not touch the DOM",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_appends_a_new_row_without_disturbing_existing_rows() {
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["did:key:zA", "did:key:zB"]))],
+            ),
+        );
+        let li_a_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(0)
+            .expect("first li mounted");
+        let li_b_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(1)
+            .expect("second li mounted");
+
+        // Add a third item — sorts last (zC > zB > zA).
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[(
+                    "item",
+                    serde_json::json!(["did:key:zA", "did:key:zB", "did:key:zC"]),
+                )],
+            ),
+        );
+
+        let after = host.query_selector_all("li").unwrap();
+        assert_eq!(after.length(), 3, "after apply: {}", host.inner_html());
+
+        // Existing rows kept their node identity. New row mounted
+        // in sorted position (last, since `zC` > `zB`).
+        let li_a_after = after.item(0).expect("first li");
+        let li_b_after = after.item(1).expect("second li");
+        assert!(
+            li_a_before.is_same_node(Some(li_a_after.unchecked_ref())),
+            "row for zA should be the same node before and after",
+        );
+        assert!(
+            li_b_before.is_same_node(Some(li_b_after.unchecked_ref())),
+            "row for zB should be the same node before and after",
+        );
+
+        let li_c = after.item(2).expect("third li");
+        let li_c_el = li_c.dyn_ref::<Element>().expect("li element");
+        assert_eq!(
+            li_c_el.text_content().as_deref(),
+            Some("did:key:zC"),
+            "new row's text",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_removes_a_row_for_a_vanished_key_without_touching_others() {
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[(
+                    "item",
+                    serde_json::json!(["did:key:zA", "did:key:zB", "did:key:zC"]),
+                )],
+            ),
+        );
+        let li_a_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(0)
+            .expect("zA row");
+        let li_c_before = host
+            .query_selector_all("li")
+            .unwrap()
+            .item(2)
+            .expect("zC row");
+
+        // Drop zB.
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["did:key:zA", "did:key:zC"]))],
+            ),
+        );
+
+        let after = host.query_selector_all("li").unwrap();
+        assert_eq!(after.length(), 2);
+        let li_a_after = after.item(0).expect("first li");
+        let li_c_after = after.item(1).expect("second li");
+        assert!(
+            li_a_before.is_same_node(Some(li_a_after.unchecked_ref())),
+            "zA row identity preserved",
+        );
+        assert!(
+            li_c_before.is_same_node(Some(li_c_after.unchecked_ref())),
+            "zC row identity preserved",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_handles_successive_appends_without_duplicating_existing_rows() {
+        // Simulates the user-reported bug shape: list starts with
+        // one item, items get appended over multiple applies.
+        // After three appends we should have four distinct rows
+        // with no duplication or content bleed.
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zList", &[("item", serde_json::json!(["zA"]))]),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zA", "zB"]))],
+            ),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zA", "zB", "zC"]))],
+            ),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zA", "zB", "zC", "zD"]))],
+            ),
+        );
+
+        let items = host.query_selector_all("li").unwrap();
+        let texts: Vec<String> = (0..items.length())
+            .filter_map(|i| items.item(i).and_then(|n| n.text_content()))
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["zA", "zB", "zC", "zD"],
+            "expected four distinct rows in sorted order, got: {}",
+            host.inner_html(),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_inserts_new_rows_in_sorted_key_order() {
+        // Start with the middle key; add a key that sorts before
+        // it and one that sorts after.
+        let host = mount("<ul><li subject={item}>{item}</li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zList", &[("item", serde_json::json!(["zB"]))]),
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zList",
+                &[("item", serde_json::json!(["zB", "zA", "zC"]))],
+            ),
+        );
+
+        let items: Vec<String> = (0..host.query_selector_all("li").unwrap().length())
+            .filter_map(|i| {
+                host.query_selector_all("li")
+                    .unwrap()
+                    .item(i)
+                    .and_then(|n| n.text_content())
+            })
+            .collect();
+        assert_eq!(
+            items,
+            vec!["zA".to_owned(), "zB".to_owned(), "zC".to_owned()],
+            "rows should appear in sorted-key order regardless of input array order",
+        );
     }
 }

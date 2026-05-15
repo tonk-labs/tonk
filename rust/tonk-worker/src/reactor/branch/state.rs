@@ -64,6 +64,19 @@ impl BranchState {
     /// expected to follow up with
     /// `branch_session.subscription(hash).poll().perform(&env)`
     /// so the new subscriber's first event is the current snapshot.
+    ///
+    /// Query identity is the blake3 hash of the serialized
+    /// [`Query`] projection. We **don't** re-check `PartialEq`
+    /// against the registered query, even though earlier
+    /// revisions did: `NamedAttributes` in dialog-query derives
+    /// `PartialEq` over a `Vec` whose order is randomized by the
+    /// `HashMap`-mediated `Serialize` / `Deserialize` impls, so
+    /// the same query round-tripped through ser/de can compare
+    /// `!=` even though the hashes match. A genuine blake3
+    /// collision is cryptographically impossible, so trusting
+    /// the hash is the right move here. Track the upstream fix
+    /// in dialog-db (make `NamedAttributes::PartialEq`
+    /// order-insensitive, or serialize in sorted order).
     pub fn subscribe(&self, query: ConceptQuery) -> Result<Subscriber, ReactorError> {
         let hash = QueryHash::from(&query);
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -75,9 +88,6 @@ impl BranchState {
             last_hash: None,
             subscribers: Vec::new(),
         });
-        if subscription.query != query {
-            return Err(ReactorError::QueryHashCollision);
-        }
         subscription.subscribers.push(SubscriberSession {
             sender,
             status: Status::Pending,

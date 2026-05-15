@@ -120,7 +120,6 @@ fn reactor_to_error(err: ReactorError) -> TonkWorkerError {
         ReactorError::QueryFailed(_)
         | ReactorError::Commit(_)
         | ReactorError::Pull(_)
-        | ReactorError::Push(_)
-        | ReactorError::QueryHashCollision => TonkWorkerError::Internal(err.to_string()),
+        | ReactorError::Push(_) => TonkWorkerError::Internal(err.to_string()),
     }
 }

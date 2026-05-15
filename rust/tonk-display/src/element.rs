@@ -64,6 +64,23 @@ struct Slide {
 
 /// Internal lifecycle state shared across async closures.
 struct Inner {
+    /// Set to true by `disconnected_callback` so any async
+    /// chain still running against this state (typically one
+    /// blocked on phase-1 fetch when the element detached) can
+    /// bail before mutating the host. Without this guard a
+    /// stale chain's view-frame handler can mount a slide into
+    /// a host whose `<tonk-display>` instance has since been
+    /// re-attached and is running a *different* state — yielding
+    /// duplicated `<tonk-view>` children under one host.
+    disposed: bool,
+    /// Monotonic counter incremented every time `start_flows`
+    /// kicks off a new lifecycle on the *current* state. Each
+    /// spawned async chain captures the value at spawn time and
+    /// bails on any step that runs after the generation has
+    /// moved on. Generation is per-`Inner`; the disposed flag
+    /// covers the cross-`Inner` race where a custom element
+    /// detaches and re-attaches.
+    generation: u64,
     /// Aborts the view (or views-for-model) subscription on
     /// disconnect / attribute change.
     view_abort: Option<AbortController>,
@@ -95,6 +112,8 @@ struct Inner {
 impl Inner {
     fn new() -> Self {
         Self {
+            disposed: false,
+            generation: 0,
             view_abort: None,
             entity_abort: None,
             last_conclusion: None,
@@ -143,7 +162,9 @@ impl CustomElement for TonkDisplay {
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
-            state.borrow_mut().abort_all();
+            let mut inner = state.borrow_mut();
+            inner.disposed = true;
+            inner.abort_all();
         }
     }
 
@@ -187,11 +208,25 @@ fn already_registered() -> bool {
 }
 
 fn start_flows(host: &Element, state: Rc<RefCell<Inner>>) {
+    // Bump the generation so any already-spawned flow chains
+    // running concurrently bail at their next generation check
+    // instead of overwriting our state.
+    let generation = {
+        let mut s = state.borrow_mut();
+        s.generation = s.generation.wrapping_add(1);
+        s.generation
+    };
     let host_clone = host.clone();
     let state_clone = state.clone();
     spawn_local(async move {
-        if let Err(err) = run(&host_clone, state_clone.clone()).await {
-            fail(&host_clone, &state_clone, err);
+        if let Err(err) = run(&host_clone, state_clone.clone(), generation).await {
+            // Only surface the error if we're still the current
+            // generation — a stale flow's failure (e.g. aborted
+            // fetch) shouldn't overwrite a healthy newer flow's
+            // state.
+            if state_clone.borrow().generation == generation {
+                fail(&host_clone, &state_clone, err);
+            }
         }
     });
 }
@@ -220,7 +255,26 @@ fn clear_host(host: &Element, inner: &mut Inner) {
     host.set_inner_html("");
 }
 
-async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetail> {
+/// Bail if this flow's generation has been superseded or the
+/// element this state belongs to has been disconnected. Either
+/// condition means our async chain has lost the right to mutate
+/// the host — a newer flow is in charge (or no flow is, if the
+/// element is gone). Returning Err here causes the caller to
+/// short-circuit without touching the DOM.
+fn check_generation(state: &Rc<RefCell<Inner>>, generation: u64) -> Result<(), ErrorDetail> {
+    let s = state.borrow();
+    if s.disposed || s.generation != generation {
+        Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"))
+    } else {
+        Ok(())
+    }
+}
+
+async fn run(
+    host: &Element,
+    state: Rc<RefCell<Inner>>,
+    generation: u64,
+) -> Result<(), ErrorDetail> {
     let entity = host
         .get_attribute("entity")
         .filter(|s| !s.is_empty())
@@ -263,6 +317,7 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
     let phase1_body = serde_json::to_string(&phase1_query(&parsed))
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
     let (model_entity, descriptor_json) = phase1_lookup(&url, &phase1_body).await?;
+    check_generation(&state, generation)?;
 
     // Build the view subscription query: pin-by-name in single
     // mode, all-views-for-model in carousel mode.
@@ -289,11 +344,30 @@ async fn run(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), ErrorDetai
     let single_mode = view.is_some();
     ensure_carousel(host, &state, single_mode);
 
-    let view_abort = open_view_stream(&url, &view_body, host.clone(), state.clone()).await?;
-    let entity_abort = open_entity_stream(&url, &entity_body, host.clone(), state.clone()).await?;
+    let view_abort =
+        open_view_stream(&url, &view_body, host.clone(), state.clone(), generation).await?;
+    // Check generation again — between opening view and entity
+    // streams, attribute_changed_callback may have fired and
+    // superseded us. If so, abort the view stream we just opened
+    // (otherwise its handler keeps pushing slides), and bail.
+    if check_generation(&state, generation).is_err() {
+        view_abort.abort();
+        return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
+    }
+    let entity_abort =
+        open_entity_stream(&url, &entity_body, host.clone(), state.clone(), generation).await?;
 
     {
         let mut s = state.borrow_mut();
+        // Final generation check — if a newer flow ran between
+        // opening entity_stream and storing the controllers,
+        // abort what we just opened so we don't orphan them
+        // (the newer flow's controllers are already stored).
+        if s.generation != generation {
+            view_abort.abort();
+            entity_abort.abort();
+            return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
+        }
         s.view_abort = Some(view_abort);
         s.entity_abort = Some(entity_abort);
     }
@@ -306,14 +380,28 @@ async fn open_view_stream(
     body: &str,
     host: Element,
     state: Rc<RefCell<Inner>>,
+    generation: u64,
 ) -> Result<AbortController, ErrorDetail> {
     let host_for_frame = host.clone();
     let host_for_err = host.clone();
     let state_for_err = state.clone();
+    let state_for_frame = state.clone();
     open_sse(
         url,
         body,
         move |frame: &str| {
+            // Discard frames from a superseded or disposed flow
+            // — a stale reader can have a queued chunk in flight
+            // when the element detaches or `attribute_changed_callback`
+            // aborts us. Without this guard the stale frame
+            // pushes a slide into a state whose host is no longer
+            // ours, yielding duplicated `<tonk-view>` children.
+            {
+                let s = state_for_frame.borrow();
+                if s.disposed || s.generation != generation {
+                    return;
+                }
+            }
             let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
                 Ok(v) => v,
                 Err(e) => {
@@ -328,6 +416,11 @@ async fn open_view_stream(
             handle_view_frame(&host_for_frame, &state, conclusions);
         },
         move |err: ErrorDetail| {
+            let s = state_for_err.borrow();
+            if s.disposed || s.generation != generation {
+                return;
+            }
+            drop(s);
             fail(&host_for_err, &state_for_err, err);
         },
     )
@@ -339,14 +432,23 @@ async fn open_entity_stream(
     body: &str,
     host: Element,
     state: Rc<RefCell<Inner>>,
+    generation: u64,
 ) -> Result<AbortController, ErrorDetail> {
     let host_for_frame = host.clone();
     let host_for_err = host.clone();
     let state_for_err = state.clone();
+    let state_for_frame = state.clone();
     open_sse(
         url,
         body,
         move |frame: &str| {
+            // Same stale-frame guard as in `open_view_stream`.
+            {
+                let s = state_for_frame.borrow();
+                if s.disposed || s.generation != generation {
+                    return;
+                }
+            }
             let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
                 Ok(v) => v,
                 Err(e) => {
@@ -361,6 +463,11 @@ async fn open_entity_stream(
             handle_entity_frame(&host_for_frame, &state, conclusions);
         },
         move |err: ErrorDetail| {
+            let s = state_for_err.borrow();
+            if s.disposed || s.generation != generation {
+                return;
+            }
+            drop(s);
             fail(&host_for_err, &state_for_err, err);
         },
     )
@@ -463,9 +570,15 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 }
 
 /// Apply an entity frame: empty → empty state + clear slides;
-/// non-empty → cache + render on every slide.
+/// non-empty → fold rows + cache + render on every slide.
+///
+/// The fold collapses N rows for the same entity (one per tuple
+/// the worker emits for cardinality-many attributes) into a single
+/// conclusion whose differing fields become `Array` values. The
+/// template renderer's iteration-aware walk does the per-value
+/// cloning from there.
 fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
-    let Some(conclusion) = conclusions.into_iter().next() else {
+    let Some(conclusion) = crate::fold::fold_rows(conclusions) else {
         let mut s = state.borrow_mut();
         s.last_conclusion = None;
         clear_host(host, &mut s);
@@ -502,23 +615,19 @@ fn update_notation(host: &Element, inner: &Inner, conclusion: &Conclusion) {
     script.set_text_content(Some(&text));
 }
 
-/// Ensure the `<wa-carousel>` chrome is mounted. Idempotent —
-/// does nothing if the carousel is already set up.
+/// Ensure the `<wa-carousel>` chrome is mounted — but **only** in
+/// the multi-view fallback mode. In single-view mode (when the
+/// `view` attribute is set) the orchestrator skips the carousel
+/// entirely and mounts the `<tonk-view>` straight into the host,
+/// so the rendered template flows in its natural layout and
+/// honours its container's sizing instead of being squeezed into
+/// the carousel's aspect ratio.
 ///
-/// `single_mode` selects between the two presentation modes:
-/// - `true` (when `view` attribute is set): no navigation arrows,
-///   no trailing notation slide. The user sees exactly one view
-///   rendering.
-/// - `false`: navigation arrows enabled, and a trailing
-///   `<tonk-notation>` slide so the user can flip to a
-///   syntax-highlighted dump of the entity in dialog-yaml
-///   notation form.
-///
-/// The carousel host is mounted either way so the slot geometry
-/// is identical between the modes — the only user-visible
-/// difference is whether arrows + the notation slide are
-/// present.
+/// Idempotent — does nothing if the carousel is already set up.
 fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool) {
+    if single_mode {
+        return;
+    }
     let mut s = state.borrow_mut();
     if s.carousel.is_some() {
         return;
@@ -529,53 +638,63 @@ fn ensure_carousel(host: &Element, state: &Rc<RefCell<Inner>>, single_mode: bool
     let Ok(carousel) = document.create_element("wa-carousel") else {
         return;
     };
-    if !single_mode {
-        let _ = carousel.set_attribute("navigation", "");
+    let _ = carousel.set_attribute("navigation", "");
 
-        // Trailing notation slide — only present in carousel
-        // mode. Lets the user fall back to a syntax-highlighted
-        // entity dump regardless of how many views the model has
-        // published. The `<script type="text/tonk-notation">`
-        // child carries the source; updating its `textContent` is
-        // what `<tonk-notation>` watches via its MutationObserver.
-        if let (Ok(item), Ok(notation), Ok(script)) = (
-            document.create_element("wa-carousel-item"),
-            document.create_element("tonk-notation"),
-            document.create_element("script"),
-        ) {
-            let _ = script.set_attribute("type", "text/tonk-notation");
-            let _ = notation.append_child(&script);
-            let _ = item.append_child(&notation);
-            let _ = carousel.append_child(&item);
-            s.notation_source = Some(script);
-            s.notation_item = Some(item);
-        }
+    // Trailing notation slide — present whenever a carousel is
+    // mounted. Lets the user fall back to a syntax-highlighted
+    // entity dump regardless of how many views the model has
+    // published. The `<script type="text/tonk-notation">` child
+    // carries the source; updating its `textContent` is what
+    // `<tonk-notation>` watches via its MutationObserver.
+    if let (Ok(item), Ok(notation), Ok(script)) = (
+        document.create_element("wa-carousel-item"),
+        document.create_element("tonk-notation"),
+        document.create_element("script"),
+    ) {
+        let _ = script.set_attribute("type", "text/tonk-notation");
+        let _ = notation.append_child(&script);
+        let _ = item.append_child(&notation);
+        let _ = carousel.append_child(&item);
+        s.notation_source = Some(script);
+        s.notation_item = Some(item);
     }
 
     let _ = host.append_child(&carousel);
     s.carousel = Some(carousel);
 }
 
-/// Create a `<wa-carousel-item>` wrapping a fresh `<tonk-view>`
-/// (initialized with `display` as inner HTML) and insert it into
-/// the carousel. In carousel mode it lands *before* the trailing
-/// inspector slide so the inspector stays last; in single-view
-/// mode there's no inspector to keep behind, so the item just
-/// gets appended.
-fn mount_view_slide(_host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
+/// Mount a fresh `<tonk-view>` (initialized with `display` as
+/// inner HTML) for this slide. Two paths:
+///
+/// - **Carousel present** (multi-view fallback): wrap the view in
+///   a `<wa-carousel-item>` and insert it before the trailing
+///   notation slide so the inspector stays last.
+/// - **Carousel absent** (single-view mode): append the
+///   `<tonk-view>` straight into the host so the user's template
+///   flows in its natural layout — no aspect ratio, no
+///   carousel-imposed sizing.
+fn mount_view_slide(host: &Element, inner: &mut Inner, display: &str) -> Option<Slide> {
     let document = window()?.document()?;
-    let carousel = inner.carousel.as_ref()?;
 
     let view_el = document.create_element("tonk-view").ok()?;
     view_el.set_inner_html(display);
 
-    let item = document.create_element("wa-carousel-item").ok()?;
-    let _ = item.append_child(&view_el);
-    if let Some(trailing) = inner.notation_item.as_ref() {
-        let _ = carousel.insert_before(&item, Some(trailing));
+    let item: Element = if let Some(carousel) = inner.carousel.as_ref() {
+        let wrapper = document.create_element("wa-carousel-item").ok()?;
+        let _ = wrapper.append_child(&view_el);
+        if let Some(trailing) = inner.notation_item.as_ref() {
+            let _ = carousel.insert_before(&wrapper, Some(trailing));
+        } else {
+            let _ = carousel.append_child(&wrapper);
+        }
+        wrapper
     } else {
-        let _ = carousel.append_child(&item);
-    }
+        // No carousel chrome — the slide *is* the `<tonk-view>`.
+        // `item` is the same element as `view_el` so removal /
+        // identity checks elsewhere work uniformly.
+        let _ = host.append_child(&view_el);
+        view_el.clone()
+    };
 
     Some(Slide {
         display: display.to_owned(),
