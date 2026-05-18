@@ -209,8 +209,10 @@ impl Effect {
     }
 
     /// The head concept entity — the value of the
-    /// `dialog.effect/assert` claim.
-    pub fn assert(&self) -> Entity {
+    /// `dialog.effect/assert` claim. Renamed away from
+    /// `assert()` so it doesn't collide with the
+    /// [`Statement::assert`] trait method.
+    pub fn head(&self) -> Entity {
         self.rule.conclusion().this()
     }
 
@@ -255,6 +257,272 @@ fn has_effect_system_trigger(rule: &InductiveRule) -> bool {
         },
         Proposition::Attribute(_) | Proposition::Formula(_) | Proposition::Constraint(_) => false,
     })
+}
+
+// ---------------------------------------------------------------- //
+// Statement impl — write an Effect into a branch transaction.      //
+// ---------------------------------------------------------------- //
+
+use dialog_artifacts::{Attribute as ArtifactsAttribute, Update};
+use dialog_query::Statement;
+
+/// The well-known marker entity asserted as the value of
+/// `dialog.meta/effect` on every effect entity, mirroring how
+/// concept entities carry `(?this, dialog.meta/concept,
+/// db:concept)`. Lets `"all effects on this branch"` queries
+/// start from a selectable triple.
+fn effect_marker_entity() -> Entity {
+    "db:effect"
+        .parse()
+        .expect("`db:effect` is a valid entity URI")
+}
+
+/// Build a runtime [`ArtifactsAttribute`] from a domain + local
+/// name. The crate's domains are well-formed so `expect` is safe.
+fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
+    format!("{domain}/{name}")
+        .parse()
+        .expect("dialog meta-attribute names should always be valid")
+}
+
+impl Statement for Effect {
+    fn assert(self, update: &mut impl Update) {
+        let this = self.this();
+        let description = self.descriptor().description.clone();
+        let source = self.source();
+        let assert = self.head();
+        let premises = self.premise_entities();
+
+        // Marker claim — `(?this, dialog.meta/effect, db:effect)`.
+        update.associate_unique(
+            meta_attr("dialog.meta", "effect"),
+            this.clone(),
+            Value::Entity(effect_marker_entity()),
+        );
+        // Source-of-truth claim.
+        update.associate_unique(
+            meta_attr("dialog.effect", "source"),
+            this.clone(),
+            Value::String(source),
+        );
+        // Head-concept index claim.
+        update.associate_unique(
+            meta_attr("dialog.effect", "assert"),
+            this.clone(),
+            Value::Entity(assert),
+        );
+        // Premise-concept index claims (cardinality-many).
+        for premise in premises {
+            update.associate(
+                meta_attr("dialog.effect", "premise"),
+                this.clone(),
+                Value::Entity(premise),
+            );
+        }
+        // Optional human-readable description, written under the
+        // shared `dialog.meta/description` attribute the rest of
+        // tonk-schema also uses.
+        if let Some(description) = description
+            && !description.is_empty()
+        {
+            update.associate_unique(
+                meta_attr("dialog.meta", "description"),
+                this,
+                Value::String(description),
+            );
+        }
+    }
+
+    fn retract(self, update: &mut impl Update) {
+        let this = self.this();
+        let description = self.descriptor().description.clone();
+        let source = self.source();
+        let assert = self.head();
+        let premises = self.premise_entities();
+
+        update.dissociate(
+            meta_attr("dialog.meta", "effect"),
+            this.clone(),
+            Value::Entity(effect_marker_entity()),
+        );
+        update.dissociate(
+            meta_attr("dialog.effect", "source"),
+            this.clone(),
+            Value::String(source),
+        );
+        update.dissociate(
+            meta_attr("dialog.effect", "assert"),
+            this.clone(),
+            Value::Entity(assert),
+        );
+        for premise in premises {
+            update.dissociate(
+                meta_attr("dialog.effect", "premise"),
+                this.clone(),
+                Value::Entity(premise),
+            );
+        }
+        if let Some(description) = description
+            && !description.is_empty()
+        {
+            update.dissociate(
+                meta_attr("dialog.meta", "description"),
+                this,
+                Value::String(description),
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------- //
+// Loading effects back from a branch.                              //
+// ---------------------------------------------------------------- //
+
+use dialog_capability::{Fork, Provider};
+use dialog_common::ConditionalSync;
+use dialog_effects::archive::{Get, Put};
+use dialog_effects::memory::Resolve;
+use dialog_query::Output as _;
+use dialog_repository::{Branch, RemoteSite};
+use thiserror::Error as ThisError;
+
+/// Trait alias gathering the capability bounds every effect
+/// resolver needs. Mirrors `concept::QueryEnv`.
+pub trait EffectEnv:
+    Provider<Get>
+    + Provider<Put>
+    + Provider<Resolve>
+    + Provider<Fork<RemoteSite, Get>>
+    + Provider<Fork<RemoteSite, Resolve>>
+    + ConditionalSync
+    + 'static
+{
+}
+
+impl<T> EffectEnv for T where
+    T: Provider<Get>
+        + Provider<Put>
+        + Provider<Resolve>
+        + Provider<Fork<RemoteSite, Get>>
+        + Provider<Fork<RemoteSite, Resolve>>
+        + ConditionalSync
+        + 'static
+{
+}
+
+/// Failures specific to loading an effect from a branch.
+#[derive(Debug, ThisError)]
+pub enum EffectLookupError {
+    /// The branch query infrastructure returned an error.
+    #[error("effect lookup query failed: {0}")]
+    Query(String),
+    /// The effect entity was found but its
+    /// `dialog.effect/source` claim couldn't be parsed back into
+    /// a valid [`Effect`].
+    #[error(transparent)]
+    Effect(#[from] EffectError),
+}
+
+/// Parse a `domain/name` pair as a typed `The`. The crate's
+/// effect attributes are well-formed at compile time so `expect`
+/// is appropriate.
+fn the(domain: &str, name: &str) -> dialog_query::attribute::The {
+    format!("{domain}/{name}")
+        .parse()
+        .expect("dialog.effect attribute name is well-formed")
+}
+
+impl Effect {
+    /// Look up an effect by its entity URI.
+    pub fn by_entity(entity: Entity) -> EffectByEntity {
+        EffectByEntity { entity }
+    }
+}
+
+/// Builder for [`Effect::by_entity`]. Resolves the
+/// `dialog.effect/source` claim and rehydrates the effect.
+pub struct EffectByEntity {
+    entity: Entity,
+}
+
+impl EffectByEntity {
+    /// Resolve the effect against a branch.
+    pub async fn resolve<Env: EffectEnv>(
+        self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<Option<Effect>, EffectLookupError> {
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "source"))
+                    .of(Term::from(self.entity.clone()))
+                    .is(Term::<String>::var("source")),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| EffectLookupError::Query(format!("source query failed: {e:?}")))?;
+
+        let Some(claim) = claims.into_iter().next() else {
+            return Ok(None);
+        };
+        let source = match claim.is {
+            Value::String(s) => s,
+            other => {
+                return Err(EffectLookupError::Query(format!(
+                    "dialog.effect/source claim was not a string: {other:?}"
+                )));
+            }
+        };
+        let effect = Effect::from_source(&source)?;
+        Ok(Some(effect))
+    }
+}
+
+/// Look up all effects whose `dialog.effect/premise` cardinality-many
+/// index contains the given concept entity. This is the reverse-index
+/// query the reactor's evaluator will use per round to find effects
+/// whose body could have been affected by a change to that concept.
+pub fn effects_by_premise(concept_entity: Entity) -> EffectsByPremise {
+    EffectsByPremise { concept_entity }
+}
+
+/// Builder for [`effects_by_premise`].
+pub struct EffectsByPremise {
+    concept_entity: Entity,
+}
+
+impl EffectsByPremise {
+    /// Resolve every effect entity whose premise index includes
+    /// `concept_entity`.
+    pub async fn resolve<Env: EffectEnv>(
+        self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<Vec<Entity>, EffectLookupError> {
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "premise"))
+                    .of(Term::<Entity>::var("effect"))
+                    .is(Term::<Entity>::from(self.concept_entity.clone())),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| EffectLookupError::Query(format!("premise query failed: {e:?}")))?;
+        let mut out: Vec<Entity> = Vec::with_capacity(claims.len());
+        for claim in claims {
+            // The query bound `of` to a variable; reading it back
+            // from the claim gives us the effect entity for each
+            // matched premise edge.
+            out.push(claim.of);
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -382,7 +650,7 @@ mod tests {
         let rule = InductiveRule::new(counter_head(), increment_with_trigger())
             .expect("rule should compile");
         let effect = Effect::from_rule(rule).expect("rule has trigger");
-        assert_eq!(effect.assert(), counter_head().this());
+        assert_eq!(effect.head(), counter_head().this());
     }
 
     #[dialog_common::test]
@@ -419,6 +687,76 @@ mod tests {
         assert_eq!(premises.len(), 2);
         assert!(premises.contains(&counter_head().this()));
         assert!(premises.contains(&increment_concept().this()));
+    }
+
+    #[dialog_common::test]
+    fn it_emits_expected_facts_when_asserted() {
+        use dialog_artifacts::{Changes, Instruction};
+        use dialog_query::Statement;
+
+        let rule = InductiveRule::new(counter_head(), increment_with_trigger())
+            .expect("rule should compile");
+        let effect = Effect::from_rule(rule).expect("rule has trigger");
+        let this = effect.this();
+        let source = effect.source();
+        let head = effect.head();
+        let premise_set = effect.premise_entities();
+
+        let mut changes = Changes::default();
+        effect.assert(&mut changes);
+
+        // Drain the changeset into a flat list of Asserts (we
+        // emit no retracts or replaces here). `associate_unique`
+        // surfaces as `Instruction::Replace`; `associate` as
+        // `Instruction::Assert`. Both count as "asserted facts"
+        // for this test.
+        let asserted: Vec<_> = changes
+            .into_instructions()
+            .into_iter()
+            .filter_map(|inst| match inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => Some(a),
+                Instruction::Retract(_) => None,
+            })
+            .collect();
+
+        let marker_entity = effect_marker_entity();
+        assert!(
+            asserted.iter().any(|c| {
+                c.the.to_string() == "dialog.meta/effect"
+                    && c.of == this
+                    && matches!(&c.is, Value::Entity(e) if *e == marker_entity)
+            }),
+            "missing dialog.meta/effect marker"
+        );
+
+        assert!(
+            asserted.iter().any(|c| {
+                c.the.to_string() == "dialog.effect/source"
+                    && c.of == this
+                    && matches!(&c.is, Value::String(s) if s == &source)
+            }),
+            "missing dialog.effect/source claim"
+        );
+
+        assert!(
+            asserted.iter().any(|c| {
+                c.the.to_string() == "dialog.effect/assert"
+                    && c.of == this
+                    && matches!(&c.is, Value::Entity(e) if *e == head)
+            }),
+            "missing dialog.effect/assert claim"
+        );
+
+        for premise in &premise_set {
+            assert!(
+                asserted.iter().any(|c| {
+                    c.the.to_string() == "dialog.effect/premise"
+                        && c.of == this
+                        && matches!(&c.is, Value::Entity(e) if *e == *premise)
+                }),
+                "missing dialog.effect/premise claim for {premise}"
+            );
+        }
     }
 
     #[dialog_common::test]
