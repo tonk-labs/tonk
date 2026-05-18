@@ -26,7 +26,7 @@ use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use wasm_bindgen_futures::JsFuture;
 use wasm_bindgen_futures::future_to_promise;
-use web_sys::{FetchEvent, Request, Response};
+use web_sys::{FetchEvent, FileSystemDirectoryHandle, Request, Response};
 
 // Global `self.fetch(...)` in the service-worker scope. Fetches
 // issued from an SW bypass the SW's own `onfetch` listener (per
@@ -497,6 +497,26 @@ impl TonkServiceWorker {
         let router = Arc::new(Mutex::new(router));
 
         Ok(Self { router, state, lsp })
+    }
+
+    /// Register a File System Access API directory handle under `id` so
+    /// `dialog-remote-fs` operations targeting an `FsAddress` with the
+    /// same id can resolve it.
+    ///
+    /// The id is opaque to this crate — callers typically use the
+    /// vault's subject DID. Browsers don't persist FS-Access permission
+    /// across sessions, so this needs to be called after each page load
+    /// once the user has re-granted access via a gesture.
+    #[wasm_bindgen(js_name = "registerFsHandle")]
+    pub fn register_fs_handle(&self, id: &str, handle: FileSystemDirectoryHandle) {
+        dialog_remote_fs::registry::register_directory(id, handle);
+    }
+
+    /// Drop a previously-registered FS handle. Returns `true` if an
+    /// entry was present.
+    #[wasm_bindgen(js_name = "unregisterFsHandle")]
+    pub fn unregister_fs_handle(&self, id: &str) -> bool {
+        dialog_remote_fs::registry::unregister_directory(id)
     }
 
     /// Hook the SW's `updatefound` event from JavaScript.

@@ -31,6 +31,7 @@ dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
+dialog-remote-fs = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-search-tree = { workspace = true }
@@ -73,6 +74,7 @@ web-sys = { workspace = true, features = [
     "CryptoKey",
     "ExtendableMessageEvent",
     "FetchEvent",
+    "FileSystemDirectoryHandle",
     "Headers",
     "ReadableStream",
     "MessageChannel",
