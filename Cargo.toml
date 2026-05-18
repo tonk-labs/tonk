@@ -120,21 +120,22 @@ js-sys = "0.3"
 send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
-# Dialog DB
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-11" }
+# Dialog DB — local path deps while iterating on InductiveRule in
+# feat/inductive-rule (worker/ada). Flip back to git+tag before shipping.
+dialog-artifacts = { path = "../../dialog-db/worker/ada/rust/dialog-artifacts" }
+dialog-capability = { path = "../../dialog-db/worker/ada/rust/dialog-capability" }
+dialog-common = { path = "../../dialog-db/worker/ada/rust/dialog-common" }
+dialog-credentials = { path = "../../dialog-db/worker/ada/rust/dialog-credentials" }
+dialog-effects = { path = "../../dialog-db/worker/ada/rust/dialog-effects" }
+dialog-operator = { path = "../../dialog-db/worker/ada/rust/dialog-operator" }
+dialog-query = { path = "../../dialog-db/worker/ada/rust/dialog-query" }
+dialog-remote-s3 = { path = "../../dialog-db/worker/ada/rust/dialog-remote-s3" }
+dialog-remote-ucan-s3 = { path = "../../dialog-db/worker/ada/rust/dialog-remote-ucan-s3" }
+dialog-repository = { path = "../../dialog-db/worker/ada/rust/dialog-repository" }
+dialog-storage = { path = "../../dialog-db/worker/ada/rust/dialog-storage" }
+dialog-ucan = { path = "../../dialog-db/worker/ada/rust/dialog-ucan" }
+dialog-ucan-core = { path = "../../dialog-db/worker/ada/rust/dialog-ucan-core" }
+dialog-varsig = { path = "../../dialog-db/worker/ada/rust/dialog-varsig" }
 
 [profile.dev]
 opt-level = 1

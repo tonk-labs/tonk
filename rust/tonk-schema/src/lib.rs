@@ -42,6 +42,8 @@ pub mod meta;
 
 pub mod concept;
 
+pub mod effect;
+
 pub mod rule;
 
 pub mod analyzer;
