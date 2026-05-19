@@ -33,6 +33,7 @@ const DB_VERSION: u32 = 1;
 const FIELD_ID: &str = "id";
 const FIELD_DISPLAY_NAME: &str = "displayName";
 const FIELD_HANDLE: &str = "handle";
+const FIELD_SUBJECT_DID: &str = "subjectDid";
 const FIELD_LAST_SYNCED_AT: &str = "lastSyncedAt";
 const FIELD_LAST_KNOWN_STATUS: &str = "lastKnownStatus";
 
@@ -71,13 +72,22 @@ impl VaultStatus {
 #[derive(Clone)]
 pub struct VaultEntry {
     /// Opaque id — used as the `FsAddress::id` on the worker side.
-    /// Consumers typically use the vault's subject DID.
+    /// Currently a randomly-minted UUID; the join flow associates an
+    /// entry with a subject DID via `subject_did` rather than reusing
+    /// it as the id, so multiple entries can coexist for the same
+    /// subject (e.g. the user picked the same vault twice).
     pub id: String,
     /// User-chosen friendly name (shown in the vaults list and the
     /// reconnect prompt).
     pub display_name: String,
     /// The directory the user picked via `showDirectoryPicker()`.
     pub handle: FileSystemDirectoryHandle,
+    /// Subject DID this vault holds, when known. Set when the entry
+    /// is created via the join flow (where the invite supplies the
+    /// DID) or when a standalone "open existing vault" verifies the
+    /// directory's `credential/key/self` against an expected DID.
+    /// `None` for standalone opens that haven't been associated yet.
+    pub subject_did: Option<String>,
     /// Wall-clock ms since epoch of the most recent sync, or `None`
     /// if this vault has never been synced from this device.
     pub last_synced_at: Option<f64>,
@@ -92,6 +102,7 @@ impl std::fmt::Debug for VaultEntry {
             .field("id", &self.id)
             .field("display_name", &self.display_name)
             .field("handle", &"<FileSystemDirectoryHandle>")
+            .field("subject_did", &self.subject_did)
             .field("last_synced_at", &self.last_synced_at)
             .field("last_known_status", &self.last_known_status)
             .finish()
@@ -153,6 +164,21 @@ impl VaultRegistry {
             entries.push(decode_entry(&value)?);
         }
         Ok(entries)
+    }
+
+    /// Find an entry whose `subject_did` matches `did`. Returns the
+    /// first match. Linear scan over the full registry — fine at the
+    /// current scale (a handful of entries per device).
+    pub async fn find_by_subject(
+        &self,
+        did: &str,
+    ) -> Result<Option<VaultEntry>, VaultRegistryError> {
+        for entry in self.list().await? {
+            if entry.subject_did.as_deref() == Some(did) {
+                return Ok(Some(entry));
+            }
+        }
+        Ok(None)
     }
 
     /// Fetch a single entry by id.
@@ -239,6 +265,14 @@ fn encode_entry(entry: &VaultEntry) -> Result<JsValue, VaultRegistryError> {
     set(&obj, FIELD_HANDLE, entry.handle.as_ref())?;
     set(
         &obj,
+        FIELD_SUBJECT_DID,
+        &match &entry.subject_did {
+            Some(did) => JsValue::from_str(did),
+            None => JsValue::NULL,
+        },
+    )?;
+    set(
+        &obj,
         FIELD_LAST_SYNCED_AT,
         &match entry.last_synced_at {
             Some(t) => JsValue::from_f64(t),
@@ -261,6 +295,15 @@ fn decode_entry(value: &JsValue) -> Result<VaultEntry, VaultRegistryError> {
     let handle: FileSystemDirectoryHandle = handle_value.dyn_into().map_err(|_| {
         VaultRegistryError::Malformed(format!("{FIELD_HANDLE} is not a FileSystemDirectoryHandle"))
     })?;
+    let subject_did = Reflect::get(value, &JsValue::from_str(FIELD_SUBJECT_DID))
+        .ok()
+        .and_then(|v| {
+            if v.is_null() || v.is_undefined() {
+                None
+            } else {
+                v.as_string()
+            }
+        });
     let last_synced_at = Reflect::get(value, &JsValue::from_str(FIELD_LAST_SYNCED_AT))
         .ok()
         .and_then(|v| {
@@ -279,6 +322,7 @@ fn decode_entry(value: &JsValue) -> Result<VaultEntry, VaultRegistryError> {
         id,
         display_name,
         handle,
+        subject_did,
         last_synced_at,
         last_known_status,
     })

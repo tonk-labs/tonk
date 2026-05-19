@@ -203,6 +203,7 @@ async fn open_existing_vault() -> Result<Option<()>, TonkUiError> {
         id: vault_id.clone(),
         display_name,
         handle: handle.clone(),
+        subject_did: None,
         last_synced_at: None,
         last_known_status: VaultStatus::Yellow,
     };
