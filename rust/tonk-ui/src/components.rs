@@ -40,6 +40,9 @@ use join::*;
 mod invite;
 use invite::*;
 
+mod vaults_page;
+pub use vaults_page::TonkVaults;
+
 /// The hosting document's service-worker Client ID, learned from
 /// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
 /// response. Provided as a Leptos context so descendant
