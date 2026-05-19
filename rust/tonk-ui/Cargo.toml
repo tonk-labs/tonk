@@ -24,6 +24,7 @@ anyhow = { workspace = true }
 console_error_panic_hook = { workspace = true }
 custom-elements = { workspace = true }
 futures-util = { workspace = true }
+idb = { workspace = true }
 js-sys = { workspace = true }
 leptos = { workspace = true, features = ["csr"] }
 leptos_router = { workspace = true }
@@ -81,7 +82,21 @@ getrandom_0_3 = { workspace = true }
 
 [dependencies.web-sys]
 workspace = true
-features = ["BroadcastChannel", "MessageEvent", "Window"]
+features = [
+    "BroadcastChannel",
+    "FileSystemDirectoryHandle",
+    "FileSystemGetDirectoryOptions",
+    "FileSystemGetFileOptions",
+    "FileSystemHandle",
+    "FileSystemHandlePermissionDescriptor",
+    "FileSystemPermissionMode",
+    "PermissionState",
+    "MessageEvent",
+    "Navigator",
+    "ServiceWorker",
+    "ServiceWorkerContainer",
+    "Window",
+]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.

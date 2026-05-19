@@ -23,6 +23,10 @@ pub mod watch;
 /// DID parsing helpers.
 pub mod did;
 
+/// Per-browser-profile registry of local-disk vaults backed by the
+/// File System Access API.
+pub mod vaults;
+
 /// Error types for the Tonk UI.
 pub mod error;
 
