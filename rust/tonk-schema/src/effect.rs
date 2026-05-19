@@ -216,28 +216,36 @@ impl Effect {
         self.rule.conclusion().this()
     }
 
-    /// The set of concept entities the body reads from: every
-    /// `Proposition::Concept` premise's predicate's
-    /// [`ConceptDescriptor::this`](dialog_query::ConceptDescriptor::this).
-    /// Values of the `dialog.effect/premise` claims.
+    /// The set of attribute entities the body reads from. For
+    /// each `Proposition::Concept` premise in `when` or `unless`,
+    /// every attribute referenced by the premise's predicate
+    /// contributes its `the:<hash>` URI to the set. Values of
+    /// the `dialog.effect/premise` claims.
+    ///
+    /// The index is attribute-keyed (not concept-keyed) so it
+    /// invalidates correctly under concept-lens-sharing: if two
+    /// concepts share an attribute URI, a change to that
+    /// attribute affects every effect that reads it via any
+    /// concept lens.
     ///
     /// Attribute-direct premises (`Proposition::Attribute`) are
-    /// *not* currently included — they read individual EAV
-    /// triples rather than full concepts, and would need a
-    /// separate attribute-entity URI mapping to participate in
-    /// the index. Most authored rules read concepts; this gap is
-    /// noted as a future extension.
+    /// *not* currently included; they read individual EAV
+    /// triples directly, which the yaml authoring surface
+    /// doesn't expose anyway.
     ///
     /// Formula premises (`math/sum`, `==`, etc.) contribute
     /// nothing: they compute from bound variables rather than
-    /// reading concept state, so a change to a formula's
-    /// "predicate" can never re-trigger anything.
+    /// reading concept state.
     pub fn premise_entities(&self) -> BTreeSet<Entity> {
         let descriptor = self.rule.descriptor();
         let mut entities = BTreeSet::new();
         for proposition in descriptor.when.iter().chain(descriptor.unless.iter()) {
             if let Proposition::Concept(concept_query) = proposition {
-                entities.insert(concept_query.predicate.this());
+                for (_, attribute) in concept_query.predicate.with().iter() {
+                    if let Ok(entity) = attribute.to_uri().parse::<Entity>() {
+                        entities.insert(entity);
+                    }
+                }
             }
         }
         entities
@@ -674,19 +682,32 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_indexes_concept_premises() {
+    fn it_indexes_premise_attributes() {
         let rule = InductiveRule::new(counter_head(), increment_with_trigger())
             .expect("rule should compile");
         let effect = Effect::from_rule(rule).expect("rule has trigger");
         let premises = effect.premise_entities();
-        // Body has two concept premises: counter and increment.
-        // Both should appear in the index. The math/sum formula
-        // premise contributes nothing — formulas re-evaluate as
-        // part of the body when surrounding concept premises
-        // change, so they have no concept "predicate" to index.
+        // Body has two concept premises:
+        //   - counter (one attribute: counter/count)
+        //   - increment (one attribute: command/subject)
+        // The index is attribute-keyed, so we expect one entity
+        // per attribute referenced. The math/sum formula premise
+        // contributes nothing.
         assert_eq!(premises.len(), 2);
-        assert!(premises.contains(&counter_head().this()));
-        assert!(premises.contains(&increment_concept().this()));
+        for (_, attr) in counter_head().with().iter() {
+            let uri: Entity = attr.to_uri().parse().expect("valid attribute URI");
+            assert!(
+                premises.contains(&uri),
+                "missing counter attribute {uri} in premise index"
+            );
+        }
+        for (_, attr) in increment_concept().with().iter() {
+            let uri: Entity = attr.to_uri().parse().expect("valid attribute URI");
+            assert!(
+                premises.contains(&uri),
+                "missing increment attribute {uri} in premise index"
+            );
+        }
     }
 
     #[dialog_common::test]

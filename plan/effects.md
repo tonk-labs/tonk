@@ -18,64 +18,196 @@ What this plan covers is **everything tonk needs on top**:
    reactor.
 3. Surfacing them as "abilities" the UI can render and trigger.
 
-### Two ideas to keep separate
+### Conceptual framing: Dedalus, transients, and persistence
 
-**Inductive rules** are the general concept (defined upstream).
-Their full semantic obligation is "re-fire whenever any state they
-read could have changed" — which, in a replicated system, means
-re-firing on every pull too. That's expensive and breaks partial
-replication (the runtime would have to materialize subtrees it
-deliberately didn't replicate, just to ask "do any of my rules
-mention concepts that changed").
+The theoretical foundation is Dedalus. In Dedalus, every relation
+is empty at every timestep unless some rule produces it.
+Persistence is a special case of inductive rules: a fact persists
+because there's an explicit rule `p(X)@next :- p(X)` saying "if
+p(X) now, then p(X) next." Without that rule, `p` is empty next
+round.
 
-**Effects** are the subset of inductive rules tonk supports in
-this initial release: rules that read at least one premise from
-`effect:system`, an ephemeral sentinel entity whose facts never
-persist. Because the trigger never replicates, an effect can only
-fire on the peer that originated the trigger, and the *output*
-(durable head facts) replicates to other peers as plain state. No
-post-pull re-evaluation needed; partial replication preserved.
+Dialog's storage layer is already this rule, materialized inside
+the engine. Every EAV triple carries forward unless a retract for
+the same entity+attribute pair is emitted. Stated as a tonk-yaml
+rule, the implicit persistence rule is something like:
 
-This is V1. V2 (mailbox-shaped rules — read from a known concept
-that the runtime scans on pull and replays as new commits) and V3
-(full re-evaluation on pull for rules that fit neither pattern)
-are future work; the V1 restriction is a temporary optimization
-gate, not a semantic claim about what inductive rules can be.
+```yaml
+rule!: &persist
+  assert!: assert
+  when:
+    - assert: assert
+      where: { this: ?this, the: ?the, of: ?of, is: ?is }
+  unless:
+    - assert: retract
+      where: { this: ?this, the: ?the, of: ?of, is: ?is }
+```
+
+Dialog doesn't actually evaluate this rule: the storage layer
+does its job directly. But it's a faithful description of the
+semantics, and it gives us vocabulary for talking about
+exceptions to it.
+
+The model that follows is built on a few core decisions, locked
+through several rounds of design:
+
+#### Concept persistence is a per-concept declaration
+
+Every concept declaration includes (implicitly or explicitly) a
+**`transient`** flag:
+
+- **`transient: false` (default)**: facts of this concept get the
+  implicit persistence rule applied. They carry forward across
+  timesteps until retracted.
+- **`transient: true`**: facts of this concept have no implicit
+  persistence rule. They exist only at the timestep they're
+  submitted in, and are stripped from the persistable delta
+  before the branch state is written.
+
+Transient concepts are how messages, commands, events, and
+abilities are expressed. Their one-timestep lifetime is what
+makes them safe under partial replication: they never enter
+storage, never replicate, can only fire effects on the peer
+where they're submitted.
+
+#### Carry-forward is governed by retraction only
+
+The implicit persistence rule applied to persistent concepts is
+exactly:
+
+> The value at entity+attribute pair `(of, the)` at the current
+> timestep carries forward to the next timestep, unless a
+> retraction for that pair is emitted at the current timestep.
+
+This is uniform across cardinalities. What differs is what
+happens when new values *also* land on the same pair:
+
+- **Cardinality-one**: storage's "at most one value per
+  entity+attribute" rule kicks in. The new value replaces the
+  old at write time. Authors updating a cardinality-one value
+  just assert the new value; they don't need to retract the old
+  one explicitly.
+- **Cardinality-many**: multiple values can coexist. The implicit
+  carry-forward keeps existing values; new asserts add more.
+  Authors who want to remove a specific value write an explicit
+  retract.
+
+This matches the natural intent of each cardinality declaration:
+cardinality-one means replacement, cardinality-many means
+accumulation.
+
+#### Rule heads have two polarities
+
+Inductive rules have either `assert!:` or `retract!:` at the
+head:
+
+```yaml
+rule!:
+  assert!: counter
+  when: …
+  # Body bindings fill the head's fields; head produces an
+  # assertion of `counter`.
+
+rule!:
+  retract!: message
+  when: …
+  # Body bindings identify the cells to retract; head produces
+  # retracts for those cells.
+```
+
+Each rule has one polarity. Multiple rules can share the same
+head concept and compose by disjunction, the same way deductive
+rules compose. Adding a new event to the system means adding new
+rules; existing rules don't need to change. This is the
+extensibility property: an `assert!: account` rule for a new
+event doesn't require the existing deposit/withdrawal rules to
+know about it.
+
+#### Conflict resolution: change wins over no-change
+
+When two rules emit on the same cell in the same round:
+
+- **Retract wins over assert.** A retract is an explicit removal;
+  an assert that would have produced the same value is
+  redundant.
+- **Update wins over no-change.** A retract from a rule plus the
+  implicit carry-forward yields the retract.
+
+In practice conflicts are rare because rule bodies differ. The
+policy is a defensive default for the cases that do arise.
+
+#### Effects, mailboxes, abilities all reduce to the same thing
+
+An **effect** is an inductive rule whose body reads at least one
+transient concept's facts. The transient is the trigger: the
+rule fires when the transient is submitted, produces persistent
+state via its head, and the transient is gone next timestep.
+
+What today's design vocabulary calls:
+
+- An **ability** is a transient concept the UI submits to invoke
+  a behavior. Same mechanism.
+- A **mailbox message** sent to an inbox is a persistent concept
+  (it has to replicate). Consumption is via an explicit `retract!:
+  message` rule that fires when an ack (transient or persistent)
+  arrives. Same mechanism, with the ack as the trigger.
+- **Authorization-as-premise** falls out for free: persistent
+  authorization assertions gate rules by appearing as positive
+  premises. No special machinery.
+- **Expiry** requires a clock concept or built-in `now` formula
+  and a `retract!:` rule guarded by the expiry condition. The
+  retract rule pattern composes; new expiry policies add new
+  rules.
+
+The same mechanism (transient concepts + assert/retract rule
+polarities) covers all of these.
+
+#### Effect trigger requirement
+
+For an inductive rule to be installed as an effect, its body
+must include **at least one positive `when` premise reading a
+transient concept's facts**. This is enforced at effect-
+registration time.
+
+The reason is convergence under partial replication. A rule with
+only persistent premises would need to re-fire on every pull to
+stay in sync with remote facts. Requiring a transient premise
+means the rule only fires when *this peer* submits the transient
+locally; whatever the rule produces is persistent and replicates
+to other peers as plain state.
 
 > [!note]
 >
 > *Naming.* The word "effects" is overloaded with `dialog_effects`
-> (the framework for system IO surface — archive, authority,
+> (the framework for system IO surface: archive, authority,
 > memory handlers). Those are operational effects produced by
 > handlers; the effects in this document are declarative
 > state-transition specs. Same word, different layer. Internal
 > Rust type is `InductiveRule` (upstream); the tonk-yaml surface
-> keyword is `effect!:` for the V1-shaped subset.
+> keyword is `effect!:`.
 
 ## What an effect looks like
 
 In dialog-yaml, the surface authors write:
 
 ```yaml
-# A command concept. Asserting one of these on `effect:system`
-# is how a user "invokes the increment ability against ?counter".
+# A command concept marked transient. Submissions of this
+# concept exist for one commit cycle, then they're gone.
 concept!: &increment
   description: Command to increment a counter
+  transient: true
   with:
     subject:
       the: tonk.xyz.command/subject
       as: entity
 
-# An effect: when an `increment` command targets a counter that
-# already has a count, derive a new counter row with count+1.
-# The `where: { this: effect, ... }` clause on the trigger
-# premise tells the engine "this is the ability that fires me."
+# An effect: when an `increment` command lands and there's a
+# counter for the target, derive a new counter row with count+1.
+# Because `increment` is transient, this rule fires once per
+# submission and can't re-fire later.
 effect!:
   description: Increment a counter on increment command
   assert!: counter
-  where:
-    this: ?this
-    count: ?next-count
   when:
     - assert: counter
       where:
@@ -83,86 +215,91 @@ effect!:
         count: ?last-count
     - assert: increment
       where:
-        this: effect:system
         subject: ?this
     - assert: +
       of: ?last-count
       with: 1
-      is: ?next-count
-  unless:
-    - assert: disable
-      where:
-        this: effect:system
-        ability: counter
+      is: ?count
 ```
 
-Roughly: think of `effect!:` as `DeductiveRuleDescriptor` extended with
-**fire semantics**: when the `when`/`unless` body produces bindings,
-the engine *commits* the head as new facts (instead of just yielding a
-tuple), and retracts the ability fact that triggered the firing.
+Reading the rule: `assert!:` produces persistent head facts; the
+`when` body must match (positive premises in `assert:` form,
+negative premises in `unless:`); the head's variable bindings
+come from variable names that match the head's field names. The
+critical premise is the `increment` one: because the `increment`
+concept is declared `transient: true`, this premise reads a
+transient fact, which satisfies the effect-trigger requirement.
 
-`effect:system` is a sentinel entity (a known DID) meaning "the
-ambient command bus." Users assert commands against it; effects
-match on it; on firing, those facts never make it into the
-persisted branch state. This is more scalable than the
-per-effect-entity scheme in the original sketch (one bus, many
-concurrent commands).
+The counter's value goes from `?last-count` to `?count` via the
+`+` formula. Because `counter.count` is cardinality-one, storage
+replaces the old value with the new one automatically. No
+explicit retract needed.
 
-### `effect:system` — the ambient command bus
+### V1 transient mechanism
 
-`effect:system` is a well-known sentinel entity. Think of it as
-the rough equivalent of stdin or the (deprecated) `window.event`:
-an ambient stream of commands handlers read but no one stores.
+A concept marked `transient: true` has no implicit persistence
+rule. When a fact of a transient concept is submitted in a
+commit:
 
-Assertions on `effect:system` are **commit-scoped**: they exist
-only for the duration of one `evaluate_effects` cycle. The
-trigger arrives in the incoming transaction, the effect loop
-reads it across however many fixpoint rounds, then those facts
-are stripped from the delta before the branch state is written.
-No separate retract instruction — the fact simply never enters
-durable storage.
+1. The transactor admits it for the duration of this commit's
+   effect evaluation.
+2. Effects can read it via positive `when` premises.
+3. Before the persistable delta is written, the transactor
+   strips all facts of transient concepts.
 
-Three consequences:
+The mechanism is just "no implicit carry-forward for facts of
+transient concepts," directly implementing the Dedalus rule "if
+no rule produces `p(X)@next`, then `p(X)` doesn't exist at the
+next timestep."
 
-- **Triggers don't replicate.** Because they never persist, they
-  never end up in the upstream tree, never get pushed, never get
-  pulled. This is the property that makes V1 effects safe under
-  partial replication — only the peer that originated the trigger
-  ever sees it.
-- **A trigger that matches no effect is silently dropped.** An
-  unanswered command does not sit in storage. The semantic is
-  "asserting on `effect:system` is sending a message; the message
+Four consequences:
+
+- **Transients don't replicate.** Because they never enter
+  storage, they never reach the upstream tree, never get pushed,
+  never get pulled. This is the property that makes V1 effects
+  safe under partial replication: only the peer that originated
+  the submission ever sees it.
+- **A submission that matches no effect is silently dropped.**
+  An unanswered command does not sit in storage. The semantic is
+  "submitting a transient is sending a message; the message
   lifetime is one commit cycle."
 - **No leftover triggers from a crash.** A crash mid-cycle drops
   the whole transaction; nothing partially-persisted to recover.
+- **`effect:system` is convention, not mechanism.** Ability
+  concepts (transient commands the UI submits) conventionally
+  use `effect:system` as the `this` field for ergonomic reasons
+  (one well-known place to send commands), but the transactor
+  doesn't special-case the URI. Transience comes from the
+  concept's declaration, not from a sentinel entity.
 
-### V1 restriction (effects vs. general inductive rules)
+### V1 effect-trigger requirement
 
-For this initial release, an `effect!:` rule must include **at
-least one positive `when` premise reading from `effect:system`**.
+An `effect!:` rule (assert or retract polarity) must include **at
+least one positive `when` premise reading a transient concept**.
 This is checked at effect-registration time (tonk-side, not
 upstream — `InductiveRule::new` itself accepts any well-formed
 inductive rule).
 
 Rules that don't satisfy this restriction are valid inductive
 rules upstream, but tonk's reactor refuses to install them as
-effects. Two reasons:
+effects. The reason is convergence under partial replication: a
+rule that reads only persistent concepts would need to re-fire
+on every pull to stay in sync with remote facts. With partial
+replication, the peer can't even see the changes that would need
+to trigger the rule.
 
-1. **Convergence under partial replication.** A rule that reads
-   only durable concepts would need to re-fire on every pull to
-   stay in sync with remote facts. With partial replication, the
-   peer can't even see the changes that would need to trigger the
-   rule.
-2. **Bounded work.** Even with full replication, "fire all rules
-   on every pull" scales poorly. V1 effects skip the pull
-   evaluation entirely; future versions (V2 mailbox, V3 full
-   re-fire) trade more work for broader rule shapes.
+Requiring a transient premise means the rule only fires when
+*this peer* submits the transient locally. Whatever the rule
+produces is persistent and replicates to other peers as plain
+state, so the rule doesn't need to re-fire elsewhere. Different
+peers converge by replicating each other's outputs, not by each
+re-running the rules.
 
 The error message points at the missing trigger and suggests
-adding `assert: <some-command>, where: { this: effect:system,
-... }`. Authors who want a derived view of state should use a
+declaring one of the body's premises against a transient
+concept. Authors who want a derived view of state should use a
 deductive rule (computed on query); authors who want a state
-transition triggered by a local command use an effect.
+transition triggered by a local command or event use an effect.
 
 ## Architecture
 
@@ -215,11 +352,11 @@ into facts. Most of it comes for free from the existing
 attribute/concept fact representation; the new bits are
 `dialog.effect/{assert,premise,unless,description}`.
 
-There is **no** `dialog.effect/ability` field. The ability is
-*inferred*: any positive premise of shape `assert: X, where: {
-this: effect:system, ... }` exposes `X` as an ability whose
-subject is the binding for `?this`. (The V1 restriction means
-every stored effect has at least one such premise — see Layer 3.)
+There is **no** `dialog.effect/ability` field. Abilities are
+*inferred*: any positive premise reading a transient concept
+exposes that concept as an ability. The body's premise structure
+tells the UI what the ability looks like (its fields, what it
+targets).
 
 ### Layer 3 — effect loader + V1 validation
 
@@ -237,8 +374,9 @@ Steps for each `dialog.effect/assert` triple:
 2. Compile via `InductiveRuleDescriptor::compile` (upstream
    analysis: planner + unbound-variable check).
 3. **Validate the V1 effect restriction**: at least one positive
-   premise must read from `effect:system`. Reject (with a
-   diagnostic fact) if not.
+   premise must read a transient concept (one whose declaration
+   has `transient: true`). Reject (with a diagnostic fact) if
+   not.
 
 > [!note]
 >
@@ -294,32 +432,38 @@ need invalidation just like positive ones. Built-in formula
 premises (`+`, `>`, etc.) don't index a concept; they're
 evaluated as part of whichever rule contains them.
 
-**The loop.** Each round computes the set of concepts whose facts
-changed, queries for the candidate effects, fires what matches.
-The `effect:system` working set is held separately and never
-persisted; only the head assertions and any non-`effect:system`
-side effects of those firings land in the durable delta.
+**The loop.** Each round computes the set of attributes whose
+facts changed, queries for the candidate effects, fires what
+matches. Facts of transient concepts are held in a working set
+during the loop and never persisted; only persistent assertions
+and retractions land in the durable delta.
 
 ```rust
 fn evaluate_effects(branch, initial_txn) {
     const MAX_DEPTH: u32 = 16;
-    let mut dirty: HashSet<ConceptId> = concepts_touched(&initial_txn);
-    let mut ephemeral = initial_txn.filter(|f| f.this == EFFECT_SYSTEM);
+    let mut dirty: HashSet<AttributeId> = attributes_touched(&initial_txn);
+    // Transient working set: facts of transient concepts. Carried
+    // through the loop but never written to durable storage.
+    let mut transients = initial_txn.filter(|f| concept_of(f).is_transient());
     let mut persistable = Transaction::new();
     let mut depth = 0;
 
     loop {
         if dirty.is_empty() || depth >= MAX_DEPTH { break; }
-        // Standing query: which effects could be triggered by these concepts?
-        let candidates = query_effects_by_premise_concepts(branch, &dirty);
+
+        // Standing query: which effects mention any of these attributes?
+        let candidates = query_effects_by_premise_attributes(branch, &dirty);
         let mut delta = Transaction::new();
 
         for effect_id in candidates {
             let effect = branch.load_effect(effect_id);
-            if any_unless_matches(branch, &ephemeral, &effect) { continue; }
-            let bindings = run_query(branch, &ephemeral, &effect.join);
+            // Evaluate the body against branch state + working transients.
+            let bindings = run_query(branch, &transients, &effect.join);
             for tuple in bindings {
-                delta.merge(effect.assertion.instantiate(&tuple));
+                match effect.polarity() {
+                    Polarity::Assert => delta.merge_assert(effect, &tuple),
+                    Polarity::Retract => delta.merge_retract(effect, &tuple),
+                }
             }
         }
 
@@ -328,28 +472,40 @@ fn evaluate_effects(branch, initial_txn) {
             log_runaway_effects(&candidates, depth, &delta);
         }
 
-        // Split: facts on effect:system are ephemeral (next round only);
-        // everything else is persistable.
-        let (next_ephemeral, durable) = delta.partition(|f| f.this == EFFECT_SYSTEM);
+        // Partition the round's delta into transient (working set)
+        // and persistent (durable). Apply persistent immediately so
+        // the next round's query sees the updated branch.
+        let (next_transients, durable) = delta.partition(|f| concept_of(f).is_transient());
         persistable.merge(durable.clone());
         branch.apply(&durable);
-        ephemeral = next_ephemeral;
-        dirty = concepts_touched(&delta);
+        transients = next_transients;
+        dirty = attributes_touched(&delta);
         depth += 1;
     }
 
-    // Original effect:system facts in initial_txn are dropped here —
-    // they only live for the duration of this loop.
+    // Transient facts from initial_txn or produced during the loop
+    // are dropped here — they only live for the duration of evaluation.
     persistable
 }
 ```
 
-There is **no cold-start round.** Inductive rules with command
-triggers can't have pre-existing triggers to drain because
-`effect:system` facts never persist. (Inductive rules without
-command triggers — pure derivations — are out of scope for v1;
-that's what `DeductiveRule` already handles via query-time
-materialization.)
+A few notes on the loop's structure:
+
+- The reverse index is keyed by **attribute URI**, not concept
+  entity. Asking "which effects could be affected by a change
+  to attribute `X`" is a single one-hop query against
+  `dialog.effect/premise`. Concept-level invalidation falls out
+  naturally because a concept's attributes are what change in
+  storage.
+- Both `assert!:` and `retract!:` rules participate. The
+  evaluator dispatches on the rule's polarity when constructing
+  the delta.
+- Conflicts within a round (assert and retract on the same cell)
+  resolve by retract-wins.
+- There is **no cold-start round.** V1 effects require transient
+  triggers, and transients don't persist, so there's no
+  backlog of pending triggers at branch open. The loop runs
+  only in response to a commit.
 
 **Why this handles chain reactions correctly.** A V1-valid
 cascade uses `effect:system` for intermediate steps. Take an
@@ -404,9 +560,9 @@ command-shaped trigger premises:
 ```
 for effect in load_effects(branch):
   for premise in effect.when:
-    if premise matches `assert: X, where: { this: effect:system, subject: ?v, ... }`:
-        let target_concept = head_concept_for_var(effect, ?v)
-        if target_concept == C:
+    if premise reads a transient concept X with a field binding
+       to a variable that the head concept also binds:
+        if the head concept is C (or a related concept):
             yield Ability { concept: X, on: C }
 ```
 
@@ -496,53 +652,67 @@ Committed upstream on `feat/inductive-rule` (dialog-db
 `Rule` enum, `Compile` trait. Tonk re-exports via
 `tonk-schema/src/rule.rs`.
 
-### Phase 2 — effect storage
+### Phase 2 — effect storage (done)
 
-- Schema constants for
-  `dialog.effect/{assert,premise,unless,description}` in
-  `tonk-schema`.
-- `load_effects(branch)` that reconstructs `InductiveRuleDescriptor`
-  from facts, compiles via the upstream `Compile::compile`, and
-  validates the V1 restriction (at least one positive
-  `effect:system` premise).
-- Failed-validation surface: `dialog.effect/error` triple (or
-  equivalent diagnostic concept) so the LSP can show the failure.
-- `effect:system` URI constant — well-known DID, documented as
-  the ambient command bus.
+- Schema constants for `dialog.effect/{source,assert,premise}`
+  in `tonk-schema`. Reverse index keyed by attribute URI
+  (revised from the original concept-keyed design to handle
+  lens-sharing across concepts correctly).
+- `Effect::by_entity(branch).resolve(...)` loads an effect's
+  source JSON and rehydrates the `InductiveRule`.
+- `Effect::from_rule(rule)` enforces the V1 trigger check.
+- `effects_by_premise(attribute)` reverse-index query.
+
+**Pending revision:** generalize the V1 trigger check from
+"positive premise reads `effect:system`" to "positive premise
+reads a transient concept." Requires the `transient: true` flag
+on concept declarations to be threaded through. Coming as part
+of Phase 3.
 
 ### Phase 3 — semi-naive fixpoint evaluator
 
-- A standing query: "effects whose `dialog.effect/premise`
-  references concept `X`," used per round by the loop. Both
-  `when` and `unless` premises participate.
+- Concept declaration extension: `transient: true` flag in the
+  schema. tonk-schema reads it; the reactor uses it to decide
+  what to strip from persistable deltas.
+- Inductive rule grammar extension: `retract!:` head polarity
+  alongside `assert!:`. Each rule has one polarity. Multiple
+  rules per head concept compose by disjunction.
 - `evaluate_effects` step in the reactor between
-  `apply_local_txn` and `notify_subscribers`, driven by that
-  query. **Not** hooked into `Pull::perform`. V1 effects' only
-  durable change is the head; the trigger never replicates so
-  there's nothing for pull to fire.
-- The ephemeral / persistable split on `effect:system` facts:
-  assertions arriving in the transaction or produced by effect
-  firings live for the duration of the loop only; everything
-  else is folded back into the persistable delta.
-- Single-round implementation first (depth=1), with a hard-coded
-  test rule that increments a counter on an `increment` command.
+  `apply_local_txn` and `notify_subscribers`, driven by the
+  attribute-keyed reverse-index query. **Not** hooked into
+  `Pull::perform`: V1 effects require transient triggers, and
+  transients don't replicate.
+- Transient working set: facts of transient concepts arriving
+  in the transaction or produced by rule firings are kept in a
+  working set for the duration of the loop, then dropped.
+  Persistent facts (asserts and retracts) accumulate into the
+  persistable delta.
+- Single-round implementation first (depth=1), with a
+  hand-rolled test effect that increments a counter on an
+  `increment` command.
 - Add the fixpoint loop with MAX_DEPTH=16 and a structured
   warning on hitting the bound.
+- Conflict resolution: assert+retract on the same cell in the
+  same round → retract wins.
 - End-to-end tests:
-  - Assert an `increment` command; the counter increments and
-    the command fact is absent from persisted state after the
-    commit settles.
-  - The `counter → counter-snapshot → alert` cascade reaches
-    `alert` within MAX_DEPTH rounds with one external
-    notification (cascade still works through `effect:system`
-    intermediates).
-  - An `effect:system` fact that matches no effect is silently
-    dropped from the persisted delta.
+  - **Increment-counter**: submit a transient `increment`, the
+    counter's value updates, the increment fact is absent from
+    persisted state after settling.
+  - **Mailbox-with-ack**: a persistent `message` exists, a
+    transient `ack` is submitted, a `retract!: message` rule
+    fires, the message is gone from persisted state.
+  - **Cascade with transient intermediate**: rule A produces a
+    transient command, rule B fires on that transient and
+    produces persistent state. Both fire in the same commit
+    cycle; the intermediate is not persisted.
+  - **Silent drop**: a transient submission with no matching
+    effect is dropped from the persisted delta.
 
 ### Phase 4 — ability discovery on subscription
 
 - Subscription opens against concept `C`: also enumerate effects
-  whose trigger asserts an ability whose subject binds to `C`.
+  whose body has a positive premise reading a transient concept
+  whose binding identifies `C` as a target.
 - SSE frame extended to carry `abilities` alongside `conclusions`.
 - Wire format frozen and documented.
 
@@ -550,81 +720,91 @@ Committed upstream on `feat/inductive-rule` (dialog-db
 
 - `<tonk-display>` reads the ability list from the SSE stream
   and renders affordances (probably a button cluster). Click
-  commits a fact asserting `<ability-concept>` with `{ this:
-  effect:system, subject: <host-entity> }`.
-- The fixpoint evaluator picks it up, fires, drops the trigger.
+  commits a fact submitting the transient ability concept.
+- The fixpoint evaluator picks it up, fires the relevant rules.
   The subscription stream updates with the new state.
 
-### Future work — V2 and V3
+### Future work
 
-V1 covers the "local command triggers durable state change" use
-case. Two follow-ups, deferred until concrete motivation:
+V1 is complete enough to support local commands, mailbox
+patterns (with persistent messages and transient acks), and
+declarative state transitions. A few things that aren't in V1
+but are within reach later:
 
-- **V2: mailbox-shaped rules.** Inductive rules whose body reads
-  from a known mailbox concept (origin-keyed or shared) can
-  participate in cross-peer messaging. Pull integration scans
-  the bounded mailbox key range, finds new messages, replays
-  them as a local commit (which then fires the relevant
-  effects). Partial replication preserved because the scan is
-  bounded by mailbox key prefix, not by the size of the pull
-  delta.
-- **V3: full re-evaluation on pull.** For inductive rules that
-  fit neither the V1 nor V2 pattern, the runtime re-fires all
-  rules on every pull. Correct but expensive; recommended only
-  when other patterns don't apply, with documentation warning
-  about the cost. Incompatible with partial replication unless
-  the runtime can prove the rule's body is satisfied entirely by
-  the locally-replicated subtree.
-
-Each version layers on top of its predecessor — V2 keeps V1's
-local triggers; V3 adds general re-evaluation as a fallback. The
-authoring surface gains progressively richer rule shapes; the
-optimization gate moves accordingly.
+- **Multi-head rules**: sugar for "this body produces both an
+  assert and a retract." Currently expressed by two rules with
+  identical bodies. Adding this is purely ergonomic.
+- **Built-in `now` / clock**: enables expiry rules. Would
+  require either an external clock-tick mechanism or special-
+  casing in the evaluator. Deferred until concrete demand.
+- **Cross-peer mailboxes**: persistent messages with a clear
+  protocol for consumption across peers. Builds on V1's
+  message-and-ack pattern but probably wants additional sugar
+  (well-known retry/ack rules?).
+- **Effects on persistent-only premises**: rules with no
+  transient triggers, requiring either full re-evaluation on
+  pull or stratification analysis. Deferred indefinitely;
+  V1's transient-trigger requirement covers our use cases.
 
 ## Things to flag in the journal
 
-- **Inductive rules vs. effects.** Two layered ideas. Inductive
-  rules are the general concept (asserts head when body matches,
-  semantically obligated to re-fire whenever any input could
-  change). Effects are the V1-restricted subset tonk supports:
-  rules that include a positive `effect:system` premise. The
-  restriction is a temporary optimization gate so we can skip
-  pull-time re-evaluation; future versions broaden the
-  accepted shapes.
+- **Persistence is a rule.** Dialog's storage layer is the
+  materialization of an implicit `p(X)@next :- p(X), notin
+  retract(p, X)` rule applied to every EAV triple. The Dedalus
+  reframing makes this visible and gives vocabulary for
+  exceptions: transient concepts are concepts whose facts don't
+  have the implicit rule applied.
+- **Transient concepts are declared per-concept.** A concept
+  marked `transient: true` produces facts that exist only at
+  the timestep of submission. Mailboxes, commands, abilities,
+  events all use this mechanism.
+- **Two rule head polarities.** `assert!:` produces new facts;
+  `retract!:` produces retracts. Each rule has one polarity.
+  Multiple rules per head concept compose by disjunction (same
+  as deductive rules) so adding a new event extends behavior
+  without modifying existing rules.
+- **Conflict resolution: change wins over no-change.** Retract
+  beats assert on the same cell; both beat the implicit
+  carry-forward.
+- **Carry-forward is governed by retraction only.** A fact
+  carries forward unless a retract is emitted on the same
+  entity+attribute pair. Cardinality-one replacement is a
+  storage-layer rule, not a carry-forward rule.
+- **Effects are inductive rules over transients.** An effect's
+  body must read at least one transient concept's facts.
+  Consumption of the trigger is automatic by absence: nothing
+  carries it forward.
 - **Naming convention.** Internal Rust type is `InductiveRule`
   (upstream, sibling of `DeductiveRule`); tonk-yaml surface
   keyword is `effect!:`. The framework already named
   `dialog_effects` is a different layer (system IO surface) and
   we document the distinction rather than rename it.
-- **No `ability` field**, inferred from `where: { this:
-  effect:system, ... }` shape.
-- **`effect:system` as the command bus.** One known DID; all
-  facts asserted on it are commit-scoped and never persisted.
-  No separate retract mechanism — facts simply don't enter
-  durable storage. An unanswered command is silently dropped.
-  The mental model is stdin or `window.event`: an ambient
-  command stream handlers read but no one stores.
-- **Pull doesn't fire effects.** Triggers don't replicate, so
-  the only way for an effect to fire is for the trigger to be
-  asserted locally. Pull is a graft of upstream changes onto the
-  local tree; the reactor's `evaluate_effects` hook lives in
-  `Commit::perform`, not `Pull::perform`. This preserves partial
-  replication — the runtime never has to materialize subtrees it
-  didn't replicate just to ask whether some rule might fire.
+- **No `ability` field**, inferred from the rule's body.
+- **`effect:system` is convention, not mechanism.** Ability
+  concepts conventionally use it as their `this` for ergonomic
+  reasons (one well-known place to send commands), but the
+  transactor doesn't special-case the URI. Transience comes
+  from the concept's `transient: true` flag.
+- **Pull doesn't fire effects.** Transients don't replicate, so
+  the only way for an effect to fire is for the transient to be
+  submitted locally. Pull is a graft of upstream changes onto
+  the local tree; the reactor's `evaluate_effects` hook lives
+  in `Commit::perform`, not `Pull::perform`. This preserves
+  partial replication.
 - **Effects are stored as concept facts** (`dialog.effect/*`),
   which means the "reverse index" needed by the evaluator is
-  just a standing query, not a cached structure. No
-  invalidation, no cold-start refresh, no separate lifecycle.
+  just a standing query, not a cached structure.
+- **Reverse index is attribute-keyed.** Asking "which effects
+  could be affected by a change to attribute X" is a single
+  one-hop query. Concept-level invalidation falls out because
+  attributes are what change in storage.
 - **Chain reactions are handled by the semi-naive fixpoint
   loop** within a single commit cycle; subscribers see the
   settled state, not intermediate rounds.
-- **Demand-driven evaluation via the standing query** means
-  cost scales with what changed, not with the size of the effect
-  set.
 - **Termination guarantee comes from the depth cap**, not from
   semantic reasoning. A pathological effect set will hit the
-  bound and log a warning; stratification analysis is a possible
-  later addition.
+  bound and log a warning; stratification analysis is a
+  possible later addition.
 
 ## Open questions still worth your call
 
