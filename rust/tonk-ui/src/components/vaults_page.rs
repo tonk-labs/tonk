@@ -11,9 +11,12 @@
 //! flow is shaken out end-to-end.
 
 use leptos::{logging::log, prelude::*, task::spawn_local};
+use std::collections::HashMap;
 use web_sys::{FileSystemDirectoryHandle, PermissionState};
 
 use crate::{
+    api,
+    components::ProfileResource,
     error::TonkUiError,
     fs_access,
     vaults::{VaultEntry, VaultRegistry, VaultRegistryError, VaultStatus},
@@ -22,11 +25,18 @@ use crate::{
 /// Top-level `/vaults` view.
 #[component]
 pub fn TonkVaults() -> impl IntoView {
+    let profile_resource =
+        use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
+
     // Reactive list of vaults. Re-fetched after open / reconnect /
     // delete so the UI converges without bespoke per-row signals.
     let entries: RwSignal<Result<Vec<VaultEntry>, String>, LocalStorage> =
         RwSignal::new_local(Ok(Vec::new()));
     let refreshing = RwSignal::new(false);
+    // Last-sync error per vault, surfaced inline on the row that
+    // produced it. Keyed by vault id.
+    let sync_errors: RwSignal<HashMap<String, String>, LocalStorage> =
+        RwSignal::new_local(HashMap::new());
 
     let reload = move || {
         refreshing.set(true);
@@ -59,6 +69,23 @@ pub fn TonkVaults() -> impl IntoView {
         });
     };
 
+    // Reverse-map of subject DID → local space name from the
+    // shared profile resource. Drives the per-row "Sync" button:
+    // a vault entry with a `subject_did` matching a space is
+    // ready to wire as that space's FS upstream. Recomputed when
+    // the profile resource updates so a newly-joined space starts
+    // offering Sync without a manual reload.
+    let space_by_did: Signal<HashMap<String, String>, LocalStorage> =
+        Signal::derive_local(move || {
+            let Some(Ok(Some(info))) = profile_resource.get() else {
+                return HashMap::new();
+            };
+            info.space
+                .into_iter()
+                .map(|(name, did)| (did.to_string(), name))
+                .collect()
+        });
+
     view! {
         <section class="tonk-vaults">
             <header>
@@ -78,7 +105,13 @@ pub fn TonkVaults() -> impl IntoView {
                 }.into_any(),
                 Ok(list) => view! {
                     <ul class="vaults-list">
-                        { list.into_iter().map(|entry| render_row(entry, reload)).collect_view() }
+                        { list.into_iter().map(|entry| {
+                            let matched_space = entry
+                                .subject_did
+                                .as_deref()
+                                .and_then(|did| space_by_did.get().get(did).cloned());
+                            render_row(entry, matched_space, sync_errors, reload)
+                        }).collect_view() }
                     </ul>
                 }.into_any(),
                 Err(message) => view! {
@@ -99,7 +132,18 @@ pub fn TonkVaults() -> impl IntoView {
 /// Render a single registered vault. Action buttons key off
 /// `last_known_status` so the visible affordance matches what's
 /// actually possible without the user gesturing again.
-fn render_row(entry: VaultEntry, reload: impl Fn() + Copy + 'static) -> impl IntoView {
+///
+/// `matched_space` is the local name of the profile space whose
+/// subject DID matches this vault's `subject_did`, when both are
+/// known. Drives the "Sync" button: without a match there's no
+/// repo to wire as upstream, so we hide the action rather than
+/// guess.
+fn render_row(
+    entry: VaultEntry,
+    matched_space: Option<String>,
+    sync_errors: RwSignal<HashMap<String, String>, LocalStorage>,
+    reload: impl Fn() + Copy + 'static,
+) -> impl IntoView {
     let (status_label, status_variant) = match entry.last_known_status {
         VaultStatus::Green => ("Ready", "success"),
         VaultStatus::Yellow => ("Tap to reconnect", "warning"),
@@ -109,6 +153,9 @@ fn render_row(entry: VaultEntry, reload: impl Fn() + Copy + 'static) -> impl Int
     let entry_id = entry.id.clone();
     let id_for_reconnect = entry.id.clone();
     let handle_for_reconnect = entry.handle.clone();
+    let id_for_sync = entry.id.clone();
+    let handle_for_sync = entry.handle.clone();
+    let id_for_error_read = entry.id.clone();
 
     let on_reconnect = move |_| {
         let id = id_for_reconnect.clone();
@@ -119,6 +166,36 @@ fn render_row(entry: VaultEntry, reload: impl Fn() + Copy + 'static) -> impl Int
                 Err(e) => log!("reconnect failed: {e}"),
             }
         });
+    };
+
+    let on_sync = {
+        let matched_space = matched_space.clone();
+        move |_| {
+            let Some(space) = matched_space.clone() else {
+                return;
+            };
+            let id = id_for_sync.clone();
+            let handle = handle_for_sync.clone();
+            sync_errors.update(|errors| {
+                errors.remove(&id);
+            });
+            spawn_local(async move {
+                match sync_vault(&space, &id, &handle).await {
+                    Ok(()) => {
+                        sync_errors.update(|errors| {
+                            errors.remove(&id);
+                        });
+                        reload();
+                    }
+                    Err(e) => {
+                        log!("sync_vault({id}, {space}): {e}");
+                        sync_errors.update(|errors| {
+                            errors.insert(id.clone(), format!("{e}"));
+                        });
+                    }
+                }
+            });
+        }
     };
 
     let id_for_remove = entry_id.clone();
@@ -132,6 +209,19 @@ fn render_row(entry: VaultEntry, reload: impl Fn() + Copy + 'static) -> impl Int
         });
     };
 
+    let sync_button = match (entry.last_known_status, matched_space.clone()) {
+        (VaultStatus::Green, Some(space)) => view! {
+            <wa-button size="small" variant="brand" on:click=on_sync>
+                { format!("Sync to {space}") }
+            </wa-button>
+        }
+        .into_any(),
+        // Subject DID matches a known space but permission isn't
+        // green yet — Reconnect runs first, surfaced via the
+        // status-block button below.
+        _ => view! { <span></span> }.into_any(),
+    };
+
     view! {
         <li class="vaults-list__row" data-vault-id=entry_id>
             <div class="vaults-list__name">{ display_name }</div>
@@ -143,12 +233,55 @@ fn render_row(entry: VaultEntry, reload: impl Fn() + Copy + 'static) -> impl Int
                     }.into_any(),
                     _ => view! { <span></span> }.into_any(),
                 } }
+                { sync_button }
                 <wa-button size="small" appearance="plain" on:click=on_remove>
                     "Forget"
                 </wa-button>
             </div>
+            { move || sync_errors
+                .get()
+                .get(&id_for_error_read)
+                .cloned()
+                .map(|message| view! {
+                    <wa-callout variant="danger">
+                        <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                        { message }
+                    </wa-callout>
+                })
+            }
         </li>
     }
+}
+
+/// Re-register the handle with the worker, wire the FS upstream
+/// for `(space, "main")`, and pull. Also updates the registry
+/// entry's `last_synced_at` on success.
+async fn sync_vault(
+    space: &str,
+    vault_id: &str,
+    handle: &FileSystemDirectoryHandle,
+) -> Result<(), TonkUiError> {
+    // Browsers reset FS-Access permission per session; re-request
+    // here so a fresh page load can sync without a separate
+    // Reconnect click. If the user already granted in this
+    // session, this is a no-op.
+    match fs_access::request_readwrite_permission(handle).await {
+        Ok(PermissionState::Granted) => {}
+        Ok(_) => return Err(TonkUiError::other("Permission was not granted")),
+        Err(e) => return Err(e),
+    }
+    fs_access::register_handle_with_worker(vault_id, handle)?;
+    api::set_fs_upstream(space, "main", vault_id).await?;
+    api::pull(space, "main").await?;
+
+    let registry = VaultRegistry::open()
+        .await
+        .map_err(|e| TonkUiError::other(format!("opening registry: {e}")))?;
+    let now_ms = js_sys::Date::now();
+    if let Err(e) = registry.touch_last_synced(vault_id, now_ms).await {
+        log!("touch_last_synced('{vault_id}'): {e}");
+    }
+    Ok(())
 }
 
 /// Open the registry, list every entry, then probe each handle's
