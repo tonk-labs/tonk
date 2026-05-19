@@ -8,8 +8,8 @@
 //! When the browser issues the initial navigation fetch for that
 //! URL the service worker:
 //!
-//! - records `resulting_client_id → {repo, branch}` in the
-//!   [`GuestBindings`] map hanging off `TonkState`, so any
+//! - records `resulting_client_id → {repo, branch, view_entity}` in the
+//!   [`ViewBindings`] map hanging off `TonkState`, so any
 //!   subsequent subresource fetch from the same iframe can be
 //!   identified by client id alone without re-parsing the URL;
 //! - serves the entity's body by selecting the claim
@@ -25,8 +25,6 @@
 //! it was loaded from, so `<script src="/foo.js">` resolves to
 //! `/api/repository/{repo}/branch/{branch}/foo.js`.
 
-use std::{collections::HashMap, sync::Arc};
-
 use ::axum::{
     body::Body,
     extract::{Path, Request, State},
@@ -38,7 +36,6 @@ use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tokio::sync::RwLock;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
@@ -56,25 +53,24 @@ use crate::TonkWorkerError;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ClientId(pub String);
 
-/// Binding that records which repository and branch an iframe
-/// client is associated with.
-///
-/// Populated on the iframe's initial navigation fetch; looked up
-/// on every subsequent subresource fetch from the same client.
+/// Binding that records which repository, branch, and view entity
+/// an iframe is bound to. Populated on the iframe's initial
+/// navigation fetch; looked up when `on_message` receives a `hello`
+/// from the same client.
 #[derive(Clone, Debug)]
-pub struct GuestBinding {
+pub struct ViewBinding {
     /// The repository name the iframe is scoped to.
     pub repo: String,
     /// The branch name the iframe is scoped to.
     pub branch: String,
+    /// The view entity URI. The bridge enumerates this entity's
+    /// `dialog.view.subscription/*` claims when the iframe connects.
+    pub view_entity: dialog_artifacts::Entity,
 }
 
-/// Shared map of guest `ClientId → GuestBinding`.
-///
-/// Lives on [`TonkState::guests`] behind its own interior
-/// `RwLock`, so guest registration / lookup doesn't serialize
-/// against profile or operator access on the outer state lock.
-pub type GuestBindings = Arc<RwLock<HashMap<ClientId, GuestBinding>>>;
+/// Shared map of `ClientId → ViewBinding`. Lives on
+/// `TonkState::view_bindings` (renamed from `guests`).
+pub type ViewBindings = std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<ClientId, ViewBinding>>>;
 
 /// Path parameters for the bridge route.
 #[derive(Debug, Deserialize)]
@@ -221,23 +217,24 @@ pub async fn guest(
         client_id,
     );
 
-    if let Some(client) = client_id {
-        let guests = state.read().await.guests.clone();
-        guests.write().await.insert(
-            client,
-            GuestBinding {
-                repo: params.repo.clone(),
-                branch: params.branch.clone(),
-            },
-        );
-    }
-
     let attribute: Attribute = attribute_str.parse().map_err(|e| {
         TonkWorkerError::Router(format!("Invalid attribute '{}': {}", attribute_str, e))
     })?;
     let entity: Entity = entity_str
         .parse()
         .map_err(|e| TonkWorkerError::Router(format!("Invalid entity '{}': {}", entity_str, e)))?;
+
+    if let Some(client) = client_id {
+        let bindings = state.read().await.view_bindings.clone();
+        bindings.write().await.insert(
+            client,
+            ViewBinding {
+                repo: params.repo.clone(),
+                branch: params.branch.clone(),
+                view_entity: entity.clone(),
+            },
+        );
+    }
 
     let tonk = state.read().await;
 

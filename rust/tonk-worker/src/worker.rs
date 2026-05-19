@@ -8,7 +8,7 @@ use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
     bootstrap_profile_meta,
-    router::{AppState, ClientId, GuestBindings, api_router_with_state},
+    router::{AppState, ClientId, ViewBindings, api_router_with_state},
 };
 use axum::{
     Router,
@@ -95,8 +95,8 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
     }
 
     let binding = {
-        let guests = state.read().await.guests.clone();
-        let guard = guests.read().await;
+        let view_bindings = state.read().await.view_bindings.clone();
+        let guard = view_bindings.read().await;
         guard.get(&ClientId(client_id.to_string())).cloned()
     };
 
@@ -257,11 +257,11 @@ pub struct TonkState {
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
     /// so subscription broadcasts happen automatically.
     pub reactor: crate::TonkReactor,
-    /// Guest-iframe bindings keyed by service-worker Client ID.
-    /// Behind its own interior lock so guest registration /
+    /// View-iframe bindings keyed by service-worker Client ID.
+    /// Behind its own interior lock so binding registration /
     /// lookup doesn't contend with profile/operator access on
     /// the outer state lock.
-    pub guests: GuestBindings,
+    pub view_bindings: ViewBindings,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -340,7 +340,7 @@ impl TonkServiceWorker {
             operator,
             profile_name: PROFILE_NAME.to_string(),
             reactor,
-            guests: Default::default(),
+            view_bindings: Default::default(),
         };
         bootstrap_profile_meta(&state, PROFILE_NAME)
             .await
