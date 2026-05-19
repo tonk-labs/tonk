@@ -316,6 +316,52 @@ impl Effect {
     pub fn by_entity(entity: Entity) -> EffectByEntity {
         EffectByEntity { entity }
     }
+
+    /// Validate the V1 trigger requirement against a branch: at
+    /// least one positive `when` premise must read a concept
+    /// marked transient.
+    ///
+    /// This is the install-time check. Construction
+    /// ([`Effect::new`], [`Effect::asserting`], etc.) is
+    /// permissive; whoever installs an effect into a branch is
+    /// responsible for running this check first.
+    pub async fn validate<Env: EffectEnv>(
+        &self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<(), EffectValidationError> {
+        let concepts = self.when_concept_entities();
+        for entity in concepts {
+            let transient = crate::concept::TransientConcept::is_transient(entity)
+                .resolve(branch, env)
+                .await
+                .map_err(|e| EffectValidationError::Query(format!("{e}")))?;
+            if transient {
+                return Ok(());
+            }
+        }
+        Err(EffectValidationError::MissingTrigger)
+    }
+}
+
+/// Reasons an effect fails to install. Distinct from
+/// [`EffectError`] because the storage-side failures and
+/// branch-side failures have different recovery strategies.
+#[derive(Debug, Error)]
+pub enum EffectValidationError {
+    /// No positive `when` premise reads a transient concept.
+    /// V1 requires this so the runtime can skip pull-time
+    /// re-evaluation for effects.
+    #[error(
+        "inductive rule has no transient trigger — V1 effects must \
+        include at least one positive `when` premise reading a \
+        concept declared `transient: true`"
+    )]
+    MissingTrigger,
+    /// The branch query infrastructure returned an error while
+    /// looking up a concept's transient marker.
+    #[error("transient lookup failed: {0}")]
+    Query(String),
 }
 
 // ---------------------------------------------------------------- //
@@ -872,5 +918,56 @@ mod tests {
             }),
             "missing dialog.effect/polarity = retract claim"
         );
+    }
+
+    /// V1 install-time check accepts an effect whose body has at
+    /// least one positive `when` premise reading a transient
+    /// concept. Asserts the `increment` concept as transient on
+    /// the branch first; the increment-counter effect's body
+    /// reads it.
+    #[dialog_common::test]
+    async fn it_accepts_effect_with_transient_premise() -> anyhow::Result<()> {
+        use crate::concept::TransientConcept;
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Mark `increment` as a transient concept on the branch.
+        let increment_transient = TransientConcept::new(increment_concept());
+        branch
+            .transaction()
+            .assert(increment_transient)
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let rule = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
+        let effect = Effect::asserting(rule);
+        effect.validate(&branch, &operator).await?;
+        Ok(())
+    }
+
+    /// V1 install-time check rejects an effect whose body has no
+    /// positive `when` premise reading a transient concept.
+    /// Without asserting `increment` as transient on the branch,
+    /// neither of the body's two concept premises (counter,
+    /// increment) is marked transient, so validation fails.
+    #[dialog_common::test]
+    async fn it_rejects_effect_without_transient_premise() -> anyhow::Result<()> {
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let rule = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
+        let effect = Effect::asserting(rule);
+
+        match effect.validate(&branch, &operator).await {
+            Err(EffectValidationError::MissingTrigger) => Ok(()),
+            other => panic!("expected MissingTrigger, got {other:?}"),
+        }
     }
 }

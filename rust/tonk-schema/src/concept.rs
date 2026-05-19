@@ -522,6 +522,59 @@ impl TransientConcept {
     }
 }
 
+impl TransientConcept {
+    /// Look up whether a concept entity is marked transient on
+    /// a branch. Returns `true` iff
+    /// `(<entity>, dialog.concept/transient, db:transient)`
+    /// holds; `false` if the marker is absent.
+    pub fn is_transient(entity: Entity) -> IsTransient {
+        IsTransient { entity }
+    }
+}
+
+/// Builder for [`TransientConcept::is_transient`]. Resolves the
+/// `dialog.concept/transient` marker claim and answers a yes/no.
+pub struct IsTransient {
+    entity: Entity,
+}
+
+impl IsTransient {
+    /// Resolve against a branch.
+    pub async fn resolve<Env: QueryEnv>(
+        self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<bool, ConceptLookupError> {
+        let marker: Entity = transient_marker_entity();
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(meta_attr_typed(
+                    "dialog.concept",
+                    "transient",
+                ))
+                .of(Term::from(self.entity))
+                .is(Term::from(marker)),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                ConceptLookupError::query(format!("transient marker query failed: {e:?}"))
+            })?;
+        Ok(!claims.is_empty())
+    }
+}
+
+/// Same as [`meta_attr`] but returns the typed
+/// [`dialog_query::attribute::The`] form required by the query
+/// builder rather than the runtime [`ArtifactsAttribute`].
+fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
+    format!("{domain}/{name}")
+        .parse()
+        .expect("dialog meta-attribute names should always be valid")
+}
+
 impl Statement for TransientConcept {
     fn assert(self, update: &mut impl Update) {
         emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
