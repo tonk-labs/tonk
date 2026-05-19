@@ -472,6 +472,76 @@ impl Statement for AnonymousConcept {
     }
 }
 
+/// Marker entity asserted as the value of
+/// `dialog.concept/transient` on every transient concept. Same
+/// role as [`concept_marker_entity`] for the
+/// `dialog.meta/concept` marker: gives queries a known triple
+/// to start from when looking for all transient concepts on a
+/// branch.
+fn transient_marker_entity() -> Entity {
+    "db:transient"
+        .parse()
+        .expect("`db:transient` is a valid entity URI")
+}
+
+/// A concept declared as **transient**: facts of this concept
+/// exist for the duration of one commit cycle and are stripped
+/// from the persistable delta before the branch state is
+/// written. The reactor's effect evaluator reads these facts
+/// during fixpoint and they're gone next round.
+///
+/// Mental model in Dedalus terms: transient concepts have no
+/// implicit persistence rule applied. Used to model abilities,
+/// commands, messages, and other event-shaped data.
+///
+/// Storage: emits everything [`AnonymousConcept`] emits
+/// (concept marker, attribute field claims, optional
+/// description), plus a `dialog.concept/transient: true` marker
+/// triple that the reactor reads at commit time to decide which
+/// facts to strip.
+#[derive(Debug, Clone)]
+pub struct TransientConcept {
+    /// `descriptor.this()` — same content-derived entity as
+    /// would be produced by an [`AnonymousConcept`] over the
+    /// same descriptor. Two concepts with identical attribute
+    /// shapes share an entity URI; the transient marker is what
+    /// distinguishes them at the storage layer.
+    pub this: Entity,
+    /// The full descriptor — same shape as a non-transient
+    /// concept.
+    pub descriptor: ConceptDescriptor,
+}
+
+impl TransientConcept {
+    /// Wrap a descriptor as a transient concept.
+    pub fn new(descriptor: ConceptDescriptor) -> Self {
+        Self {
+            this: descriptor.this(),
+            descriptor,
+        }
+    }
+}
+
+impl Statement for TransientConcept {
+    fn assert(self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        update.associate_unique(
+            meta_attr("dialog.concept", "transient"),
+            self.this,
+            Value::Entity(transient_marker_entity()),
+        );
+    }
+
+    fn retract(self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
+        update.dissociate(
+            meta_attr("dialog.concept", "transient"),
+            self.this,
+            Value::Entity(transient_marker_entity()),
+        );
+    }
+}
+
 // `Predicate` + `Concept` so `AnonymousConcept` plugs into the
 // same query machinery as a `#[derive(Concept)]` type. The
 // `Application` is [`AnonymousConceptQuery`] — a custom query
@@ -1058,6 +1128,60 @@ mod tests {
         concept.assert(&mut changes);
         // Marker + two with/* claims + one description claim = 4.
         assert!(!changes.is_empty());
+    }
+
+    /// `TransientConcept::assert` should write everything
+    /// `AnonymousConcept::assert` writes plus a
+    /// `(?this, dialog.concept/transient, db:transient)` marker
+    /// triple. The marker is what the reactor reads at commit
+    /// time to decide which facts to strip from the persistable
+    /// delta.
+    #[test]
+    fn transient_concept_writes_transient_marker() {
+        use dialog_artifacts::{Changes, Instruction};
+        let json = r#"{
+            "description": "An ephemeral command",
+            "with": {
+                "subject": { "the": "command/subject", "as": "Entity", "cardinality": "one" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept = TransientConcept::new(descriptor);
+        let this = concept.this.clone();
+        let mut changes = Changes::new();
+        concept.assert(&mut changes);
+
+        let instructions = changes.into_instructions();
+        let marker_target = transient_marker_entity();
+        let transient_attr = meta_attr("dialog.concept", "transient");
+
+        assert!(
+            instructions.iter().any(|inst| match inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => {
+                    a.the == transient_attr
+                        && a.of == this
+                        && matches!(&a.is, Value::Entity(e) if *e == marker_target)
+                }
+                _ => false,
+            }),
+            "missing dialog.concept/transient marker"
+        );
+
+        // Also writes the normal concept-marker so concept-enumeration
+        // queries find this entity.
+        let concept_marker_attr = meta_attr("dialog.meta", "concept");
+        let concept_marker = concept_marker_entity();
+        assert!(
+            instructions.iter().any(|inst| match inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => {
+                    a.the == concept_marker_attr
+                        && a.of == this
+                        && matches!(&a.is, Value::Entity(e) if *e == concept_marker)
+                }
+                _ => false,
+            }),
+            "missing dialog.meta/concept marker"
+        );
     }
 
     /// Every concept assert must include the
