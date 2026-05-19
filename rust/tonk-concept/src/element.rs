@@ -234,7 +234,10 @@ async fn phase1_lookup(query: &tonk_schema::query::Query) -> Result<String, Erro
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
     let result = crate::bridge::query(&body).await?;
     let arr = result.as_array().ok_or_else(|| {
-        ErrorDetail::new(ErrorKind::Descriptor, "phase1: expected array of conclusions")
+        ErrorDetail::new(
+            ErrorKind::Descriptor,
+            "phase1: expected array of conclusions",
+        )
     })?;
     let first = arr
         .first()

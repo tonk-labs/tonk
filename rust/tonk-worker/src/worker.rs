@@ -333,8 +333,7 @@ mod route_for_tests {
 
     async fn state_with_view_client(client: &str, repo: &str, branch: &str) -> AppState {
         let state = router::tests::test_state().await;
-        let app_state: AppState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let app_state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
         let bindings = app_state.read().await.view_bindings.clone();
         bindings.write().await.insert(
             ClientId(client.to_owned()),
@@ -360,8 +359,7 @@ mod route_for_tests {
     #[dialog_common::test]
     async fn it_lets_non_view_clients_through_to_api() {
         let state = router::tests::test_state().await;
-        let app_state: AppState =
-            std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let app_state: AppState = std::sync::Arc::new(tokio::sync::RwLock::new(state));
         let r = route_for(
             "/api/repository/r/branch/main/query",
             "no-such-client",
@@ -369,7 +367,12 @@ mod route_for_tests {
         )
         .await;
         assert!(
-            matches!(r, Route::Handle { rewritten_path: None }),
+            matches!(
+                r,
+                Route::Handle {
+                    rewritten_path: None
+                }
+            ),
             "non-view client should pass through to axum, got {r:?}",
         );
     }
@@ -379,7 +382,12 @@ mod route_for_tests {
         let state = state_with_view_client("c1", "r", "main").await;
         let r = route_for("/foo.js", "c1", &state).await;
         assert!(
-            matches!(r, Route::Handle { rewritten_path: Some(_) }),
+            matches!(
+                r,
+                Route::Handle {
+                    rewritten_path: Some(_)
+                }
+            ),
             "view client static subresource should be rewritten, got {r:?}",
         );
     }

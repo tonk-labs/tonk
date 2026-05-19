@@ -15,9 +15,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use std::sync::atomic::Ordering;
-use std::sync::atomic::AtomicBool;
 
 use ::axum::body::Body;
 use ::axum::http::{HeaderValue, StatusCode, header};
@@ -102,10 +102,7 @@ pub async fn handle_message(
     envelope: serde_json::Value,
     ports: js_sys::Array,
 ) {
-    let envelope_type = envelope
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
         "query" => handle_query(state, client, envelope).await,
@@ -123,11 +120,7 @@ pub async fn handle_message(
 /// id, and posts a `ready` envelope back so the iframe-side
 /// `tonk.ready` promise resolves.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn handle_hello(
-    state: crate::router::AppState,
-    client: ClientId,
-    ports: js_sys::Array,
-) {
+async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: js_sys::Array) {
     if ports.length() == 0 {
         log!("bridge: hello from {client:?} had no transferred port; dropping");
         return;
@@ -405,14 +398,7 @@ async fn handle_subscribe(
             if session.subscriptions.contains_key(&id) {
                 log!("bridge: subscribe id '{id}' already active for {client:?}");
                 drop(guard);
-                send_error(
-                    &state,
-                    &client,
-                    "subscribe-error",
-                    &id,
-                    "id already in use",
-                )
-                .await;
+                send_error(&state, &client, "subscribe-error", &id, "id already in use").await;
                 return;
             }
         }

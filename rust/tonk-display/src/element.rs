@@ -330,8 +330,7 @@ async fn run(
     let single_mode = view.is_some();
     ensure_carousel(host, &state, single_mode);
 
-    let view_abort =
-        open_view_stream(&view_body, host.clone(), state.clone(), generation)?;
+    let view_abort = open_view_stream(&view_body, host.clone(), state.clone(), generation)?;
     // Check generation again — between opening view and entity
     // streams, attribute_changed_callback may have fired and
     // superseded us. If so, drop the view handle we just opened
@@ -340,8 +339,7 @@ async fn run(
         drop(view_abort);
         return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
     }
-    let entity_abort =
-        open_entity_stream(&entity_body, host.clone(), state.clone(), generation)?;
+    let entity_abort = open_entity_stream(&entity_body, host.clone(), state.clone(), generation)?;
 
     {
         let mut s = state.borrow_mut();
@@ -716,7 +714,10 @@ async fn phase1_lookup(query: &tonk_schema::query::Query) -> Result<(String, Str
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
     let result = bridge_query(&body).await?;
     let arr = result.as_array().ok_or_else(|| {
-        ErrorDetail::new(ErrorKind::Descriptor, "phase1: expected array of conclusions")
+        ErrorDetail::new(
+            ErrorKind::Descriptor,
+            "phase1: expected array of conclusions",
+        )
     })?;
     let first = arr
         .first()
@@ -725,7 +726,9 @@ async fn phase1_lookup(query: &tonk_schema::query::Query) -> Result<(String, Str
         .get("this")
         .and_then(|v| v.as_str())
         .map(str::to_owned)
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `this` field"))?;
+        .ok_or_else(|| {
+            ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `this` field")
+        })?;
     let source = first
         .get("fields")
         .and_then(|f| f.get("source"))

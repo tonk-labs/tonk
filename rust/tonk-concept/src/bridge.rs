@@ -5,8 +5,8 @@
 
 use crate::error::{ErrorDetail, ErrorKind};
 use js_sys::{Function, Promise, Reflect};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::window;
 
@@ -100,14 +100,12 @@ pub fn subscribe(
             on_error_cb.as_ref().unchecked_ref(),
         )
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("tonk.subscribe call: {e:?}")))?;
-    let unsub: Function = unsub_value
-        .dyn_into()
-        .map_err(|_| {
-            ErrorDetail::new(
-                ErrorKind::Network,
-                "tonk.subscribe did not return a function",
-            )
-        })?;
+    let unsub: Function = unsub_value.dyn_into().map_err(|_| {
+        ErrorDetail::new(
+            ErrorKind::Network,
+            "tonk.subscribe did not return a function",
+        )
+    })?;
 
     Ok(SubscribeHandle {
         unsub,
