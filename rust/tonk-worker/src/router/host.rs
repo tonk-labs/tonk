@@ -70,7 +70,8 @@ pub struct ViewBinding {
 
 /// Shared map of `ClientId → ViewBinding`. Lives on
 /// `TonkState::view_bindings` (renamed from `guests`).
-pub type ViewBindings = std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<ClientId, ViewBinding>>>;
+pub type ViewBindings =
+    std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<ClientId, ViewBinding>>>;
 
 /// Path parameters for the bridge route.
 #[derive(Debug, Deserialize)]
@@ -174,10 +175,8 @@ fn wrap_html_body(body: &str) -> String {
          <html>\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
-         <script type=\"module\">\n\
-         import init from '/tonk-concept.js';\n\
-         await init();\n\
-         </script>\n\
+         <script type=\"module\" src=\"/__tonk/bridge.js\"></script>\n\
+         <script type=\"module\" src=\"/tonk-concept.js\"></script>\n\
          </head>\n\
          <body>\n\
          {body}\n\
@@ -299,4 +298,41 @@ pub async fn guest(
         "No claim found for entity={} attribute={}",
         entity_str, attribute_str,
     )))
+}
+
+#[cfg(test)]
+mod wrapper_tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_injects_the_bridge_module_in_head() {
+        let body = "<h1>hi</h1>";
+        let wrapped = wrap_html_body(body);
+        assert!(wrapped.contains("<!doctype html>"));
+        assert!(wrapped.contains("<head>"));
+        assert!(
+            wrapped.contains("src=\"/__tonk/bridge.js\""),
+            "bridge module script tag missing: {wrapped}",
+        );
+        assert!(wrapped.contains("<body>"));
+        assert!(wrapped.contains("<h1>hi</h1>"));
+    }
+
+    #[dialog_common::test]
+    fn it_also_loads_tonk_concept_runtime() {
+        let wrapped = wrap_html_body("");
+        // Both the bridge module and the tonk-concept module are
+        // loaded. The bridge MUST come first so `globalThis.tonk` is
+        // populated by the time tonk-concept's init runs.
+        let bridge_idx = wrapped
+            .find("/__tonk/bridge.js")
+            .expect("bridge loader missing");
+        let concept_idx = wrapped
+            .find("/tonk-concept.js")
+            .expect("tonk-concept loader missing");
+        assert!(
+            bridge_idx < concept_idx,
+            "bridge module must be loaded before tonk-concept runtime: {wrapped}",
+        );
+    }
 }
