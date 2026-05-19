@@ -78,10 +78,6 @@ pub type BridgeRegistry = Arc<RwLock<HashMap<ClientId, BridgeSession>>>;
 
 /// Top-level dispatcher invoked from `worker::on_message`. Routes
 /// the envelope to the right per-type handler.
-///
-/// Increment 1 ships `hello` (port handoff) only. The other types
-/// log "not yet implemented" — they'll be filled in by follow-up
-/// tasks in the same PR.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn handle_message(
     state: crate::router::AppState,
@@ -95,7 +91,9 @@ pub async fn handle_message(
         .unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
-        "query" | "subscribe" | "unsubscribe" | "evaluate" => {
+        "query" => handle_query(state, client, envelope).await,
+        "evaluate" => handle_evaluate(state, client, envelope).await,
+        "subscribe" | "unsubscribe" => {
             log!("bridge: envelope type '{envelope_type}' is not yet wired");
         }
         other => {
@@ -149,4 +147,244 @@ async fn handle_hello(
     if let Err(e) = port.post_message(&js) {
         log!("bridge: failed to post ready to {client:?}: {e:?}");
     }
+}
+
+/// `query` handler. Looks up the client's `ViewBinding`, runs a
+/// one-shot reactor query, and posts `{query-result, id, rows}` (or
+/// `{query-error, id, error}`) back over the port.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn handle_query(
+    state: crate::router::AppState,
+    client: ClientId,
+    envelope: serde_json::Value,
+) {
+    let id = envelope
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_default();
+    let body = match envelope.get("body") {
+        Some(b) => b.clone(),
+        None => {
+            send_error(&state, &client, "query-error", &id, "missing body").await;
+            return;
+        }
+    };
+
+    let Some(binding) = lookup_binding(&state, &client).await else {
+        send_error(&state, &client, "query-error", &id, "no view binding").await;
+        return;
+    };
+
+    let wire: crate::reactor::Query = match serde_json::from_value(body) {
+        Ok(w) => w,
+        Err(e) => {
+            send_error(
+                &state,
+                &client,
+                "query-error",
+                &id,
+                &format!("invalid ConceptQuery: {e}"),
+            )
+            .await;
+            return;
+        }
+    };
+    let query: dialog_query::ConceptQuery = wire.into();
+
+    // Run the one-shot path — same as `router::query::query` does
+    // when the request did not ask for a stream.
+    let conclusions = {
+        let tonk = state.read().await;
+        let session = match tonk
+            .reactor
+            .repository(&binding.repo)
+            .branch(&binding.branch)
+            .acquire(&tonk.operator)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                send_error(
+                    &state,
+                    &client,
+                    "query-error",
+                    &id,
+                    &format!("reactor acquire: {e}"),
+                )
+                .await;
+                return;
+            }
+        };
+        let terms = query.terms.clone();
+        use dialog_query::Output as _;
+        match session
+            .handle()
+            .select(tonk_schema::concept::QueryPlan::from(query))
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+        {
+            Ok(rows) => rows
+                .iter()
+                .map(|c| crate::reactor::Conclusion::project(c, &terms))
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                send_error(
+                    &state,
+                    &client,
+                    "query-error",
+                    &id,
+                    &format!("query exec: {e}"),
+                )
+                .await;
+                return;
+            }
+        }
+    };
+
+    send_envelope(
+        &state,
+        &client,
+        serde_json::json!({
+            "v": 1,
+            "type": "query-result",
+            "id": id,
+            "rows": conclusions,
+        }),
+    )
+    .await;
+}
+
+/// `evaluate` handler. Looks up the client's `ViewBinding`, runs
+/// the evaluate pipeline against the supplied body, and posts
+/// `{evaluate-result, id, result}` (or `{evaluate-error, id, error}`).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn handle_evaluate(
+    state: crate::router::AppState,
+    client: ClientId,
+    envelope: serde_json::Value,
+) {
+    let id = envelope
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_default();
+    let body = match envelope.get("body").and_then(|v| v.as_str()) {
+        Some(b) => b.to_owned(),
+        None => {
+            send_error(
+                &state,
+                &client,
+                "evaluate-error",
+                &id,
+                "missing body string",
+            )
+            .await;
+            return;
+        }
+    };
+    let content_type = envelope
+        .get("contentType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("application/yaml")
+        .to_owned();
+    let transact = envelope
+        .get("transact")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let Some(binding) = lookup_binding(&state, &client).await else {
+        send_error(&state, &client, "evaluate-error", &id, "no view binding").await;
+        return;
+    };
+
+    let result = {
+        let tonk = state.read().await;
+        crate::router::evaluate::evaluate_body(
+            &tonk,
+            &binding.repo,
+            &binding.branch,
+            body,
+            &content_type,
+            transact,
+        )
+        .await
+    };
+    match result {
+        Ok(response) => {
+            send_envelope(
+                &state,
+                &client,
+                serde_json::json!({
+                    "v": 1,
+                    "type": "evaluate-result",
+                    "id": id,
+                    "result": response,
+                }),
+            )
+            .await;
+        }
+        Err(e) => {
+            send_error(&state, &client, "evaluate-error", &id, &format!("{e}")).await;
+        }
+    }
+}
+
+/// Look up the `ViewBinding` for the given client.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn lookup_binding(
+    state: &crate::router::AppState,
+    client: &ClientId,
+) -> Option<crate::router::ViewBinding> {
+    let bindings = state.read().await.view_bindings.clone();
+    let guard = bindings.read().await;
+    guard.get(client).cloned()
+}
+
+/// Serialize `envelope` and post it over the client's bridge port.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn send_envelope(
+    state: &crate::router::AppState,
+    client: &ClientId,
+    envelope: serde_json::Value,
+) {
+    let bridges = state.read().await.bridges.clone();
+    let guard = bridges.read().await;
+    let Some(session) = guard.get(client) else {
+        log!("bridge: tried to send to {client:?} but no session");
+        return;
+    };
+    let js = match serde_wasm_bindgen::to_value(&envelope) {
+        Ok(v) => v,
+        Err(e) => {
+            log!("bridge: envelope serialise failed: {e:?}");
+            return;
+        }
+    };
+    if let Err(e) = session.port.post_message(&js) {
+        log!("bridge: post_message to {client:?} failed: {e:?}");
+    }
+}
+
+/// Post an error envelope back to the client.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn send_error(
+    state: &crate::router::AppState,
+    client: &ClientId,
+    error_type: &str,
+    id: &str,
+    message: &str,
+) {
+    send_envelope(
+        state,
+        client,
+        serde_json::json!({
+            "v": 1,
+            "type": error_type,
+            "id": id,
+            "error": message,
+        }),
+    )
+    .await;
 }
