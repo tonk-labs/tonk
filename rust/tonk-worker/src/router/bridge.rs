@@ -15,13 +15,13 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ::axum::body::Body;
 use ::axum::http::{HeaderValue, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
 use send_wrapper::SendWrapper;
 use tokio::sync::RwLock;
-use tokio::task::AbortHandle;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tonk_common::log;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -48,7 +48,7 @@ pub async fn serve_bridge_js() -> Response {
 }
 
 /// One per connected iframe. Owns the transferred `MessagePort`
-/// plus abort handles keyed by correlation id — one per in-flight
+/// plus abort flags keyed by correlation id — one per in-flight
 /// subscribe. `query` and `evaluate` are one-shot and don't need
 /// to be tracked.
 ///
@@ -56,9 +56,16 @@ pub async fn serve_bridge_js() -> Response {
 /// satisfy the trait bounds the registry imposes. The SW runtime
 /// is single-threaded so SendWrapper's panic-on-cross-thread
 /// guard never fires.
+///
+/// Each active subscription is represented by an `Arc<AtomicBool>`
+/// abort flag. Setting the flag to `true` causes the pump task to
+/// exit on its next iteration. We use this instead of a tokio
+/// `AbortHandle` because `wasm_bindgen_futures::spawn_local` (the
+/// only spawn primitive available in the WASM service-worker
+/// environment) returns `()` rather than a join-handle.
 pub(crate) struct BridgeSession {
     pub port: SendWrapper<MessagePort>,
-    pub subscriptions: HashMap<String, AbortHandle>,
+    pub subscriptions: HashMap<String, Arc<AtomicBool>>,
 }
 
 impl BridgeSession {
@@ -93,9 +100,8 @@ pub async fn handle_message(
         "hello" => handle_hello(state, client, ports).await,
         "query" => handle_query(state, client, envelope).await,
         "evaluate" => handle_evaluate(state, client, envelope).await,
-        "subscribe" | "unsubscribe" => {
-            log!("bridge: envelope type '{envelope_type}' is not yet wired");
-        }
+        "subscribe" => handle_subscribe(state, client, envelope).await,
+        "unsubscribe" => handle_unsubscribe(state, client, envelope).await,
         other => {
             log!("bridge: ignoring envelope type '{other}'");
         }
@@ -328,6 +334,173 @@ async fn handle_evaluate(
         Err(e) => {
             send_error(&state, &client, "evaluate-error", &id, &format!("{e}")).await;
         }
+    }
+}
+
+/// `subscribe` handler. Opens a reactor subscription for the
+/// client's bound branch, spawns a pump task that posts each
+/// emission as `subscribe-event` over the port. A shared
+/// `Arc<AtomicBool>` abort flag is stored against
+/// `BridgeSession.subscriptions` keyed by the correlation `id` so
+/// `handle_unsubscribe` can stop the pump.
+///
+/// Re-subscribing with the same `id` is treated as a programmer
+/// error: we log and return an error envelope without disturbing
+/// the existing pump. The client should `unsubscribe` first.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn handle_subscribe(
+    state: crate::router::AppState,
+    client: ClientId,
+    envelope: serde_json::Value,
+) {
+    let id = envelope
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_default();
+    let body = match envelope.get("body") {
+        Some(b) => b.clone(),
+        None => {
+            send_error(&state, &client, "subscribe-error", &id, "missing body").await;
+            return;
+        }
+    };
+
+    let Some(binding) = lookup_binding(&state, &client).await else {
+        send_error(&state, &client, "subscribe-error", &id, "no view binding").await;
+        return;
+    };
+
+    let wire: crate::reactor::Query = match serde_json::from_value(body) {
+        Ok(w) => w,
+        Err(e) => {
+            send_error(
+                &state,
+                &client,
+                "subscribe-error",
+                &id,
+                &format!("invalid ConceptQuery: {e}"),
+            )
+            .await;
+            return;
+        }
+    };
+    let query: dialog_query::ConceptQuery = wire.into();
+
+    // Bail early if this id is already pumping.
+    {
+        let bridges = state.read().await.bridges.clone();
+        let guard = bridges.read().await;
+        if let Some(session) = guard.get(&client) {
+            if session.subscriptions.contains_key(&id) {
+                log!("bridge: subscribe id '{id}' already active for {client:?}");
+                drop(guard);
+                send_error(
+                    &state,
+                    &client,
+                    "subscribe-error",
+                    &id,
+                    "id already in use",
+                )
+                .await;
+                return;
+            }
+        }
+    }
+
+    let subscriber = {
+        let tonk = state.read().await;
+        match tonk
+            .reactor
+            .repository(&binding.repo)
+            .branch(&binding.branch)
+            .subscribe(query)
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                send_error(
+                    &state,
+                    &client,
+                    "subscribe-error",
+                    &id,
+                    &format!("reactor subscribe: {e}"),
+                )
+                .await;
+                return;
+            }
+        }
+    };
+
+    let mut receiver = subscriber.receiver;
+    let pump_state = state.clone();
+    let pump_client = client.clone();
+    let pump_id = id.clone();
+
+    let abort_flag = Arc::new(AtomicBool::new(false));
+    let pump_flag = abort_flag.clone();
+
+    wasm_bindgen_futures::spawn_local(async move {
+        while !pump_flag.load(Ordering::Acquire) {
+            let Some(bytes) = receiver.recv().await else {
+                break;
+            };
+            if pump_flag.load(Ordering::Acquire) {
+                break;
+            }
+            // The reactor emits a JSON-serialised `Vec<Conclusion>`
+            // per frame. Decode and re-wrap as a subscribe-event.
+            let rows: serde_json::Value = match serde_json::from_slice(&bytes) {
+                Ok(v) => v,
+                Err(e) => {
+                    log!("bridge: subscribe frame for id '{pump_id}' was not JSON: {e}");
+                    continue;
+                }
+            };
+            send_envelope(
+                &pump_state,
+                &pump_client,
+                serde_json::json!({
+                    "v": 1,
+                    "type": "subscribe-event",
+                    "id": pump_id,
+                    "rows": rows,
+                }),
+            )
+            .await;
+        }
+    });
+
+    let bridges = state.read().await.bridges.clone();
+    let mut guard = bridges.write().await;
+    if let Some(session) = guard.get_mut(&client) {
+        session.subscriptions.insert(id, abort_flag);
+    }
+}
+
+/// `unsubscribe` handler. Sets the pump task's abort flag and
+/// removes the subscription entry. Idempotent — calling it with
+/// an unknown id is a no-op (no error envelope sent back).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn handle_unsubscribe(
+    state: crate::router::AppState,
+    client: ClientId,
+    envelope: serde_json::Value,
+) {
+    let id = envelope
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .unwrap_or_default();
+
+    let bridges = state.read().await.bridges.clone();
+    let mut guard = bridges.write().await;
+    let Some(session) = guard.get_mut(&client) else {
+        return;
+    };
+    if let Some(flag) = session.subscriptions.remove(&id) {
+        flag.store(true, Ordering::Release);
     }
 }
 
