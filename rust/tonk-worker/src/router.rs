@@ -47,6 +47,7 @@ mod query;
 pub use query::QueryPath;
 
 mod bridge;
+pub use bridge::BridgeRegistry;
 
 mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
@@ -258,6 +259,7 @@ pub mod tests {
             profile_name: "test-tonk".to_string(),
             reactor,
             view_bindings: Default::default(),
+            bridges: Default::default(),
         }
     }
 

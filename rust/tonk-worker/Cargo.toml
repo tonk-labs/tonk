@@ -41,6 +41,7 @@ http-body-util = { workspace = true }
 js-sys = { workspace = true }
 lsp-types = { workspace = true }
 rand = { workspace = true }
+send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -5042,6 +5042,7 @@ dependencies = [
  "lsp-types",
  "parking_lot",
  "rand 0.9.2",
+ "send_wrapper",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

@@ -13,9 +13,18 @@
 //! Increment 1 ships only the serve route; the message handler
 //! lives in later tasks.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use ::axum::body::Body;
 use ::axum::http::{HeaderValue, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
+use send_wrapper::SendWrapper;
+use tokio::sync::RwLock;
+use tokio::task::AbortHandle;
+use web_sys::MessagePort;
+
+use crate::router::ClientId;
 
 const BRIDGE_JS: &str = include_str!("../../assets/bridge.js");
 
@@ -33,3 +42,32 @@ pub async fn serve_bridge_js() -> Response {
     );
     response
 }
+
+/// One per connected iframe. Owns the transferred `MessagePort`
+/// plus abort handles keyed by correlation id — one per in-flight
+/// subscribe. `query` and `evaluate` are one-shot and don't need
+/// to be tracked.
+///
+/// `MessagePort` is `!Send + !Sync`; wrap it in `SendWrapper` to
+/// satisfy the trait bounds the registry imposes. The SW runtime
+/// is single-threaded so SendWrapper's panic-on-cross-thread
+/// guard never fires.
+pub(crate) struct BridgeSession {
+    pub port: SendWrapper<MessagePort>,
+    pub subscriptions: HashMap<String, AbortHandle>,
+}
+
+impl BridgeSession {
+    pub fn new(port: MessagePort) -> Self {
+        Self {
+            port: SendWrapper::new(port),
+            subscriptions: HashMap::new(),
+        }
+    }
+}
+
+/// Per-SW registry: ClientId → BridgeSession. Held behind an
+/// `RwLock` so multiple in-flight message-dispatch tasks can read
+/// the port concurrently and only contend when adding/removing
+/// sessions.
+pub type BridgeRegistry = Arc<RwLock<HashMap<ClientId, BridgeSession>>>;

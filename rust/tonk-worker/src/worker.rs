@@ -8,7 +8,7 @@ use crate::{
     LspHub,
     axum::{RequestConversion, ResponseConversion},
     bootstrap_profile_meta,
-    router::{AppState, ClientId, ViewBindings, api_router_with_state},
+    router::{AppState, BridgeRegistry, ClientId, ViewBindings, api_router_with_state},
 };
 use axum::{
     Router,
@@ -308,6 +308,10 @@ pub struct TonkState {
     /// lookup doesn't contend with profile/operator access on
     /// the outer state lock.
     pub view_bindings: ViewBindings,
+    /// Per-client bridge sessions keyed by service-worker Client
+    /// ID. Each session owns the transferred `MessagePort` and the
+    /// abort handles for any open subscriptions on that client.
+    pub bridges: BridgeRegistry,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -459,6 +463,7 @@ impl TonkServiceWorker {
             profile_name: PROFILE_NAME.to_string(),
             reactor,
             view_bindings: Default::default(),
+            bridges: Default::default(),
         };
         bootstrap_profile_meta(&state, PROFILE_NAME)
             .await
