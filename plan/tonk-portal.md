@@ -624,6 +624,52 @@ types — `open_sse`, `ErrorDetail`), `tonk-schema`, `serde`,
 8. Empty-stream → `data-state="empty"`; failure → `data-state="error"`.
 9. Register in `tonk-ui` shell.
 
+## Possible v2: per-artifact subdomains
+
+The nested-iframe topology in this plan gives artifacts an
+opaque origin per portal *instance*, but every portal instance
+shares the same OriginID with every other portal on the same
+host page (they're all "opaque, child of this host"). Storage
+is unavailable across the board, and there's no stable
+per-artifact identity at the origin layer.
+
+An alternative we could adopt later: route artifacts through
+a wildcard subdomain on the deployment domain. Given
+`tonk.xyz` is already a Cloudflare-registered domain backing
+`staging.tonk.xyz`, a wildcard DNS record (e.g.
+`*.artifact.tonk.xyz`) could resolve every subdomain to the
+same static page. A portal would then load
+`https://{fingerprint}.artifact.tonk.xyz/...`, where
+`fingerprint` is derived from the artifact's
+`did:key:{fingerprint}`.
+
+Consequences:
+
+- Artifacts can load images, stylesheets, scripts, fonts, and
+  any other subresources the way an ordinary web page would.
+  Relative URLs resolve, `<link>`/`<script>`/`<img>` work, and
+  authors can write artifacts that look and behave like normal
+  HTML rather than self-contained `srcdoc` blobs. This is the
+  main motivation.
+- Each artifact gets its own real origin. Persistent storage
+  (IndexedDB, Cache API, OPFS) is available and scoped per
+  artifact. Two artifacts at different fingerprints can't read
+  each other's storage even if the user opens both.
+- The static page we serve to every subdomain registers a Tonk
+  service worker scoped to that subdomain. The SW is host-supplied,
+  not artifact-authored, so the artifact inherits SW-mediated
+  `fetch` APIs without having to ship a worker itself. The same
+  SW handles the artifact's queries directly, so no
+  `parent.tonk` bridge is needed.
+- First load requires network (to fetch the static page +
+  register the SW). After that the registered SW makes the
+  subdomain offline-capable.
+
+This is a meaningful shift in the trust and identity model and
+isn't compatible with the in-document `srcdoc` approach v1
+takes, so it's flagged here as a direction rather than slotted
+into the current spec.
+
 ## Open questions
 
 1. `tonk.transact` authorization for untrusted artifacts.
