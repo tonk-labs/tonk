@@ -6,11 +6,18 @@
 //! can't forget to notify subscribers — the wrapper does it
 //! automatically. The builder is lazy; nothing touches the
 //! branch until `Commit::perform`.
+//!
+//! [`Commit::perform`] runs the effects evaluator
+//! ([`super::effects::evaluate_effects`]) between the user's
+//! changes and the durable write, then strips transient facts
+//! ([`super::effects::retract_transients`]) before commit so they
+//! never reach durable storage.
 
 use dialog_artifacts::{Changes, Statement};
 use dialog_repository::Revision;
 
 use super::BranchReference;
+use super::effects::{evaluate_effects, retract_transients};
 use super::env::{BranchOpenProvider, CommitProvider, LoadProvider, SelectProvider};
 use super::error::ReactorError;
 
@@ -67,16 +74,25 @@ impl Commit<'_> {
     /// Execute the commit. On success, every subscription on
     /// the branch is re-evaluated and (if its result changed)
     /// broadcasts to its subscribers.
+    ///
+    /// The user's [`Changes`] are loaded into a dialog
+    /// [`Transaction`](dialog_repository::Transaction); the
+    /// effects evaluator runs against it (firing inductive rules
+    /// whose body matches the transaction's overlay view), then
+    /// transient facts are retracted in-place so they cancel at
+    /// commit. Whatever's left lands durably.
     pub async fn perform<Env>(self, env: &Env) -> Result<Revision, ReactorError>
     where
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
         let cached = self.branch.acquire(env).await?;
-        let revision = cached
-            .handle()
-            .commit(self.changes.into_stream())
-            .perform(env)
-            .await?;
+        let branch = cached.handle();
+
+        let mut txn = branch.transaction().integrate(self.changes);
+        txn = evaluate_effects(branch, txn, env).await?;
+        txn = retract_transients(branch, txn, env).await?;
+
+        let revision = txn.commit().perform(env).await?;
         cached.poll(env).await;
         Ok(revision)
     }

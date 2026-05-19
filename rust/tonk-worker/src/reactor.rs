@@ -23,6 +23,7 @@ use dialog_operator::Profile;
 use parking_lot::Mutex;
 
 mod branch;
+mod effects;
 mod env;
 mod error;
 mod pull;
