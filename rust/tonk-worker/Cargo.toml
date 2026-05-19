@@ -59,9 +59,14 @@ wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
     "BroadcastChannel",
+    "Client",
     "CryptoKey",
+    "ExtendableMessageEvent",
     "FetchEvent",
     "Headers",
+    "MessageChannel",
+    "MessageEvent",
+    "MessagePort",
     "Request",
     "RequestInit",
     "RequestMode",
