@@ -10,9 +10,7 @@ description = "<tonk-concept> custom element — live-subscribes to a tonk-worke
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bytes = { workspace = true }
 custom-elements = { workspace = true }
-futures = { workspace = true }
 indexmap = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -21,10 +19,7 @@ serde_json = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
-    "AbortController",
-    "AbortSignal",
     "Attr",
     "Comment",
     "CustomElementRegistry",
@@ -33,7 +28,6 @@ web-sys = { workspace = true, features = [
     "Document",
     "DocumentFragment",
     "Element",
-    "Headers",
     "HtmlElement",
     "HtmlScriptElement",
     "HtmlTemplateElement",
@@ -41,10 +35,6 @@ web-sys = { workspace = true, features = [
     "Node",
     "NodeFilter",
     "NodeList",
-    "ReadableStream",
-    "Request",
-    "RequestInit",
-    "Response",
     "Text",
     "TreeWalker",
     "Window",

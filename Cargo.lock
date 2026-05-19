@@ -4821,10 +4821,8 @@ dependencies = [
 name = "tonk-concept"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "custom-elements",
  "dialog-common",
- "futures",
  "indexmap",
  "js-sys",
  "serde",
@@ -4835,7 +4833,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "wasm-streams",
  "web-sys",
 ]
 

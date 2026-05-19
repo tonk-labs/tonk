@@ -3,18 +3,18 @@
 //! Wires the static-side modules ([`crate::resolve`],
 //! [`crate::template`], [`crate::render`], [`crate::sse`]) into a
 //! lifecycle: snapshot the row template once, resolve `source`
-//! into a wire query, open an SSE subscription, and diff each
-//! frame into the live DOM.
+//! into a wire query, open an SSE subscription, and diff each frame
+//! into the live DOM.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use wasm_bindgen::JsValue;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{AbortController, CustomEvent, CustomEventInit, Element, HtmlElement, window};
+use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
+use crate::bridge::SubscribeHandle;
 use crate::error::{ErrorDetail, ErrorKind};
 use crate::render::Renderer;
 use crate::resolve::{ParsedSource, parse_source, phase1_query, phase2_query};
@@ -32,9 +32,8 @@ struct Inner {
     container: Option<Element>,
     /// Active diff renderer once Phase 2 has started.
     renderer: Option<Renderer>,
-    /// Aborts the in-flight Phase-2 SSE fetch when the element
-    /// disconnects or an attribute changes.
-    abort: Option<AbortController>,
+    /// Active subscription handle — dropping it cancels the stream.
+    abort: Option<SubscribeHandle>,
 }
 
 impl Inner {
@@ -64,7 +63,7 @@ impl CustomElement for TonkConcept {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["source", "space", "branch"]
+        &["source"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -93,10 +92,9 @@ impl CustomElement for TonkConcept {
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        if let Some(state) = self.inner.borrow_mut().take()
-            && let Some(abort) = state.borrow_mut().abort.take()
-        {
-            abort.abort();
+        if let Some(state) = self.inner.borrow_mut().take() {
+            // Drop the SubscribeHandle — its Drop impl calls unsub().
+            state.borrow_mut().abort.take();
         }
     }
 
@@ -114,9 +112,8 @@ impl CustomElement for TonkConcept {
         // Cancel any in-flight stream, drop existing rows, restart.
         {
             let mut s = state.borrow_mut();
-            if let Some(abort) = s.abort.take() {
-                abort.abort();
-            }
+            // Drop the handle — this triggers the unsubscribe call.
+            s.abort.take();
             if let Some(mut renderer) = s.renderer.take() {
                 renderer.clear();
             }
@@ -160,34 +157,13 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     }
     let parsed: ParsedSource = parse_source(&source_attr);
 
-    // Either-or override: if the author sets `space` or `branch`,
-    // build an absolute `/api/repository/{space}/branch/{branch}/query`
-    // URL — missing half defaults to `home`/`main`. With neither
-    // attribute set, a relative `/query` URL lets the service
-    // worker's guest-iframe rewrite resolve the request under
-    // whatever branch the iframe is actually rooted at, which is
-    // rarely `home`/`main`.
-    let space_attr = host.get_attribute("space");
-    let branch_attr = host.get_attribute("branch");
-    let url = match (&space_attr, &branch_attr) {
-        (None, None) => "/query".to_owned(),
-        _ => format!(
-            "/api/repository/{}/branch/{}/query",
-            space_attr.as_deref().unwrap_or("home"),
-            branch_attr.as_deref().unwrap_or("main"),
-        ),
-    };
-
-    // Phase 1 — one-shot resolve via plain JSON request.
-    let phase1_body = serde_json::to_string(&phase1_query(&parsed))
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-    let descriptor_json = phase1_lookup(&url, &phase1_body).await?;
+    // Phase 1 — one-shot resolve via the bridge query method.
+    let phase1_body = phase1_query(&parsed);
+    let descriptor_json = phase1_lookup(&phase1_body).await?;
 
     // Phase 2 — build the actual subscription query and stream it.
     let phase2 = phase2_query(&descriptor_json, &parsed.filters)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("phase2: {e}")))?;
-    let phase2_body = serde_json::to_string(&phase2)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase2 body: {e}")))?;
 
     // Initialise the renderer now that we know the descriptor.
     {
@@ -211,9 +187,12 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     let host_for_err = host.clone();
     let state_for_frame = state.clone();
     let state_for_err = state.clone();
-    let abort = open_sse(
-        &url,
-        &phase2_body,
+
+    let phase2_value = serde_json::to_value(&phase2)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase2 serialise: {e}")))?;
+
+    let handle = open_sse(
+        &phase2_value,
         move |frame: &str| {
             let conclusions: Vec<tonk_schema::conclusion::Conclusion> =
                 match serde_json::from_str(frame) {
@@ -240,76 +219,37 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
             // Drop renderer on persistent stream error.
             state_for_err.borrow_mut().renderer = None;
         },
-    )
-    .await?;
+    )?;
 
-    state.borrow_mut().abort = Some(abort);
+    state.borrow_mut().abort = Some(handle);
     dispatch_event(host, "tonk-concept:connected", None);
     Ok(())
 }
 
-/// Phase-1 helper — POST the query as JSON, parse one
-/// `Conclusion`, return its `source` field.
-async fn phase1_lookup(url: &str, body: &str) -> Result<String, ErrorDetail> {
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Headers, Request, RequestInit, Response};
-
-    let init = RequestInit::new();
-    init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
-    headers
-        .append("content-type", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
-    headers
-        .append("accept", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    init.set_headers(&headers);
-    init.set_body(&JsValue::from_str(body));
-
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
-
-    let win = window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no window"))?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
-        .await
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
-    if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
-            format!("phase1 HTTP {}", resp.status()),
-        ));
-    }
-    let text = JsFuture::from(
-        resp.text()
-            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
-    )
-    .await
-    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read body: {e:?}")))?;
-    let body_text = text
-        .as_string()
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
-    let conclusions: Vec<tonk_schema::conclusion::Conclusion> = serde_json::from_str(&body_text)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse: {e}")))?;
-    let first = conclusions
-        .into_iter()
-        .next()
+/// Phase-1 helper — call `globalThis.tonk.query` with the given
+/// query body, parse the first `Conclusion`, return its `source`
+/// field (the descriptor JSON for Phase 2).
+async fn phase1_lookup(query: &tonk_schema::query::Query) -> Result<String, ErrorDetail> {
+    let body = serde_json::to_value(query)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
+    let result = crate::bridge::query(&body).await?;
+    let arr = result.as_array().ok_or_else(|| {
+        ErrorDetail::new(ErrorKind::Descriptor, "phase1: expected array of conclusions")
+    })?;
+    let first = arr
+        .first()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
     let source = first
-        .fields
-        .get("source")
+        .get("fields")
+        .and_then(|f| f.get("source"))
         .and_then(|v| v.as_str())
-        .map(str::to_owned)
         .ok_or_else(|| {
             ErrorDetail::new(
                 ErrorKind::Descriptor,
                 "phase1 row missing `source` field — worker may not be on the AnonymousConceptQuery build",
             )
         })?;
-    Ok(source)
+    Ok(source.to_owned())
 }
 
 fn dispatch_error(host: &Element, err: ErrorDetail) {
