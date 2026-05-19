@@ -654,46 +654,75 @@ Committed upstream on `feat/inductive-rule` (dialog-db
 
 ### Phase 2 — effect storage (done)
 
-- Schema constants for `dialog.effect/{source,assert,premise}`
-  in `tonk-schema`. Reverse index keyed by attribute URI
-  (revised from the original concept-keyed design to handle
-  lens-sharing across concepts correctly).
-- `Effect::by_entity(branch).resolve(...)` loads an effect's
-  source JSON and rehydrates the `InductiveRule`.
-- `Effect::from_rule(rule)` enforces the V1 trigger check.
+- Schema constants for
+  `dialog.effect/{source,conclusion,polarity,premise}` in
+  `tonk-schema`. The head-concept-index attribute is named
+  `conclusion` (matching upstream `InductiveRule::conclusion()`)
+  so the same name works for both assert- and retract-polarity
+  effects.
+- Reverse index (`dialog.effect/premise`) keyed by attribute URI,
+  not concept entity. Handles lens-sharing across concepts: a
+  change to a shared attribute correctly invalidates effects that
+  read it through any concept lens.
+- `Effect::new(rule, polarity)` and convenience
+  `Effect::asserting(rule)` / `Effect::retracting(rule)`.
+- `Effect::by_entity(branch).resolve(...)` loads source +
+  polarity and rehydrates the `Effect`.
+- `Effect::validate(branch, env)` enforces the V1 trigger
+  requirement at install time: at least one positive `when`
+  premise must read a transient concept (lookup via
+  `TransientConcept::is_transient` against the branch). The
+  check moved from construction to install because it needs
+  branch state for transience markers.
+- `TransientConcept` wrapper in `tonk-schema::concept`. Same
+  storage as `AnonymousConcept` plus a
+  `(?this, dialog.concept/transient, db:transient)` marker. The
+  marker is what the reactor reads to decide which facts to
+  retract.
 - `effects_by_premise(attribute)` reverse-index query.
-
-**Pending revision:** generalize the V1 trigger check from
-"positive premise reads `effect:system`" to "positive premise
-reads a transient concept." Requires the `transient: true` flag
-on concept declarations to be threaded through. Coming as part
-of Phase 3.
 
 ### Phase 3 — semi-naive fixpoint evaluator
 
-- Concept declaration extension: `transient: true` flag in the
-  schema. tonk-schema reads it; the reactor uses it to decide
-  what to strip from persistable deltas.
-- Inductive rule grammar extension: `retract!:` head polarity
-  alongside `assert!:`. Each rule has one polarity. Multiple
-  rules per head concept compose by disjunction.
-- `evaluate_effects` step in the reactor between
-  `apply_local_txn` and `notify_subscribers`, driven by the
-  attribute-keyed reverse-index query. **Not** hooked into
-  `Pull::perform`: V1 effects require transient triggers, and
-  transients don't replicate.
-- Transient working set: facts of transient concepts arriving
-  in the transaction or produced by rule firings are kept in a
-  working set for the duration of the loop, then dropped.
-  Persistent facts (asserts and retracts) accumulate into the
-  persistable delta.
-- Single-round implementation first (depth=1), with a
-  hand-rolled test effect that increments a counter on an
-  `increment` command.
-- Add the fixpoint loop with MAX_DEPTH=16 and a structured
-  warning on hitting the bound.
-- Conflict resolution: assert+retract on the same cell in the
-  same round → retract wins.
+**Architecture:** `Commit::perform` now routes through a dialog
+`Transaction` instead of a raw `Changes` stream. Sequence:
+
+1. Load user's `Changes` into a fresh `Transaction` via
+   `branch.transaction().integrate(user_changes)`.
+2. `evaluate_effects(branch, txn, env)` — fixpoint loop.
+   Reads `txn.query()` for the overlay view (branch state +
+   pending writes). Each round queries the reverse index for
+   candidate effects, fires what matches, integrates head facts
+   back into `txn`. Loop until empty round or MAX_DEPTH=16.
+3. `retract_transients(branch, txn, env)` — for each fact in
+   the transaction whose attribute belongs to a transient
+   concept (looked up via the `dialog.concept/transient`
+   marker), retract it in-place. The assert+retract pair in
+   the same transaction collapses at commit, so transient
+   facts never reach durable storage. No commit-time stripping
+   logic needed.
+4. `txn.commit().perform(env)` — durably write the persistent
+   residue.
+
+**Hook scaffold landed** (`reactor::effects::evaluate_effects` /
+`retract_transients`); both pass the transaction through
+unchanged today.
+
+**Still to land:**
+
+- Single-round evaluator: query reverse index, load candidate
+  effects via `Effect::by_entity`, run rule body against
+  `txn.query()`, instantiate head from bindings, integrate.
+  Test: increment-counter (assert polarity, transient trigger).
+- Fixpoint loop with MAX_DEPTH=16 and runaway warning.
+- Retract-polarity dispatch (the `retract!:` rule head case).
+  Heads of retract rules name a concept and identify the cells
+  to retract via the bindings.
+- Conflict resolution at integration time: assert+retract on
+  the same cell — retract wins.
+- `retract_transients` implementation: enumerate transient
+  concepts via marker query, load each descriptor, walk its
+  relation URIs, query `txn` for facts under those relations,
+  retract each.
 - End-to-end tests:
   - **Increment-counter**: submit a transient `increment`, the
     counter's value updates, the increment fact is absent from

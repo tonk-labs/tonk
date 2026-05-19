@@ -61,9 +61,9 @@ where
 /// facts never enter durable storage.
 ///
 /// V1 skeleton: passes the transaction through unchanged. The real
-/// strip will query the transaction for transient-attribute facts
-/// (using [`Transaction::query`] so it sees pending writes alongside
-/// branch state) and retract each.
+/// implementation will query the transaction for transient-attribute
+/// facts (using [`Transaction::query`] so it sees pending writes
+/// alongside branch state) and retract each.
 pub(super) async fn retract_transients<'a, Env>(
     _branch: &'a Branch,
     txn: Transaction<'a>,
