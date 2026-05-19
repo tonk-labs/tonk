@@ -57,6 +57,7 @@ fn event_resulting_client_id(event: &FetchEvent) -> String {
 
 /// Outcome of the routing decision made in
 /// [`TonkServiceWorker::on_fetch`].
+#[derive(Clone, Debug)]
 enum Route {
     /// Dispatch through the axum router. `rewritten_path` is
     /// `Some` only when the request originated from a registered
@@ -65,11 +66,20 @@ enum Route {
     Handle { rewritten_path: Option<String> },
     /// Pass the request through to the network.
     Passthrough,
+    /// Returned for view clients trying to reach the data plane
+    /// directly. The SW synthesises a 404 response without
+    /// invoking axum.
+    Reject,
 }
 
 /// Decides how the Rust side should route this request.
 ///
-/// - Paths under `/api/` are handled by the axum router as-is.
+/// - View clients (registered via `view_bindings`) hitting `/api/`
+///   paths receive [`Route::Reject`] — the SW returns a synthetic
+///   404 without invoking axum. The data plane is not reachable
+///   directly from an iframe; only the bridge is.
+/// - Paths under `/api/` from non-view clients are handled by the
+///   axum router as-is.
 /// - A small allow-list of shared dist-root assets (the
 ///   `<tonk-concept>` web-target build and the wasm-bindgen
 ///   `/snippets/*` shims it pulls in) is passed straight through,
@@ -82,6 +92,24 @@ enum Route {
 ///   `/foo.js` lands at `/api/repository/{repo}/branch/{branch}/foo.js`.
 /// - Everything else falls through to the network.
 async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
+    // Look up the view binding early; we need it both for the
+    // reject check and for the later path-rewrite.
+    let view_binding = if client_id.is_empty() {
+        None
+    } else {
+        let bindings = state.read().await.view_bindings.clone();
+        let guard = bindings.read().await;
+        guard.get(&ClientId(client_id.to_string())).cloned()
+    };
+
+    // View clients are walled off from the data plane. Any
+    // `/api/...` from a registered view client is a code path
+    // we deliberately removed; surface it as a 404 so the
+    // iframe-side bug is visible.
+    if view_binding.is_some() && path.starts_with("/api/") {
+        return Route::Reject;
+    }
+
     if path.starts_with("/api/") {
         return Route::Handle {
             rewritten_path: None,
@@ -90,17 +118,7 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
     if is_shared_asset(path) {
         return Route::Passthrough;
     }
-    if client_id.is_empty() {
-        return Route::Passthrough;
-    }
-
-    let binding = {
-        let view_bindings = state.read().await.view_bindings.clone();
-        let guard = view_bindings.read().await;
-        guard.get(&ClientId(client_id.to_string())).cloned()
-    };
-
-    let Some(binding) = binding else {
+    let Some(binding) = view_binding else {
         return Route::Passthrough;
     };
 
@@ -206,6 +224,31 @@ async fn handle_via_router(
         .map_err(JsValue::from)
 }
 
+/// Synthesise a 404 response for view clients hitting `/api/...`.
+///
+/// The bridge is the only data plane an iframe gets; everything
+/// else is closed off so the iframe-side bug — "tried to fetch
+/// the API directly" — surfaces immediately.
+///
+/// Only reachable at runtime from `on_fetch`, which is invoked
+/// exclusively in a WASM service-worker context.
+fn reject_404() -> Result<JsValue, JsValue> {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let init = web_sys::ResponseInit::new();
+        init.set_status(404);
+        let response = web_sys::Response::new_with_opt_str_and_init(
+            Some("view clients cannot reach /api/; use the bridge"),
+            &init,
+        )?;
+        return Ok(JsValue::from(response));
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        unreachable!("reject_404 is only callable in a WASM service-worker context")
+    }
+}
+
 /// Pass the request through to the network by calling
 /// `self.fetch(request)` from inside the service worker. Such
 /// fetches bypass the SW's own `onfetch` handler (per spec), so
@@ -272,6 +315,68 @@ pub struct TonkState {
 unsafe impl Send for TonkState {}
 #[cfg(target_arch = "wasm32")]
 unsafe impl Sync for TonkState {}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod route_for_tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use super::*;
+    use crate::router;
+
+    async fn state_with_view_client(client: &str, repo: &str, branch: &str) -> AppState {
+        let state = router::tests::test_state().await;
+        let app_state: AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let bindings = app_state.read().await.view_bindings.clone();
+        bindings.write().await.insert(
+            ClientId(client.to_owned()),
+            router::ViewBinding {
+                repo: repo.to_owned(),
+                branch: branch.to_owned(),
+                view_entity: "concept:test".parse().unwrap(),
+            },
+        );
+        app_state
+    }
+
+    #[dialog_common::test]
+    async fn it_rejects_api_paths_from_view_clients() {
+        let state = state_with_view_client("c1", "r", "main").await;
+        let r = route_for("/api/repository/r/branch/main/query", "c1", &state).await;
+        assert!(
+            matches!(r, Route::Reject),
+            "view client should be rejected, got {r:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_lets_non_view_clients_through_to_api() {
+        let state = router::tests::test_state().await;
+        let app_state: AppState =
+            std::sync::Arc::new(tokio::sync::RwLock::new(state));
+        let r = route_for(
+            "/api/repository/r/branch/main/query",
+            "no-such-client",
+            &app_state,
+        )
+        .await;
+        assert!(
+            matches!(r, Route::Handle { rewritten_path: None }),
+            "non-view client should pass through to axum, got {r:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_still_rewrites_static_subresources_for_view_clients() {
+        let state = state_with_view_client("c1", "r", "main").await;
+        let r = route_for("/foo.js", "c1", &state).await;
+        assert!(
+            matches!(r, Route::Handle { rewritten_path: Some(_) }),
+            "view client static subresource should be rewritten, got {r:?}",
+        );
+    }
+}
 
 /// The main Tonk service worker that handles browser fetch events.
 ///
@@ -445,6 +550,7 @@ impl TonkServiceWorker {
                     handle_via_router(router, request, effective_client_id, rewritten_path).await
                 }
                 Route::Passthrough => passthrough(request, is_navigation).await,
+                Route::Reject => reject_404(),
             }
         })
     }
