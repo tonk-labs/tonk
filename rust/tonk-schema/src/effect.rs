@@ -62,6 +62,7 @@ use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Update, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::{Blake3Hash, ConditionalSync};
 use dialog_effects::archive::{Get, Put};
+use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
 use dialog_query::{
     Attribute, InductiveRule, InductiveRuleDescriptor, Output as _, Proposition, Statement, Term,
@@ -498,6 +499,7 @@ pub trait EffectEnv:
     Provider<Get>
     + Provider<Put>
     + Provider<Resolve>
+    + Provider<Identify>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -509,6 +511,7 @@ impl<T> EffectEnv for T where
     T: Provider<Get>
         + Provider<Put>
         + Provider<Resolve>
+        + Provider<Identify>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync

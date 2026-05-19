@@ -120,22 +120,24 @@ js-sys = "0.3"
 send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
-# Dialog DB — pinned to the upstream `feat/inductive-rule` branch
-# while it stabilizes. Switch back to a tag once it lands.
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/inductive-rule" }
+# Dialog DB — pinned to the upstream `claude/add-overlay-queries-Ay6sq`
+# branch which carries InductiveRule (Phase 1) plus the Transaction::query()
+# overlay machinery the reactor effects evaluator builds on top of.
+# Switch to a tag once the branch lands upstream.
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "claude/add-overlay-queries-Ay6sq" }
 
 [profile.dev]
 opt-level = 1

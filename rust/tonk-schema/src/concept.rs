@@ -26,6 +26,7 @@ use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Select};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
+use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
@@ -158,6 +159,7 @@ pub trait QueryEnv:
     Provider<Get>
     + Provider<Put>
     + Provider<Resolve>
+    + Provider<Identify>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -169,6 +171,7 @@ impl<T> QueryEnv for T where
     T: Provider<Get>
         + Provider<Put>
         + Provider<Resolve>
+        + Provider<Identify>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync

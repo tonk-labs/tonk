@@ -1072,7 +1072,7 @@ dependencies = [
 [[package]]
 name = "dialog-artifacts"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "arrayref",
  "async-stream",
@@ -1107,7 +1107,7 @@ dependencies = [
 [[package]]
 name = "dialog-capability"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "async-trait",
  "convert_case 0.6.0",
@@ -1124,7 +1124,7 @@ dependencies = [
 [[package]]
 name = "dialog-common"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1152,7 +1152,7 @@ dependencies = [
 [[package]]
 name = "dialog-credentials"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "dialog-effects"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1188,7 +1188,7 @@ dependencies = [
 [[package]]
 name = "dialog-macros"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "blake3",
  "convert_case 0.6.0",
@@ -1200,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "dialog-network"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "async-trait",
  "dialog-capability",
@@ -1214,7 +1214,7 @@ dependencies = [
 [[package]]
 name = "dialog-operator"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1248,7 +1248,7 @@ dependencies = [
 [[package]]
 name = "dialog-prolly-tree"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1268,9 +1268,10 @@ dependencies = [
 [[package]]
 name = "dialog-query"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "async-stream",
+ "async-trait",
  "base58",
  "blake3",
  "dialog-artifacts",
@@ -1291,7 +1292,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1330,7 +1331,7 @@ dependencies = [
 [[package]]
 name = "dialog-remote-ucan-s3"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1365,7 +1366,7 @@ dependencies = [
 [[package]]
 name = "dialog-repository"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1401,7 +1402,7 @@ dependencies = [
 [[package]]
 name = "dialog-storage"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1444,7 +1445,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "async-trait",
  "base58",
@@ -1465,7 +1466,7 @@ dependencies = [
 [[package]]
 name = "dialog-ucan-core"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "dialog-varsig",
  "futures",
@@ -1491,7 +1492,7 @@ dependencies = [
 [[package]]
 name = "dialog-varsig"
 version = "0.1.0"
-source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Finductive-rule#83549c034be446739adfc7ae6ea82b970a54b786"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=claude%2Fadd-overlay-queries-Ay6sq#4fd2a0f0136b4944d707e306e3a716fbda813a3a"
 dependencies = [
  "dialog-common",
  "ed25519-dalek",

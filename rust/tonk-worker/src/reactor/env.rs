@@ -31,6 +31,7 @@ pub trait SelectProvider:
     Provider<Get>
     + Provider<Put>
     + Provider<Resolve>
+    + Provider<Identify>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -41,6 +42,7 @@ impl<T> SelectProvider for T where
     T: Provider<Get>
         + Provider<Put>
         + Provider<Resolve>
+        + Provider<Identify>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
