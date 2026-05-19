@@ -46,7 +46,7 @@ pub struct FsUpstreamPath {
 }
 
 /// Response shape.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FsUpstreamResponse {
     /// `true` when the upstream points at the requested vault id.
     pub success: bool,

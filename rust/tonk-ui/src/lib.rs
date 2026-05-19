@@ -23,6 +23,11 @@ pub mod watch;
 /// DID parsing helpers.
 pub mod did;
 
+/// Thin wrappers around the File System Access API: directory picker,
+/// permission probes, and the page-to-service-worker handshake that
+/// forwards directory handles into `dialog-remote-fs`'s registry.
+pub mod fs_access;
+
 /// Per-browser-profile registry of local-disk vaults backed by the
 /// File System Access API.
 pub mod vaults;
