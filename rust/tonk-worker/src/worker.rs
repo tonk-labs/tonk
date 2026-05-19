@@ -145,7 +145,10 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
 /// JS shims that the element's glue imports (e.g. for the
 /// `custom-elements` crate).
 fn is_shared_asset(path: &str) -> bool {
-    matches!(path, "/tonk-concept.js" | "/tonk-concept_bg.wasm") || path.starts_with("/snippets/")
+    matches!(
+        path,
+        "/tonk-concept.js" | "/tonk-concept_bg.wasm" | "/__tonk/bridge.js"
+    ) || path.starts_with("/snippets/")
 }
 
 /// Route the request through the axum router, apply response
@@ -374,6 +377,16 @@ mod route_for_tests {
         assert!(
             matches!(r, Route::Handle { rewritten_path: Some(_) }),
             "view client static subresource should be rewritten, got {r:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    async fn it_passes_through_bridge_js_for_view_clients() {
+        let state = state_with_view_client("c1", "r", "main").await;
+        let r = route_for("/__tonk/bridge.js", "c1", &state).await;
+        assert!(
+            matches!(r, Route::Passthrough),
+            "bridge module must bypass the rewrite, got {r:?}",
         );
     }
 }
