@@ -221,14 +221,18 @@ pub fn TonkJoin() -> impl IntoView {
     // match (if any). Held in a local-storage signal because
     // `VaultEntry` carries a `FileSystemDirectoryHandle` — `!Send`.
     let disk_match: RwSignal<Option<Option<VaultEntry>>, LocalStorage> = RwSignal::new_local(None);
-    Effect::new(move |fired: Option<()>| {
-        if fired.is_some() {
+    let lookup_started = RwSignal::new(false);
+    Effect::new(move |_: Option<()>| {
+        // Re-fires whenever `parsed_invite` updates. Only kick off
+        // the IDB lookup once the invite has actually parsed
+        // successfully, and de-dup against the initial None tick.
+        if lookup_started.get_untracked() {
             return;
         }
-        // Run once on mount; depends on parsed_invite via `get`.
         let Some(Ok(invite)) = parsed_invite.get() else {
             return;
         };
+        lookup_started.set(true);
         let subject = invite.subject().to_string();
         spawn_local(async move {
             match VaultRegistry::open().await {
