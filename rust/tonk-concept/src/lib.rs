@@ -20,7 +20,7 @@ pub mod resolve;
 pub mod template;
 
 #[cfg(target_arch = "wasm32")]
-mod bridge;
+pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]

@@ -15,7 +15,9 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use std::sync::atomic::Ordering;
+use std::sync::atomic::AtomicBool;
 
 use ::axum::body::Body;
 use ::axum::http::{HeaderValue, StatusCode, header};
@@ -63,12 +65,20 @@ pub async fn serve_bridge_js() -> Response {
 /// `AbortHandle` because `wasm_bindgen_futures::spawn_local` (the
 /// only spawn primitive available in the WASM service-worker
 /// environment) returns `()` rather than a join-handle.
-pub(crate) struct BridgeSession {
+pub struct BridgeSession {
+    /// The `MessagePort` end transferred from the iframe's bridge
+    /// module on `hello`. Used to send response envelopes back to
+    /// the iframe.
     pub port: SendWrapper<MessagePort>,
+    /// Active subscriptions keyed by correlation id. Each value is
+    /// an abort flag; setting it to `true` causes the pump task to
+    /// exit on its next iteration.
     pub subscriptions: HashMap<String, Arc<AtomicBool>>,
 }
 
 impl BridgeSession {
+    /// Create a new session wrapping the given port with no active
+    /// subscriptions.
     pub fn new(port: MessagePort) -> Self {
         Self {
             port: SendWrapper::new(port),
