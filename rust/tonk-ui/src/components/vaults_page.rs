@@ -10,8 +10,14 @@
 //! scaffolded as placeholders — landing them next once the open
 //! flow is shaken out end-to-end.
 
-use leptos::{logging::log, prelude::*, task::spawn_local};
+use leptos::{
+    ev::{Event, SubmitEvent},
+    logging::log,
+    prelude::*,
+    task::spawn_local,
+};
 use std::collections::HashMap;
+use wasm_bindgen::JsCast;
 use web_sys::{FileSystemDirectoryHandle, PermissionState};
 
 use crate::{
@@ -54,16 +60,81 @@ pub fn TonkVaults() -> impl IntoView {
     // resolves to nothing) and paint accordingly.
     reload();
 
+    // Holds the directory the user picked while they're typing a
+    // display name into the dialog. `None` means the dialog is
+    // closed. `!Send` so it lives in `LocalStorage`.
+    let pending_handle: RwSignal<Option<FileSystemDirectoryHandle>, LocalStorage> =
+        RwSignal::new_local(None);
+    let proposed_name = RwSignal::new(String::new());
+    let dialog_error = RwSignal::new(Option::<String>::None);
+
     let on_open_click = move |_| {
         spawn_local(async move {
-            match open_existing_vault().await {
-                Ok(Some(())) => reload(),
+            match fs_access::show_directory_picker().await {
+                Ok(Some(handle)) => {
+                    // Pre-fill the dialog with the directory's name so
+                    // the common case is "just hit Open".
+                    proposed_name.set(handle.name());
+                    dialog_error.set(None);
+                    pending_handle.set(Some(handle));
+                }
                 Ok(None) => {
-                    // User cancelled the picker — leave the list as-is.
+                    // User cancelled the picker — nothing to do.
                 }
                 Err(e) => {
-                    log!("open_existing_vault: {e}");
+                    log!("show_directory_picker: {e}");
                     entries.set(Err(format!("{e}")));
+                }
+            }
+        });
+    };
+
+    let close_dialog = move || {
+        pending_handle.set(None);
+        proposed_name.set(String::new());
+        dialog_error.set(None);
+    };
+
+    let on_dialog_cancel = move |_| close_dialog();
+
+    // `wa-dialog` fires `wa-after-hide` once the close animation
+    // finishes (Esc / X / `open=false`). Clear the pending state
+    // here so cancellation paths converge on the same cleanup.
+    let on_after_hide = move |_: Event| close_dialog();
+
+    let on_name_input = move |event: Event| {
+        let value = event
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
+            .and_then(|el| {
+                js_sys::Reflect::get(&el, &wasm_bindgen::JsValue::from_str("value"))
+                    .ok()
+                    .and_then(|v| v.as_string())
+            })
+            .unwrap_or_default();
+        proposed_name.set(value);
+    };
+
+    let on_dialog_submit = move |event: SubmitEvent| {
+        event.prevent_default();
+        let Some(handle) = pending_handle.get() else {
+            return;
+        };
+        let name = proposed_name.get().trim().to_string();
+        if name.is_empty() {
+            dialog_error.set(Some("Name can't be empty".into()));
+            return;
+        }
+        dialog_error.set(None);
+        spawn_local(async move {
+            match register_picked_vault(&handle, &name).await {
+                Ok(()) => {
+                    close_dialog();
+                    reload();
+                }
+                Err(e) => {
+                    log!("register_picked_vault: {e}");
+                    dialog_error.set(Some(format!("{e}")));
                 }
             }
         });
@@ -125,6 +196,45 @@ pub fn TonkVaults() -> impl IntoView {
             <Show when=move || refreshing.get()>
                 <wa-spinner></wa-spinner>
             </Show>
+
+            <wa-dialog
+                label="Name this vault"
+                prop:open=move || pending_handle.get().is_some()
+                on:wa-after-hide=on_after_hide
+            >
+                <form on:submit=on_dialog_submit>
+                    <div class="wa-stack wa-gap-s">
+                        <wa-input
+                            name="vault-display-name"
+                            label="Local name"
+                            placeholder="e.g. recipes"
+                            autocomplete="off"
+                            autofocus
+                            required
+                            prop:value=move || proposed_name.get()
+                            on:input=on_name_input
+                        ></wa-input>
+                        { move || dialog_error.get().map(|message| view! {
+                            <wa-callout variant="danger">
+                                <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                                { message }
+                            </wa-callout>
+                        }) }
+                    </div>
+                    <wa-button
+                        slot="footer"
+                        type="button"
+                        variant="neutral"
+                        appearance="plain"
+                        on:click=on_dialog_cancel
+                    >"Cancel"</wa-button>
+                    <wa-button
+                        slot="footer"
+                        type="submit"
+                        variant="primary"
+                    >"Open"</wa-button>
+                </form>
+            </wa-dialog>
         </section>
     }
 }
@@ -313,20 +423,16 @@ async fn load_with_status() -> Result<Vec<VaultEntry>, VaultRegistryError> {
     Ok(list)
 }
 
-/// Drive the open-existing flow: pick a directory, ask for a
-/// display name, write the entry to the registry, and hand the
-/// handle to the worker. Returns `Ok(None)` if the user cancels
-/// the picker.
-async fn open_existing_vault() -> Result<Option<()>, TonkUiError> {
-    let Some(handle) = fs_access::show_directory_picker().await? else {
-        return Ok(None);
-    };
-
-    let display_name = prompt_display_name(handle.name())?;
-    let Some(display_name) = display_name else {
-        return Ok(None);
-    };
-
+/// Persist a freshly-picked directory in the registry under
+/// `display_name`, then best-effort ask for permission and hand
+/// the handle to the worker so the row starts green.
+///
+/// The picker + display-name input are driven from the component
+/// itself (via `wa-dialog`); this is the post-dialog tail.
+async fn register_picked_vault(
+    handle: &FileSystemDirectoryHandle,
+    display_name: &str,
+) -> Result<(), TonkUiError> {
     let vault_id = random_vault_id()?;
 
     let registry = VaultRegistry::open()
@@ -334,7 +440,7 @@ async fn open_existing_vault() -> Result<Option<()>, TonkUiError> {
         .map_err(|e| TonkUiError::other(format!("opening registry: {e}")))?;
     let entry = VaultEntry {
         id: vault_id.clone(),
-        display_name,
+        display_name: display_name.to_string(),
         handle: handle.clone(),
         subject_did: None,
         last_synced_at: None,
@@ -349,11 +455,11 @@ async fn open_existing_vault() -> Result<Option<()>, TonkUiError> {
     // green immediately on the freshly registered row. Failure here
     // just leaves the status at yellow until the user re-clicks
     // Reconnect.
-    if let Ok(PermissionState::Granted) = fs_access::request_readwrite_permission(&handle).await {
+    if let Ok(PermissionState::Granted) = fs_access::request_readwrite_permission(handle).await {
         let _ = registry.update_status(&vault_id, VaultStatus::Green).await;
-        fs_access::register_handle_with_worker(&vault_id, &handle)?;
+        fs_access::register_handle_with_worker(&vault_id, handle)?;
     }
-    Ok(Some(()))
+    Ok(())
 }
 
 /// Yellow → green reconnect: re-prompt for permission, update the
@@ -394,22 +500,6 @@ async fn remove_vault(id: &str) -> Result<(), TonkUiError> {
         .map_err(|e| TonkUiError::other(format!("remove: {e}")))?;
     let _ = fs_access::unregister_handle_with_worker(id);
     Ok(())
-}
-
-fn prompt_display_name(default: String) -> Result<Option<String>, TonkUiError> {
-    let window = web_sys::window().ok_or_else(|| TonkUiError::other("window unavailable"))?;
-    // `window.prompt(message, default)` — the `_with_message_and_default` overload.
-    let result = window
-        .prompt_with_message_and_default("Name this vault", &default)
-        .map_err(|_| TonkUiError::other("prompt() rejected"))?;
-    Ok(result.and_then(|s| {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    }))
 }
 
 fn random_vault_id() -> Result<String, TonkUiError> {
