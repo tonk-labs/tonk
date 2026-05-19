@@ -46,7 +46,7 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 mod query;
 pub use query::QueryPath;
 
-mod bridge;
+pub mod bridge;
 pub use bridge::BridgeRegistry;
 
 mod host;

@@ -22,6 +22,10 @@ use ::axum::response::{IntoResponse, Response};
 use send_wrapper::SendWrapper;
 use tokio::sync::RwLock;
 use tokio::task::AbortHandle;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tonk_common::log;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use wasm_bindgen::JsCast;
 use web_sys::MessagePort;
 
 use crate::router::ClientId;
@@ -71,3 +75,78 @@ impl BridgeSession {
 /// the port concurrently and only contend when adding/removing
 /// sessions.
 pub type BridgeRegistry = Arc<RwLock<HashMap<ClientId, BridgeSession>>>;
+
+/// Top-level dispatcher invoked from `worker::on_message`. Routes
+/// the envelope to the right per-type handler.
+///
+/// Increment 1 ships `hello` (port handoff) only. The other types
+/// log "not yet implemented" — they'll be filled in by follow-up
+/// tasks in the same PR.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn handle_message(
+    state: crate::router::AppState,
+    client: ClientId,
+    envelope: serde_json::Value,
+    ports: js_sys::Array,
+) {
+    let envelope_type = envelope
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match envelope_type {
+        "hello" => handle_hello(state, client, ports).await,
+        "query" | "subscribe" | "unsubscribe" | "evaluate" => {
+            log!("bridge: envelope type '{envelope_type}' is not yet wired");
+        }
+        other => {
+            log!("bridge: ignoring envelope type '{other}'");
+        }
+    }
+}
+
+/// `hello` handler. Extracts the transferred port (index 0 of the
+/// `ports` array), registers a `BridgeSession` against the client
+/// id, and posts a `ready` envelope back so the iframe-side
+/// `tonk.ready` promise resolves.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn handle_hello(
+    state: crate::router::AppState,
+    client: ClientId,
+    ports: js_sys::Array,
+) {
+    if ports.length() == 0 {
+        log!("bridge: hello from {client:?} had no transferred port; dropping");
+        return;
+    }
+    let port_value = ports.get(0);
+    let port: MessagePort = match port_value.dyn_into() {
+        Ok(p) => p,
+        Err(_) => {
+            log!("bridge: hello from {client:?} transferred a non-MessagePort; dropping");
+            return;
+        }
+    };
+
+    // Stash the session BEFORE posting `ready` so any immediate
+    // query/subscribe that follows finds the binding.
+    let bridges = state.read().await.bridges.clone();
+    {
+        let mut guard = bridges.write().await;
+        guard.insert(client.clone(), BridgeSession::new(port.clone()));
+    }
+
+    let envelope = serde_json::json!({
+        "v": 1,
+        "type": "ready",
+    });
+    let js = match serde_wasm_bindgen::to_value(&envelope) {
+        Ok(v) => v,
+        Err(e) => {
+            log!("bridge: ready envelope serialise failed: {e:?}");
+            return;
+        }
+    };
+    if let Err(e) = port.post_message(&js) {
+        log!("bridge: failed to post ready to {client:?}: {e:?}");
+    }
+}

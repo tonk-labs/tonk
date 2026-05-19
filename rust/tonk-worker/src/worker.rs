@@ -573,6 +573,40 @@ impl TonkServiceWorker {
         })
     }
 
+    /// Handles `message` events from view clients. Routes the
+    /// initial `hello` envelope (and future query/subscribe/evaluate
+    /// envelopes) to the bridge module.
+    ///
+    /// Wired into the SW global by the same JS bootstrap that sets
+    /// `self.onfetch`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    #[wasm_bindgen(js_name = "onmessage")]
+    pub fn on_message(&self, event: web_sys::ExtendableMessageEvent) -> Promise {
+        let state = self.state.clone();
+        let source_client_id = event_source_client_id(&event);
+        let data = event.data();
+        let ports = event.ports();
+
+        future_to_promise(async move {
+            let envelope: serde_json::Value = match serde_wasm_bindgen::from_value(data) {
+                Ok(v) => v,
+                Err(e) => {
+                    log!("on_message: malformed envelope: {e:?}");
+                    return Ok(JsValue::UNDEFINED);
+                }
+            };
+
+            let Some(client_id) = source_client_id else {
+                log!("on_message: envelope has no source client id");
+                return Ok(JsValue::UNDEFINED);
+            };
+
+            crate::router::bridge::handle_message(state, ClientId(client_id), envelope, ports)
+                .await;
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
     /// Performs a full sync operation (pull then push) with the upstream remote.
     ///
     /// This method dispatches to the `/api/repository/home/branch/main/sync`
@@ -612,4 +646,18 @@ impl TonkServiceWorker {
             }
         })
     }
+}
+
+/// Extracts the `source.id` string from an `ExtendableMessageEvent`.
+///
+/// The source of a service-worker message event is a `Client`; we
+/// need its id so we can look up (or create) the `BridgeSession` in
+/// the registry. Returns `None` if the source is absent or cannot be
+/// cast to a `Client`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn event_source_client_id(event: &web_sys::ExtendableMessageEvent) -> Option<String> {
+    use wasm_bindgen::JsCast;
+    let source = event.source()?;
+    let client: web_sys::Client = source.dyn_into().ok()?;
+    Some(client.id())
 }
