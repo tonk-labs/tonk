@@ -25,9 +25,12 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::Replica;
 
 use super::AppState;
 use crate::TonkWorkerError;
+
+const META_BRANCH: &str = "meta";
 
 /// Conventional name for the FS-remote on a repository. There's only
 /// ever one — switching the underlying vault id rewrites this entry.
@@ -127,6 +130,42 @@ pub async fn set_fs_upstream(
         .perform(&tonk.operator)
         .await
         .map_err(|e| TonkWorkerError::Router(format!("set upstream: {e}")))?;
+
+    // The dialog layer now knows the remote and the upstream wiring,
+    // but the UI's `GET /api/repository/{name}` reads remotes/branches
+    // from the **meta-branch concepts** (`Remote`, `TrackingBranch`,
+    // `Replica.branch().set_upstream`). Without these asserts the
+    // repo view shows `REMOTES (0)` and `UPSTREAM none` even though
+    // the underlying configuration is in place — matching what
+    // `PUT /api/repository`'s remote/upstream block does.
+    let meta = repo
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Router(format!("open meta branch on '{}': {e}", params.repo))
+        })?;
+
+    let address_for_concept: dialog_repository::SiteAddress =
+        FsAddress::new(&params.vault_id).into();
+    let replica = Replica::new(tonk.profile.did(), repo.did(), &params.repo);
+    let remote_concept = replica.remote(FS_REMOTE_NAME, repo.did(), &address_for_concept);
+    let tracked = remote_concept.branch(&params.branch);
+
+    meta.transaction()
+        .assert(remote_concept.clone())
+        .assert(tracked.clone())
+        // Asserting the local branch concept is harmless if it
+        // already exists (cardinality-one no-op) and necessary if
+        // it doesn't — matches what `PUT /api/repository` does
+        // before wiring upstream tracking.
+        .assert(replica.branch(&params.branch))
+        .assert(replica.branch(&params.branch).set_upstream(&tracked))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Router(format!("commit meta updates: {e}")))?;
 
     Ok((
         StatusCode::OK,
