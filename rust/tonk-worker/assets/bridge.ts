@@ -1,138 +1,184 @@
 // rust/tonk-worker/assets/bridge.ts
 //
-// Iframe-side bridge module. Served by the SW at
-// /__tonk/bridge.js (the .ts is compiled by the Trunk hook in
-// build.rs / Trunk.toml; see Task 14).
+// Iframe-side bridge. Loaded as an ES module from /__tonk/bridge.js;
+// the wrapper injected by host::wrap_html_body imports it before any
+// iframe-authored script runs.
 //
-// On load:
-//   1. Open a MessageChannel.
-//   2. Send port2 to navigator.serviceWorker.controller with a
-//      `hello` envelope.
-//   3. Wait for `ready` over port1. Materialise tonk.subscriptions
-//      with one Signal per declared name.
-//   4. Apply each subsequent `data` envelope to its matching
-//      signal; surface `error` envelopes via signal error listeners.
+// Publishes globalThis.tonk with three methods that mirror today's
+// `/api/.../query` and `/api/.../evaluate` HTTP shapes — same input
+// payloads, same output payloads, just over postMessage instead of
+// fetch. The SW dispatches each envelope to the existing axum
+// handlers using the iframe's bound {repo, branch}.
 //
-// The agent's body only sees `globalThis.tonk` — never postMessage,
-// MessageChannel, or navigator.serviceWorker.
+// All envelopes carry a correlation `id` so the same port can multiplex
+// many in-flight queries / subscriptions without ordering assumptions.
 
-type Row = { this: string; [field: string]: unknown };
-
-type ReadyEnvelope = {
+type HelloEnvelope     = { v: 1; type: "hello" };
+type QueryEnvelope     = { v: 1; type: "query";     id: string; body: unknown };
+type SubscribeEnvelope = { v: 1; type: "subscribe"; id: string; body: unknown };
+type UnsubscribeEnvelope = { v: 1; type: "unsubscribe"; id: string };
+type EvaluateEnvelope  = {
   v: 1;
-  type: "ready";
-  subscriptions: string[];
+  type: "evaluate";
+  id: string;
+  body: string;
+  contentType: string;
+  transact: boolean;
 };
 
-type DataEnvelope = {
-  v: 1;
-  type: "data";
-  name: string;
-  rows: Row[];
-};
+type ReadyResponse           = { v: 1; type: "ready" };
+type QueryResultResponse     = { v: 1; type: "query-result";     id: string; rows: unknown };
+type QueryErrorResponse      = { v: 1; type: "query-error";      id: string; error: string };
+type SubscribeEventResponse  = { v: 1; type: "subscribe-event";  id: string; rows: unknown };
+type SubscribeErrorResponse  = { v: 1; type: "subscribe-error";  id: string; error: string };
+type EvaluateResultResponse  = { v: 1; type: "evaluate-result";  id: string; result: unknown };
+type EvaluateErrorResponse   = { v: 1; type: "evaluate-error";   id: string; error: string };
+type Inbound =
+  | ReadyResponse
+  | QueryResultResponse | QueryErrorResponse
+  | SubscribeEventResponse | SubscribeErrorResponse
+  | EvaluateResultResponse | EvaluateErrorResponse;
 
-type ErrorEnvelope = {
-  v: 1;
-  type: "error";
-  name?: string;
-  error: string;
-};
+class Bridge {
+  private port: MessagePort;
+  private nextId = 0;
+  private pendingOnce = new Map<string, {
+    resolve: (value: unknown) => void;
+    reject: (error: Error) => void;
+    kind: "query" | "evaluate";
+  }>();
+  private pendingStream = new Map<string, {
+    onFrame: (rows: unknown) => void;
+    onError?: (message: string) => void;
+  }>();
+  private resolveReady!: () => void;
+  ready: Promise<void>;
 
-type InboundEnvelope = ReadyEnvelope | DataEnvelope | ErrorEnvelope;
+  constructor() {
+    this.ready = new Promise<void>(resolve => {
+      this.resolveReady = resolve;
+    });
 
-class Signal<T> {
-  private value: T | undefined = undefined;
-  private listeners = new Set<(value: T) => void>();
-  private errorListeners = new Set<(message: string) => void>();
-
-  get(): T | undefined {
-    return this.value;
-  }
-
-  set(value: T): void {
-    this.value = value;
-    for (const listener of this.listeners) {
-      try {
-        listener(value);
-      } catch (e) {
-        console.error("[tonk] signal listener threw", e);
-      }
-    }
-  }
-
-  fireError(message: string): void {
-    for (const listener of this.errorListeners) {
-      try {
-        listener(message);
-      } catch (e) {
-        console.error("[tonk] error listener threw", e);
-      }
-    }
-  }
-
-  subscribe(listener: (value: T) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
+    const channel = new MessageChannel();
+    this.port = channel.port1;
+    this.port.onmessage = (event: MessageEvent<Inbound>) => {
+      this.dispatch(event.data);
     };
-  }
 
-  subscribeError(listener: (message: string) => void): () => void {
-    this.errorListeners.add(listener);
-    return () => {
-      this.errorListeners.delete(listener);
-    };
-  }
-}
-
-const subscriptions: Record<string, Signal<Row[]>> = {};
-
-let resolveReady!: () => void;
-const ready = new Promise<void>(resolve => {
-  resolveReady = resolve;
-});
-
-(globalThis as any).tonk = { ready, subscriptions };
-
-function handle(envelope: InboundEnvelope): void {
-  switch (envelope.type) {
-    case "ready":
-      for (const name of envelope.subscriptions) {
-        subscriptions[name] = new Signal<Row[]>();
-      }
-      resolveReady();
+    const controller = navigator.serviceWorker?.controller;
+    if (!controller) {
+      // No SW yet — the iframe was opened in a tab that hasn't
+      // claimed control. The bridge is inert; method calls will
+      // hang. Surface the situation clearly in devtools.
+      console.error("[tonk] bridge: no service worker controller; calls will hang");
       return;
-    case "data": {
-      const signal = subscriptions[envelope.name];
-      if (!signal) {
-        console.warn("[tonk] data for unknown subscription", envelope.name);
+    }
+    controller.postMessage(
+      { v: 1, type: "hello" } satisfies HelloEnvelope,
+      [channel.port2],
+    );
+  }
+
+  query(body: unknown): Promise<unknown> {
+    const id = this.mintId();
+    return new Promise<unknown>((resolve, reject) => {
+      this.pendingOnce.set(id, { resolve, reject, kind: "query" });
+      this.port.postMessage({ v: 1, type: "query", id, body } satisfies QueryEnvelope);
+    });
+  }
+
+  subscribe(
+    body: unknown,
+    onFrame: (rows: unknown) => void,
+    onError?: (message: string) => void,
+  ): () => void {
+    const id = this.mintId();
+    this.pendingStream.set(id, { onFrame, onError });
+    this.port.postMessage({ v: 1, type: "subscribe", id, body } satisfies SubscribeEnvelope);
+    return () => {
+      if (!this.pendingStream.delete(id)) return;
+      this.port.postMessage({ v: 1, type: "unsubscribe", id } satisfies UnsubscribeEnvelope);
+    };
+  }
+
+  evaluate(body: string, contentType = "application/yaml", transact = true): Promise<unknown> {
+    const id = this.mintId();
+    return new Promise<unknown>((resolve, reject) => {
+      this.pendingOnce.set(id, { resolve, reject, kind: "evaluate" });
+      this.port.postMessage({
+        v: 1,
+        type: "evaluate",
+        id,
+        body,
+        contentType,
+        transact,
+      } satisfies EvaluateEnvelope);
+    });
+  }
+
+  private mintId(): string {
+    this.nextId += 1;
+    return `r${this.nextId}`;
+  }
+
+  private dispatch(envelope: Inbound): void {
+    switch (envelope.type) {
+      case "ready":
+        this.resolveReady();
         return;
-      }
-      signal.set(envelope.rows);
-      return;
-    }
-    case "error": {
-      if (envelope.name) {
-        const signal = subscriptions[envelope.name];
-        if (signal) {
-          signal.fireError(envelope.error);
+      case "query-result":
+      case "evaluate-result": {
+        const handler = this.pendingOnce.get(envelope.id);
+        if (!handler) {
+          console.warn("[tonk] result for unknown id", envelope.id);
           return;
         }
+        this.pendingOnce.delete(envelope.id);
+        const payload = "rows" in envelope ? envelope.rows : envelope.result;
+        handler.resolve(payload);
+        return;
       }
-      console.error("[tonk] bridge error", envelope.error);
-      return;
+      case "query-error":
+      case "evaluate-error": {
+        const handler = this.pendingOnce.get(envelope.id);
+        if (!handler) {
+          console.warn("[tonk] error for unknown id", envelope.id);
+          return;
+        }
+        this.pendingOnce.delete(envelope.id);
+        handler.reject(new Error(envelope.error));
+        return;
+      }
+      case "subscribe-event": {
+        const handler = this.pendingStream.get(envelope.id);
+        if (!handler) {
+          // Late frame after unsubscribe; drop silently.
+          return;
+        }
+        try {
+          handler.onFrame(envelope.rows);
+        } catch (e) {
+          console.error("[tonk] subscribe frame handler threw", e);
+        }
+        return;
+      }
+      case "subscribe-error": {
+        const handler = this.pendingStream.get(envelope.id);
+        if (!handler) return;
+        if (handler.onError) {
+          try {
+            handler.onError(envelope.error);
+          } catch (e) {
+            console.error("[tonk] subscribe error handler threw", e);
+          }
+        } else {
+          console.error("[tonk] subscribe error", envelope.error);
+        }
+        return;
+      }
     }
   }
 }
 
-const channel = new MessageChannel();
-channel.port1.onmessage = (event: MessageEvent<InboundEnvelope>) => {
-  handle(event.data);
-};
-
-const controller = navigator.serviceWorker?.controller;
-if (!controller) {
-  console.error("[tonk] no service worker controller; bridge inactive");
-} else {
-  controller.postMessage({ v: 1, type: "hello" }, [channel.port2]);
-}
+const bridge = new Bridge();
+(globalThis as any).tonk = bridge;
