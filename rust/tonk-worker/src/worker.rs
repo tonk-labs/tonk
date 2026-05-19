@@ -563,6 +563,11 @@ impl TonkServiceWorker {
                 effective_client_id,
             );
 
+            // Opportunistic cleanup of stale bridge sessions and view
+            // bindings. Cheap enough to run on every fetch.
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            crate::router::bridge::sweep_stale_clients(&state).await;
+
             match route_for(&path, &effective_client_id, &state).await {
                 Route::Handle { rewritten_path } => {
                     handle_via_router(router, request, effective_client_id, rewritten_path).await

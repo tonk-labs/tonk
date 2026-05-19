@@ -62,6 +62,7 @@ wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
     "BroadcastChannel",
     "Client",
+    "Clients",
     "CryptoKey",
     "ExtendableMessageEvent",
     "FetchEvent",

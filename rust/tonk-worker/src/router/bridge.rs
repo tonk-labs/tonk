@@ -540,6 +540,96 @@ async fn send_envelope(
     }
 }
 
+/// Walk every entry in `BridgeRegistry` and `ViewBindings`, drop any
+/// whose client id isn't in the SW's `matchAll()` live set.
+///
+/// Best-effort — runs opportunistically from `on_fetch` so idle SWs
+/// may accumulate stale entries briefly.
+///
+/// For each dropped `BridgeSession`, abort flags are set so pump
+/// tasks exit on their next iteration.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn sweep_stale_clients(state: &crate::router::AppState) {
+    use wasm_bindgen::JsCast;
+
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(g) => g,
+        Err(_) => {
+            log!("sweep: not in a service worker scope");
+            return;
+        }
+    };
+    let live_promise = global.clients().match_all();
+    let live_value = match wasm_bindgen_futures::JsFuture::from(live_promise).await {
+        Ok(v) => v,
+        Err(e) => {
+            log!("sweep: clients.matchAll failed: {e:?}");
+            return;
+        }
+    };
+    let live_array = js_sys::Array::from(&live_value);
+    let live_ids: std::collections::HashSet<String> = live_array
+        .iter()
+        .filter_map(|v| v.dyn_into::<web_sys::Client>().ok().map(|c| c.id()))
+        .collect();
+
+    let (stale_bridges, stale_views) = {
+        let snap = state.read().await;
+        let bridges_arc = snap.bridges.clone();
+        let views_arc = snap.view_bindings.clone();
+        drop(snap);
+
+        let stale_bridges: Vec<ClientId> = {
+            let guard = bridges_arc.read().await;
+            guard
+                .keys()
+                .filter(|c| !live_ids.contains(&c.0))
+                .cloned()
+                .collect()
+        };
+        let stale_views: Vec<ClientId> = {
+            let guard = views_arc.read().await;
+            guard
+                .keys()
+                .filter(|c| !live_ids.contains(&c.0))
+                .cloned()
+                .collect()
+        };
+        (stale_bridges, stale_views)
+    };
+
+    if stale_bridges.is_empty() && stale_views.is_empty() {
+        return;
+    }
+
+    let bridges_arc = state.read().await.bridges.clone();
+    let views_arc = state.read().await.view_bindings.clone();
+
+    {
+        let mut guard = bridges_arc.write().await;
+        for client in &stale_bridges {
+            if let Some(session) = guard.remove(client) {
+                for (_id, flag) in session.subscriptions.iter() {
+                    flag.store(true, Ordering::Release);
+                }
+                // session.port drops here.
+            }
+        }
+    }
+    {
+        let mut guard = views_arc.write().await;
+        for client in &stale_views {
+            guard.remove(client);
+        }
+    }
+
+    log!(
+        "sweep: dropped {} bridge sessions, {} view bindings",
+        stale_bridges.len(),
+        stale_views.len(),
+    );
+}
+
 /// Post an error envelope back to the client.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn send_error(
