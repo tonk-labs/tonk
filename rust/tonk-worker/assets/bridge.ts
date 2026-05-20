@@ -12,6 +12,12 @@
 //
 // All envelopes carry a correlation `id` so the same port can multiplex
 // many in-flight queries / subscriptions without ordering assumptions.
+//
+// Each public method internally awaits `this.ready` before posting, so
+// authors call `tonk.query(...)` / `tonk.subscribe(...)` directly from
+// a `<script type="module">` without writing handshake boilerplate.
+// Failures (no SW controller, bad query, evaluate error) surface as
+// Promise rejections.
 
 type HelloEnvelope     = { v: 1; type: "hello" };
 type QueryEnvelope     = { v: 1; type: "query";     id: string; body: unknown };
@@ -51,11 +57,13 @@ class Bridge {
     onError?: (message: string) => void;
   }>();
   private resolveReady!: () => void;
+  private rejectReady!: (err: Error) => void;
   ready: Promise<void>;
 
   constructor() {
-    this.ready = new Promise<void>(resolve => {
+    this.ready = new Promise<void>((resolve, reject) => {
       this.resolveReady = resolve;
+      this.rejectReady = reject;
     });
 
     const channel = new MessageChannel();
@@ -66,10 +74,10 @@ class Bridge {
 
     const controller = navigator.serviceWorker?.controller;
     if (!controller) {
-      // No SW yet — the iframe was opened in a tab that hasn't
-      // claimed control. The bridge is inert; method calls will
-      // hang. Surface the situation clearly in devtools.
-      console.error("[tonk] bridge: no service worker controller; calls will hang");
+      // No SW controlling this page — every method will reject from
+      // the awaited ready promise so callers see a clear error
+      // instead of an indefinite hang.
+      this.rejectReady(new Error("[tonk] bridge: no service worker controller"));
       return;
     }
     controller.postMessage(
@@ -78,7 +86,8 @@ class Bridge {
     );
   }
 
-  query(body: unknown): Promise<unknown> {
+  async query(body: unknown): Promise<unknown> {
+    await this.ready;
     const id = this.mintId();
     return new Promise<unknown>((resolve, reject) => {
       this.pendingOnce.set(id, { resolve, reject, kind: "query" });
@@ -93,14 +102,40 @@ class Bridge {
   ): () => void {
     const id = this.mintId();
     this.pendingStream.set(id, { onFrame, onError });
-    this.port.postMessage({ v: 1, type: "subscribe", id, body } satisfies SubscribeEnvelope);
+    this.ready.then(
+      () => {
+        // Cancelled before ready resolved — skip the send entirely.
+        if (this.pendingStream.has(id)) {
+          this.port.postMessage({ v: 1, type: "subscribe", id, body } satisfies SubscribeEnvelope);
+        }
+      },
+      (err: Error) => {
+        // Bridge never came up. Surface to the caller's onError so a
+        // failed subscribe looks like every other reportable failure
+        // instead of silently dropping.
+        if (this.pendingStream.delete(id)) {
+          const message = err.message ?? String(err);
+          if (onError) onError(message);
+          else console.error("[tonk] subscribe failed:", message);
+        }
+      },
+    );
     return () => {
       if (!this.pendingStream.delete(id)) return;
-      this.port.postMessage({ v: 1, type: "unsubscribe", id } satisfies UnsubscribeEnvelope);
+      // If the subscribe envelope never went out (cancelled before
+      // ready), the SW will treat unsubscribe-for-unknown-id as a
+      // no-op — see router::bridge::handle_unsubscribe.
+      this.ready.then(
+        () => {
+          this.port.postMessage({ v: 1, type: "unsubscribe", id } satisfies UnsubscribeEnvelope);
+        },
+        () => { /* bridge never came up — nothing to unsubscribe */ },
+      );
     };
   }
 
-  evaluate(body: string, transact = true): Promise<unknown> {
+  async evaluate(body: string, transact = true): Promise<unknown> {
+    await this.ready;
     const id = this.mintId();
     return new Promise<unknown>((resolve, reject) => {
       this.pendingOnce.set(id, { resolve, reject, kind: "evaluate" });

@@ -10,7 +10,11 @@
 //!    covering the view convention that `slide share view`
 //!    relies on. Kept out of the upstream notation guide so the
 //!    notation reference stays a clean syntax doc.
-//! 3. `tonk-concept/SPEC.md` — the `<tonk-concept>` custom
+//! 3. `slide/src/guide-views-dynamic.md` — companion to the views
+//!    addendum that documents the `globalThis.tonk` API agents
+//!    can call from `<script type="module">` inside a view body
+//!    when the declarative `<tonk-concept>` element doesn't fit.
+//! 4. `tonk-concept/SPEC.md` — the `<tonk-concept>` custom
 //!    element reference: source-attribute grammar, template
 //!    detection, `{field}` substitution. Relevant whenever an
 //!    agent authors an HTML view body that embeds a live
@@ -28,6 +32,8 @@ pub const GUIDE: &str = concat!(
     include_str!("../../tonk-notation/guide.md"),
     "\n",
     include_str!("guide-views.md"),
+    "\n",
+    include_str!("guide-views-dynamic.md"),
     "\n",
     include_str!("../../tonk-concept/SPEC.md"),
 );
