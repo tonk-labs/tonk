@@ -45,23 +45,57 @@ affordance.
    └───────────────────────────────────────────────┘
 ```
 
-- **Strip** — an ordered list of **columns**. Scrolls horizontally;
-  width is unbounded.
-- **Column** — an ordered list of **tiles** stacked vertically, plus a
-  `width` (a fraction of the viewport, e.g. `0.5`). All tiles in a
-  column share the column width.
-- **Tile** — one cell. Carries a `height` (fraction of column height
-  when sharing with sibling tiles) and a **content descriptor**
-  (`entity` / `view` / `model` / `space` / `branch`) used to mount a
+- **Strip** — an ordered list of **columns** laid end to end.
+  Scrolls horizontally; total width is the sum of the column widths
+  and is unbounded. Most workspaces have more columns than fit on
+  screen — overflow is the normal case, not an accident.
+- **Column** — an ordered list of **tiles** stacked vertically, plus
+  a `width`. All tiles in a column share the column width.
+- **Tile** — one cell. Carries a `height` and a **content
+  descriptor** (`entity` / `view` / `model`) used to mount a
   `<tonk-display>`.
-- **Focus** — exactly one tile is focused. Focus drives scroll: niri
-  keeps the focused column in view (centred / nearest-edge).
+- **Focus** — exactly one tile is focused. Focus drives scroll: the
+  strip slides so the focused column is fully on screen.
 - **Workspace** — a named strip. One branch can hold several
   (`default`, `scratch`, …); the `workspace` attribute selects one.
 
-Sizing is **relative**, never pixel-absolute, so the same layout
-restores correctly at any viewport size. Niri's preset column widths
-(⅓, ½, ⅔, full) are the width values we cycle through.
+### Sizing — grid units
+
+Column `width` and tile `height` are **integer counts of grid
+cells**, not viewport fractions. The page already paints a
+graph-paper dot grid (`--dot-gap: 16px`, with a brighter "major"
+dot every 4 cells = 64px). The window manager sizes everything in
+**major-grid units** (1 unit = 64px):
+
+- A column `width` of `8` is 512px wide; `12` is 768px.
+- A tile `height` of `10` is 640px tall.
+- The preset column widths cycled by the keyboard are expressed in
+  units sized to the viewport: roughly ⅓, ½, ⅔, and full of the
+  visible width, each **rounded to the nearest grid unit** so a
+  column edge always lands on the grid.
+
+Grid units make three things fall out for free:
+
+1. **No "ghost scroll".** Widths are absolute, so the rail is
+   exactly as wide as its columns — horizontal scroll appears only
+   when columns genuinely overflow, never from rounding or chrome.
+2. **Grid-snapped scrolling.** Scroll snap points are grid lines.
+   The strip uses CSS scroll-snap with a snap stride of one major
+   grid cell, so the strip settles with content aligned to the
+   dotted background rather than at arbitrary offsets. This is
+   looser than carousel page-snap (it does not force a column to
+   the edge) but tighter than free scroll.
+3. **Resolution independence is still fine.** A layout authored on
+   a wide screen restores on a narrow one; it just scrolls more.
+   The grid is fixed-pitch, so a column is the same physical size
+   everywhere — which is what makes the snap grid meaningful.
+
+Niri itself is resolution-relative (preset *fractions*); we trade
+that for grid alignment because the graph-paper background is a
+defining part of this UI and columns that don't sit on the grid
+look wrong against it. The keyboard presets keep the niri feel —
+they pick a sensible width for the current viewport — while the
+stored value stays an absolute grid count.
 
 ## Data model — normalized tile entities
 
@@ -94,9 +128,9 @@ concept!: &column
       the: xyz.tonk.layout/column-order
       as: float
     width:
-      description: Column width as a fraction of the viewport (0..1)
+      description: Column width in major grid units (1 unit = 64px)
       the: xyz.tonk.layout/column-width
-      as: float
+      as: unsigned-integer
 
 concept!: &tile
   description: One cell; mounts a <tonk-display>
@@ -115,9 +149,9 @@ concept!: &tile
       the: xyz.tonk.layout/tile-order
       as: float
     height:
-      description: Tile height as a fraction of the column (0..1)
+      description: Tile height in major grid units (1 unit = 64px)
       the: xyz.tonk.layout/tile-height
-      as: float
+      as: unsigned-integer
     entity:
       description: Entity the tile's <tonk-display> renders
       the: xyz.tonk.layout/tile-entity
@@ -240,22 +274,40 @@ own root):
 | `↑` / `↓` | Move focus up / down within the focused column. |
 | `Ctrl+←/→` | Move the focused column left / right in the strip. |
 | `Ctrl+↑/↓` | Move the focused tile up / down within its column. |
-| `R` | Cycle the focused column through preset widths (⅓ ½ ⅔ 1). |
+| `R` | Cycle the focused column through preset widths (⅓ ½ ⅔ full). |
+| `Shift+R` | Cycle the focused tile through preset heights. |
 | `Q` | Close the focused tile. |
 | `Enter` | Open a new tile (prompt for entity/view — see below). |
 
-Pointer: click a tile to focus it; drag the gap between columns or
-tiles to resize; horizontal wheel / trackpad scrolls the strip.
+Each preset is computed from the current viewport and **rounded to
+the nearest grid unit**, so the stored `width` / `height` stays an
+integer grid count and the column edge lands on the dotted grid.
+
+Pointer:
+
+- **Focus** — click a tile to focus it.
+- **Resize** — a drag handle sits on each column's trailing edge
+  and each tile's bottom edge. Dragging snaps to grid units: the
+  handle follows the pointer but the committed `width` / `height`
+  is the nearest whole grid count. The DOM updates optimistically
+  on every pointer move; the write to the branch is debounced and
+  flushed on `pointerup` (see *Writing layout state*).
+- **Scroll** — horizontal wheel / trackpad scrolls the strip. The
+  strip carries CSS scroll-snap with a one-grid-cell stride, so a
+  flick settles with content aligned to the dotted background. The
+  snap is *proximity*, not *mandatory* — a deliberate scroll can
+  rest anywhere, it just nudges to the nearest grid line when it
+  would otherwise stop between cells.
 
 **Opening a tile** needs an entity to display. v1: a `<wa-dialog>`
 (Web Awesome) with inputs for `entity`, `model`, `view`. A richer
 picker (browse branch entities) is a follow-up. Authors can also seed
 tiles by asserting `tile` rows directly.
 
-Focus changes scroll the strip so the focused column is fully visible
-(niri's "centre / nearest edge" behaviour) — a CSS
-`scroll-behavior: smooth` container plus `scrollIntoView` on the
-focused column suffices for v1.
+Focus changes scroll the strip so the focused column is fully
+visible: `scrollIntoView` on the focused column with
+`scroll-behavior: smooth`. Because the strip snaps to the grid, the
+slide settles grid-aligned without extra work.
 
 ## Tile content — `<tonk-display>` per tile
 
@@ -276,21 +328,30 @@ The host gets a non-shadow light DOM tree the WM owns entirely:
 
 ```
 <tonk-layout data-state="ready">
-  <div class="niri-strip">                <!-- scroll container -->
-    <div class="niri-column" data-order=…> <!-- flex column, width: Nfr -->
-      <div class="niri-tile" data-focused>  <!-- height: Nfr -->
-        <tonk-display entity=… view=… />
+  <div class="tonk-layout-strip">             <!-- scroll container, grid snap -->
+    <div class="tonk-layout-rail">            <!-- flex row of columns -->
+      <div class="tonk-layout-column" data-id=…>
+        <div class="tonk-layout-tile" data-focused>
+          <tonk-display entity=… view=… />
+        </div>
+        …
       </div>
       …
     </div>
-    …
   </div>
 </tonk-layout>
 ```
 
 - Column width and tile height come from the `width` / `height`
-  fractions, written as inline `flex` / CSS custom properties so the
-  browser does the pixel math; the layout stays resolution-independent.
+  **grid-unit counts**, written as CSS custom properties
+  (`--tonk-layout-width` / `--tonk-layout-height`); the stylesheet
+  multiplies by the grid-cell size for the pixel value. Columns size
+  to their content (the rail overflows and scrolls); tiles divide
+  their column's height by their grid counts.
+- The strip is a plain scrolling `<div>` (a `<wa-scroller>` was tried
+  but does not propagate height to its slotted child). It carries
+  `scroll-snap-type: x proximity` with a one-grid-cell snap stride so
+  scrolling settles aligned to the dotted background.
 - The **reconciler** keys columns by entity URI and tiles by entity
   URI. On each merged frame it: (a) removes DOM nodes whose entity
   vanished, (b) inserts nodes for new entities, (c) reorders by
