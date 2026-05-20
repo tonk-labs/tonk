@@ -18,6 +18,8 @@ use ::axum::{
 use axum_wasm_macros::wasm_compat;
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::evaluate::CommitSummary;
 use tonk_schema::mutation::TransactRequest;

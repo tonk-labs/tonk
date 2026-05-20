@@ -211,13 +211,19 @@ async fn evaluate_on_branch<'a>(
     } else {
         // Pure-query or dry-run: drop the transaction without
         // committing. The pre-mutation matches double as "after"
-        // because no mutations actually landed.
+        // because no mutations actually landed. Zero out
+        // `claims` so the response reflects what *did* commit
+        // (nothing), not what *would* have committed — auto-
+        // evaluate from the editor relies on this to know the
+        // branch is untouched.
+        let mut commits = evaluated.commits;
+        commits.claims = 0;
         EvaluateResponse {
             revision_before: revision_before.clone(),
             revision_after: revision_before,
             matches_before: evaluated.matches.clone(),
             matches_after: evaluated.matches,
-            commits: evaluated.commits,
+            commits,
         }
     };
 
