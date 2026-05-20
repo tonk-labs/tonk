@@ -28,25 +28,49 @@ p(X) now, then p(X) next." Without that rule, `p` is empty next
 round.
 
 Dialog's storage layer is already this rule, materialized inside
-the engine. Every EAV triple carries forward unless a retract for
-the same entity+attribute pair is emitted. Stated as a tonk-yaml
-rule, the implicit persistence rule is something like:
+the engine. Every fact of a durable (non-transient) concept
+carries forward unless a retract for the same (entity, attribute)
+pair is emitted. Stated as a tonk-yaml rule, the implicit
+persistence rule for any concept `c` is something like:
 
 ```yaml
 rule!: &persist
-  assert!: assert
+  assert!: c
   when:
-    - assert: assert
-      where: { this: ?this, the: ?the, of: ?of, is: ?is }
+    - assert: c
+      where: { this: ?this, ... }
   unless:
-    - assert: retract
-      where: { this: ?this, the: ?the, of: ?of, is: ?is }
+    - assert: _c   # the "retracted-c" form; no real syntax for it
+      where: { this: ?this, ... }
 ```
 
-Dialog doesn't actually evaluate this rule: the storage layer
-does its job directly. But it's a faithful description of the
-semantics, and it gives us vocabulary for talking about
+The `_c` premise is a notation placeholder: tonk-yaml doesn't
+have a way to talk about "retraction of c as a body premise", so
+we write it with the underscore prefix to denote "retracted form
+of c". Dialog doesn't actually evaluate this rule; the storage
+layer does its job directly. But it's a faithful description of
+the semantics, and it gives us vocabulary for talking about
 exceptions to it.
+
+#### Implicit persistence stays out of the fixpoint loop
+
+A natural worry: if persistence is itself an inductive rule, does
+the fixpoint ever terminate? Every round would re-assert every
+durable fact carried from the previous round.
+
+The answer is that **persistence is the timestamp boundary, not a
+rule the evaluator fires**. Dialog's storage layer materializes
+it directly; the evaluator inside `evaluate_effects` only fires
+the user-defined inductive rules. Each round adds new facts
+derived from explicit rules; carry-forward is what happens *at*
+the boundary between rounds, courtesy of the transaction's
+overlay over branch state.
+
+This means the fixpoint's termination is bounded by what
+*explicit* rules can derive — which is finite given a fixed
+input, modulo pathological recursive rules. `MAX_ROUNDS` catches
+the pathological case (see [Termination and `MAX_ROUNDS`](#termination-and-max_rounds)
+below).
 
 The model that follows is built on a few core decisions, locked
 through several rounds of design:
@@ -506,6 +530,157 @@ A few notes on the loop's structure:
   triggers, and transients don't persist, so there's no
   backlog of pending triggers at branch open. The loop runs
   only in response to a commit.
+
+#### Each round is a logical timestamp
+
+Semantically, each fixpoint round is a separate logical
+timestamp. Round *k* reads state at *t+k*, fires the rules
+triggered by transients at *t+k*, and produces facts at *t+k+1*.
+Operationally we don't commit at every round — intermediate
+states aren't observable to subscribers — so we hold everything
+in the transaction overlay until quiescence and emit a single
+durable commit at the end.
+
+Within each round:
+
+1. Run all triggered rules. Their head conclusions split into
+   durable assertions (heads of durable concepts) and transient
+   assertions (heads of transient concepts).
+2. Retract this round's transients. They belonged to *t+k* and
+   don't carry forward — by the time we evaluate round *k+1*
+   they must be gone, otherwise the same rule would re-fire
+   forever.
+3. Apply this round's durable conclusions to the transaction.
+   These now sit at *t+k+1* and persist into subsequent rounds
+   via the implicit-persistence boundary.
+4. If this round emitted any transients, those transients are
+   facts at *t+k+1* that can trigger more rules. Go to round
+   *k+1*.
+5. If this round emitted no transients, no rule can fire next
+   round (by the [tier-1 cost gate](#cost-tiers-and-the-transient-trigger-requirement)
+   — every rule requires a transient premise). Stop and commit.
+
+The termination criterion is **"no transients emitted this
+round"**, not "delta is empty". A round that emits only durable
+facts cannot trigger further rounds, because no rule has a body
+that fires without a transient. This is sharper than checking
+the whole delta and makes the loop's behavior easier to reason
+about: the loop runs as long as transients keep flowing.
+
+#### Termination and `MAX_ROUNDS`
+
+`MAX_ROUNDS` is the safety net for rule sets that produce
+transients indefinitely. There are two realistic shapes that
+hit it:
+
+**1. Cycle in the transient-attribute graph.** Two or more
+effects ping-pong transients:
+
+```yaml
+# effect A
+rule!:
+  assert!: ping
+  when:
+    - assert: pong
+      where: { ... }
+
+# effect B
+rule!:
+  assert!: pong
+  when:
+    - assert: ping
+      where: { ... }
+```
+
+Round 1 fires A (produces `pong`), round 2 fires B (produces
+`ping`), round 3 fires A again, forever. Detectable statically
+as a cycle in the directed graph from rule transient-premises
+to transient heads.
+
+**2. Self-feeding parameterized transient.** A rule whose head
+is a transient that re-triggers itself with different bindings:
+
+```yaml
+rule!:
+  assert!: tick
+  when:
+    - assert: tick
+      where: { n: ?n }
+    - is: { count: ?next }
+      from: { + : [?n, 1] }
+  # head produces tick{n: ?next}
+```
+
+Each round produces a `tick` with a new value of `n`, which
+matches the rule again with the next value. Semi-naive dedup
+doesn't help because each round's head is genuinely new (the
+parameter differs). Detectable statically as a transient head
+that depends on its own transient premise with a transformed
+binding.
+
+Both shapes are programmer errors. Ideally we reject them at
+rule-compile time (related to task #35); at runtime `MAX_ROUNDS`
+limits the damage to bounded work plus an error response, so
+the commit fails rather than hanging.
+
+What *doesn't* hit `MAX_ROUNDS`:
+
+- **Cascading durable updates.** A rule that asserts durable
+  state which combined with the original event triggers other
+  rules. The cascade is bounded because each rule requires a
+  transient premise, and the set of transients is finite (from
+  the input batch + any effect-emitted transients), so the
+  cascade depth is bounded by the longest chain of distinct
+  transient-producing effects.
+- **Tautological inductive rules.** A rule like
+  `assert!: counter when assert: counter` re-derives a fact
+  already present. Semi-naive dedup makes this a no-op; no new
+  transients flow, the round emits nothing, the loop stops.
+  These are still worth rejecting at compile time (task #35)
+  because they signal confusion, but they don't threaten
+  termination.
+
+#### Cost tiers and the transient-trigger requirement
+
+Effects must have **at least one positive `when` premise reading
+a transient concept**. This isn't a correctness requirement —
+semi-naive dedup handles termination regardless — but a
+performance requirement that keeps every rule in the cheapest
+evaluation tier.
+
+Three tiers, distinguished by how much we know about a rule's
+trigger:
+
+- **Tier 1: rule with a transient in `when`.** Cheapest. The
+  reverse index keys on transient-concept attributes. A commit
+  that asserts no transients matches no index entries; zero
+  rules are considered. A commit that asserts transient `T`
+  only triggers rules whose `when` mentions `T`. Wasted
+  evaluation is bounded by "rules that read this specific
+  transient", which is exactly the event-driven model we want.
+
+- **Tier 2: rule with no transient (durable-only).** Mid cost.
+  The index can't filter by "did a transient fire" because the
+  rule doesn't read any. We'd index by every attribute the rule
+  reads and re-evaluate whenever any of those is touched. Most
+  of those re-evaluations produce nothing (the rule already
+  fired in a prior commit and its conclusion is durable). Every
+  durable mutation pays this cost.
+
+- **Tier 3: no transient mechanism at all.** Worst case. Every
+  commit potentially affects every rule. Evaluate every rule on
+  every commit; rely on semi-naive dedup. Correct but wasteful.
+
+The transient-in-`when` requirement collapses tier 2 and tier 3
+onto tier 1. The reverse index can be small, keyed on transient
+attributes, and queried per-round in O(transients emitted).
+
+Patterns that *look* like they need tier 2 (e.g. "session
+expires when `now > expires_at`") are best modeled by making
+the time signal itself transient. Assert `now` (or a `tick`) as
+a transient on each time advance; the session-expiry rule reads
+that transient and falls into tier 1. The model stays uniform
+and the index efficient.
 
 **Why this handles chain reactions correctly.** A V1-valid
 cascade uses `effect:system` for intermediate steps. Take an

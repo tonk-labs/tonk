@@ -44,6 +44,8 @@ pub mod concept;
 
 pub mod effect;
 
+pub mod effects;
+
 pub mod rule;
 
 pub mod analyzer;
@@ -53,6 +55,8 @@ pub mod builtin;
 pub mod transact;
 
 pub mod evaluate;
+
+pub mod mutation;
 
 pub mod query;
 
