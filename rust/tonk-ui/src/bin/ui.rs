@@ -17,6 +17,7 @@ async fn main() {
     tonk_sigil::Sigil::install();
     tonk_concept::register();
     tonk_display::register();
+    tonk_layout::register();
     // Inject the `<tonk-code>` element's JS bundle. The path
     // matches the `copy-dir` target in `index.html` — both must
     // change together if the deployment layout shifts.
