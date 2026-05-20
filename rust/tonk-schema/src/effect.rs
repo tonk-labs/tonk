@@ -29,12 +29,17 @@
 //! - `dialog.effect/polarity` — `"assert"` or `"retract"`, the
 //!   polarity of the rule's head. Disambiguates two effects with
 //!   structurally-identical descriptors but different intent.
-//! - `dialog.effect/premise` — index listing every attribute
-//!   entity referenced by any premise's predicate (positive
-//!   `when` ∪ negative `unless`). Cardinality-many; one claim per
-//!   distinct attribute the body reads. The reverse index is
-//!   attribute-keyed so it invalidates correctly under
-//!   concept-lens-sharing.
+//! - `dialog.effect/on` — index listing every attribute the
+//!   body reads from, encoded as `on:<domain>/<name>` entity
+//!   URIs. Cardinality-many; one claim per distinct attribute
+//!   in any premise (positive `when` ∪ negative `unless`). The
+//!   key form is recoverable from a runtime `Changes`
+//!   instruction's `Attribute(domain/name)` without any schema
+//!   lookup — the reactor's loop builds `on:<that string>`
+//!   directly. Dialog's `Uri::key_bytes()` projection packs the
+//!   prefix into 32 bytes and hashes any overflow, so short
+//!   attribute names get full sort-locality and long ones still
+//!   collide cleanly.
 //! - `dialog.meta/description` — optional human-readable
 //!   description.
 //!
@@ -113,14 +118,17 @@ pub struct Conclusion(pub Entity);
 #[domain("dialog.effect")]
 pub struct Polarity(pub String);
 
-/// An attribute entity referenced by some premise in the
-/// effect's body (positive `when` or negative `unless`).
+/// An attribute the effect's body reads from, encoded as the
+/// entity URI `on:<domain>/<name>` so the reactor can build the
+/// key directly from a [`Changes`](dialog_artifacts::Changes)
+/// instruction's `Attribute` without resolving the full
+/// [`AttributeDescriptor`](dialog_query::AttributeDescriptor).
 /// Cardinality-many: one claim per distinct attribute the body
-/// reads.
+/// reads (positive `when` ∪ negative `unless`).
 #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cardinality(many)]
 #[domain("dialog.effect")]
-pub struct Premise(pub Entity);
+pub struct On(pub Entity);
 
 // ---------------------------------------------------------------- //
 // Effect type                                                      //
@@ -272,11 +280,17 @@ impl Effect {
         self.rule.conclusion().this()
     }
 
-    /// The set of attribute entities the body reads from. For
-    /// each `Proposition::Concept` premise in `when` or `unless`,
+    /// The set of `on:<domain>/<name>` entity URIs for every
+    /// attribute the body reads from. For each
+    /// `Proposition::Concept` premise in `when` or `unless`,
     /// every attribute referenced by the premise's predicate
-    /// contributes its `the:<hash>` URI to the set. Values of
-    /// the `dialog.effect/premise` claims.
+    /// contributes one URI. Values of the `dialog.effect/on`
+    /// claims.
+    ///
+    /// The URI form is recoverable at runtime from a `Changes`
+    /// instruction's `Attribute` alone: `on:` + the runtime
+    /// `domain/name`. No schema lookup needed to compute the
+    /// reverse-index key.
     ///
     /// Attribute-direct premises (`Proposition::Attribute`) are
     /// not currently included; they read individual EAV triples
@@ -284,13 +298,15 @@ impl Effect {
     ///
     /// Formula premises (`math/sum`, `==`, etc.) contribute
     /// nothing.
-    pub fn premise_entities(&self) -> BTreeSet<Entity> {
+    pub fn on_entities(&self) -> BTreeSet<Entity> {
         let descriptor = self.rule.descriptor();
         let mut entities = BTreeSet::new();
         for proposition in descriptor.when.iter().chain(descriptor.unless.iter()) {
             if let Proposition::Concept(concept_query) = proposition {
                 for (_, attribute) in concept_query.predicate.with().iter() {
-                    if let Ok(entity) = attribute.to_uri().parse::<Entity>() {
+                    let the = attribute.the();
+                    let uri = format!("on:{}/{}", the.domain(), the.name());
+                    if let Ok(entity) = uri.parse::<Entity>() {
                         entities.insert(entity);
                     }
                 }
@@ -395,7 +411,7 @@ impl Statement for Effect {
         let source = self.source();
         let conclusion = self.conclusion();
         let polarity = self.polarity;
-        let premises = self.premise_entities();
+        let attributes = self.on_entities();
 
         // Marker — `(?this, dialog.meta/effect, db:effect)`.
         update.associate_unique(
@@ -421,12 +437,12 @@ impl Statement for Effect {
             this.clone(),
             Value::String(polarity.as_str().to_owned()),
         );
-        // Premise attribute index (cardinality-many).
-        for premise in premises {
+        // Per-attribute reverse index (cardinality-many).
+        for attribute in attributes {
             update.associate(
-                meta_attr("dialog.effect", "premise"),
+                meta_attr("dialog.effect", "on"),
                 this.clone(),
-                Value::Entity(premise),
+                Value::Entity(attribute),
             );
         }
         // Optional description, shared with the rest of
@@ -448,7 +464,7 @@ impl Statement for Effect {
         let source = self.source();
         let conclusion = self.conclusion();
         let polarity = self.polarity;
-        let premises = self.premise_entities();
+        let attributes = self.on_entities();
 
         update.dissociate(
             meta_attr("dialog.meta", "effect"),
@@ -470,11 +486,11 @@ impl Statement for Effect {
             this.clone(),
             Value::String(polarity.as_str().to_owned()),
         );
-        for premise in premises {
+        for attribute in attributes {
             update.dissociate(
-                meta_attr("dialog.effect", "premise"),
+                meta_attr("dialog.effect", "on"),
                 this.clone(),
-                Value::Entity(premise),
+                Value::Entity(attribute),
             );
         }
         if let Some(description) = description
@@ -606,23 +622,31 @@ impl EffectByEntity {
     }
 }
 
-/// Look up all effect entities whose `dialog.effect/premise`
-/// cardinality-many index contains the given attribute entity.
-/// The reverse-index query the reactor's evaluator runs per round
-/// to find effects whose body could have been affected by a
-/// change.
-pub fn effects_by_premise(attribute_entity: Entity) -> EffectsByPremise {
-    EffectsByPremise { attribute_entity }
+/// Look up all effect entities whose `dialog.effect/on` index
+/// contains the given attribute. `attribute_name` is the runtime
+/// `domain/name` form (what a [`Changes`](dialog_artifacts::Changes)
+/// instruction's `Attribute` displays as); this builder wraps it
+/// in the `on:` prefix to form the index key.
+///
+/// The reverse-index query the reactor's evaluator runs per
+/// round to find effects whose body could have been affected by
+/// a change.
+pub fn effects_by_on(attribute_name: &str) -> EffectsByOn {
+    let uri = format!("on:{attribute_name}");
+    let attribute_entity = uri
+        .parse()
+        .expect("on:<domain>/<name> is a valid entity URI");
+    EffectsByOn { attribute_entity }
 }
 
-/// Builder for [`effects_by_premise`].
-pub struct EffectsByPremise {
+/// Builder for [`effects_by_on`].
+pub struct EffectsByOn {
     attribute_entity: Entity,
 }
 
-impl EffectsByPremise {
-    /// Resolve every effect entity whose premise index includes
-    /// `attribute_entity`.
+impl EffectsByOn {
+    /// Resolve every effect entity whose `dialog.effect/on`
+    /// index includes `attribute_entity`.
     pub async fn resolve<Env: EffectEnv>(
         self,
         branch: &Branch,
@@ -631,14 +655,14 @@ impl EffectsByPremise {
         let claims: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "premise"))
+                Term::<dialog_query::attribute::The>::from(the("dialog.effect", "on"))
                     .of(Term::<Entity>::var("effect"))
                     .is(Term::<Entity>::from(self.attribute_entity.clone())),
             ))
             .perform(env)
             .try_vec()
             .await
-            .map_err(|e| EffectLookupError::Query(format!("premise query failed: {e:?}")))?;
+            .map_err(|e| EffectLookupError::Query(format!("on-index query failed: {e:?}")))?;
         let mut out: Vec<Entity> = Vec::with_capacity(claims.len());
         for claim in claims {
             out.push(claim.of);
@@ -791,22 +815,28 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_indexes_premise_attributes() {
+    fn it_indexes_on_attributes() {
         let rule = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
         let effect = Effect::asserting(rule);
-        let premises = effect.premise_entities();
+        let attributes = effect.on_entities();
         // Body has two concept premises:
         //   counter (one attribute: counter/count)
         //   increment (one attribute: command/subject)
         // Plus a math/sum formula premise that contributes nothing.
-        assert_eq!(premises.len(), 2);
+        assert_eq!(attributes.len(), 2);
         for (_, attr) in counter_head().with().iter() {
-            let uri: Entity = attr.to_uri().parse().expect("valid attribute URI");
-            assert!(premises.contains(&uri));
+            let the = attr.the();
+            let uri: Entity = format!("on:{}/{}", the.domain(), the.name())
+                .parse()
+                .expect("valid on: URI");
+            assert!(attributes.contains(&uri));
         }
         for (_, attr) in increment_concept().with().iter() {
-            let uri: Entity = attr.to_uri().parse().expect("valid attribute URI");
-            assert!(premises.contains(&uri));
+            let the = attr.the();
+            let uri: Entity = format!("on:{}/{}", the.domain(), the.name())
+                .parse()
+                .expect("valid on: URI");
+            assert!(attributes.contains(&uri));
         }
     }
 
@@ -830,7 +860,7 @@ mod tests {
         let this = effect.this();
         let source = effect.source();
         let conclusion = effect.conclusion();
-        let premise_set = effect.premise_entities();
+        let on_set = effect.on_entities();
 
         let mut changes = Changes::default();
         effect.assert(&mut changes);
@@ -881,14 +911,14 @@ mod tests {
             "missing dialog.effect/polarity claim"
         );
 
-        for premise in &premise_set {
+        for attribute in &on_set {
             assert!(
                 asserted.iter().any(|c| {
-                    c.the.to_string() == "dialog.effect/premise"
+                    c.the.to_string() == "dialog.effect/on"
                         && c.of == this
-                        && matches!(&c.is, Value::Entity(e) if *e == *premise)
+                        && matches!(&c.is, Value::Entity(e) if *e == *attribute)
                 }),
-                "missing dialog.effect/premise claim for {premise}"
+                "missing dialog.effect/on claim for {attribute}"
             );
         }
     }

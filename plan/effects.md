@@ -363,12 +363,12 @@ so they replicate, version, and query like everything else:
 
 ```
 dialog.effect/assert    : entity   (head concept)
-dialog.effect/premise   : entity   (positive when premise)
+dialog.effect/on   : entity   (positive when premise)
 dialog.effect/unless    : entity   (negative premise)
 dialog.effect/description : text
 ```
 
-The premise/parameter substructure (`dialog.effect/premise →
+The premise/parameter substructure (`dialog.effect/on →
 dialog.premise/predicate`, `dialog.application/parameter`,
 `dialog.parameter/name`, `dialog.parameter/binding`) mirrors how
 attribute and concept declarations already serialize themselves
@@ -437,9 +437,9 @@ possibly have been affected by what changed.
 
 **The reverse index is a standing query, not a cached structure.**
 Effects are themselves stored as facts (`dialog.effect/assert`,
-`dialog.effect/premise`, `dialog.effect/unless` — see Layer 2),
+`dialog.effect/on`, `dialog.effect/unless` — see Layer 2),
 so "effects whose body mentions concept `X`" is just a query
-over `dialog.effect/premise` rows whose predicate is `X`. There
+over `dialog.effect/on` rows whose predicate is `X`. There
 is no separate in-memory index to maintain, no invalidation on
 effect-set change, no cold-start refresh — the lookup is always
 live with the branch state.
@@ -476,7 +476,7 @@ fn evaluate_effects(branch, initial_txn) {
         if dirty.is_empty() || depth >= MAX_DEPTH { break; }
 
         // Standing query: which effects mention any of these attributes?
-        let candidates = query_effects_by_premise_attributes(branch, &dirty);
+        let candidates = query_effects_by_on_attributes(branch, &dirty);
         let mut delta = Transaction::new();
 
         for effect_id in candidates {
@@ -518,7 +518,7 @@ A few notes on the loop's structure:
 - The reverse index is keyed by **attribute URI**, not concept
   entity. Asking "which effects could be affected by a change
   to attribute `X`" is a single one-hop query against
-  `dialog.effect/premise`. Concept-level invalidation falls out
+  `dialog.effect/on`. Concept-level invalidation falls out
   naturally because a concept's attributes are what change in
   storage.
 - Both `assert!:` and `retract!:` rules participate. The
@@ -835,7 +835,7 @@ Committed upstream on `feat/inductive-rule` (dialog-db
   `conclusion` (matching upstream `InductiveRule::conclusion()`)
   so the same name works for both assert- and retract-polarity
   effects.
-- Reverse index (`dialog.effect/premise`) keyed by attribute URI,
+- Reverse index (`dialog.effect/on`) keyed by attribute URI,
   not concept entity. Handles lens-sharing across concepts: a
   change to a shared attribute correctly invalidates effects that
   read it through any concept lens.
@@ -854,7 +854,7 @@ Committed upstream on `feat/inductive-rule` (dialog-db
   `(?this, dialog.concept/transient, db:transient)` marker. The
   marker is what the reactor reads to decide which facts to
   retract.
-- `effects_by_premise(attribute)` reverse-index query.
+- `effects_by_on(attribute)` reverse-index query.
 
 ### Phase 3 — semi-naive fixpoint evaluator
 
@@ -882,32 +882,19 @@ Committed upstream on `feat/inductive-rule` (dialog-db
 `retract_transients`); both pass the transaction through
 unchanged today.
 
-**Discovered gap — premise index key derivation.**
+**Reverse-index key derivation.**
 
-The reverse index `effects_by_premise(attribute_entity)` keys on
-the attribute *entity URI* (`the:<base58hash>`), which is
-`blake3(cbor(domain, name, cardinality, content_type))` (see
-`AttributeDescriptor::to_uri` in dialog-query). A `Changes`
-instruction holds only the runtime `Attribute(String)` — just
-the `domain/name`. The instruction alone is insufficient to
-recover the index key; the loop would have to look up the full
-`AttributeDescriptor` from the branch per touched attribute, or
-the bucket has to carry the descriptor alongside.
-
-The cheap fix at write time: have
-[`TransactionBuilder::apply_assert`](`crate::reactor::TransactionBuilder`)
-/ `apply_retract` capture the attribute entity URIs from the
-`PredicateApplication`'s `ConceptDescriptor` and stash them
-alongside the transient `Changes`. The induce loop reads from
-this set directly rather than re-resolving each `Changes`
-instruction. Requires changing `transients: Changes` →
-`transients: (Changes, BTreeSet<Entity>)` or a small wrapper
-type. No upstream dialog change needed.
+`dialog.effect/on` is keyed by `on:<domain>/<name>` entity URIs.
+A runtime `Changes` instruction holds the attribute as the
+`domain/name` string, so the reactor builds the key by
+prepending `on:` and parsing as `Entity`. No schema lookup, no
+dependence on cardinality or content_type. Dialog's
+`Uri::key_bytes()` projection (32 bytes of prefix, 32 bytes of
+hash suffix for overflow) handles arbitrary attribute-name
+lengths while preserving sort locality for short ones.
 
 **Still to land:**
 
-- Plumb attribute-entity capture through the builder so the
-  loop can key the reverse index without re-resolving.
 - Single-round evaluator: query reverse index, load candidate
   effects via `Effect::by_entity`, run rule body against
   `txn.query()`, instantiate head from bindings, integrate.
