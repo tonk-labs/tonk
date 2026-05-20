@@ -1,49 +1,120 @@
-//! Bridge-driven subscription helper.
+//! Subscription helper — selects bridge or fetch transport at
+//! runtime and exposes a uniform `SubscriptionAbort` handle.
 //!
-//! Replaces the previous `fetch()`-based SSE reader. All streaming
-//! data now flows through `globalThis.tonk.subscribe`, which the
-//! bridge module routes over postMessage to the service worker.
+//! When `globalThis.tonk` is present (the iframe shell has loaded
+//! `bridge.js`) the bridge path is used: `globalThis.tonk.subscribe`
+//! routes every data request over postMessage to the service worker.
+//!
+//! When `globalThis.tonk` is absent (the shell mounts these elements
+//! directly in its own DOM, outside any iframe) the legacy
+//! `fetch()`-based SSE reader in [`crate::fetch`] is used instead.
+//! The caller is responsible for supplying a non-empty `url` and
+//! `body_str` in that case (built from the `space`/`branch` HTML
+//! attributes).
 
 use std::rc::Rc;
+
+use web_sys::AbortController;
 
 use crate::bridge::{SubscribeHandle, subscribe};
 use crate::error::{ErrorDetail, ErrorKind};
 
-/// Open a streaming subscription via the postMessage bridge.
+/// Transport handle returned by [`open_sse`].
 ///
-/// `body` is the wire query to send. `on_frame` is called for each
-/// emitted frame (the raw JSON string of a `Vec<Conclusion>`).
-/// `on_error` is called on bridge-reported transport errors.
+/// Dropping this value cancels the subscription regardless of which
+/// transport is active.
+pub enum SubscriptionAbort {
+    /// Bridge path — `Drop` calls the bridge's unsubscribe function.
+    Bridge(SubscribeHandle),
+    /// Fetch/SSE path — `Drop` calls `AbortController::abort()`.
+    Fetch(AbortController),
+}
+
+impl Drop for SubscriptionAbort {
+    fn drop(&mut self) {
+        match self {
+            SubscriptionAbort::Bridge(_handle) => {
+                // SubscribeHandle's own Drop impl calls unsub().
+            }
+            SubscriptionAbort::Fetch(ctrl) => {
+                ctrl.abort();
+            }
+        }
+    }
+}
+
+/// Pick a transport. Prefer the iframe bridge if it's loaded
+/// (`globalThis.tonk` is defined and not null); otherwise fall back
+/// to direct fetch against `url`. The shell mounts these elements
+/// with `space`/`branch` attributes set; the iframe-wrapped body
+/// mounts them without (and has `globalThis.tonk` available).
+pub fn use_bridge() -> bool {
+    use js_sys::Reflect;
+    use wasm_bindgen::JsValue;
+    let Some(win) = web_sys::window() else {
+        return false;
+    };
+    let Ok(tonk) = Reflect::get(&win, &JsValue::from_str("tonk")) else {
+        return false;
+    };
+    !tonk.is_undefined() && !tonk.is_null()
+}
+
+/// Open a streaming subscription using whichever transport is
+/// available.
 ///
-/// Returns a [`SubscribeHandle`] that the caller must keep alive;
+/// `url` and `body_str` are used on the legacy fetch path; `body`
+/// (the `serde_json::Value` form) is used on the bridge path.
+/// When `use_bridge()` is true `url`/`body_str` are ignored.
+///
+/// `on_frame` is called for each emitted frame with the raw JSON
+/// string of a `Vec<Conclusion>`. `on_error` is called on transport
+/// errors.
+///
+/// Returns a [`SubscriptionAbort`] that the caller must keep alive;
 /// dropping it cancels the subscription.
-pub fn open_sse(
+pub async fn open_sse(
+    url: &str,
+    body_str: &str,
     body: &serde_json::Value,
     on_frame: impl Fn(&str) + 'static,
     on_error: impl Fn(ErrorDetail) + 'static,
-) -> Result<SubscribeHandle, ErrorDetail> {
-    // Wrap on_error in Rc so it can be shared between the two bridge
-    // callbacks without cloning the underlying value.
-    let on_error = Rc::new(on_error);
-    let on_error_for_frame = on_error.clone();
-
-    subscribe(
-        body,
-        move |frame_value| {
-            // Re-serialise to a string so that the call site
-            // (which expects `&str`) doesn't need to change shape.
-            match serde_json::to_string(&frame_value) {
-                Ok(s) => on_frame(&s),
-                Err(e) => {
-                    on_error_for_frame(ErrorDetail::new(
-                        ErrorKind::Parse,
-                        format!("frame stringify: {e}"),
-                    ));
+) -> Result<SubscriptionAbort, ErrorDetail> {
+    if use_bridge() {
+        // Bridge path — synchronous setup via globalThis.tonk.subscribe.
+        let on_error = Rc::new(on_error);
+        let on_error_for_frame = on_error.clone();
+        let handle = subscribe(
+            body,
+            move |frame_value| {
+                match serde_json::to_string(&frame_value) {
+                    Ok(s) => on_frame(&s),
+                    Err(e) => {
+                        on_error_for_frame(ErrorDetail::new(
+                            ErrorKind::Parse,
+                            format!("frame stringify: {e}"),
+                        ));
+                    }
                 }
-            }
-        },
-        move |message| {
-            on_error(ErrorDetail::new(ErrorKind::Network, message));
-        },
-    )
+            },
+            move |message| {
+                on_error(ErrorDetail::new(ErrorKind::Network, message));
+            },
+        )?;
+        Ok(SubscriptionAbort::Bridge(handle))
+    } else {
+        // Fetch/SSE path — async, awaits the initial HTTP response.
+        // on_frame / on_error must be FnMut for the SSE reader loop.
+        // Wrap in a flag to adapt Fn → FnMut.
+        let on_frame_cell = std::cell::RefCell::new(on_frame);
+        let on_error_cell = std::cell::RefCell::new(on_error);
+        let ctrl = crate::fetch::open_sse(
+            url,
+            body_str,
+            move |frame| (on_frame_cell.borrow())(frame),
+            move |err| (on_error_cell.borrow())(err),
+        )
+        .await?;
+        Ok(SubscriptionAbort::Fetch(ctrl))
+    }
 }

@@ -28,10 +28,9 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::{Function, Reflect};
-use tonk_concept::bridge::{SubscribeHandle, query as bridge_query};
 use tonk_concept::error::{ErrorDetail, ErrorKind};
 use tonk_concept::resolve::{ParsedSource, parse_source, phase1_query};
-use tonk_concept::sse::open_sse;
+use tonk_concept::sse::{SubscriptionAbort, open_sse, use_bridge};
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -80,12 +79,12 @@ struct Inner {
     /// detaches and re-attaches.
     generation: u64,
     /// Cancels the view (or views-for-model) subscription on
-    /// disconnect / attribute change. Dropping the handle calls
-    /// the bridge's unsubscribe function.
-    view_abort: Option<SubscribeHandle>,
+    /// disconnect / attribute change. Dropping the handle cancels
+    /// the active transport (bridge or fetch).
+    view_abort: Option<SubscriptionAbort>,
     /// Cancels the entity subscription on disconnect / attribute
     /// change.
-    entity_abort: Option<SubscribeHandle>,
+    entity_abort: Option<SubscriptionAbort>,
     /// Last entity conclusion seen; replayed when a fresh slide
     /// is mounted so it picks up the current data without waiting
     /// for the next entity frame.
@@ -300,9 +299,33 @@ async fn run(
     // `view` is optional — its absence triggers carousel mode.
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
+    // Build the query URL from `space`/`branch` attributes (shell
+    // path). When neither is set a relative `/query` is used. In
+    // bridge mode this URL is passed along but is unused — the
+    // bridge routes every request through postMessage.
+    let space_attr = host.get_attribute("space");
+    let branch_attr = host.get_attribute("branch");
+    let url = match (&space_attr, &branch_attr) {
+        (None, None) => "/query".to_owned(),
+        _ => format!(
+            "/api/repository/{}/branch/{}/query",
+            space_attr.as_deref().unwrap_or("home"),
+            branch_attr.as_deref().unwrap_or("main"),
+        ),
+    };
+
     // Phase 1 — resolve the model concept's entity + descriptor.
     let parsed: ParsedSource = parse_source(&model);
-    let (model_entity, descriptor_json) = phase1_lookup(&phase1_query(&parsed)).await?;
+    let phase1_q = phase1_query(&parsed);
+    let (model_entity, descriptor_json) = if use_bridge() {
+        let body_val = serde_json::to_value(&phase1_q)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
+        bridge_phase1_lookup(&body_val).await?
+    } else {
+        let body_str = serde_json::to_string(&phase1_q)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
+        tonk_concept::fetch::phase1_lookup_with_entity(&url, &body_str).await?
+    };
     check_generation(&state, generation)?;
 
     // Build the view subscription query: pin-by-name in single
@@ -316,11 +339,15 @@ async fn run(
     };
     let view_body = serde_json::to_value(&view_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body: {e}")))?;
+    let view_body_str = serde_json::to_string(&view_q)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body str: {e}")))?;
 
     let entity_q = entity_query(&descriptor_json, &entity)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = serde_json::to_value(&entity_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body: {e}")))?;
+    let entity_body_str = serde_json::to_string(&entity_q)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body str: {e}")))?;
 
     // Always mount the `<wa-carousel>` so the slot geometry is
     // identical regardless of mode. The only user-visible
@@ -330,16 +357,20 @@ async fn run(
     let single_mode = view.is_some();
     ensure_carousel(host, &state, single_mode);
 
-    let view_abort = open_view_stream(&view_body, host.clone(), state.clone(), generation)?;
+    let view_abort =
+        open_view_stream(&url, &view_body_str, &view_body, host.clone(), state.clone(), generation)
+            .await?;
     // Check generation again — between opening view and entity
     // streams, attribute_changed_callback may have fired and
     // superseded us. If so, drop the view handle we just opened
-    // (its Drop impl calls unsubscribe), and bail.
+    // (its Drop impl cancels the transport), and bail.
     if check_generation(&state, generation).is_err() {
         drop(view_abort);
         return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
     }
-    let entity_abort = open_entity_stream(&entity_body, host.clone(), state.clone(), generation)?;
+    let entity_abort =
+        open_entity_stream(&url, &entity_body_str, &entity_body, host.clone(), state.clone(), generation)
+            .await?;
 
     {
         let mut s = state.borrow_mut();
@@ -359,17 +390,21 @@ async fn run(
     Ok(())
 }
 
-fn open_view_stream(
+async fn open_view_stream(
+    url: &str,
+    body_str: &str,
     body: &serde_json::Value,
     host: Element,
     state: Rc<RefCell<Inner>>,
     generation: u64,
-) -> Result<SubscribeHandle, ErrorDetail> {
+) -> Result<SubscriptionAbort, ErrorDetail> {
     let host_for_frame = host.clone();
     let host_for_err = host.clone();
     let state_for_err = state.clone();
     let state_for_frame = state.clone();
     open_sse(
+        url,
+        body_str,
         body,
         move |frame: &str| {
             // Discard frames from a superseded or disposed flow
@@ -406,19 +441,24 @@ fn open_view_stream(
             fail(&host_for_err, &state_for_err, err);
         },
     )
+    .await
 }
 
-fn open_entity_stream(
+async fn open_entity_stream(
+    url: &str,
+    body_str: &str,
     body: &serde_json::Value,
     host: Element,
     state: Rc<RefCell<Inner>>,
     generation: u64,
-) -> Result<SubscribeHandle, ErrorDetail> {
+) -> Result<SubscriptionAbort, ErrorDetail> {
     let host_for_frame = host.clone();
     let host_for_err = host.clone();
     let state_for_err = state.clone();
     let state_for_frame = state.clone();
     open_sse(
+        url,
+        body_str,
         body,
         move |frame: &str| {
             // Same stale-frame guard as in `open_view_stream`.
@@ -450,6 +490,7 @@ fn open_entity_stream(
             fail(&host_for_err, &state_for_err, err);
         },
     )
+    .await
 }
 
 /// Diff the incoming view frame against currently mounted slides.
@@ -704,15 +745,13 @@ fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
     serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
 }
 
-/// One-shot Phase-1 lookup via the postMessage bridge.
+/// Phase-1 lookup via the postMessage bridge.
 ///
 /// Returns `(this, source)` from the first matching row — `this` is
 /// the concept entity URI, `source` is the raw descriptor JSON the
 /// worker put in the row's `source` field.
-async fn phase1_lookup(query: &tonk_schema::query::Query) -> Result<(String, String), ErrorDetail> {
-    let body = serde_json::to_value(query)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-    let result = bridge_query(&body).await?;
+async fn bridge_phase1_lookup(body: &serde_json::Value) -> Result<(String, String), ErrorDetail> {
+    let result = tonk_concept::bridge::query(body).await?;
     let arr = result.as_array().ok_or_else(|| {
         ErrorDetail::new(
             ErrorKind::Descriptor,
