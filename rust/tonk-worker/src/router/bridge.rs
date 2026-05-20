@@ -182,7 +182,7 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
         "v": 1,
         "type": "ready",
     });
-    let js = match serde_wasm_bindgen::to_value(&envelope) {
+    let js = match envelope_to_js(&envelope) {
         Ok(v) => v,
         Err(e) => {
             log!("bridge: ready envelope serialise failed: {e:?}");
@@ -547,6 +547,20 @@ async fn lookup_binding(
     guard.get(client).cloned()
 }
 
+/// Serialise an envelope as a plain JS object (not a `Map`) so
+/// the iframe-side `Bridge.dispatch` can read fields via dot
+/// access. `serde_wasm_bindgen::to_value` defaults to producing
+/// `Map`s for `serde_json::Value::Object`, which would make every
+/// dispatched envelope's `.type` come out `undefined` on the
+/// iframe side.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn envelope_to_js(
+    envelope: &serde_json::Value,
+) -> Result<wasm_bindgen::JsValue, serde_wasm_bindgen::Error> {
+    use serde::Serialize;
+    envelope.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+}
+
 /// Serialize `envelope` and post it over the client's bridge port.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn send_envelope(
@@ -560,7 +574,7 @@ async fn send_envelope(
         log!("bridge: tried to send to {client:?} but no session");
         return;
     };
-    let js = match serde_wasm_bindgen::to_value(&envelope) {
+    let js = match envelope_to_js(&envelope) {
         Ok(v) => v,
         Err(e) => {
             log!("bridge: envelope serialise failed: {e:?}");
