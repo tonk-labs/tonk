@@ -1,0 +1,31 @@
+[package]
+name = "tonk-layout"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "<tonk-layout> custom element — niri-style tiling workspace whose strip of columns and tiles is persisted as normalized entities on the branch."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+custom-elements = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+    "CustomElementRegistry",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

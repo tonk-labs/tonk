@@ -1,0 +1,26 @@
+//! `<tonk-layout>` — a niri-style tiling workspace custom element.
+//!
+//! The strip of columns and the tiles inside them are persisted as
+//! normalized entities on the branch, so the workspace reconstructs
+//! identically on reload or another device.
+//!
+//! See `SPEC.md` at the crate root for the author-facing reference
+//! and `plan/tonk-layout.md` at the repo root for the design.
+
+#![warn(missing_docs)]
+
+// `state::State` and its `as_str` mapping are target-independent so
+// the enum can be unit-tested natively; the DOM-touching `set`
+// helper is wasm-gated inside the module.
+#[cfg(any(target_arch = "wasm32", test))]
+mod state;
+
+#[cfg(target_arch = "wasm32")]
+mod element;
+
+/// Register the `<tonk-layout>` custom element with the page.
+/// Idempotent — calling more than once is harmless.
+#[cfg(target_arch = "wasm32")]
+pub fn register() {
+    element::register();
+}
