@@ -62,6 +62,17 @@ self.onfetch = event => {
     );
 };
 
+// Iframe-side bridge messages. The iframe sends `{v:1,type:"hello"}`
+// at boot (with a transferred MessagePort) and then dispatches
+// query/subscribe/evaluate envelopes over the port. The Rust
+// worker's `onmessage` stashes the port against the client id and
+// routes per-envelope dispatch from there.
+self.onmessage = event => {
+    event.waitUntil?.(
+        (async () => (await activateWorker()).onmessage(event))(),
+    );
+};
+
 // Background Sync API event handler
 self.onsync = event => {
     log("Background sync event:", event.tag);
