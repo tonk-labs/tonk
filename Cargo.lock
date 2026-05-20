@@ -4966,9 +4966,12 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "indexmap",
+ "serde-wasm-bindgen",
  "serde_json",
+ "tonk-concept",
  "tonk-schema",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

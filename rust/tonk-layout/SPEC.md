@@ -171,24 +171,25 @@ ULIDs — distinct entities, no spurious merge. That is the right
 behaviour for v1; cross-device deduplication of "should-be-the-same"
 entities requires consensus and is out of scope.
 
-### Workspace name binding
+### Workspace name resolution
 
-Workspaces additionally get a `name!` binding so the `workspace`
-attribute can be a logical name rather than a ULID URI:
+The `workspace` attribute is matched against the workspace concept's
+`name` field. The element subscribes to the workspace concept with
+`name = "<attribute value>"` pinned as a constant, picks the first
+matching row, and uses its `this` URI as the parent reference for
+column / tile queries. Same pattern as `<tonk-display>`'s
+`view="basic"` resolution — concept-field filter, not a name-table
+lookup.
 
 ```yaml
 workspace!:
   this: id:01HMW...
   name: "default"
-
-name!:
-  this:   id:default-workspace
-  entity: id:01HMW...
 ```
 
-The element resolves `workspace="default"` by looking up
-`id:default-workspace` through dialog's name table — same pattern as
-`<tonk-display>`'s `view="basic"` resolution.
+A workspace's ULID is internal — authors and other tools address
+the workspace by `name`, which is human-meaningful and stable
+across re-asserts of the workspace entity.
 
 ### Seeding a workspace by hand
 
@@ -198,10 +199,6 @@ A complete two-tile workspace, asserted directly:
 workspace!:
   this: id:01HMW000000000000000000000
   name: "default"
-
-name!:
-  this:   id:default-workspace
-  entity: id:01HMW000000000000000000000
 
 column!:
   this:      id:01HMC000000000000000000000

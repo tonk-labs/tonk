@@ -20,6 +20,24 @@ use indexmap::IndexMap;
 use serde_json::{Value, json};
 use tonk_schema::query::Query;
 
+/// Build the `/query` URL the SSE subscriptions POST against.
+///
+/// When neither `space` nor `branch` is set, the element runs inside
+/// a host that has already scoped the request — a relative `/query`
+/// path. Otherwise the full `/api/repository/<space>/branch/<branch>/query`
+/// path routes the request to a specific repository / branch via the
+/// worker's REST endpoint.
+pub fn query_url(space: Option<&str>, branch: Option<&str>) -> String {
+    match (space, branch) {
+        (None, None) => "/query".to_owned(),
+        _ => format!(
+            "/api/repository/{}/branch/{}/query",
+            space.unwrap_or("home"),
+            branch.unwrap_or("main"),
+        ),
+    }
+}
+
 /// Build the live workspace subscription query. Pins `name` to the
 /// caller's value; projects `this` (entity URI) and `focus` (the
 /// tile entity, when set).
@@ -125,6 +143,35 @@ mod tests {
         let q = columns_query("id:01HMW...").expect("columns_query");
         assert_eq!(term_value(&q, "order"), json!({ "?": { "name": "order" } }));
         assert_eq!(term_value(&q, "width"), json!({ "?": { "name": "width" } }));
+    }
+
+    #[dialog_common::test]
+    fn it_routes_to_relative_query_when_no_attributes_are_set() {
+        assert_eq!(query_url(None, None), "/query");
+    }
+
+    #[dialog_common::test]
+    fn it_routes_to_the_repository_endpoint_when_an_attribute_is_set() {
+        assert_eq!(
+            query_url(Some("home"), Some("main")),
+            "/api/repository/home/branch/main/query",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_fills_in_default_space_when_only_branch_is_set() {
+        assert_eq!(
+            query_url(None, Some("feature-x")),
+            "/api/repository/home/branch/feature-x/query",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_fills_in_default_branch_when_only_space_is_set() {
+        assert_eq!(
+            query_url(Some("staging"), None),
+            "/api/repository/staging/branch/main/query",
+        );
     }
 
     #[dialog_common::test]
