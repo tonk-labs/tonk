@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 custom-elements = { workspace = true }
+serde_json = { workspace = true }
+tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 web-sys = { workspace = true, features = [
     "CustomElementRegistry",

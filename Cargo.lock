@@ -4965,6 +4965,8 @@ version = "0.1.0"
 dependencies = [
  "custom-elements",
  "dialog-common",
+ "serde_json",
+ "tonk-schema",
  "wasm-bindgen",
  "web-sys",
 ]

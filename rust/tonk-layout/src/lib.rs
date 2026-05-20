@@ -23,6 +23,9 @@ mod order;
 // writer module needs it.)
 mod ulid;
 
+// Layout tree + frame folding; native-testable.
+mod model;
+
 #[cfg(target_arch = "wasm32")]
 mod element;
 
