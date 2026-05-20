@@ -13,6 +13,12 @@
 
 #![warn(missing_docs)]
 
+// `Layout` / `Column` / `Tile` and the `fold` that builds them
+// from subscription frames are target-independent — the element
+// consumes them on wasm32, the tests on native.
+#[cfg(any(target_arch = "wasm32", test))]
+mod model;
+
 // `State` and its `as_str` mapping are target-independent — the
 // DOM-touching `set` helper is individually gated to wasm32 so
 // native test builds can still exercise the enum.
