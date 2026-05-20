@@ -314,7 +314,7 @@ async fn run(
         ),
     };
 
-    // Phase 1 — resolve the model concept's entity + descriptor.
+    // Resolve the model concept's entity + descriptor.
     let parsed: ParsedSource = parse_source(&model);
     let phase1_q = phase1_query(&parsed);
     let (model_entity, descriptor_json) = if use_bridge() {
@@ -324,7 +324,7 @@ async fn run(
     } else {
         let body_str = serde_json::to_string(&phase1_q)
             .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-        tonk_concept::fetch::phase1_lookup_with_entity(&url, &body_str).await?
+        tonk_concept::fetch::phase1_lookup(&url, &body_str).await?
     };
     check_generation(&state, generation)?;
 
@@ -339,15 +339,11 @@ async fn run(
     };
     let view_body = serde_json::to_value(&view_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body: {e}")))?;
-    let view_body_str = serde_json::to_string(&view_q)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body str: {e}")))?;
 
     let entity_q = entity_query(&descriptor_json, &entity)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = serde_json::to_value(&entity_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body: {e}")))?;
-    let entity_body_str = serde_json::to_string(&entity_q)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body str: {e}")))?;
 
     // Always mount the `<wa-carousel>` so the slot geometry is
     // identical regardless of mode. The only user-visible
@@ -358,8 +354,7 @@ async fn run(
     ensure_carousel(host, &state, single_mode);
 
     let view_abort =
-        open_view_stream(&url, &view_body_str, &view_body, host.clone(), state.clone(), generation)
-            .await?;
+        open_view_stream(&url, &view_body, host.clone(), state.clone(), generation).await?;
     // Check generation again — between opening view and entity
     // streams, attribute_changed_callback may have fired and
     // superseded us. If so, drop the view handle we just opened
@@ -369,8 +364,7 @@ async fn run(
         return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
     }
     let entity_abort =
-        open_entity_stream(&url, &entity_body_str, &entity_body, host.clone(), state.clone(), generation)
-            .await?;
+        open_entity_stream(&url, &entity_body, host.clone(), state.clone(), generation).await?;
 
     {
         let mut s = state.borrow_mut();
@@ -392,7 +386,6 @@ async fn run(
 
 async fn open_view_stream(
     url: &str,
-    body_str: &str,
     body: &serde_json::Value,
     host: Element,
     state: Rc<RefCell<Inner>>,
@@ -404,7 +397,6 @@ async fn open_view_stream(
     let state_for_frame = state.clone();
     open_sse(
         url,
-        body_str,
         body,
         move |frame: &str| {
             // Discard frames from a superseded or disposed flow
@@ -446,7 +438,6 @@ async fn open_view_stream(
 
 async fn open_entity_stream(
     url: &str,
-    body_str: &str,
     body: &serde_json::Value,
     host: Element,
     state: Rc<RefCell<Inner>>,
@@ -458,7 +449,6 @@ async fn open_entity_stream(
     let state_for_frame = state.clone();
     open_sse(
         url,
-        body_str,
         body,
         move |frame: &str| {
             // Same stale-frame guard as in `open_view_stream`.
@@ -745,11 +735,9 @@ fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
     serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
 }
 
-/// Phase-1 lookup via the postMessage bridge.
-///
-/// Returns `(this, source)` from the first matching row — `this` is
-/// the concept entity URI, `source` is the raw descriptor JSON the
-/// worker put in the row's `source` field.
+/// Bridge-side resolver — returns `(this, source)` from the first
+/// matching row. `this` is the concept entity URI; `source` is the
+/// raw descriptor JSON the worker put in the row's `source` field.
 async fn bridge_phase1_lookup(body: &serde_json::Value) -> Result<(String, String), ErrorDetail> {
     let result = tonk_concept::bridge::query(body).await?;
     let arr = result.as_array().ok_or_else(|| {

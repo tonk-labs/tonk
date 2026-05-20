@@ -183,7 +183,6 @@ pub async fn evaluate_body(
     repo: &str,
     branch: &str,
     body: String,
-    _content_type: &str,
     transact: bool,
 ) -> Result<EvaluateResponse, TonkWorkerError> {
     let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);

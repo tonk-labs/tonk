@@ -340,7 +340,6 @@ mod route_for_tests {
             router::ViewBinding {
                 repo: repo.to_owned(),
                 branch: branch.to_owned(),
-                view_entity: "concept:test".parse().unwrap(),
             },
         );
         app_state

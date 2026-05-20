@@ -8,7 +8,7 @@
 //! When the browser issues the initial navigation fetch for that
 //! URL the service worker:
 //!
-//! - records `resulting_client_id → {repo, branch, view_entity}` in the
+//! - records `resulting_client_id → {repo, branch}` in the
 //!   [`ViewBindings`] map hanging off `TonkState`, so any
 //!   subsequent subresource fetch from the same iframe can be
 //!   identified by client id alone without re-parsing the URL;
@@ -53,19 +53,16 @@ use crate::TonkWorkerError;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ClientId(pub String);
 
-/// Binding that records which repository, branch, and view entity
-/// an iframe is bound to. Populated on the iframe's initial
-/// navigation fetch; looked up when `on_message` receives a `hello`
-/// from the same client.
+/// Binding that records which repository and branch an iframe is
+/// bound to. Populated on the iframe's initial navigation fetch;
+/// looked up when `on_message` receives a `hello` from the same
+/// client.
 #[derive(Clone, Debug)]
 pub struct ViewBinding {
     /// The repository name the iframe is scoped to.
     pub repo: String,
     /// The branch name the iframe is scoped to.
     pub branch: String,
-    /// The view entity URI. The bridge enumerates this entity's
-    /// `dialog.view.subscription/*` claims when the iframe connects.
-    pub view_entity: dialog_artifacts::Entity,
 }
 
 /// Shared map of `ClientId → ViewBinding`. Lives on
@@ -244,7 +241,6 @@ pub async fn guest(
             ViewBinding {
                 repo: params.repo.clone(),
                 branch: params.branch.clone(),
-                view_entity: entity.clone(),
             },
         );
     }
@@ -283,12 +279,6 @@ pub async fn guest(
     while let Some(result) = stream.next().await {
         match result {
             Ok(artifact) => {
-                // Agent-authored HTML is treated as a body
-                // fragment: wrap it with the doctype, the
-                // `<tonk-concept>` runtime, and the `<body>`
-                // boundary before serving. The agent never sees
-                // these — it writes the body of a layout and the
-                // host hydrates it.
                 let body = if attribute_str == "text/html"
                     && let Value::String(s) = &artifact.is
                 {

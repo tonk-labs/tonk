@@ -41,7 +41,7 @@ var Bridge = class {
       this.port.postMessage({ v: 1, type: "unsubscribe", id });
     };
   }
-  evaluate(body, contentType = "application/yaml", transact = true) {
+  evaluate(body, transact = true) {
     const id = this.mintId();
     return new Promise((resolve, reject) => {
       this.pendingOnce.set(id, { resolve, reject, kind: "evaluate" });
@@ -50,7 +50,6 @@ var Bridge = class {
         type: "evaluate",
         id,
         body,
-        contentType,
         transact
       });
     });

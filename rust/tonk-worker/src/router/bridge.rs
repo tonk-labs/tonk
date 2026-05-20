@@ -1,10 +1,12 @@
 //! Iframe ↔ service-worker bridge.
 //!
-//! Handles `message` events from view clients. The iframe loads
-//! `/__tonk/bridge.js` (served from dist by the dev server / CDN)
-//! and sends `{v:1,type:"hello"}` with a transferred `MessagePort`;
-//! the SW enumerates the view's subscription claims, opens reactor
-//! subscriptions, and pumps snapshots back over the port.
+//! The iframe loads `/__tonk/bridge.js` and posts a
+//! `{v:1,type:"hello"}` envelope to the SW with a transferred
+//! `MessagePort`. The SW stashes the port against the iframe's
+//! ClientId and replies with `ready`; the iframe then drives
+//! `query` / `subscribe` / `unsubscribe` / `evaluate` envelopes
+//! over the port, which this module dispatches to the reactor
+//! against the bound `{repo, branch}`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,8 +55,7 @@ pub struct BridgeSession {
     ///
     /// `Closure` is `!Send + !Sync` (holds JS state); `SendWrapper`
     /// makes it acceptable to the single-threaded SW registry.
-    pub _on_message:
-        SendWrapper<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MessageEvent)>>,
+    pub _on_message: SendWrapper<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MessageEvent)>>,
 }
 
 impl BridgeSession {
@@ -69,6 +70,15 @@ impl BridgeSession {
             subscriptions: HashMap::new(),
             _on_message: SendWrapper::new(on_message),
         }
+    }
+}
+
+impl Drop for BridgeSession {
+    fn drop(&mut self) {
+        // Clear `onmessage` before the closure inside `_on_message`
+        // drops, so the port doesn't transiently point at freed
+        // wasm memory between the two drops.
+        self.port.set_onmessage(None);
     }
 }
 
@@ -125,11 +135,6 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
         }
     };
 
-    // Build the per-port message handler. Each envelope arriving on
-    // the port (query / subscribe / evaluate / unsubscribe) is
-    // dispatched asynchronously. The closure is stored on
-    // BridgeSession to keep it alive; dropping the session drops the
-    // closure and detaches the listener.
     let state_for_handler = state.clone();
     let client_for_handler = client.clone();
     let on_message = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
@@ -144,10 +149,7 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
                     return;
                 }
             };
-            let envelope_type = envelope
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
             log!("bridge port: received '{envelope_type}' from {client:?}");
             match envelope_type {
                 "query" => handle_query(state, client, envelope).await,
@@ -155,9 +157,7 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
                 "subscribe" => handle_subscribe(state, client, envelope).await,
                 "unsubscribe" => handle_unsubscribe(state, client, envelope).await,
                 "hello" => {
-                    log!(
-                        "bridge port: ignoring 'hello' on established port from {client:?}"
-                    );
+                    log!("bridge port: ignoring 'hello' on established port from {client:?}");
                 }
                 other => {
                     log!("bridge port: ignoring envelope type '{other}' from {client:?}");
@@ -166,13 +166,11 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
         });
     }) as Box<dyn FnMut(web_sys::MessageEvent)>);
 
-    // Attach the listener. Setting onmessage auto-starts the port,
-    // so no explicit port.start() call is needed.
+    // Setting onmessage auto-starts the port; no port.start() needed.
     port.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
 
-    // Stash the session (holding port + closure) BEFORE posting
-    // `ready` so any immediate query/subscribe that follows finds
-    // the binding.
+    // Stash the session before posting `ready` so any immediate
+    // query/subscribe that follows finds the binding.
     let bridges = state.read().await.bridges.clone();
     {
         let mut guard = bridges.write().await;
@@ -330,11 +328,6 @@ async fn handle_evaluate(
             return;
         }
     };
-    let content_type = envelope
-        .get("contentType")
-        .and_then(|v| v.as_str())
-        .unwrap_or("application/yaml")
-        .to_owned();
     let transact = envelope
         .get("transact")
         .and_then(|v| v.as_bool())
@@ -352,7 +345,6 @@ async fn handle_evaluate(
             &binding.repo,
             &binding.branch,
             body,
-            &content_type,
             transact,
         )
         .await
@@ -482,8 +474,6 @@ async fn handle_subscribe(
             if pump_flag.load(Ordering::Acquire) {
                 break;
             }
-            // The reactor emits a JSON-serialised `Vec<Conclusion>`
-            // per frame. Decode and re-wrap as a subscribe-event.
             let rows: serde_json::Value = match serde_json::from_slice(&bytes) {
                 Ok(v) => v,
                 Err(e) => {
@@ -509,6 +499,11 @@ async fn handle_subscribe(
     let mut guard = bridges.write().await;
     if let Some(session) = guard.get_mut(&client) {
         session.subscriptions.insert(id, abort_flag);
+    } else {
+        // Session was swept (or never existed) between subscribe and
+        // insert — flag the pump so it exits on the next iteration
+        // instead of running orphaned forever.
+        abort_flag.store(true, Ordering::Release);
     }
 }
 
@@ -649,8 +644,10 @@ pub async fn sweep_stale_clients(state: &crate::router::AppState) {
         return;
     }
 
-    let bridges_arc = state.read().await.bridges.clone();
-    let views_arc = state.read().await.view_bindings.clone();
+    let (bridges_arc, views_arc) = {
+        let snap = state.read().await;
+        (snap.bridges.clone(), snap.view_bindings.clone())
+    };
 
     {
         let mut guard = bridges_arc.write().await;

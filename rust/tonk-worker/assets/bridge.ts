@@ -22,7 +22,6 @@ type EvaluateEnvelope  = {
   type: "evaluate";
   id: string;
   body: string;
-  contentType: string;
   transact: boolean;
 };
 
@@ -101,7 +100,7 @@ class Bridge {
     };
   }
 
-  evaluate(body: string, contentType = "application/yaml", transact = true): Promise<unknown> {
+  evaluate(body: string, transact = true): Promise<unknown> {
     const id = this.mintId();
     return new Promise<unknown>((resolve, reject) => {
       this.pendingOnce.set(id, { resolve, reject, kind: "evaluate" });
@@ -110,7 +109,6 @@ class Bridge {
         type: "evaluate",
         id,
         body,
-        contentType,
         transact,
       } satisfies EvaluateEnvelope);
     });

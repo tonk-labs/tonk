@@ -21,14 +21,16 @@ use js_sys::Uint8Array;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use wasm_streams::ReadableStream;
-use web_sys::{AbortController, Headers, Request, RequestInit, Response, Window, window as get_window};
+use web_sys::{
+    AbortController, Headers, Request, RequestInit, Response, Window, window as get_window,
+};
 
 use crate::error::{ErrorDetail, ErrorKind};
 
-/// Phase-1 helper — POST `body` as JSON to `url`, parse the
-/// returned `Vec<Conclusion>`, return the `source` field from the
-/// first row (the descriptor JSON for Phase 2).
-pub async fn phase1_lookup(url: &str, body: &str) -> Result<String, ErrorDetail> {
+/// POST `body` as JSON to `url`, parse the returned `Vec<Conclusion>`,
+/// and return the first row's `this` (concept entity URI) plus its
+/// `source` field (the descriptor JSON the next step needs).
+pub async fn phase1_lookup(url: &str, body: &str) -> Result<(String, String), ErrorDetail> {
     let init = RequestInit::new();
     init.set_method("POST");
     let headers = Headers::new()
@@ -66,9 +68,8 @@ pub async fn phase1_lookup(url: &str, body: &str) -> Result<String, ErrorDetail>
     let body_text = text
         .as_string()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
-    let conclusions: Vec<tonk_schema::conclusion::Conclusion> =
-        serde_json::from_str(&body_text)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse: {e}")))?;
+    let conclusions: Vec<tonk_schema::conclusion::Conclusion> = serde_json::from_str(&body_text)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse: {e}")))?;
     let first = conclusions
         .into_iter()
         .next()
@@ -83,68 +84,6 @@ pub async fn phase1_lookup(url: &str, body: &str) -> Result<String, ErrorDetail>
                 ErrorKind::Descriptor,
                 "phase1 row missing `source` field — worker may not be on the AnonymousConceptQuery build",
             )
-        })?;
-    Ok(source)
-}
-
-/// Phase-1 helper (display variant) — like [`phase1_lookup`] but
-/// also returns the `this` field (the concept entity URI) needed by
-/// `<tonk-display>` to build view and entity queries.
-pub async fn phase1_lookup_with_entity(
-    url: &str,
-    body: &str,
-) -> Result<(String, String), ErrorDetail> {
-    let init = RequestInit::new();
-    init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
-    headers
-        .append("content-type", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
-    headers
-        .append("accept", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    init.set_headers(&headers);
-    init.set_body(&JsValue::from_str(body));
-
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
-    let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
-        .await
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
-    if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
-            format!("phase1 HTTP {}", resp.status()),
-        ));
-    }
-    let text = JsFuture::from(
-        resp.text()
-            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
-    )
-    .await
-    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read body: {e:?}")))?;
-    let body_text = text
-        .as_string()
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
-    let conclusions: Vec<tonk_schema::conclusion::Conclusion> =
-        serde_json::from_str(&body_text)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse: {e}")))?;
-    let first = conclusions
-        .into_iter()
-        .next()
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
-    let source = first
-        .fields
-        .get("source")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `source` field")
         })?;
     Ok((first.this, source))
 }

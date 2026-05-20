@@ -8,9 +8,8 @@
 //! When `globalThis.tonk` is absent (the shell mounts these elements
 //! directly in its own DOM, outside any iframe) the legacy
 //! `fetch()`-based SSE reader in [`crate::fetch`] is used instead.
-//! The caller is responsible for supplying a non-empty `url` and
-//! `body_str` in that case (built from the `space`/`branch` HTML
-//! attributes).
+//! The caller is responsible for supplying a non-empty `url` in
+//! that case (built from the `space`/`branch` HTML attributes).
 
 use std::rc::Rc;
 
@@ -63,9 +62,9 @@ pub fn use_bridge() -> bool {
 /// Open a streaming subscription using whichever transport is
 /// available.
 ///
-/// `url` and `body_str` are used on the legacy fetch path; `body`
-/// (the `serde_json::Value` form) is used on the bridge path.
-/// When `use_bridge()` is true `url`/`body_str` are ignored.
+/// `url` is only used on the legacy fetch path. `body` is the
+/// query as a `serde_json::Value`; on the fetch path it is
+/// stringified once for the request body.
 ///
 /// `on_frame` is called for each emitted frame with the raw JSON
 /// string of a `Vec<Conclusion>`. `on_error` is called on transport
@@ -75,26 +74,22 @@ pub fn use_bridge() -> bool {
 /// dropping it cancels the subscription.
 pub async fn open_sse(
     url: &str,
-    body_str: &str,
     body: &serde_json::Value,
     on_frame: impl Fn(&str) + 'static,
     on_error: impl Fn(ErrorDetail) + 'static,
 ) -> Result<SubscriptionAbort, ErrorDetail> {
     if use_bridge() {
-        // Bridge path — synchronous setup via globalThis.tonk.subscribe.
         let on_error = Rc::new(on_error);
         let on_error_for_frame = on_error.clone();
         let handle = subscribe(
             body,
-            move |frame_value| {
-                match serde_json::to_string(&frame_value) {
-                    Ok(s) => on_frame(&s),
-                    Err(e) => {
-                        on_error_for_frame(ErrorDetail::new(
-                            ErrorKind::Parse,
-                            format!("frame stringify: {e}"),
-                        ));
-                    }
+            move |frame_value| match serde_json::to_string(&frame_value) {
+                Ok(s) => on_frame(&s),
+                Err(e) => {
+                    on_error_for_frame(ErrorDetail::new(
+                        ErrorKind::Parse,
+                        format!("frame stringify: {e}"),
+                    ));
                 }
             },
             move |message| {
@@ -103,14 +98,14 @@ pub async fn open_sse(
         )?;
         Ok(SubscriptionAbort::Bridge(handle))
     } else {
-        // Fetch/SSE path — async, awaits the initial HTTP response.
+        let body_str = serde_json::to_string(body)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body stringify: {e}")))?;
         // on_frame / on_error must be FnMut for the SSE reader loop.
-        // Wrap in a flag to adapt Fn → FnMut.
         let on_frame_cell = std::cell::RefCell::new(on_frame);
         let on_error_cell = std::cell::RefCell::new(on_error);
         let ctrl = crate::fetch::open_sse(
             url,
-            body_str,
+            &body_str,
             move |frame| (on_frame_cell.borrow())(frame),
             move |err| (on_error_cell.borrow())(err),
         )

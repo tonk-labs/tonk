@@ -36,7 +36,7 @@ struct Inner {
     template: Option<web_sys::DocumentFragment>,
     /// Where rendered rows are appended.
     container: Option<Element>,
-    /// Active diff renderer once Phase 2 has started.
+    /// Active diff renderer once the subscription has opened.
     renderer: Option<Renderer>,
     /// Active subscription handle — dropping it cancels the stream.
     abort: Option<SubscriptionAbort>,
@@ -99,7 +99,6 @@ impl CustomElement for TonkConcept {
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
-            // Drop the SubscriptionAbort — its Drop impl cancels the stream.
             state.borrow_mut().abort.take();
         }
     }
@@ -115,10 +114,8 @@ impl CustomElement for TonkConcept {
         let Some(state) = self.inner.borrow().clone() else {
             return;
         };
-        // Cancel any in-flight stream, drop existing rows, restart.
         {
             let mut s = state.borrow_mut();
-            // Drop the handle — this triggers cancellation.
             s.abort.take();
             if let Some(mut renderer) = s.renderer.take() {
                 renderer.clear();
@@ -143,7 +140,6 @@ fn already_registered() -> bool {
     !win.custom_elements().get("tonk-concept").is_undefined()
 }
 
-/// Kick off Phase 1 → Phase 2.
 fn start_subscription(host: &Element, state: Rc<RefCell<Inner>>) {
     let host = host.clone();
     spawn_local(async move {
@@ -180,7 +176,6 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
         ),
     };
 
-    // Phase 1 — one-shot resolve.
     let phase1_body_query = phase1_query(&parsed);
     let descriptor_json = if use_bridge() {
         let body_val = serde_json::to_value(&phase1_body_query)
@@ -189,10 +184,10 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     } else {
         let body_str = serde_json::to_string(&phase1_body_query)
             .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-        crate::fetch::phase1_lookup(&url, &body_str).await?
+        let (_this, source) = crate::fetch::phase1_lookup(&url, &body_str).await?;
+        source
     };
 
-    // Phase 2 — build the actual subscription query and stream it.
     let phase2 = phase2_query(&descriptor_json, &parsed.filters)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("phase2: {e}")))?;
 
@@ -221,12 +216,9 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
 
     let phase2_value = serde_json::to_value(&phase2)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase2 serialise: {e}")))?;
-    let phase2_body = serde_json::to_string(&phase2)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase2 body: {e}")))?;
 
     let handle = open_sse(
         &url,
-        &phase2_body,
         &phase2_value,
         move |frame: &str| {
             let conclusions: Vec<tonk_schema::conclusion::Conclusion> =
@@ -262,8 +254,8 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     Ok(())
 }
 
-/// Phase-1 helper for the bridge path — call `globalThis.tonk.query`
-/// and extract the `source` field from the first returned conclusion.
+/// Bridge-side resolver — call `globalThis.tonk.query` and extract the
+/// `source` field from the first returned conclusion.
 async fn bridge_phase1_lookup(body: &serde_json::Value) -> Result<String, ErrorDetail> {
     let result = crate::bridge::query(body).await?;
     let arr = result.as_array().ok_or_else(|| {
