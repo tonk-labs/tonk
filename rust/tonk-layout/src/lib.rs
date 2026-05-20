@@ -26,6 +26,9 @@ mod ulid;
 // Layout tree + frame folding; native-testable.
 mod model;
 
+// Wire-query builders; native-testable.
+mod resolve;
+
 #[cfg(target_arch = "wasm32")]
 mod element;
 
