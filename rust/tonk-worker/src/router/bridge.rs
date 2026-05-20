@@ -47,15 +47,27 @@ pub struct BridgeSession {
     /// an abort flag; setting it to `true` causes the pump task to
     /// exit on its next iteration.
     pub subscriptions: HashMap<String, Arc<AtomicBool>>,
+    /// Closure attached to `port.onmessage`. Kept here so it stays
+    /// alive for the session's lifetime and is dropped (detaching
+    /// the listener) when the session is removed from the registry.
+    ///
+    /// `Closure` is `!Send + !Sync` (holds JS state); `SendWrapper`
+    /// makes it acceptable to the single-threaded SW registry.
+    pub _on_message:
+        SendWrapper<wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MessageEvent)>>,
 }
 
 impl BridgeSession {
-    /// Create a new session wrapping the given port with no active
-    /// subscriptions.
-    pub fn new(port: MessagePort) -> Self {
+    /// Create a new session wrapping the port and its `onmessage`
+    /// closure with no active subscriptions.
+    pub fn new(
+        port: MessagePort,
+        on_message: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::MessageEvent)>,
+    ) -> Self {
         Self {
             port: SendWrapper::new(port),
             subscriptions: HashMap::new(),
+            _on_message: SendWrapper::new(on_message),
         }
     }
 }
@@ -66,8 +78,12 @@ impl BridgeSession {
 /// sessions.
 pub type BridgeRegistry = Arc<RwLock<HashMap<ClientId, BridgeSession>>>;
 
-/// Top-level dispatcher invoked from `worker::on_message`. Routes
-/// the envelope to the right per-type handler.
+/// Top-level dispatcher invoked from `worker::on_message` for the SW
+/// global `message` event. Only `hello` arrives this way — all
+/// subsequent envelopes (`query`, `subscribe`, `evaluate`,
+/// `unsubscribe`) travel over the transferred `MessagePort` and are
+/// handled by the per-port `onmessage` closure attached in
+/// `handle_hello`.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub async fn handle_message(
     state: crate::router::AppState,
@@ -78,22 +94,24 @@ pub async fn handle_message(
     let envelope_type = envelope.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match envelope_type {
         "hello" => handle_hello(state, client, ports).await,
-        "query" => handle_query(state, client, envelope).await,
-        "evaluate" => handle_evaluate(state, client, envelope).await,
-        "subscribe" => handle_subscribe(state, client, envelope).await,
-        "unsubscribe" => handle_unsubscribe(state, client, envelope).await,
         other => {
-            log!("bridge: ignoring envelope type '{other}'");
+            log!(
+                "bridge: SW global received unexpected envelope type '{other}' from {client:?} \
+                 (post-hello messages should go through the port, not the SW global)"
+            );
         }
     }
 }
 
 /// `hello` handler. Extracts the transferred port (index 0 of the
-/// `ports` array), registers a `BridgeSession` against the client
-/// id, and posts a `ready` envelope back so the iframe-side
-/// `tonk.ready` promise resolves.
+/// `ports` array), attaches an `onmessage` listener that dispatches
+/// subsequent envelopes from the iframe, registers a `BridgeSession`
+/// (which keeps the closure alive), and posts a `ready` envelope so
+/// the iframe-side `tonk.ready` promise resolves.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: js_sys::Array) {
+    use wasm_bindgen::closure::Closure;
+
     if ports.length() == 0 {
         log!("bridge: hello from {client:?} had no transferred port; dropping");
         return;
@@ -107,12 +125,57 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
         }
     };
 
-    // Stash the session BEFORE posting `ready` so any immediate
-    // query/subscribe that follows finds the binding.
+    // Build the per-port message handler. Each envelope arriving on
+    // the port (query / subscribe / evaluate / unsubscribe) is
+    // dispatched asynchronously. The closure is stored on
+    // BridgeSession to keep it alive; dropping the session drops the
+    // closure and detaches the listener.
+    let state_for_handler = state.clone();
+    let client_for_handler = client.clone();
+    let on_message = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {
+        let state = state_for_handler.clone();
+        let client = client_for_handler.clone();
+        let data = event.data();
+        wasm_bindgen_futures::spawn_local(async move {
+            let envelope: serde_json::Value = match serde_wasm_bindgen::from_value(data) {
+                Ok(v) => v,
+                Err(e) => {
+                    log!("bridge port: malformed envelope from {client:?}: {e:?}");
+                    return;
+                }
+            };
+            let envelope_type = envelope
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            match envelope_type {
+                "query" => handle_query(state, client, envelope).await,
+                "evaluate" => handle_evaluate(state, client, envelope).await,
+                "subscribe" => handle_subscribe(state, client, envelope).await,
+                "unsubscribe" => handle_unsubscribe(state, client, envelope).await,
+                "hello" => {
+                    log!(
+                        "bridge port: ignoring 'hello' on established port from {client:?}"
+                    );
+                }
+                other => {
+                    log!("bridge port: ignoring envelope type '{other}' from {client:?}");
+                }
+            }
+        });
+    }) as Box<dyn FnMut(web_sys::MessageEvent)>);
+
+    // Attach the listener. Setting onmessage auto-starts the port,
+    // so no explicit port.start() call is needed.
+    port.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+
+    // Stash the session (holding port + closure) BEFORE posting
+    // `ready` so any immediate query/subscribe that follows finds
+    // the binding.
     let bridges = state.read().await.bridges.clone();
     {
         let mut guard = bridges.write().await;
-        guard.insert(client.clone(), BridgeSession::new(port.clone()));
+        guard.insert(client.clone(), BridgeSession::new(port.clone(), on_message));
     }
 
     let envelope = serde_json::json!({
