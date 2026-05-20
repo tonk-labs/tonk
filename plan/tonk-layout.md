@@ -97,6 +97,34 @@ look wrong against it. The keyboard presets keep the niri feel —
 they pick a sensible width for the current viewport — while the
 stored value stays an absolute grid count.
 
+### Viewport width cap — responsive to the form factor
+
+Grid units are the *intent*, but a column is **never allowed to
+exceed the viewport width**:
+
+- column width = `min(width-units × cell, viewport width − chrome)`
+- tile height = `height-units × cell` (no cap)
+
+On a wide screen the grid count wins and columns sit on the grid.
+On a phone the cap wins: a column shrinks to the screen width, so
+**one column fills the viewport and the next is reached by
+swiping** rather than overflowing off-screen.
+
+Only *width* caps. A tile taller than the viewport is fine — it
+just scrolls vertically within its column, the same as any
+overflowing content. There is no need to force a tall tile to
+fit, only to keep a column from being wider than the screen can
+show.
+
+This is the responsive behaviour — the layout adapts to the form
+factor without the stored grid counts changing. It is expressed
+purely in CSS (`min()` against a container-query unit), so it
+re-resolves on every resize with no JavaScript resize listener.
+
+The keyboard width presets are computed from the *current*
+viewport and recomputed on resize, so the "full" preset always
+fills the visible width.
+
 ## Data model — normalized tile entities
 
 Three concepts on the branch. They are declared once per repository

@@ -1164,20 +1164,30 @@ tonk-layout {
 /* The strip fills the host and scrolls horizontally when the
    column rail overflows — overflow is the normal case, niri-style.
    `scroll-snap-type: x proximity` snaps a settling scroll to the
-   major grid (one `--tonk-layout-cell` stride) so the strip rests
-   aligned to the dotted graph-paper background; "proximity" keeps
-   it from fighting a deliberate scroll. */
+   column starts so a flick rests on a column edge, aligned to the
+   dotted graph-paper background; "proximity" keeps it from
+   fighting a deliberate scroll. */
 .tonk-layout-strip {
     /* One major grid cell — matches the bright dots of the
-       graph-paper background (`--dot-gap` × 4 = 16px × 4). All
-       layout sizes are integer multiples of this. */
+       graph-paper background (`--dot-gap` × 4 = 16px × 4). Layout
+       sizes are integer multiples of this *until* a column would
+       exceed the viewport width, at which point it is capped. */
     --tonk-layout-cell: calc(var(--dot-gap, 16px) * 4);
+    /* Width a column is never allowed past: the viewport minus the
+       rail padding. On a narrow screen a column shrinks to this so
+       one column fills the viewport and the next is swiped to,
+       instead of overflowing off-screen. Only width caps — a tall
+       tile simply scrolls within its column. */
+    --tonk-layout-pad: var(--wa-space-s);
+    --tonk-layout-vw-cap: calc(100cqi - var(--tonk-layout-pad) * 2);
     display: block;
     block-size: 100%;
     overflow-x: auto;
     overflow-y: hidden;
     scroll-snap-type: x proximity;
     scroll-padding-inline: var(--wa-space-s);
+    /* `cqi` above resolves against this container's inline size. */
+    container-type: inline-size;
 }
 
 /* The rail is the flex row of columns. It grows to its columns'
@@ -1187,34 +1197,39 @@ tonk-layout {
     flex-direction: row;
     align-items: stretch;
     gap: var(--wa-space-s);
-    padding: var(--wa-space-s);
+    padding: var(--tonk-layout-pad);
     block-size: 100%;
     min-inline-size: min-content;
     box-sizing: border-box;
 }
 
-/* A column's width is `--tonk-layout-width` major grid cells.
-   `flex-grow`/`flex-shrink` are both `0` so the column keeps that
-   exact width and the rail overflows rather than squeezing — this
-   is what makes the strip genuinely scroll. Its leading edge is a
-   scroll-snap point so focus-scroll and flicks land grid-aligned. */
+/* A column's width is `--tonk-layout-width` grid cells, but
+   `min()`-capped at the viewport so it never grows wider than the
+   screen — on a narrow window the column shrinks to fit and the
+   strip still scrolls between columns. `flex-grow`/`flex-shrink`
+   are `0` so the column holds that resolved width and the rail
+   overflows rather than squeezing. The leading edge is a
+   scroll-snap point. */
 .tonk-layout-column {
     display: flex;
     flex-direction: column;
-    flex: 0 0 calc(var(--tonk-layout-width, 8) * var(--tonk-layout-cell));
+    flex: 0 0
+        min(
+            var(--tonk-layout-width, 8) * var(--tonk-layout-cell),
+            var(--tonk-layout-vw-cap)
+        );
     gap: var(--wa-space-s);
     scroll-snap-align: start;
-    /* Tiles have fixed grid heights — a column taller than its
-       strip scrolls its tiles vertically. */
+    /* A column whose tiles total taller than the strip scrolls
+       them vertically — tile heights are not capped. */
     overflow-y: auto;
     overflow-x: hidden;
 }
 
-/* A tile's height is `--tonk-layout-height` major grid cells.
-   Fixed height (not a flex ratio) so a column's tiles sit on the
-   grid; the column scrolls if its tiles exceed its height. The
-   surface, border, and radius are WA tokens so tiles match cards
-   elsewhere in the app. */
+/* A tile's height is `--tonk-layout-height` grid cells, full
+   stop — no viewport cap. A tile taller than the screen just
+   scrolls within its column. The surface, border, and radius are
+   WA tokens so tiles match cards elsewhere. */
 .tonk-layout-tile {
     flex: 0 0 calc(var(--tonk-layout-height, 8) * var(--tonk-layout-cell));
     display: flex;
@@ -1250,17 +1265,23 @@ tonk-layout[data-state="empty"] .tonk-layout-rail {
     color: var(--wa-color-text-quiet);
 }
 
-/* The `<tonk-layout>` route's mount region. It fills the
-   `<wa-page>` main area edge-to-edge — the window manager owns
-   the whole viewport, so the route drops the content padding the
-   other routes get. `100cqi` on columns above resolves against
-   this container. */
+/* The `<tonk-layout>` route's mount region. The window manager
+   owns the whole viewport, so the route drops the content padding
+   the other routes get.
+
+   Height is pinned to the viewport and overflow is clipped. The
+   `<wa-page>` main slot only carries `min-height: 100%` — a
+   content-driven height — so a plain `block-size: 100%` here
+   would feed back into the column/rail intrinsic heights and
+   inflate the whole chain, leaving the page itself scrollable.
+   Pinning to `100dvh` and clipping breaks that cycle: the strip
+   inside scrolls, the page never does. */
 .layout-view {
     display: block;
-    block-size: 100%;
+    block-size: 100dvh;
     inline-size: 100%;
     padding: 0;
-    container-type: inline-size;
+    overflow: hidden;
 }
 .layout-view-slot {
     display: block;
