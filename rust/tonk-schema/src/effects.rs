@@ -191,7 +191,10 @@ mod tests {
 
         // Build a transient bucket holding one assertion.
         let mut transients = Changes::new();
-        transients.assert(attr.clone().of(subject.clone()).is("hello".to_string()));
+        attr.clone()
+            .of(subject.clone())
+            .is("hello".to_string())
+            .assert(&mut transients);
 
         // Drive the bucket through the sweep: integrate into a
         // transaction, then induce. The sweep retracts every

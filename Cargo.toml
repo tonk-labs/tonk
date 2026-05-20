@@ -120,24 +120,23 @@ js-sys = "0.3"
 send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
-# Dialog DB — pinned to the upstream `feat/transaction-integrate`
-# branch. Carries InductiveRule (Phase 1), Transaction::query() overlay
-# (from claude/add-overlay-queries-Ay6sq), and Transaction::integrate
-# (this branch's one-commit addition). Switch to a tag once stable.
-dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
-dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/transaction-integrate" }
+# Dialog DB — pinned to the `tonk-2026-05-19` tag, which folds in
+# InductiveRule (Phase 1), Transaction::query() overlay, and
+# Transaction::integrate.
+dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
+dialog-varsig = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
 
 [profile.dev]
 opt-level = 1

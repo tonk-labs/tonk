@@ -64,14 +64,14 @@ impl<'a> TransactionBuilder<'a> {
     /// `/claim/*` and tests) without a durability
     /// classification — assume durable.
     pub fn assert<S: Statement>(mut self, claim: S) -> Self {
-        self.changes.assert(claim);
+        claim.assert(&mut self.changes);
         self
     }
 
     /// Add a retraction to the durable bucket. Same fallback
     /// semantics as [`Self::assert`].
     pub fn retract<S: Statement>(mut self, claim: S) -> Self {
-        self.changes.retract(claim);
+        claim.retract(&mut self.changes);
         self
     }
 
@@ -97,7 +97,7 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             &mut self.changes
         };
-        bucket.assert(application.into_plan());
+        application.into_plan().assert(bucket);
         self
     }
 
@@ -112,7 +112,7 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             &mut self.changes
         };
-        bucket.retract(application.into_plan());
+        application.into_plan().retract(bucket);
         self
     }
 
