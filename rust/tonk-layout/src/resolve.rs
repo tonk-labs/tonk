@@ -63,31 +63,40 @@ pub fn columns_query(workspace_entity: &str) -> Query {
     serde_json::from_value(body).expect("columns query body is well-formed")
 }
 
-/// Build a query for every `tile` row whose `column` equals the
-/// column entity URI.
+/// Build a query for every `tile` row whose `workspace` equals
+/// the workspace entity URI.
+///
+/// Tiles carry a denormalized `workspace` reference (a copy of
+/// their column's `workspace`), so a single subscription returns
+/// exactly this workspace's tiles — no one-per-column fan-out and
+/// no cross-workspace rows for the fold to discard.
+/// [`crate::model::Layout::fold`] attaches each tile to its
+/// parent column by the `column` field.
 ///
 /// Reads back the full content descriptor
-/// `(this, order, height, entity, view, model)`; `column` is
-/// pinned to the constant.
-pub fn tiles_query(column_entity: &str) -> Query {
+/// `(this, column, order, height, entity, view, model)`;
+/// `workspace` is pinned to the constant.
+pub fn tiles_query(workspace_entity: &str) -> Query {
     let body = json!({
         "terms": {
-            "this":   { "?": { "name": "this" } },
-            "column": column_entity,
-            "order":  { "?": { "name": "order" } },
-            "height": { "?": { "name": "height" } },
-            "entity": { "?": { "name": "entity" } },
-            "view":   { "?": { "name": "view" } },
-            "model":  { "?": { "name": "model" } }
+            "this":      { "?": { "name": "this" } },
+            "workspace": workspace_entity,
+            "column":    { "?": { "name": "column" } },
+            "order":     { "?": { "name": "order" } },
+            "height":    { "?": { "name": "height" } },
+            "entity":    { "?": { "name": "entity" } },
+            "view":      { "?": { "name": "view" } },
+            "model":     { "?": { "name": "model" } }
         },
         "predicate": {
             "with": {
-                "column": { "the": "xyz.tonk.layout/tile-column", "as": "Entity", "cardinality": "one" },
-                "order":  { "the": "xyz.tonk.layout/tile-order",  "as": "Float",  "cardinality": "one" },
-                "height": { "the": "xyz.tonk.layout/tile-height", "as": "Float",  "cardinality": "one" },
-                "entity": { "the": "xyz.tonk.layout/tile-entity", "as": "Entity", "cardinality": "one" },
-                "view":   { "the": "xyz.tonk.layout/tile-view",   "as": "Text",   "cardinality": "one" },
-                "model":  { "the": "xyz.tonk.layout/tile-model",  "as": "Text",   "cardinality": "one" }
+                "workspace": { "the": "xyz.tonk.layout/tile-workspace", "as": "Entity", "cardinality": "one" },
+                "column":    { "the": "xyz.tonk.layout/tile-column",    "as": "Entity", "cardinality": "one" },
+                "order":     { "the": "xyz.tonk.layout/tile-order",     "as": "Float",  "cardinality": "one" },
+                "height":    { "the": "xyz.tonk.layout/tile-height",    "as": "Float",  "cardinality": "one" },
+                "entity":    { "the": "xyz.tonk.layout/tile-entity",    "as": "Entity", "cardinality": "one" },
+                "view":      { "the": "xyz.tonk.layout/tile-view",      "as": "Text",   "cardinality": "one" },
+                "model":     { "the": "xyz.tonk.layout/tile-model",     "as": "Text",   "cardinality": "one" }
             }
         }
     });
@@ -133,15 +142,17 @@ mod tests {
     }
 
     #[test]
-    fn it_pins_the_tiles_query_by_column_entity() {
-        let query = tiles_query("did:key:zColumn");
-        assert_eq!(term(&query, "column"), json!("did:key:zColumn"));
+    fn it_pins_the_tiles_query_by_workspace_entity() {
+        let query = tiles_query("did:key:zWorkspace");
+        assert_eq!(term(&query, "workspace"), json!("did:key:zWorkspace"));
     }
 
     #[test]
     fn it_projects_the_full_content_descriptor_on_the_tiles_query() {
-        let query = tiles_query("did:key:zColumn");
-        for field in ["order", "height", "entity", "view", "model", "this"] {
+        let query = tiles_query("did:key:zWorkspace");
+        for field in [
+            "column", "order", "height", "entity", "view", "model", "this",
+        ] {
             assert!(
                 term(&query, field).is_object(),
                 "{field} should be a projection variable"

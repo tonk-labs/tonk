@@ -4915,6 +4915,7 @@ dependencies = [
  "dialog-common",
  "js-sys",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "tokio",
  "tonk-concept",

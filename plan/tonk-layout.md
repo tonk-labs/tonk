@@ -101,6 +101,12 @@ concept!: &column
 concept!: &tile
   description: One cell; mounts a <tonk-display>
   with:
+    workspace:
+      description: Workspace the tile belongs to (denormalized from
+        the parent column, so all tiles for a workspace come back
+        in one query)
+      the: xyz.tonk.layout/tile-workspace
+      as: entity
     column:
       the: xyz.tonk.layout/tile-column
       as: entity
@@ -132,7 +138,12 @@ Notes on the model:
   column. (Fractional indexing.)
 - **References point upward** (`tile.column`, `column.workspace`) so a
   child can be inserted/removed with a single assertion and the parent
-  never needs rewriting.
+  never needs rewriting. `tile.workspace` is a **denormalized** copy of
+  `column.workspace`: it lets the tiles subscription filter by
+  workspace in a single query, instead of one subscription per column
+  or fetching every tile on the branch. A tile moved between columns of
+  the same workspace leaves `tile.workspace` unchanged; only a move
+  across workspaces rewrites it (alongside `tile.column`).
 - **`workspace.focus`** is a cardinality-one pointer to a tile entity;
   re-asserting it retracts the previous value automatically (the
   git-ref pattern from the notation guide).
