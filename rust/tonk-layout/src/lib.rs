@@ -1,5 +1,4 @@
-//! `<tonk-layout>` — a niri-style tiling window manager custom
-//! element.
+//! `<tonk-layout>` — a tiling window manager custom element.
 //!
 //! Arranges tiles on an infinite horizontal scrollable strip of
 //! columns, each column a vertical stack of tiles. Every tile

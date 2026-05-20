@@ -11,9 +11,9 @@
 //!
 //! ```text
 //! <tonk-layout>
-//!   <div class="niri-strip">
-//!     <div class="niri-column" data-id=…>
-//!       <div class="niri-tile" data-id=…>
+//!   <div class="tonk-layout-strip">
+//!     <div class="tonk-layout-column" data-id=…>
+//!       <div class="tonk-layout-tile" data-id=…>
 //!         <tonk-display entity=… view=… />
 //!       </div>
 //!     </div>
@@ -22,7 +22,7 @@
 //! ```
 //!
 //! Column width and tile height are written as CSS custom
-//! properties (`--niri-width`, `--niri-height`) so the layout
+//! properties (`--tonk-layout-width`, `--tonk-layout-height`) so the layout
 //! stays resolution-independent — the stylesheet turns the
 //! fractions into pixels.
 
@@ -31,12 +31,17 @@ use web_sys::{Document, Element, window};
 
 use crate::model::{Column, Layout, Tile};
 
-/// CSS class on the scrolling strip container.
-const STRIP_CLASS: &str = "niri-strip";
+/// Tag for the scrolling strip container. `<wa-scroller>` is Web
+/// Awesome's accessible scroll region — it supplies the
+/// horizontal scroll affordances (edge fades, keyboard support)
+/// so we don't hand-roll them.
+const STRIP_TAG: &str = "wa-scroller";
+/// CSS class on the strip container.
+const STRIP_CLASS: &str = "tonk-layout-strip";
 /// CSS class on each column.
-const COLUMN_CLASS: &str = "niri-column";
+const COLUMN_CLASS: &str = "tonk-layout-column";
 /// CSS class on each tile.
-const TILE_CLASS: &str = "niri-tile";
+const TILE_CLASS: &str = "tonk-layout-tile";
 /// Attribute carrying a column's / tile's entity URI — the
 /// reconciliation key.
 const ID_ATTR: &str = "data-id";
@@ -48,7 +53,7 @@ const FOCUSED_ATTR: &str = "data-focused";
 pub struct Reconciler {
     /// The `<tonk-layout>` host.
     host: Element,
-    /// The `.niri-strip` scroll container, created lazily on the
+    /// The `.tonk-layout-strip` scroll container, created lazily on the
     /// first [`Reconciler::apply`].
     strip: Option<Element>,
     /// `space` attribute forwarded to every tile's
@@ -95,7 +100,10 @@ impl Reconciler {
         if let Some(strip) = &self.strip {
             return strip.clone();
         }
-        let strip = create(document, "div", STRIP_CLASS);
+        let strip = create(document, STRIP_TAG, STRIP_CLASS);
+        // `orientation="horizontal"` puts the scroll affordances
+        // on the correct axis for the column strip.
+        let _ = strip.set_attribute("orientation", "horizontal");
         let _ = self.host.append_child(&strip);
         self.strip = Some(strip.clone());
         strip
@@ -138,7 +146,7 @@ fn apply_column(
     space: &str,
     branch: &str,
 ) {
-    set_fraction(element, "--niri-width", column.width);
+    set_fraction(element, "--tonk-layout-width", column.width);
 
     remove_departed(element, &column.tiles, |t| &t.id);
 
@@ -160,7 +168,7 @@ fn apply_tile(
     space: &str,
     branch: &str,
 ) {
-    set_fraction(element, "--niri-height", tile.height);
+    set_fraction(element, "--tonk-layout-height", tile.height);
 
     if focus.as_deref() == Some(tile.id.as_str()) {
         let _ = element.set_attribute(FOCUSED_ATTR, "");
@@ -346,7 +354,7 @@ mod tests {
         reconciler.apply(&layout);
 
         let strip = host
-            .query_selector(".niri-strip")
+            .query_selector(".tonk-layout-strip")
             .unwrap()
             .expect("strip mounted");
         assert_eq!(strip.children().length(), 2, "two columns");
@@ -386,7 +394,7 @@ mod tests {
             focus: None,
             columns: vec![column("col:b", vec![])],
         });
-        let strip = host.query_selector(".niri-strip").unwrap().unwrap();
+        let strip = host.query_selector(".tonk-layout-strip").unwrap().unwrap();
         assert_eq!(strip.children().length(), 1);
         assert_eq!(
             strip
@@ -412,7 +420,7 @@ mod tests {
             focus: None,
             columns: vec![column("col:b", vec![]), column("col:a", vec![])],
         });
-        let strip = host.query_selector(".niri-strip").unwrap().unwrap();
+        let strip = host.query_selector(".tonk-layout-strip").unwrap().unwrap();
         let ids: Vec<Option<String>> = (0..strip.children().length())
             .map(|i| strip.children().item(i).unwrap().get_attribute("data-id"))
             .collect();

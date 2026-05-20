@@ -1,9 +1,9 @@
 //! `<tonk-layout>` custom-element implementation.
 //!
-//! A niri-style tiling window manager: an infinite horizontal
-//! scrollable strip of columns, each column a vertical stack of
-//! tiles. The layout itself is persisted to the branch as
-//! normalized entities (see `/plan/tonk-layout.md`).
+//! A tiling window manager: an infinite horizontal scrollable
+//! strip of columns, each column a vertical stack of tiles. The
+//! layout itself is persisted to the branch as normalized
+//! entities (see `/plan/tonk-layout.md`).
 //!
 //! This module owns the element lifecycle and the read path: a
 //! cascade of three SSE subscriptions (workspace → columns +

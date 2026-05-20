@@ -1144,3 +1144,94 @@ tonk-code:focus-within {
     /* Sits above the match list as a one-line tag. */
     margin-block-end: var(--wa-space-2xs);
 }
+
+/* ── `<tonk-layout>` — tiling window manager ───────────────────
+
+   A horizontal scrollable strip of columns; each column is a
+   vertical stack of tiles. The element owns this whole subtree
+   (see `rust/tonk-layout`). Sizing is relative: the reconciler
+   writes `--tonk-layout-width` / `--tonk-layout-height` as `0..1`
+   fractions and the rules below turn them into `flex` ratios, so
+   a layout restores at any viewport size. Colors and spacing all
+   come from Web Awesome tokens so the strip reads as part of the
+   app. */
+tonk-layout {
+    display: block;
+    block-size: 100%;
+    inline-size: 100%;
+}
+
+/* The strip is a `<wa-scroller>` — it supplies the horizontal
+   scroll affordances. Its direct children (columns) lay out as a
+   horizontal flex row that may overflow the viewport. */
+.tonk-layout-strip {
+    display: block;
+    block-size: 100%;
+}
+.tonk-layout-strip::part(content) {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: var(--wa-space-s);
+    padding: var(--wa-space-s);
+    block-size: 100%;
+    box-sizing: border-box;
+}
+
+/* A column's `--tonk-layout-width` fraction becomes its flex
+   ratio, so columns share the viewport proportionally. Tiles
+   stack vertically inside. */
+.tonk-layout-column {
+    display: flex;
+    flex-direction: column;
+    flex: var(--tonk-layout-width, 0.5) 1 0;
+    min-inline-size: 16rem;
+    gap: var(--wa-space-s);
+}
+
+/* A tile's `--tonk-layout-height` fraction is its flex ratio
+   within the column. The surface, border, and radius are WA
+   tokens so tiles match cards elsewhere in the app. */
+.tonk-layout-tile {
+    flex: var(--tonk-layout-height, 1) 1 0;
+    min-block-size: 6rem;
+    display: flex;
+    overflow: hidden;
+    background: var(--wa-color-surface-default);
+    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-m);
+}
+
+/* The focused tile is lifted with a brand-colored ring, the same
+   affordance WA form controls use for focus. */
+.tonk-layout-tile[data-focused] {
+    border-color: var(--wa-color-brand-fill-loud);
+    box-shadow: 0 0 0 var(--wa-focus-ring-width, 2px)
+        var(--wa-color-brand-fill-loud);
+}
+
+/* The `<tonk-display>` fills its tile. */
+.tonk-layout-tile tonk-display {
+    display: block;
+    inline-size: 100%;
+    overflow: auto;
+}
+
+/* Lifecycle skins, mirroring `<tonk-display>`'s data-state
+   convention. An empty workspace and a loading one both show a
+   muted placeholder rather than a blank strip. */
+tonk-layout[data-state="loading"] .tonk-layout-strip::part(content),
+tonk-layout[data-state="empty"] .tonk-layout-strip::part(content) {
+    align-items: center;
+    justify-content: center;
+    color: var(--wa-color-text-quiet);
+}
+
+/* The `<tonk-layout>` route's mount slot. The element fills its
+   container, so the slot must claim the available height inside
+   the `<wa-page>` main region. */
+.layout-view,
+.layout-view-slot {
+    display: block;
+    block-size: 100%;
+}
