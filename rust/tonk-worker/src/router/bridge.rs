@@ -148,6 +148,7 @@ async fn handle_hello(state: crate::router::AppState, client: ClientId, ports: j
                 .get("type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
+            log!("bridge port: received '{envelope_type}' from {client:?}");
             match envelope_type {
                 "query" => handle_query(state, client, envelope).await,
                 "evaluate" => handle_evaluate(state, client, envelope).await,
