@@ -88,7 +88,6 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
     let factory = lsp_introspection::ReactorIntrospectionFactory::new(state.clone());
     let (lsp_routes, lsp_hub) = lsp::lsp_router_with_introspection(factory);
     let router = Router::new()
-        .route("/__tonk/bridge.js", get(bridge::serve_bridge_js))
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
         .route("/api/profile", get(profile::get_profile))
@@ -2589,32 +2588,4 @@ person:
         );
     }
 
-    #[dialog_common::test]
-    async fn it_serves_bridge_js_with_correct_content_type() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/__tonk/bridge.js")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
-            "application/javascript",
-        );
-        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert!(!body_bytes.is_empty(), "bridge.js body must not be empty");
-    }
 }

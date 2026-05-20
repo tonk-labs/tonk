@@ -131,6 +131,11 @@
        into this page. -->
   <link data-trunk rel="rust" data-bin="tonk-concept" data-type="worker" data-bindgen-target="web" data-wasm-opt="z" />
 
+  <!-- Bridge module injected by host::wrap_html_body into iframe srcdoc.
+       Served at `/__tonk/bridge.js` by the dev server / CDN so the
+       service-worker passthrough route can reach it without the SW
+       needing to bundle and serve it internally. -->
+  <link data-trunk rel="copy-file" href="../tonk-worker/assets/bridge.js" data-target-path="__tonk" />
   <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
   <link data-trunk rel="copy-dir" href="./assets/images" />
   <link data-trunk rel="copy-dir" href="./assets/webawesome" />
