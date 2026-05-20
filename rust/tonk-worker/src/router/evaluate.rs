@@ -174,6 +174,26 @@ async fn evaluate_on_branch<'a>(
     Ok(Json(outcome.response))
 }
 
+/// Bridge-callable wrapper around the evaluate pipeline. Runs
+/// the same logic as [`evaluate_on_branch`] but accepts plain
+/// `String` arguments instead of HTTP-level types so the bridge
+/// handler can call it without constructing an axum request.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_body(
+    tonk_state: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    body: String,
+    transact: bool,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.repository(repo).branch(branch);
+    let query = EvaluateQuery { transact };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+        .await
+        .map(|Json(r)| r)
+}
+
 /// Project [`Parsed`] onto a successful syntax or a 400 error
 /// carrying the first diagnostic's structure (code + range +
 /// message) so the editor can route it to a positioned

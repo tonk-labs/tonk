@@ -82,24 +82,15 @@ pub async fn open_sse(
         let subscription = Rc::new(subscribe(body).await?);
         let pump_sub = subscription.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            loop {
-                match pump_sub.next().await {
-                    Ok(Some(value)) => match serde_json::to_string(&value) {
-                        Ok(s) => on_frame(&s),
-                        Err(e) => {
-                            on_error(ErrorDetail::new(
-                                ErrorKind::Parse,
-                                format!("frame stringify: {e}"),
-                            ));
-                            break;
-                        }
-                    },
-                    Ok(None) => break,
-                    Err(e) => {
-                        on_error(e);
-                        break;
-                    }
+            let result: Result<(), ErrorDetail> = async {
+                while let Some(frame) = pump_sub.next().await? {
+                    on_frame(&frame);
                 }
+                Ok(())
+            }
+            .await;
+            if let Err(e) = result {
+                on_error(e);
             }
         });
         Ok(SubscriptionAbort::Bridge(subscription))

@@ -3,9 +3,6 @@ var Bridge = class {
   port;
   nextId = 0;
   pendingOnce = /* @__PURE__ */ new Map();
-  // One controller per active subscription, keyed by correlation id.
-  // Populated in the stream's `start`, removed when the stream is
-  // cancelled or the SW reports an error.
   streamControllers = /* @__PURE__ */ new Map();
   resolveReady;
   rejectReady;

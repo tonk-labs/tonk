@@ -3,6 +3,8 @@
 //! previous direct `fetch()` calls so the bridge can route every
 //! data-plane request through postMessage to the service worker.
 
+use std::cell::Cell;
+
 use crate::error::{ErrorDetail, ErrorKind};
 use js_sys::{Function, Promise, Reflect};
 use wasm_bindgen::JsCast;
@@ -90,19 +92,30 @@ pub async fn subscribe(body: &serde_json::Value) -> Result<Subscription, ErrorDe
             "stream.getReader did not return a default reader",
         )
     })?;
-    Ok(Subscription { reader })
+    Ok(Subscription {
+        reader,
+        cancelled: Cell::new(false),
+    })
 }
 
-/// A live subscription. `next` yields one frame; `Ok(None)` signals
-/// the stream closed normally. Dropping the value cancels the
-/// stream and posts an `unsubscribe` envelope.
+/// A live subscription. `next` yields one frame as its raw JSON
+/// string; `Ok(None)` signals the stream closed normally. Dropping
+/// the value cancels the stream and posts an `unsubscribe` envelope.
 pub struct Subscription {
     reader: ReadableStreamDefaultReader,
+    // Set on first `cancel()` so the second call (from the other
+    // `Drop` path, when both `SubscriptionAbort::Bridge` and the
+    // last `Rc<Subscription>` go away) doesn't allocate a redundant
+    // `reader.cancel()` Promise.
+    cancelled: Cell<bool>,
 }
 
 impl Subscription {
-    /// Pull the next frame. `Ok(None)` means the stream closed.
-    pub async fn next(&self) -> Result<Option<serde_json::Value>, ErrorDetail> {
+    /// Pull the next frame as its JSON-stringified form. `Ok(None)`
+    /// means the stream closed. The string is produced by
+    /// `JSON.stringify` on the raw `value` so the JSON tree never
+    /// has to be walked in Rust.
+    pub async fn next(&self) -> Result<Option<String>, ErrorDetail> {
         let promise = self.reader.read();
         let result_js = JsFuture::from(promise)
             .await
@@ -116,14 +129,20 @@ impl Subscription {
         }
         let value_js = Reflect::get(&result_js, &JsValue::from_str("value"))
             .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read.value: {e:?}")))?;
-        let value = serde_wasm_bindgen::from_value(value_js)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("frame deserialise: {e}")))?;
-        Ok(Some(value))
+        let stringified = js_sys::JSON::stringify(&value_js)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("JSON.stringify: {e:?}")))?;
+        let s = stringified.as_string().ok_or_else(|| {
+            ErrorDetail::new(ErrorKind::Parse, "JSON.stringify yielded non-string")
+        })?;
+        Ok(Some(s))
     }
 
-    /// Cancel the underlying stream. Idempotent — the JS `cancel`
-    /// returns a Promise that we discard.
+    /// Cancel the underlying stream. Safe to call multiple times;
+    /// subsequent calls are no-ops.
     pub fn cancel(&self) {
+        if self.cancelled.replace(true) {
+            return;
+        }
         let _ = self.reader.cancel();
     }
 }

@@ -58,9 +58,6 @@ class Bridge {
     reject: (error: Error) => void;
     kind: "query" | "evaluate";
   }>();
-  // One controller per active subscription, keyed by correlation id.
-  // Populated in the stream's `start`, removed when the stream is
-  // cancelled or the SW reports an error.
   private streamControllers = new Map<
     string,
     ReadableStreamDefaultController<unknown>
