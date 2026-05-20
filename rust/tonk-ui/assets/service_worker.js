@@ -2,8 +2,6 @@ import init, { activate } from "./worker.js";
 
 const log = (...args) => console.log("[Tonk Service Worker]", ...args);
 
-log("script loaded — version: bridge-diag-1");
-
 let tonkServiceWorkerResolves;
 
 async function activateWorker() {
@@ -70,13 +68,11 @@ self.onfetch = event => {
 // worker's `onmessage` stashes the port against the client id and
 // routes per-envelope dispatch from there.
 self.onmessage = event => {
-    log("onmessage received", { data: event.data, hasPort: event.ports?.length > 0 });
     event.waitUntil?.(
         (async () => {
             try {
                 const worker = await activateWorker();
                 await worker.onmessage(event);
-                log("onmessage dispatched to wasm worker");
             } catch (err) {
                 log("onmessage dispatch failed:", err);
             }
