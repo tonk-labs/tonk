@@ -161,14 +161,25 @@ fn body_for(value: Value) -> Body {
 /// `<body>` content; we provide the doctype, the script, and the
 /// `<body>` boundary.
 ///
-/// The script imports the standalone `<tonk-concept>` web-target
-/// build from `/tonk-concept.js`. `init()` instantiates the wasm
-/// module and the bin shim's `main` registers the element in the
+/// The bridge module's top-level installs `globalThis.tonk` and
+/// posts the `hello` handshake to the SW — loading it as a plain
+/// `<script type="module" src>` is enough.
+///
+/// `tonk-concept.js` is a wasm-bindgen web-target build: importing
+/// it merely binds the exports, so we use an inline module to
+/// `await init()`. That instantiates the wasm and runs the bin
+/// shim's `#[wasm_bindgen(main)]`, which calls
+/// `tonk_concept::register()` and defines `<tonk-concept>` in the
 /// iframe's own `customElements` registry — the parent shell's
 /// registration doesn't reach across documents. The path is
 /// exempted from the iframe-branch rewrite in the worker's fetch
 /// router so the request reaches the dist-root asset rather than
 /// a guest entity lookup.
+///
+/// Module-script order matters: bridge.js's `<script>` tag comes
+/// first so `globalThis.tonk` is populated before the
+/// `tonk_concept` element's `connected_callback` runs and reaches
+/// for it.
 fn wrap_html_body(body: &str) -> String {
     format!(
         "<!doctype html>\n\
@@ -176,7 +187,10 @@ fn wrap_html_body(body: &str) -> String {
          <head>\n\
          <meta charset=\"utf-8\">\n\
          <script type=\"module\" src=\"/__tonk/bridge.js\"></script>\n\
-         <script type=\"module\" src=\"/tonk-concept.js\"></script>\n\
+         <script type=\"module\">\n\
+         import init from '/tonk-concept.js';\n\
+         await init();\n\
+         </script>\n\
          </head>\n\
          <body>\n\
          {body}\n\
@@ -333,6 +347,29 @@ mod wrapper_tests {
         assert!(
             bridge_idx < concept_idx,
             "bridge module must be loaded before tonk-concept runtime: {wrapped}",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_invokes_tonk_concept_init() {
+        // The trunk-built `tonk-concept.js` (data-type="worker") only
+        // exports `__wbg_init`/`initSync`; nothing in the file
+        // auto-instantiates the wasm module. A bare
+        // `<script type="module" src="/tonk-concept.js">` therefore
+        // binds the exports but never runs `#[wasm_bindgen(main)]`,
+        // so `tonk_concept::register()` never fires and
+        // `<tonk-concept>` is never defined.
+        //
+        // Guard against that regression by asserting the wrapper
+        // imports the default export and awaits it.
+        let wrapped = wrap_html_body("");
+        assert!(
+            wrapped.contains("import init from '/tonk-concept.js'"),
+            "wrapper must import init from /tonk-concept.js: {wrapped}",
+        );
+        assert!(
+            wrapped.contains("await init()"),
+            "wrapper must await init() to instantiate wasm: {wrapped}",
         );
     }
 }
