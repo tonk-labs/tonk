@@ -40,7 +40,9 @@ use dialog_query::{
 };
 use serde_json::Value as Json;
 use tonk_notation::parse;
-use tonk_schema::evaluate::{self, EvaluateResponse, QueryMatchBlock};
+use tonk_schema::evaluate::{QueryMatchBlock, TransactionEvaluateExt};
+
+use crate::output::EvaluateResponse;
 
 use crate::site::SlideSite;
 
@@ -409,10 +411,23 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
                 .collect::<Vec<_>>()
         ));
     }
-    let outcome = evaluate::run(&syntax, &site.branch, &site.operator, true)
+    let revision = site.branch.revision();
+    let evaluated = site
+        .branch
+        .transaction()
+        .evaluate(&syntax)
+        .perform(&site.branch, &site.operator)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
-    Ok(outcome.response)
+    // schema-internal docs are pure-query; the chain didn't
+    // commit, so before == after.
+    Ok(EvaluateResponse {
+        revision_before: revision.clone(),
+        revision_after: revision,
+        matches_before: evaluated.matches.clone(),
+        matches_after: evaluated.matches,
+        commits: evaluated.commits,
+    })
 }
 
 /// Extract the matches block whose source-expression head label

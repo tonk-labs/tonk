@@ -1,26 +1,44 @@
-//! Shared analyze → query → plan → commit driver for asserted-notation.
+//! Shared analyze → query → mutation pipeline for asserted-notation.
 //!
-//! Both the worker's `POST /evaluate` route and the slide CLI run the
-//! same pipeline against an open dialog branch:
+//! The public surface is [`TransactionEvaluateExt::evaluate`], which
+//! returns an [`Evaluate`] chain (mirroring dialog's
+//! `Branch::commit(...)` pattern). Callers reach the post-mutation
+//! transaction via `.perform(branch, env).await`:
 //!
-//! 1. Analyze the parsed [`Syntax`] into an [`Analysis`].
-//! 2. Run each query expression as an `Application`; hash-join their
-//!    frames on shared user-named variables.
-//! 3. For each joined frame, plan every mutation `Statement` against
-//!    `analysis.variables ∪ frame`.
-//! 4. Commit the assert/retract pairs to the branch.
-//! 5. Re-run the queries against post-commit state so the response
-//!    carries before/after match views.
+//! ```ignore
+//! use tonk_schema::evaluate::TransactionEvaluateExt;
 //!
-//! Callers wrap the returned [`EvaluateOutcome`] with whatever
-//! envelope they need: the worker emits `Json(response)` and triggers
-//! a subscription re-poll when `committed`; slide renders the
-//! response as YAML or JSON.
+//! let evaluated = branch.transaction()
+//!     .evaluate(&syntax)
+//!     .perform(&branch, env).await?;
+//! // evaluated.txn — overlay reflects pending mutations
+//! // evaluated.transients — bucket to hand to `induce`
+//! // evaluated.matches — pre-mutation per-expression match blocks
+//! // evaluated.commits — claim count + entity bindings for the response envelope
+//! // evaluated.analysis — re-run queries against the overlay to get post-mutation matches
+//! ```
+//!
+//! [`Evaluated::commit`] is a shortcut that chains `induce` and the
+//! durable commit:
+//!
+//! ```ignore
+//! let result = branch.transaction()
+//!     .evaluate(&syntax)
+//!     .perform(&branch, env).await?
+//!     .commit()
+//!     .perform(&branch, env).await?;
+//! // result.revision, result.matches_after, ...
+//! ```
+//!
+//! Pre-existing helpers (per-expression query, natural join, match
+//! rendering) stay inside this module — they're called both during
+//! `Evaluate::perform` (for `matches_before`) and by
+//! [`EvaluatedCommit::perform`] (for `matches_after` after commit).
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use dialog_artifacts::{Entity, Value};
+use dialog_artifacts::{Changes, Entity, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -28,7 +46,7 @@ use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, RemoteSite, Revision};
+use dialog_repository::{Branch, RemoteSite, Revision, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -44,33 +62,6 @@ use crate::transact::{
 // ---------------------------------------------------------------- //
 // Public response types                                            //
 // ---------------------------------------------------------------- //
-
-/// Full result of [`run`] — the on-the-wire shape the worker
-/// returns and the structured shape slide consumes.
-///
-/// Carries the branch revision before and after the commit (one
-/// before/after pair — every match's mutations land in the same
-/// dialog transaction), the per-source-expression query matches
-/// in both pre- and post-commit shape, and a commit summary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EvaluateResponse {
-    /// Revision of the branch before the commit, if any. `None`
-    /// when the branch had no prior commits.
-    pub revision_before: Option<Revision>,
-    /// Revision of the branch after the commit. Same as
-    /// `revision_before` when the document carried no mutations.
-    pub revision_after: Option<Revision>,
-    /// Per-source-expression query matches as they looked
-    /// *before* the commit. Same shape as `matches_after`. For
-    /// pure-query documents this equals `matches_after`.
-    pub matches_before: Vec<QueryMatchBlock>,
-    /// Per-source-expression query matches as they look *after*
-    /// the commit — what the user just produced.
-    pub matches_after: Vec<QueryMatchBlock>,
-    /// Commit summary — number of EAV claims written/retracted
-    /// and the entities the commit touched.
-    pub commits: CommitSummary,
-}
 
 /// Matches for one source-expression query, projected back into
 /// the user's view.
@@ -102,26 +93,13 @@ pub struct CommitSummary {
     pub entities: BTreeMap<String, String>,
 }
 
-/// What [`run`] returns — the response plus a flag the caller can
-/// use to decide whether downstream side-effects (e.g. the
-/// worker's subscription re-poll) need to fire.
-#[derive(Debug, Clone)]
-pub struct EvaluateOutcome {
-    /// Response payload.
-    pub response: EvaluateResponse,
-    /// `true` iff a dialog commit was attempted (i.e. the
-    /// document carried at least one mutation `Statement`). The
-    /// worker uses this to decide whether to re-poll branch
-    /// subscriptions.
-    pub committed: bool,
-}
-
 // ---------------------------------------------------------------- //
 // Errors                                                           //
 // ---------------------------------------------------------------- //
 
-/// Failure modes for [`run`]. Callers map these onto whatever
-/// envelope they expose (HTTP status, CLI exit code).
+/// Failure modes for [`Evaluate::perform`]. Callers map these
+/// onto whatever envelope they expose (HTTP status, CLI exit
+/// code).
 #[derive(Debug, Error)]
 pub enum EvaluateError {
     /// The analyzer rejected the document (unknown name, type
@@ -140,9 +118,6 @@ pub enum EvaluateError {
     /// failed (a referenced `?var` isn't bound).
     #[error("{0}")]
     Plan(String),
-    /// The dialog commit itself failed.
-    #[error("{0}")]
-    Commit(String),
 }
 
 // ---------------------------------------------------------------- //
@@ -388,177 +363,242 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
 }
 
 // ---------------------------------------------------------------- //
-// Public entry point                                               //
+// Public entry point — txn.evaluate(syntax).perform(branch, env)   //
 // ---------------------------------------------------------------- //
 
-/// Drive analyze → query → plan → commit → re-query against an
-/// open dialog branch. Captures the branch revision before and
-/// after the commit so the response carries a snapshot pair.
-///
-/// `transact` controls whether mutation statements actually
-/// commit. With `transact = false` the planner runs (so
-/// plan-time errors still surface) but the dialog transaction
-/// is dropped instead of committed — used by the editor's
-/// auto-evaluate to project what *would* happen after a
-/// keystroke without applying it.
-///
-/// Caller is responsible for parsing the source text into
-/// [`Syntax`] (callers want different parse-diagnostic surfaces
-/// — HTTP 400 body vs. CLI `<source>:<line>:<col>:` lines — and
-/// each owns its own surfacing logic).
-pub async fn run<Env: EvaluateEnv>(
-    syntax: &Syntax,
-    branch: &Branch,
-    env: &Env,
-    transact: bool,
-) -> Result<EvaluateOutcome, EvaluateError> {
-    let resolver = BranchResolver { branch, env };
-    let analysis = analyzer::analyze(syntax, &resolver)
-        .await
-        .map_err(EvaluateError::Analyze)?;
-
-    let revision_before = branch.revision();
-    let (response, committed) = run_pipeline(&analysis, branch, env, transact).await?;
-    let revision_after = branch.revision();
-
-    Ok(EvaluateOutcome {
-        response: EvaluateResponse {
-            revision_before,
-            revision_after,
-            ..response
-        },
-        committed,
-    })
+/// Extension trait that adds [`Self::evaluate`] to dialog's
+/// [`Transaction`]. Imported at call sites to use the chain.
+pub trait TransactionEvaluateExt<'a> {
+    /// Stage an evaluation of `syntax` against this transaction.
+    /// Returns a chain handle; call `.perform(branch, env)` to
+    /// execute.
+    fn evaluate<'s>(self, syntax: &'s Syntax) -> Evaluate<'a, 's>;
 }
 
-// ---------------------------------------------------------------- //
-// Pipeline                                                         //
-// ---------------------------------------------------------------- //
-
-/// Drive the analyze → run → plan → commit pipeline. Returns the
-/// matches + commit summary plus a `committed` flag (true iff a
-/// dialog commit was attempted); the caller fills in the
-/// before/after revisions.
-async fn run_pipeline<Env: EvaluateEnv>(
-    analysis: &Analysis,
-    branch: &Branch,
-    env: &Env,
-    transact: bool,
-) -> Result<(EvaluateResponse, bool), EvaluateError> {
-    // ---- Build base bindings frame from analysis-derived vars ----
-    let mut base = Parameters::new();
-    for (name, entity) in &analysis.variables {
-        base.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
+impl<'a> TransactionEvaluateExt<'a> for Transaction<'a> {
+    fn evaluate<'s>(self, syntax: &'s Syntax) -> Evaluate<'a, 's> {
+        Evaluate { txn: self, syntax }
     }
+}
 
-    // ---- Per-expression queries + post-join ----
-    // Each expression runs its own ConceptQuery. The driver
-    // hash-joins their frames on shared user-named variables so
-    // disjoint expressions cross-product (independent results)
-    // and connected expressions equi-join (filtered intersection).
-    //
-    // Disjoint queries used to fail because a single unified
-    // ConceptQuery has only one `this` slot; merging two
-    // expressions collapsed both entities into one.
-    let pre_results = match &analysis.query {
-        Some(q) => Some(run_query(q, branch, env).await?),
-        None => None,
-    };
-    let pre_matches: Vec<Parameters> = match &pre_results {
-        Some(r) if !r.joined.is_empty() => r.joined.clone(),
-        _ => vec![Parameters::new()],
-    };
+/// Chain handle for an evaluation. Holds the transaction and
+/// syntax until `.perform(branch, env)` consumes them.
+pub struct Evaluate<'a, 's> {
+    txn: Transaction<'a>,
+    syntax: &'s Syntax,
+}
 
-    // ---- Plan + commit each mutation per match frame ----
-    let mut commits = CommitSummary::default();
-    for (key, entity) in &analysis.declarations {
-        commits.entities.insert(key.clone(), entity.to_string());
-    }
-    for (key, entity) in &analysis.variables {
-        commits
-            .entities
-            .insert(format!("?{key}"), entity.to_string());
-    }
-    // We only build a transaction at all when there are
-    // mutation statements *and* the caller wants them
-    // committed. `committed` reports whether a commit was
-    // actually attempted — `transact = false` callers (the
-    // editor's auto-evaluate) get the rendered matches without
-    // any branch state change.
-    let committed = transact && !analysis.mutate.statements.is_empty();
-    if committed {
-        let mut tx = branch.transaction();
+impl<'a, 's> Evaluate<'a, 's> {
+    /// Analyze the syntax, run pre-mutation queries, plan every
+    /// mutation `Statement` per match frame, and apply the
+    /// resulting claims to `self.txn`. The transaction is
+    /// returned in [`Evaluated::txn`] with mutations baked into
+    /// its overlay — caller commits, runs `induce`, or drops as
+    /// they see fit.
+    ///
+    /// `branch` is required for analyzer introspection lookups
+    /// and pre-mutation query reads — the same branch the
+    /// transaction is open against. Passing it explicitly until
+    /// dialog exposes a `Transaction::branch()` accessor.
+    pub async fn perform<Env: EvaluateEnv>(
+        self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<Evaluated<'a>, EvaluateError> {
+        let Evaluate { mut txn, syntax } = self;
+
+        let resolver = BranchResolver { branch, env };
+        let analysis = analyzer::analyze(syntax, &resolver)
+            .await
+            .map_err(EvaluateError::Analyze)?;
+
+        // ---- Build base bindings frame from analysis-derived vars ----
+        let mut base = Parameters::new();
+        for (name, entity) in &analysis.variables {
+            base.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
+        }
+
+        // ---- Per-expression queries + post-join ----
+        let pre_results = match &analysis.query {
+            Some(q) => Some(run_query(q, branch, env).await?),
+            None => None,
+        };
+        let pre_matches: Vec<Parameters> = match &pre_results {
+            Some(r) if !r.joined.is_empty() => r.joined.clone(),
+            _ => vec![Parameters::new()],
+        };
+
+        // ---- Commit-summary seed: published declarations + analysis variables ----
+        let mut commits = CommitSummary::default();
+        for (key, entity) in &analysis.declarations {
+            commits.entities.insert(key.clone(), entity.to_string());
+        }
+        for (key, entity) in &analysis.variables {
+            commits
+                .entities
+                .insert(format!("?{key}"), entity.to_string());
+        }
+
+        // ---- Plan + apply mutations to the caller's transaction ----
         let mut claim_count = 0usize;
         // Retraction targets resolved by querying the branch
-        // *before* the transaction commits — collected here and
-        // tx.retract'd in one shot below so we don't interleave
-        // queries with transaction building.
+        // up-front so we don't interleave reads with mutation
+        // accumulation against the transaction.
         let mut retract_claims: Vec<RawClaim> = Vec::new();
-        for match_frame in &pre_matches {
-            let mut frame = base.clone();
-            for (k, v) in match_frame.iter() {
-                frame.insert(k.clone(), v.clone());
-            }
-            for statement in &analysis.mutate.statements {
-                let plan = statement
-                    .application()
-                    .clone()
-                    .plan(&frame)
-                    .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
-                match statement {
-                    Statement::Assert(_) => {
-                        claim_count += count_emitted_claims(&plan);
-                        tx = tx.assert(plan);
-                    }
-                    Statement::Retract(_) => {
-                        // Resolve blank fields by querying the
-                        // branch for their current values, then
-                        // dissociate each match.
-                        let resolved = resolve_retraction_targets(plan, branch, env).await?;
-                        claim_count += resolved.len();
-                        retract_claims.extend(resolved);
+        if !analysis.mutate.statements.is_empty() {
+            for match_frame in &pre_matches {
+                let mut frame = base.clone();
+                for (k, v) in match_frame.iter() {
+                    frame.insert(k.clone(), v.clone());
+                }
+                for statement in &analysis.mutate.statements {
+                    let plan = statement
+                        .application()
+                        .clone()
+                        .plan(&frame)
+                        .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
+                    match statement {
+                        Statement::Assert(_) => {
+                            claim_count += count_emitted_claims(&plan);
+                            txn = txn.assert(plan);
+                        }
+                        Statement::Retract(_) => {
+                            let resolved = resolve_retraction_targets(plan, branch, env).await?;
+                            claim_count += resolved.len();
+                            retract_claims.extend(resolved);
+                        }
                     }
                 }
             }
+            for claim in retract_claims {
+                txn = txn.retract(claim);
+            }
         }
-        for claim in retract_claims {
-            tx = tx.retract(claim);
-        }
-        tx.commit()
+        commits.claims = claim_count;
+
+        let matches = render_match_blocks(&analysis, pre_results.as_ref());
+
+        Ok(Evaluated {
+            txn,
+            transients: Changes::new(),
+            matches,
+            commits,
+            analysis,
+        })
+    }
+}
+
+/// Result of [`Evaluate::perform`].
+///
+/// The transaction's overlay reflects every mutation the
+/// document carried; querying `txn.query()` sees the
+/// post-mutation state. To run effects + commit, call
+/// [`Self::commit`].
+pub struct Evaluated<'a> {
+    /// Transaction with mutations applied to its overlay.
+    pub txn: Transaction<'a>,
+    /// Transient claims the document asserted. Hand to
+    /// [`crate::effects::TransactionExt::induce`].
+    ///
+    /// V1 skeleton: always empty — transient classification
+    /// flows through the `tonk-schema::mutation` typed path
+    /// (`/transact` route), and the asserted-notation path
+    /// will plumb it through once the analyzer surfaces the
+    /// concept's transient flag per statement.
+    pub transients: Changes,
+    /// Pre-mutation per-source-expression match blocks. For
+    /// post-mutation matches, re-run the analyzer's queries
+    /// against `txn.query()` using the analysis carried below.
+    pub matches: Vec<QueryMatchBlock>,
+    /// Commit-side summary — claim count + entity bindings
+    /// surfaced to response envelopes.
+    pub commits: CommitSummary,
+    /// The analyzer's output. Callers re-run its queries
+    /// against the transaction overlay (or the post-commit
+    /// branch) to compute post-mutation matches.
+    pub analysis: Analysis,
+}
+
+impl<'a> Evaluated<'a> {
+    /// Shortcut: run effects (via `induce`) and commit the
+    /// transaction. Re-queries the branch post-commit so the
+    /// returned [`EvaluateResult`] carries both `matches_before`
+    /// (from `self.matches`) and `matches_after`.
+    pub fn commit(self) -> EvaluatedCommit<'a> {
+        EvaluatedCommit { evaluated: self }
+    }
+}
+
+/// Chain handle for committing an [`Evaluated`].
+pub struct EvaluatedCommit<'a> {
+    evaluated: Evaluated<'a>,
+}
+
+impl<'a> EvaluatedCommit<'a> {
+    /// Run `induce` against the transaction, commit, and
+    /// re-query the post-commit branch state for
+    /// `matches_after`.
+    pub async fn perform<Env: EvaluateEnv>(
+        self,
+        branch: &Branch,
+        env: &Env,
+    ) -> Result<EvaluateResult, EvaluateError> {
+        use crate::effects::TransactionExt as _;
+
+        let Evaluated {
+            txn,
+            transients,
+            matches: matches_before,
+            commits,
+            analysis,
+        } = self.evaluated;
+
+        let txn = txn
+            .induce(transients)
             .perform(env)
             .await
-            .map_err(|e| EvaluateError::Commit(format!("commit failed: {e}")))?;
-        commits.claims = claim_count;
-    }
+            .map_err(|e| EvaluateError::Query(format!("induce failed: {e}")))?;
+        let revision = txn
+            .commit()
+            .perform(env)
+            .await
+            .map_err(|e| EvaluateError::Query(format!("commit failed: {e}")))?;
 
-    // Render the pre-commit matches now (before we run the
-    // post-commit query) so the response carries both shapes
-    // and the editor can show a before/after comparison.
-    let matches_before = render_match_blocks(analysis, pre_results.as_ref());
-
-    // ---- Re-run per-expression queries against post-commit state ----
-    // For pure-query documents the post-state equals the
-    // pre-state, so reuse `pre_results` to skip the round-trip.
-    let post_results = if analysis.mutate.statements.is_empty() {
-        pre_results
-    } else {
-        match &analysis.query {
+        // Post-commit re-query for matches_after. For
+        // pure-mutation docs (no `analysis.query`), the after
+        // block is empty.
+        let post_results = match &analysis.query {
             Some(q) => Some(run_query(q, branch, env).await?),
-            None => pre_results,
-        }
-    };
-    let matches_after = render_match_blocks(analysis, post_results.as_ref());
+            None => None,
+        };
+        let matches_after = render_match_blocks(&analysis, post_results.as_ref());
 
-    Ok((
-        EvaluateResponse {
-            revision_before: None,
-            revision_after: None,
+        Ok(EvaluateResult {
+            revision,
             matches_before,
             matches_after,
             commits,
-        },
-        committed,
-    ))
+            analysis,
+        })
+    }
+}
+
+/// Result of [`EvaluatedCommit::perform`] — the durable
+/// revision plus both before/after match views and the
+/// analyzer's output.
+pub struct EvaluateResult {
+    /// Durable revision the commit produced.
+    pub revision: Revision,
+    /// Pre-mutation per-source-expression matches.
+    pub matches_before: Vec<QueryMatchBlock>,
+    /// Post-commit per-source-expression matches — the user's
+    /// view of what's now in the branch.
+    pub matches_after: Vec<QueryMatchBlock>,
+    /// Commit-side summary.
+    pub commits: CommitSummary,
+    /// The analyzer's output, in case the caller wants further
+    /// queries against the analysis.
+    pub analysis: Analysis,
 }
 
 /// Per-expression query results plus the joined frames for

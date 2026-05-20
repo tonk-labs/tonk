@@ -7,12 +7,41 @@
 //! emitted as a YAML mapping prefix and the matches as
 //! per-expression query expressions, separated by `---` YAML
 //! document markers.
+//!
+//! [`EvaluateResponse`] is slide's own copy of the JSON wire
+//! shape the worker's `/evaluate` route returns. The two are
+//! byte-compatible: slide's `-f json` output is the same JSON a
+//! browser client would see from the HTTP route. Defined here
+//! rather than imported so slide doesn't depend on the worker
+//! crate.
 
 use std::fmt::Write as _;
 
 use anyhow::{Context, Result};
-use serde::Serialize;
-use tonk_schema::evaluate::{EvaluateResponse, QueryMatchBlock, QueryResult};
+use dialog_repository::Revision;
+use serde::{Deserialize, Serialize};
+use tonk_schema::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+
+/// JSON wire shape returned by both slide and the worker's
+/// `/evaluate` route. Slide owns its own copy so the JSON
+/// contract stays where it's consumed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluateResponse {
+    /// Revision of the branch before the commit, if any.
+    pub revision_before: Option<Revision>,
+    /// Revision of the branch after the commit. Equal to
+    /// `revision_before` when nothing committed.
+    pub revision_after: Option<Revision>,
+    /// Per-source-expression query matches as they looked
+    /// *before* the commit.
+    pub matches_before: Vec<QueryMatchBlock>,
+    /// Per-source-expression query matches as they look *after*
+    /// the commit.
+    pub matches_after: Vec<QueryMatchBlock>,
+    /// Commit summary — number of EAV claims plus entities the
+    /// document touched.
+    pub commits: CommitSummary,
+}
 
 /// Output format selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,7 +209,7 @@ fn quote_string(s: &str) -> String {
 struct QuietJson<'a> {
     revision_before: Option<&'a dialog_repository::Revision>,
     revision_after: Option<&'a dialog_repository::Revision>,
-    commits: &'a tonk_schema::evaluate::CommitSummary,
+    commits: &'a CommitSummary,
 }
 
 fn render_json(response: &EvaluateResponse, quiet: bool) -> Result<String> {
@@ -199,7 +228,7 @@ fn render_json(response: &EvaluateResponse, quiet: bool) -> Result<String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tonk_schema::evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
+    use tonk_schema::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
 
     use super::*;
 

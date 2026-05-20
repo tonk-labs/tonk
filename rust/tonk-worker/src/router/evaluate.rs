@@ -1,12 +1,15 @@
 //! Evaluate route — accepts an asserted-notation document and
-//! drives the unified analyze → query → plan → commit pipeline.
+//! drives the analyze → query → mutation pipeline against the
+//! branch.
 //!
-//! Implementation lives in [`tonk_schema::evaluate`]; this module
-//! is the axum adapter: parse the body, surface parse diagnostics
-//! as 400s, acquire the cached branch via the reactor (so the
-//! handle is reused across requests), call
-//! [`tonk_schema::evaluate::run`], then re-poll subscriptions when
-//! the document committed.
+//! The actual analyze + plan logic lives in
+//! [`tonk_schema::evaluate`] behind the
+//! [`TransactionEvaluateExt::evaluate`] chain. This module is
+//! the axum adapter: parse the body, surface parse diagnostics
+//! as 400s, acquire the cached branch via the reactor, drive
+//! the chain, and assemble the JSON response. Subscription
+//! polling fires after a successful commit so SSE subscribers
+//! see the new state.
 
 use ::axum::{
     Json,
@@ -15,17 +18,45 @@ use ::axum::{
     http::HeaderMap,
 };
 use axum_wasm_macros::wasm_compat;
-use serde::Deserialize;
+use dialog_repository::Revision;
+use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_notation::{Parsed, Syntax, parse};
-use tonk_schema::evaluate::{self, EvaluateError};
+use tonk_schema::evaluate::{EvaluateError, TransactionEvaluateExt};
 
 use super::AppState;
 use crate::TonkWorkerError;
 
-pub use tonk_schema::evaluate::{CommitSummary, EvaluateResponse, QueryMatchBlock, QueryResult};
+// Re-export the response and match types so router consumers
+// (router.rs, browser clients via wasm-bindgen) name them
+// through this module rather than reaching into tonk-schema.
+pub use tonk_schema::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+
+/// Wire-shape returned by `/evaluate`. Local to the worker so
+/// the JSON contract is owned at the HTTP boundary, not in the
+/// shared evaluator. Slide owns its own copy of this shape
+/// (`slide::output`) so its `-f json` output stays byte-compatible
+/// with the HTTP body.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EvaluateResponse {
+    /// Revision of the branch before the commit, if any.
+    pub revision_before: Option<Revision>,
+    /// Revision of the branch after the commit. Equal to
+    /// `revision_before` when the document didn't commit.
+    pub revision_after: Option<Revision>,
+    /// Per-source-expression query matches as they looked
+    /// *before* the commit.
+    pub matches_before: Vec<QueryMatchBlock>,
+    /// Per-source-expression query matches as they look *after*
+    /// the commit. For pure-query / dry-run docs this equals
+    /// `matches_before`.
+    pub matches_after: Vec<QueryMatchBlock>,
+    /// Commit summary — number of EAV claims plus entities the
+    /// document touched.
+    pub commits: CommitSummary,
+}
 
 /// Path parameters for the evaluate route.
 #[derive(Debug, Deserialize)]
@@ -146,32 +177,51 @@ async fn evaluate_on_branch<'a>(
 
     log!("Evaluating {} expression(s)", syntax.expressions.len());
 
-    // Acquire the cached branch via the reactor so the same
-    // handle is reused across requests and subscription polling
-    // sees commits emitted by the shared evaluator below.
     let session = tonk_branch
         .acquire(&tonk_state.operator)
         .await
         .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+    let branch = session.handle();
+    let revision_before = branch.revision();
 
-    let outcome = evaluate::run(
-        &syntax,
-        session.handle(),
-        &tonk_state.operator,
-        query.transact,
-    )
-    .await
-    .map_err(map_evaluate_error)?;
+    let evaluated = branch
+        .transaction()
+        .evaluate(&syntax)
+        .perform(branch, &tonk_state.operator)
+        .await
+        .map_err(map_evaluate_error)?;
 
-    // Subscriptions on this branch only need re-polling when the
-    // document committed — pure-query docs leave branch state
-    // unchanged, so existing subscribers' results couldn't have
-    // changed.
-    if outcome.committed {
+    let response = if query.transact && !evaluated.analysis.mutate.statements.is_empty() {
+        let result = evaluated
+            .commit()
+            .perform(branch, &tonk_state.operator)
+            .await
+            .map_err(map_evaluate_error)?;
+        // Re-poll subscriptions so SSE clients see the new state.
+        // The chain commits via dialog directly; the reactor's
+        // subscription registry is the worker's responsibility.
         session.poll(&tonk_state.operator).await;
-    }
+        EvaluateResponse {
+            revision_before,
+            revision_after: Some(result.revision),
+            matches_before: result.matches_before,
+            matches_after: result.matches_after,
+            commits: result.commits,
+        }
+    } else {
+        // Pure-query or dry-run: drop the transaction without
+        // committing. The pre-mutation matches double as "after"
+        // because no mutations actually landed.
+        EvaluateResponse {
+            revision_before: revision_before.clone(),
+            revision_after: revision_before,
+            matches_before: evaluated.matches.clone(),
+            matches_after: evaluated.matches,
+            commits: evaluated.commits,
+        }
+    };
 
-    Ok(Json(outcome.response))
+    Ok(Json(response))
 }
 
 /// Project [`Parsed`] onto a successful syntax or a 400 error
@@ -208,8 +258,8 @@ fn surface_parse_diagnostics(parsed: Parsed) -> Result<Syntax, TonkWorkerError> 
 }
 
 /// Map shared-evaluator errors onto worker-level HTTP failures.
-/// Analyze-time failures are the user's fault (400); query, plan,
-/// and commit failures are internal (500).
+/// Analyze-time failures are the user's fault (400); query and
+/// plan failures are internal (500).
 fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
     match error {
         EvaluateError::Analyze(analyze_error) => {
@@ -223,10 +273,6 @@ fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
         EvaluateError::Query(message) => TonkWorkerError::Internal(message),
         EvaluateError::Plan(message) => {
             TonkWorkerError::Internal(format!("plan failed: {message}"))
-        }
-        EvaluateError::Commit(message) => {
-            log!("Transaction commit failed: {message}");
-            TonkWorkerError::Internal(message)
         }
     }
 }
