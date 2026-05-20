@@ -13,6 +13,12 @@
 // All envelopes carry a correlation `id` so the same port can multiplex
 // many in-flight queries / subscriptions without ordering assumptions.
 //
+// `subscribe` returns a `ReadableStream<unknown>` whose chunks are the
+// `rows` payloads of `subscribe-event` envelopes. The stream's
+// `cancel` posts an `unsubscribe` envelope, so dropping/cancelling
+// the stream is the only teardown surface — no separate unsubscribe
+// function is exposed.
+//
 // Each public method internally awaits `this.ready` before posting, so
 // authors call `tonk.query(...)` / `tonk.subscribe(...)` directly from
 // a `<script type="module">` without writing handshake boilerplate.
@@ -52,10 +58,13 @@ class Bridge {
     reject: (error: Error) => void;
     kind: "query" | "evaluate";
   }>();
-  private pendingStream = new Map<string, {
-    onFrame: (rows: unknown) => void;
-    onError?: (message: string) => void;
-  }>();
+  // One controller per active subscription, keyed by correlation id.
+  // Populated in the stream's `start`, removed when the stream is
+  // cancelled or the SW reports an error.
+  private streamControllers = new Map<
+    string,
+    ReadableStreamDefaultController<unknown>
+  >();
   private resolveReady!: () => void;
   private rejectReady!: (err: Error) => void;
   ready: Promise<void>;
@@ -95,43 +104,25 @@ class Bridge {
     });
   }
 
-  subscribe(
-    body: unknown,
-    onFrame: (rows: unknown) => void,
-    onError?: (message: string) => void,
-  ): () => void {
+  async subscribe(body: unknown): Promise<ReadableStream<unknown>> {
+    await this.ready;
     const id = this.mintId();
-    this.pendingStream.set(id, { onFrame, onError });
-    this.ready.then(
-      () => {
-        // Cancelled before ready resolved — skip the send entirely.
-        if (this.pendingStream.has(id)) {
-          this.port.postMessage({ v: 1, type: "subscribe", id, body } satisfies SubscribeEnvelope);
-        }
+    const port = this.port;
+    const controllers = this.streamControllers;
+    return new ReadableStream<unknown>({
+      start(controller) {
+        controllers.set(id, controller);
+        port.postMessage(
+          { v: 1, type: "subscribe", id, body } satisfies SubscribeEnvelope,
+        );
       },
-      (err: Error) => {
-        // Bridge never came up. Surface to the caller's onError so a
-        // failed subscribe looks like every other reportable failure
-        // instead of silently dropping.
-        if (this.pendingStream.delete(id)) {
-          const message = err.message ?? String(err);
-          if (onError) onError(message);
-          else console.error("[tonk] subscribe failed:", message);
-        }
+      cancel() {
+        controllers.delete(id);
+        port.postMessage(
+          { v: 1, type: "unsubscribe", id } satisfies UnsubscribeEnvelope,
+        );
       },
-    );
-    return () => {
-      if (!this.pendingStream.delete(id)) return;
-      // If the subscribe envelope never went out (cancelled before
-      // ready), the SW will treat unsubscribe-for-unknown-id as a
-      // no-op — see router::bridge::handle_unsubscribe.
-      this.ready.then(
-        () => {
-          this.port.postMessage({ v: 1, type: "unsubscribe", id } satisfies UnsubscribeEnvelope);
-        },
-        () => { /* bridge never came up — nothing to unsubscribe */ },
-      );
-    };
+    });
   }
 
   async evaluate(body: string, transact = true): Promise<unknown> {
@@ -183,30 +174,26 @@ class Bridge {
         return;
       }
       case "subscribe-event": {
-        const handler = this.pendingStream.get(envelope.id);
-        if (!handler) {
-          // Late frame after unsubscribe; drop silently.
+        const controller = this.streamControllers.get(envelope.id);
+        if (!controller) {
+          // Late frame after cancel/error; drop silently.
           return;
         }
         try {
-          handler.onFrame(envelope.rows);
+          controller.enqueue(envelope.rows);
         } catch (e) {
-          console.error("[tonk] subscribe frame handler threw", e);
+          // enqueue throws if the stream is already closed/errored —
+          // drop the controller so subsequent frames are ignored.
+          this.streamControllers.delete(envelope.id);
+          console.error("[tonk] subscribe enqueue failed", e);
         }
         return;
       }
       case "subscribe-error": {
-        const handler = this.pendingStream.get(envelope.id);
-        if (!handler) return;
-        if (handler.onError) {
-          try {
-            handler.onError(envelope.error);
-          } catch (e) {
-            console.error("[tonk] subscribe error handler threw", e);
-          }
-        } else {
-          console.error("[tonk] subscribe error", envelope.error);
-        }
+        const controller = this.streamControllers.get(envelope.id);
+        if (!controller) return;
+        this.streamControllers.delete(envelope.id);
+        controller.error(new Error(envelope.error));
         return;
       }
     }

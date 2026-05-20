@@ -3,7 +3,10 @@ var Bridge = class {
   port;
   nextId = 0;
   pendingOnce = /* @__PURE__ */ new Map();
-  pendingStream = /* @__PURE__ */ new Map();
+  // One controller per active subscription, keyed by correlation id.
+  // Populated in the stream's `start`, removed when the stream is
+  // cancelled or the SW reports an error.
+  streamControllers = /* @__PURE__ */ new Map();
   resolveReady;
   rejectReady;
   ready;
@@ -35,32 +38,25 @@ var Bridge = class {
       this.port.postMessage({ v: 1, type: "query", id, body });
     });
   }
-  subscribe(body, onFrame, onError) {
+  async subscribe(body) {
+    await this.ready;
     const id = this.mintId();
-    this.pendingStream.set(id, { onFrame, onError });
-    this.ready.then(
-      () => {
-        if (this.pendingStream.has(id)) {
-          this.port.postMessage({ v: 1, type: "subscribe", id, body });
-        }
+    const port = this.port;
+    const controllers = this.streamControllers;
+    return new ReadableStream({
+      start(controller) {
+        controllers.set(id, controller);
+        port.postMessage(
+          { v: 1, type: "subscribe", id, body }
+        );
       },
-      (err) => {
-        if (this.pendingStream.delete(id)) {
-          const message = err.message ?? String(err);
-          if (onError) onError(message);
-          else console.error("[tonk] subscribe failed:", message);
-        }
+      cancel() {
+        controllers.delete(id);
+        port.postMessage(
+          { v: 1, type: "unsubscribe", id }
+        );
       }
-    );
-    return () => {
-      if (!this.pendingStream.delete(id)) return;
-      this.ready.then(
-        () => {
-          this.port.postMessage({ v: 1, type: "unsubscribe", id });
-        },
-        () => {}
-      );
-    };
+    });
   }
   async evaluate(body, transact = true) {
     await this.ready;
@@ -109,29 +105,23 @@ var Bridge = class {
         return;
       }
       case "subscribe-event": {
-        const handler = this.pendingStream.get(envelope.id);
-        if (!handler) {
+        const controller = this.streamControllers.get(envelope.id);
+        if (!controller) {
           return;
         }
         try {
-          handler.onFrame(envelope.rows);
+          controller.enqueue(envelope.rows);
         } catch (e) {
-          console.error("[tonk] subscribe frame handler threw", e);
+          this.streamControllers.delete(envelope.id);
+          console.error("[tonk] subscribe enqueue failed", e);
         }
         return;
       }
       case "subscribe-error": {
-        const handler = this.pendingStream.get(envelope.id);
-        if (!handler) return;
-        if (handler.onError) {
-          try {
-            handler.onError(envelope.error);
-          } catch (e) {
-            console.error("[tonk] subscribe error handler threw", e);
-          }
-        } else {
-          console.error("[tonk] subscribe error", envelope.error);
-        }
+        const controller = this.streamControllers.get(envelope.id);
+        if (!controller) return;
+        this.streamControllers.delete(envelope.id);
+        controller.error(new Error(envelope.error));
         return;
       }
     }

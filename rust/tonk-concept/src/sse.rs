@@ -3,7 +3,9 @@
 //!
 //! When `globalThis.tonk` is present (the iframe shell has loaded
 //! `bridge.js`) the bridge path is used: `globalThis.tonk.subscribe`
-//! routes every data request over postMessage to the service worker.
+//! returns a `ReadableStream` whose chunks are routed to the
+//! caller's `on_frame` callback by a pump spawned in
+//! `wasm_bindgen_futures::spawn_local`.
 //!
 //! When `globalThis.tonk` is absent (the shell mounts these elements
 //! directly in its own DOM, outside any iframe) the legacy
@@ -15,7 +17,7 @@ use std::rc::Rc;
 
 use web_sys::AbortController;
 
-use crate::bridge::{SubscribeHandle, subscribe};
+use crate::bridge::{Subscription, subscribe};
 use crate::error::{ErrorDetail, ErrorKind};
 
 /// Transport handle returned by [`open_sse`].
@@ -23,8 +25,10 @@ use crate::error::{ErrorDetail, ErrorKind};
 /// Dropping this value cancels the subscription regardless of which
 /// transport is active.
 pub enum SubscriptionAbort {
-    /// Bridge path — `Drop` calls the bridge's unsubscribe function.
-    Bridge(SubscribeHandle),
+    /// Bridge path — `Drop` cancels the underlying `ReadableStream`,
+    /// which posts an `unsubscribe` envelope to the SW. The pump
+    /// task's pending `read()` resolves with `done=true` and exits.
+    Bridge(Rc<Subscription>),
     /// Fetch/SSE path — `Drop` calls `AbortController::abort()`.
     Fetch(AbortController),
 }
@@ -32,12 +36,8 @@ pub enum SubscriptionAbort {
 impl Drop for SubscriptionAbort {
     fn drop(&mut self) {
         match self {
-            SubscriptionAbort::Bridge(_handle) => {
-                // SubscribeHandle's own Drop impl calls unsub().
-            }
-            SubscriptionAbort::Fetch(ctrl) => {
-                ctrl.abort();
-            }
+            SubscriptionAbort::Bridge(sub) => sub.cancel(),
+            SubscriptionAbort::Fetch(ctrl) => ctrl.abort(),
         }
     }
 }
@@ -79,24 +79,30 @@ pub async fn open_sse(
     on_error: impl Fn(ErrorDetail) + 'static,
 ) -> Result<SubscriptionAbort, ErrorDetail> {
     if use_bridge() {
-        let on_error = Rc::new(on_error);
-        let on_error_for_frame = on_error.clone();
-        let handle = subscribe(
-            body,
-            move |frame_value| match serde_json::to_string(&frame_value) {
-                Ok(s) => on_frame(&s),
-                Err(e) => {
-                    on_error_for_frame(ErrorDetail::new(
-                        ErrorKind::Parse,
-                        format!("frame stringify: {e}"),
-                    ));
+        let subscription = Rc::new(subscribe(body).await?);
+        let pump_sub = subscription.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            loop {
+                match pump_sub.next().await {
+                    Ok(Some(value)) => match serde_json::to_string(&value) {
+                        Ok(s) => on_frame(&s),
+                        Err(e) => {
+                            on_error(ErrorDetail::new(
+                                ErrorKind::Parse,
+                                format!("frame stringify: {e}"),
+                            ));
+                            break;
+                        }
+                    },
+                    Ok(None) => break,
+                    Err(e) => {
+                        on_error(e);
+                        break;
+                    }
                 }
-            },
-            move |message| {
-                on_error(ErrorDetail::new(ErrorKind::Network, message));
-            },
-        )?;
-        Ok(SubscriptionAbort::Bridge(handle))
+            }
+        });
+        Ok(SubscriptionAbort::Bridge(subscription))
     } else {
         let body_str = serde_json::to_string(body)
             .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body stringify: {e}")))?;

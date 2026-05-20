@@ -5,13 +5,13 @@
 doesn't fit the row-template model, drop into JavaScript and use the
 `globalThis.tonk` API the host injects into every view iframe.
 
-Three methods, all return Promises (or, for `subscribe`, a cancel
-function). No handshake, no initialisation — call them at the top of
-your script:
+Three methods, all return Promises. No handshake, no initialisation —
+call them at the top of your script:
 
 - `tonk.query(body)` — one-shot query. Resolves to an array of rows.
-- `tonk.subscribe(body, onFrame, onError?)` — live query. `onFrame`
-  fires on every branch change. Returns an unsubscribe function.
+- `tonk.subscribe(body)` — live query. Resolves to a
+  `ReadableStream` whose chunks are arrays of rows, one per branch
+  change. Cancel the stream to unsubscribe.
 - `tonk.evaluate(body, transact = true)` — run a notation document
   (assertions, queries, retractions). Resolves to the evaluate result.
 
@@ -28,15 +28,23 @@ view!: &person-counter
   body: |
     <p>People online: <span id="count">…</span></p>
     <script type="module">
-      tonk.subscribe(
-        { terms: { this: "?p" }, predicate: { with: { name: "?n" } } },
-        rows => {
+      const stream = await tonk.subscribe({
+        terms: { this: "?p" },
+        predicate: { with: { name: "?n" } },
+      });
+      try {
+        for await (const rows of stream) {
           document.getElementById("count").textContent = rows.length;
-        },
-        err => console.error("count subscription failed:", err),
-      );
+        }
+      } catch (err) {
+        console.error("count subscription failed:", err);
+      }
     </script>
 ```
+
+Cancel a subscription by calling `stream.cancel()` (or by aborting
+the reader). The unsubscribe envelope to the worker is posted
+automatically.
 
 For a one-shot read:
 
@@ -75,9 +83,9 @@ parser doesn't read them as symbols.
 
 ### Errors
 
-Bad bodies and worker-side failures surface as Promise rejections (or
-`onError` callbacks for `subscribe`). Treat them like any other JS
-error:
+Bad bodies and worker-side failures surface as Promise rejections —
+for `subscribe`, errors raise on the stream and propagate out of the
+`for await` loop. Treat them like any other JS error:
 
 ```js
 try {
