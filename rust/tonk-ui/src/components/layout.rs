@@ -74,15 +74,10 @@ pub fn TonkLayoutView() -> impl IntoView {
         let _ = slot.append_child(&host);
     });
 
+    // No header — the window manager owns the whole viewport, so
+    // there is no workspace-title banner. The current workspace
+    // is already in the URL.
     view! {
-        <header slot="main-header" class="space-banner">
-            <h1
-                class="space-banner-title"
-                title=move || workspace_name.get().unwrap_or_default()
-            >
-                { move || workspace_name.get().unwrap_or_default() }
-            </h1>
-        </header>
         <main class="layout-view">
             <div class="layout-view-slot" node_ref=mount></div>
         </main>

@@ -11,10 +11,12 @@
 //!
 //! ```text
 //! <tonk-layout>
-//!   <div class="tonk-layout-strip">
-//!     <div class="tonk-layout-column" data-id=…>
-//!       <div class="tonk-layout-tile" data-id=…>
-//!         <tonk-display entity=… view=… />
+//!   <div class="tonk-layout-strip">      <!-- scrolls horizontally -->
+//!     <div class="tonk-layout-rail">     <!-- flex row of columns -->
+//!       <div class="tonk-layout-column" data-id=…>
+//!         <div class="tonk-layout-tile" data-id=…>
+//!           <tonk-display entity=… view=… />
+//!         </div>
 //!       </div>
 //!     </div>
 //!   </div>
@@ -31,13 +33,15 @@ use web_sys::{Document, Element, window};
 
 use crate::model::{Column, Layout, Tile};
 
-/// Tag for the scrolling strip container. `<wa-scroller>` is Web
-/// Awesome's accessible scroll region — it supplies the
-/// horizontal scroll affordances (edge fades, keyboard support)
-/// so we don't hand-roll them.
-const STRIP_TAG: &str = "wa-scroller";
-/// CSS class on the strip container.
+/// CSS class on the strip container — a plain `<div>` that
+/// scrolls horizontally. A `<wa-scroller>` was tried here but it
+/// does not propagate height to its slotted child, collapsing
+/// the rail; a `<div>` with `overflow-x: auto` is two lines of
+/// CSS and keeps the height chain intact.
 const STRIP_CLASS: &str = "tonk-layout-strip";
+/// CSS class on the flex rail inside the strip — the row of
+/// columns.
+const RAIL_CLASS: &str = "tonk-layout-rail";
 /// CSS class on each column.
 const COLUMN_CLASS: &str = "tonk-layout-column";
 /// CSS class on each tile.
@@ -53,9 +57,12 @@ const FOCUSED_ATTR: &str = "data-focused";
 pub struct Reconciler {
     /// The `<tonk-layout>` host.
     host: Element,
-    /// The `.tonk-layout-strip` scroll container, created lazily on the
+    /// The `<wa-scroller>` strip container, created lazily on the
     /// first [`Reconciler::apply`].
     strip: Option<Element>,
+    /// The `.tonk-layout-rail` flex row inside the scroller —
+    /// where columns are reconciled.
+    rail: Option<Element>,
     /// `space` attribute forwarded to every tile's
     /// `<tonk-display>`.
     space: String,
@@ -72,6 +79,7 @@ impl Reconciler {
         Self {
             host,
             strip: None,
+            rail: None,
             space,
             branch,
         }
@@ -82,8 +90,8 @@ impl Reconciler {
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };
-        let strip = self.ensure_strip(&document);
-        reconcile_columns(&document, &strip, layout, &self.space, &self.branch);
+        let rail = self.ensure_rail(&document);
+        reconcile_columns(&document, &rail, layout, &self.space, &self.branch);
     }
 
     /// Remove the strip and everything in it. Used when the
@@ -92,21 +100,22 @@ impl Reconciler {
         if let Some(strip) = self.strip.take() {
             strip.remove();
         }
+        self.rail = None;
     }
 
-    /// Return the existing strip container, creating and
-    /// appending it to the host on first use.
-    fn ensure_strip(&mut self, document: &Document) -> Element {
-        if let Some(strip) = &self.strip {
-            return strip.clone();
+    /// Return the column rail, creating the strip `<div>` and its
+    /// inner `.tonk-layout-rail` on first use.
+    fn ensure_rail(&mut self, document: &Document) -> Element {
+        if let Some(rail) = &self.rail {
+            return rail.clone();
         }
-        let strip = create(document, STRIP_TAG, STRIP_CLASS);
-        // `orientation="horizontal"` puts the scroll affordances
-        // on the correct axis for the column strip.
-        let _ = strip.set_attribute("orientation", "horizontal");
+        let strip = create(document, "div", STRIP_CLASS);
+        let rail = create(document, "div", RAIL_CLASS);
+        let _ = strip.append_child(&rail);
         let _ = self.host.append_child(&strip);
-        self.strip = Some(strip.clone());
-        strip
+        self.strip = Some(strip);
+        self.rail = Some(rail.clone());
+        rail
     }
 }
 
@@ -354,9 +363,9 @@ mod tests {
         reconciler.apply(&layout);
 
         let strip = host
-            .query_selector(".tonk-layout-strip")
+            .query_selector(".tonk-layout-rail")
             .unwrap()
-            .expect("strip mounted");
+            .expect("rail mounted");
         assert_eq!(strip.children().length(), 2, "two columns");
         let displays = host.query_selector_all("tonk-display").unwrap();
         assert_eq!(displays.length(), 1, "only the tile with an entity");
@@ -394,7 +403,7 @@ mod tests {
             focus: None,
             columns: vec![column("col:b", vec![])],
         });
-        let strip = host.query_selector(".tonk-layout-strip").unwrap().unwrap();
+        let strip = host.query_selector(".tonk-layout-rail").unwrap().unwrap();
         assert_eq!(strip.children().length(), 1);
         assert_eq!(
             strip
@@ -420,7 +429,7 @@ mod tests {
             focus: None,
             columns: vec![column("col:b", vec![]), column("col:a", vec![])],
         });
-        let strip = host.query_selector(".tonk-layout-strip").unwrap().unwrap();
+        let strip = host.query_selector(".tonk-layout-rail").unwrap().unwrap();
         let ids: Vec<Option<String>> = (0..strip.children().length())
             .map(|i| strip.children().item(i).unwrap().get_attribute("data-id"))
             .collect();

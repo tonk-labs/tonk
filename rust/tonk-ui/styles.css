@@ -1161,40 +1161,51 @@ tonk-layout {
     inline-size: 100%;
 }
 
-/* The strip is a `<wa-scroller>` — it supplies the horizontal
-   scroll affordances. Its direct children (columns) lay out as a
-   horizontal flex row that may overflow the viewport. */
+/* The strip fills the host and scrolls horizontally when the
+   column rail overflows. Vertical overflow is clipped — columns
+   are sized to fit. */
 .tonk-layout-strip {
     display: block;
     block-size: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
 }
-.tonk-layout-strip::part(content) {
+
+/* The rail is the flex row of columns. It is at least as wide as
+   the strip, and grows wider when columns overflow — that
+   overflow is what the strip scrolls. `min-content` width makes
+   it expand to its columns rather than being capped at 100%. */
+.tonk-layout-rail {
     display: flex;
     flex-direction: row;
     align-items: stretch;
     gap: var(--wa-space-s);
     padding: var(--wa-space-s);
     block-size: 100%;
+    min-inline-size: min-content;
     box-sizing: border-box;
 }
 
-/* A column's `--tonk-layout-width` fraction becomes its flex
-   ratio, so columns share the viewport proportionally. Tiles
-   stack vertically inside. */
+/* A column's `--tonk-layout-width` fraction is the share of the
+   viewport it claims. `flex-grow` is `0` so columns keep their
+   natural width and the rail overflows (niri-style) rather than
+   squeezing every column to fit; the basis is the fraction of
+   the viewport width. */
 .tonk-layout-column {
     display: flex;
     flex-direction: column;
-    flex: var(--tonk-layout-width, 0.5) 1 0;
+    flex: 0 0 calc(var(--tonk-layout-width, 0.5) * 100cqi);
     min-inline-size: 16rem;
     gap: var(--wa-space-s);
 }
 
 /* A tile's `--tonk-layout-height` fraction is its flex ratio
-   within the column. The surface, border, and radius are WA
+   within the column, so the tiles of a column fill its full
+   height between them. The surface, border, and radius are WA
    tokens so tiles match cards elsewhere in the app. */
 .tonk-layout-tile {
     flex: var(--tonk-layout-height, 1) 1 0;
-    min-block-size: 6rem;
+    min-block-size: 0;
     display: flex;
     overflow: hidden;
     background: var(--wa-color-surface-default);
@@ -1214,23 +1225,32 @@ tonk-layout {
 .tonk-layout-tile tonk-display {
     display: block;
     inline-size: 100%;
+    block-size: 100%;
     overflow: auto;
 }
 
 /* Lifecycle skins, mirroring `<tonk-display>`'s data-state
    convention. An empty workspace and a loading one both show a
    muted placeholder rather than a blank strip. */
-tonk-layout[data-state="loading"] .tonk-layout-strip::part(content),
-tonk-layout[data-state="empty"] .tonk-layout-strip::part(content) {
+tonk-layout[data-state="loading"] .tonk-layout-rail,
+tonk-layout[data-state="empty"] .tonk-layout-rail {
     align-items: center;
     justify-content: center;
     color: var(--wa-color-text-quiet);
 }
 
-/* The `<tonk-layout>` route's mount slot. The element fills its
-   container, so the slot must claim the available height inside
-   the `<wa-page>` main region. */
-.layout-view,
+/* The `<tonk-layout>` route's mount region. It fills the
+   `<wa-page>` main area edge-to-edge — the window manager owns
+   the whole viewport, so the route drops the content padding the
+   other routes get. `100cqi` on columns above resolves against
+   this container. */
+.layout-view {
+    display: block;
+    block-size: 100%;
+    inline-size: 100%;
+    padding: 0;
+    container-type: inline-size;
+}
 .layout-view-slot {
     display: block;
     block-size: 100%;

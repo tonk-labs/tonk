@@ -176,7 +176,8 @@ branch the previous left behind.
 # The workspace. `&ws-default` names the entity so the columns
 # and tiles can reference it by the bare symbol `ws-default`.
 workspace!: &ws-default
-  name: default
+  name: "default"
+  focus: id:nil
 ```
 
 ```yaml
@@ -203,27 +204,27 @@ tile!: &tile-a
   column:    col-left
   order:     1.0
   height:    0.5
-  entity:    did:key:zGreeting…
+  entity:    did:key:z6MkEWJRjLtdeain8H18zgnfZLK6rNNxcrbqZcnYbfuWhg6J
   model:     greeting
-  view:      basic
+  view:      "basic"
 
 tile!: &tile-b
   workspace: ws-default
   column:    col-left
   order:     2.0
   height:    0.5
-  entity:    did:key:zGreeting…
+  entity:    did:key:z6MkEWJRjLtdeain8H18zgnfZLK6rNNxcrbqZcnYbfuWhg6J
   model:     greeting
-  view:      basic
+  view:      "basic"
 
 tile!: &tile-c
   workspace: ws-default
   column:    col-right
   order:     1.0
   height:    1.0
-  entity:    did:key:zGreeting…
+  entity:    did:key:z6MkEWJRjLtdeain8H18zgnfZLK6rNNxcrbqZcnYbfuWhg6J
   model:     greeting
-  view:      basic
+  view:      "basic"
 ```
 
 ```yaml
