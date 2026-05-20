@@ -882,8 +882,32 @@ Committed upstream on `feat/inductive-rule` (dialog-db
 `retract_transients`); both pass the transaction through
 unchanged today.
 
+**Discovered gap — premise index key derivation.**
+
+The reverse index `effects_by_premise(attribute_entity)` keys on
+the attribute *entity URI* (`the:<base58hash>`), which is
+`blake3(cbor(domain, name, cardinality, content_type))` (see
+`AttributeDescriptor::to_uri` in dialog-query). A `Changes`
+instruction holds only the runtime `Attribute(String)` — just
+the `domain/name`. The instruction alone is insufficient to
+recover the index key; the loop would have to look up the full
+`AttributeDescriptor` from the branch per touched attribute, or
+the bucket has to carry the descriptor alongside.
+
+The cheap fix at write time: have
+[`TransactionBuilder::apply_assert`](`crate::reactor::TransactionBuilder`)
+/ `apply_retract` capture the attribute entity URIs from the
+`PredicateApplication`'s `ConceptDescriptor` and stash them
+alongside the transient `Changes`. The induce loop reads from
+this set directly rather than re-resolving each `Changes`
+instruction. Requires changing `transients: Changes` →
+`transients: (Changes, BTreeSet<Entity>)` or a small wrapper
+type. No upstream dialog change needed.
+
 **Still to land:**
 
+- Plumb attribute-entity capture through the builder so the
+  loop can key the reverse index without re-resolving.
 - Single-round evaluator: query reverse index, load candidate
   effects via `Effect::by_entity`, run rule body against
   `txn.query()`, instantiate head from bindings, integrate.
@@ -894,10 +918,9 @@ unchanged today.
   to retract via the bindings.
 - Conflict resolution at integration time: assert+retract on
   the same cell — retract wins.
-- `retract_transients` implementation: enumerate transient
-  concepts via marker query, load each descriptor, walk its
-  relation URIs, query `txn` for facts under those relations,
-  retract each.
+- `retract_transients` for **effect-emitted** transients
+  (user-submitted transients already cancel via the sweep
+  landed in `4cca6d9`).
 - End-to-end tests:
   - **Increment-counter**: submit a transient `increment`, the
     counter's value updates, the increment fact is absent from
