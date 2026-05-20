@@ -34,6 +34,11 @@ mod state;
 #[cfg(target_arch = "wasm32")]
 mod element;
 
+// The DOM reconciler touches `web_sys` and is wasm-only; its
+// tests run under `wasm_bindgen_test` in a browser.
+#[cfg(target_arch = "wasm32")]
+mod reconcile;
+
 /// Register the `<tonk-layout>` custom element. Idempotent — the
 /// shell calls this once at startup. Pages don't have to.
 #[cfg(target_arch = "wasm32")]

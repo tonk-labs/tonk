@@ -22,6 +22,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{AbortController, CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 use crate::model::Layout;
+use crate::reconcile::Reconciler;
 use crate::resolve::{columns_query, tiles_query, workspace_query};
 use crate::state::{self, State};
 
@@ -48,6 +49,9 @@ struct Inner {
     columns: Vec<Conclusion>,
     /// Latest tiles frame.
     tiles: Vec<Conclusion>,
+    /// Patches the strip DOM to match each folded layout. Created
+    /// lazily on the first fold, dropped on `abort`.
+    reconciler: Option<Reconciler>,
     /// Monotonic counter. Every spawned flow captures the value
     /// at spawn; a flow whose generation no longer matches has
     /// been superseded by an `attribute_changed_callback` and
@@ -64,6 +68,7 @@ impl Inner {
             workspace: None,
             columns: Vec::new(),
             tiles: Vec::new(),
+            reconciler: None,
             generation: 0,
         }
     }
@@ -84,6 +89,10 @@ impl Inner {
         self.workspace = None;
         self.columns.clear();
         self.tiles.clear();
+        if let Some(reconciler) = &mut self.reconciler {
+            reconciler.clear();
+        }
+        self.reconciler = None;
     }
 }
 
@@ -153,18 +162,28 @@ fn workspace_name(host: &Element) -> String {
     }
 }
 
+/// The `space` attribute, defaulting to `"home"`.
+fn space(host: &Element) -> String {
+    host.get_attribute("space")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "home".to_string())
+}
+
+/// The `branch` attribute, defaulting to `"main"`.
+fn branch(host: &Element) -> String {
+    host.get_attribute("branch")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".to_string())
+}
+
 /// Build the worker `/query` URL from the host's `space` /
 /// `branch` attributes.
 fn query_url(host: &Element) -> String {
-    let space = host
-        .get_attribute("space")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "home".to_string());
-    let branch = host
-        .get_attribute("branch")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "main".to_string());
-    format!("/api/repository/{space}/branch/{branch}/query")
+    format!(
+        "/api/repository/{}/branch/{}/query",
+        space(host),
+        branch(host)
+    )
 }
 
 /// Begin (or restart) the element's read path.
@@ -376,16 +395,22 @@ fn spawn_stream(
     });
 }
 
-/// Fold the latest cached frames into a [`Layout`], reflect the
-/// resulting `data-state`, and dispatch `tonk-layout:layout`.
-///
-/// DOM rendering of the layout is the next step; for now this is
-/// where the read path terminates.
+/// Fold the latest cached frames into a [`Layout`], patch the
+/// strip DOM to match, reflect the resulting `data-state`, and
+/// dispatch `tonk-layout:layout`.
 fn refold(host: &Element, inner: &Rc<RefCell<Inner>>) {
     let layout = {
         let s = inner.borrow();
         Layout::fold(s.workspace.as_ref(), &s.columns, &s.tiles)
     };
+
+    {
+        let mut s = inner.borrow_mut();
+        let reconciler = s
+            .reconciler
+            .get_or_insert_with(|| Reconciler::new(host.clone(), space(host), branch(host)));
+        reconciler.apply(&layout);
+    }
 
     let next = if layout.is_empty() {
         State::Empty
