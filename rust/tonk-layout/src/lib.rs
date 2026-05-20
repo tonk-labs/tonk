@@ -19,6 +19,12 @@
 #[cfg(any(target_arch = "wasm32", test))]
 mod model;
 
+// The three subscription query builders are target-independent —
+// the element opens them on wasm32, the tests pin their wire
+// shape natively.
+#[cfg(any(target_arch = "wasm32", test))]
+mod resolve;
+
 // `State` and its `as_str` mapping are target-independent — the
 // DOM-touching `set` helper is individually gated to wasm32 so
 // native test builds can still exercise the enum.
