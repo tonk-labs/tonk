@@ -1,140 +1,112 @@
-//! `fetch()`-driven Server-Sent Events reader.
+//! Subscription helper — selects bridge or fetch transport at
+//! runtime and exposes a uniform `SubscriptionAbort` handle.
 //!
-//! `wasm_streams::ReadableStream::from_raw(...)` adapts the JS
-//! `ReadableStream` returned by `Response::body()` into a Rust
-//! `Stream<Item = Result<JsValue, JsValue>>`. Each chunk is a
-//! `Uint8Array`; we accumulate bytes into a buffer, split on
-//! `\n\n` (SSE event delimiter), strip the leading `data: ` from
-//! each event's payload line, and hand the remaining JSON to a
-//! callback.
+//! When `globalThis.tonk` is present (the iframe shell has loaded
+//! `bridge.js`) the bridge path is used: `globalThis.tonk.subscribe`
+//! returns a `ReadableStream` whose chunks are routed to the
+//! caller's `on_frame` callback by a pump spawned in
+//! `wasm_bindgen_futures::spawn_local`.
+//!
+//! When `globalThis.tonk` is absent (the shell mounts these elements
+//! directly in its own DOM, outside any iframe) the legacy
+//! `fetch()`-based SSE reader in [`crate::fetch`] is used instead.
+//! The caller is responsible for supplying a non-empty `url` in
+//! that case (built from the `space`/`branch` HTML attributes).
 
-use bytes::BytesMut;
-use futures::StreamExt as _;
-use js_sys::Uint8Array;
-use wasm_bindgen::{JsCast, JsValue};
-use wasm_bindgen_futures::JsFuture;
-use wasm_streams::ReadableStream;
-use web_sys::{
-    AbortController, Headers, Request, RequestInit, Response, Window, window as get_window,
-};
+use std::rc::Rc;
 
+use web_sys::AbortController;
+
+use crate::bridge::{Subscription, subscribe};
 use crate::error::{ErrorDetail, ErrorKind};
 
-/// Open an SSE subscription against `url`, sending `body` as the
-/// JSON request body. The future resolves once the first read
-/// completes; subsequent frames flow through `on_frame`. Cancel
-/// by calling `.abort()` on the returned [`AbortController`].
+/// Transport handle returned by [`open_sse`].
 ///
-/// Errors during streaming are reported via the `on_error`
-/// callback; the future itself returns `Err` only for the
-/// initial fetch failure.
+/// Dropping this value cancels the subscription regardless of which
+/// transport is active.
+pub enum SubscriptionAbort {
+    /// Bridge path — `Drop` cancels the underlying `ReadableStream`,
+    /// which posts an `unsubscribe` envelope to the SW. The pump
+    /// task's pending `read()` resolves with `done=true` and exits.
+    Bridge(Rc<Subscription>),
+    /// Fetch/SSE path — `Drop` calls `AbortController::abort()`.
+    Fetch(AbortController),
+}
+
+impl Drop for SubscriptionAbort {
+    fn drop(&mut self) {
+        match self {
+            SubscriptionAbort::Bridge(sub) => sub.cancel(),
+            SubscriptionAbort::Fetch(ctrl) => ctrl.abort(),
+        }
+    }
+}
+
+/// Pick a transport. Prefer the iframe bridge if it's loaded
+/// (`globalThis.tonk` is defined and not null); otherwise fall back
+/// to direct fetch against `url`. The shell mounts these elements
+/// with `space`/`branch` attributes set; the iframe-wrapped body
+/// mounts them without (and has `globalThis.tonk` available).
+pub fn use_bridge() -> bool {
+    use js_sys::Reflect;
+    use wasm_bindgen::JsValue;
+    let Some(win) = web_sys::window() else {
+        return false;
+    };
+    let Ok(tonk) = Reflect::get(&win, &JsValue::from_str("tonk")) else {
+        return false;
+    };
+    !tonk.is_undefined() && !tonk.is_null()
+}
+
+/// Open a streaming subscription using whichever transport is
+/// available.
+///
+/// `url` is only used on the legacy fetch path. `body` is the
+/// query as a `serde_json::Value`; on the fetch path it is
+/// stringified once for the request body.
+///
+/// `on_frame` is called for each emitted frame with the raw JSON
+/// string of a `Vec<Conclusion>`. `on_error` is called on transport
+/// errors.
+///
+/// Returns a [`SubscriptionAbort`] that the caller must keep alive;
+/// dropping it cancels the subscription.
 pub async fn open_sse(
     url: &str,
-    body: &str,
-    on_frame: impl FnMut(&str) + 'static,
-    on_error: impl FnMut(ErrorDetail) + 'static,
-) -> Result<AbortController, ErrorDetail> {
-    let abort = AbortController::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("AbortController: {e:?}")))?;
-
-    let init = RequestInit::new();
-    init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers::new: {e:?}")))?;
-    headers
-        .append("accept", "text/event-stream")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    headers
-        .append("content-type", "application/json")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
-    init.set_headers(&headers);
-    init.set_body(&JsValue::from_str(body));
-    init.set_signal(Some(&abort.signal()));
-
-    let request = Request::new_with_str_and_init(url, &init).map_err(|e| {
-        ErrorDetail::new(ErrorKind::Network, format!("Request construction: {e:?}"))
-    })?;
-
-    let win = window_handle()?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
-        .await
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return a Response"))?;
-    if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
-            format!("HTTP {}", resp.status()),
-        ));
-    }
-
-    let body_stream = resp
-        .body()
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "response has no body stream"))?;
-    let stream = ReadableStream::from_raw(body_stream).into_stream();
-    spawn_reader(stream, on_frame, on_error);
-    Ok(abort)
-}
-
-fn window_handle() -> Result<Window, ErrorDetail> {
-    get_window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no `window` available"))
-}
-
-fn spawn_reader(
-    mut stream: impl futures::Stream<Item = Result<JsValue, JsValue>> + Unpin + 'static,
-    mut on_frame: impl FnMut(&str) + 'static,
-    mut on_error: impl FnMut(ErrorDetail) + 'static,
-) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let mut buffer = BytesMut::new();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(value) => {
-                    let array: Uint8Array = match value.dyn_into() {
-                        Ok(a) => a,
-                        Err(_) => continue,
-                    };
-                    buffer.extend_from_slice(&array.to_vec());
-                    drain_frames(&mut buffer, &mut on_frame);
+    body: &serde_json::Value,
+    on_frame: impl Fn(&str) + 'static,
+    on_error: impl Fn(ErrorDetail) + 'static,
+) -> Result<SubscriptionAbort, ErrorDetail> {
+    if use_bridge() {
+        let subscription = Rc::new(subscribe(body).await?);
+        let pump_sub = subscription.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result: Result<(), ErrorDetail> = async {
+                while let Some(frame) = pump_sub.next().await? {
+                    on_frame(&frame);
                 }
-                Err(e) => {
-                    on_error(ErrorDetail::new(
-                        ErrorKind::Network,
-                        format!("stream read failed: {e:?}"),
-                    ));
-                    break;
-                }
+                Ok(())
             }
-        }
-    });
-}
-
-/// Pull every complete SSE event (terminated by `\n\n`) out of
-/// `buffer`, strip its `data: ` prefix, and invoke `on_frame` with
-/// the inner JSON. Whatever bytes are left after the last `\n\n`
-/// stay in the buffer for the next chunk.
-fn drain_frames(buffer: &mut BytesMut, on_frame: &mut impl FnMut(&str)) {
-    while let Some(idx) = find_double_newline(buffer) {
-        let frame = buffer.split_to(idx);
-        let _ = buffer.split_to(2); // discard "\n\n"
-        if let Ok(text) = std::str::from_utf8(&frame)
-            && let Some(payload) = strip_sse_data_prefix(text)
-        {
-            on_frame(payload);
-        }
+            .await;
+            if let Err(e) = result {
+                on_error(e);
+            }
+        });
+        Ok(SubscriptionAbort::Bridge(subscription))
+    } else {
+        let body_str = serde_json::to_string(body)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body stringify: {e}")))?;
+        // on_frame / on_error must be FnMut for the SSE reader loop.
+        let on_frame_cell = std::cell::RefCell::new(on_frame);
+        let on_error_cell = std::cell::RefCell::new(on_error);
+        let ctrl = crate::fetch::open_sse(
+            url,
+            &body_str,
+            move |frame| (on_frame_cell.borrow())(frame),
+            move |err| (on_error_cell.borrow())(err),
+        )
+        .await?;
+        Ok(SubscriptionAbort::Fetch(ctrl))
     }
-}
-
-fn find_double_newline(b: &[u8]) -> Option<usize> {
-    b.windows(2).position(|w| w == b"\n\n")
-}
-
-/// `data: {…}\n` → `{…}`. Multi-line `data:` events are joined
-/// with literal `\n` per the SSE spec, but the worker emits
-/// single-line frames so the simple form is enough.
-fn strip_sse_data_prefix(frame: &str) -> Option<&str> {
-    frame
-        .strip_prefix("data: ")
-        .or_else(|| frame.strip_prefix("data:"))
 }

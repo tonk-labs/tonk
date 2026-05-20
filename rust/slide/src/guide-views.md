@@ -51,14 +51,18 @@ view!: &my-task-list
     </tonk-concept>
 ```
 
-Do **not** write `<!doctype>`, `<html>`, `<head>`, `<body>`, `<title>`,
-or `<script>` tags yourself. They will either be stripped or
-double-wrapped — neither does what you want. If you need page-level
+Do **not** write `<!doctype>`, `<html>`, `<head>`, `<body>`, or
+`<title>` tags yourself — the host wraps your body in its own
+shell, so writing chrome doubles it up. If you need page-level
 styling, put a `<style>` tag at the top of the body fragment.
 
 The runtime that activates `<tonk-concept>` is provided by the host
 and ships with every served view. You don't import it, link to it,
 or include it — assume it's there.
+
+For interactive views (forms, buttons, custom write flows), drop
+into a `<script type="module">` and use `globalThis.tonk` directly.
+See the next section.
 
 Git-tag semantics apply: re-asserting the same body is idempotent
 (same content → same content-derived entity), a different body
