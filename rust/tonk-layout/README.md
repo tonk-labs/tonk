@@ -70,9 +70,9 @@ attribute!: &column-order
   cardinality: one
 
 attribute!: &column-width
-  description: Column width as a fraction of the viewport (0..1)
+  description: Column width in major grid units (1 unit = 64px)
   the:         xyz.tonk.layout/column-width
-  as:          float
+  as:          unsigned-integer
   cardinality: one
 
 concept!: &column
@@ -103,9 +103,9 @@ attribute!: &tile-order
   cardinality: one
 
 attribute!: &tile-height
-  description: Tile height as a fraction of the column (0..1)
+  description: Tile height in major grid units (1 unit = 64px)
   the:         xyz.tonk.layout/tile-height
-  as:          float
+  as:          unsigned-integer
   cardinality: one
 
 attribute!: &tile-entity
@@ -143,10 +143,12 @@ Notes:
 - **`order` is a float.** To insert a column or tile between two
   others, give it an `order` halfway between its neighbours — no
   renumbering needed (fractional indexing).
-- **`width` / `height` are `0..1` fractions** of the viewport and
-  column respectively. The strip turns them into flex ratios, so a
-  layout restores at any window size. Niri-style preset column
-  widths are `⅓`, `½`, `⅔`, `1`.
+- **`width` / `height` are integer counts of major grid cells**
+  (1 cell = 64px — the bright dots of the graph-paper background).
+  A column `width` of `12` is 768px; a tile `height` of `5` is
+  320px. Columns lay end to end and the strip scrolls when they
+  overflow; tiles have fixed grid heights. The strip's scroll
+  snaps to the grid.
 - **`tile.workspace`** is a denormalized copy of the tile's
   column's workspace. Keep the two in sync when you move a tile
   across workspaces.
@@ -183,27 +185,28 @@ workspace!: &ws-default
 ```yaml
 # Two columns. `&col-left` / `&col-right` name the entities so
 # the tiles can reference them. `order` sets strip position;
-# `width` is the viewport fraction.
+# `width` is the column width in grid units (1 unit = 64px), so
+# `12` is 768px wide and `8` is 512px.
 column!: &col-left
   workspace: ws-default
   order:     1.0
-  width:     0.66
+  width:     12
 
 column!: &col-right
   workspace: ws-default
   order:     2.0
-  width:     0.34
+  width:     8
 ```
 
 ```yaml
 # Tiles. Each names its workspace and column, an `order` within
-# the column, a `height` fraction, and the entity its
+# the column, a `height` in grid units, and the entity its
 # <tonk-display> should render.
 tile!: &tile-a
   workspace: ws-default
   column:    col-left
   order:     1.0
-  height:    0.5
+  height:    5
   entity:    did:key:z6MkEWJRjLtdeain8H18zgnfZLK6rNNxcrbqZcnYbfuWhg6J
   model:     greeting
   view:      "basic"
@@ -212,7 +215,7 @@ tile!: &tile-b
   workspace: ws-default
   column:    col-left
   order:     2.0
-  height:    0.5
+  height:    5
   entity:    did:key:z6MkEWJRjLtdeain8H18zgnfZLK6rNNxcrbqZcnYbfuWhg6J
   model:     greeting
   view:      "basic"
@@ -221,7 +224,7 @@ tile!: &tile-c
   workspace: ws-default
   column:    col-right
   order:     1.0
-  height:    1.0
+  height:    8
   entity:    did:key:z6MkEWJRjLtdeain8H18zgnfZLK6rNNxcrbqZcnYbfuWhg6J
   model:     greeting
   view:      "basic"

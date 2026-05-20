@@ -24,9 +24,9 @@
 //! ```
 //!
 //! Column width and tile height are written as CSS custom
-//! properties (`--tonk-layout-width`, `--tonk-layout-height`) so the layout
-//! stays resolution-independent — the stylesheet turns the
-//! fractions into pixels.
+//! properties (`--tonk-layout-width`, `--tonk-layout-height`) —
+//! integer counts of major grid cells. The stylesheet multiplies
+//! them by the grid-cell size for the pixel value.
 
 use wasm_bindgen::JsCast as _;
 use web_sys::{Document, Element, window};
@@ -57,11 +57,11 @@ const FOCUSED_ATTR: &str = "data-focused";
 pub struct Reconciler {
     /// The `<tonk-layout>` host.
     host: Element,
-    /// The `<wa-scroller>` strip container, created lazily on the
-    /// first [`Reconciler::apply`].
+    /// The `.tonk-layout-strip` scroll container, created lazily
+    /// on the first [`Reconciler::apply`].
     strip: Option<Element>,
-    /// The `.tonk-layout-rail` flex row inside the scroller —
-    /// where columns are reconciled.
+    /// The `.tonk-layout-rail` flex row inside the strip — where
+    /// columns are reconciled.
     rail: Option<Element>,
     /// `space` attribute forwarded to every tile's
     /// `<tonk-display>`.
@@ -155,7 +155,7 @@ fn apply_column(
     space: &str,
     branch: &str,
 ) {
-    set_fraction(element, "--tonk-layout-width", column.width);
+    set_units(element, "--tonk-layout-width", column.width);
 
     remove_departed(element, &column.tiles, |t| &t.id);
 
@@ -177,7 +177,7 @@ fn apply_tile(
     space: &str,
     branch: &str,
 ) {
-    set_fraction(element, "--tonk-layout-height", tile.height);
+    set_units(element, "--tonk-layout-height", tile.height);
 
     if focus.as_deref() == Some(tile.id.as_str()) {
         let _ = element.set_attribute(FOCUSED_ATTR, "");
@@ -288,12 +288,13 @@ fn create_keyed(document: &Document, tag: &str, class: &str, id: &str) -> Elemen
     element
 }
 
-/// Write a `0..1` fraction as a CSS custom property on `element`'s
-/// inline style. Falls through silently if the element is not an
-/// `HtmlElement` (it always is here).
-fn set_fraction(element: &Element, property: &str, fraction: f64) {
+/// Write a grid-unit count as a CSS custom property on
+/// `element`'s inline style. The stylesheet multiplies it by the
+/// grid-cell size for the pixel value. Falls through silently if
+/// the element is not an `HtmlElement` (it always is here).
+fn set_units(element: &Element, property: &str, units: u32) {
     if let Some(html) = element.dyn_ref::<web_sys::HtmlElement>() {
-        let _ = html.style().set_property(property, &format!("{fraction}"));
+        let _ = html.style().set_property(property, &units.to_string());
     }
 }
 
@@ -332,7 +333,7 @@ mod tests {
         Tile {
             id: id.to_string(),
             order: 1.0,
-            height: 1.0,
+            height: 8,
             entity: entity.map(str::to_string),
             view: None,
             model: None,
@@ -344,7 +345,7 @@ mod tests {
         Column {
             id: id.to_string(),
             order: 1.0,
-            width: 0.5,
+            width: 8,
             tiles,
         }
     }

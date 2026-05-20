@@ -28,12 +28,12 @@ const TILE_ENTITY: &str = "entity";
 const TILE_VIEW: &str = "view";
 const TILE_MODEL: &str = "model";
 
-/// Fallback column width (half the viewport) when a `column` row
-/// omits or malforms its `width` field.
-const DEFAULT_COLUMN_WIDTH: f64 = 0.5;
-/// Fallback tile height fraction when a `tile` row omits or
-/// malforms its `height` field.
-const DEFAULT_TILE_HEIGHT: f64 = 1.0;
+/// Fallback column width, in major grid units, when a `column`
+/// row omits or malforms its `width` field.
+const DEFAULT_COLUMN_WIDTH: u32 = 8;
+/// Fallback tile height, in major grid units, when a `tile` row
+/// omits or malforms its `height` field.
+const DEFAULT_TILE_HEIGHT: u32 = 8;
 
 /// One cell in the strip. Mounts a `<tonk-display>` pointed at
 /// [`Tile::entity`].
@@ -44,8 +44,9 @@ pub struct Tile {
     pub id: String,
     /// Vertical position within the column. Sorted ascending.
     pub order: f64,
-    /// Height as a fraction of the column (`0..1`).
-    pub height: f64,
+    /// Height in major grid units (1 unit = 64px). Tiles in a
+    /// column divide its height by these counts.
+    pub height: u32,
     /// Entity the tile's `<tonk-display>` renders, if any. A tile
     /// with no entity is a valid empty cell.
     pub entity: Option<String>,
@@ -63,8 +64,8 @@ pub struct Column {
     pub id: String,
     /// Horizontal position in the strip. Sorted ascending.
     pub order: f64,
-    /// Width as a fraction of the viewport (`0..1`).
-    pub width: f64,
+    /// Width in major grid units (1 unit = 64px).
+    pub width: u32,
     /// Tiles in this column, sorted by [`Tile::order`].
     pub tiles: Vec<Tile>,
 }
@@ -101,7 +102,7 @@ impl Layout {
             .map(|row| Column {
                 id: row.this.clone(),
                 order: number_field(row, COLUMN_ORDER).unwrap_or(0.0),
-                width: number_field(row, COLUMN_WIDTH).unwrap_or(DEFAULT_COLUMN_WIDTH),
+                width: units_field(row, COLUMN_WIDTH).unwrap_or(DEFAULT_COLUMN_WIDTH),
                 tiles: Vec::new(),
             })
             .collect();
@@ -119,7 +120,7 @@ impl Layout {
             column.tiles.push(Tile {
                 id: row.this.clone(),
                 order: number_field(row, TILE_ORDER).unwrap_or(0.0),
-                height: number_field(row, TILE_HEIGHT).unwrap_or(DEFAULT_TILE_HEIGHT),
+                height: units_field(row, TILE_HEIGHT).unwrap_or(DEFAULT_TILE_HEIGHT),
                 entity: string_field(row, TILE_ENTITY),
                 view: string_field(row, TILE_VIEW),
                 model: string_field(row, TILE_MODEL),
@@ -153,11 +154,20 @@ fn string_field(row: &Conclusion, name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Read a number-valued field. Dialog `float` values arrive as
-/// JSON numbers; integers are accepted too so a `0` order isn't
-/// silently dropped.
+/// Read a `float`-valued field as `f64` — used for the sortable
+/// `order` keys.
 fn number_field(row: &Conclusion, name: &str) -> Option<f64> {
     row.fields.get(name).and_then(serde_json::Value::as_f64)
+}
+
+/// Read an `unsigned-integer`-valued field as a `u32` grid-unit
+/// count. A negative or absurdly large value is treated as absent
+/// so the caller's default applies.
+fn units_field(row: &Conclusion, name: &str) -> Option<u32> {
+    row.fields
+        .get(name)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 #[cfg(test)]
@@ -195,9 +205,9 @@ mod tests {
     #[test]
     fn it_sorts_columns_by_their_float_order() {
         let columns = [
-            row("col:b", &[("order", json!(2.0)), ("width", json!(0.5))]),
-            row("col:a", &[("order", json!(1.0)), ("width", json!(0.5))]),
-            row("col:c", &[("order", json!(3.0)), ("width", json!(0.5))]),
+            row("col:b", &[("order", json!(2.0)), ("width", json!(8))]),
+            row("col:a", &[("order", json!(1.0)), ("width", json!(8))]),
+            row("col:c", &[("order", json!(3.0)), ("width", json!(8))]),
         ];
         let layout = Layout::fold(None, &columns, &[]);
         let ids: Vec<&str> = layout.columns.iter().map(|c| c.id.as_str()).collect();

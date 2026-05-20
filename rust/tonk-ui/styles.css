@@ -1162,19 +1162,26 @@ tonk-layout {
 }
 
 /* The strip fills the host and scrolls horizontally when the
-   column rail overflows. Vertical overflow is clipped — columns
-   are sized to fit. */
+   column rail overflows — overflow is the normal case, niri-style.
+   `scroll-snap-type: x proximity` snaps a settling scroll to the
+   major grid (one `--tonk-layout-cell` stride) so the strip rests
+   aligned to the dotted graph-paper background; "proximity" keeps
+   it from fighting a deliberate scroll. */
 .tonk-layout-strip {
+    /* One major grid cell — matches the bright dots of the
+       graph-paper background (`--dot-gap` × 4 = 16px × 4). All
+       layout sizes are integer multiples of this. */
+    --tonk-layout-cell: calc(var(--dot-gap, 16px) * 4);
     display: block;
     block-size: 100%;
     overflow-x: auto;
     overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    scroll-padding-inline: var(--wa-space-s);
 }
 
-/* The rail is the flex row of columns. It is at least as wide as
-   the strip, and grows wider when columns overflow — that
-   overflow is what the strip scrolls. `min-content` width makes
-   it expand to its columns rather than being capped at 100%. */
+/* The rail is the flex row of columns. It grows to its columns'
+   combined width and the strip scrolls that overflow. */
 .tonk-layout-rail {
     display: flex;
     flex-direction: row;
@@ -1186,26 +1193,30 @@ tonk-layout {
     box-sizing: border-box;
 }
 
-/* A column's `--tonk-layout-width` fraction is the share of the
-   viewport it claims. `flex-grow` is `0` so columns keep their
-   natural width and the rail overflows (niri-style) rather than
-   squeezing every column to fit; the basis is the fraction of
-   the viewport width. */
+/* A column's width is `--tonk-layout-width` major grid cells.
+   `flex-grow`/`flex-shrink` are both `0` so the column keeps that
+   exact width and the rail overflows rather than squeezing — this
+   is what makes the strip genuinely scroll. Its leading edge is a
+   scroll-snap point so focus-scroll and flicks land grid-aligned. */
 .tonk-layout-column {
     display: flex;
     flex-direction: column;
-    flex: 0 0 calc(var(--tonk-layout-width, 0.5) * 100cqi);
-    min-inline-size: 16rem;
+    flex: 0 0 calc(var(--tonk-layout-width, 8) * var(--tonk-layout-cell));
     gap: var(--wa-space-s);
+    scroll-snap-align: start;
+    /* Tiles have fixed grid heights — a column taller than its
+       strip scrolls its tiles vertically. */
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
-/* A tile's `--tonk-layout-height` fraction is its flex ratio
-   within the column, so the tiles of a column fill its full
-   height between them. The surface, border, and radius are WA
-   tokens so tiles match cards elsewhere in the app. */
+/* A tile's height is `--tonk-layout-height` major grid cells.
+   Fixed height (not a flex ratio) so a column's tiles sit on the
+   grid; the column scrolls if its tiles exceed its height. The
+   surface, border, and radius are WA tokens so tiles match cards
+   elsewhere in the app. */
 .tonk-layout-tile {
-    flex: var(--tonk-layout-height, 1) 1 0;
-    min-block-size: 0;
+    flex: 0 0 calc(var(--tonk-layout-height, 8) * var(--tonk-layout-cell));
     display: flex;
     overflow: hidden;
     background: var(--wa-color-surface-default);

@@ -55,8 +55,8 @@ pub fn columns_query(workspace_entity: &str) -> Query {
         "predicate": {
             "with": {
                 "workspace": { "the": "xyz.tonk.layout/column-workspace", "as": "Entity", "cardinality": "one" },
-                "order":     { "the": "xyz.tonk.layout/column-order",     "as": "Float",  "cardinality": "one" },
-                "width":     { "the": "xyz.tonk.layout/column-width",     "as": "Float",  "cardinality": "one" }
+                "order":     { "the": "xyz.tonk.layout/column-order",     "as": "Float",           "cardinality": "one" },
+                "width":     { "the": "xyz.tonk.layout/column-width",     "as": "UnsignedInteger", "cardinality": "one" }
             }
         }
     });
@@ -92,8 +92,8 @@ pub fn tiles_query(workspace_entity: &str) -> Query {
             "with": {
                 "workspace": { "the": "xyz.tonk.layout/tile-workspace", "as": "Entity", "cardinality": "one" },
                 "column":    { "the": "xyz.tonk.layout/tile-column",    "as": "Entity", "cardinality": "one" },
-                "order":     { "the": "xyz.tonk.layout/tile-order",     "as": "Float",  "cardinality": "one" },
-                "height":    { "the": "xyz.tonk.layout/tile-height",    "as": "Float",  "cardinality": "one" },
+                "order":     { "the": "xyz.tonk.layout/tile-order",     "as": "Float",           "cardinality": "one" },
+                "height":    { "the": "xyz.tonk.layout/tile-height",    "as": "UnsignedInteger", "cardinality": "one" },
                 "entity":    { "the": "xyz.tonk.layout/tile-entity",    "as": "Entity", "cardinality": "one" },
                 "view":      { "the": "xyz.tonk.layout/tile-view",      "as": "Text",   "cardinality": "one" },
                 "model":     { "the": "xyz.tonk.layout/tile-model",     "as": "Text",   "cardinality": "one" }
