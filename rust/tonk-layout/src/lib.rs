@@ -15,6 +15,14 @@
 #[cfg(any(target_arch = "wasm32", test))]
 mod state;
 
+// Pure-logic ordering keys; native-testable.
+mod order;
+
+// Pure-logic ULID encoder; native-testable. (The wasm-side mint
+// that supplies current time + crypto randomness lands when the
+// writer module needs it.)
+mod ulid;
+
 #[cfg(target_arch = "wasm32")]
 mod element;
 
