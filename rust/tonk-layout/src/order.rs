@@ -156,7 +156,7 @@ mod tests {
     fn it_returns_a_first_key_when_both_bounds_are_open() {
         let mid = between(None, None);
         assert!(!mid.is_empty());
-        assert!(mid.chars().all(|c| ('a'..='z').contains(&c)));
+        assert!(mid.chars().all(|c: char| c.is_ascii_lowercase()));
     }
 
     #[dialog_common::test]

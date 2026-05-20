@@ -20,6 +20,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 use crate::model::{Layout, fold_layout};
+use crate::reconcile::reconcile_layout;
 use crate::resolve::{columns_query, query_url, tiles_query, workspace_query};
 use crate::state::{self, State};
 
@@ -400,9 +401,8 @@ where
     Ok(())
 }
 
-/// Re-fold the three latest frames into a [`Layout`] and update
-/// `data-state` accordingly. No DOM patching of column / tile
-/// children yet — that's step 6.
+/// Re-fold the three latest frames into a [`Layout`], patch the
+/// DOM via the reconciler, and update `data-state`.
 fn refold(host: &Element, inner: &Rc<RefCell<Inner>>) {
     let mut i = inner.borrow_mut();
     let layout = fold_layout(&i.workspace_frame, &i.columns_frame, &i.tiles_frame);
@@ -413,6 +413,13 @@ fn refold(host: &Element, inner: &Rc<RefCell<Inner>>) {
         // covering both.
         _ => State::Empty,
     };
+    if let Some(l) = layout.as_ref() {
+        reconcile_layout(host, l);
+    } else {
+        // Workspace not found yet — clear any prior column / tile
+        // DOM so the host shows the bare strip skeleton.
+        mount_skeleton(host);
+    }
     state::set(host, next_state);
     i.layout = layout;
     dispatch(host, "tonk-layout:layout", None);

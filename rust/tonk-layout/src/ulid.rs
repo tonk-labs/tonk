@@ -36,9 +36,9 @@ pub fn encode_ulid(timestamp_ms: u64, random: [u8; 10]) -> String {
     // = 26 * 5 bit string). Its value is therefore in 0..=7.
     out[0] = ALPHABET[(value >> 125) as usize];
     // Remaining 25 chars take 5 bits each, MSB first.
-    for i in 1..26 {
+    for (i, slot) in out.iter_mut().enumerate().skip(1) {
         let shift = 125 - i * 5;
-        out[i] = ALPHABET[((value >> shift) & 0x1F) as usize];
+        *slot = ALPHABET[((value >> shift) & 0x1F) as usize];
     }
     String::from_utf8(out.to_vec()).expect("ASCII")
 }

@@ -2,9 +2,9 @@
 name = "tonk-layout"
 version.workspace = true
 authors.workspace = true
-license.workspace = true
 edition.workspace = true
 description = "<tonk-layout> custom element — niri-style tiling workspace whose strip of columns and tiles is persisted as normalized entities on the branch."
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -12,28 +12,31 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 custom-elements = { workspace = true }
 indexmap = { workspace = true }
-serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
 tonk-concept = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
-    "CustomElementRegistry",
-    "CustomEvent",
-    "CustomEventInit",
-    "Document",
-    "Element",
-    "HtmlElement",
-    "Window",
+  "CustomElementRegistry",
+  "CustomEvent",
+  "CustomEventInit",
+  "Document",
+  "Element",
+  "HtmlCollection",
+  "HtmlElement",
+  "Node",
+  "Window",
 ] }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
+wasm-bindgen-test = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(dialog_test_native_integration)',
-    'cfg(dialog_test_wasm_integration)',
-    'cfg(feature, values("web-integration-tests"))',
+  "cfg(dialog_test_native_integration)",
+  "cfg(dialog_test_wasm_integration)",
+  'cfg(feature, values("web-integration-tests"))',
 ] }

@@ -32,6 +32,9 @@ mod resolve;
 #[cfg(target_arch = "wasm32")]
 mod element;
 
+#[cfg(target_arch = "wasm32")]
+mod reconcile;
+
 /// Register the `<tonk-layout>` custom element with the page.
 /// Idempotent — calling more than once is harmless.
 #[cfg(target_arch = "wasm32")]
