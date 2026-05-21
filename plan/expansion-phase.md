@@ -100,12 +100,22 @@ homes them on the resolved type.
 
 **Deleted:**
 - `tonk_introspect::BranchIntrospection`.
+- `tonk_introspect::SystemIntrospection` /
+  `RepositoryIntrospection` — speculative stub traits with zero
+  implementors and zero callers anywhere in the workspace.
+  Re-introduce against a real shape when a consumer appears.
 - `analyzer::resolver::Resolver`, `NoopResolver`.
 - `tonk_schema::evaluate::BranchResolver`.
 - the `analyzer` `ResolvedConcept` / `ResolvedAttribute` mirrors +
   `From` shims — the `tonk_introspect` structs are the one home.
 - the `ConceptLookup` / `AttributeByName` / `AttributeByEntity`
   builders — folded into the `resolve` handles.
+
+With every trait gone, `tonk-introspect` is reduced to the
+resolved-schema structs (`ResolvedConcept`, `ResolvedAttribute`,
+`NamedEntity`) and `IntrospectionError`. Worth folding those into
+`tonk-schema` and dropping the `tonk-introspect` crate entirely —
+flagged as an open item.
 
 ### A.2 The analyzer's sub-phase 1 takes `&S: Source`
 
@@ -405,6 +415,12 @@ its variant shape:
 - `rule!:` premises: if domain premises are allowed, the
   domain→anonymous-concept lowering must also run inside rule
   expansion.
+- **Fate of the `tonk-introspect` crate.** Once every trait is
+  deleted it holds only `ResolvedConcept` / `ResolvedAttribute` /
+  `NamedEntity` / `IntrospectionError`. Decide whether to fold
+  those into `tonk-schema` and remove the crate, or keep it as the
+  resolved-types home. Removing it is tidier but touches every
+  crate that depends on it — confirm the dependency fan-out first.
 - `EmptyStore` (empty `Source` for the document-only path) — a
   trivial fact-less store. Confirm where it lives so both the
   analyzer's no-branch path and the language server's
