@@ -4966,6 +4966,7 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "indexmap",
+ "js-sys",
  "serde-wasm-bindgen",
  "serde_json",
  "tonk-concept",

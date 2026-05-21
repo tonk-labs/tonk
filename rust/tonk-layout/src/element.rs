@@ -20,8 +20,8 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{
-    CustomEvent, CustomEventInit, Element, HtmlElement, KeyboardEvent, MouseEvent, PointerEvent,
-    window,
+    CustomEvent, CustomEventInit, Document, Element, Event, HtmlElement, KeyboardEvent,
+    MouseEvent, PointerEvent, window,
 };
 
 use crate::interact;
@@ -29,6 +29,7 @@ use crate::model::{Layout, fold_layout};
 use crate::reconcile::reconcile_layout;
 use crate::resolve::{columns_query, evaluate_url, query_url, tiles_query, workspace_query};
 use crate::state::{self, State};
+use crate::ulid;
 use crate::writer;
 
 /// Internal lifecycle state shared across async closures.
@@ -80,6 +81,15 @@ struct Inner {
     /// Debounced `/evaluate` poster — coalesces pointermove flushes
     /// into one POST ~200ms after the pointer goes idle.
     debouncer: writer::Debouncer,
+    /// The open-tile dialog, mounted as a sibling of `.niri-strip`
+    /// inside the host. Held so we don't open a second instance and
+    /// can clean it up on disconnect.
+    add_tile_dialog: Option<Element>,
+    /// Submit listener for the open-tile dialog's form — held to
+    /// keep the closure alive while the listener is attached.
+    add_tile_submit: Option<Closure<dyn FnMut(Event)>>,
+    /// `wa-after-hide` listener that cleans up after dismissal.
+    add_tile_close: Option<Closure<dyn FnMut(Event)>>,
 }
 
 impl Inner {
@@ -102,6 +112,9 @@ impl Inner {
             pointerup_listener: None,
             active_drag: None,
             debouncer: writer::Debouncer::new(),
+            add_tile_dialog: None,
+            add_tile_submit: None,
+            add_tile_close: None,
         }
     }
 
@@ -510,9 +523,16 @@ fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
         let Some(layout) = layout else {
             return;
         };
-        if let Some(doc) = interact::handle_keydown(&layout, &ev) {
-            ev.prevent_default();
-            spawn_evaluate_post(&host_for_key, &inner_for_key, doc);
+        match interact::handle_keydown(&layout, &ev) {
+            Some(interact::KeydownAction::PostDoc(doc)) => {
+                ev.prevent_default();
+                spawn_evaluate_post(&host_for_key, &inner_for_key, doc);
+            }
+            Some(interact::KeydownAction::OpenAddTileDialog) => {
+                ev.prevent_default();
+                open_add_tile_dialog(&host_for_key, &inner_for_key);
+            }
+            None => {}
         }
     }) as Box<dyn FnMut(KeyboardEvent)>);
     let _ = host.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
@@ -634,6 +654,164 @@ fn detach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
     // Drop any in-flight debounced POST — element is going away.
     i.debouncer.cancel();
     i.active_drag = None;
+    // Tear down the open-tile dialog if it's still mounted.
+    if let Some(dialog) = i.add_tile_dialog.take() {
+        dialog.remove();
+    }
+    i.add_tile_submit = None;
+    i.add_tile_close = None;
+}
+
+/// Mount a `<wa-dialog>` prompting for the new tile's `entity` /
+/// `model` / `view`. Submitting builds a `kind: "display"` tile
+/// row, POSTs it, and closes the dialog; the new tile appears via
+/// the subscription frame, no manual reconciliation needed.
+fn open_add_tile_dialog(host: &Element, inner: &Rc<RefCell<Inner>>) {
+    if inner.borrow().add_tile_dialog.is_some() {
+        return;
+    }
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(dialog) = document.create_element("wa-dialog") else {
+        return;
+    };
+    let _ = dialog.set_attribute("label", "Open tile");
+    let _ = dialog.set_attribute("open", "");
+    let _ = dialog.set_attribute("class", "tonk-layout-add-tile");
+
+    let Ok(form) = document.create_element("form") else {
+        return;
+    };
+    let _ = form.set_attribute("class", "tonk-layout-add-tile-form");
+    let _ = form.set_attribute(
+        "style",
+        "display: flex; flex-direction: column; gap: var(--wa-space-m, 12px);",
+    );
+
+    let entity_input = make_input(&document, "entity", "Entity URI", true);
+    let model_input = make_input(&document, "model", "Model name", false);
+    let view_input = make_input(&document, "view", "View name", false);
+    let _ = form.append_child(&entity_input);
+    let _ = form.append_child(&model_input);
+    let _ = form.append_child(&view_input);
+
+    if let Ok(submit_btn) = document.create_element("wa-button") {
+        let _ = submit_btn.set_attribute("type", "submit");
+        let _ = submit_btn.set_attribute("variant", "brand");
+        let _ = submit_btn.set_attribute("appearance", "filled");
+        submit_btn.set_text_content(Some("Open"));
+        let _ = form.append_child(&submit_btn);
+    }
+
+    let _ = dialog.append_child(&form);
+    let _ = host.append_child(&dialog);
+
+    // Submit — read inputs, build doc, POST, close dialog.
+    let host_for_submit = host.clone();
+    let inner_for_submit = inner.clone();
+    let dialog_for_submit = dialog.clone();
+    let entity_for_submit = entity_input.clone();
+    let model_for_submit = model_input.clone();
+    let view_for_submit = view_input.clone();
+    let submit = Closure::wrap(Box::new(move |ev: Event| {
+        ev.prevent_default();
+        let entity = read_value(&entity_for_submit);
+        if entity.is_empty() {
+            return;
+        }
+        let model = read_value(&model_for_submit);
+        let view = read_value(&view_for_submit);
+        submit_add_tile(
+            &host_for_submit,
+            &inner_for_submit,
+            &dialog_for_submit,
+            &entity,
+            &model,
+            &view,
+        );
+    }) as Box<dyn FnMut(Event)>);
+    let _ = form.add_event_listener_with_callback("submit", submit.as_ref().unchecked_ref());
+
+    // wa-after-hide fires on dismissal (X button, ESC, programmatic
+    // close). Clean up our refs and remove the element from the DOM.
+    let inner_for_close = inner.clone();
+    let dialog_for_close = dialog.clone();
+    let close = Closure::wrap(Box::new(move |_ev: Event| {
+        let mut i = inner_for_close.borrow_mut();
+        i.add_tile_dialog = None;
+        i.add_tile_submit = None;
+        i.add_tile_close = None;
+        dialog_for_close.remove();
+    }) as Box<dyn FnMut(Event)>);
+    let _ = dialog
+        .add_event_listener_with_callback("wa-after-hide", close.as_ref().unchecked_ref());
+
+    let mut i = inner.borrow_mut();
+    i.add_tile_dialog = Some(dialog);
+    i.add_tile_submit = Some(submit);
+    i.add_tile_close = Some(close);
+}
+
+/// Build a `<wa-input>` with name/label and (optionally) required.
+fn make_input(document: &Document, name: &str, label: &str, required: bool) -> Element {
+    let input = document
+        .create_element("wa-input")
+        .expect("wa-input always creates");
+    let _ = input.set_attribute("name", name);
+    let _ = input.set_attribute("label", label);
+    if required {
+        let _ = input.set_attribute("required", "");
+    }
+    input
+}
+
+/// Read a `<wa-input>`'s `.value` JS property. Plain `get_attribute`
+/// doesn't see the value the user typed — Web Awesome's inputs
+/// expose it as a property, not as a reflected attribute.
+fn read_value(input: &Element) -> String {
+    use js_sys::Reflect;
+    Reflect::get(input.as_ref(), &JsValue::from_str("value"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// Build + POST a `create_display_tile_doc`. Picks the focused
+/// column (or first column) as the target and appends the new tile
+/// after the column's last tile.
+fn submit_add_tile(
+    host: &Element,
+    inner: &Rc<RefCell<Inner>>,
+    dialog: &Element,
+    display_entity: &str,
+    model: &str,
+    view: &str,
+) {
+    let layout = match inner.borrow().layout.clone() {
+        Some(l) => l,
+        None => return,
+    };
+    let Some((column_entity, new_order)) = interact::pick_new_tile_target(&layout) else {
+        return;
+    };
+    let Some(ulid_str) = ulid::new_ulid() else {
+        return;
+    };
+    let new_tile_id = format!("id:{ulid_str}");
+    let doc = writer::create_display_tile_doc(
+        &new_tile_id,
+        &column_entity,
+        &new_order,
+        1.0,
+        display_entity,
+        view,
+        model,
+    );
+    spawn_evaluate_post(host, inner, doc);
+    // Programmatically close the dialog — wa-after-hide fires
+    // and our close listener tears down the refs.
+    let _ = dialog.remove_attribute("open");
 }
 
 /// Spawn an async task that POSTs `doc` to `/evaluate`. On failure

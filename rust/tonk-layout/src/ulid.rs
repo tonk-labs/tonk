@@ -19,6 +19,24 @@
 /// visual unambiguity.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+/// Mint a fresh ULID using the wall-clock timestamp (`Date.now()`)
+/// and 80 bits of cryptographically-strong randomness from
+/// `crypto.getRandomValues`. Returns the 26-char Crockford-base32
+/// encoding. Callers wrap it in `id:<ulid>` to use it as an entity
+/// URI literal.
+///
+/// Returns `None` only if the window or crypto interface is
+/// unavailable — both essentially always present in a browser.
+#[cfg(target_arch = "wasm32")]
+pub fn new_ulid() -> Option<String> {
+    let now_ms = js_sys::Date::now() as u64;
+    let win = web_sys::window()?;
+    let crypto = win.crypto().ok()?;
+    let mut random = [0u8; 10];
+    crypto.get_random_values_with_u8_array(&mut random).ok()?;
+    Some(encode_ulid(now_ms, random))
+}
+
 /// Encode a 48-bit timestamp (ms since epoch) + 80 bits of
 /// randomness as a 26-character Crockford-base32 ULID string. The
 /// timestamp occupies the leading 10 characters so two ULIDs minted

@@ -165,17 +165,30 @@ fn focused_column_width(layout: &Layout) -> Option<f64> {
     Some(layout.columns[col_idx].width)
 }
 
+/// Action produced by a keydown event. Either a finished
+/// notation document ready to POST, or a request to open the
+/// add-tile dialog (which gathers more input before doc construction).
+#[cfg(target_arch = "wasm32")]
+pub(crate) enum KeydownAction {
+    /// The document is ready — POST it via `/evaluate`.
+    PostDoc(String),
+    /// Open the add-tile dialog; submission later builds a tile
+    /// document and posts it.
+    OpenAddTileDialog,
+}
+
 /// Dispatch a keyboard event to the matching mutation builder.
-/// Returns the notation document to POST, or `None` if the key
-/// doesn't bind to any action (or the action's target doesn't
-/// exist, like arrow-down at the bottom of a column). Callers
-/// `prevent_default()` only when this returns `Some`.
+/// Returns the action to take, or `None` if the key doesn't bind
+/// (or the action's target doesn't exist — arrow-down at the
+/// bottom of a column). Callers `prevent_default()` only when this
+/// returns `Some`.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn handle_keydown(
     layout: &Layout,
     ev: &web_sys::KeyboardEvent,
-) -> Option<String> {
+) -> Option<KeydownAction> {
     use crate::writer;
+    use KeydownAction::*;
 
     let key = ev.key();
     let ctrl = ev.ctrl_key() || ev.meta_key();
@@ -183,49 +196,81 @@ pub(crate) fn handle_keydown(
     match (key.as_str(), ctrl) {
         ("ArrowLeft", false) => {
             let tile = next_focus_across_columns(layout, Direction::Backward)?;
-            Some(writer::set_focus_doc(&layout.workspace, &tile))
+            Some(PostDoc(writer::set_focus_doc(&layout.workspace, &tile)))
         }
         ("ArrowRight", false) => {
             let tile = next_focus_across_columns(layout, Direction::Forward)?;
-            Some(writer::set_focus_doc(&layout.workspace, &tile))
+            Some(PostDoc(writer::set_focus_doc(&layout.workspace, &tile)))
         }
         ("ArrowUp", false) => {
             let tile = next_focus_within_column(layout, Direction::Backward)?;
-            Some(writer::set_focus_doc(&layout.workspace, &tile))
+            Some(PostDoc(writer::set_focus_doc(&layout.workspace, &tile)))
         }
         ("ArrowDown", false) => {
             let tile = next_focus_within_column(layout, Direction::Forward)?;
-            Some(writer::set_focus_doc(&layout.workspace, &tile))
+            Some(PostDoc(writer::set_focus_doc(&layout.workspace, &tile)))
         }
         ("ArrowLeft", true) => {
             let (entity, new_order) = move_focused_column(layout, Direction::Backward)?;
-            Some(writer::move_column_doc(&entity, &new_order))
+            Some(PostDoc(writer::move_column_doc(&entity, &new_order)))
         }
         ("ArrowRight", true) => {
             let (entity, new_order) = move_focused_column(layout, Direction::Forward)?;
-            Some(writer::move_column_doc(&entity, &new_order))
+            Some(PostDoc(writer::move_column_doc(&entity, &new_order)))
         }
         ("ArrowUp", true) => {
             let (tile_entity, new_order) = move_focused_tile(layout, Direction::Backward)?;
             let col_entity = focused_column_entity(layout)?;
-            Some(writer::move_tile_doc(&tile_entity, &col_entity, &new_order))
+            Some(PostDoc(writer::move_tile_doc(
+                &tile_entity,
+                &col_entity,
+                &new_order,
+            )))
         }
         ("ArrowDown", true) => {
             let (tile_entity, new_order) = move_focused_tile(layout, Direction::Forward)?;
             let col_entity = focused_column_entity(layout)?;
-            Some(writer::move_tile_doc(&tile_entity, &col_entity, &new_order))
+            Some(PostDoc(writer::move_tile_doc(
+                &tile_entity,
+                &col_entity,
+                &new_order,
+            )))
         }
         ("r" | "R", false) => {
             let col_entity = focused_column_entity(layout)?;
             let current = focused_column_width(layout)?;
-            Some(writer::resize_column_doc(&col_entity, cycle_width(current)))
+            Some(PostDoc(writer::resize_column_doc(
+                &col_entity,
+                cycle_width(current),
+            )))
         }
         ("q" | "Q", false) => {
             let tile = layout.focus.clone()?;
-            Some(writer::close_tile_doc(&tile))
+            Some(PostDoc(writer::close_tile_doc(&tile)))
         }
+        ("Enter", false) => Some(OpenAddTileDialog),
         _ => None,
     }
+}
+
+/// Resolve the column the new tile should join, plus the lex order
+/// key for its position within that column. v1 picks the column
+/// containing the focused tile (or the first column if no focus),
+/// and appends after the column's last tile. Returns `None` when
+/// the layout has no columns to add into.
+pub(crate) fn pick_new_tile_target(layout: &Layout) -> Option<(String, String)> {
+    let column = match layout.focus.as_deref() {
+        Some(focus) => {
+            let (col_idx, _) = locate(layout, focus)?;
+            &layout.columns[col_idx]
+        }
+        None => layout.columns.first()?,
+    };
+    let last = column.tiles.last().map(|t| t.order.as_str());
+    // `above` always succeeds with the [a-z] alphabet, so this
+    // shouldn't return None in practice — but stay defensive.
+    let new_order = order::between(last, None)?;
+    Some((column.entity.clone(), new_order))
 }
 
 /// Dispatch a click to a focus-set mutation when the click landed
