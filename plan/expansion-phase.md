@@ -236,128 +236,186 @@ One boxed-closure boundary at the LSP edge, versus a
 > unavoidable `dyn` (the LSP's late-bound branch resolution) is a
 > boxed closure, not a trait object.
 
-## Part B — analyze chain + two sub-phases
+## Part B — analyze / evaluate chains + two sub-phases
 
-### B.1 Public surface
+### B.0 Crate home
+
+The analyzer + expansion logic moves into its own crate,
+**`tonk-analyzer`**. Today it is a `mod analyzer` tangled inside
+`tonk-schema` next to `concept.rs` / `evaluate.rs`. It is *not*
+folded into `tonk-notation`: `tonk-notation` is pure syntax (parse
+→ `Syntax`, no branch, no `Source`); analysis resolves against a
+branch and would drag `dialog_query::Source` + the
+schema-reconstruction surface into the lightweight parser crate.
+`tonk-analyzer` depends on `tonk-notation` (syntax) and the
+schema-resolution pieces; `tonk-schema`'s `evaluate` builds on it.
+
+All trait bounds on new code use `dialog_common::ConditionalSend`
+/ `ConditionalSync`, never bare `Send` / `Sync` — so the same
+source compiles for native (where they expand to `Send + Sync`)
+and `wasm32` (where they vanish).
+
+### B.1 Public surface — `syntax.analyze(source)` / `syntax.evaluate(txn)`
+
+The analyzer **never touches a transaction** — it only reads
+(resolution queries) and produces an `Analysis` value. So `analyze`
+takes a `Source`, not a `Transaction`. Evaluation *does* produce
+mutations, so it takes a `Transaction`. The chains hang off
+`Syntax` (the thing being analyzed), not off the source:
 
 ```rust
-// tonk-schema/src/analyzer.rs — mirrors evaluate / induce.
-
-pub trait TransactionAnalyzeExt<'a> {
-    /// Stage analysis of `syntax` against this transaction.
-    fn analyze<'s>(self, syntax: &'s Syntax) -> Analyze<'a, 's>;
+// tonk-analyzer — analysis is pure-read; Source is the input.
+pub trait SyntaxAnalyzeExt {
+    fn analyze<S: Source>(&self, source: S) -> Analyze<'_, S>;
 }
-impl<'a> TransactionAnalyzeExt<'a> for Transaction<'a> {
-    fn analyze<'s>(self, syntax: &'s Syntax) -> Analyze<'a, 's> {
-        Analyze { txn: self, syntax }
-    }
-}
+impl SyntaxAnalyzeExt for Syntax { /* … */ }
 
-pub struct Analyze<'a, 's> { txn: Transaction<'a>, syntax: &'s Syntax }
-
-impl<'a, 's> Analyze<'a, 's> {
-    /// Resolve + expand `syntax` against the transaction's
-    /// overlay. `env` supplies query capability. The transaction
-    /// is the query target, so an in-document concept declared in
-    /// an earlier statement is visible to a later one.
-    pub async fn perform<Env: QueryEnv>(self, env: &Env)
-        -> Result<Analyzed<'a>, AnalyzeError>
+pub struct Analyze<'s, S> { syntax: &'s Syntax, source: S }
+impl<'s, S: Source> Analyze<'s, S> {
+    pub async fn perform<Env: QueryEnv + ConditionalSync>(self, env: &Env)
+        -> Result<Analysis, AnalyzeError>
     {
-        // The schema lookups query through the transaction's
-        // overlay — see open item on the txn → Source handle.
-        let resolved = resolve(self.syntax, &self.txn, env).await?;
+        let resolved = resolve(self.syntax, &self.source, env).await?;
         let expanded = expand(resolved)?;
-        Ok(Analyzed { txn: self.txn, analysis: expanded.into_analysis() })
+        Ok(expanded.into_analysis())
     }
 }
 ```
 
-`Evaluate::perform` is rewired to call `txn.analyze(syntax)`
-internally instead of building a `BranchResolver`. Usage:
+```rust
+// tonk-schema/src/evaluate.rs — evaluation needs a transaction.
+pub trait SyntaxEvaluateExt {
+    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a>;
+}
+impl SyntaxEvaluateExt for Syntax { /* … */ }
+// Evaluate::perform analyzes against the txn (its overlay is a
+// Source, so in-document declarations from earlier statements
+// resolve), applies mutations to the txn, returns Evaluated.
+```
+
+Usage:
 
 ```rust
-branch.transaction().analyze(syntax).perform(env)        // analysis only
-branch.transaction().evaluate(syntax).perform(branch, env)   // unchanged
+syntax.analyze(branch).perform(env)                  // analysis only — read
+syntax.evaluate(branch.transaction()).perform(env)   // mutate — caller makes the txn
 ```
+
+A query is read-only, so callers that only run queries go through
+`analyze` against the `Branch` directly — no transaction. A
+document that mutates goes through `evaluate`, and the caller
+creates the `Transaction` and hands it in.
+
+> Open: whether the `Transaction` overlay satisfies `Source` so
+> `evaluate`'s internal `analyze` resolves through it. See open
+> items — does not change the public shape, only whether
+> `evaluate` analyzes against the overlay or the underlying
+> branch.
 
 ### B.2 Sub-phase 1 — resolve + annotate
 
 Walks the syntax tree; resolves every reference through the
-`Source` it is handed (via `ResolvedConcept::resolve(...)
-.perform(env)` and siblings); attaches descriptors; records
+`Source` it is handed (`NamedReference::resolve` →
+`ResolvedConcept::resolve`); attaches descriptors; records
 `declarations` / `variables`; emits diagnostics carrying source
 spans. **Output keeps source shape** — `concept!`, `rule!`, domain
 heads, anchors all still distinct — plus resolution annotations
 and a stable per-expression id.
 
+The IR types drop the `Resolved` prefix — they are the analyzer's
+own `Expression` / `Document`, in the `tonk-analyzer` namespace,
+distinct from `tonk_notation::Expression` (the *parsed* node) one
+import away. The analyzer's `Expression` is the *resolved* form.
+
 ```rust
-struct ResolvedDocument {
-    exprs: Vec<ResolvedExpr>,           // document order
-    diagnostics: Vec<AnalyzeDiagnostic>,// carry source spans
+// tonk-analyzer. `Expression` here = resolved expression; the
+// parsed `tonk_notation::Expression` is a different type, never
+// imported unqualified alongside it.
+struct Document {
+    expressions: Vec<Expression>,        // document order
+    diagnostics: Vec<AnalyzeDiagnostic>, // carry source spans
     declarations: HashMap<String, Entity>,
     variables: HashMap<String, Entity>,
 }
 
 #[derive(Copy, Clone)]
-struct ExprId(usize);                   // stable source back-pointer
+struct ExpressionId(usize);              // stable source back-pointer
 
-struct ResolvedExpr { id: ExprId, label: String, span: Range, kind: ResolvedKind }
+struct Expression { id: ExpressionId, label: String, span: Range, kind: ExpressionKind }
 
-enum ResolvedKind {
-    Query(ResolvedQuery),
-    Assertion(ResolvedAssertion),       // source shape: concept|domain, this, anchor
-    Declaration(ResolvedDeclaration),   // concept! / attribute! — stay special for now
-    Rule(ResolvedRule),
+enum ExpressionKind {
+    Query(Query),
+    Assertion(Assertion),       // source shape: concept|domain predicate, this, anchor
+    Declaration(Declaration),   // concept! / attribute! — stay special for now
+    Rule(Rule),
 }
 
-struct ResolvedAssertion {
-    head: ResolvedHead,                 // Concept | Domain
-    this: ThisIntent,                   // consumed by expand; not in ExpandedDocument
-    anchor: Option<String>,             // consumed by expand; not in ExpandedDocument
-    fields: Vec<ResolvedField>,
+struct Assertion {
+    predicate: Predicate,       // Concept | Domain — was `head`
+    this: ThisIntent,           // consumed by expand; not in the expanded Document
+    anchor: Option<String>,     // consumed by expand; not in the expanded Document
+    fields: Vec<Field>,
 }
 
-enum ResolvedHead {
-    Concept { predicate: PredicateDescriptor },  // Durable | Transient
-    Domain  { domain: String },                  // descriptor synthesized in expand
+enum Predicate {
+    Concept { descriptor: PredicateDescriptor },  // Durable | Transient
+    Domain  { domain: String },                   // descriptor synthesized in expand
 }
 ```
+
+(`head` is gone — the predicate of an assertion is the
+`predicate` field, matching `mutation.rs`'s `PredicateDescriptor`
+vocabulary that Part C consolidates onto.)
 
 ### B.3 Sub-phase 2 — expand
 
 Lowers the annotated tree into **kernel-shaped** forms: every
 mutation is a concept-assert. No `Domain`, no `anchor`, no
-`ThisIntent`.
+`ThisIntent`. The output reuses the same `Document` /
+`Expression` types — expansion rewrites expressions in place; the
+post-expansion invariant is "every `Assertion` predicate is
+`Concept`, `anchor` is `None`".
+
+Expansion **only touches mutations.** A query has no anchor, no
+derived-`this:` write, no durability — there is nothing to lower.
+A query `Expression` passes through sub-phase 2 unchanged. (Hence
+no separate "expanded query" type — that was a phantom in the
+draft sketch; dropped.)
+
+The write side becomes a list of **`MutationAnalysis`** — the
+per-mutation analysis: a kernel `Mutation` (reused verbatim from
+`tonk-schema::mutation`, the same type `/transact` uses) plus the
+source expression it came from.
 
 ```rust
-struct ExpandedDocument {
-    queries: Vec<ExpandedQuery>,
-    mutations: Vec<SourcedMutation>,
-    effects: Vec<Effect>,
-    declarations: HashMap<String, Entity>,
-    variables: HashMap<String, Entity>,
-    diagnostics: Vec<AnalyzeDiagnostic>,
+/// Per-mutation analysis: a kernel mutation + its source
+/// expression. One source expression can yield several
+/// (an anchor → assert + Name assert); they share `source`.
+struct MutationAnalysis {
+    mutation: Mutation,          // tonk-schema::mutation — concept-only
+    source: ExpressionId,
 }
-
-/// A kernel mutation + its source expression. `Mutation` is the
-/// SHARED core reused verbatim from `tonk-schema::mutation` — the
-/// same type the /transact wire path uses. The wrapper carries
-/// only what downstream still needs: the source expr id, for
-/// projecting results back into the user's view.
-struct SourcedMutation { mutation: Mutation, source: ExprId }
 ```
+
+> Naming note. The *current* `transact::MutationAnalysis`
+> (`{ statements, requires, transient }` — the whole write-side
+> bundle) is **removed** by Part C: `statements` becomes
+> `Vec<MutationAnalysis>` on `Analysis`, `transient` is gone
+> (durability rides on `PredicateDescriptor`), `requires` either
+> moves onto `Analysis` or is recomputed. So the name
+> `MutationAnalysis` is freed up and re-used for the *element*
+> type — there is no collision in the final state.
 
 Lowerings (the fixed set):
 
-- **domain head → anonymous concept.** Synthesize a
+- **domain predicate → anonymous concept.** Synthesize a
   `ConceptDescriptor` (one `<domain>/<field>` attribute per field,
   cardinality one, no value-type constraint — the existing
   `From<DomainApplication> for ConceptQuery` logic, run here).
   Always `PredicateDescriptor::Durable`.
 - **`&anchor` → paired `Name` assert.** The assert, plus a second
   assert of the built-in `Name` concept publishing `id:<anchor>` →
-  the subject entity. Both `SourcedMutation`s share the source
-  `ExprId`.
+  the subject entity. Both `MutationAnalysis` entries share the
+  source `ExpressionId`.
 - **omitted `this:` → injected `id:<body-digest>`.** `ThisIntent`
   is consumed here: `Uri` → that entity, `Variable` → a var term,
   `Derived` → `id:<digest>`.
@@ -389,7 +447,8 @@ shared `mutation.rs` types:
   shims (Part A).
 - `tonk_schema::evaluate::BranchResolver` (Part A).
 - `transact::Application` enum (`Concept | Domain`).
-- `transact::Statement` enum → replaced by `SourcedMutation`.
+- `transact::Statement` enum → replaced by `MutationAnalysis`
+  (the per-mutation element type).
 - `transact::ThisIntent` survives only inside sub-phase 1→2; never
   reaches `Analysis`.
 - `MutationAnalysis::transient` side-set — durability now rides on
@@ -423,11 +482,11 @@ Downstream needs three things, all kept *beside* the IR, not in
 its variant shape:
 
 1. **Projection labels** (`render_match_blocks`) — kept parallel to
-   forms today as `labels`; in the new IR each `SourcedMutation` /
-   `ExpandedQuery` carries an `ExprId`, and `ResolvedExpr` holds
-   `(id, label, span)`. Grouping by `ExprId` recovers the block
-   structure even when one source expr lowers to two mutations
-   (the anchor case).
+   forms today as `labels`; in the new IR each `MutationAnalysis`
+   carries an `ExpressionId`, and the analyzer `Expression` holds
+   `(id, label, span)`. Grouping by `ExpressionId` recovers the
+   block structure even when one source expression lowers to two
+   mutations (the anchor case).
 2. **`declarations` / `variables`** — built in sub-phase 1, copied
    through.
 3. **Diagnostics** — produced in sub-phase 1 against source spans;
@@ -447,10 +506,12 @@ its variant shape:
    `Resolver` / `NoopResolver` / `BranchResolver` and the
    `analyzer` resolved-type mirrors. Language server +
    `lsp_introspection` rewired to the boxed-closure boundary.
-3. **Part B** — `TransactionAnalyzeExt` + the two sub-phases.
-   `Evaluate::perform` rewired through `txn.analyze(syntax)`.
+3. **Part B** — carve out the `tonk-analyzer` crate; the
+   `syntax.analyze(source)` / `syntax.evaluate(txn)` chains; the
+   two sub-phases. `ConditionalSend` / `ConditionalSync` on all
+   new bounds.
 4. **Part C** — collapse `Application` / `Statement` onto
-   `mutation::Mutation` + `SourcedMutation`; delete the listed
+   `mutation::Mutation` + `MutationAnalysis`; delete the listed
    types.
 5. Each step: `cargo fmt --all`, `clippy --all-targets
    --all-features -D warnings`, native + wasm tests.
@@ -468,9 +529,10 @@ its variant shape:
   lookups take a `&Branch` for the schema (schema rarely changes
   mid-document) and the analyzer's in-doc `Scope` continues to
   cover same-document declarations — i.e. keep today's split.
-- `ExprId` representation — a plain `usize` index into
-  `ResolvedDocument::exprs`. Sturdier than today's positional
-  `labels` parallelism once one source expr → many forms.
+- `ExpressionId` representation — a plain `usize` index into
+  the analyzer `Document`'s `expressions`. Sturdier than today's
+  positional `labels` parallelism once one source expression
+  lowers to several forms.
 - Whether `concept!` / `rule!` lower through expansion too (the
   2026-05-16 ambition) or stay analyzer-special. This spec keeps
   them special; only domain / anchor / derived-`this:` lower.
