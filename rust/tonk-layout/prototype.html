@@ -1,0 +1,268 @@
+<!doctype html>
+<!--
+  Prototype of the <tonk-layout> layout model. No Rust, no dialog
+  DB — just layout CSS with dummy tiles.
+
+  Story so far:
+   - "rigid rows of columns" looked like a broken list (a short
+     tile beside a tall stack left a dead gap; a wrapped-alone
+     column stretched full width).
+   - "CSS Grid masonry with width spans" needs a brittle row-span
+     height hack and fell apart.
+
+  This version is the SIMPLE thing that actually works: CSS
+  multi-column masonry (the real Pinterest technique). Tiles are
+  content-height; the browser flows them top-to-bottom into a set
+  of equal base-width columns, balanced, with no dead gaps and no
+  JavaScript. Every tile is one base column wide — there is no
+  width preset / spanning in this mode, on purpose, so we can
+  judge the clean baseline first.
+
+  The button toggles a "wide" variant where a tile MAY span the
+  full width (one coarse exception: full-bleed), to feel whether
+  even minimal width variation is wanted, without the full
+  Grid-spanning complexity.
+
+  Resize the window: the column count changes; tiles reflow.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tonk-layout prototype</title>
+    <style>
+      :root {
+        --surface: #1a1a1f;
+        --border: #33333b;
+        --text: #e8e8ea;
+        --quiet: #8a8a92;
+        --brand: #3b82f6;
+        --space-xs: 0.5rem;
+        --space-s: 0.75rem;
+        --space-m: 1rem;
+        --radius: 0.5rem;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0e0e12;
+        color: var(--text);
+        font-family: system-ui, sans-serif;
+        background-image: radial-gradient(
+          color-mix(in srgb, var(--text) 12%, transparent) 0.5px,
+          transparent 0.5px
+        );
+        background-size: 16px 16px;
+      }
+
+      /* ---- the board: CSS multi-column masonry -----------------
+         `column-width` is the base column (~17rem); the browser
+         fits as many as the viewport allows and balances tiles
+         across them. `column-gap` is the inter-column space.
+         Tiles are normal flow content inside the column box, so
+         each is exactly its content height; the only scroller is
+         the page. */
+      .board {
+        --base: 17rem;
+        --gap: var(--space-s);
+        column-width: var(--base);
+        column-gap: var(--gap);
+        padding: var(--gap);
+        box-sizing: border-box;
+        min-block-size: 100dvh;
+      }
+
+      /* A tile. `break-inside: avoid` keeps a tile from being
+         split across two columns. The bottom margin is the
+         vertical gap (column items have no `row-gap`). */
+      .tile {
+        break-inside: avoid;
+        margin-block-end: var(--gap);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--space-m);
+        box-sizing: border-box;
+        overflow: hidden;
+      }
+      .tile[data-focused] {
+        border-color: var(--brand);
+        box-shadow: 0 0 0 2px var(--brand);
+      }
+
+      /* A full-bleed tile spans every column. This is the one
+         width variation in the prototype: it shows whether even a
+         single "wide" option reads well, without committing to
+         the full XS-XL spanning machinery. Toggle hides/shows it
+         as a span vs a normal one-column tile. */
+      .board[data-wide="on"] .tile[data-span="full"] {
+        column-span: all;
+      }
+
+      .tile-title {
+        margin: 0 0 var(--space-xs);
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .tile-meta {
+        margin: 0 0 var(--space-s);
+        font-size: 0.8rem;
+        color: var(--quiet);
+      }
+      .tile-body {
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: var(--quiet);
+      }
+
+      .bar {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        display: flex;
+        gap: var(--space-m);
+        align-items: center;
+        padding: var(--space-s) var(--space-m);
+        background: color-mix(in srgb, #0e0e12 92%, transparent);
+        border-block-end: 1px solid var(--border);
+        backdrop-filter: blur(6px);
+        font-size: 0.85rem;
+      }
+      .bar strong {
+        font-weight: 600;
+      }
+      .bar button {
+        font: inherit;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--space-xs) var(--space-s);
+        cursor: pointer;
+      }
+      .bar span {
+        color: var(--quiet);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="bar">
+      <strong>tonk-layout prototype</strong>
+      <button id="toggle">full-bleed tile: off</button>
+      <span>CSS multi-column masonry — resize to change column count</span>
+    </div>
+
+    <!--
+      A flat list of tiles. No row / column wrappers: in masonry
+      the browser owns placement. Tiles are content-height; their
+      order here is their flow order.
+    -->
+    <div class="board" id="board" data-wide="off">
+      <div class="tile" data-focused>
+        <p class="tile-title">Inbox</p>
+        <p class="tile-meta">focused tile</p>
+        <p class="tile-body">
+          Every tile is one base column wide. The board flows tiles
+          top to bottom into as many base-width columns as the
+          viewport fits, balancing their heights. No dead gaps, no
+          stranded full-width tiles, no JavaScript.
+        </p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Notifications</p>
+        <p class="tile-meta">short tile</p>
+        <p class="tile-body">A short one.</p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Activity</p>
+        <p class="tile-meta">content-height</p>
+        <p class="tile-body">
+          This tile is exactly as tall as its text. No inner
+          scrollbar; the page is the only scroller.
+        </p>
+      </div>
+
+      <div class="tile" data-span="full">
+        <p class="tile-title">Wide feature panel</p>
+        <p class="tile-meta">full-bleed — toggled by the button</p>
+        <p class="tile-body">
+          With the toggle on, this tile spans every column. With it
+          off, it is a normal one-column tile. Use the toggle to
+          judge whether even one "wide" option earns its keep, or
+          whether a uniform single width reads better.
+        </p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Project Alpha</p>
+        <p class="tile-meta">medium body</p>
+        <p class="tile-body">
+          A tile with a couple of sentences of content so the board
+          has a mix of heights to balance across columns.
+        </p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Project Beta</p>
+        <p class="tile-meta">taller body</p>
+        <p class="tile-body">
+          A taller tile. Masonry handles uneven heights for free:
+          the column balancer simply makes columns of roughly equal
+          total height, so a tall tile here is offset by shorter
+          tiles elsewhere.
+          <br /><br />
+          Extra paragraph to make this tile clearly the tallest, so
+          the balancing is visible.
+        </p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Project Gamma</p>
+        <p class="tile-meta">short</p>
+        <p class="tile-body">Short again.</p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Task: write spec</p>
+        <p class="tile-meta">task</p>
+        <p class="tile-body">One line.</p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Task: review PR</p>
+        <p class="tile-meta">task</p>
+        <p class="tile-body">Another one-liner.</p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Task: ship it</p>
+        <p class="tile-meta">task</p>
+        <p class="tile-body">A third.</p>
+      </div>
+
+      <div class="tile">
+        <p class="tile-title">Notes</p>
+        <p class="tile-meta">medium body</p>
+        <p class="tile-body">
+          A closing tile with enough text to round out the board so
+          the column balance is easy to read at a glance.
+        </p>
+      </div>
+    </div>
+
+    <script>
+      const board = document.getElementById("board");
+      const toggle = document.getElementById("toggle");
+      toggle.addEventListener("click", () => {
+        const on = board.dataset.wide === "on";
+        board.dataset.wide = on ? "off" : "on";
+        toggle.textContent = "full-bleed tile: " + (on ? "off" : "on");
+      });
+    </script>
+  </body>
+</html>

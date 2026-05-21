@@ -1,0 +1,922 @@
+<!doctype html>
+<!--
+  Interaction prototype for <tonk-layout>. A clean rebuild.
+
+  LAYOUT (settled, from prototype-niri.html)
+   - a horizontal strip of columns; the strip scrolls sideways.
+   - a column is a vertical stack of tiles; the column scrolls.
+   - tiles are content-height; a tile never scrolls itself.
+   - one strict grid: a --cell unit; --cell is a whole multiple
+     of the fine dot --pitch, so every edge sits on a dot.
+
+  LOOK
+   - no per-tile borders, no panel chrome. Tiles are separated by
+     DIVIDER lines — horizontal rules between stacked tiles,
+     vertical rules between columns. The apps sit flat on the
+     board canvas (Metro / iPad-widget), not boxed cards.
+
+  INSERT  (hover a gap)
+   - every gap is a COLLAPSED divider — a hairline at rest. Hover
+     it and it expands into a real tile/column-sized slot with a +
+     to open an app there. One gesture: hover the line, it opens.
+   - the column foot keeps a permanent reveal-only placeholder
+     slot; hover shows its + without expanding.
+
+  RESIZE
+   - drag a divider to resize: a row divider resizes the tile
+     above it, a column divider resizes the column to its left.
+     The size snaps to whole grid cells.
+
+  A feel prototype: no Rust, no persistence.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tonk-layout — interaction prototype</title>
+    <style>
+      :root {
+        --surface: #1a1a1f;
+        --surface-2: #232329;
+        --border: #33333b;
+        --text: #e8e8ea;
+        --quiet: #8a8a92;
+        --brand: #3b82f6;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0e0e12;
+        color: var(--text);
+        font-family: system-ui, sans-serif;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ===========================================================
+         GRID. --pitch is the fine graph-paper dot; --cell is the
+         snap unit (a whole multiple of --pitch). --gap, the space
+         between tiles and columns where dividers and inserts live.
+         =========================================================== */
+      .strip {
+        --pitch: 16px; /* graph-paper dot pitch */
+        --cell: 48px; /* snap unit = 3 dots */
+        /* the gap between tiles/columns is one --pitch, so the
+           dividers that fill it stay on the dot grid. */
+        --gap: var(--pitch);
+        --pad: var(--cell); /* strip padding = one cell */
+        /* the one grey wash used for BOTH the divider hover hint
+           and the placeholder, so the dwell hint flows seamlessly
+           into the placeholder with no colour change. */
+        --wash: color-mix(in srgb, var(--text) 6%, transparent);
+        flex: 1;
+        min-block-size: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scroll-snap-type: x proximity;
+        /* snap a column flush to the strip's left edge, so the
+           divider line before it tucks just off-screen. */
+        scroll-padding-inline: 0;
+        overscroll-behavior-x: contain;
+      }
+
+      /* the rail — the scrolled content. Carries the dot grid so
+         the grid travels with the columns (pure CSS). */
+      .rail {
+        display: flex;
+        flex-direction: row;
+        align-items: flex-start;
+        padding: var(--pad);
+        /* trailing room so the LAST column can be scrolled flush
+           to the strip's left edge — niri-style. Script sizes it
+           to exactly (strip width - last column width) so the
+           scroll END coincides with that snap point and there is
+           no dead void to snap back from. */
+        gap: 0;
+        box-sizing: border-box;
+        block-size: 100%;
+        min-inline-size: 100%;
+        inline-size: max-content;
+        /* dot grid; the position is offset back half a dot so the
+           dots land ON the grid lines, where edges sit. */
+        background-image: radial-gradient(
+          color-mix(in srgb, var(--text) 7%, transparent) 0.5px,
+          transparent 0.5px
+        );
+        background-size: var(--pitch) var(--pitch);
+        background-position:
+          calc(var(--pitch) / -2) calc(var(--pitch) / -2);
+      }
+
+      /* a column: a vertical stack of tiles, an integer number of
+         cells wide. */
+      .column {
+        position: relative;
+        flex: 0 0 calc(var(--cells, 8) * var(--cell));
+        block-size: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        overflow-x: clip;
+        scroll-snap-align: start;
+      }
+      /* the first column has no divider before it, so it must not
+         snap flush — it rests with the rail's lead pad showing. */
+      .rail > .column:first-child {
+        scroll-snap-align: none;
+      }
+
+      /* ---- tile: a full app panel (niri split-view style) ------
+         A tile FILLS its share of the column but NEVER shrinks
+         (`flex-shrink: 0`). So when a new panel is inserted the
+         existing tiles keep their size — the column's content
+         grows and the column scrolls; nothing gets squashed. A
+         lone tile still grows to fill an otherwise-empty column.
+         A `--rows` tile takes a fixed integer-cell height. */
+      .tile {
+        position: relative;
+        flex: 1 0 auto;
+        min-block-size: calc(var(--cell) * 3);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .tile[data-rows] {
+        flex: 0 0 calc(var(--rows) * var(--cell));
+      }
+
+      /* An app panel — NO chrome at all: no title bar, no panel
+         background. The content sits directly on the board canvas;
+         only the dividers and the layout separate one app from the
+         next. Generous padding gives it room to breathe. */
+      .app {
+        display: flex;
+        flex-direction: column;
+        min-block-size: 0;
+        flex: 1;
+        padding: 1rem 1.1rem;
+        font-size: 0.9rem;
+        color: var(--quiet);
+        line-height: 1.55;
+      }
+      /* the app name — just bold text leading the content, not a
+         bar; no background, no separator. */
+      .app-name {
+        color: var(--text);
+        font-size: 1.05rem;
+        font-weight: 700;
+        margin-bottom: 0.6rem;
+        letter-spacing: -0.01em;
+      }
+      .app-body {
+        flex: 1;
+        min-block-size: 0;
+      }
+      /* a few app-content building blocks */
+      .row-item {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.3rem 0;
+      }
+      .avatar {
+        width: 1.5rem;
+        height: 1.5rem;
+        border-radius: 50%;
+        background: var(--border);
+        flex: 0 0 auto;
+      }
+      .bar-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 0.35rem;
+        height: 4rem;
+        margin-top: 0.5rem;
+      }
+      .bar-chart i {
+        flex: 1;
+        background: var(--brand);
+        opacity: 0.7;
+        border-radius: 2px 2px 0 0;
+      }
+      .chip {
+        display: inline-block;
+        padding: 0.15rem 0.5rem;
+        margin: 0.15rem 0.15rem 0 0;
+        background: var(--surface);
+        font-size: 0.75rem;
+        color: var(--text);
+      }
+      .swatch {
+        height: 5rem;
+        background: linear-gradient(
+          135deg,
+          var(--brand),
+          color-mix(in srgb, var(--brand) 30%, #9333ea)
+        );
+        opacity: 0.6;
+      }
+
+      /* drag-handle grip: the braille glyph, focus indicator */
+      .tile-handle {
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        color: var(--quiet);
+        font-size: 1rem;
+        line-height: 1;
+        cursor: grab;
+        opacity: 0;
+        transition: opacity 0.12s ease;
+        user-select: none;
+        z-index: 6;
+      }
+      .tile:hover .tile-handle {
+        opacity: 1;
+      }
+      .tile[data-focused] .tile-handle {
+        opacity: 1;
+        color: var(--text);
+        animation: handle-pulse 1.3s ease-in-out infinite;
+      }
+      @keyframes handle-pulse {
+        0%, 100% { opacity: 0.4; }
+        50%      { opacity: 1; }
+      }
+
+      /* ===========================================================
+         DIVIDERS. A divider sits between two tiles (row) or two
+         columns (col), and also one at every column foot and the
+         strip end. The GESTURE decides what it does:
+          - REST on it ~0.5s and it expands (the .dwell class) into
+            a real tile/column-sized insert slot showing a +.
+          - PRESS and drag before that dwell fires and it resizes
+            the tile above / column to its left instead — the drag
+            cancels the dwell, so it never expands under a resize.
+         At rest it is just a thin hairline.
+         =========================================================== */
+      .divider {
+        position: relative;
+        flex: 0 0 var(--gap);
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition:
+          flex-basis 0.18s ease,
+          background 0.15s ease;
+      }
+      .divider.row {
+        cursor: ns-resize;
+      }
+      .divider.col {
+        cursor: ew-resize;
+        align-self: stretch;
+      }
+      /* after the dwell: expand into a real insert slot */
+      .divider.row.dwell {
+        flex-basis: calc(var(--cell) * 3);
+        background: var(--wash);
+      }
+      .divider.col.dwell {
+        flex-basis: calc(var(--cell) * 8);
+        background: var(--wash);
+      }
+      /* the visible hairline, centred in the gap; fades on dwell */
+      .divider::before {
+        content: "";
+        position: absolute;
+        background: var(--border);
+        transition: opacity 0.12s ease;
+      }
+      .divider.row::before {
+        left: 0.75rem;
+        right: 0.75rem;
+        top: 50%;
+        height: 1px;
+        translate: 0 -50%;
+      }
+      .divider.col::before {
+        top: 0.75rem;
+        bottom: 0.75rem;
+        left: 50%;
+        width: 1px;
+        translate: -50% 0;
+      }
+      .divider.dwell::before {
+        opacity: 0;
+      }
+      /* the + control, revealed when the divider has expanded. It
+         is absolutely positioned so it never inflates the resting
+         hairline's width/height. */
+      .divider .open-btn {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease;
+      }
+      .divider.dwell .open-btn {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      /* ===========================================================
+         PLACEHOLDER — the column-foot slot. A fixed one-cell strip
+         always present at the bottom of a column; invisible at
+         rest, on hover it reveals the grey wash + the + button. It
+         does NOT expand. (Between-tile and between-column gaps use
+         the collapsed `.divider` above, which DOES expand.)
+         =========================================================== */
+      .placeholder {
+        position: relative;
+        flex: 0 0 var(--cell);
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 4;
+        overflow: hidden;
+        transition: background 0.15s ease;
+      }
+      .placeholder .open-btn {
+        opacity: 0;
+        transition: opacity 0.12s ease;
+      }
+      .placeholder:hover {
+        background: var(--wash);
+      }
+      .placeholder:hover .open-btn {
+        opacity: 1;
+      }
+      /* the open control — subtle: just a + glyph,
+         no background, monochrome. Brightens on hover. */
+      .open-btn {
+        font: inherit;
+        font-size: 1.5rem;
+        line-height: 1;
+        color: var(--quiet);
+        background: transparent;
+        border: 0;
+        padding: 0.3rem;
+        cursor: pointer;
+      }
+      .open-btn:hover {
+        color: var(--text);
+      }
+
+      /* ===========================================================
+         PICKER. A search dropdown shown when OPEN is clicked.
+         =========================================================== */
+      .picker {
+        position: absolute;
+        z-index: 20;
+        width: 16rem;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+        display: flex;
+        flex-direction: column;
+      }
+      .picker input {
+        font: inherit;
+        font-size: 0.85rem;
+        padding: 0.5rem 0.7rem;
+        background: var(--surface-2);
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+        outline: none;
+      }
+      .picker-list {
+        max-height: 12rem;
+        overflow-y: auto;
+      }
+      .picker-item {
+        padding: 0.45rem 0.7rem;
+        font-size: 0.85rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .picker-item:hover,
+      .picker-item[data-active] {
+        background: var(--brand);
+        color: #fff;
+      }
+
+      .bar {
+        flex: 0 0 auto;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        padding: 0.6rem 1rem;
+        background: #0e0e12;
+        border-block-end: 1px solid var(--border);
+        font-size: 0.85rem;
+      }
+      .bar strong {
+        font-weight: 600;
+      }
+      .bar span {
+        color: var(--quiet);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="bar">
+      <strong>tonk-layout — interaction prototype</strong>
+      <span>hover a gap to insert; drag a divider to resize</span>
+    </div>
+
+    <div class="strip" id="strip">
+      <div class="rail" id="rail"><!-- columns injected --></div>
+    </div>
+
+    <script>
+      // ---- the catalogue of fake apps --------------------------
+      // Each is a full app PANEL — built to fill a niri-style pane,
+      // not a small card. Bodies have enough content to look real
+      // at full column height.
+      const lines = (n, make) =>
+        Array.from({ length: n }, (_, i) => make(i)).join("");
+
+      const APPS = {
+        chat: {
+          label: "Conversation",
+          body: () =>
+            lines(
+              9,
+              (i) => `
+            <div class="row-item">
+              <div class="avatar"></div>
+              <div>
+                <strong style="color:var(--text)">${
+                  ["Alice", "Bob", "Carol", "You"][i % 4]
+                }</strong><br>
+                ${
+                  [
+                    "see you at 3?",
+                    "pushed the fix to main",
+                    "lunch later?",
+                    "sounds good — on my way",
+                    "the layout demo looks great",
+                  ][i % 5]
+                }
+              </div>
+            </div>`,
+            ),
+        },
+        editor: {
+          label: "Editor — plan.md",
+          body: () => `
+            <div style="color:var(--text);font-weight:600;
+              font-size:1rem;margin-bottom:.5rem">
+              Magazine layout</div>
+            ${lines(
+              14,
+              () => `<div style="height:.55rem;margin:.5rem 0;
+                background:var(--surface);
+                width:${70 + Math.round(Math.random() * 25)}%">
+                </div>`,
+            )}`,
+        },
+        calendar: {
+          label: "Calendar — Today",
+          body: () =>
+            lines(
+              8,
+              (i) => `
+            <div class="row-item" style="border-left:2px solid
+              var(--brand);padding-left:.5rem">
+              <span style="color:var(--text)">${
+                ["09:00", "10:30", "11:30", "13:00", "14:00",
+                 "15:30", "16:00", "17:00"][i]
+              }</span>
+              &nbsp;${
+                ["standup", "focus block", "design review",
+                 "lunch", "1:1 with Sam", "interview",
+                 "ship it", "wind down"][i]
+              }</div>`,
+            ),
+        },
+        metrics: {
+          label: "Metrics — last 12 days",
+          body: () => `
+            <div style="color:var(--text)">Daily active users</div>
+            <div class="bar-chart" style="height:7rem">
+              ${lines(
+                12,
+                () =>
+                  `<i style="height:${
+                    30 + Math.round(Math.random() * 65)
+                  }%"></i>`,
+              )}
+            </div>
+            <div style="margin-top:1rem;color:var(--text)">
+              Retention</div>
+            <div class="bar-chart" style="height:5rem">
+              ${lines(
+                12,
+                () =>
+                  `<i style="height:${
+                    40 + Math.round(Math.random() * 55)
+                  }%"></i>`,
+              )}
+            </div>`,
+        },
+        files: {
+          label: "Files — project",
+          body: () =>
+            lines(
+              11,
+              (i) => `
+            <div class="row-item">${
+              ["📁 assets", "📄 plan.md", "📄 prototype.html",
+               "📄 README.md", "📁 rust", "📄 Cargo.toml",
+               "📄 notes.txt", "📁 docs", "📄 index.html",
+               "📄 styles.css", "📁 .git"][i]
+            }</div>`,
+            ),
+        },
+        media: {
+          label: "Media",
+          body: () => `
+            <div class="swatch" style="height:11rem"></div>
+            <div style="margin-top:.5rem;color:var(--text)">
+              cover.jpg</div>
+            <div>1280 × 720 · 240 KB</div>`,
+        },
+        notes: {
+          label: "Notes",
+          body: () => `
+            <div style="color:var(--text);font-weight:600;
+              margin-bottom:.4rem">Ideas</div>
+            ${lines(
+              7,
+              (i) =>
+                `<div>· ${
+                  ["grid-snapped layout",
+                   "dividers, not borders",
+                   "dwell in a gap to insert",
+                   "panels fill their pane",
+                   "drag a divider to resize",
+                   "app picker on open",
+                   "scroll the strip sideways"][i]
+                }</div>`,
+            )}
+            <div style="margin-top:.5rem">
+              <span class="chip">layout</span>
+              <span class="chip">niri</span>
+              <span class="chip">wip</span></div>`,
+        },
+      };
+      const APP_KEYS = Object.keys(APPS);
+
+      const strip = document.getElementById("strip");
+      const rail = document.getElementById("rail");
+      const cssNum = (el, p) =>
+        parseFloat(getComputedStyle(el).getPropertyValue(p)) || 0;
+      const cell = () => cssNum(strip, "--cell");
+
+      // ---- initial board ---------------------------------------
+      // a board is columns; a column is { cells, tiles:[appKey] }.
+      // niri-style: a few BIG panels. Most columns are a single
+      // full-height pane; one column splits into two.
+      const BOARD = [
+        { cells: 11, tiles: ["editor"] },
+        { cells: 9, tiles: ["chat"] },
+        { cells: 10, tiles: ["calendar", "notes"] },
+        { cells: 13, tiles: ["metrics"] },
+        { cells: 8, tiles: ["files"] },
+      ];
+
+      // build a tile element for an app
+      function buildTile(appKey, opts = {}) {
+        const app = APPS[appKey];
+        const tile = document.createElement("div");
+        tile.className = "tile";
+        if (opts.focused) tile.dataset.focused = "";
+        // a fixed-height tile if rows given; else content-sized
+        if (opts.rows) {
+          tile.dataset.rows = "";
+          tile.style.setProperty("--rows", opts.rows);
+        }
+        tile.innerHTML = `
+          <div class="tile-handle" title="drag to move">⠿</div>
+          <div class="app">
+            <div class="app-name">${app.label}</div>
+            <div class="app-body">${app.body()}</div>
+          </div>`;
+        return tile;
+      }
+
+      // build a column element. Tiles fill the column (niri
+      // panes); dividers sit between stacked tiles; a PLACEHOLDER
+      // sits permanently at the column foot — invisible until
+      // hovered, when it reveals a + to open a tile there.
+      function buildColumn(spec) {
+        const col = document.createElement("div");
+        col.className = "column";
+        col.style.setProperty("--cells", spec.cells);
+        spec.tiles.forEach((appKey, i) => {
+          if (i > 0) col.append(makeDivider("row"));
+          col.append(buildTile(appKey));
+        });
+        col.append(makePlaceholder("row"));
+        return col;
+      }
+
+      // a divider: a collapsed slot between two tiles ("row") or
+      // two columns ("col"). At rest a hairline; on hover (pure
+      // CSS) it expands and reveals the + to open an app here. It
+      // is also the drag-to-resize handle.
+      function makeDivider(kind) {
+        const d = document.createElement("div");
+        d.className = "divider " + kind;
+        const open = document.createElement("button");
+        open.className = "open-btn";
+        open.textContent = "+";
+        open.title = "open here";
+        open.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openPicker(d, kind, open);
+        });
+        d.append(open);
+        return d;
+      }
+
+      // a placeholder: a permanent, normally-invisible slot. On
+      // hover it reveals a grey wash and a + button; clicking +
+      // opens the app picker. `kind` is "row" (column foot) or
+      // "col" (strip end).
+      function makePlaceholder(kind) {
+        const ph = document.createElement("div");
+        ph.className = "placeholder " + kind;
+        const open = document.createElement("button");
+        open.className = "open-btn";
+        open.textContent = "+";
+        open.title = "open a tile here";
+        open.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openPicker(ph, kind, open);
+        });
+        ph.append(open);
+        return ph;
+      }
+
+      // render the whole board: column dividers BETWEEN columns,
+      // and one more divider at the strip end so opening a column
+      // there works EXACTLY like opening one between columns —
+      // same dwell-spawn line, same expand.
+      function render() {
+        rail.replaceChildren();
+        BOARD.forEach((spec, i) => {
+          if (i > 0) rail.append(makeDivider("col"));
+          rail.append(buildColumn(spec));
+        });
+        rail.append(makeDivider("col"));
+        markFocus();
+      }
+
+      // focus: first tile of the first column, for the demo
+      function markFocus() {
+        const first = rail.querySelector(".tile");
+        if (first) first.dataset.focused = "";
+      }
+
+      // size the rail's trailing room so the LAST column can rest
+      // flush against the strip's left edge and the scroll END
+      // lands exactly on that snap point — no dead void to snap
+      // back from.
+      function sizeTrailing() {
+        const cols = rail.querySelectorAll(".column");
+        const last = cols[cols.length - 1];
+        const lastW = last ? last.getBoundingClientRect().width : 0;
+        // the strip-end divider sits after the last column; the
+        // trailing pad follows it, so subtract its width too so
+        // the last column lands flush at the strip's left edge.
+        const endDiv = rail.querySelector(".divider.col:last-of-type");
+        const endW = endDiv ? endDiv.getBoundingClientRect().width : 0;
+        const room = Math.max(0, strip.clientWidth - lastW - endW);
+        rail.style.paddingInlineEnd = room + "px";
+      }
+
+      render();
+      sizeTrailing();
+      window.addEventListener("resize", sizeTrailing);
+      // start at the strip's left edge, first column in view
+      strip.scrollLeft = 0;
+
+      // ===========================================================
+      // INSERT. Every gap is a collapsed divider: a hairline at
+      // rest that expands on hover (pure CSS) into a real slot
+      // with a + to open an app there. The column foot keeps its
+      // permanent `.placeholder` slot. Nothing dynamic to spawn.
+      // ===========================================================
+
+      // ===========================================================
+      // PICKER — choose an app to open into a divider/placeholder.
+      // ===========================================================
+      let pickerOpen = false;
+      let currentPicker = null;
+
+      function openPicker(ph, kind, anchorBtn) {
+        closePicker();
+        pickerOpen = true;
+        const picker = document.createElement("div");
+        picker.className = "picker";
+        picker.innerHTML =
+          '<input type="text" placeholder="search apps…" />' +
+          '<div class="picker-list"></div>';
+        document.body.append(picker);
+        const r = anchorBtn.getBoundingClientRect();
+        picker.style.left =
+          Math.min(r.left, window.innerWidth - 270) + "px";
+        picker.style.top = r.bottom + 4 + "px";
+
+        const input = picker.querySelector("input");
+        const list = picker.querySelector(".picker-list");
+        function fill(q) {
+          list.replaceChildren();
+          APP_KEYS.filter((k) =>
+            APPS[k].label.toLowerCase().includes(q.toLowerCase()),
+          ).forEach((k) => {
+            const item = document.createElement("div");
+            item.className = "picker-item";
+            item.innerHTML =
+              '<span class="dot"></span>' + APPS[k].label;
+            item.addEventListener("click", () => {
+              choose(k, ph, kind);
+              closePicker();
+            });
+            list.append(item);
+          });
+        }
+        fill("");
+        input.addEventListener("input", () => fill(input.value));
+        input.focus();
+
+        setTimeout(() => {
+          document.addEventListener("pointerdown", awayClose, true);
+        }, 0);
+        function awayClose(e) {
+          if (picker.contains(e.target)) return;
+          closePicker();
+        }
+        currentPicker = picker;
+        currentPicker._away = awayClose;
+      }
+
+      function closePicker() {
+        pickerOpen = false;
+        if (currentPicker) {
+          document.removeEventListener(
+            "pointerdown",
+            currentPicker._away,
+            true,
+          );
+          currentPicker.remove();
+          currentPicker = null;
+        }
+      }
+
+      // open the chosen app. `anchor` is the divider hovered (or
+      // the column-foot placeholder). A new tile/column is
+      // inserted at that gap; for a column it is wrapped with its
+      // own foot placeholder and bracketed by fresh dividers so
+      // every new gap is itself openable.
+      function choose(appKey, anchor, kind) {
+        if (kind === "row") {
+          anchor.before(buildTile(appKey));
+        } else {
+          const c = document.createElement("div");
+          c.className = "column";
+          c.style.setProperty("--cells", 8);
+          c.append(buildTile(appKey));
+          c.append(makePlaceholder("row"));
+          anchor.before(c, makeDivider("col"));
+        }
+        sizeTrailing();
+      }
+
+      // ===========================================================
+      // DWELL — the insert hint (+) on a divider appears only
+      // after the pointer rests on it for a moment, so a quick
+      // pass on the way to grab a resize handle does not flash it.
+      // ===========================================================
+      const DWELL_MS = 450;
+      let dwellTimer = 0;
+      let dwellDivider = null;
+
+      rail.addEventListener("pointerover", (event) => {
+        const divider = event.target.closest(".divider");
+        if (divider === dwellDivider) return;
+        if (dwellDivider) dwellDivider.classList.remove("dwell");
+        clearTimeout(dwellTimer);
+        dwellDivider = divider;
+        if (divider) {
+          dwellTimer = setTimeout(
+            () => divider.classList.add("dwell"),
+            DWELL_MS,
+          );
+        }
+      });
+      rail.addEventListener("pointerout", (event) => {
+        if (event.target.closest(".divider") !== dwellDivider) return;
+        const to = event.relatedTarget;
+        if (dwellDivider && to && dwellDivider.contains(to)) return;
+        clearTimeout(dwellTimer);
+        if (dwellDivider) dwellDivider.classList.remove("dwell");
+        dwellDivider = null;
+      });
+
+      // ===========================================================
+      // RESIZE — drag a divider. A row divider resizes the tile
+      // above it; a column divider resizes the column to its left.
+      // The size snaps to whole grid cells.
+      // ===========================================================
+      let drag = null;
+      let suppressClick = false;
+
+      rail.addEventListener("pointerdown", (event) => {
+        const divider = event.target.closest(".divider");
+        if (!divider) return;
+        // once a divider has dwelled open it is an insert slot, not
+        // a resize handle — a press there should fall through to
+        // the click that opens the picker.
+        if (divider.classList.contains("dwell")) return;
+        // pressing to resize cancels any pending dwell so the
+        // divider never expands out from under the drag.
+        clearTimeout(dwellTimer);
+        dwellDivider = null;
+        event.preventDefault();
+        try { rail.setPointerCapture(event.pointerId); } catch {}
+        const isRow = divider.classList.contains("row");
+        const target = divider.previousElementSibling;
+        if (!target) return;
+        const rect = target.getBoundingClientRect();
+        drag = {
+          isRow,
+          target,
+          startX: event.clientX,
+          startY: event.clientY,
+          startSize: isRow ? rect.height : rect.width,
+          moved: false,
+        };
+        strip.style.scrollSnapType = "none";
+      });
+
+      rail.addEventListener("pointermove", (event) => {
+        if (!drag) return;
+        if (
+          Math.abs(event.clientX - drag.startX) > 3 ||
+          Math.abs(event.clientY - drag.startY) > 3
+        ) {
+          drag.moved = true;
+        }
+        const c = cell();
+        if (drag.isRow) {
+          const raw = drag.startSize + (event.clientY - drag.startY);
+          const rows = Math.max(1, Math.round(raw / c));
+          drag.target.dataset.rows = "";
+          drag.target.style.setProperty("--rows", rows);
+        } else {
+          const raw = drag.startSize + (event.clientX - drag.startX);
+          const cells = Math.max(3, Math.round(raw / c));
+          drag.target.style.setProperty("--cells", cells);
+        }
+      });
+
+      rail.addEventListener("pointerup", () => {
+        if (!drag) return;
+        // a drag that moved must not also open the picker
+        if (drag.moved) suppressClick = true;
+        strip.style.scrollSnapType = "";
+        drag = null;
+        sizeTrailing();
+      });
+
+      // CLICK anywhere on a divider or the column-foot placeholder
+      // opens the app picker — not just the + button. A click that
+      // followed a resize drag is ignored (the drag handled it).
+      rail.addEventListener("click", (event) => {
+        if (suppressClick) {
+          suppressClick = false;
+          return;
+        }
+        const slot = event.target.closest(".divider, .placeholder");
+        if (!slot) return;
+        const kind = slot.classList.contains("col") ? "col" : "row";
+        const anchor = slot.querySelector(".open-btn") || slot;
+        openPicker(slot, kind, anchor);
+      });
+    </script>
+  </body>
+</html>
