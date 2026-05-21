@@ -474,6 +474,65 @@ mod tests {
     use dialog_query::{Term, the};
     use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
+    use crate::concept::{AnonymousConcept, TransientConcept};
+    use crate::effect::{Effect, EffectPolarity};
+    use dialog_artifacts::Statement;
+    use dialog_query::artifact::Type;
+    use dialog_query::attribute::Cardinality as DialogCardinality;
+    use dialog_query::concept::descriptor::ConceptDescriptor;
+    use dialog_query::concept::query::ConceptQuery;
+    use dialog_query::premise::Premise as DialogPremise;
+    use dialog_query::{AttributeDescriptor, InductiveRule, Parameters as DialogParameters};
+
+    /// A 1-field concept descriptor. Helper because tests below
+    /// build several.
+    fn one_text_field_concept(domain: &str, name: &str) -> ConceptDescriptor {
+        ConceptDescriptor::from(vec![(
+            name,
+            AttributeDescriptor::new(
+                format!("{domain}/{name}").parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::String),
+            ),
+        )])
+    }
+
+    /// Install the attribute-side facts a concept's fields need
+    /// so the concept's query can be rehydrated against the
+    /// branch. Mirrors the pattern in `concept.rs`'s round-trip
+    /// test.
+    fn install_attribute_facts<'a>(
+        mut txn: dialog_repository::Transaction<'a>,
+        descriptor: &ConceptDescriptor,
+    ) -> dialog_repository::Transaction<'a> {
+        for (_, attr) in descriptor.with().iter() {
+            let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+            txn = txn
+                .assert(
+                    the!("dialog.attribute/id")
+                        .of(attr_entity.clone())
+                        .is(format!("{}/{}", attr.domain(), attr.name())),
+                )
+                .assert(
+                    the!("dialog.attribute/type")
+                        .of(attr_entity.clone())
+                        .is("String".to_string()),
+                )
+                .assert(
+                    the!("dialog.attribute/cardinality")
+                        .of(attr_entity.clone())
+                        .is("one".to_string()),
+                )
+                .assert(
+                    the!("dialog.meta/description")
+                        .of(attr_entity)
+                        .is(String::new()),
+                );
+        }
+        txn
+    }
+
     /// User-submitted transient assertions must cancel against
     /// the matching retracts the sweep emits — net effect after
     /// commit: nothing landed durably for those facts. This is
@@ -526,6 +585,104 @@ mod tests {
             claims.is_empty(),
             "transient assert+retract should cancel; saw {claims:?}"
         );
+        Ok(())
+    }
+
+    /// End-to-end fire path: a transient `ping{this, tag}`
+    /// triggers a `pong{this, tag}` head, which lands durably.
+    /// Verifies discovery + body evaluation + head emission
+    /// together.
+    #[dialog_common::test]
+    async fn it_fires_an_assert_rule_on_a_transient() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Concepts: ping (transient) and pong (durable), each
+        // with a single `tag: Text` field.
+        let ping = one_text_field_concept("io.gozala.ping", "tag");
+        let pong = one_text_field_concept("io.gozala.pong", "tag");
+
+        // Body: read a ping instance, binding its this and tag.
+        // Head: pong with the same this/tag.
+        let mut body_terms = DialogParameters::new();
+        body_terms.insert("this".to_string(), Term::var("this"));
+        body_terms.insert("tag".to_string(), Term::var("tag"));
+        let body_premise =
+            DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+                terms: body_terms,
+                predicate: ping.clone(),
+            }));
+        let rule = InductiveRule::new(pong.clone(), vec![body_premise]).expect("rule compiles");
+        let effect = Effect::new(rule, EffectPolarity::Assert);
+
+        // Install everything: concept facts, transient marker
+        // on ping, the effect itself.
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &ping);
+        install = install_attribute_facts(install, &pong);
+        install = install.assert(AnonymousConcept::new(pong.clone()));
+        install = install.assert(TransientConcept::new(ping.clone()));
+        install = install.assert(effect);
+        install.commit().perform(&operator).await?;
+
+        // Submit a transient `ping{this: e1, tag: "hello"}`.
+        let subject: Entity = "did:key:zPingSubject".parse()?;
+        let ping_tag_attr = the!("io.gozala.ping/tag");
+        let mut transients = Changes::new();
+        ping_tag_attr
+            .clone()
+            .of(subject.clone())
+            .is("hello".to_string())
+            .assert(&mut transients);
+
+        // Drive induce + commit through the chain.
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Expect the durable pong claim landed.
+        let pong_tag_attr = the!("io.gozala.pong/tag");
+        let pong_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(pong_tag_attr)
+                    .of(Term::from(subject.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(
+            pong_claims.len(),
+            1,
+            "expected one pong claim from the firing rule; saw {pong_claims:?}"
+        );
+
+        // And the ping claim should not have survived.
+        let ping_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(ping_tag_attr)
+                    .of(Term::from(subject))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            ping_claims.is_empty(),
+            "transient ping should have been swept; saw {ping_claims:?}"
+        );
+
         Ok(())
     }
 }
