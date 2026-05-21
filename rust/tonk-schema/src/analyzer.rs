@@ -48,6 +48,7 @@ mod error;
 mod field;
 mod query;
 mod resolver;
+mod rule;
 mod scan;
 mod scope;
 
@@ -364,6 +365,19 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         statements,
         requires,
     };
+
+    // ---- Phase 3b: lift rule!: expressions into Effects ----
+    // Rules don't contribute to the query/mutation pipeline;
+    // they install effects on the branch. Each lift resolves
+    // the rule's head + premise concepts through the scope,
+    // translates premise bindings into dialog Terms, and runs
+    // dialog's planner to catch unbound-head-variable etc.
+    for expression in &syntax.expressions {
+        if let Expression::Rule(rule_expr) = expression {
+            let effect = rule::lift_rule(rule_expr, &scope, &analysis).await?;
+            analysis.effects.push(effect);
+        }
+    }
 
     // ---- Phase 4: synthesize implicit queries for touched entities ----
     // For every mutation statement that targets a known entity

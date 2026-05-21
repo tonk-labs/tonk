@@ -390,6 +390,15 @@ pub enum AnalyzeErrorKind {
         /// entity)" or "`?alice` is not bound by any query").
         selector_form: String,
     },
+    /// Dialog's [`InductiveRule::compile`](dialog_query::InductiveRule)
+    /// rejected the lifted rule — body planner failure, unbound
+    /// head variable, etc. The message preserves the dialog-level
+    /// detail so users see what's wrong.
+    #[error("rule compilation failed: {reason}")]
+    RuleCompileFailed {
+        /// Underlying message from dialog's compiler.
+        reason: String,
+    },
 }
 
 impl AnalyzeErrorKind {
@@ -415,6 +424,7 @@ impl AnalyzeErrorKind {
             Self::ResolverFailed { .. } => "E_RESOLVER_FAILED",
             Self::ProtectedUri { .. } => "E_PROTECTED_URI",
             Self::IncompleteAssertion { .. } => "E_INCOMPLETE_ASSERTION",
+            Self::RuleCompileFailed { .. } => "E_RULE_COMPILE_FAILED",
         }
     }
 }

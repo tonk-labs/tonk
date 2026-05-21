@@ -476,6 +476,24 @@ impl<'a, 's> Evaluate<'a, 's> {
         }
         commits.claims = claim_count;
 
+        // ---- Install effects ----
+        // Each rule!: expression lifted in the analyzer's
+        // Phase 3b lands here as an `Effect`. The
+        // `Effect: Statement` impl writes the
+        // `dialog.effect/*` facts that the reactor's `induce`
+        // loop reads on every subsequent commit.
+        //
+        // Each effect emits a constant set of claims (marker +
+        // source + conclusion + polarity + one `on:` entry per
+        // attribute the body reads) — bump the claim count by
+        // a flat 4 + premise-attribute count so the response's
+        // `commits.claims` reflects what's about to land
+        // durably.
+        for effect in analysis.effects.iter().cloned() {
+            commits.claims += 4 + effect.on_entities().len();
+            txn = txn.assert(effect);
+        }
+
         let matches = render_match_blocks(&analysis, pre_results.as_ref());
 
         Ok(Evaluated {

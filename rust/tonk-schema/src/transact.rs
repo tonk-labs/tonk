@@ -64,6 +64,14 @@ pub struct Analysis {
     /// documents.
     pub mutate: MutationAnalysis,
 
+    /// Inductive effects lifted from `rule!:` expressions.
+    /// Empty for documents that declare no rules. Each entry
+    /// is installed against the branch at commit time by the
+    /// evaluator (writing the `dialog.effect/*` facts via the
+    /// `Effect: Statement` impl) and participates in the
+    /// reactor's induce loop on every subsequent commit.
+    pub effects: Vec<crate::effect::Effect>,
+
     /// Non-fatal findings the analyzer accumulated during the
     /// pass. Always present (empty when nothing surfaced); the
     /// LSP and worker convert these to editor diagnostics.
