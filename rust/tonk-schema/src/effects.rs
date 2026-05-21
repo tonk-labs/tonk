@@ -682,13 +682,16 @@ mod tests {
     }
 
     /// The string form dialog stores in `dialog.attribute/type`
-    /// for each `Type` variant the tests need.
+    /// for each `Type` variant the tests need. The labels match
+    /// dialog's `TypeDescriptor` names (Text for String,
+    /// UnsignedInteger for UnsignedInt, etc.), not the variant
+    /// names of `Type` itself.
     fn type_storage_string(ty: Type) -> &'static str {
         match ty {
-            Type::String => "String",
+            Type::String => "Text",
             Type::Entity => "Entity",
-            Type::UnsignedInt => "UnsignedInt",
-            _ => "String",
+            Type::UnsignedInt => "UnsignedInteger",
+            _ => "Text",
         }
     }
 
