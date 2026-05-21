@@ -23,24 +23,28 @@ const MAX: u8 = b'z';
 /// Returns a key strictly between `low` and `high` in byte-lex
 /// ordering. `None` on either side means "no bound".
 ///
-/// Panics in debug if `low >= high` (when both are `Some`), or if
-/// no key fits in the requested gap (e.g. `between(None, Some("a"))`
-/// when the alphabet has no char below `'a'`).
-pub fn between(low: Option<&str>, high: Option<&str>) -> String {
+/// Returns `None` when no key fits — most commonly when the high
+/// bound is `Some("a")` (or any leading `'a'` with no tail) since
+/// the `[a-z]` alphabet has no char below `'a'`. Also `None` on
+/// contract violations (`low >= high`).
+pub fn between(low: Option<&str>, high: Option<&str>) -> Option<String> {
     let lo = low.unwrap_or("").as_bytes();
     let bytes = match high {
         Some(h) => {
-            debug_assert!(lo < h.as_bytes(), "between: low >= high");
-            bisect(lo, h.as_bytes())
+            if lo >= h.as_bytes() {
+                return None;
+            }
+            bisect(lo, h.as_bytes())?
         }
         None => above(lo),
     };
-    String::from_utf8(bytes).expect("alphabet is ASCII")
+    Some(String::from_utf8(bytes).expect("alphabet is ASCII"))
 }
 
 /// Returns a byte string strictly greater than `low` and strictly
-/// less than `high`. Both bounds closed.
-fn bisect(low: &[u8], high: &[u8]) -> Vec<u8> {
+/// less than `high`, or `None` if no such string exists in the
+/// finite alphabet.
+fn bisect(low: &[u8], high: &[u8]) -> Option<Vec<u8>> {
     let mut result = Vec::new();
     let mut i = 0;
     loop {
@@ -54,40 +58,39 @@ fn bisect(low: &[u8], high: &[u8]) -> Vec<u8> {
                 // lc < hc by the caller's contract.
                 if hc - lc > 1 {
                     result.push((lc + hc) / 2);
-                    return result;
+                    return Some(result);
                 }
                 // Adjacent. Emit lc; remainder is "strictly above low's
                 // tail" (any extension stays below high because we
                 // committed to lc < hc at this position).
                 result.push(lc);
                 result.extend(above(&low[i + 1..]));
-                return result;
+                return Some(result);
             }
             (None, Some(hc)) => {
                 if hc > MIN {
                     // Room for a char strictly between MIN-1 and hc.
                     // Pick the midpoint of the valid range [MIN, hc-1].
                     result.push((MIN + hc - 1) / 2);
-                    return result;
+                    return Some(result);
                 }
                 // hc == MIN. Extending with MIN leaves result < high
-                // only if high has further chars; otherwise no key fits.
-                debug_assert!(
-                    i + 1 < high.len(),
-                    "between: no key fits between low and high",
-                );
-                result.push(MIN);
-                return result;
+                // only when high has further chars; otherwise no key
+                // fits (no char below MIN exists in the alphabet).
+                if i + 1 < high.len() {
+                    result.push(MIN);
+                    return Some(result);
+                }
+                return None;
             }
             (Some(_), None) => {
                 // High exhausted while low continues — means high is
-                // a prefix of low, so high < low. Contract violation.
-                debug_assert!(false, "between: high is a prefix of low");
-                return result;
+                // a prefix of low, so high <= low. Contract violation.
+                return None;
             }
             (None, None) => {
-                debug_assert!(false, "between: low == high");
-                return result;
+                // low == high.
+                return None;
             }
         }
     }
@@ -141,7 +144,7 @@ mod tests {
     #[dialog_common::test]
     fn it_returns_a_midpoint_between_keys_with_room() {
         // `between` picks a char strictly between `a` and `c`.
-        let mid = between(Some("a"), Some("c"));
+        let mid = between(Some("a"), Some("c")).expect("key fits");
         assert_strictly_between(Some("a"), Some("c"), &mid);
         assert_eq!(mid, "b");
     }
@@ -150,7 +153,7 @@ mod tests {
     fn it_extends_the_key_when_neighbours_are_adjacent() {
         // No char fits strictly between `a` and `b` at one position;
         // the key must lengthen.
-        let mid = between(Some("a"), Some("b"));
+        let mid = between(Some("a"), Some("b")).expect("key fits");
         assert_strictly_between(Some("a"), Some("b"), &mid);
         assert!(mid.len() > 1, "expected extension, got {mid:?}");
         assert!(mid.starts_with('a'));
@@ -158,20 +161,20 @@ mod tests {
 
     #[dialog_common::test]
     fn it_returns_a_first_key_when_both_bounds_are_open() {
-        let mid = between(None, None);
+        let mid = between(None, None).expect("key fits");
         assert!(!mid.is_empty());
         assert!(mid.chars().all(|c: char| c.is_ascii_lowercase()));
     }
 
     #[dialog_common::test]
     fn it_returns_a_key_below_high_when_low_is_open() {
-        let mid = between(None, Some("m"));
+        let mid = between(None, Some("m")).expect("key fits");
         assert_strictly_between(None, Some("m"), &mid);
     }
 
     #[dialog_common::test]
     fn it_returns_a_key_above_low_when_high_is_open() {
-        let mid = between(Some("m"), None);
+        let mid = between(Some("m"), None).expect("key fits");
         assert_strictly_between(Some("m"), None, &mid);
     }
 
@@ -182,7 +185,7 @@ mod tests {
         // diverging position.
         let lo = "aaaaaaaaaa";
         let hi = "aaaaaaaaab";
-        let mid = between(Some(lo), Some(hi));
+        let mid = between(Some(lo), Some(hi)).expect("key fits");
         assert_strictly_between(Some(lo), Some(hi), &mid);
         assert!(mid.starts_with("aaaaaaaaaa"));
     }
@@ -194,7 +197,7 @@ mod tests {
         // scheme would run out of precision long before this.
         let mut lo = String::from("a");
         for _ in 0..200 {
-            let next = between(Some(&lo), None);
+            let next = between(Some(&lo), None).expect("key fits");
             assert!(next > lo, "key {next:?} not above {lo:?}");
             lo = next;
         }
@@ -211,10 +214,27 @@ mod tests {
         let mut lo = String::from("a");
         let hi = String::from("b");
         for _ in 0..200 {
-            let next = between(Some(&lo), Some(&hi));
+            let next = between(Some(&lo), Some(&hi)).expect("key fits");
             assert!(lo < next && next < hi, "key {next:?} out of bounds");
             lo = next;
         }
         assert!(lo.len() < 100, "subdivision blew up: {lo:?}");
+    }
+
+    #[dialog_common::test]
+    fn it_returns_none_below_a_single_min_char() {
+        // No string fits strictly between "" (or any lower bound)
+        // and "a" — the alphabet has no char below MIN.
+        assert!(between(None, Some("a")).is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_returns_none_when_low_equals_high() {
+        assert!(between(Some("m"), Some("m")).is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_returns_none_when_low_is_greater_than_high() {
+        assert!(between(Some("z"), Some("a")).is_none());
     }
 }

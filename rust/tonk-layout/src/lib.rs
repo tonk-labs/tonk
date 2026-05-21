@@ -33,6 +33,9 @@ mod resolve;
 // native-testable.
 mod writer;
 
+// Keyboard + pointer handler logic; pure helpers native-testable.
+mod interact;
+
 #[cfg(target_arch = "wasm32")]
 mod element;
 

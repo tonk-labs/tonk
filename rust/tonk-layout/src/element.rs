@@ -15,14 +15,20 @@ use custom_elements::CustomElement;
 use tonk_concept::error::{ErrorDetail, ErrorKind};
 use tonk_concept::sse::{SubscriptionAbort, open_sse};
 use tonk_schema::conclusion::Conclusion;
+use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
+use web_sys::{
+    CustomEvent, CustomEventInit, Element, HtmlElement, KeyboardEvent, MouseEvent, window,
+};
 
+use crate::interact;
 use crate::model::{Layout, fold_layout};
 use crate::reconcile::reconcile_layout;
-use crate::resolve::{columns_query, query_url, tiles_query, workspace_query};
+use crate::resolve::{columns_query, evaluate_url, query_url, tiles_query, workspace_query};
 use crate::state::{self, State};
+use crate::writer;
 
 /// Internal lifecycle state shared across async closures.
 struct Inner {
@@ -54,6 +60,11 @@ struct Inner {
     /// Latest folded layout — stashed so step 6's reconciler can
     /// diff against it without re-folding from scratch.
     layout: Option<Layout>,
+    /// Live keyboard listener. Held so the closure stays alive for
+    /// the duration of this element's connection.
+    keydown_listener: Option<Closure<dyn FnMut(KeyboardEvent)>>,
+    /// Live click listener — click-to-focus delegation.
+    click_listener: Option<Closure<dyn FnMut(MouseEvent)>>,
 }
 
 impl Inner {
@@ -69,6 +80,8 @@ impl Inner {
             columns_frame: Vec::new(),
             tiles_frame: Vec::new(),
             layout: None,
+            keydown_listener: None,
+            click_listener: None,
         }
     }
 
@@ -103,8 +116,10 @@ impl CustomElement for TonkLayout {
         start(&host, inner);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
         if let Some(inner) = self.inner.borrow_mut().take() {
+            let host: Element = this.clone().into();
+            detach_listeners(&host, &inner);
             let mut i = inner.borrow_mut();
             i.disposed = true;
             i.abort_all();
@@ -122,6 +137,7 @@ impl CustomElement for TonkLayout {
         let Some(inner) = self.inner.borrow().clone() else {
             return;
         };
+        detach_listeners(&host, &inner);
         {
             let mut i = inner.borrow_mut();
             i.abort_all();
@@ -151,8 +167,8 @@ fn already_registered() -> bool {
     !win.custom_elements().get("tonk-layout").is_undefined()
 }
 
-/// Bump generation, paint a loading skeleton, kick off the
-/// workspace subscription.
+/// Bump generation, paint a loading skeleton, attach interaction
+/// listeners, kick off the workspace subscription.
 fn start(host: &Element, inner: Rc<RefCell<Inner>>) {
     let generation = {
         let mut i = inner.borrow_mut();
@@ -161,6 +177,7 @@ fn start(host: &Element, inner: Rc<RefCell<Inner>>) {
     };
     state::set(host, State::Loading);
     mount_skeleton(host);
+    attach_listeners(host, &inner);
 
     let host_for_run = host.clone();
     let inner_for_run = inner.clone();
@@ -454,4 +471,85 @@ fn dispatch(host: &Element, name: &str, detail: Option<JsValue>) {
         return;
     };
     let _ = host.dispatch_event(&event);
+}
+
+/// Wire keyboard + pointer listeners to the host. Closures are
+/// stored in [`Inner`] so they outlive the registration; they're
+/// dropped (and the listeners removed) by `detach_listeners` on
+/// disconnect or attribute change.
+fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
+    // Make the host focusable so it can receive keydown events.
+    // `tabindex="0"` adds it to the natural tab order — users can
+    // tab into the strip; once focused, arrow keys / R / Q fire.
+    let _ = host.set_attribute("tabindex", "0");
+
+    let host_for_key = host.clone();
+    let inner_for_key = inner.clone();
+    let keydown = Closure::wrap(Box::new(move |ev: KeyboardEvent| {
+        let layout = inner_for_key.borrow().layout.clone();
+        let Some(layout) = layout else {
+            return;
+        };
+        if let Some(doc) = interact::handle_keydown(&layout, &ev) {
+            ev.prevent_default();
+            spawn_evaluate_post(&host_for_key, &inner_for_key, doc);
+        }
+    }) as Box<dyn FnMut(KeyboardEvent)>);
+    let _ = host.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+
+    let host_for_click = host.clone();
+    let inner_for_click = inner.clone();
+    let click = Closure::wrap(Box::new(move |ev: MouseEvent| {
+        let layout = inner_for_click.borrow().layout.clone();
+        let Some(layout) = layout else {
+            return;
+        };
+        if let Some(doc) = interact::handle_click(&layout, &ev) {
+            spawn_evaluate_post(&host_for_click, &inner_for_click, doc);
+        }
+    }) as Box<dyn FnMut(MouseEvent)>);
+    let _ = host.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+
+    let mut i = inner.borrow_mut();
+    i.keydown_listener = Some(keydown);
+    i.click_listener = Some(click);
+}
+
+/// Remove the listeners we attached and drop the Closures that
+/// back them. Must run before the host's event-target identity
+/// gets reused — leaving a dangling listener referencing a freed
+/// Closure crashes on dispatch.
+fn detach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
+    let mut i = inner.borrow_mut();
+    if let Some(keydown) = i.keydown_listener.take() {
+        let _ =
+            host.remove_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+    }
+    if let Some(click) = i.click_listener.take() {
+        let _ = host.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
+    }
+}
+
+/// Spawn an async task that POSTs `doc` to `/evaluate`. On failure
+/// routes the error through [`fail`], surfacing it on the host's
+/// `data-state` and via the `tonk-layout:error` event.
+fn spawn_evaluate_post(host: &Element, inner: &Rc<RefCell<Inner>>, doc: String) {
+    let url = evaluate_url(
+        host.get_attribute("space").as_deref(),
+        host.get_attribute("branch").as_deref(),
+    );
+    let host_clone = host.clone();
+    let inner_clone = inner.clone();
+    spawn_local(async move {
+        match writer::post_evaluate(&url, &doc).await {
+            Ok(()) => {
+                // Subscription frame will reflect the new state.
+            }
+            Err(err) => {
+                if !inner_clone.borrow().disposed {
+                    fail(&host_clone, &inner_clone, err);
+                }
+            }
+        }
+    });
 }
