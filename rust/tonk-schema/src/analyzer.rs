@@ -184,6 +184,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     let concept = ResolvedConcept {
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
+                        transient: plan.transient,
                     };
                     let (this, name) =
                         derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), &scope)
@@ -274,12 +275,20 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         }
     }
     if !queries.is_empty() {
-        analysis.query = Some(QueryAnalysis { queries, labels });
+        analysis.query = Some(QueryAnalysis {
+            queries,
+            labels,
+            ..Default::default()
+        });
     }
 
     // ---- Phase 3: build mutation Statements ----
     let mut statements: Vec<Statement> = Vec::new();
     let mut requires: HashSet<String> = HashSet::new();
+    // Concept entities whose asserted facts are transient — the
+    // evaluator routes these into the effects-fixpoint seed
+    // bucket. Populated from each assertion's resolved concept.
+    let mut transient: HashSet<Entity> = HashSet::new();
     // Indexes (within `statements`) of statements that came
     // from `attribute!` / `concept!` declarations. These are
     // excluded from auto-snapshot synthesis (Phase 4) because
@@ -338,6 +347,14 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     }
                     if let Some(assert_app) = plan.assert {
                         collect_unbound_variables(&assert_app, &analysis, &mut requires);
+                        // A transient-concept assertion: record the
+                        // concept entity so the evaluator buckets
+                        // its claims for the effects fixpoint.
+                        if plan.transient
+                            && let Application::Concept { query, .. } = &assert_app
+                        {
+                            transient.insert(query.predicate.this());
+                        }
                         statements.push(Statement::Assert(assert_app));
                         statement_labels.push(Some(a.head.source.clone()));
                     }
@@ -365,6 +382,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     analysis.mutate = MutationAnalysis {
         statements,
         requires,
+        transient,
     };
 
     // ---- Phase 3b: lift rule!: expressions into Effects ----
@@ -544,14 +562,16 @@ fn synthesize_implicit_queries(
     if implicit.is_empty() {
         return;
     }
-    let (mut queries, mut labels) = analysis
-        .query
-        .clone()
-        .map(|q| (q.queries, q.labels))
-        .unwrap_or_default();
-    queries.extend(implicit);
-    labels.extend(implicit_labels);
-    analysis.query = Some(QueryAnalysis { queries, labels });
+    // Snapshot queries land in `synthesized`, NOT `queries` — a
+    // snapshot of a fresh assert target reads a not-yet-existing
+    // entity and returns zero rows; joining it into `queries`
+    // would zero the join that feeds mutation planning. The
+    // renderer reads both; the evaluator's planning path reads
+    // only `queries`.
+    let mut query = analysis.query.clone().unwrap_or_default();
+    query.synthesized.extend(implicit);
+    query.synthesized_labels.extend(implicit_labels);
+    analysis.query = Some(query);
 }
 
 /// Pull a concrete `Entity` out of a `Term::Constant(Value::Entity(_))`,
@@ -610,6 +630,7 @@ mod tests {
                 Ok(Some(ResolvedConcept {
                     entity: self.descriptor.this(),
                     descriptor: self.descriptor.clone(),
+                    transient: false,
                 }))
             } else {
                 Ok(None)
@@ -1401,6 +1422,7 @@ person!:
                     Ok(Some(ResolvedConcept {
                         entity: descriptor.this(),
                         descriptor,
+                        transient: false,
                     }))
                 } else {
                     Ok(None)
@@ -1542,6 +1564,7 @@ person!:
                     Ok(Some(ResolvedConcept {
                         entity: self.concept.this(),
                         descriptor: self.concept.clone(),
+                        transient: false,
                     }))
                 } else {
                     Ok(None)
@@ -2770,16 +2793,16 @@ person!:
             ],
         );
         let analysis = analyze(&syntax, &resolver).await.unwrap();
-        let queries = analysis
+        let synthesized = analysis
             .query
             .as_ref()
             .expect("auto-snapshot should populate analysis.query")
-            .queries
+            .synthesized
             .as_slice();
         assert_eq!(
-            queries.len(),
+            synthesized.len(),
             1,
-            "expected one implicit query for the touched URI"
+            "expected one synthesized snapshot for the touched URI"
         );
     }
 
@@ -2809,10 +2832,10 @@ person!:
             analysis
                 .query
                 .as_ref()
-                .map(|q| q.queries.len())
+                .map(|q| q.synthesized.len())
                 .unwrap_or(0),
             1,
-            "expected one implicit query for the body-derived entity"
+            "expected one synthesized snapshot for the body-derived entity"
         );
     }
 
@@ -2840,14 +2863,12 @@ person!:
         );
         let analysis = analyze(&syntax, &resolver).await.unwrap();
         // Only the user's explicit query — no synthesized
-        // duplicate.
-        assert_eq!(
-            analysis
-                .query
-                .as_ref()
-                .map(|q| q.queries.len())
-                .unwrap_or(0),
-            1,
+        // duplicate for the already-covered URI.
+        let query = analysis.query.as_ref().unwrap();
+        assert_eq!(query.queries.len(), 1);
+        assert!(
+            query.synthesized.is_empty(),
+            "user query covers the URI — synthesis must skip it"
         );
     }
 
@@ -2903,10 +2924,10 @@ person!:
             analysis
                 .query
                 .as_ref()
-                .map(|q| q.queries.len())
+                .map(|q| q.synthesized.len())
                 .unwrap_or(0),
             1,
-            "unbound `?alice` should still seed an implicit query for the body-derived entity"
+            "unbound `?alice` should still seed a synthesized snapshot for the body-derived entity"
         );
     }
 

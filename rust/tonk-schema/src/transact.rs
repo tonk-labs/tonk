@@ -92,16 +92,29 @@ pub struct Analysis {
 /// `ConceptQuery::from(&query_analysis)`.
 #[derive(Debug, Clone, Default)]
 pub struct QueryAnalysis {
-    /// One [`Application`] per source expression.
+    /// One [`Application`] per *user-written* query expression.
+    /// These are the only queries that contribute bindings to
+    /// mutation planning — the evaluator joins them and the
+    /// joined frames feed each statement's `.plan(...)`.
     pub queries: Vec<Application>,
-    /// Display label for each query, parallel to `queries`. For
-    /// explicit `Expression::Query`s this is the head's source
-    /// name (`person`, `attribute`, …). For implicit queries
-    /// synthesized from an assertion to project the post-commit
-    /// snapshot, this is the assertion's head name. Renderers
-    /// surface the label as the result block's title; without
-    /// it the assertion path falls back to `?`.
+    /// Display label for each entry of `queries`, parallel to it.
+    /// The head's source name (`person`, `attribute`, …).
     pub labels: Vec<String>,
+    /// Implicit snapshot queries synthesized from assertions so
+    /// the editor's before/after view surfaces a mutated entity
+    /// even when the user wrote no query for it.
+    ///
+    /// **Kept separate from `queries` on purpose.** A snapshot of
+    /// an assertion's target may read an entity that does not yet
+    /// exist (a fresh `id:…`), so it returns zero rows; if it
+    /// were joined with the user queries it would zero the join
+    /// that feeds mutation planning. Renderers read `queries`
+    /// *and* `synthesized`; the evaluator's planning path reads
+    /// only `queries`.
+    pub synthesized: Vec<Application>,
+    /// Display label for each entry of `synthesized`, parallel
+    /// to it — the originating assertion's head name.
+    pub synthesized_labels: Vec<String>,
 }
 
 impl QueryAnalysis {
@@ -111,6 +124,9 @@ impl QueryAnalysis {
     /// (whose names start with `__`) are excluded; they're an
     /// implementation detail of anonymous-head bindings, not
     /// user-visible bindings.
+    ///
+    /// Only `queries` (user-written) count — synthesized snapshot
+    /// queries are display projections, not a binding source.
     pub fn bindings(&self) -> HashSet<String> {
         let mut out = HashSet::new();
         for application in &self.queries {
@@ -137,6 +153,16 @@ pub struct MutationAnalysis {
     /// enforces). Subset of `query.bindings()` (the analyzer
     /// also enforces).
     pub requires: HashSet<String>,
+    /// Concept entities (`descriptor.this()`) whose facts are
+    /// transient — declared with `transient:` either in the same
+    /// document or on the branch. An `Assert` statement whose
+    /// concept entity is in this set has its emitted claims
+    /// routed into the evaluator's transient seed bucket so the
+    /// effects fixpoint fires on them and they're swept before
+    /// the durable commit. Lives on the write side rather than
+    /// on the shared [`Application`] because transience only
+    /// matters for mutations.
+    pub transient: HashSet<Entity>,
 }
 
 /// One element of [`MutationAnalysis::statements`] — either an

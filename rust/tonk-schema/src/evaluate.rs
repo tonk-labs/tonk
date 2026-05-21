@@ -53,7 +53,8 @@ use tonk_notation::Syntax;
 
 use crate::analyzer;
 use crate::concept::{
-    AttributeByEntity, AttributeByName, Concept as ConceptLookup, lookup_named_entity,
+    AttributeByEntity, AttributeByName, Concept as ConceptLookup, TransientConcept,
+    lookup_named_entity,
 };
 use crate::transact::{
     Analysis, Application, ApplicationPlan, Planner as _, QueryAnalysis, Statement,
@@ -176,6 +177,22 @@ pub struct BranchResolver<'a, Env> {
 // `analyzer::resolver` provides it via the introspection
 // implementation below.
 
+impl<'a, Env: EvaluateEnv> BranchResolver<'a, Env> {
+    /// Resolve a concept entity's `dialog.concept/transient`
+    /// marker — `true` iff the concept is transient. Shared by
+    /// `lookup_concept` and `list_concepts` so every resolved
+    /// concept carries its durability classification.
+    async fn lookup_concept_transient(
+        &self,
+        entity: &Entity,
+    ) -> Result<bool, tonk_introspect::IntrospectionError> {
+        TransientConcept::is_transient(entity.clone())
+            .resolve(self.branch, self.env)
+            .await
+            .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))
+    }
+}
+
 // ---------------------------------------------------------------- //
 // Branch-backed BranchIntrospection                                //
 // ---------------------------------------------------------------- //
@@ -198,9 +215,14 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
             .resolve(self.branch, self.env)
             .await
             .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
-        Ok(resolved.map(|c| tonk_introspect::ResolvedConcept {
+        let Some(c) = resolved else {
+            return Ok(None);
+        };
+        let transient = self.lookup_concept_transient(&c.entity).await?;
+        Ok(Some(tonk_introspect::ResolvedConcept {
             entity: c.entity,
             descriptor: c.descriptor,
+            transient,
         }))
     }
 
@@ -263,9 +285,13 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
         let mut out: Vec<tonk_introspect::ResolvedConcept> = Vec::new();
 
         for (_name, resolved) in concept_registry().iter() {
+            // Built-in concepts are always durable — the
+            // transient marker is a branch-published claim and
+            // the registry holds no claims.
             out.push(tonk_introspect::ResolvedConcept {
                 entity: resolved.entity.clone(),
                 descriptor: resolved.descriptor.clone(),
+                transient: false,
             });
         }
 
@@ -307,9 +333,11 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
                     ))
                 })?;
             if let Some(c) = resolved {
+                let transient = self.lookup_concept_transient(&c.entity).await?;
                 out.push(tonk_introspect::ResolvedConcept {
                     entity: c.entity,
                     descriptor: c.descriptor,
+                    transient,
                 });
             }
         }
@@ -445,6 +473,12 @@ impl<'a, 's> Evaluate<'a, 's> {
         // up-front so we don't interleave reads with mutation
         // accumulation against the transaction.
         let mut retract_claims: Vec<RawClaim> = Vec::new();
+        // Transient-concept assertions, accumulated so the caller
+        // can hand them to `induce` as the effects-fixpoint seed.
+        // An assertion's concept entity is in
+        // `analysis.mutate.transient` when the concept was
+        // declared `transient:`.
+        let mut transients = Changes::new();
         if !analysis.mutate.statements.is_empty() {
             for match_frame in &pre_matches {
                 let mut frame = base.clone();
@@ -460,6 +494,20 @@ impl<'a, 's> Evaluate<'a, 's> {
                     match statement {
                         Statement::Assert(_) => {
                             claim_count += count_emitted_claims(&plan);
+                            // A transient-concept assertion also
+                            // seeds the transient bucket so the
+                            // effects fixpoint fires on it and it's
+                            // swept before the durable commit.
+                            if analysis
+                                .mutate
+                                .transient
+                                .contains(&plan.statement.predicate.this())
+                            {
+                                crate::effects::accumulate_head_facts(
+                                    &plan.statement,
+                                    &mut transients,
+                                );
+                            }
                             txn = txn.assert(plan);
                         }
                         Statement::Retract(_) => {
@@ -498,7 +546,7 @@ impl<'a, 's> Evaluate<'a, 's> {
 
         Ok(Evaluated {
             txn,
-            transients: Changes::new(),
+            transients,
             matches,
             commits,
             analysis,
@@ -515,14 +563,14 @@ impl<'a, 's> Evaluate<'a, 's> {
 pub struct Evaluated<'a> {
     /// Transaction with mutations applied to its overlay.
     pub txn: Transaction<'a>,
-    /// Transient claims the document asserted. Hand to
-    /// [`crate::effects::TransactionExt::induce`].
-    ///
-    /// V1 skeleton: always empty — transient classification
-    /// flows through the `tonk-schema::mutation` typed path
-    /// (`/transact` route), and the asserted-notation path
-    /// will plumb it through once the analyzer surfaces the
-    /// concept's transient flag per statement.
+    /// Transient claims the document asserted — one entry per
+    /// field of every assertion whose concept is declared
+    /// `transient:`. Hand to
+    /// [`crate::effects::TransactionExt::induce`] as the
+    /// effects-fixpoint seed; `induce` fires the installed rules
+    /// on these and sweeps them so they never reach durable
+    /// storage. Empty when the document asserts no transient
+    /// concepts.
     pub transients: Changes,
     /// Pre-mutation per-source-expression match blocks. For
     /// post-mutation matches, re-run the analyzer's queries
@@ -627,15 +675,23 @@ pub struct EvaluateResult {
 /// Disjoint expressions cross-product (no shared variable to
 /// constrain on); connected expressions equi-join.
 struct QueryResults {
-    /// Per-expression frames, in document order. Each frame
-    /// carries every user-named variable bound by that
-    /// expression's query.
+    /// Per-expression frames for the *user-written* queries, in
+    /// document order. Each frame carries every user-named
+    /// variable bound by that expression's query.
     per_expression: Vec<Vec<Parameters>>,
     /// The natural join of `per_expression`. Used for mutation
     /// planning (one row = one substitution into a [`Statement`]).
     /// Equivalent to the cross-product when no expressions share
-    /// variables.
+    /// variables. Synthesized snapshots are deliberately excluded
+    /// — a snapshot of a fresh assert target returns zero rows
+    /// and would zero the join.
     joined: Vec<Parameters>,
+    /// Per-expression frames for the analyzer's *synthesized*
+    /// snapshot queries (Phase 4), parallel to
+    /// `QueryAnalysis::synthesized`. Each snapshot runs
+    /// standalone — never joined — and is rendered as its own
+    /// match block.
+    synthesized_per_expression: Vec<Vec<Parameters>>,
 }
 
 /// Run each expression's [`Application`] independently and join
@@ -655,9 +711,20 @@ async fn run_query<Env: EvaluateEnv>(
         per_expression.push(frames);
     }
     let joined = natural_join(&per_expression);
+
+    // Synthesized snapshots run standalone — never joined into
+    // `joined`, so an empty snapshot can't zero mutation
+    // planning's binding set.
+    let mut synthesized_per_expression = Vec::with_capacity(query.synthesized.len());
+    for application in &query.synthesized {
+        let frames = collect_matches(application.clone(), branch, env).await?;
+        synthesized_per_expression.push(frames);
+    }
+
     Ok(QueryResults {
         per_expression,
         joined,
+        synthesized_per_expression,
     })
 }
 
@@ -879,41 +946,17 @@ fn render_match_blocks(
         return Vec::new();
     };
 
-    // For each expression, collect the user-named variables it
-    // binds. We project the joined frame onto these to dedupe.
-    // Labels come from `analysis.query.labels` — populated by
-    // the analyzer for both explicit query expressions and the
-    // implicit queries it synthesizes for assertions, so the
-    // assertion path's result block is titled by the head name
-    // (`person`) instead of the legacy `?` fallback.
-    let mut blocks = Vec::with_capacity(query.queries.len());
+    let mut blocks = Vec::with_capacity(query.queries.len() + query.synthesized.len());
+
+    // User-written queries: each block draws from the joined
+    // frames so connected queries display the filtered
+    // intersection.
     for (i, application) in query.queries.iter().enumerate() {
         let label = query
             .labels
             .get(i)
             .cloned()
             .unwrap_or_else(|| "?".to_owned());
-        let descriptor = match application {
-            Application::Concept { query: q, .. } => q.predicate.clone(),
-            Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
-        };
-
-        // Variable names this expression contributes to the join.
-        let mut my_vars: Vec<String> = Vec::new();
-        let terms = match application {
-            Application::Concept { query: q, .. } => &q.terms,
-            Application::Domain { application: d, .. } => &d.parameters,
-        };
-        for (_, term) in terms.iter() {
-            if let Term::Variable {
-                name: Some(name), ..
-            } = term
-                && !my_vars.contains(name)
-            {
-                my_vars.push(name.clone());
-            }
-        }
-
         // Source frames: prefer joined when non-empty (so
         // connected queries see the filter); otherwise fall back
         // to the expression's own frames so disjoint expressions
@@ -928,28 +971,75 @@ fn render_match_blocks(
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
         };
+        blocks.push(render_block(label, application, source_frames));
+    }
 
-        let mut seen = std::collections::HashSet::<Vec<String>>::new();
-        let mut block_results = Vec::new();
-        for frame in source_frames {
-            let mut key = Vec::with_capacity(my_vars.len());
-            for var in &my_vars {
-                key.push(match frame.get(var) {
-                    Some(Term::Constant(v)) => format!("{v:?}"),
-                    _ => String::new(),
-                });
-            }
-            if !seen.insert(key) {
-                continue;
-            }
-            block_results.push(render_one_result(&descriptor, application, frame));
-        }
-        blocks.push(QueryMatchBlock {
-            label,
-            results: block_results,
-        });
+    // Synthesized snapshot queries: each runs standalone (no
+    // join), rendered from its own per-expression frames.
+    for (i, application) in query.synthesized.iter().enumerate() {
+        let label = query
+            .synthesized_labels
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| "?".to_owned());
+        let source_frames: &[Parameters] = results
+            .synthesized_per_expression
+            .get(i)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        blocks.push(render_block(label, application, source_frames));
     }
     blocks
+}
+
+/// Build one [`QueryMatchBlock`] for `application` over
+/// `source_frames`, deduplicating rows by the variables the
+/// expression binds.
+fn render_block(
+    label: String,
+    application: &Application,
+    source_frames: &[Parameters],
+) -> QueryMatchBlock {
+    let descriptor = match application {
+        Application::Concept { query: q, .. } => q.predicate.clone(),
+        Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
+    };
+
+    // Variable names this expression binds — used to dedupe rows.
+    let mut my_vars: Vec<String> = Vec::new();
+    let terms = match application {
+        Application::Concept { query: q, .. } => &q.terms,
+        Application::Domain { application: d, .. } => &d.parameters,
+    };
+    for (_, term) in terms.iter() {
+        if let Term::Variable {
+            name: Some(name), ..
+        } = term
+            && !my_vars.contains(name)
+        {
+            my_vars.push(name.clone());
+        }
+    }
+
+    let mut seen = std::collections::HashSet::<Vec<String>>::new();
+    let mut block_results = Vec::new();
+    for frame in source_frames {
+        let mut key = Vec::with_capacity(my_vars.len());
+        for var in &my_vars {
+            key.push(match frame.get(var) {
+                Some(Term::Constant(v)) => format!("{v:?}"),
+                _ => String::new(),
+            });
+        }
+        if !seen.insert(key) {
+            continue;
+        }
+        block_results.push(render_one_result(&descriptor, application, frame));
+    }
+    QueryMatchBlock {
+        label,
+        results: block_results,
+    }
 }
 
 fn render_one_result(
@@ -1105,6 +1195,78 @@ mod tests {
     /// it on the branch; the reactor's `induce` loop fires it
     /// on the in-flight transient; the durable `pong` head
     /// lands.
+    /// A document that queries one entity and asserts to a
+    /// *different constant* entity must plan: the assert's `?var`
+    /// is bound by the user query.
+    ///
+    /// Regression guard. Phase 4 synthesizes a snapshot query for
+    /// the assert target (`id:demo-copy`), which does not exist
+    /// pre-commit and returns zero rows. That snapshot must stay
+    /// out of the join that feeds mutation planning — it lives in
+    /// `QueryAnalysis::synthesized`, not `queries` — or it zeroes
+    /// the join and the assert's `?var` goes unbound.
+    #[dialog_common::test]
+    async fn it_binds_assert_var_from_query_for_distinct_target() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Seed: id:demo's referent points at a target entity.
+        let target: dialog_artifacts::Entity = "did:key:zReproTarget".parse()?;
+        let id_demo: dialog_artifacts::Entity = "id:demo".parse()?;
+        branch
+            .transaction()
+            .assert(the!("dialog.name/referent").of(id_demo).is(target.clone()))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Query id:demo's referent into ?demo, then assert it as
+        // id:demo-copy's referent — a different, fresh entity.
+        let doc = "\
+name:\n\
+\x20 this: id:demo\n\
+\x20 entity: ?demo\n\
+\n\
+name!:\n\
+\x20 this: id:demo-copy\n\
+\x20 entity: ?demo\n";
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        branch
+            .transaction()
+            .evaluate(&syntax)
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+
+        // id:demo-copy now carries the copied referent.
+        let id_copy: dialog_artifacts::Entity = "id:demo-copy".parse()?;
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                    .of(Term::<dialog_artifacts::Entity>::from(id_copy))
+                    .is(Term::<dialog_artifacts::Entity>::var("referent")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(claims.len(), 1, "expected the copied referent claim");
+        assert_eq!(claims[0].is, Value::Entity(target));
+        Ok(())
+    }
+
     #[dialog_common::test]
     async fn it_installs_and_fires_a_notation_rule() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
