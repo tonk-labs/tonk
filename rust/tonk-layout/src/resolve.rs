@@ -168,7 +168,10 @@ mod tests {
         // one until a tile is picked. Focus is fetched separately
         // via `focus_query`.
         let q = workspace_query("default").expect("workspace_query");
-        assert!(q.terms.get("focus").is_none(), "focus must not be a term of workspace_query");
+        assert!(
+            q.terms.get("focus").is_none(),
+            "focus must not be a term of workspace_query"
+        );
     }
 
     #[dialog_common::test]

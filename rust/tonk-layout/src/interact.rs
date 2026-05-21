@@ -312,10 +312,7 @@ pub fn pick_new_tile_target(layout: Option<&Layout>) -> NewTileTarget {
 /// on (or inside) a `.niri-tile`. Returns the notation document to
 /// POST, or `None` for clicks outside tile chrome.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn handle_click(
-    layout: &Layout,
-    ev: &web_sys::MouseEvent,
-) -> Option<String> {
+pub(crate) fn handle_click(layout: &Layout, ev: &web_sys::MouseEvent) -> Option<String> {
     use wasm_bindgen::JsCast;
 
     let target = ev.target()?;
@@ -326,7 +323,10 @@ pub(crate) fn handle_click(
     if layout.focus.as_deref() == Some(tile_entity.as_str()) {
         return None;
     }
-    Some(crate::writer::set_focus_doc(&layout.workspace, &tile_entity))
+    Some(crate::writer::set_focus_doc(
+        &layout.workspace,
+        &tile_entity,
+    ))
 }
 
 /// State carried across the three phases of a column-resize drag.
@@ -381,9 +381,7 @@ pub(crate) fn start_resize_drag(
     let strip = host.query_selector(":scope > .niri-strip").ok().flatten()?;
     let strip_width_px = strip.client_width();
     let column_el = strip
-        .query_selector(&format!(
-            ".niri-column[data-entity=\"{column_entity}\"]"
-        ))
+        .query_selector(&format!(".niri-column[data-entity=\"{column_entity}\"]"))
         .ok()
         .flatten()?;
 
@@ -586,8 +584,7 @@ mod tests {
                 vec![tile("t-top", "n"), tile("t-mid", "p"), tile("t-bot", "r")],
             )],
         );
-        let (entity, new_order) =
-            move_focused_tile(&l, Direction::Forward).expect("move expected");
+        let (entity, new_order) = move_focused_tile(&l, Direction::Forward).expect("move expected");
         assert_eq!(entity, "t-mid");
         assert!(
             new_order.as_str() > "r",
@@ -658,7 +655,10 @@ mod tests {
             } => {
                 assert_eq!(column_entity, "c-m");
                 // New tile lands after "p" — so order > "p".
-                assert!(tile_order.as_str() > "p", "expected order > 'p', got {tile_order:?}");
+                assert!(
+                    tile_order.as_str() > "p",
+                    "expected order > 'p', got {tile_order:?}"
+                );
             }
             other => panic!("expected AppendToColumn, got {other:?}"),
         }
@@ -668,10 +668,7 @@ mod tests {
     fn it_appends_to_first_column_when_no_focus_is_set() {
         let l = layout(
             None,
-            vec![
-                column("c-l", "n", vec![]),
-                column("c-r", "p", vec![]),
-            ],
+            vec![column("c-l", "n", vec![]), column("c-r", "p", vec![])],
         );
         match pick_new_tile_target(Some(&l)) {
             NewTileTarget::AppendToColumn { column_entity, .. } => {

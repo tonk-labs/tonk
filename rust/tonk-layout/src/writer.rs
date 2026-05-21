@@ -72,6 +72,41 @@ pub fn clear_focus_doc(workspace_entity: &str) -> String {
     format!("workspace!:\n  this: {workspace_entity}\n  focus: _\n")
 }
 
+/// Build the notation document for opening a `kind: "concept"`
+/// tile — the body mounts `<tonk-concept source="<source>">` to list
+/// every entity of that concept. The concept's name goes in the
+/// tile's `model` slot (text), keeping the schema unchanged.
+///
+/// The tile schema has `entity` / `view` / `model` as
+/// `cardinality: one`, so the tiles subscription's predicate
+/// requires all three to be set on a matching row. For concept
+/// tiles we don't have a meaningful entity or view; we set them
+/// to placeholders (the column URI for `entity`, empty string for
+/// `view`) so the query still matches. The reconciler dispatches
+/// on `kind` and ignores those slots for concept tiles.
+pub fn create_concept_tile_doc(
+    new_tile_id: &str,
+    column_entity: &str,
+    order: &str,
+    height: f64,
+    source: &str,
+) -> String {
+    format!(
+        "tile!:\n  \
+         this: {new_tile_id}\n  \
+         column: {column_entity}\n  \
+         order: {}\n  \
+         height: {}\n  \
+         kind: \"concept\"\n  \
+         entity: {column_entity}\n  \
+         view: \"\"\n  \
+         model: {}\n",
+        quoted(order),
+        float(height),
+        quoted(source),
+    )
+}
+
 /// Build the notation document for opening a `kind: "display"` tile
 /// in an existing column. `new_tile_id` is the caller-minted ULID
 /// (typically from `ulid::new_ulid()`); the resulting tile's `this:`
@@ -437,6 +472,26 @@ mod tests {
         // tile references the new column URI; all by URI literal.
         assert!(doc.contains(&format!("workspace: {WORKSPACE}")));
         assert!(doc.contains(&format!("column: {COLUMN}")));
+    }
+
+    #[dialog_common::test]
+    fn it_builds_a_create_concept_tile_doc_with_all_fields_set() {
+        // The concept tile uses the `model` slot for the
+        // tonk-concept `source`. `entity` is set to the column URI
+        // (any valid URI suffices) and `view` to an empty string
+        // so the tiles subscription's predicate matches — the
+        // reconciler dispatches on `kind` and ignores them.
+        let new_id = "id:01HMT999999999999999999999";
+        let doc = create_concept_tile_doc(new_id, COLUMN, "n", 1.0, "person");
+        assert!(doc.contains("tile!"));
+        assert!(doc.contains(&format!("this: {new_id}")));
+        assert!(doc.contains(&format!("column: {COLUMN}")));
+        assert!(doc.contains(r#"order: "n""#));
+        assert!(doc.contains("height: 1"));
+        assert!(doc.contains(r#"kind: "concept""#));
+        assert!(doc.contains(r#"model: "person""#));
+        assert!(doc.contains(&format!("entity: {COLUMN}")));
+        assert!(doc.contains(r#"view: """#));
     }
 
     #[dialog_common::test]

@@ -73,7 +73,7 @@ fn reconcile_tiles(
             .remove(&tile.entity)
             .unwrap_or_else(|| create_tile_element(document, tile, host));
         update_tile_attrs(&tile_el, tile, focus);
-        update_display_attrs(&tile_el, tile, host);
+        update_tile_body_attrs(&tile_el, tile, host);
         place_node(column_el, &tile_el, &mut anchor);
     }
     remove_remaining(&existing);
@@ -155,15 +155,29 @@ fn create_tile_element(document: &Document, tile: &Tile, host: &Element) -> Elem
         .expect("create div always succeeds");
     let _ = el.set_attribute("class", "niri-tile");
     let _ = el.set_attribute("data-entity", &tile.entity);
-    // Mount the tile body. v1 only knows `display`; unknown kinds
-    // get an inline error placeholder so the strip's geometry stays
-    // intact while making the misconfiguration visible.
+    // Mount the tile body keyed by `kind`. Display tiles render a
+    // single entity via `<tonk-display>`; concept tiles render an
+    // entity list via `<tonk-concept>`. Unknown kinds get an inline
+    // error placeholder so the strip's geometry stays intact while
+    // making the misconfiguration visible.
     match tile.kind.as_str() {
         "display" => {
             if let Ok(display) = document.create_element("tonk-display") {
                 copy_routing_attrs(host, &display);
                 set_display_attrs(&display, tile);
                 let _ = el.append_child(&display);
+            }
+        }
+        "concept" => {
+            if let Ok(concept) = document.create_element("tonk-concept") {
+                copy_routing_attrs(host, &concept);
+                set_concept_source(&concept, tile);
+                // Default template — list one row per entity. Uses
+                // `{name}` and `{this}` placeholders; concepts that
+                // don't project `name` just show the URI. A future
+                // iteration can let the tile carry a custom template.
+                concept.set_inner_html(CONCEPT_TILE_TEMPLATE);
+                let _ = el.append_child(&concept);
             }
         }
         other => {
@@ -178,6 +192,21 @@ fn create_tile_element(document: &Document, tile: &Tile, host: &Element) -> Elem
     el
 }
 
+/// Default per-row template for `<tonk-concept>` mounted inside a
+/// concept tile. Shows the entity's name when the concept projects
+/// one, falling back to the URI; clickable to support future
+/// drill-in behaviour.
+const CONCEPT_TILE_TEMPLATE: &str = r#"
+<ul class="niri-concept-list">
+  <template>
+    <li class="niri-concept-row" data-entity="{this}">
+      <span class="niri-concept-row-name">{name}</span>
+      <span class="niri-concept-row-id">{this}</span>
+    </li>
+  </template>
+</ul>
+"#;
+
 /// Reflect `height` + focus onto the tile element.
 fn update_tile_attrs(el: &Element, tile: &Tile, focus: Option<&str>) {
     let flex = format!("flex: {} 1 0;", tile.height);
@@ -186,6 +215,32 @@ fn update_tile_attrs(el: &Element, tile: &Tile, focus: Option<&str>) {
         set_if_changed(el, "data-focused", "");
     } else {
         let _ = el.remove_attribute("data-focused");
+    }
+}
+
+/// Set the `<tonk-concept>` element's `source` attribute from a
+/// concept tile's `model` field (which carries the concept name).
+fn set_concept_source(concept_el: &Element, tile: &Tile) {
+    set_optional(concept_el, "source", tile.display_model.as_deref());
+}
+
+/// In-place update for the tile's body child, dispatched on `kind`.
+/// Skipping equal-value sets via `set_if_changed` keeps the child
+/// element from restarting its subscriptions for cosmetic re-folds.
+fn update_tile_body_attrs(tile_el: &Element, tile: &Tile, host: &Element) {
+    match tile.kind.as_str() {
+        "display" => update_display_attrs(tile_el, tile, host),
+        "concept" => {
+            if let Some(concept) = tile_el
+                .query_selector(":scope > tonk-concept")
+                .ok()
+                .flatten()
+            {
+                copy_routing_attrs(host, &concept);
+                set_concept_source(&concept, tile);
+            }
+        }
+        _ => {}
     }
 }
 

@@ -499,6 +499,79 @@ tonk-layout .niri-tile-error {
     font-family: monospace;
 }
 
+/* Concept tile — the body is a `<tonk-concept>` that clones one
+   row per matched entity into `<ul class="niri-concept-list">`.
+   List scrolls inside the tile so the strip's geometry stays
+   intact regardless of how many entities exist. */
+tonk-layout .niri-concept-list {
+    list-style: none;
+    margin: 0;
+    padding: var(--wa-space-2xs, 6px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-3xs, 4px);
+    height: 100%;
+    overflow-y: auto;
+}
+tonk-layout .niri-concept-row {
+    display: flex;
+    flex-direction: column;
+    padding: var(--wa-space-2xs, 6px) var(--wa-space-s, 10px);
+    border-radius: var(--wa-border-radius-s, 4px);
+    cursor: pointer;
+}
+tonk-layout .niri-concept-row:hover {
+    background: var(--wa-color-neutral-fill-quiet, #f5f5f5);
+}
+tonk-layout .niri-concept-row-name {
+    font-weight: 500;
+}
+tonk-layout .niri-concept-row-name:empty {
+    display: none;
+}
+tonk-layout .niri-concept-row-id {
+    font-family: var(--wa-font-family-code, monospace);
+    font-size: 0.8em;
+    opacity: 0.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Open-tile dialog — picker rows in the Views / Concepts tabs.
+   `<tonk-concept>` clones one row per match into the .picker-list
+   container; each row is a button so it's keyboard-accessible and
+   gives a click target for the delegated handler. */
+tonk-layout .picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-3xs, 4px);
+    max-height: 360px;
+    overflow-y: auto;
+    padding-block: var(--wa-space-2xs, 6px);
+}
+tonk-layout .picker-row {
+    text-align: left;
+    padding: var(--wa-space-2xs, 6px) var(--wa-space-s, 10px);
+    border: 1px solid var(--wa-color-border-normal, #d4d4d8);
+    border-radius: var(--wa-border-radius-s, 4px);
+    background: transparent;
+    cursor: pointer;
+    font-family: var(--wa-font-family-code, monospace);
+    font-size: 0.9em;
+    color: inherit;
+}
+tonk-layout .picker-row:hover,
+tonk-layout .picker-row:focus-visible {
+    background: var(--wa-color-neutral-fill-quiet, #f5f5f5);
+    outline: none;
+}
+tonk-layout .picker-empty {
+    padding: var(--wa-space-m, 12px);
+    color: var(--wa-color-neutral-text-quiet, #71717a);
+    font-style: italic;
+}
+
 /* Concept view: same padding as `.space-view`. The
    `<tonk-concept>` element is `display: inline` by default, and
    its rendered `<table>` would otherwise overflow the main slot

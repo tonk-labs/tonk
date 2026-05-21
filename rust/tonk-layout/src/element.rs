@@ -20,8 +20,8 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{
-    CustomEvent, CustomEventInit, Document, Element, Event, HtmlElement, KeyboardEvent,
-    MouseEvent, PointerEvent, window,
+    CustomEvent, CustomEventInit, Document, Element, Event, HtmlElement, KeyboardEvent, MouseEvent,
+    PointerEvent, window,
 };
 
 use crate::interact;
@@ -90,11 +90,13 @@ struct Inner {
     /// inside the host. Held so we don't open a second instance and
     /// can clean it up on disconnect.
     add_tile_dialog: Option<Element>,
-    /// Submit listener for the open-tile dialog's form — held to
-    /// keep the closure alive while the listener is attached.
+    /// Submit listener for the open-tile dialog's manual form.
     add_tile_submit: Option<Closure<dyn FnMut(Event)>>,
     /// `wa-after-hide` listener that cleans up after dismissal.
     add_tile_close: Option<Closure<dyn FnMut(Event)>>,
+    /// Click listener that delegates picker-row clicks in the
+    /// Views / Concepts tabs to pre-filling the manual form.
+    add_tile_pick: Option<Closure<dyn FnMut(MouseEvent)>>,
 }
 
 impl Inner {
@@ -121,6 +123,7 @@ impl Inner {
             add_tile_dialog: None,
             add_tile_submit: None,
             add_tile_close: None,
+            add_tile_pick: None,
         }
     }
 
@@ -612,8 +615,8 @@ fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
             inner_for_pd.borrow_mut().active_drag = Some(drag);
         }
     }) as Box<dyn FnMut(PointerEvent)>);
-    let _ = host
-        .add_event_listener_with_callback("pointerdown", pointerdown.as_ref().unchecked_ref());
+    let _ =
+        host.add_event_listener_with_callback("pointerdown", pointerdown.as_ref().unchecked_ref());
 
     // Pointermove — bail unless a drag is running. Computes the
     // new width, updates inline CSS directly (instant feedback),
@@ -633,8 +636,8 @@ fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
         let doc = writer::resize_column_doc(&drag.column_entity, new_width);
         inner_for_pm.borrow().debouncer.schedule(url, doc, 200);
     }) as Box<dyn FnMut(PointerEvent)>);
-    let _ = host
-        .add_event_listener_with_callback("pointermove", pointermove.as_ref().unchecked_ref());
+    let _ =
+        host.add_event_listener_with_callback("pointermove", pointermove.as_ref().unchecked_ref());
 
     // Pointerup / pointercancel — end the drag, release pointer
     // capture, and flush the debouncer so the commit lands on
@@ -647,10 +650,9 @@ fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
             inner_for_pu.borrow().debouncer.flush();
         }
     }) as Box<dyn FnMut(PointerEvent)>);
+    let _ = host.add_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
     let _ =
-        host.add_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
-    let _ = host
-        .add_event_listener_with_callback("pointercancel", pointerup.as_ref().unchecked_ref());
+        host.add_event_listener_with_callback("pointercancel", pointerup.as_ref().unchecked_ref());
 
     let mut i = inner.borrow_mut();
     i.keydown_listener = Some(keydown);
@@ -686,8 +688,8 @@ fn detach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
         );
     }
     if let Some(pointerup) = i.pointerup_listener.take() {
-        let _ =
-            host.remove_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
+        let _ = host
+            .remove_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
         let _ = host.remove_event_listener_with_callback(
             "pointercancel",
             pointerup.as_ref().unchecked_ref(),
@@ -702,12 +704,15 @@ fn detach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
     }
     i.add_tile_submit = None;
     i.add_tile_close = None;
+    i.add_tile_pick = None;
 }
 
-/// Mount a `<wa-dialog>` prompting for the new tile's `entity` /
-/// `model` / `view`. Submitting builds a `kind: "display"` tile
-/// row, POSTs it, and closes the dialog; the new tile appears via
-/// the subscription frame, no manual reconciliation needed.
+/// Mount a `<wa-dialog>` with three tabs: Views, Concepts, and
+/// Manual. The picker tabs embed `<tonk-concept>` to list available
+/// renderables; clicking a row pre-fills the manual form's fields
+/// and switches the user there for review + submit. The manual
+/// tab is also the standalone fallback when no views / concepts
+/// exist yet.
 fn open_add_tile_dialog(host: &Element, inner: &Rc<RefCell<Inner>>) {
     if inner.borrow().add_tile_dialog.is_some() {
         return;
@@ -721,22 +726,223 @@ fn open_add_tile_dialog(host: &Element, inner: &Rc<RefCell<Inner>>) {
     let _ = dialog.set_attribute("label", "Open tile");
     let _ = dialog.set_attribute("open", "");
     let _ = dialog.set_attribute("class", "tonk-layout-add-tile");
+    let _ = dialog.set_attribute("style", "--width: 32rem;");
 
-    let Ok(form) = document.create_element("form") else {
+    let Ok(tab_group) = document.create_element("wa-tab-group") else {
         return;
     };
+
+    let space = host.get_attribute("space");
+    let branch = host.get_attribute("branch");
+
+    // Tab headers — `panel` attribute links to the corresponding
+    // wa-tab-panel's `name`. Manual is active by default so the
+    // form is the first thing visible.
+    append_tab(&document, &tab_group, "views", "Views", false);
+    append_tab(&document, &tab_group, "concepts", "Concepts", false);
+    append_tab(&document, &tab_group, "manual", "Manual", true);
+
+    // Views panel — `<tonk-concept source="view">` lists every view
+    // row on the branch. Each match clones a `.picker-row` button
+    // with `data-model` (concept entity URI) and `data-view-name`
+    // (view's name) so the delegated click handler can pre-fill
+    // the manual form.
+    append_picker_panel(
+        &document,
+        &tab_group,
+        "views",
+        "view",
+        space.as_deref(),
+        branch.as_deref(),
+        VIEW_ROW_TEMPLATE,
+        "No views asserted on this branch yet. Use the Manual tab to enter values directly.",
+    );
+
+    // Concepts panel — `<tonk-concept source="concept">` lists every
+    // concept by name. Clicking a row fills the model field; the
+    // user supplies entity + view in the manual tab.
+    append_picker_panel(
+        &document,
+        &tab_group,
+        "concepts",
+        "concept",
+        space.as_deref(),
+        branch.as_deref(),
+        CONCEPT_ROW_TEMPLATE,
+        "No concepts found.",
+    );
+
+    // Manual panel — the original 3-input form, plus the submit
+    // button. Picker tabs pre-fill these inputs and switch the
+    // active tab here so the user can review.
+    let entity_input = make_input(&document, "entity", "Entity URI", true);
+    let model_input = make_input(&document, "model", "Model name", false);
+    let view_input = make_input(&document, "view", "View name", false);
+    let (manual_panel, submit_closure) = build_manual_panel(
+        &document,
+        host,
+        inner,
+        &dialog,
+        &entity_input,
+        &model_input,
+        &view_input,
+    );
+    let _ = tab_group.append_child(&manual_panel);
+
+    let _ = dialog.append_child(&tab_group);
+    let _ = host.append_child(&dialog);
+
+    // Delegated click — dispatches by row class. Views pre-fill the
+    // manual form; concepts submit a `kind: "concept"` tile directly
+    // (no further input needed — the tile body is a list of every
+    // entity of that concept).
+    let host_for_click = host.clone();
+    let inner_for_click = inner.clone();
+    let dialog_for_click = dialog.clone();
+    let entity_for_click = entity_input.clone();
+    let model_for_click = model_input.clone();
+    let view_for_click = view_input.clone();
+    let pick = Closure::wrap(Box::new(move |ev: MouseEvent| {
+        let Some(target) = ev.target() else {
+            return;
+        };
+        let Ok(el) = target.dyn_into::<Element>() else {
+            return;
+        };
+        if let Some(view_row) = el.closest(".picker-row-view").ok().flatten() {
+            ev.prevent_default();
+            if let Some(model) = view_row.get_attribute("data-model") {
+                set_value(&model_for_click, &model);
+            }
+            if let Some(view) = view_row.get_attribute("data-view-name") {
+                set_value(&view_for_click, &view);
+            }
+            switch_to_tab(&dialog_for_click, "manual");
+            if let Some(el) = entity_for_click.clone().dyn_into::<HtmlElement>().ok() {
+                let _ = el.focus();
+            }
+        } else if let Some(concept_row) = el.closest(".picker-row-concept").ok().flatten() {
+            ev.prevent_default();
+            let Some(source) = concept_row.get_attribute("data-source") else {
+                return;
+            };
+            if source.is_empty() {
+                return;
+            }
+            submit_concept_tile(
+                &host_for_click,
+                &inner_for_click,
+                &dialog_for_click,
+                &source,
+            );
+        }
+    }) as Box<dyn FnMut(MouseEvent)>);
+    let _ = dialog.add_event_listener_with_callback("click", pick.as_ref().unchecked_ref());
+
+    // wa-after-hide cleanup — fires on X click, ESC, or programmatic
+    // close. Tear down inner refs and remove the element from the DOM.
+    let inner_for_close = inner.clone();
+    let dialog_for_close = dialog.clone();
+    let close = Closure::wrap(Box::new(move |_ev: Event| {
+        let mut i = inner_for_close.borrow_mut();
+        i.add_tile_dialog = None;
+        i.add_tile_submit = None;
+        i.add_tile_close = None;
+        i.add_tile_pick = None;
+        dialog_for_close.remove();
+    }) as Box<dyn FnMut(Event)>);
+    let _ =
+        dialog.add_event_listener_with_callback("wa-after-hide", close.as_ref().unchecked_ref());
+
+    let mut i = inner.borrow_mut();
+    i.add_tile_dialog = Some(dialog);
+    i.add_tile_submit = Some(submit_closure);
+    i.add_tile_close = Some(close);
+    i.add_tile_pick = Some(pick);
+}
+
+/// Append a `<wa-tab panel="..." [active]>` header to a tab group.
+fn append_tab(document: &Document, tab_group: &Element, panel: &str, label: &str, active: bool) {
+    if let Ok(tab) = document.create_element("wa-tab") {
+        let _ = tab.set_attribute("panel", panel);
+        if active {
+            let _ = tab.set_attribute("active", "");
+        }
+        tab.set_text_content(Some(label));
+        let _ = tab_group.append_child(&tab);
+    }
+}
+
+/// Append a `<wa-tab-panel>` containing a `<tonk-concept>` listing.
+/// The `row_template_html` is the inner-HTML chrome + `<template>`
+/// `<tonk-concept>` clones per matched row.
+fn append_picker_panel(
+    document: &Document,
+    tab_group: &Element,
+    panel_name: &str,
+    source: &str,
+    space: Option<&str>,
+    branch: Option<&str>,
+    row_template_html: &str,
+    empty_message: &str,
+) {
+    let Ok(panel) = document.create_element("wa-tab-panel") else {
+        return;
+    };
+    let _ = panel.set_attribute("name", panel_name);
+
+    let Ok(picker) = document.create_element("tonk-concept") else {
+        return;
+    };
+    let _ = picker.set_attribute("source", source);
+    if let Some(s) = space {
+        let _ = picker.set_attribute("space", s);
+    }
+    if let Some(b) = branch {
+        let _ = picker.set_attribute("branch", b);
+    }
+    picker.set_inner_html(row_template_html);
+    let _ = panel.append_child(&picker);
+
+    // A trailing hint that's only relevant when the picker has no
+    // rows — `<tonk-concept>` doesn't paint anything in that case,
+    // so the message would otherwise sit alone next to an invisible
+    // listing. It also serves as the "use Manual instead" cue.
+    if let Ok(hint) = document.create_element("p") {
+        let _ = hint.set_attribute("class", "picker-empty");
+        hint.set_text_content(Some(empty_message));
+        let _ = panel.append_child(&hint);
+    }
+
+    let _ = tab_group.append_child(&panel);
+}
+
+/// Build the Manual tab's panel: form with three inputs and a
+/// submit button, wired to `submit_add_tile`. Returns the panel and
+/// the submit Closure (caller parks it on `Inner`).
+fn build_manual_panel(
+    document: &Document,
+    host: &Element,
+    inner: &Rc<RefCell<Inner>>,
+    dialog: &Element,
+    entity_input: &Element,
+    model_input: &Element,
+    view_input: &Element,
+) -> (Element, Closure<dyn FnMut(Event)>) {
+    let panel = document
+        .create_element("wa-tab-panel")
+        .expect("create wa-tab-panel");
+    let _ = panel.set_attribute("name", "manual");
+
+    let form = document.create_element("form").expect("create form");
     let _ = form.set_attribute("class", "tonk-layout-add-tile-form");
     let _ = form.set_attribute(
         "style",
         "display: flex; flex-direction: column; gap: var(--wa-space-m, 12px);",
     );
-
-    let entity_input = make_input(&document, "entity", "Entity URI", true);
-    let model_input = make_input(&document, "model", "Model name", false);
-    let view_input = make_input(&document, "view", "View name", false);
-    let _ = form.append_child(&entity_input);
-    let _ = form.append_child(&model_input);
-    let _ = form.append_child(&view_input);
+    let _ = form.append_child(entity_input);
+    let _ = form.append_child(model_input);
+    let _ = form.append_child(view_input);
 
     if let Ok(submit_btn) = document.create_element("wa-button") {
         let _ = submit_btn.set_attribute("type", "submit");
@@ -745,11 +951,8 @@ fn open_add_tile_dialog(host: &Element, inner: &Rc<RefCell<Inner>>) {
         submit_btn.set_text_content(Some("Open"));
         let _ = form.append_child(&submit_btn);
     }
+    let _ = panel.append_child(&form);
 
-    let _ = dialog.append_child(&form);
-    let _ = host.append_child(&dialog);
-
-    // Submit — read inputs, build doc, POST, close dialog.
     let host_for_submit = host.clone();
     let inner_for_submit = inner.clone();
     let dialog_for_submit = dialog.clone();
@@ -775,25 +978,65 @@ fn open_add_tile_dialog(host: &Element, inner: &Rc<RefCell<Inner>>) {
     }) as Box<dyn FnMut(Event)>);
     let _ = form.add_event_listener_with_callback("submit", submit.as_ref().unchecked_ref());
 
-    // wa-after-hide fires on dismissal (X button, ESC, programmatic
-    // close). Clean up our refs and remove the element from the DOM.
-    let inner_for_close = inner.clone();
-    let dialog_for_close = dialog.clone();
-    let close = Closure::wrap(Box::new(move |_ev: Event| {
-        let mut i = inner_for_close.borrow_mut();
-        i.add_tile_dialog = None;
-        i.add_tile_submit = None;
-        i.add_tile_close = None;
-        dialog_for_close.remove();
-    }) as Box<dyn FnMut(Event)>);
-    let _ = dialog
-        .add_event_listener_with_callback("wa-after-hide", close.as_ref().unchecked_ref());
-
-    let mut i = inner.borrow_mut();
-    i.add_tile_dialog = Some(dialog);
-    i.add_tile_submit = Some(submit);
-    i.add_tile_close = Some(close);
+    (panel, submit)
 }
+
+/// Toggle the active `<wa-tab>` to the one whose `panel` matches
+/// `panel_name`. Cleared the previous active.
+fn switch_to_tab(dialog: &Element, panel_name: &str) {
+    let Ok(tabs) = dialog.query_selector_all("wa-tab") else {
+        return;
+    };
+    for i in 0..tabs.length() {
+        let Some(node) = tabs.item(i) else {
+            continue;
+        };
+        let Ok(el) = node.dyn_into::<Element>() else {
+            continue;
+        };
+        if el.get_attribute("panel").as_deref() == Some(panel_name) {
+            let _ = el.set_attribute("active", "");
+        } else {
+            let _ = el.remove_attribute("active");
+        }
+    }
+}
+
+/// Set a `<wa-input>`'s `.value` JS property — same shape as
+/// reading it via `read_value`, but write side. Used to pre-fill
+/// the manual form when the user picks from Views/Concepts.
+fn set_value(input: &Element, value: &str) {
+    use js_sys::Reflect;
+    let _ = Reflect::set(
+        input.as_ref(),
+        &JsValue::from_str("value"),
+        &JsValue::from_str(value),
+    );
+}
+
+/// Row template for the Views picker. Each clone surfaces the view's
+/// model entity URI and its name. Clicking pre-fills the manual
+/// form (model + view) and switches the user there to supply the
+/// entity URI.
+const VIEW_ROW_TEMPLATE: &str = r#"
+<div class="picker-list">
+  <template>
+    <button type="button" class="picker-row picker-row-view" data-model="{model}" data-view-name="{name}">{model} · {name}</button>
+  </template>
+</div>
+"#;
+
+/// Row template for the Concepts picker. Each clone surfaces a
+/// concept's name. Clicking creates a `kind: "concept"` tile
+/// directly — no entity / view needed because the tile's body is
+/// a list of every entity of that concept.
+const CONCEPT_ROW_TEMPLATE: &str = r#"
+<div class="picker-list">
+  <template>
+    <button type="button" class="picker-row picker-row-concept" data-source="{name}">{name}</button>
+  </template>
+</div>
+"#;
 
 /// Build a `<wa-input>` with name/label and (optionally) required.
 fn make_input(document: &Document, name: &str, label: &str, required: bool) -> Element {
@@ -819,8 +1062,23 @@ fn read_value(input: &Element) -> String {
         .unwrap_or_default()
 }
 
-/// Build + POST the doc that opens a new tile. Handles all three
-/// states the branch can be in:
+/// What goes inside the new tile's body. Display tiles render one
+/// entity via `<tonk-display>`; concept tiles list every entity of
+/// a model via `<tonk-concept>`. The two share all the surrounding
+/// lazy-bootstrap logic, so they pass through `assemble_new_tile_doc`.
+enum NewTileBody<'a> {
+    Display {
+        entity: &'a str,
+        view: &'a str,
+        model: &'a str,
+    },
+    Concept {
+        source: &'a str,
+    },
+}
+
+/// Build the new-tile notation document for whatever state the
+/// branch is in:
 ///
 /// - **Layout has columns** — append to the focused column (or the
 ///   first column if no focus); one `tile!:` block.
@@ -829,6 +1087,64 @@ fn read_value(input: &Element) -> String {
 /// - **No workspace yet** — mint workspace + column ULIDs from the
 ///   `workspace` attribute's name; emit `workspace!:` + `column!:` +
 ///   `tile!:` in one document for full lazy bootstrap.
+fn assemble_new_tile_doc(
+    host: &Element,
+    inner: &Rc<RefCell<Inner>>,
+    body: NewTileBody<'_>,
+) -> Option<String> {
+    let layout = inner.borrow().layout.clone();
+    let target = interact::pick_new_tile_target(layout.as_ref());
+
+    let tile_ulid = ulid::new_ulid()?;
+    let tile_id = format!("id:{tile_ulid}");
+
+    // Closure that emits the right tile block for the body kind.
+    let tile_block = |column_ref: &str, order: &str| -> String {
+        match &body {
+            NewTileBody::Display {
+                entity,
+                view,
+                model,
+            } => writer::create_display_tile_doc(
+                &tile_id, column_ref, order, 1.0, entity, view, model,
+            ),
+            NewTileBody::Concept { source } => {
+                writer::create_concept_tile_doc(&tile_id, column_ref, order, 1.0, source)
+            }
+        }
+    };
+
+    Some(match target {
+        interact::NewTileTarget::AppendToColumn {
+            column_entity,
+            tile_order,
+        } => tile_block(&column_entity, &tile_order),
+        interact::NewTileTarget::NewColumn { workspace_entity } => {
+            let col_ulid = ulid::new_ulid()?;
+            let col_id = format!("id:{col_ulid}");
+            writer::column_creation_block(&col_id, &workspace_entity, "n", 1.0)
+                + "\n"
+                + &tile_block(&col_id, "n")
+        }
+        interact::NewTileTarget::NewWorkspace => {
+            let workspace_name = host
+                .get_attribute("workspace")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "default".to_owned());
+            let ws_ulid = ulid::new_ulid()?;
+            let col_ulid = ulid::new_ulid()?;
+            let ws_id = format!("id:{ws_ulid}");
+            let col_id = format!("id:{col_ulid}");
+            writer::workspace_creation_block(&ws_id, &workspace_name)
+                + "\n"
+                + &writer::column_creation_block(&col_id, &ws_id, "n", 1.0)
+                + "\n"
+                + &tile_block(&col_id, "n")
+        }
+    })
+}
+
+/// Manual-form submit — builds a `kind: "display"` tile and posts.
 fn submit_add_tile(
     host: &Element,
     inner: &Rc<RefCell<Inner>>,
@@ -837,77 +1153,26 @@ fn submit_add_tile(
     model: &str,
     view: &str,
 ) {
-    let layout = inner.borrow().layout.clone();
-    let target = interact::pick_new_tile_target(layout.as_ref());
-
-    let Some(tile_ulid) = ulid::new_ulid() else {
-        return;
+    let body = NewTileBody::Display {
+        entity: display_entity,
+        view,
+        model,
     };
-    let tile_id = format!("id:{tile_ulid}");
+    if let Some(doc) = assemble_new_tile_doc(host, inner, body) {
+        spawn_evaluate_post(host, inner, doc);
+        // Programmatically close — `wa-after-hide` cleans up refs.
+        let _ = dialog.remove_attribute("open");
+    }
+}
 
-    let doc = match target {
-        interact::NewTileTarget::AppendToColumn {
-            column_entity,
-            tile_order,
-        } => writer::create_display_tile_doc(
-            &tile_id,
-            &column_entity,
-            &tile_order,
-            1.0,
-            display_entity,
-            view,
-            model,
-        ),
-        interact::NewTileTarget::NewColumn { workspace_entity } => {
-            let Some(col_ulid) = ulid::new_ulid() else {
-                return;
-            };
-            let col_id = format!("id:{col_ulid}");
-            writer::column_creation_block(&col_id, &workspace_entity, "n", 1.0)
-                + "\n"
-                + &writer::create_display_tile_doc(
-                    &tile_id,
-                    &col_id,
-                    "n",
-                    1.0,
-                    display_entity,
-                    view,
-                    model,
-                )
-        }
-        interact::NewTileTarget::NewWorkspace => {
-            let workspace_name = host
-                .get_attribute("workspace")
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "default".to_owned());
-            let Some(ws_ulid) = ulid::new_ulid() else {
-                return;
-            };
-            let Some(col_ulid) = ulid::new_ulid() else {
-                return;
-            };
-            let ws_id = format!("id:{ws_ulid}");
-            let col_id = format!("id:{col_ulid}");
-            writer::workspace_creation_block(&ws_id, &workspace_name)
-                + "\n"
-                + &writer::column_creation_block(&col_id, &ws_id, "n", 1.0)
-                + "\n"
-                + &writer::create_display_tile_doc(
-                    &tile_id,
-                    &col_id,
-                    "n",
-                    1.0,
-                    display_entity,
-                    view,
-                    model,
-                )
-        }
-    };
-
-    spawn_evaluate_post(host, inner, doc);
-    // Programmatically close the dialog — wa-after-hide fires
-    // and our close listener tears down the refs.
-    let _ = dialog.remove_attribute("open");
+/// Concept-picker submit — builds a `kind: "concept"` tile whose
+/// body lists every entity of `source`, then posts.
+fn submit_concept_tile(host: &Element, inner: &Rc<RefCell<Inner>>, dialog: &Element, source: &str) {
+    let body = NewTileBody::Concept { source };
+    if let Some(doc) = assemble_new_tile_doc(host, inner, body) {
+        spawn_evaluate_post(host, inner, doc);
+        let _ = dialog.remove_attribute("open");
+    }
 }
 
 /// Spawn an async task that POSTs `doc` to `/evaluate`. On failure
