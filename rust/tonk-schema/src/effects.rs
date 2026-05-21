@@ -25,13 +25,17 @@
 
 use std::collections::BTreeSet;
 
-use dialog_artifacts::{Changes, Entity, Instruction, Statement, Update, Value};
+use dialog_artifacts::{Attribute, Changes, Entity, Instruction, Select, Statement, Update, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
-use dialog_query::{Output as _, Term};
+use dialog_query::concept::query::ConceptQuery;
+use dialog_query::error::EvaluationError;
+use dialog_query::selection::{Match, Selection};
+use dialog_query::source::SelectRules;
+use dialog_query::{Cardinality, InductiveRule, Output as _, Parameters, Proposition, Term};
 use dialog_repository::{RemoteSite, Transaction};
 use thiserror::Error;
 
@@ -129,8 +133,8 @@ impl<'a> Induce<'a> {
     /// - Single round only (no cascade yet). A future revision
     ///   wraps this in a loop terminated on "no transients
     ///   emitted" or `MAX_ROUNDS`.
-    /// - Body evaluation isn't wired yet (see [`fire_effect`]).
-    /// - Retract-polarity effects aren't dispatched yet.
+    /// - Retract-polarity effects aren't dispatched yet (see
+    ///   [`fire_effect`]).
     pub async fn perform<Env: InduceEnv>(self, env: &Env) -> Result<Transaction<'a>, InduceError> {
         let Induce {
             mut txn,
@@ -311,36 +315,152 @@ async fn load_effect<Env: InduceEnv>(
 /// Evaluate one effect's body against the transaction overlay,
 /// instantiate the head per match, and apply to the transaction.
 ///
-/// **Body evaluation is currently a no-op.** Dialog's
-/// `Conjunction::evaluate(selection, env)` needs an env that
-/// provides `Provider<Select> + Provider<SelectRules>`. The
-/// plain operator env doesn't — those wrappers are constructed
-/// internally by `Transaction::query()`. To run a `Conjunction`
-/// against the overlay, we need to wrap it in a custom
-/// `dialog_query::Application` and pass it through
-/// `txn.query().select(<wrapper>).perform(env)`. Tracked in
-/// `plan/effects.md` Phase 3.
+/// V1: only `Assert`-polarity heads are dispatched. Retract
+/// polarity is recognized at install time but its head
+/// dispatch isn't wired yet.
 async fn fire_effect<'a, Env: InduceEnv>(
     effect: Effect,
-    txn: Transaction<'a>,
+    mut txn: Transaction<'a>,
     env: &Env,
 ) -> Result<Transaction<'a>, InduceError> {
-    let _ = (effect, env);
+    if effect.polarity() != EffectPolarity::Assert {
+        // V1: retract-polarity dispatch lands later.
+        return Ok(txn);
+    }
+
+    let rule = effect.into_rule();
+
+    // Evaluate the body against the transaction overlay.
+    // `BodyApp` wraps the rule's plan in a `dialog_query::Application`
+    // so we can route through `txn.query().select(...).perform(env)`,
+    // which supplies the `Provider<Select> + Provider<SelectRules>`
+    // wrapper internally.
+    let body = BodyApp { rule: rule.clone() };
+    let matches: Vec<Match> = dialog_query::Output::try_vec(txn.query().select(body).perform(env))
+        .await
+        .map_err(|e| InduceError::Query(format!("body evaluation failed: {e:?}")))?;
+
+    let head = rule.conclusion().clone();
+    for frame in matches {
+        // Project the match into a `Parameters` map of the head's
+        // operands. The conclusion-variable check at rule-compile
+        // time guarantees every operand is bound somewhere in the
+        // body.
+        let mut parameters = Parameters::new();
+        for operand in head.operands() {
+            if let Ok(value) = frame.lookup(&Term::<dialog_query::Any>::var(operand)) {
+                parameters.insert(operand.to_string(), Term::Constant(value));
+            }
+        }
+
+        let proposition = rule
+            .apply(parameters)
+            .map_err(|e| InduceError::Query(format!("head instantiation failed: {e}")))?;
+
+        // V1 inductive rules produce concept-shaped heads. Walk
+        // the predicate and emit one `(attr, this, value)` per
+        // bound field into the transaction.
+        if let Proposition::Concept(concept_query) = proposition {
+            txn = emit_head_facts(concept_query, txn);
+        }
+    }
+
     Ok(txn)
+}
+
+/// Walk a fully-bound [`ConceptQuery`] (the instantiated head
+/// of an assert-polarity rule) and emit one assertion per
+/// non-blank field. Mirrors the same emission logic the
+/// asserted-notation planner uses in `crate::transact`, but
+/// writes directly into a dialog `Transaction` since the
+/// induce path doesn't go through `ApplicationPlan`.
+fn emit_head_facts<'a>(concept_query: ConceptQuery, mut txn: Transaction<'a>) -> Transaction<'a> {
+    let Some(this_term) = concept_query.terms.get("this") else {
+        return txn;
+    };
+    let this_entity = match this_term {
+        Term::Constant(Value::Entity(e)) => e.clone(),
+        _ => return txn,
+    };
+    for (field_name, attribute) in concept_query.predicate.with().iter() {
+        let Some(term) = concept_query.terms.get(field_name) else {
+            continue;
+        };
+        let Term::Constant(value) = term else {
+            continue;
+        };
+        let the: Attribute = attribute.the().clone().into();
+        txn = match attribute.cardinality() {
+            Cardinality::One => txn.assert(RawReplace {
+                the,
+                of: this_entity.clone(),
+                is: value.clone(),
+            }),
+            Cardinality::Many => txn.assert(RawClaim {
+                the,
+                of: this_entity.clone(),
+                is: value.clone(),
+            }),
+        };
+    }
+    txn
+}
+
+/// Wrap an [`InductiveRule`] as a [`dialog_query::Application`]
+/// so its body can be evaluated against a [`Transaction::query`]
+/// overlay. The conclusion is the raw [`Match`] — the induce
+/// loop projects head operands out of it after the fact.
+#[derive(Clone)]
+struct BodyApp {
+    rule: InductiveRule,
+}
+
+impl dialog_query::Application for BodyApp {
+    type Conclusion = Match;
+
+    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
+    where
+        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+    {
+        let plan = self.rule.plan(&Default::default());
+        plan.evaluate(selection, env)
+    }
+
+    fn realize(&self, input: Match) -> Result<Match, EvaluationError> {
+        Ok(input)
+    }
 }
 
 /// One concrete `(the, of, is)` triple wrapped as a
 /// [`Statement`] so the transient sweep can hand it to
 /// [`Transaction::assert`] / [`Transaction::retract`].
 struct RawClaim {
-    the: dialog_artifacts::Attribute,
-    of: dialog_artifacts::Entity,
+    the: Attribute,
+    of: Entity,
     is: Value,
 }
 
 impl Statement for RawClaim {
     fn assert(self, update: &mut impl Update) {
         update.associate(self.the, self.of, self.is);
+    }
+    fn retract(self, update: &mut impl Update) {
+        update.dissociate(self.the, self.of, self.is);
+    }
+}
+
+/// Cardinality-one variant of [`RawClaim`] — emits via
+/// `associate_unique` so re-assertion of the same `(the, of)`
+/// pair supersedes the prior value.
+struct RawReplace {
+    the: Attribute,
+    of: Entity,
+    is: Value,
+}
+
+impl Statement for RawReplace {
+    fn assert(self, update: &mut impl Update) {
+        update.associate_unique(self.the, self.of, self.is);
     }
     fn retract(self, update: &mut impl Update) {
         update.dissociate(self.the, self.of, self.is);
