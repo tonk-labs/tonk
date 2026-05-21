@@ -65,6 +65,13 @@ pub fn scan_variables(syntax: &Syntax) -> Vec<AnalyzeDiagnostic> {
                 Position::AssertionField,
                 &mut occurrences,
             ),
+            // Rule expressions have their own scoping (each
+            // premise's `where:` binds variables) and don't
+            // share the top-level query/assertion variable
+            // namespace, so the single-occurrence scan skips
+            // them. A dedicated rule-side scanner will land with
+            // analyzer lifting.
+            Expression::Rule(_) => {}
         }
     }
 

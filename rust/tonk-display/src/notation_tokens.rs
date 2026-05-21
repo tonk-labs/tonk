@@ -85,6 +85,11 @@ fn walk_syntax(syntax: &Syntax, text: &str, line_starts: &[usize], out: &mut Vec
         match expr {
             Expression::Query(q) => walk_query(q, text, line_starts, out),
             Expression::Assertion(a) => walk_assertion(a, text, line_starts, out),
+            // Rule-expression tokenization will land alongside
+            // the editor support for `rule!:`. For now no
+            // marks contribute, so the whole rule block falls
+            // through to the default lexer styling.
+            Expression::Rule(_) => {}
         }
     }
 }

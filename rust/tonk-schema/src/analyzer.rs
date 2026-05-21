@@ -111,6 +111,10 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         let (head, has_effect) = match expression {
             Expression::Query(q) => (&q.head, false),
             Expression::Assertion(a) => (&a.head, true),
+            // Rule expressions are lifted in a separate analyzer
+            // pass (Phase 3 notation surface). They contribute no
+            // declarations to the query/mutation pipeline.
+            Expression::Rule(_) => continue,
         };
 
         // Meta heads carry their entity in the descriptor, which
@@ -289,6 +293,11 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     for (index, expression) in syntax.expressions.iter().enumerate() {
         match expression {
             Expression::Query(_) => {}
+            // Rule expressions are lifted by a separate pass and
+            // contribute no statements to the query/mutation
+            // pipeline today. Skipping here keeps the loop's
+            // statement counter consistent with the query phase.
+            Expression::Rule(_) => {}
             Expression::Assertion(a) => {
                 if let Some(declaration) = declared.remove(&index) {
                     // `attribute!` / `concept!` head — Phase 1

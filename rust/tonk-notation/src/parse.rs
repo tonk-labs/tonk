@@ -17,7 +17,8 @@ use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
 use crate::syntax::{
-    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Query, Scalar, Syntax,
+    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Premise, Query, Rule,
+    RulePolarity, Scalar, Spanned, Syntax,
 };
 
 /// Outcome of a parse.
@@ -374,6 +375,22 @@ fn walk_expression(
     let block_range = extend_range(key_range, range_of(value));
     let anchor = scan_anchor(source, key.span.end, value.span.start);
 
+    // `rule!:` heads have a structured body (assert!:/retract!:
+    // + when:/unless:/description:) that doesn't conform to the
+    // generic `Fields` shape. Dispatch to the rule-body parser
+    // and skip the field walk.
+    if is_rule_head(&head) {
+        if anchor.is_some() {
+            out.push(error(
+                block_range,
+                "`&anchor` is not valid on a `rule!:` head. Anchors \
+                 publish a single entity's name; rules don't have a \
+                 single subject entity.",
+            ));
+        }
+        return parse_rule_body(&head, value, block_range, out);
+    }
+
     // Body: null/empty (no-fields query or assertion), or a
     // mapping of fields. A bare `_` body is rejected — entity
     // selection requires a `this:` field, which requires a
@@ -441,6 +458,302 @@ fn walk_expression(
             fields: field_nodes,
             range: block_range,
         }))
+    }
+}
+
+/// `rule!:` heads are the only ones whose body is parsed
+/// through [`parse_rule_body`] rather than as a generic field
+/// map.
+fn is_rule_head(head: &Head) -> bool {
+    head.effect && matches!(&head.name, HeadName::Concept(name) if name == "rule")
+}
+
+/// Parse a `rule!:` body into a [`Rule`] expression.
+///
+/// The body must be a mapping with these keys:
+///
+/// - exactly one of `assert!:` or `retract!:` — value is the
+///   head concept name
+/// - `when:` — required, list of premises
+/// - `unless:` — optional, list of premises
+/// - `description:` — optional, string
+///
+/// Unknown top-level keys raise a diagnostic but don't reject
+/// the rule.
+fn parse_rule_body(
+    head: &Head,
+    value: &MarkedYaml<'_>,
+    block_range: Range,
+    out: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    let Some(pairs) = mapping_of(value) else {
+        out.push(error(
+            range_of(value),
+            "`rule!:` body must be a mapping with `assert!:` or \
+             `retract!:` plus a `when:` list.",
+        ));
+        return None;
+    };
+
+    let mut polarity: Option<(RulePolarity, Spanned<String>, Range)> = None;
+    let mut when: Option<(Vec<Premise>, Range)> = None;
+    let mut unless: Option<(Vec<Premise>, Range)> = None;
+    let mut description: Option<Spanned<String>> = None;
+
+    for (k, v) in pairs {
+        let Some(key) = string_of(k) else {
+            out.push(error(
+                range_of(k),
+                "Rule body key must be a string (`assert!:`, `retract!:`, \
+                 `when:`, `unless:`, `description:`).",
+            ));
+            continue;
+        };
+        let key_range = range_of(k);
+        match key {
+            "assert!" | "retract!" => {
+                let new_polarity = if key == "assert!" {
+                    RulePolarity::Assert
+                } else {
+                    RulePolarity::Retract
+                };
+                if let Some((existing, _, existing_range)) = &polarity {
+                    let label = match existing {
+                        RulePolarity::Assert => "assert!:",
+                        RulePolarity::Retract => "retract!:",
+                    };
+                    out.push(error(
+                        key_range,
+                        format!(
+                            "Rule already declared {label} at \
+                             {}:{}. A rule has exactly one polarity.",
+                            existing_range.start.line + 1,
+                            existing_range.start.character + 1,
+                        ),
+                    ));
+                    continue;
+                }
+                let Some(concept) = string_of(v).map(str::to_owned) else {
+                    out.push(error(
+                        range_of(v),
+                        "Rule head's polarity value must be a concept name \
+                         (e.g. `assert!: counter`).",
+                    ));
+                    continue;
+                };
+                polarity = Some((new_polarity, Spanned::new(concept, range_of(v)), key_range));
+            }
+            "when" => {
+                if when.is_some() {
+                    out.push(error(
+                        key_range,
+                        "Rule already declared `when:`. Combine premises \
+                         into one list.",
+                    ));
+                    continue;
+                }
+                when = Some((parse_premise_list("when", v, out), range_of(v)));
+            }
+            "unless" => {
+                if unless.is_some() {
+                    out.push(error(
+                        key_range,
+                        "Rule already declared `unless:`. Combine premises \
+                         into one list.",
+                    ));
+                    continue;
+                }
+                unless = Some((parse_premise_list("unless", v, out), range_of(v)));
+            }
+            "description" => {
+                let Some(text) = string_of(v) else {
+                    out.push(error(range_of(v), "Rule `description:` must be a string."));
+                    continue;
+                };
+                description = Some(Spanned::new(text.to_owned(), range_of(v)));
+            }
+            other => {
+                out.push(error(
+                    key_range,
+                    format!(
+                        "Unknown rule body key `{other}`. Valid keys: \
+                         `assert!:`, `retract!:`, `when:`, `unless:`, \
+                         `description:`."
+                    ),
+                ));
+            }
+        }
+    }
+
+    let (polarity, conclusion) = match polarity {
+        Some((p, c, _)) => (p, c),
+        None => {
+            out.push(error(
+                block_range,
+                "Rule must declare `assert!:` or `retract!:` with a head \
+                 concept name.",
+            ));
+            return None;
+        }
+    };
+
+    let (when, when_range) = match when {
+        Some(w) => w,
+        None => {
+            out.push(error(
+                block_range,
+                "Rule must declare `when:` with at least one premise.",
+            ));
+            return None;
+        }
+    };
+    if when.is_empty() {
+        out.push(error(
+            when_range,
+            "Rule's `when:` must list at least one premise.",
+        ));
+        return None;
+    }
+
+    Some(Expression::Rule(Rule {
+        head: head.clone(),
+        polarity,
+        conclusion,
+        when,
+        unless: unless.map(|(p, _)| p).unwrap_or_default(),
+        description,
+        range: block_range,
+    }))
+}
+
+/// Parse a `when:` or `unless:` value into a list of premises.
+/// The value must be a YAML sequence; each item must be a
+/// mapping with `assert:` + optional `where:`.
+fn parse_premise_list(
+    list_label: &str,
+    value: &MarkedYaml<'_>,
+    out: &mut Vec<Diagnostic>,
+) -> Vec<Premise> {
+    let YamlData::Sequence(items) = &value.data else {
+        out.push(error(
+            range_of(value),
+            format!("`{list_label}:` must be a list (`-` items) of premises."),
+        ));
+        return Vec::new();
+    };
+    let mut premises = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(premise) = parse_premise(item, out) {
+            premises.push(premise);
+        }
+    }
+    premises
+}
+
+/// Parse one premise: `{ assert: <concept>, where: { … } }`.
+fn parse_premise(item: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<Premise> {
+    let Some(pairs) = mapping_of(item) else {
+        out.push(error(
+            range_of(item),
+            "Premise must be a mapping with `assert:` and `where:` \
+             fields.",
+        ));
+        return None;
+    };
+
+    let mut concept: Option<Spanned<String>> = None;
+    let mut bindings: Vec<Field> = Vec::new();
+
+    for (k, v) in pairs {
+        let Some(key) = string_of(k) else {
+            out.push(error(
+                range_of(k),
+                "Premise key must be a string (`assert:` or `where:`).",
+            ));
+            continue;
+        };
+        let key_range = range_of(k);
+        match key {
+            "assert" => {
+                if concept.is_some() {
+                    out.push(error(
+                        key_range,
+                        "Premise already declared `assert:`. Each premise \
+                         names one concept.",
+                    ));
+                    continue;
+                }
+                let Some(name) = string_of(v).map(str::to_owned) else {
+                    out.push(error(
+                        range_of(v),
+                        "Premise `assert:` value must be a concept name.",
+                    ));
+                    continue;
+                };
+                concept = Some(Spanned::new(name, range_of(v)));
+            }
+            "where" => {
+                if !bindings.is_empty() {
+                    out.push(error(
+                        key_range,
+                        "Premise already declared `where:`. Combine \
+                         bindings into one mapping.",
+                    ));
+                    continue;
+                }
+                let Some(field_pairs) = mapping_of(v) else {
+                    out.push(error(
+                        range_of(v),
+                        "Premise `where:` must be a mapping of \
+                         `field: value`.",
+                    ));
+                    continue;
+                };
+                for (field_key, field_value) in field_pairs {
+                    if let Some(field) = walk_field(field_key, field_value, out) {
+                        bindings.push(field);
+                    }
+                }
+            }
+            other => {
+                out.push(error(
+                    key_range,
+                    format!(
+                        "Unknown premise key `{other}`. Valid keys: \
+                         `assert:`, `where:`."
+                    ),
+                ));
+            }
+        }
+    }
+
+    let concept = concept.or_else(|| {
+        out.push(error(
+            range_of(item),
+            "Premise must declare `assert: <concept-name>`.",
+        ));
+        None
+    })?;
+
+    Some(Premise {
+        concept,
+        bindings,
+        range: range_of(item),
+    })
+}
+
+/// Extract the mapping pairs from a [`MarkedYaml`], or `None`
+/// if it isn't a mapping. Returns the underlying
+/// `LinkedHashMap` (via the saphyr-exposed
+/// `AnnotatedMapping<'_, MarkedYaml<'_>>` alias) so callers can
+/// iterate `for (k, v) in pairs` — order matches source.
+fn mapping_of<'a, 'b>(
+    value: &'a MarkedYaml<'b>,
+) -> Option<&'a saphyr::AnnotatedMapping<'b, MarkedYaml<'b>>> {
+    if let YamlData::Mapping(pairs) = &value.data {
+        Some(pairs)
+    } else {
+        None
     }
 }
 
@@ -1964,6 +2277,175 @@ page!:
         assert!(
             range.end.line == 0,
             "diagnostic end must stay on the only line, got {range:?}",
+        );
+    }
+
+    // -------------------------------------------------------------
+    // Rule expressions
+    // -------------------------------------------------------------
+
+    /// Smallest valid rule: assert-polarity, one positive premise,
+    /// empty `where:` (matches any).
+    #[dialog_common::test]
+    fn it_parses_minimal_assert_rule() {
+        let syntax =
+            parse_clean("rule!:\n  assert!: pong\n  when:\n    - assert: ping\n      where: {}\n");
+        assert_eq!(syntax.expressions.len(), 1);
+        let Expression::Rule(rule) = &syntax.expressions[0] else {
+            panic!("expected Rule");
+        };
+        assert_eq!(rule.polarity, RulePolarity::Assert);
+        assert_eq!(rule.conclusion.value, "pong");
+        assert_eq!(rule.when.len(), 1);
+        assert_eq!(rule.when[0].concept.value, "ping");
+        assert!(rule.when[0].bindings.is_empty());
+        assert!(rule.unless.is_empty());
+        assert!(rule.description.is_none());
+    }
+
+    /// `retract!:` works the same way, with the polarity flipped.
+    #[dialog_common::test]
+    fn it_parses_retract_polarity_rule() {
+        let syntax = parse_clean(
+            "rule!:\n\
+             \x20 retract!: message\n\
+             \x20 when:\n\
+             \x20   - assert: ack\n\
+             \x20     where: { target: ?m }\n\
+             \x20   - assert: message\n\
+             \x20     where: { this: ?m, body: ?b }\n",
+        );
+        let Expression::Rule(rule) = &syntax.expressions[0] else {
+            panic!("expected Rule");
+        };
+        assert_eq!(rule.polarity, RulePolarity::Retract);
+        assert_eq!(rule.conclusion.value, "message");
+        assert_eq!(rule.when.len(), 2);
+        assert_eq!(rule.when[0].concept.value, "ack");
+        assert_eq!(rule.when[1].concept.value, "message");
+        // Field bindings should round-trip through walk_field
+        // — second premise binds two fields.
+        assert_eq!(rule.when[1].bindings.len(), 2);
+    }
+
+    /// Optional `unless:` and `description:` slots are picked
+    /// up when present.
+    #[dialog_common::test]
+    fn it_parses_unless_and_description() {
+        let syntax = parse_clean(
+            "rule!:\n\
+             \x20 description: \"increment counter on increment command\"\n\
+             \x20 assert!: counter\n\
+             \x20 when:\n\
+             \x20   - assert: counter\n\
+             \x20     where: { this: ?c, count: ?prev }\n\
+             \x20 unless:\n\
+             \x20   - assert: counter-paused\n\
+             \x20     where: { this: ?c }\n",
+        );
+        let Expression::Rule(rule) = &syntax.expressions[0] else {
+            panic!("expected Rule");
+        };
+        assert_eq!(rule.unless.len(), 1);
+        assert_eq!(rule.unless[0].concept.value, "counter-paused");
+        let desc = rule.description.as_ref().expect("description set");
+        assert!(desc.value.contains("increment counter"));
+    }
+
+    /// Missing `assert!:` / `retract!:` is a hard error — every
+    /// rule must declare a head polarity.
+    #[dialog_common::test]
+    fn it_rejects_rule_without_polarity() {
+        let parsed = parse("rule!:\n  when:\n    - assert: ping\n      where: {}\n");
+        assert!(parsed.syntax.is_some(), "syntax should still parse");
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("assert!:") && m.contains("retract!:")),
+            "expected diagnostic about missing polarity, got {messages:?}",
+        );
+    }
+
+    /// Missing `when:` is a hard error — a rule with no body
+    /// would fire on nothing.
+    #[dialog_common::test]
+    fn it_rejects_rule_without_when() {
+        let parsed = parse("rule!:\n  assert!: pong\n");
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("`when:`")),
+            "expected diagnostic about missing when, got {messages:?}",
+        );
+    }
+
+    /// Empty `when:` list is also rejected — same reason.
+    #[dialog_common::test]
+    fn it_rejects_rule_with_empty_when() {
+        let parsed = parse("rule!:\n  assert!: pong\n  when: []\n");
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("at least one premise")),
+            "expected diagnostic about empty when, got {messages:?}",
+        );
+    }
+
+    /// Declaring both `assert!:` and `retract!:` is a hard
+    /// error — a rule has one polarity.
+    #[dialog_common::test]
+    fn it_rejects_rule_with_both_polarities() {
+        let parsed = parse(
+            "rule!:\n\
+             \x20 assert!: ping\n\
+             \x20 retract!: pong\n\
+             \x20 when:\n\
+             \x20   - assert: ping\n\
+             \x20     where: {}\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("one polarity")),
+            "expected diagnostic about duplicate polarity, got {messages:?}",
+        );
+    }
+
+    /// Anchors on `rule!:` heads are rejected — rules don't
+    /// have a single subject entity to name.
+    #[dialog_common::test]
+    fn it_rejects_anchor_on_rule_head() {
+        let parsed = parse(
+            "rule!: &mine\n\
+             \x20 assert!: pong\n\
+             \x20 when:\n\
+             \x20   - assert: ping\n\
+             \x20     where: {}\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("&anchor") && m.contains("`rule!:`")),
+            "expected diagnostic about anchor on rule, got {messages:?}",
         );
     }
 }

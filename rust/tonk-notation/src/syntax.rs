@@ -24,18 +24,20 @@ pub struct Syntax {
     pub range: Range,
 }
 
-/// One top-level entry. Two flavours, distinguished by the head's
-/// effect marker (`!`):
+/// One top-level entry. Three flavours, distinguished by the head:
 ///
-/// | Head     | Body              | Variant       |
-/// |----------|-------------------|---------------|
-/// | `name`   | fields or empty   | `Query`       |
-/// | `name!`  | fields or empty   | `Assertion`   |
+/// | Head     | Body shape         | Variant       |
+/// |----------|--------------------|---------------|
+/// | `name`   | fields or empty    | `Query`       |
+/// | `name!`  | fields or empty    | `Assertion`   |
+/// | `rule!`  | `{assert!:|retract!:, when:, unless:?, description:?}` | `Rule` |
 ///
-/// Retraction is not a separate top-level variant — it happens
-/// *inside* an assertion body via `field: _` (retract one
-/// attribute) or `..: _` (retract every attribute in the concept's
-/// `with:` map not named elsewhere in the body).
+/// Retraction of a *single fact* (per attribute) is not a separate
+/// top-level variant — it happens inside an assertion body via
+/// `field: _` or `..: _`. The `Rule` variant captures *inductive
+/// rules* whose head is an `assert!:` or `retract!:` directive
+/// against a concept, and whose body is a `when:` / `unless:`
+/// premise list.
 ///
 /// A bare `_` body (`head!: _`) is a parse error: with no `this:`
 /// field there's no entity selection mechanism for the operation
@@ -49,6 +51,11 @@ pub enum Expression {
     /// entity if `this:` is omitted). Per-field retractions live
     /// inside the body as `field: _` or `..: _`.
     Assertion(Assertion),
+    /// `rule!:` — an inductive rule. The body carries
+    /// `assert!:` or `retract!:` (the head concept), `when:` (a
+    /// list of positive premises), and optionally `unless:` (a
+    /// list of negative premises) and `description:`.
+    Rule(Rule),
 }
 
 impl Expression {
@@ -57,6 +64,7 @@ impl Expression {
         match self {
             Expression::Query(q) => q.range,
             Expression::Assertion(a) => a.range,
+            Expression::Rule(r) => r.range,
         }
     }
 }
@@ -89,6 +97,89 @@ pub struct Assertion {
     /// retracts that one attribute. Other fields are asserted.
     pub fields: Vec<Field>,
     /// Span of the whole `head!: …` block.
+    pub range: Range,
+}
+
+/// `rule!:` with a structured body. The body's shape is fixed
+/// by the rule grammar rather than free-form `Field`s:
+///
+/// ```yaml
+/// rule!:
+///   assert!: counter        # or retract!: counter
+///   description: "..."      # optional
+///   when:
+///     - assert: counter
+///       where: { this: ?c, count: ?prev }
+///     - assert: increment
+///       where: { subject: ?c }
+///   unless:                 # optional
+///     - assert: counter-paused
+///       where: { this: ?c }
+/// ```
+///
+/// `assert!:` / `retract!:` are mutually exclusive; exactly one
+/// must be present and its value is the head concept name. The
+/// `when` list must be non-empty; each premise binds variables
+/// that the head reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rule {
+    /// The `rule!:` head itself (always concept `rule` with
+    /// `effect = true`).
+    pub head: Head,
+    /// `Assert` for `assert!:`, `Retract` for `retract!:`.
+    pub polarity: RulePolarity,
+    /// Head concept name — the value of the `assert!:` /
+    /// `retract!:` field.
+    pub conclusion: Spanned<String>,
+    /// Positive premises (under `when:`).
+    pub when: Vec<Premise>,
+    /// Negative premises (under `unless:`), if any.
+    pub unless: Vec<Premise>,
+    /// Optional human-readable description.
+    pub description: Option<Spanned<String>>,
+    /// Span of the whole `rule!: …` block.
+    pub range: Range,
+}
+
+/// Polarity of a [`Rule`]'s head — whether matches assert or
+/// retract head facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RulePolarity {
+    /// `assert!:` head — body matches produce new head facts.
+    Assert,
+    /// `retract!:` head — body matches produce retractions of
+    /// the head concept's facts at the bound entity.
+    Retract,
+}
+
+/// One premise inside a rule's `when` or `unless` list. A
+/// premise is a mapping with `assert: <concept>` plus `where:
+/// { … }` field bindings:
+///
+/// ```yaml
+/// - assert: counter
+///   where:
+///     this: ?c
+///     count: ?prev
+/// ```
+///
+/// Variable names in the bindings are how rules connect
+/// premises and feed the head — sharing a `?name` joins two
+/// premises, and `?name` reappearing in the head's
+/// (implicit) operand position binds the head's field.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Premise {
+    /// Concept name (value of the `assert:` field). For
+    /// negative premises (under `unless:`) the `assert:` key is
+    /// reused — there's no separate `retract:` key inside a
+    /// premise body, because the premise's polarity is
+    /// determined by which list (`when` vs `unless`) it
+    /// appears in.
+    pub concept: Spanned<String>,
+    /// `where:` field bindings. May be empty (matches every
+    /// entity of the concept).
+    pub bindings: Vec<Field>,
+    /// Span of the whole premise mapping.
     pub range: Range,
 }
 
