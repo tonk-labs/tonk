@@ -1,312 +1,242 @@
-//! Notation-document builders for layout mutations + the
-//! wasm-only `/evaluate` POST that submits them.
+//! Notation-document builders for the six effects, plus the
+//! wasm-only `/evaluate` POST.
 //!
-//! Every mutation that changes branch state — moving a column,
-//! resizing a tile, opening or closing a tile, setting focus —
-//! goes through one of the builders here. The builders are pure
-//! string-format functions, native-testable; the POST and the
-//! debounce machinery sit behind `cfg(target_arch = "wasm32")`.
+//! Every effect that touches branch state lands here. Builders are
+//! pure string-format functions, native-testable. Resolvers are pure
+//! readers of a folded [`Layout`] that derive concrete write args
+//! (target tile, lex-midpoint order key, focus-advance choice) from
+//! the effect's high-level params. The wasm-only `post_evaluate`
+//! shipped at the bottom is the single transport point.
 //!
-//! All builders assume the target entity already exists on the
-//! branch (the writer is for mutations, not creation outside the
-//! `create_*` family). Partial-field updates are safe under
-//! dialog-yaml semantics because the analyzer skips the "incomplete
-//! fresh-entity" check when `this:` resolves to a known entity.
+//! All builders assume target entities already exist on the branch
+//! unless they're freshly minted in the same document. Partial-field
+//! updates are safe under dialog-yaml semantics because the analyzer
+//! skips the "incomplete fresh-entity" check when `this:` resolves
+//! to a known entity.
 
-// Wasm-side consumers (interact.rs, attribute_changed_callback)
-// arrive later; until then the builders are exercised by native
-// tests only.
-#![allow(dead_code)]
+use crate::model::Layout;
+use crate::order;
 
-/// Build the notation document for moving a column to a new lex
-/// order key. Width and tile membership are untouched.
-pub fn move_column_doc(column_entity: &str, new_order: &str) -> String {
-    format!(
-        "column!:\n  this: {column_entity}\n  order: {}\n",
-        quoted(new_order),
-    )
+/// Step direction for `focus-prev` / `focus-next`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Toward smaller `order` keys.
+    Prev,
+    /// Toward larger `order` keys.
+    Next,
 }
 
-/// Build the notation document for resizing a column.
-pub fn resize_column_doc(column_entity: &str, new_width: f64) -> String {
-    format!(
-        "column!:\n  this: {column_entity}\n  width: {}\n",
-        float(new_width),
-    )
+/// What `close-tile` should do to `workspace.focus`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CloseFocus {
+    /// Target wasn't focused — leave focus alone.
+    Leave,
+    /// Target was focused; advance to this neighbour.
+    SetTo(String),
+    /// Target was focused; no neighbours — retract focus.
+    Clear,
 }
 
-/// Build the notation document for moving a tile — possibly to a
-/// different column, possibly within the same column. One document,
-/// one dialog transaction: the `column` and `order` claims are
-/// re-asserted atomically.
-pub fn move_tile_doc(tile_entity: &str, new_column: &str, new_order: &str) -> String {
-    format!(
-        "tile!:\n  this: {tile_entity}\n  column: {new_column}\n  order: {}\n",
-        quoted(new_order),
-    )
+/// `open-tile`'s parent workspace: either an existing entity URI, or
+/// a fresh-minted workspace to lazy-bootstrap in the same document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceTarget {
+    /// Workspace already exists on the branch.
+    Existing(String),
+    /// Workspace does not exist yet; mint it under `id` with `name`.
+    Bootstrap {
+        /// Minted ULID URI (`id:<ulid>`) for the new workspace.
+        id: String,
+        /// Name claim (matches the host element's `workspace` attribute).
+        name: String,
+    },
 }
 
-/// Build the notation document for resizing a tile.
-pub fn resize_tile_doc(tile_entity: &str, new_height: f64) -> String {
-    format!(
-        "tile!:\n  this: {tile_entity}\n  height: {}\n",
-        float(new_height),
-    )
+/// Walk linear order from current focus to its neighbour. Returns
+/// `None` at the boundary, or when nothing is focused (use
+/// `focus-tile` to set an initial focus).
+pub fn resolve_focus_step(layout: &Layout, direction: Direction) -> Option<String> {
+    let focus = layout.focus.as_deref()?;
+    let idx = layout.tiles.iter().position(|t| t.entity == focus)?;
+    let new_idx = match direction {
+        Direction::Prev => idx.checked_sub(1)?,
+        Direction::Next => {
+            let next = idx + 1;
+            (next < layout.tiles.len()).then_some(next)?
+        }
+    };
+    Some(layout.tiles[new_idx].entity.clone())
 }
 
-/// Build the notation document for closing a tile — retracts every
-/// claim on the tile entity via the rest-retraction marker.
-pub fn close_tile_doc(tile_entity: &str) -> String {
-    format!("tile!:\n  this: {tile_entity}\n  ..: _\n")
-}
-
-/// Build the notation document for setting the workspace's focused
-/// tile. Re-asserting a cardinality:one field retracts the previous
-/// value automatically.
-pub fn set_focus_doc(workspace_entity: &str, focused_tile: &str) -> String {
-    format!("workspace!:\n  this: {workspace_entity}\n  focus: {focused_tile}\n")
-}
-
-/// Build the notation document for clearing focus.
-pub fn clear_focus_doc(workspace_entity: &str) -> String {
-    format!("workspace!:\n  this: {workspace_entity}\n  focus: _\n")
-}
-
-/// Build the notation document for opening a `kind: "concept"`
-/// tile — the body mounts `<tonk-concept source="<source>">` to list
-/// every entity of that concept. The concept's name goes in the
-/// tile's `model` slot (text), keeping the schema unchanged.
+/// Compute the `order` key for an `open-tile` or `reorder-tile`
+/// per the SPEC's order-key rules. `before` / `after` are tile
+/// entity URIs; either, both, or neither may be set.
 ///
-/// The tile schema has `entity` / `view` / `model` as
-/// `cardinality: one`, so the tiles subscription's predicate
-/// requires all three to be set on a matching row. For concept
-/// tiles we don't have a meaningful entity or view; we set them
-/// to placeholders (the column URI for `entity`, empty string for
-/// `view`) so the query still matches. The reconciler dispatches
-/// on `kind` and ignores those slots for concept tiles.
-pub fn create_concept_tile_doc(
+/// `Err` describes which input didn't resolve. `Ok` is the lex-key
+/// to assert.
+pub fn resolve_position_order(
+    layout: &Layout,
+    before: Option<&str>,
+    after: Option<&str>,
+) -> Result<String, &'static str> {
+    let find = |uri: &str| layout.tiles.iter().position(|t| t.entity == uri);
+    let (lo, hi): (Option<&str>, Option<&str>) = match (before, after) {
+        (Some(b), Some(a)) => {
+            let b_idx = find(b).ok_or("before tile not found")?;
+            let a_idx = find(a).ok_or("after tile not found")?;
+            (
+                Some(layout.tiles[a_idx].order.as_str()),
+                Some(layout.tiles[b_idx].order.as_str()),
+            )
+        }
+        (Some(b), None) => {
+            let b_idx = find(b).ok_or("before tile not found")?;
+            let prev_order = b_idx.checked_sub(1).map(|i| layout.tiles[i].order.as_str());
+            (prev_order, Some(layout.tiles[b_idx].order.as_str()))
+        }
+        (None, Some(a)) => {
+            let a_idx = find(a).ok_or("after tile not found")?;
+            let next_order = layout.tiles.get(a_idx + 1).map(|t| t.order.as_str());
+            (Some(layout.tiles[a_idx].order.as_str()), next_order)
+        }
+        (None, None) => {
+            let last_order = layout.tiles.last().map(|t| t.order.as_str());
+            (last_order, None)
+        }
+    };
+    order::between(lo, hi).ok_or("no order key fits")
+}
+
+/// Decide what to do with `workspace.focus` on `close-tile(target)`.
+/// If the target wasn't focused, leave focus untouched. Otherwise
+/// advance to the previous tile (or next if previous is gone, or
+/// clear if no tiles remain).
+pub fn resolve_close_focus(layout: &Layout, target: &str) -> CloseFocus {
+    if layout.focus.as_deref() != Some(target) {
+        return CloseFocus::Leave;
+    }
+    let Some(idx) = layout.tiles.iter().position(|t| t.entity == target) else {
+        // Target was focused but isn't in the tile list — clear
+        // focus so the workspace doesn't keep pointing at a ghost.
+        return CloseFocus::Clear;
+    };
+    if let Some(prev) = idx.checked_sub(1).and_then(|i| layout.tiles.get(i)) {
+        return CloseFocus::SetTo(prev.entity.clone());
+    }
+    if let Some(next) = layout.tiles.get(idx + 1) {
+        return CloseFocus::SetTo(next.entity.clone());
+    }
+    CloseFocus::Clear
+}
+
+/// Build the notation document for `focus-tile` / `focus-prev` /
+/// `focus-next`: assert `workspace.focus = target`. Re-asserting a
+/// cardinality-one field retracts the previous value automatically.
+pub fn focus_tile_doc(workspace_entity: &str, target_tile: &str) -> String {
+    format!("workspace!:\n  this: {workspace_entity}\n  focus: {target_tile}\n")
+}
+
+/// Build the notation document for `close-tile`: retract every claim
+/// on the target tile and, if it was focused, advance focus in the
+/// same atomic document.
+pub fn close_tile_doc(
+    target_tile: &str,
+    workspace_entity: &str,
+    focus_action: CloseFocus,
+) -> String {
+    let mut doc = format!("tile!:\n  this: {target_tile}\n  ..: _\n");
+    match focus_action {
+        CloseFocus::Leave => {}
+        CloseFocus::SetTo(new_focus) => {
+            doc.push('\n');
+            doc.push_str(&focus_tile_doc(workspace_entity, &new_focus));
+        }
+        CloseFocus::Clear => {
+            doc.push('\n');
+            doc.push_str(&format!(
+                "workspace!:\n  this: {workspace_entity}\n  focus: _\n"
+            ));
+        }
+    }
+    doc
+}
+
+/// Build the notation document for `reorder-tile`: assert `order` on
+/// `target_tile`. The caller resolves the new order via
+/// [`resolve_position_order`].
+pub fn reorder_tile_doc(target_tile: &str, new_order: &str) -> String {
+    format!(
+        "tile!:\n  this: {target_tile}\n  order: {}\n",
+        quoted(new_order),
+    )
+}
+
+/// Build the notation document for `update-tile-content`: assert
+/// whichever of `entity` / `view` / `model` are provided. Emits an
+/// empty doc when all three are `None`.
+pub fn update_tile_content_doc(
+    target_tile: &str,
+    entity: Option<&str>,
+    view: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    if entity.is_none() && view.is_none() && model.is_none() {
+        return String::new();
+    }
+    let mut doc = format!("tile!:\n  this: {target_tile}\n");
+    if let Some(e) = entity {
+        doc.push_str(&format!("  entity: {e}\n"));
+    }
+    if let Some(v) = view {
+        doc.push_str(&format!("  view: {}\n", quoted(v)));
+    }
+    if let Some(m) = model {
+        doc.push_str(&format!("  model: {}\n", quoted(m)));
+    }
+    doc
+}
+
+/// Build the notation document for `open-tile`: assert a fresh `tile!`
+/// row and set `workspace.focus` to it, atomically. When
+/// `workspace = Bootstrap`, also mints the workspace in the same
+/// document — the full lazy-bootstrap case.
+pub fn open_tile_doc(
+    workspace: WorkspaceTarget,
     new_tile_id: &str,
-    column_entity: &str,
     order: &str,
-    height: f64,
-    source: &str,
+    view: &str,
+    model: &str,
+    entity: Option<&str>,
 ) -> String {
-    format!(
-        "tile!:\n  \
-         this: {new_tile_id}\n  \
-         column: {column_entity}\n  \
-         order: {}\n  \
-         height: {}\n  \
-         kind: \"concept\"\n  \
-         entity: {column_entity}\n  \
-         view: \"\"\n  \
-         model: {}\n",
+    let mut doc = String::new();
+    let workspace_ref = match &workspace {
+        WorkspaceTarget::Existing(uri) => uri.as_str(),
+        WorkspaceTarget::Bootstrap { id, name } => {
+            doc.push_str(&format!(
+                "workspace!:\n  this: {id}\n  name: {}\n\n",
+                quoted(name)
+            ));
+            id.as_str()
+        }
+    };
+    doc.push_str(&format!(
+        "tile!:\n  this: {new_tile_id}\n  workspace: {workspace_ref}\n  order: {}\n  view: {}\n  model: {}\n",
         quoted(order),
-        float(height),
-        quoted(source),
-    )
-}
-
-/// Build the notation document for opening a `kind: "display"` tile
-/// in an existing column. `new_tile_id` is the caller-minted ULID
-/// (typically from `ulid::new_ulid()`); the resulting tile's `this:`
-/// becomes `id:<new_tile_id>` so subsequent edits target the same
-/// entity instead of content-addressing each body.
-pub fn create_display_tile_doc(
-    new_tile_id: &str,
-    column_entity: &str,
-    order: &str,
-    height: f64,
-    display_entity: &str,
-    view_name: &str,
-    model_name: &str,
-) -> String {
-    format!(
-        "tile!:\n  \
-         this: {new_tile_id}\n  \
-         column: {column_entity}\n  \
-         order: {}\n  \
-         height: {}\n  \
-         kind: \"display\"\n  \
-         entity: {display_entity}\n  \
-         view: {}\n  \
-         model: {}\n",
-        quoted(order),
-        float(height),
-        quoted(view_name),
-        quoted(model_name),
-    )
-}
-
-/// Build the `workspace!:` block for lazy bootstrap — a workspace
-/// entity with a name claim. Concatenate with [`column_creation_block`]
-/// and [`create_display_tile_doc`] to land everything in one
-/// `/evaluate` transaction.
-pub fn workspace_creation_block(workspace_id: &str, name: &str) -> String {
-    format!(
-        "workspace!:\n  this: {workspace_id}\n  name: {}\n",
-        quoted(name),
-    )
-}
-
-/// Build the `column!:` block — a column entity pointing at a
-/// workspace, with order and width. The `workspace_ref` is either an
-/// existing workspace entity URI or a freshly-minted `id:<ulid>`
-/// from the same document.
-pub fn column_creation_block(
-    column_id: &str,
-    workspace_ref: &str,
-    order: &str,
-    width: f64,
-) -> String {
-    format!(
-        "column!:\n  \
-         this: {column_id}\n  \
-         workspace: {workspace_ref}\n  \
-         order: {}\n  \
-         width: {}\n",
-        quoted(order),
-        float(width),
-    )
+        quoted(view),
+        quoted(model),
+    ));
+    if let Some(e) = entity {
+        doc.push_str(&format!("  entity: {e}\n"));
+    }
+    doc.push('\n');
+    doc.push_str(&focus_tile_doc(workspace_ref, new_tile_id));
+    doc
 }
 
 /// Double-quote a string for YAML output. Embedded backslashes /
 /// quotes are escaped — Rust's debug format does the right thing.
 fn quoted(value: &str) -> String {
     format!("{value:?}")
-}
-
-/// Format a float so an integer-valued one still has a `.0` tail —
-/// `as: float` attribute fields require float YAML syntax (`1.0`),
-/// not integer syntax (`1`).
-fn float(value: f64) -> String {
-    let s = format!("{value}");
-    if s.contains('.') { s } else { format!("{s}.0") }
-}
-
-/// Debounced `/evaluate` poster. Lets continuous-write actions like
-/// drag-resize coalesce ~60Hz pointer events into a single POST
-/// fired ~200ms after the pointer goes idle. Replacing the pending
-/// doc per call (rather than queueing) keeps memory bounded and
-/// matches the SPEC: debounce is bandwidth control, not optimistic
-/// correctness — the latest value is the truth.
-#[cfg(target_arch = "wasm32")]
-pub struct Debouncer {
-    inner: std::rc::Rc<std::cell::RefCell<DebouncerInner>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-struct DebouncerInner {
-    /// `setTimeout` handle for the pending flush, or `None` if no
-    /// flush is queued.
-    timeout_id: Option<i32>,
-    /// Latest `(url, doc)` waiting to be sent.
-    pending: Option<(String, String)>,
-    /// The JS-side callback `setTimeout` invokes — held here so the
-    /// `Closure` outlives the timer registration.
-    callback: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
-}
-
-#[cfg(target_arch = "wasm32")]
-impl Default for Debouncer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl Debouncer {
-    /// Create an empty debouncer with no pending work.
-    pub fn new() -> Self {
-        Self {
-            inner: std::rc::Rc::new(std::cell::RefCell::new(DebouncerInner {
-                timeout_id: None,
-                pending: None,
-                callback: None,
-            })),
-        }
-    }
-
-    /// Replace the pending write and schedule a flush `delay_ms` from
-    /// now. Cancels any prior timer — only one POST fires per idle
-    /// period regardless of how many `schedule` calls arrived.
-    pub fn schedule(&self, url: String, doc: String, delay_ms: i32) {
-        use wasm_bindgen::JsCast;
-        use wasm_bindgen::closure::Closure;
-
-        let win = match web_sys::window() {
-            Some(w) => w,
-            None => return,
-        };
-
-        // Cancel any prior timer first so we don't end up with two.
-        {
-            let mut i = self.inner.borrow_mut();
-            if let Some(id) = i.timeout_id.take() {
-                win.clear_timeout_with_handle(id);
-            }
-            i.pending = Some((url, doc));
-        }
-
-        let inner = self.inner.clone();
-        let callback = Closure::wrap(Box::new(move || {
-            let pending = {
-                let mut i = inner.borrow_mut();
-                i.timeout_id = None;
-                i.pending.take()
-            };
-            if let Some((url, doc)) = pending {
-                wasm_bindgen_futures::spawn_local(async move {
-                    let _ = post_evaluate(&url, &doc).await;
-                });
-            }
-        }) as Box<dyn FnMut()>);
-
-        let id_result = win.set_timeout_with_callback_and_timeout_and_arguments_0(
-            callback.as_ref().unchecked_ref(),
-            delay_ms,
-        );
-        let mut i = self.inner.borrow_mut();
-        if let Ok(id) = id_result {
-            i.timeout_id = Some(id);
-        }
-        // Park the closure on the debouncer so the JS callback
-        // reference stays valid until it fires (or gets cancelled).
-        i.callback = Some(callback);
-    }
-
-    /// Cancel any pending timer and immediately POST the latest
-    /// document. Call this on `pointerup` so the user sees the
-    /// commit as soon as the drag ends, rather than after the
-    /// trailing 200ms.
-    pub fn flush(&self) {
-        let pending = {
-            let mut i = self.inner.borrow_mut();
-            if let Some(id) = i.timeout_id.take()
-                && let Some(win) = web_sys::window()
-            {
-                win.clear_timeout_with_handle(id);
-            }
-            i.pending.take()
-        };
-        if let Some((url, doc)) = pending {
-            wasm_bindgen_futures::spawn_local(async move {
-                let _ = post_evaluate(&url, &doc).await;
-            });
-        }
-    }
-
-    /// Cancel any pending flush without sending — for use when the
-    /// element disconnects mid-drag.
-    pub fn cancel(&self) {
-        let mut i = self.inner.borrow_mut();
-        if let Some(id) = i.timeout_id.take()
-            && let Some(win) = web_sys::window()
-        {
-            win.clear_timeout_with_handle(id);
-        }
-        i.pending = None;
-    }
 }
 
 /// POST a notation document to the `/evaluate` endpoint. Returns
@@ -351,162 +281,310 @@ pub async fn post_evaluate(url: &str, doc: &str) -> Result<(), tonk_concept::err
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Tile;
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    const COLUMN: &str = "id:01HMC000000000000000000000";
-    const TILE: &str = "id:01HMT000000000000000000000";
     const WORKSPACE: &str = "id:01HMW000000000000000000000";
+    const TILE_NEW: &str = "id:01HMT999999999999999999999";
+    const TARGET: &str = "id:01HENT000000000000000000000";
+
+    fn tile(entity: &str, order: &str) -> Tile {
+        Tile {
+            entity: entity.to_owned(),
+            order: order.to_owned(),
+            target: None,
+            view: "card".to_owned(),
+            model: "person".to_owned(),
+        }
+    }
+
+    fn layout(focus: Option<&str>, tiles: Vec<Tile>) -> Layout {
+        Layout {
+            workspace: WORKSPACE.to_owned(),
+            focus: focus.map(str::to_owned),
+            tiles,
+        }
+    }
+
+    // -- resolve_focus_step ---------------------------------------
 
     #[dialog_common::test]
-    fn it_builds_a_move_column_doc_with_only_order() {
-        // Width is left untouched so the move doesn't accidentally
-        // reset a column the user resized.
-        let doc = move_column_doc(COLUMN, "nm");
-        assert!(doc.contains("column!"));
-        assert!(doc.contains(&format!("this: {COLUMN}")));
-        assert!(doc.contains(r#"order: "nm""#));
-        assert!(!doc.contains("width"));
+    fn it_steps_focus_to_the_next_tile_in_linear_order() {
+        let l = layout(
+            Some("id:a"),
+            vec![tile("id:a", "a"), tile("id:b", "b"), tile("id:c", "c")],
+        );
+        assert_eq!(
+            resolve_focus_step(&l, Direction::Next).as_deref(),
+            Some("id:b"),
+        );
     }
 
     #[dialog_common::test]
-    fn it_builds_a_resize_column_doc_with_only_width() {
-        let doc = resize_column_doc(COLUMN, 0.5);
-        assert!(doc.contains("column!"));
-        assert!(doc.contains(&format!("this: {COLUMN}")));
-        assert!(doc.contains("width: 0.5"));
-        assert!(!doc.contains("order"));
+    fn it_steps_focus_to_the_previous_tile_in_linear_order() {
+        let l = layout(
+            Some("id:c"),
+            vec![tile("id:a", "a"), tile("id:b", "b"), tile("id:c", "c")],
+        );
+        assert_eq!(
+            resolve_focus_step(&l, Direction::Prev).as_deref(),
+            Some("id:b"),
+        );
     }
 
     #[dialog_common::test]
-    fn it_builds_a_move_tile_doc_with_column_and_order_in_one_document() {
-        // Moving a tile between columns rewrites two claims — they
-        // must be in one document so dialog commits them as one
-        // transaction (no intermediate "tile under wrong parent"
-        // frame).
-        let doc = move_tile_doc(TILE, COLUMN, "n");
-        assert!(doc.contains("tile!"));
-        assert!(doc.contains(&format!("this: {TILE}")));
-        assert!(doc.contains(&format!("column: {COLUMN}")));
-        assert!(doc.contains(r#"order: "n""#));
-        // One head — not two separate `tile!:` blocks.
-        assert_eq!(doc.matches("tile!").count(), 1);
+    fn it_returns_none_at_the_linear_order_boundary() {
+        let l = layout(Some("id:a"), vec![tile("id:a", "a"), tile("id:b", "b")]);
+        assert!(resolve_focus_step(&l, Direction::Prev).is_none());
+        let r = layout(Some("id:b"), vec![tile("id:a", "a"), tile("id:b", "b")]);
+        assert!(resolve_focus_step(&r, Direction::Next).is_none());
     }
 
     #[dialog_common::test]
-    fn it_builds_a_resize_tile_doc_with_only_height() {
-        let doc = resize_tile_doc(TILE, 0.4);
-        assert!(doc.contains("tile!"));
-        assert!(doc.contains(&format!("this: {TILE}")));
-        assert!(doc.contains("height: 0.4"));
-        assert!(!doc.contains("width"));
+    fn it_returns_none_when_no_tile_is_focused() {
+        let l = layout(None, vec![tile("id:a", "a"), tile("id:b", "b")]);
+        assert!(resolve_focus_step(&l, Direction::Next).is_none());
     }
+
+    // -- resolve_position_order -----------------------------------
+
+    #[dialog_common::test]
+    fn it_picks_a_midpoint_between_two_supplied_neighbours() {
+        // before set + after set: midpoint(after.order, before.order).
+        let l = layout(None, vec![tile("id:a", "a"), tile("id:c", "c")]);
+        let mid = resolve_position_order(&l, Some("id:c"), Some("id:a")).expect("key fits");
+        assert!(mid.as_str() > "a" && mid.as_str() < "c");
+    }
+
+    #[dialog_common::test]
+    fn it_places_a_new_tile_before_an_existing_tile() {
+        // before set + after unset: midpoint(prev(before).order, before.order).
+        let l = layout(
+            None,
+            vec![tile("id:a", "a"), tile("id:c", "c"), tile("id:e", "e")],
+        );
+        let mid = resolve_position_order(&l, Some("id:c"), None).expect("key fits");
+        assert!(mid.as_str() > "a" && mid.as_str() < "c");
+    }
+
+    #[dialog_common::test]
+    fn it_places_a_new_tile_before_the_first_tile() {
+        // before is the only tile / first tile: prev(before) is sentinel-min.
+        let l = layout(None, vec![tile("id:a", "n")]);
+        let mid = resolve_position_order(&l, Some("id:a"), None).expect("key fits");
+        assert!(mid.as_str() < "n");
+    }
+
+    #[dialog_common::test]
+    fn it_places_a_new_tile_after_an_existing_tile() {
+        // before unset + after set: midpoint(after.order, next(after).order).
+        let l = layout(
+            None,
+            vec![tile("id:a", "a"), tile("id:c", "c"), tile("id:e", "e")],
+        );
+        let mid = resolve_position_order(&l, None, Some("id:c")).expect("key fits");
+        assert!(mid.as_str() > "c" && mid.as_str() < "e");
+    }
+
+    #[dialog_common::test]
+    fn it_places_a_new_tile_after_the_last_tile() {
+        // After unset + after set with after being last: next(after) is sentinel-max.
+        let l = layout(None, vec![tile("id:a", "a")]);
+        let mid = resolve_position_order(&l, None, Some("id:a")).expect("key fits");
+        assert!(mid.as_str() > "a");
+    }
+
+    #[dialog_common::test]
+    fn it_appends_to_the_end_when_neither_bound_is_supplied() {
+        let l = layout(None, vec![tile("id:a", "a"), tile("id:b", "b")]);
+        let mid = resolve_position_order(&l, None, None).expect("key fits");
+        assert!(mid.as_str() > "b");
+    }
+
+    #[dialog_common::test]
+    fn it_picks_a_first_key_when_the_workspace_is_empty() {
+        let l = layout(None, vec![]);
+        let mid = resolve_position_order(&l, None, None).expect("key fits");
+        assert!(!mid.is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_returns_err_when_before_does_not_resolve() {
+        let l = layout(None, vec![tile("id:a", "a")]);
+        assert!(resolve_position_order(&l, Some("id:missing"), None).is_err());
+    }
+
+    #[dialog_common::test]
+    fn it_returns_err_when_after_does_not_resolve() {
+        let l = layout(None, vec![tile("id:a", "a")]);
+        assert!(resolve_position_order(&l, None, Some("id:missing")).is_err());
+    }
+
+    // -- resolve_close_focus --------------------------------------
+
+    #[dialog_common::test]
+    fn it_leaves_focus_alone_when_closing_an_unfocused_tile() {
+        let l = layout(Some("id:a"), vec![tile("id:a", "a"), tile("id:b", "b")]);
+        assert_eq!(resolve_close_focus(&l, "id:b"), CloseFocus::Leave);
+    }
+
+    #[dialog_common::test]
+    fn it_advances_focus_to_the_previous_tile_when_closing_focused() {
+        let l = layout(
+            Some("id:b"),
+            vec![tile("id:a", "a"), tile("id:b", "b"), tile("id:c", "c")],
+        );
+        assert_eq!(
+            resolve_close_focus(&l, "id:b"),
+            CloseFocus::SetTo("id:a".to_owned()),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_advances_focus_to_the_next_tile_when_closing_the_first() {
+        let l = layout(Some("id:a"), vec![tile("id:a", "a"), tile("id:b", "b")]);
+        assert_eq!(
+            resolve_close_focus(&l, "id:a"),
+            CloseFocus::SetTo("id:b".to_owned()),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_clears_focus_when_closing_the_only_tile() {
+        let l = layout(Some("id:a"), vec![tile("id:a", "a")]);
+        assert_eq!(resolve_close_focus(&l, "id:a"), CloseFocus::Clear);
+    }
+
+    // -- focus_tile_doc -------------------------------------------
+
+    #[dialog_common::test]
+    fn it_builds_a_focus_tile_doc_pointing_at_the_target() {
+        let doc = focus_tile_doc(WORKSPACE, TARGET);
+        assert!(doc.contains("workspace!"));
+        assert!(doc.contains(&format!("this: {WORKSPACE}")));
+        assert!(doc.contains(&format!("focus: {TARGET}")));
+    }
+
+    // -- close_tile_doc -------------------------------------------
 
     #[dialog_common::test]
     fn it_builds_a_close_tile_doc_with_rest_retraction_marker() {
-        // `..: _` tells the analyzer to retract every claim on the
-        // entity that isn't explicitly set in the body — the
-        // canonical close form.
-        let doc = close_tile_doc(TILE);
+        let doc = close_tile_doc(TARGET, WORKSPACE, CloseFocus::Leave);
         assert!(doc.contains("tile!"));
-        assert!(doc.contains(&format!("this: {TILE}")));
+        assert!(doc.contains(&format!("this: {TARGET}")));
         assert!(doc.contains("..: _"));
+        // No workspace block when focus stays put.
+        assert!(!doc.contains("workspace!"));
     }
 
     #[dialog_common::test]
-    fn it_builds_a_set_focus_doc_pointing_at_the_focused_tile() {
-        let doc = set_focus_doc(WORKSPACE, TILE);
+    fn it_includes_focus_advance_when_closing_the_focused_tile() {
+        let doc = close_tile_doc(
+            TARGET,
+            WORKSPACE,
+            CloseFocus::SetTo("id:neighbour".to_owned()),
+        );
+        assert!(doc.contains("tile!"));
+        assert!(doc.contains("..: _"));
         assert!(doc.contains("workspace!"));
-        assert!(doc.contains(&format!("this: {WORKSPACE}")));
-        assert!(doc.contains(&format!("focus: {TILE}")));
+        assert!(doc.contains("focus: id:neighbour"));
     }
 
     #[dialog_common::test]
-    fn it_builds_a_clear_focus_doc_retracting_the_focus_field() {
-        // Per-field retraction is `<field>: _`. The analyzer
-        // emits a retraction transaction for just `focus` without
-        // touching the workspace's `name` claim.
-        let doc = clear_focus_doc(WORKSPACE);
+    fn it_clears_focus_when_closing_the_last_tile() {
+        let doc = close_tile_doc(TARGET, WORKSPACE, CloseFocus::Clear);
+        assert!(doc.contains("..: _"));
         assert!(doc.contains("workspace!"));
-        assert!(doc.contains(&format!("this: {WORKSPACE}")));
         assert!(doc.contains("focus: _"));
     }
 
-    #[dialog_common::test]
-    fn it_builds_a_workspace_creation_block_with_this_and_name() {
-        let doc = workspace_creation_block(WORKSPACE, "default");
-        assert!(doc.contains("workspace!"));
-        assert!(doc.contains(&format!("this: {WORKSPACE}")));
-        assert!(doc.contains(r#"name: "default""#));
-    }
+    // -- reorder_tile_doc -----------------------------------------
 
     #[dialog_common::test]
-    fn it_builds_a_column_creation_block_with_workspace_order_and_width() {
-        let doc = column_creation_block(COLUMN, WORKSPACE, "n", 1.0);
-        assert!(doc.contains("column!"));
-        assert!(doc.contains(&format!("this: {COLUMN}")));
-        assert!(doc.contains(&format!("workspace: {WORKSPACE}")));
-        assert!(doc.contains(r#"order: "n""#));
-        assert!(doc.contains("width: 1"));
-    }
-
-    #[dialog_common::test]
-    fn it_concatenates_blocks_into_a_single_bootstrap_document() {
-        // Assembling workspace + column + tile yields one document
-        // dialog evaluates as one transaction. Order matters: each
-        // later block can reference URIs declared earlier (and the
-        // analyzer phase 1 processes expressions sequentially).
-        let new_tile = "id:01HMT999999999999999999999";
-        let target = "id:01HENT000000000000000000000";
-        let doc = workspace_creation_block(WORKSPACE, "default")
-            + "\n"
-            + &column_creation_block(COLUMN, WORKSPACE, "n", 1.0)
-            + "\n"
-            + &create_display_tile_doc(new_tile, COLUMN, "n", 1.0, target, "card", "person");
-        assert!(doc.contains("workspace!"));
-        assert!(doc.contains("column!"));
+    fn it_builds_a_reorder_tile_doc_with_only_order() {
+        let doc = reorder_tile_doc(TARGET, "nm");
         assert!(doc.contains("tile!"));
-        // Single document — column references the new workspace URI;
-        // tile references the new column URI; all by URI literal.
-        assert!(doc.contains(&format!("workspace: {WORKSPACE}")));
-        assert!(doc.contains(&format!("column: {COLUMN}")));
+        assert!(doc.contains(&format!("this: {TARGET}")));
+        assert!(doc.contains(r#"order: "nm""#));
+        assert!(!doc.contains("workspace"));
+    }
+
+    // -- update_tile_content_doc ----------------------------------
+
+    #[dialog_common::test]
+    fn it_returns_an_empty_doc_when_no_field_is_supplied() {
+        assert!(update_tile_content_doc(TARGET, None, None, None).is_empty());
     }
 
     #[dialog_common::test]
-    fn it_builds_a_create_concept_tile_doc_with_all_fields_set() {
-        // The concept tile uses the `model` slot for the
-        // tonk-concept `source`. `entity` is set to the column URI
-        // (any valid URI suffices) and `view` to an empty string
-        // so the tiles subscription's predicate matches — the
-        // reconciler dispatches on `kind` and ignores them.
-        let new_id = "id:01HMT999999999999999999999";
-        let doc = create_concept_tile_doc(new_id, COLUMN, "n", 1.0, "person");
-        assert!(doc.contains("tile!"));
-        assert!(doc.contains(&format!("this: {new_id}")));
-        assert!(doc.contains(&format!("column: {COLUMN}")));
-        assert!(doc.contains(r#"order: "n""#));
-        assert!(doc.contains("height: 1"));
-        assert!(doc.contains(r#"kind: "concept""#));
+    fn it_writes_only_the_supplied_fields() {
+        let doc = update_tile_content_doc(TARGET, Some("id:e"), None, Some("person"));
+        assert!(doc.contains(&format!("this: {TARGET}")));
+        assert!(doc.contains("entity: id:e"));
         assert!(doc.contains(r#"model: "person""#));
-        assert!(doc.contains(&format!("entity: {COLUMN}")));
-        assert!(doc.contains(r#"view: """#));
+        assert!(!doc.contains("view"));
     }
 
+    // -- open_tile_doc --------------------------------------------
+
     #[dialog_common::test]
-    fn it_builds_a_create_display_tile_doc_with_every_required_field() {
-        let new_id = "id:01HMT999999999999999999999";
-        let target = "id:01HENT000000000000000000000";
-        let doc = create_display_tile_doc(new_id, COLUMN, "n", 1.0, target, "card", "person");
+    fn it_builds_an_open_tile_doc_under_an_existing_workspace() {
+        let doc = open_tile_doc(
+            WorkspaceTarget::Existing(WORKSPACE.to_owned()),
+            TILE_NEW,
+            "n",
+            "card",
+            "person",
+            Some(TARGET),
+        );
         assert!(doc.contains("tile!"));
-        assert!(doc.contains(&format!("this: {new_id}")));
-        assert!(doc.contains(&format!("column: {COLUMN}")));
+        assert!(doc.contains(&format!("this: {TILE_NEW}")));
+        assert!(doc.contains(&format!("workspace: {WORKSPACE}")));
         assert!(doc.contains(r#"order: "n""#));
-        assert!(doc.contains("height: 1"));
-        assert!(doc.contains(r#"kind: "display""#));
-        assert!(doc.contains(&format!("entity: {target}")));
         assert!(doc.contains(r#"view: "card""#));
         assert!(doc.contains(r#"model: "person""#));
+        assert!(doc.contains(&format!("entity: {TARGET}")));
+        // Atomic focus update in the same doc.
+        assert!(doc.contains("workspace!"));
+        assert!(doc.contains(&format!("focus: {TILE_NEW}")));
+    }
+
+    #[dialog_common::test]
+    fn it_omits_entity_from_open_tile_doc_for_concept_list_tiles() {
+        let doc = open_tile_doc(
+            WorkspaceTarget::Existing(WORKSPACE.to_owned()),
+            TILE_NEW,
+            "n",
+            "concept-list",
+            "person",
+            None,
+        );
+        assert!(doc.contains("tile!"));
+        assert!(!doc.contains("entity:"));
+    }
+
+    #[dialog_common::test]
+    fn it_bootstraps_the_workspace_in_one_open_tile_doc() {
+        let new_ws = "id:01HMW111111111111111111111";
+        let doc = open_tile_doc(
+            WorkspaceTarget::Bootstrap {
+                id: new_ws.to_owned(),
+                name: "default".to_owned(),
+            },
+            TILE_NEW,
+            "n",
+            "card",
+            "person",
+            Some(TARGET),
+        );
+        // Three blocks: workspace creation, tile, focus.
+        assert_eq!(doc.matches("workspace!").count(), 2);
+        assert!(doc.contains(&format!("this: {new_ws}")));
+        assert!(doc.contains(r#"name: "default""#));
+        assert!(doc.contains(&format!("workspace: {new_ws}")));
+        assert!(doc.contains(&format!("focus: {TILE_NEW}")));
     }
 }

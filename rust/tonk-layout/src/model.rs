@@ -1,141 +1,99 @@
-//! The in-memory layout tree the reconciler patches into the DOM.
+//! Universal workspace fold.
 //!
-//! [`Layout`] / [`Column`] / [`Tile`] are the structured form of
-//! "the latest frame of each subscription, folded together and
-//! sorted." Subscriptions deliver flat lists of [`Conclusion`]
-//! rows; the reconciler wants a tree shape with parent/child
-//! relationships resolved and siblings in lex order so it can
-//! diff against the prior frame's tree.
-
-// Wasm-side consumer arrives with `reconcile.rs`; until then the
-// types are exercised by native tests only.
-#![allow(dead_code)]
+//! [`Layout`] is "the latest workspace + focus + tiles frames folded
+//! together and sorted." Subscriptions deliver flat lists of
+//! [`Conclusion`] rows; effect handlers want a tile linear order
+//! with focus resolved so they can read "previous", "next", or
+//! "tile at index N" without re-walking the frame.
+//!
+//! Focus rides its own frame because cardinality-one fields are
+//! filter requirements: a fresh workspace has no focus claim, so
+//! including focus in the workspace query's predicate would return
+//! zero rows. The separate focus subscription pins `this =
+//! workspace_entity` and returns zero or one row.
 
 use tonk_schema::conclusion::Conclusion;
 
-/// The folded workspace tree.
+/// The folded workspace.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     /// Workspace entity URI.
     pub workspace: String,
     /// Focused tile entity URI, if any.
     pub focus: Option<String>,
-    /// Columns in lex `order` order.
-    pub columns: Vec<Column>,
-}
-
-/// A column in the strip.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Column {
-    /// Column entity URI.
-    pub entity: String,
-    /// Lex ordering key within the workspace.
-    pub order: String,
-    /// Width as a fraction of the viewport.
-    pub width: f64,
     /// Tiles in lex `order` order.
     pub tiles: Vec<Tile>,
 }
 
-/// A tile within a column.
+/// One tile in the workspace.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tile {
-    /// Tile entity URI.
+    /// Tile entity URI (`this:`).
     pub entity: String,
-    /// Lex ordering key within the column.
+    /// Lex ordering key within the workspace.
     pub order: String,
-    /// Height as a fraction of the column.
-    pub height: f64,
-    /// Content kind; v1 recognises `"display"`.
-    pub kind: String,
-    /// For `kind: "display"` — the entity the tile renders.
-    pub display_entity: Option<String>,
-    /// For `kind: "display"` — the view name.
-    pub display_view: Option<String>,
-    /// For `kind: "display"` — the model name.
-    pub display_model: Option<String>,
+    /// What the tile renders (`tile.entity`). `None` for concept-list
+    /// tiles that key off `view` + `model` alone.
+    pub target: Option<String>,
+    /// View name (`tile.view`).
+    pub view: String,
+    /// Model / concept name (`tile.model`).
+    pub model: String,
 }
 
-/// Fold the three subscription frames into a sorted [`Layout`].
+/// Fold the workspace + focus + tiles frames into a sorted [`Layout`].
 ///
-/// Returns `None` when no workspace row matches — callers render
-/// state `empty` (or trigger lazy-create on first interaction).
-/// Tiles whose `column` doesn't appear in the columns frame are
-/// dropped: a column-resize commit can briefly arrive before the
-/// re-asserted tile rows, and a stray tile-without-parent has no
-/// sensible slot.
-pub fn fold_layout(
+/// Returns `None` when no workspace row matches — callers treat this
+/// as "no workspace yet" and either render empty or lazy-bootstrap on
+/// the first `open-tile`. Tiles whose `workspace` reference doesn't
+/// match the folded workspace are dropped (the tiles subscription
+/// streams every tile on the branch).
+pub fn fold_universal(
     workspace_frame: &[Conclusion],
-    columns_frame: &[Conclusion],
+    focus_frame: &[Conclusion],
     tiles_frame: &[Conclusion],
 ) -> Option<Layout> {
     let ws_row = workspace_frame.first()?;
     let workspace = ws_row.this.clone();
-    let focus = read_str(ws_row, "focus").map(str::to_owned);
+    let focus = focus_frame
+        .first()
+        .and_then(|row| read_str(row, "focus"))
+        .map(str::to_owned);
 
-    // Collect columns into a map keyed by entity URI; we'll attach
-    // tiles to them in the second pass and only keep columns whose
-    // `order` field is present (it's required for placement).
-    let mut columns: std::collections::HashMap<String, Column> =
-        std::collections::HashMap::with_capacity(columns_frame.len());
-    for row in columns_frame {
-        let Some(order) = read_str(row, "order") else {
-            continue;
-        };
-        let width = read_f64(row, "width").unwrap_or(1.0);
-        columns.insert(
-            row.this.clone(),
-            Column {
-                entity: row.this.clone(),
-                order: order.to_owned(),
-                width,
-                tiles: Vec::new(),
-            },
-        );
-    }
-
-    // Bucket tiles into their parent column; drop orphans.
-    for row in tiles_frame {
-        let Some(parent) = read_str(row, "column") else {
-            continue;
-        };
-        let Some(order) = read_str(row, "order") else {
-            continue;
-        };
-        let Some(column) = columns.get_mut(parent) else {
-            continue;
-        };
-        column.tiles.push(Tile {
-            entity: row.this.clone(),
-            order: order.to_owned(),
-            height: read_f64(row, "height").unwrap_or(1.0),
-            kind: read_str(row, "kind").unwrap_or("display").to_owned(),
-            display_entity: read_str(row, "entity").map(str::to_owned),
-            display_view: read_str(row, "view").map(str::to_owned),
-            display_model: read_str(row, "model").map(str::to_owned),
-        });
-    }
-
-    // Sort tiles within each column, then collect columns and sort.
-    let mut columns: Vec<Column> = columns.into_values().collect();
-    for column in columns.iter_mut() {
-        column.tiles.sort_by(|a, b| a.order.cmp(&b.order));
-    }
-    columns.sort_by(|a, b| a.order.cmp(&b.order));
+    let mut tiles: Vec<Tile> = tiles_frame
+        .iter()
+        .filter_map(|row| build_tile(row, &workspace))
+        .collect();
+    tiles.sort_by(|a, b| a.order.cmp(&b.order));
 
     Some(Layout {
         workspace,
         focus,
-        columns,
+        tiles,
+    })
+}
+
+/// Project a conclusion row into a [`Tile`], dropping it if it's not
+/// part of `workspace` or is missing a required field.
+fn build_tile(row: &Conclusion, workspace: &str) -> Option<Tile> {
+    if read_str(row, "workspace")? != workspace {
+        return None;
+    }
+    let order = read_str(row, "order")?.to_owned();
+    let view = read_str(row, "view")?.to_owned();
+    let model = read_str(row, "model")?.to_owned();
+    let target = read_str(row, "entity").map(str::to_owned);
+    Some(Tile {
+        entity: row.this.clone(),
+        order,
+        target,
+        view,
+        model,
     })
 }
 
 fn read_str<'a>(c: &'a Conclusion, name: &str) -> Option<&'a str> {
     c.fields.get(name).and_then(|v| v.as_str())
-}
-
-fn read_f64(c: &Conclusion, name: &str) -> Option<f64> {
-    c.fields.get(name).and_then(|v| v.as_f64())
 }
 
 #[cfg(test)]
@@ -148,9 +106,6 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// Build a [`Conclusion`] from an entity URI and a JSON-object
-    /// of fields. Keeps the tests' setup terse — the alternative is
-    /// constructing `BTreeMap` literals inline at every call site.
     fn conclusion(this: &str, fields: serde_json::Value) -> Conclusion {
         let obj = fields
             .as_object()
@@ -162,162 +117,125 @@ mod tests {
         }
     }
 
-    fn workspace(this: &str, focus: Option<&str>) -> Conclusion {
-        let mut f = serde_json::Map::new();
-        if let Some(t) = focus {
-            f.insert("focus".into(), json!(t));
-        }
-        conclusion(this, serde_json::Value::Object(f))
+    fn workspace(this: &str) -> Conclusion {
+        conclusion(this, serde_json::Value::Object(serde_json::Map::new()))
     }
 
-    fn column(this: &str, workspace_uri: &str, order: &str, width: f64) -> Conclusion {
-        conclusion(
-            this,
-            json!({ "workspace": workspace_uri, "order": order, "width": width }),
-        )
+    fn focus_row(workspace_uri: &str, focus_tile: &str) -> Conclusion {
+        conclusion(workspace_uri, json!({ "focus": focus_tile }))
     }
 
-    fn tile(this: &str, column_uri: &str, order: &str, height: f64) -> Conclusion {
+    fn tile(this: &str, workspace_uri: &str, order: &str) -> Conclusion {
         conclusion(
             this,
             json!({
-                "column": column_uri,
+                "workspace": workspace_uri,
                 "order": order,
-                "height": height,
-                "kind": "display",
-                "entity": "id:ent",
                 "view": "card",
                 "model": "person",
+                "entity": "id:target",
             }),
         )
     }
 
     #[dialog_common::test]
     fn it_returns_none_when_the_workspace_frame_is_empty() {
-        // No matching workspace → caller renders the "empty" state
-        // (or kicks off lazy-create on first interaction).
-        let layout = fold_layout(&[], &[], &[]);
-        assert!(layout.is_none());
+        assert!(fold_universal(&[], &[], &[]).is_none());
     }
 
     #[dialog_common::test]
-    fn it_folds_a_simple_two_column_strip() {
-        let ws = "id:ws";
-        let c_a = "id:col-a";
-        let c_b = "id:col-b";
-        let layout = fold_layout(
-            &[workspace(ws, None)],
-            &[column(c_a, ws, "a", 0.5), column(c_b, ws, "b", 0.5)],
-            &[tile("id:t1", c_a, "n", 1.0), tile("id:t2", c_b, "n", 1.0)],
-        )
-        .expect("layout folds");
-        assert_eq!(layout.workspace, ws);
-        assert_eq!(layout.columns.len(), 2);
-        assert_eq!(layout.columns[0].entity, c_a);
-        assert_eq!(layout.columns[1].entity, c_b);
-        assert_eq!(layout.columns[0].tiles.len(), 1);
-        assert_eq!(layout.columns[0].tiles[0].entity, "id:t1");
-    }
-
-    #[dialog_common::test]
-    fn it_sorts_columns_by_order_key() {
-        let ws = "id:ws";
-        let layout = fold_layout(
-            &[workspace(ws, None)],
-            &[
-                column("id:c1", ws, "c", 0.33),
-                column("id:c2", ws, "a", 0.33),
-                column("id:c3", ws, "b", 0.33),
-            ],
-            &[],
-        )
-        .expect("layout folds");
-        let orders: Vec<&str> = layout.columns.iter().map(|c| c.order.as_str()).collect();
-        assert_eq!(orders, vec!["a", "b", "c"]);
-    }
-
-    #[dialog_common::test]
-    fn it_sorts_tiles_within_a_column_by_order_key() {
-        let ws = "id:ws";
-        let c = "id:col";
-        let layout = fold_layout(
-            &[workspace(ws, None)],
-            &[column(c, ws, "n", 1.0)],
-            &[
-                tile("id:t1", c, "c", 0.33),
-                tile("id:t2", c, "a", 0.33),
-                tile("id:t3", c, "b", 0.33),
-            ],
-        )
-        .expect("layout folds");
-        let orders: Vec<&str> = layout.columns[0]
-            .tiles
-            .iter()
-            .map(|t| t.order.as_str())
-            .collect();
-        assert_eq!(orders, vec!["a", "b", "c"]);
-    }
-
-    #[dialog_common::test]
-    fn it_drops_tiles_whose_column_is_missing() {
-        // A tile whose `column` reference doesn't exist in the
-        // columns frame has no parent to live under. We drop it
-        // rather than silently re-parent — keeps the tree clean
-        // and the case is short-lived in practice (frames catch up).
-        let ws = "id:ws";
-        let c = "id:col";
-        let layout = fold_layout(
-            &[workspace(ws, None)],
-            &[column(c, ws, "n", 1.0)],
-            &[
-                tile("id:t1", c, "a", 1.0),
-                tile("id:orphan", "id:missing-col", "a", 1.0),
-            ],
-        )
-        .expect("layout folds");
-        assert_eq!(layout.columns[0].tiles.len(), 1);
-        assert_eq!(layout.columns[0].tiles[0].entity, "id:t1");
-    }
-
-    #[dialog_common::test]
-    fn it_carries_focus_from_the_workspace_frame() {
-        let ws = "id:ws";
-        let layout =
-            fold_layout(&[workspace(ws, Some("id:focused-tile"))], &[], &[]).expect("layout folds");
-        assert_eq!(layout.focus.as_deref(), Some("id:focused-tile"));
-    }
-
-    #[dialog_common::test]
-    fn it_inserts_a_column_between_neighbours_at_the_right_slot() {
-        // The reconciler relies on lex sort: an order key strictly
-        // between two existing keys must land between them.
-        let ws = "id:ws";
-        let layout = fold_layout(
-            &[workspace(ws, None)],
-            &[
-                column("id:cA", ws, "a", 0.33),
-                column("id:cC", ws, "c", 0.33),
-                column("id:cB", ws, "b", 0.33),
-            ],
-            &[],
-        )
-        .expect("layout folds");
-        let entities: Vec<&str> = layout.columns.iter().map(|c| c.entity.as_str()).collect();
-        assert_eq!(entities, vec!["id:cA", "id:cB", "id:cC"]);
-    }
-
-    #[dialog_common::test]
-    fn it_preserves_unknown_kinds_so_the_reconciler_can_flag_them() {
-        // A `kind` value the WM doesn't recognise still flows
-        // through the fold; the reconciler is what surfaces an
-        // error placeholder. Preserving the kind here means new
-        // kinds can be added without touching model code.
-        let ws = "id:ws";
-        let c = "id:col";
-        let mut t = tile("id:t1", c, "n", 1.0);
-        t.fields.insert("kind".into(), json!("future-thing"));
-        let layout = fold_layout(&[workspace(ws, None)], &[column(c, ws, "n", 1.0)], &[t])
+    fn it_carries_focus_when_the_focus_frame_has_a_row() {
+        let layout = fold_universal(&[workspace("id:ws")], &[focus_row("id:ws", "id:t")], &[])
             .expect("layout folds");
-        assert_eq!(layout.columns[0].tiles[0].kind, "future-thing");
+        assert_eq!(layout.focus.as_deref(), Some("id:t"));
+    }
+
+    #[dialog_common::test]
+    fn it_leaves_focus_none_when_the_focus_frame_is_empty() {
+        let layout = fold_universal(&[workspace("id:ws")], &[], &[]).expect("layout folds");
+        assert_eq!(layout.focus, None);
+    }
+
+    #[dialog_common::test]
+    fn it_sorts_tiles_by_their_order_key() {
+        let ws = "id:ws";
+        let layout = fold_universal(
+            &[workspace(ws)],
+            &[],
+            &[
+                tile("id:t1", ws, "c"),
+                tile("id:t2", ws, "a"),
+                tile("id:t3", ws, "b"),
+            ],
+        )
+        .expect("layout folds");
+        let orders: Vec<&str> = layout.tiles.iter().map(|t| t.order.as_str()).collect();
+        assert_eq!(orders, vec!["a", "b", "c"]);
+    }
+
+    #[dialog_common::test]
+    fn it_drops_tiles_belonging_to_a_different_workspace() {
+        let layout = fold_universal(
+            &[workspace("id:ws-a")],
+            &[],
+            &[
+                tile("id:t-mine", "id:ws-a", "n"),
+                tile("id:t-theirs", "id:ws-b", "n"),
+            ],
+        )
+        .expect("layout folds");
+        assert_eq!(layout.tiles.len(), 1);
+        assert_eq!(layout.tiles[0].entity, "id:t-mine");
+    }
+
+    #[dialog_common::test]
+    fn it_drops_tiles_missing_a_required_field() {
+        let ws = "id:ws";
+        let mut without_order = tile("id:no-order", ws, "n");
+        without_order.fields.remove("order");
+        let mut without_view = tile("id:no-view", ws, "n");
+        without_view.fields.remove("view");
+        let mut without_model = tile("id:no-model", ws, "n");
+        without_model.fields.remove("model");
+        let layout = fold_universal(
+            &[workspace(ws)],
+            &[],
+            &[
+                without_order,
+                without_view,
+                without_model,
+                tile("id:ok", ws, "n"),
+            ],
+        )
+        .expect("layout folds");
+        assert_eq!(layout.tiles.len(), 1);
+        assert_eq!(layout.tiles[0].entity, "id:ok");
+    }
+
+    #[dialog_common::test]
+    fn it_treats_tile_entity_as_optional() {
+        let ws = "id:ws";
+        let mut concept_tile = tile("id:concept", ws, "n");
+        concept_tile.fields.remove("entity");
+        let layout = fold_universal(&[workspace(ws)], &[], &[concept_tile]).expect("layout folds");
+        assert_eq!(layout.tiles.len(), 1);
+        assert_eq!(layout.tiles[0].target, None);
+    }
+
+    #[dialog_common::test]
+    fn it_inserts_a_tile_between_neighbours_at_the_right_slot() {
+        let ws = "id:ws";
+        let layout = fold_universal(
+            &[workspace(ws)],
+            &[],
+            &[
+                tile("id:tA", ws, "a"),
+                tile("id:tC", ws, "c"),
+                tile("id:tB", ws, "b"),
+            ],
+        )
+        .expect("layout folds");
+        let entities: Vec<&str> = layout.tiles.iter().map(|t| t.entity.as_str()).collect();
+        assert_eq!(entities, vec!["id:tA", "id:tB", "id:tC"]);
     }
 }

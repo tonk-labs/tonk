@@ -3,7 +3,7 @@ name = "tonk-layout"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "<tonk-layout> custom element — niri-style tiling workspace whose strip of columns and tiles is persisted as normalized entities on the branch."
+description = "<tonk-layout> custom element — headless workspace primitive holding universal state and command primitives for tile-based workspaces."
 license.workspace = true
 
 [lib]
@@ -29,19 +29,10 @@ web-sys = { workspace = true, features = [
   "Event",
   "EventTarget",
   "Headers",
-  "HtmlCollection",
   "HtmlElement",
-  "KeyboardEvent",
-  "MouseEvent",
-  "Node",
-  "NodeList",
-  "PointerEvent",
   "Request",
   "RequestInit",
   "Response",
-  "ScrollBehavior",
-  "ScrollIntoViewOptions",
-  "ScrollLogicalPosition",
   "Window",
 ] }
 

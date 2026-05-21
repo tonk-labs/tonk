@@ -1,15 +1,22 @@
-# `<tonk-layout>` — niri-style tiling workspace
+# `<tonk-layout>` — headless workspace primitive
 
-A custom element that renders a **strip of columns**, each a vertical
-stack of tiles, modelled on the [niri](https://github.com/YaLTeR/niri)
-tiling window manager. Each tile mounts a `<tonk-display>` pointed at
-a branch entity. The strip — columns, tiles, sizes, focus — is
-persisted as **normalized entities** on the branch, so a reload on
-the same device or any other one reconstructs the exact workspace.
+A custom element that holds the **universal state and command
+primitives** for a tile-based workspace: which tiles exist, what
+content they render, which one is focused, and what linear order
+they live in. It has **no rendered DOM of its own** — UIs that
+present the workspace (a niri-style strip, a grid, a single-view
+spotlight, …) ship as `<tonk-display>` view documents that wrap
+`<tonk-layout>` and own all rendering, layout-specific gestures,
+and any style-specific overlay state.
 
-The element is registered by `tonk-layout`'s `register()` (the shell
-does this at startup; pages don't have to). Once registered, drop the
-tag anywhere in the document.
+The element subscribes to its workspace's universal concepts on
+the branch, listens for a small vocabulary of named effects
+bubbling up from its subtree, and translates them into atomic
+notation writes — applying lex-midpoint math, ULID minting, and
+atomic lazy-bootstrap so view authors don't have to.
+
+The element is registered by `tonk-layout`'s `register()` (the
+shell does this at startup; view authors don't have to).
 
 ## Shape
 
@@ -20,66 +27,59 @@ tag anywhere in the document.
 </tonk-layout>
 ```
 
-No children — the element owns the entire subtree, building it from
-the branch.
+No children. The element renders nothing into its own subtree;
+its purpose is to subscribe, fold, and dispatch.
 
 | Attribute | Required | Default | Meaning |
 |---|---|---|---|
-| `workspace` | no | `"default"` | Logical name of the strip to render. Resolves through dialog's name table to a workspace entity. |
+| `workspace` | no | `"default"` | Logical name of the workspace. Resolves through the workspace concept's `name` field. |
 | `space` | no | `"home"` | Repository space (query routing). |
 | `branch` | no | `"main"` | Branch (query routing). |
 
-Changing any of these after the element is connected aborts the
-current subscriptions, clears the strip, and restarts against the new
-target — same teardown/restart discipline as `<tonk-concept>` /
-`<tonk-display>`.
+Changing any of these after the element is connected aborts
+outstanding subscriptions, clears the folded snapshot, and
+restarts against the new target — same teardown/restart
+discipline as `<tonk-concept>` / `<tonk-display>`.
 
-## Layout model
+## Where the UI lives
 
+A WM-style UI is a `<tonk-display>` view document whose template
+body embeds `<tonk-layout>` as a child and renders the workspace
+in whatever shape it likes. Switching between UIs is just
+swapping the wrapping `<tonk-display>`'s `view=` attribute.
+
+```html
+<!-- niri-strip UI -->
+<tonk-display view="niri-strip" workspace="default">
+  <!-- view template body, defined elsewhere:
+       <tonk-layout workspace="..."></tonk-layout>
+       <div class="niri-strip">...</div>
+       <script>...</script> -->
+</tonk-display>
 ```
-            viewport (scrolls horizontally)
-   ┌───────────────────────────────────────────────┐
-   │  column 0     column 1        column 2        │ ...→ infinite
-   │ ┌─────────┐  ┌──────────┐  ┌──────────────┐   │
-   │ │ tile A  │  │  tile C  │  │   tile E     │   │
-   │ ├─────────┤  └──────────┘  ├──────────────┤   │
-   │ │ tile B  │                │   tile F     │   │
-   │ └─────────┘                └──────────────┘   │
-   └───────────────────────────────────────────────┘
-```
 
-- **Strip** — an ordered list of **columns**. Scrolls horizontally;
-  width is unbounded.
-- **Column** — an ordered list of **tiles** stacked vertically, plus a
-  `width` (a fraction of the viewport, e.g. `0.5`). All tiles in a
-  column share the column width.
-- **Tile** — one cell. Carries a `height` (fraction of column height
-  when sharing with sibling tiles), a `kind` (the content type — v1
-  recognises `display`), and a content descriptor used to mount the
-  tile body.
-- **Focus** — exactly one tile is focused at a time. Focus drives
-  scroll: the focused column is brought fully into view (centred /
-  nearest-edge).
-- **Workspace** — a named strip. One branch can hold several
-  (`default`, `scratch`, …); the `workspace` attribute selects one.
+Each UI declares its own overlay concepts (e.g. niri declares
+`niri-column` / `niri-placement` to record column structure and
+per-tile placement). UI-specific writes (column resize, drag
+reorder, etc.) bypass `<tonk-layout>` entirely — the view's JS
+asserts the overlay concepts directly. The layout vocabulary is
+only for things that touch the universal tile / workspace state.
 
-Sizing is **relative**, never pixel-absolute, so the same layout
-restores correctly at any viewport size. The preset column widths
-(⅓, ½, ⅔, full) are the values the `R` key cycles through.
+Switching UIs leaves the inactive overlay rows latent in dialog;
+switch back later and the layout is exactly as you left it.
 
 ## Data model
 
-The element reads and writes three concepts on the branch. They are
-declared once per repository — drop them into a dialog-yaml document
-under `concept!:` the same way `<tonk-display>` depends on the
-`view` concept:
+Two universal concepts. They are declared once per repository in
+a dialog-yaml `concept!:` document the same way `<tonk-display>`
+depends on the `view` concept.
 
 ```yaml
 concept!: &workspace
-  description: A named niri-style strip
+  description: A workspace of tiles
   with:
     name:
-      description: Workspace name (selects which strip to render)
+      description: Workspace name (selects which workspace to render)
       the: xyz.tonk.layout/workspace-name
       as: text
     focus:
@@ -88,108 +88,79 @@ concept!: &workspace
       as: entity
       cardinality: one
 
-concept!: &column
-  description: A vertical stack of tiles within a workspace
+concept!: &tile
+  description: One tile in a workspace; renders content via <tonk-display>
   with:
     workspace:
-      the: xyz.tonk.layout/column-workspace
+      description: Parent workspace
+      the: xyz.tonk.layout/tile-workspace
       as: entity
     order:
-      description: Lexicographic ordering key within the strip
-      the: xyz.tonk.layout/column-order
-      as: text
-    width:
-      description: Column width as a fraction of the viewport (0..1)
-      the: xyz.tonk.layout/column-width
-      as: float
-
-concept!: &tile
-  description: One cell; mounts a presentation body chosen by `kind`
-  with:
-    column:
-      the: xyz.tonk.layout/tile-column
-      as: entity
-    order:
-      description: Lexicographic ordering key within the column
+      description: Lexicographic linear order within the workspace
       the: xyz.tonk.layout/tile-order
       as: text
-    height:
-      description: Tile height as a fraction of the column (0..1)
-      the: xyz.tonk.layout/tile-height
-      as: float
-    kind:
-      description: Content kind; v1 recognises "display"
-      the: xyz.tonk.layout/tile-kind
-      as: text
     entity:
-      description: For kind=display — the entity the tile renders
+      description: Entity the tile renders (omit for concept-list tiles)
       the: xyz.tonk.layout/tile-entity
       as: entity
     view:
-      description: For kind=display — the view name
+      description: View name for the tile body
       the: xyz.tonk.layout/tile-view
       as: text
     model:
-      description: For kind=display — the model name
+      description: Model / concept name for the tile body
       the: xyz.tonk.layout/tile-model
       as: text
 ```
 
+Two things to notice:
+
+- **No column, height, kind, or any placement field.** Those are
+  UI-overlay concerns and live in the view document's own
+  overlay concepts.
+- **`tile.entity` is optional.** Single-entity tiles populate it
+  (the view's body is `<tonk-display entity={entity}
+  view={view}>`). Concept-listing tiles leave it empty and rely
+  on `view` naming a list-rendering view (e.g. `"concept-list"`)
+  that internally uses `<tonk-concept source={model}>`.
+
 ### Ordering keys
 
-`column.order` and `tile.order` are **lexicographic text keys**, not
-numbers. Inserting between two neighbours picks a key that sorts
-strictly between them; with strings there's no precision floor, so
-subdivision works indefinitely. The element uses a fixed printable
-ASCII alphabet and finds the midpoint of two keys by character-wise
-bisection — the same approach as LexoRank. Authors writing
-notation by hand can use plain ASCII letters: `"a"`, `"b"`, `"c"`,
-or `"a"`, `"n"`, `"z"` for a coarser split.
+`tile.order` is a **lexicographic text key**, not a number. The
+element uses the same LexoRank-style fixed-alphabet midpoint
+algorithm as today's column/tile ordering. Authors writing
+notation by hand can use plain ASCII letters (`"a"`, `"n"`, `"z"`
+for a coarse split).
 
 ### Stable identity
 
-Every workspace / column / tile entity is created with a
-client-minted ULID embedded as the `this:` URI:
+Tiles and workspaces are minted with client-side ULIDs embedded
+as the `this:` URI, exactly as today:
 
 ```yaml
-column!:
-  this: id:01HMX...
-  workspace: id:01HMW...
-  order: "n"
-  width: 0.5
+tile!:
+  this:      id:01HMT000000000000000000000
+  workspace: id:01HMW000000000000000000000
+  order:     "n"
+  view:      "card"
+  model:     "person"
+  entity:    id:01HENT00000000000000000000
 ```
 
 The `id:<ulid>` form is a direct URI literal — the analyser does
 *not* content-address the body, so subsequent edits to the same
-ULID target the same entity. Without this, dialog's default
-behaviour (`Entity::of(&body_digest)`) would compute a fresh
-entity every time a field changed, so a column re-asserted with a
-new `order` would orphan its tiles.
-
-Two devices independently creating "the first column" mint distinct
-ULIDs — distinct entities, no spurious merge. That is the right
-behaviour for v1; cross-device deduplication of "should-be-the-same"
-entities requires consensus and is out of scope.
+ULID target the same entity. The same rationale as before
+(without it, dialog's default behaviour would orphan a tile on
+every `order` update).
 
 ### Workspace name resolution
 
-The `workspace` attribute is matched against the workspace concept's
-`name` field. The element subscribes to the workspace concept with
-`name = "<attribute value>"` pinned as a constant, picks the first
-matching row, and uses its `this` URI as the parent reference for
-column / tile queries. Same pattern as `<tonk-display>`'s
-`view="basic"` resolution — concept-field filter, not a name-table
-lookup.
-
-```yaml
-workspace!:
-  this: id:01HMW...
-  name: "default"
-```
-
-A workspace's ULID is internal — authors and other tools address
-the workspace by `name`, which is human-meaningful and stable
-across re-asserts of the workspace entity.
+The `workspace` attribute is matched against the workspace
+concept's `name` field. The element subscribes to the workspace
+concept with `name = "<attribute value>"` pinned as a constant,
+picks the first matching row, and uses its `this` URI as the
+parent reference for the tile subscription. Same pattern as
+`<tonk-display>`'s `view="basic"` resolution.
 
 ### Seeding a workspace by hand
 
@@ -200,201 +171,204 @@ workspace!:
   this: id:01HMW000000000000000000000
   name: "default"
 
-column!:
-  this:      id:01HMC000000000000000000000
+tile!:
+  this:      id:01HMT100000000000000000000
   workspace: id:01HMW000000000000000000000
-  order:     "n"
-  width:     0.5
+  order:     "a"
+  entity:    id:01HENT00000000000000000000
+  view:      "card"
+  model:     "person"
 
 tile!:
-  this:    id:01HMT000000000000000000000
-  column:  id:01HMC000000000000000000000
-  order:   "n"
-  height:  1.0
-  kind:    "display"
-  entity:  id:01HENT00000000000000000000
-  model:   "person"
-  view:    "card"
+  this:      id:01HMT200000000000000000000
+  workspace: id:01HMW000000000000000000000
+  order:     "n"
+  entity:    id:01HENT00000000000000000001
+  view:      "card"
+  model:     "person"
 ```
 
-Drop that into an `/evaluate` request and `<tonk-layout
-workspace="default">` will render a single column of one tile.
+Drop that into an `/evaluate` request and any UI view wrapping
+`<tonk-layout workspace="default">` will see two tiles in the
+expected order.
 
 ### Why normalized rather than a JSON blob
 
-Per-attribute merge: two devices dragging different columns, or
-resizing different tiles, commit disjoint claims and merge cleanly on
-sync. A single JSON-blob workspace entity would re-hash on every
-edit and lose one side's change.
+Per-attribute merge: two devices reordering different tiles, or
+swapping different tile bodies, commit disjoint claims and merge
+cleanly on sync. A single JSON-blob workspace would re-hash on
+every edit and lose one side's change.
 
 ## Bootstrapping an empty workspace
 
-If the `workspace` attribute names a workspace with no entity yet,
-the element renders an empty strip (state `empty`) with an
-"add column" affordance. The first open-tile action **lazy-mints**
-the workspace entity, its `name!` binding, and the first column /
-tile in a single `/evaluate` document — atomic.
+If the `workspace` attribute names a workspace with no entity
+yet, the element holds an empty folded snapshot. The first
+`open-tile` effect **lazy-mints** the workspace entity, its
+`name!` binding, and the first tile in a single `/evaluate`
+document — atomic.
 
 This means a fresh branch + `<tonk-layout>` "just works" with no
 ceremony. The trade-off: a typo in `workspace="defualt"` silently
-creates a new empty workspace rather than failing loudly. Pre-asserting
-a workspace (above) sidesteps the risk.
+creates a new empty workspace rather than failing loudly.
+Pre-asserting a workspace (above) sidesteps the risk.
 
-## Tile content
+## Effects vocabulary
 
-Each tile's body is chosen by the `kind` field.
+Six named effects. UIs dispatch them as DOM `CustomEvent`s that
+bubble up to `<tonk-layout>`. A small JS helper is shipped
+alongside the element for view authors:
 
-### `kind: "display"` (v1)
-
-The element mounts a `<tonk-display>` configured from the tile row's
-`entity` / `model` / `view` fields, plus the WM's own `space` /
-`branch`:
-
-```html
-<tonk-display entity="<tile.entity>"
-              model="<tile.model>"
-              view="<tile.view>"
-              space="<host.space>"
-              branch="<host.branch>" />
+```js
+const layout = document.querySelector('tonk-layout');
+layout.emit('focus-next');
+layout.emit('open-tile', { entity, view, model });
 ```
 
-`<tonk-display>` then owns its own subscriptions and `data-state`.
-The WM never touches a tile's inner DOM — it only manages geometry,
-focus, and the descriptor.
+Under the hood, `emit()` wraps a `dispatchEvent(new
+CustomEvent('tonk-layout/<name>', { detail: params, bubbles:
+true, composed: true }))`. The element's root listener
+dispatches by event type.
 
-When a `display` tile row's content fields change, the element calls
-`set_attribute` on the existing `<tonk-display>` (which already
-restarts its flows on attribute change) rather than remounting it.
-A layout change that reorders columns or tiles does **not** remount
-healthy `<tonk-display>` instances either — node identity is
-preserved across reconciliations.
+The event-name namespace is chosen to match a future
+transient-concept transport (per `tonk-labs/tonk` PR #461). When
+that lands, `emit()` swaps to writing transient concept
+assertions via `/transact`; view call sites don't change.
 
-### Unknown `kind`
+### `tonk-layout/focus-tile`
 
-A tile with a `kind` value the element does not recognise is rendered
-as a placeholder with `data-state="error"`. Adding a new kind later
-is purely additive (new mount path, no schema migration).
+Params: `target` (tile entity URI).
 
-## Interaction
+Asserts `workspace.focus = target`. No-op if `target` is already
+focused.
 
-### Keyboard
+### `tonk-layout/focus-prev` / `tonk-layout/focus-next`
 
-Focus must be within the host; the element listens on its own root.
+No params.
 
-| Key | Action |
-|---|---|
-| `←` / `→` | Move focus to previous / next column. |
-| `↑` / `↓` | Move focus up / down within the focused column. |
-| `Ctrl+←/→` | Move the focused column left / right in the strip. |
-| `Ctrl+↑/↓` | Move the focused tile up / down within its column. |
-| `R` | Cycle the focused column through preset widths (⅓ ½ ⅔ 1). |
-| `Q` | Close the focused tile. |
-| `Enter` | Open a new tile — see "Opening a tile". |
+Walks the universal linear order from the current focus to the
+previous / next tile and asserts `workspace.focus` to it. No-op
+if focus is already at the relevant boundary, or if no tile is
+focused (use `focus-tile` to set an initial focus).
 
-### Pointer
+### `tonk-layout/open-tile`
 
-- **Click** a tile to focus it.
-- **Drag** the gap between columns or tiles to resize. The DOM
-  updates inline on each `pointermove`; the persisted `width` /
-  `height` is debounced (~200 ms after the pointer goes idle, or on
-  `pointerup`).
-- **Horizontal wheel / trackpad** scrolls the strip.
+Required: `view`, `model`.
+Optional: `entity`, `before`, `after`.
 
-### Opening a tile
+Mints a fresh tile ULID, computes its `order` per the order-key
+rules below, and asserts a new `tile!` row plus
+`workspace.focus = <new-tile>` in one atomic `/evaluate`
+document. If the workspace doesn't yet exist, the same document
+also mints it (lazy bootstrap).
 
-`Enter` (or the empty-strip affordance) opens a `<wa-dialog>` with
-inputs for `entity`, `model`, and `view`. Submitting builds a
-`tile!` row with `kind: display` and posts it. A richer
-branch-aware picker is a follow-up; authors can also seed tiles by
-asserting `tile` rows directly.
+`entity` is optional: omit for concept-list-style tiles where
+`view` and `model` are sufficient.
 
-### Focus follows scroll
+#### Order-key rules
 
-Focus changes scroll the strip so the focused column is fully
-visible (niri's "centre / nearest edge" behaviour). Scroll position
-is **not persisted** — it is derived from focus, so a reload simply
-scrolls to the saved focus tile.
+Both `open-tile` and `reorder-tile` resolve their target order
+key from the optional `before` / `after` params:
 
-## Persistence behaviour
+| `before` | `after` | Resolved range | Notes |
+|---|---|---|---|
+| set | set | midpoint(`after.order`, `before.order`) | Insert strictly between two tiles. |
+| set | unset | midpoint(`prev(before).order`, `before.order`) | "Place before this tile." `prev(t)` is the tile immediately before `t` in current linear order, or sentinel-min if `t` is first. |
+| unset | set | midpoint(`after.order`, `next(after).order`) | "Place after this tile." `next(t)` is the tile immediately after `t`, or sentinel-max if `t` is last. |
+| unset | unset | midpoint(`last.order`, sentinel-max) | Append at the end. |
 
-There is no local-only state. Every mutation — open a tile, move a
-column, resize, focus — is written as an assertion document to
-`/evaluate` and reaches the element back through its subscriptions.
+If `before` / `after` are both set but not adjacent, midpoint is
+still computed against the supplied two — the caller opted in.
+If a supplied tile reference doesn't resolve in the current
+fold, the effect fails loudly via `tonk-layout:error`.
 
-- **Discrete actions** write immediately, one POST per action.
-- **Continuous actions** (drag-resize) update inline CSS on each
-  `pointermove`, then coalesce into a single debounced `/evaluate`
-  ~200 ms after the pointer goes idle (or on `pointerup`).
-- **Multi-entity actions** (moving a tile between columns rewrites
-  both `tile.column` and `tile.order`) go in one `/evaluate`
-  document — one dialog transaction — atomically.
+### `tonk-layout/close-tile`
 
-Because every write goes through `/evaluate`, the workspace is
-**reactive across tabs and devices** for free: move a column on one
-screen, it moves on the other.
+Required: `target` (tile entity URI).
 
-**Concurrent-writer flicker.** If a second tab commits to the same
-column while a drag is in progress, the arriving frame patches the
-DOM to the remote value for one frame before the next `pointermove`
-patches it back. v1 accepts this; a pending-override map can
-address it later without protocol changes.
+Retracts the tile row. If `target` was focused, advances focus
+to the previous tile (or next if previous is gone, or null if
+no tiles remain). All in one atomic document.
 
-## Rendered DOM
+### `tonk-layout/reorder-tile`
 
-The host gets a non-shadow light DOM tree the element owns entirely:
+Required: `target`.
+Optional: `before`, `after`.
 
-```
-<tonk-layout data-state="ready">
-  <div class="niri-strip">                       <!-- scroll container -->
-    <div class="niri-column" data-order="...">   <!-- flex column, width: Nfr -->
-      <div class="niri-tile" data-focused>       <!-- height: Nfr -->
-        <tonk-display entity="..." view="..." />
-      </div>
-      ...
-    </div>
-    ...
-  </div>
-</tonk-layout>
-```
+Computes a new `order` per the [order-key
+rules](#order-key-rules) and asserts `tile.order` on `target`.
+Used by UIs that want to surface "move tile" gestures.
 
-Column width and tile height come from the persisted fractions,
-written as inline `flex` / CSS custom properties so the browser
-does the pixel math; the layout stays resolution-independent.
+### `tonk-layout/update-tile-content`
 
-Web Awesome elements (`<wa-dialog>`, `<wa-button>`, `<wa-icon>`,
-`<wa-spinner>`, `<wa-callout>`) provide the chrome — they auto-register
-via the loader already in the page.
+Required: `target`.
+Optional: `entity`, `view`, `model`.
 
-## DOM state and events
+Asserts whichever of the three fields are provided on `target`.
+Used to swap what a tile renders without remounting it.
 
-| `data-state` | Meaning |
-|---|---|
-| `loading` | Subscriptions opening, no frame yet. |
-| `ready` | Strip rendered. |
-| `empty` | Workspace has zero columns (or doesn't exist yet — see "Bootstrapping"). |
-| `error` | Query / network failure. |
+## Atomic guarantees
 
-Custom events (all bubble and are composed):
+Every effect produces exactly one `/evaluate` document.
+`open-tile` (workspace bootstrap + tile + focus) and
+`close-tile` (retract + focus advance) are the multi-statement
+ones; both are atomic so they merge cleanly under concurrent
+writers.
+
+## Outbound events
+
+The element dispatches three custom events (all bubble and are
+composed):
 
 | Event | When | Detail |
 |---|---|---|
-| `tonk-layout:connected` | Subscriptions opened | `{ workspace }` |
-| `tonk-layout:layout` | Strip reconciled | `{ columns, tiles }` |
-| `tonk-layout:focus` | Focused tile changed | `{ tile }` |
-| `tonk-layout:error` | Failure | `{ kind, message }` |
+| `tonk-layout:changed` | A refold settled. | `{ workspace, focus, tile_count }` |
+| `tonk-layout:focus` | The focused tile changed. | `{ tile }` |
+| `tonk-layout:error` | Subscription / transport failure or unresolvable effect ref. | `{ kind, message }` |
+
+UIs that need to react to focus changes (e.g. scroll the
+focused tile into view) subscribe to `tonk-layout:focus`. UIs
+that need a "subscriptions settled" indicator listen for
+`tonk-layout:changed`.
+
+The element exposes **no readable JS property** for the folded
+state. UIs read tile / workspace rows directly from dialog via
+`<tonk-concept>` — the same source `<tonk-layout>` reads from.
+
+## Persistence behaviour
+
+Same model as today: there is no local-only state. Every
+mutation goes through `/evaluate` and reaches subscribers via
+SSE. Discrete actions write immediately; continuous actions
+(e.g. a niri view's drag-resize on `niri-column.width`) are the
+view's responsibility to debounce — `<tonk-layout>` itself only
+handles atomic discrete writes.
+
+Because every write goes through `/evaluate`, the workspace is
+reactive across tabs and devices for free: open a tile on one
+device, it appears on the other.
+
+## Concurrency
+
+Same generation/lifecycle discipline as today: attribute
+changes bump an internal generation counter, abort outstanding
+subscriptions, and clear the folded snapshot. Effects spawned
+by a superseded generation no-op before posting.
 
 ## Known limitations
 
-- **Typo-creates-empty-workspace.** Pre-assert workspaces if loud-fail
-  matters for your deployment.
-- **Concurrent-drag flicker.** A remote commit during a local drag
-  flashes the remote value for one frame.
-- **Single tile kind.** v1 recognises `kind: "display"` only.
-  `concept` (a `<tonk-concept>` list), `html` (static markup), and
-  `inspector` (debug view) are likely future values; each is
-  additive.
-- **Cross-device "first column" duplicates.** Two offline devices
-  each creating "the first column" on the same workspace mint two
-  distinct columns — there is no consensus pass.
-- **No free-scroll.** Scroll follows focus; there is no
-  focus-independent scroll-position storage.
+- **Typo-creates-empty-workspace.** Pre-assert workspaces if
+  loud-fail matters for your deployment.
+- **No readable state property.** UIs that need synchronous
+  "what's adjacent to T" must subscribe to tiles themselves via
+  `<tonk-concept>` (or use `focus-prev` / `focus-next` to let
+  the element resolve adjacency).
+- **Cross-device "first tile" duplicates.** Two offline devices
+  each opening "the first tile" on the same workspace mint two
+  distinct tiles — there is no consensus pass.
+- **DOM-event transport, not yet dialog-native.** The effects
+  vocabulary is dispatched as DOM CustomEvents until PR #461's
+  transient-concept transport lands. Event names are chosen so
+  the swap is mechanical and view call sites are unaffected.
+- **No headless usage outside a UI view.** With no rendered DOM,
+  `<tonk-layout>` alone shows nothing on the page. A wrapping
+  `<tonk-display>` view is required for any visible workspace.
