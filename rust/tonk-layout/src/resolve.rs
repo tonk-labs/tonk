@@ -140,6 +140,10 @@ fn tile_predicate() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     fn term_value(q: &Query, name: &str) -> Value {
         serde_json::to_value(q.terms.get(name).expect("term present")).unwrap()

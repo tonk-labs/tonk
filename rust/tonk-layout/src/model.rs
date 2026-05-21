@@ -143,6 +143,10 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeMap;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     /// Build a [`Conclusion`] from an entity URI and a JSON-object
     /// of fields. Keeps the tests' setup terse — the alternative is

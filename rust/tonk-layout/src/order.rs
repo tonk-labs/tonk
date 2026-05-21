@@ -116,6 +116,10 @@ fn above(low: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     /// Check the result is strictly between the inputs under
     /// byte-lex ordering. `None` on either side means "no bound".

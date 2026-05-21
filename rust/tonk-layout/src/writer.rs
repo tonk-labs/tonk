@@ -159,6 +159,10 @@ pub async fn post_evaluate(url: &str, doc: &str) -> Result<(), tonk_concept::err
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     const COLUMN: &str = "id:01HMC000000000000000000000";
     const TILE: &str = "id:01HMT000000000000000000000";
