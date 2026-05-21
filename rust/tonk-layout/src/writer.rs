@@ -103,6 +103,38 @@ pub fn create_display_tile_doc(
     )
 }
 
+/// Build the `workspace!:` block for lazy bootstrap — a workspace
+/// entity with a name claim. Concatenate with [`column_creation_block`]
+/// and [`create_display_tile_doc`] to land everything in one
+/// `/evaluate` transaction.
+pub fn workspace_creation_block(workspace_id: &str, name: &str) -> String {
+    format!(
+        "workspace!:\n  this: {workspace_id}\n  name: {}\n",
+        quoted(name),
+    )
+}
+
+/// Build the `column!:` block — a column entity pointing at a
+/// workspace, with order and width. The `workspace_ref` is either an
+/// existing workspace entity URI or a freshly-minted `id:<ulid>`
+/// from the same document.
+pub fn column_creation_block(
+    column_id: &str,
+    workspace_ref: &str,
+    order: &str,
+    width: f64,
+) -> String {
+    format!(
+        "column!:\n  \
+         this: {column_id}\n  \
+         workspace: {workspace_ref}\n  \
+         order: {}\n  \
+         width: {}\n",
+        quoted(order),
+        float(width),
+    )
+}
+
 /// Double-quote a string for YAML output. Embedded backslashes /
 /// quotes are escaped — Rust's debug format does the right thing.
 fn quoted(value: &str) -> String {
@@ -365,6 +397,46 @@ mod tests {
         assert!(doc.contains("workspace!"));
         assert!(doc.contains(&format!("this: {WORKSPACE}")));
         assert!(doc.contains("focus: _"));
+    }
+
+    #[dialog_common::test]
+    fn it_builds_a_workspace_creation_block_with_this_and_name() {
+        let doc = workspace_creation_block(WORKSPACE, "default");
+        assert!(doc.contains("workspace!"));
+        assert!(doc.contains(&format!("this: {WORKSPACE}")));
+        assert!(doc.contains(r#"name: "default""#));
+    }
+
+    #[dialog_common::test]
+    fn it_builds_a_column_creation_block_with_workspace_order_and_width() {
+        let doc = column_creation_block(COLUMN, WORKSPACE, "n", 1.0);
+        assert!(doc.contains("column!"));
+        assert!(doc.contains(&format!("this: {COLUMN}")));
+        assert!(doc.contains(&format!("workspace: {WORKSPACE}")));
+        assert!(doc.contains(r#"order: "n""#));
+        assert!(doc.contains("width: 1"));
+    }
+
+    #[dialog_common::test]
+    fn it_concatenates_blocks_into_a_single_bootstrap_document() {
+        // Assembling workspace + column + tile yields one document
+        // dialog evaluates as one transaction. Order matters: each
+        // later block can reference URIs declared earlier (and the
+        // analyzer phase 1 processes expressions sequentially).
+        let new_tile = "id:01HMT999999999999999999999";
+        let target = "id:01HENT000000000000000000000";
+        let doc = workspace_creation_block(WORKSPACE, "default")
+            + "\n"
+            + &column_creation_block(COLUMN, WORKSPACE, "n", 1.0)
+            + "\n"
+            + &create_display_tile_doc(new_tile, COLUMN, "n", 1.0, target, "card", "person");
+        assert!(doc.contains("workspace!"));
+        assert!(doc.contains("column!"));
+        assert!(doc.contains("tile!"));
+        // Single document — column references the new workspace URI;
+        // tile references the new column URI; all by URI literal.
+        assert!(doc.contains(&format!("workspace: {WORKSPACE}")));
+        assert!(doc.contains(&format!("column: {COLUMN}")));
     }
 
     #[dialog_common::test]

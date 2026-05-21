@@ -819,9 +819,16 @@ fn read_value(input: &Element) -> String {
         .unwrap_or_default()
 }
 
-/// Build + POST a `create_display_tile_doc`. Picks the focused
-/// column (or first column) as the target and appends the new tile
-/// after the column's last tile.
+/// Build + POST the doc that opens a new tile. Handles all three
+/// states the branch can be in:
+///
+/// - **Layout has columns** — append to the focused column (or the
+///   first column if no focus); one `tile!:` block.
+/// - **Workspace exists, no columns** — mint a column ULID, emit
+///   `column!:` + `tile!:` in one document so they commit together.
+/// - **No workspace yet** — mint workspace + column ULIDs from the
+///   `workspace` attribute's name; emit `workspace!:` + `column!:` +
+///   `tile!:` in one document for full lazy bootstrap.
 fn submit_add_tile(
     host: &Element,
     inner: &Rc<RefCell<Inner>>,
@@ -830,26 +837,73 @@ fn submit_add_tile(
     model: &str,
     view: &str,
 ) {
-    let layout = match inner.borrow().layout.clone() {
-        Some(l) => l,
-        None => return,
-    };
-    let Some((column_entity, new_order)) = interact::pick_new_tile_target(&layout) else {
+    let layout = inner.borrow().layout.clone();
+    let target = interact::pick_new_tile_target(layout.as_ref());
+
+    let Some(tile_ulid) = ulid::new_ulid() else {
         return;
     };
-    let Some(ulid_str) = ulid::new_ulid() else {
-        return;
+    let tile_id = format!("id:{tile_ulid}");
+
+    let doc = match target {
+        interact::NewTileTarget::AppendToColumn {
+            column_entity,
+            tile_order,
+        } => writer::create_display_tile_doc(
+            &tile_id,
+            &column_entity,
+            &tile_order,
+            1.0,
+            display_entity,
+            view,
+            model,
+        ),
+        interact::NewTileTarget::NewColumn { workspace_entity } => {
+            let Some(col_ulid) = ulid::new_ulid() else {
+                return;
+            };
+            let col_id = format!("id:{col_ulid}");
+            writer::column_creation_block(&col_id, &workspace_entity, "n", 1.0)
+                + "\n"
+                + &writer::create_display_tile_doc(
+                    &tile_id,
+                    &col_id,
+                    "n",
+                    1.0,
+                    display_entity,
+                    view,
+                    model,
+                )
+        }
+        interact::NewTileTarget::NewWorkspace => {
+            let workspace_name = host
+                .get_attribute("workspace")
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "default".to_owned());
+            let Some(ws_ulid) = ulid::new_ulid() else {
+                return;
+            };
+            let Some(col_ulid) = ulid::new_ulid() else {
+                return;
+            };
+            let ws_id = format!("id:{ws_ulid}");
+            let col_id = format!("id:{col_ulid}");
+            writer::workspace_creation_block(&ws_id, &workspace_name)
+                + "\n"
+                + &writer::column_creation_block(&col_id, &ws_id, "n", 1.0)
+                + "\n"
+                + &writer::create_display_tile_doc(
+                    &tile_id,
+                    &col_id,
+                    "n",
+                    1.0,
+                    display_entity,
+                    view,
+                    model,
+                )
+        }
     };
-    let new_tile_id = format!("id:{ulid_str}");
-    let doc = writer::create_display_tile_doc(
-        &new_tile_id,
-        &column_entity,
-        &new_order,
-        1.0,
-        display_entity,
-        view,
-        model,
-    );
+
     spawn_evaluate_post(host, inner, doc);
     // Programmatically close the dialog — wa-after-hide fires
     // and our close listener tears down the refs.

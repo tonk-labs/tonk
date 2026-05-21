@@ -253,24 +253,59 @@ pub(crate) fn handle_keydown(
     }
 }
 
-/// Resolve the column the new tile should join, plus the lex order
-/// key for its position within that column. v1 picks the column
+/// Where a new tile should land. The three variants correspond to
+/// the three states a fresh open-tile action can encounter: a
+/// healthy layout with columns, a workspace with no columns yet,
+/// or no workspace at all (the lazy-bootstrap case). The caller
+/// fills in fresh ULIDs (and a workspace name attribute) for the
+/// `New*` cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewTileTarget {
+    /// Layout has columns. Append the tile to the picked column at
+    /// `tile_order` (a lex key past the column's last tile).
+    AppendToColumn {
+        column_entity: String,
+        tile_order: String,
+    },
+    /// Workspace exists but has no columns yet. Caller mints a
+    /// column ULID and uses `tile_order = "n"` (no peers to bisect
+    /// between) when assembling the doc.
+    NewColumn { workspace_entity: String },
+    /// No workspace yet. Caller mints workspace + column ULIDs and
+    /// supplies the workspace name from the host attribute.
+    NewWorkspace,
+}
+
+/// Resolve where the new tile should join. v1 picks the column
 /// containing the focused tile (or the first column if no focus),
-/// and appends after the column's last tile. Returns `None` when
-/// the layout has no columns to add into.
-pub(crate) fn pick_new_tile_target(layout: &Layout) -> Option<(String, String)> {
+/// and appends after the column's last tile.
+pub fn pick_new_tile_target(layout: Option<&Layout>) -> NewTileTarget {
+    let Some(layout) = layout else {
+        return NewTileTarget::NewWorkspace;
+    };
+    if layout.columns.is_empty() {
+        return NewTileTarget::NewColumn {
+            workspace_entity: layout.workspace.clone(),
+        };
+    }
     let column = match layout.focus.as_deref() {
-        Some(focus) => {
-            let (col_idx, _) = locate(layout, focus)?;
-            &layout.columns[col_idx]
-        }
-        None => layout.columns.first()?,
+        Some(focus) => match locate(layout, focus) {
+            Some((col_idx, _)) => &layout.columns[col_idx],
+            // Focus references a tile that vanished — fall back.
+            None => &layout.columns[0],
+        },
+        None => &layout.columns[0],
     };
     let last = column.tiles.last().map(|t| t.order.as_str());
-    // `above` always succeeds with the [a-z] alphabet, so this
-    // shouldn't return None in practice — but stay defensive.
-    let new_order = order::between(last, None)?;
-    Some((column.entity.clone(), new_order))
+    // `above` always succeeds with the [a-z] alphabet, but stay
+    // defensive: if it ever returns None we substitute "n" so the
+    // tile still lands (just possibly out of order — better than
+    // silently dropping the user's action).
+    let tile_order = order::between(last, None).unwrap_or_else(|| "n".to_owned());
+    NewTileTarget::AppendToColumn {
+        column_entity: column.entity.clone(),
+        tile_order,
+    }
 }
 
 /// Dispatch a click to a focus-set mutation when the click landed
@@ -589,5 +624,60 @@ mod tests {
         let l = layout(None, vec![column("c", "n", vec![tile("t", "n")])]);
         assert!(next_focus_across_columns(&l, Direction::Forward).is_none());
         assert!(next_focus_within_column(&l, Direction::Forward).is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_picks_new_workspace_when_layout_is_absent() {
+        assert_eq!(pick_new_tile_target(None), NewTileTarget::NewWorkspace);
+    }
+
+    #[dialog_common::test]
+    fn it_picks_new_column_when_workspace_has_no_columns() {
+        let l = layout(None, vec![]);
+        assert_eq!(
+            pick_new_tile_target(Some(&l)),
+            NewTileTarget::NewColumn {
+                workspace_entity: "id:ws".to_owned(),
+            },
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_appends_to_focused_columns_tail_when_focus_exists() {
+        let l = layout(
+            Some("t-mid"),
+            vec![
+                column("c-l", "n", vec![tile("t-l", "n")]),
+                column("c-m", "p", vec![tile("t-mid", "n"), tile("t-mid2", "p")]),
+            ],
+        );
+        match pick_new_tile_target(Some(&l)) {
+            NewTileTarget::AppendToColumn {
+                column_entity,
+                tile_order,
+            } => {
+                assert_eq!(column_entity, "c-m");
+                // New tile lands after "p" — so order > "p".
+                assert!(tile_order.as_str() > "p", "expected order > 'p', got {tile_order:?}");
+            }
+            other => panic!("expected AppendToColumn, got {other:?}"),
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_appends_to_first_column_when_no_focus_is_set() {
+        let l = layout(
+            None,
+            vec![
+                column("c-l", "n", vec![]),
+                column("c-r", "p", vec![]),
+            ],
+        );
+        match pick_new_tile_target(Some(&l)) {
+            NewTileTarget::AppendToColumn { column_entity, .. } => {
+                assert_eq!(column_entity, "c-l");
+            }
+            other => panic!("expected AppendToColumn, got {other:?}"),
+        }
     }
 }
