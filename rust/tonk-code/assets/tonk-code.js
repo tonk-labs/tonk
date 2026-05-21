@@ -108,6 +108,7 @@ Please report this to https://github.com/markedjs/marked.`,t){let r="<p>An error
     --tonk-code-name: var(--tonk-code-key);
     --tonk-code-name-sigil: var(--tonk-code-fg-muted);
     --tonk-code-effect: var(--tonk-code-error);
+    --tonk-code-keyword: var(--tonk-code-key);
 
     display: block;
     position: relative;
