@@ -52,37 +52,16 @@ already the established shape in `concept.rs` —
 `resolve` runs against `(branch, env)`. We make every schema
 lookup follow it, with `.perform(env)` for consistency.
 
-#### `EntityReference` — name→entity as a separate, composable step
+#### Name resolution and concept resolution are separate steps
 
 The schema lookups today come in two flavors: by published name
-(`ConceptByName`) and by entity URI (`ConceptByEntity`). The new
-shape separates the two cleanly: **`ResolvedConcept` / `Resolved-
-Attribute` resolve from an `Entity` only.** Name resolution is a
-distinct primitive the caller runs first when it holds a name.
+(`ConceptByName`) and by entity URI (`ConceptByEntity`). These are
+genuinely two operations — and the caller always knows statically
+which it has. No `Name | Entity` enum is needed; each gets its own
+type and `resolve`.
 
-```rust
-/// How a thing is referred to: a published name (`id:<n>` carries
-/// the referent claim) or a direct entity URI. The resolved form
-/// of a notation reference — a bare symbol is a `Name`, a
-/// `did:key:…` / `id:…` is an `Entity`.
-pub enum EntityReference {
-    Name(String),
-    Entity(Entity),
-}
-
-impl From<&str>   for EntityReference { /* → Name */ }
-impl From<String> for EntityReference { /* → Name */ }
-impl From<Entity> for EntityReference { /* → Entity */ }
-
-impl EntityReference {
-    /// Resolve to a concrete entity. `Name` → look up
-    /// `(id:<n>, dialog.name/referent, ?e)`; `Entity` → itself.
-    pub fn resolve<S: Source>(self, source: &S) -> ResolveEntity<'_, S>;
-}
-```
-
-The typed resolvers take a concrete `Entity` — one `resolve` each,
-no name/entity branching inside:
+`ResolvedConcept` / `ResolvedAttribute` resolve from a concrete
+`Entity`:
 
 ```rust
 impl ResolvedConcept {
@@ -103,21 +82,48 @@ impl ResolvedAttribute {
 // …with the matching `perform(env)`.
 ```
 
-A caller that starts from a name does the two steps explicitly:
+A named reference is a `NamedReference` newtype with its own
+`resolve` — the name→entity step:
 
 ```rust
-let entity = EntityReference::Name("person".into())
-    .resolve(source).perform(env).await?;
-let concept = ResolvedConcept::resolve(source, entity)
-    .perform(env).await?;
+/// A published name — `id:<n>` carries the referent claim.
+/// Distinct from the `meta::Name` *concept* schema type; this is
+/// just the reference, not the stored claim.
+pub struct NamedReference(pub String);
+
+impl NamedReference {
+    /// Resolve to the entity the name currently points at —
+    /// `(id:<n>, dialog.name/referent, ?e)`.
+    pub fn resolve<S: Source>(self, source: &S) -> ResolveName<'_, S>;
+}
+pub struct ResolveName<'a, S> { source: &'a S, name: NamedReference }
+impl<'a, S: Source> ResolveName<'a, S> {
+    pub async fn perform<Env: QueryEnv>(self, env: &Env)
+        -> Result<Option<Entity>, IntrospectionError>;
+}
 ```
 
-This pushes the name→entity step out of `ResolvedConcept::perform`
-and makes it a separate, composable primitive — a caller that
-already holds an entity (the common case once a notation reference
-is resolved) skips it entirely. It mirrors what `ConceptByName`
-does internally today (`id:<name>` lookup, then `ConceptByEntity`)
-— just made the caller's explicit two-step rather than hidden.
+A caller with a name runs both steps; a caller with an entity runs
+only the second:
+
+```rust
+// have a name:
+let Some(entity) = NamedReference("person".into())
+    .resolve(source).perform(env).await?
+else { /* unknown name */ };
+let concept = ResolvedConcept::resolve(source, entity)
+    .perform(env).await?;
+
+// already have the entity: just the second line.
+```
+
+`ResolvedConcept::resolve` does exactly one thing — descriptor
+reconstruction from an entity. `NamedReference::resolve` does
+exactly one thing — name lookup. No enum, no `From` juggling, no
+"which variant" branch; the caller's static knowledge of what it
+holds picks the path. `NamedReference` is also the natural home
+for the `lookup_named_entity` logic that is a loose free function
+in `concept.rs` today.
 
 The reconstruction body (scattered EAV facts → `ConceptDescriptor`)
 is the existing logic, unchanged except the query target
@@ -127,11 +133,9 @@ generalizes from `&Branch` to `&S: Source`. A `ResolvedConcept`
 internally — same composition the `ConceptByEntity` →
 `AttributeByEntity` builder chain does today.
 
-`EntityReference` is also a candidate for the analyzer to adopt as
-the output of bare-symbol / URI field-value resolution — a `From<…
-notation reference>` — unifying "how a thing is named" across the
-resolvers and the analyzer. Noted, not required by this spec; see
-open items.
+`NamedReference` is also a candidate for the analyzer to adopt as
+the resolved form of a bare-symbol notation reference. Noted, not
+required by this spec; see open items.
 
 Enumerations don't resolve to a single value, so they are their
 own handles of the same shape:
@@ -145,7 +149,7 @@ pub fn list_named_entities<S: Source>(source: &S) -> ListNamedEntities<'_, S>;
 The existing `ConceptLookup` / `AttributeByName` /
 `AttributeByEntity` builder structs are replaced by these. The
 by-name lookups (`ConceptByName`, `AttributeByName`) become the
-caller-side `EntityReference::resolve` step; the by-entity
+caller-side `NamedReference::resolve` step; the by-entity
 reconstruction becomes `ResolvedConcept::resolve` /
 `ResolvedAttribute::resolve`. Both shed `&Branch` for
 `&S: Source` and rename `.resolve(branch, env)` → `.perform(env)`.
@@ -172,9 +176,9 @@ flagged as an open item.
 ### A.2 The analyzer's sub-phase 1 takes `&S: Source`
 
 `resolve(syntax, source, env)` — generic over `S: Source`. For a
-named reference it runs `EntityReference::Name(name)
-.resolve(source).perform(env)` then `ResolvedConcept::resolve(
-source, entity).perform(env)`; for an already-resolved entity it
+named reference it runs `NamedReference(name).resolve(source)
+.perform(env)` then `ResolvedConcept::resolve(source, entity)
+.perform(env)`; for an already-resolved entity it
 skips straight to the second step. No trait, no trait object
 anywhere in `tonk-schema`. Analyzing against a `Transaction`
 overlay (so in-document declarations from earlier statements are
@@ -210,7 +214,7 @@ type ConceptResolver =
 closures (concept lookup, attribute lookup, the two enumerations).
 Each closure is built at the factory, where the concrete branch
 `Source` *is* known, by capturing it and running the two steps —
-`EntityReference::Name(name).resolve(&src).perform(&env)` then
+`NamedReference(name).resolve(&src).perform(&env)` then
 `ResolvedConcept::resolve(&src, entity).perform(&env)` — inside.
 The completion/hover helpers take the bundle; `tonk-schema` stays
 fully monomorphic.
@@ -226,7 +230,7 @@ One boxed-closure boundary at the LSP edge, versus a
 > `.perform(env)` — the same idiom as `evaluate` / `induce` /
 > `analyze`. `ResolvedConcept` / `ResolvedAttribute` resolve from
 > an `Entity`; name resolution is a separate
-> `EntityReference::resolve` step the caller runs first.
+> `NamedReference::resolve` step the caller runs first.
 > `BranchIntrospection` / `Resolver` / `BranchResolver`
 > and the `ConceptLookup` builder family are deleted. The single
 > unavoidable `dyn` (the LSP's late-bound branch resolution) is a
@@ -475,17 +479,17 @@ its variant shape:
   expansion.
 - **Fate of the `tonk-introspect` crate.** Once every trait is
   deleted it holds only `ResolvedConcept` / `ResolvedAttribute` /
-  `NamedEntity` / `IntrospectionError` (and now `EntityReference`).
+  `NamedEntity` / `IntrospectionError` (and now `NamedReference`).
   Decide whether to fold those into `tonk-schema` and remove the
   crate, or keep it as the resolved-types home. Removing it is
   tidier but touches every crate that depends on it — confirm the
   dependency fan-out first.
-- **`EntityReference` in the analyzer.** The enum is the resolved
-  form of a notation reference. The analyzer's bare-symbol / URI
-  field-value resolution could produce `EntityReference` directly
-  (a `From<&FieldValue>` or similar), unifying naming across the
-  resolve handles and the analyzer. Worth doing once Part A lands;
-  not required by the resolution refactor itself.
+- **`NamedReference` in the analyzer.** It is the resolved form of
+  a bare-symbol notation reference. The analyzer's bare-symbol
+  field-value resolution could produce `NamedReference` directly,
+  unifying naming across the resolvers and the analyzer. Worth
+  doing once Part A lands; not required by the resolution refactor
+  itself.
 - `EmptyStore` (empty `Source` for the document-only path) — a
   trivial fact-less store. Confirm where it lives so both the
   analyzer's no-branch path and the language server's
