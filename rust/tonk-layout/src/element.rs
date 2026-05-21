@@ -20,7 +20,8 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{
-    CustomEvent, CustomEventInit, Element, HtmlElement, KeyboardEvent, MouseEvent, window,
+    CustomEvent, CustomEventInit, Element, HtmlElement, KeyboardEvent, MouseEvent, PointerEvent,
+    window,
 };
 
 use crate::interact;
@@ -65,6 +66,20 @@ struct Inner {
     keydown_listener: Option<Closure<dyn FnMut(KeyboardEvent)>>,
     /// Live click listener — click-to-focus delegation.
     click_listener: Option<Closure<dyn FnMut(MouseEvent)>>,
+    /// Pointerdown listener — starts a resize drag if the event
+    /// lands on a `.niri-resize` handle, no-op otherwise.
+    pointerdown_listener: Option<Closure<dyn FnMut(PointerEvent)>>,
+    /// Pointermove listener — applies the running drag (if any).
+    pointermove_listener: Option<Closure<dyn FnMut(PointerEvent)>>,
+    /// Pointerup / pointercancel listener — ends the drag and
+    /// flushes the debouncer.
+    pointerup_listener: Option<Closure<dyn FnMut(PointerEvent)>>,
+    /// State of the currently-running drag, if any. Replaced on
+    /// pointerdown of a fresh handle and cleared on pointerup.
+    active_drag: Option<interact::ActiveDrag>,
+    /// Debounced `/evaluate` poster — coalesces pointermove flushes
+    /// into one POST ~200ms after the pointer goes idle.
+    debouncer: writer::Debouncer,
 }
 
 impl Inner {
@@ -82,6 +97,11 @@ impl Inner {
             layout: None,
             keydown_listener: None,
             click_listener: None,
+            pointerdown_listener: None,
+            pointermove_listener: None,
+            pointerup_listener: None,
+            active_drag: None,
+            debouncer: writer::Debouncer::new(),
         }
     }
 
@@ -500,6 +520,12 @@ fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
     let host_for_click = host.clone();
     let inner_for_click = inner.clone();
     let click = Closure::wrap(Box::new(move |ev: MouseEvent| {
+        // Suppress click-to-focus if the click was the end of a
+        // resize drag — pointerup synthesises a click on the
+        // handle, which would otherwise yank focus to nothing.
+        if inner_for_click.borrow().active_drag.is_some() {
+            return;
+        }
         let layout = inner_for_click.borrow().layout.clone();
         let Some(layout) = layout else {
             return;
@@ -510,9 +536,66 @@ fn attach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
     }) as Box<dyn FnMut(MouseEvent)>);
     let _ = host.add_event_listener_with_callback("click", click.as_ref().unchecked_ref());
 
+    // Pointerdown — start a resize drag if the event landed on a
+    // handle. Otherwise the click listener above takes over.
+    let host_for_pd = host.clone();
+    let inner_for_pd = inner.clone();
+    let pointerdown = Closure::wrap(Box::new(move |ev: PointerEvent| {
+        let layout = inner_for_pd.borrow().layout.clone();
+        let Some(layout) = layout else {
+            return;
+        };
+        if let Some(drag) = interact::start_resize_drag(&host_for_pd, &layout, &ev) {
+            ev.prevent_default();
+            inner_for_pd.borrow_mut().active_drag = Some(drag);
+        }
+    }) as Box<dyn FnMut(PointerEvent)>);
+    let _ = host
+        .add_event_listener_with_callback("pointerdown", pointerdown.as_ref().unchecked_ref());
+
+    // Pointermove — bail unless a drag is running. Computes the
+    // new width, updates inline CSS directly (instant feedback),
+    // and schedules a debounced /evaluate POST.
+    let host_for_pm = host.clone();
+    let inner_for_pm = inner.clone();
+    let pointermove = Closure::wrap(Box::new(move |ev: PointerEvent| {
+        let drag = inner_for_pm.borrow().active_drag.clone();
+        let Some(drag) = drag else {
+            return;
+        };
+        let new_width = interact::update_resize_drag(&drag, &ev);
+        let url = evaluate_url(
+            host_for_pm.get_attribute("space").as_deref(),
+            host_for_pm.get_attribute("branch").as_deref(),
+        );
+        let doc = writer::resize_column_doc(&drag.column_entity, new_width);
+        inner_for_pm.borrow().debouncer.schedule(url, doc, 200);
+    }) as Box<dyn FnMut(PointerEvent)>);
+    let _ = host
+        .add_event_listener_with_callback("pointermove", pointermove.as_ref().unchecked_ref());
+
+    // Pointerup / pointercancel — end the drag, release pointer
+    // capture, and flush the debouncer so the commit lands on
+    // release without waiting for the trailing 200ms.
+    let inner_for_pu = inner.clone();
+    let pointerup = Closure::wrap(Box::new(move |_ev: PointerEvent| {
+        let drag = inner_for_pu.borrow_mut().active_drag.take();
+        if let Some(drag) = drag {
+            interact::end_resize_drag(&drag);
+            inner_for_pu.borrow().debouncer.flush();
+        }
+    }) as Box<dyn FnMut(PointerEvent)>);
+    let _ =
+        host.add_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
+    let _ = host
+        .add_event_listener_with_callback("pointercancel", pointerup.as_ref().unchecked_ref());
+
     let mut i = inner.borrow_mut();
     i.keydown_listener = Some(keydown);
     i.click_listener = Some(click);
+    i.pointerdown_listener = Some(pointerdown);
+    i.pointermove_listener = Some(pointermove);
+    i.pointerup_listener = Some(pointerup);
 }
 
 /// Remove the listeners we attached and drop the Closures that
@@ -528,6 +611,29 @@ fn detach_listeners(host: &Element, inner: &Rc<RefCell<Inner>>) {
     if let Some(click) = i.click_listener.take() {
         let _ = host.remove_event_listener_with_callback("click", click.as_ref().unchecked_ref());
     }
+    if let Some(pointerdown) = i.pointerdown_listener.take() {
+        let _ = host.remove_event_listener_with_callback(
+            "pointerdown",
+            pointerdown.as_ref().unchecked_ref(),
+        );
+    }
+    if let Some(pointermove) = i.pointermove_listener.take() {
+        let _ = host.remove_event_listener_with_callback(
+            "pointermove",
+            pointermove.as_ref().unchecked_ref(),
+        );
+    }
+    if let Some(pointerup) = i.pointerup_listener.take() {
+        let _ =
+            host.remove_event_listener_with_callback("pointerup", pointerup.as_ref().unchecked_ref());
+        let _ = host.remove_event_listener_with_callback(
+            "pointercancel",
+            pointerup.as_ref().unchecked_ref(),
+        );
+    }
+    // Drop any in-flight debounced POST — element is going away.
+    i.debouncer.cancel();
+    i.active_drag = None;
 }
 
 /// Spawn an async task that POSTs `doc` to `/evaluate`. On failure

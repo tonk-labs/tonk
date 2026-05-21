@@ -29,18 +29,32 @@ pub fn reconcile_layout(host: &Element, layout: &Layout) {
     // Collect existing column nodes by their entity URI; nodes
     // claimed during the walk are removed from the map, so anything
     // left over at the end is stale and gets removed from the DOM.
-    let mut existing = collect_keyed_children(&strip, "niri-column");
+    let mut existing_columns = collect_keyed_children(&strip, "niri-column");
+    // Resize handles between columns are keyed by the entity of the
+    // column they sit *after* — the one whose right edge they drag.
+    let mut existing_handles = collect_keyed_handles(&strip);
 
     let mut anchor: Option<Node> = strip.first_child();
-    for column in &layout.columns {
-        let column_el = existing
+    for (i, column) in layout.columns.iter().enumerate() {
+        let column_el = existing_columns
             .remove(&column.entity)
             .unwrap_or_else(|| create_column_element(&document, column));
         update_column_attrs(&column_el, column);
         reconcile_tiles(&document, host, &column_el, column, layout.focus.as_deref());
         place_node(&strip, &column_el, &mut anchor);
+
+        // Resize handle between this column and the next (skip
+        // after the last column — no right neighbour to resize
+        // against).
+        if i + 1 < layout.columns.len() {
+            let handle_el = existing_handles
+                .remove(&column.entity)
+                .unwrap_or_else(|| create_resize_handle(&document, &column.entity));
+            place_node(&strip, &handle_el, &mut anchor);
+        }
     }
-    remove_remaining(&existing);
+    remove_remaining(&existing_columns);
+    remove_remaining(&existing_handles);
 }
 
 /// Patch a column's tiles in place. Mirror of the column-level walk
@@ -91,6 +105,38 @@ fn create_column_element(document: &Document, column: &Column) -> Element {
     let _ = el.set_attribute("class", "niri-column");
     let _ = el.set_attribute("data-entity", &column.entity);
     el
+}
+
+/// Resize handle that sits between two adjacent columns. Carries
+/// `data-after-column` so the pointer handler can look up which
+/// column it's dragging in the live layout. The handle is its own
+/// flex item with a fixed basis — it doesn't grow with the strip.
+fn create_resize_handle(document: &Document, after_column: &str) -> Element {
+    let el = document
+        .create_element("div")
+        .expect("create div always succeeds");
+    let _ = el.set_attribute("class", "niri-resize");
+    let _ = el.set_attribute("data-after-column", after_column);
+    el
+}
+
+/// Map handle elements by the column entity they sit after.
+fn collect_keyed_handles(parent: &Element) -> std::collections::HashMap<String, Element> {
+    let mut out = std::collections::HashMap::new();
+    let children = parent.children();
+    for i in 0..children.length() {
+        let Some(child) = children.item(i) else {
+            continue;
+        };
+        if child.get_attribute("class").as_deref() != Some("niri-resize") {
+            continue;
+        }
+        let Some(after) = child.get_attribute("data-after-column") else {
+            continue;
+        };
+        out.insert(after, child);
+    }
+    out
 }
 
 /// Reflect `width` + `order` onto the column element. `width`

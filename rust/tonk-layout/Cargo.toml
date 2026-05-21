@@ -31,6 +31,7 @@ web-sys = { workspace = true, features = [
   "KeyboardEvent",
   "MouseEvent",
   "Node",
+  "PointerEvent",
   "Request",
   "RequestInit",
   "Response",

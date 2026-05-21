@@ -452,9 +452,26 @@ tonk-layout .niri-strip {
     flex-direction: row;
     overflow-x: auto;
     height: 100%;
-    gap: var(--wa-space-s, 8px);
     padding: var(--wa-space-s, 8px);
     scroll-behavior: smooth;
+    /* No `gap` — the reconciler injects `.niri-resize` handles
+       between adjacent columns instead, so the gap is interactive.
+       Each handle is its own flex item with a fixed basis. */
+}
+tonk-layout .niri-resize {
+    /* Fixed-basis handle that doesn't grow with the strip; thin
+       enough to feel like a divider, wide enough to grab. */
+    flex: 0 0 8px;
+    cursor: ew-resize;
+    background: transparent;
+    transition: background 0.12s ease;
+    /* Disable touch's default pan-on-drag so a finger drag
+       resizes instead of scrolling the strip. */
+    touch-action: none;
+}
+tonk-layout .niri-resize:hover {
+    background: var(--wa-color-brand-fill-loud, #0070f3);
+    opacity: 0.4;
 }
 tonk-layout .niri-column {
     display: flex;

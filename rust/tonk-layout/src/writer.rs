@@ -117,6 +117,131 @@ fn float(value: f64) -> String {
     if s.contains('.') { s } else { format!("{s}.0") }
 }
 
+/// Debounced `/evaluate` poster. Lets continuous-write actions like
+/// drag-resize coalesce ~60Hz pointer events into a single POST
+/// fired ~200ms after the pointer goes idle. Replacing the pending
+/// doc per call (rather than queueing) keeps memory bounded and
+/// matches the SPEC: debounce is bandwidth control, not optimistic
+/// correctness — the latest value is the truth.
+#[cfg(target_arch = "wasm32")]
+pub struct Debouncer {
+    inner: std::rc::Rc<std::cell::RefCell<DebouncerInner>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+struct DebouncerInner {
+    /// `setTimeout` handle for the pending flush, or `None` if no
+    /// flush is queued.
+    timeout_id: Option<i32>,
+    /// Latest `(url, doc)` waiting to be sent.
+    pending: Option<(String, String)>,
+    /// The JS-side callback `setTimeout` invokes — held here so the
+    /// `Closure` outlives the timer registration.
+    callback: Option<wasm_bindgen::closure::Closure<dyn FnMut()>>,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Default for Debouncer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Debouncer {
+    /// Create an empty debouncer with no pending work.
+    pub fn new() -> Self {
+        Self {
+            inner: std::rc::Rc::new(std::cell::RefCell::new(DebouncerInner {
+                timeout_id: None,
+                pending: None,
+                callback: None,
+            })),
+        }
+    }
+
+    /// Replace the pending write and schedule a flush `delay_ms` from
+    /// now. Cancels any prior timer — only one POST fires per idle
+    /// period regardless of how many `schedule` calls arrived.
+    pub fn schedule(&self, url: String, doc: String, delay_ms: i32) {
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
+
+        let win = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+
+        // Cancel any prior timer first so we don't end up with two.
+        {
+            let mut i = self.inner.borrow_mut();
+            if let Some(id) = i.timeout_id.take() {
+                win.clear_timeout_with_handle(id);
+            }
+            i.pending = Some((url, doc));
+        }
+
+        let inner = self.inner.clone();
+        let callback = Closure::wrap(Box::new(move || {
+            let pending = {
+                let mut i = inner.borrow_mut();
+                i.timeout_id = None;
+                i.pending.take()
+            };
+            if let Some((url, doc)) = pending {
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = post_evaluate(&url, &doc).await;
+                });
+            }
+        }) as Box<dyn FnMut()>);
+
+        let id_result = win.set_timeout_with_callback_and_timeout_and_arguments_0(
+            callback.as_ref().unchecked_ref(),
+            delay_ms,
+        );
+        let mut i = self.inner.borrow_mut();
+        if let Ok(id) = id_result {
+            i.timeout_id = Some(id);
+        }
+        // Park the closure on the debouncer so the JS callback
+        // reference stays valid until it fires (or gets cancelled).
+        i.callback = Some(callback);
+    }
+
+    /// Cancel any pending timer and immediately POST the latest
+    /// document. Call this on `pointerup` so the user sees the
+    /// commit as soon as the drag ends, rather than after the
+    /// trailing 200ms.
+    pub fn flush(&self) {
+        let pending = {
+            let mut i = self.inner.borrow_mut();
+            if let Some(id) = i.timeout_id.take()
+                && let Some(win) = web_sys::window()
+            {
+                win.clear_timeout_with_handle(id);
+            }
+            i.pending.take()
+        };
+        if let Some((url, doc)) = pending {
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = post_evaluate(&url, &doc).await;
+            });
+        }
+    }
+
+    /// Cancel any pending flush without sending — for use when the
+    /// element disconnects mid-drag.
+    pub fn cancel(&self) {
+        let mut i = self.inner.borrow_mut();
+        if let Some(id) = i.timeout_id.take()
+            && let Some(win) = web_sys::window()
+        {
+            win.clear_timeout_with_handle(id);
+        }
+        i.pending = None;
+    }
+}
+
 /// POST a notation document to the `/evaluate` endpoint. Returns
 /// `Ok(())` on a 2xx response; surfaces network or HTTP errors as
 /// [`ErrorDetail`] so callers can route them through the same fail

@@ -249,6 +249,103 @@ pub(crate) fn handle_click(
     Some(crate::writer::set_focus_doc(&layout.workspace, &tile_entity))
 }
 
+/// State carried across the three phases of a column-resize drag.
+/// Captured at `pointerdown` and consulted on every `pointermove`
+/// to translate pixel deltas into width-fraction deltas.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+pub(crate) struct ActiveDrag {
+    /// Entity URI of the column being resized — the one whose right
+    /// edge the handle sits on.
+    pub column_entity: String,
+    /// The column `<div>` so we can update its inline `flex` style
+    /// without re-querying.
+    pub column_el: web_sys::Element,
+    /// The handle the pointer was captured on. Held so `pointerup`
+    /// knows where to release capture.
+    pub handle: web_sys::Element,
+    /// Pointer ID for the capture / release calls.
+    pub pointer_id: i32,
+    /// Cursor X at drag start, in viewport pixels.
+    pub start_x: i32,
+    /// Column width fraction at drag start.
+    pub start_width: f64,
+    /// Sum of all column widths at drag start — used to scale pixel
+    /// deltas into width-fraction deltas in the same proportion as
+    /// flex layout assigns the columns to the strip.
+    pub total_width: f64,
+    /// Strip's pixel width at drag start.
+    pub strip_width_px: i32,
+}
+
+/// Try to start a resize drag from this `pointerdown` event.
+/// Returns the drag state if the event landed on a `.niri-resize`
+/// handle, or `None` for any other target (the normal click handler
+/// then runs against the same event).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn start_resize_drag(
+    host: &web_sys::Element,
+    layout: &Layout,
+    ev: &web_sys::PointerEvent,
+) -> Option<ActiveDrag> {
+    use wasm_bindgen::JsCast;
+
+    let target = ev.target()?;
+    let el = target.dyn_into::<web_sys::Element>().ok()?;
+    let handle = el.closest(".niri-resize").ok().flatten()?;
+    let column_entity = handle.get_attribute("data-after-column")?;
+
+    let col = layout.columns.iter().find(|c| c.entity == column_entity)?;
+    let total_width: f64 = layout.columns.iter().map(|c| c.width).sum();
+
+    let strip = host.query_selector(":scope > .niri-strip").ok().flatten()?;
+    let strip_width_px = strip.client_width();
+    let column_el = strip
+        .query_selector(&format!(
+            ".niri-column[data-entity=\"{column_entity}\"]"
+        ))
+        .ok()
+        .flatten()?;
+
+    let pointer_id = ev.pointer_id();
+    let _ = handle.set_pointer_capture(pointer_id);
+
+    Some(ActiveDrag {
+        column_entity,
+        column_el,
+        handle,
+        pointer_id,
+        start_x: ev.client_x(),
+        start_width: col.width,
+        total_width,
+        strip_width_px,
+    })
+}
+
+/// Apply a `pointermove` to the active drag: compute the new column
+/// width from the cursor delta, update the inline style on the
+/// column element so the user sees the resize live, and return the
+/// new width for the caller to schedule via the debouncer.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn update_resize_drag(drag: &ActiveDrag, ev: &web_sys::PointerEvent) -> f64 {
+    let delta_px = ev.client_x() - drag.start_x;
+    let strip_px = drag.strip_width_px.max(1) as f64;
+    let delta_width = (delta_px as f64) * drag.total_width / strip_px;
+    // Clamp so the column doesn't disappear entirely.
+    let new_width = (drag.start_width + delta_width).max(0.1);
+    let _ = drag
+        .column_el
+        .set_attribute("style", &format!("flex: {new_width} 1 0;"));
+    new_width
+}
+
+/// End-of-drag cleanup: release the pointer capture so the handle
+/// stops receiving move events from a now-passive pointer.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn end_resize_drag(drag: &ActiveDrag) {
+    let _ = drag.handle.release_pointer_capture(drag.pointer_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
