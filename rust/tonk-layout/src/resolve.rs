@@ -39,14 +39,42 @@ pub fn query_url(space: Option<&str>, branch: Option<&str>) -> String {
 }
 
 /// Build the live workspace subscription query. Pins `name` to the
-/// caller's value; projects `this` (entity URI) and `focus` (the
-/// tile entity, when set).
+/// caller's value; projects `this` (entity URI).
+///
+/// `focus` is *not* part of this query's predicate even though
+/// it's a workspace field. Cardinality-one fields are filter
+/// requirements: an entity missing the claim doesn't match. Fresh
+/// workspaces have no focus until the user picks a tile, so
+/// requiring it here would return zero rows. Focus is fetched via
+/// [`focus_query`] once the workspace entity is known.
 pub fn workspace_query(name: &str) -> Result<Query, serde_json::Error> {
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "this" } }));
     terms.insert("name".into(), json!(name));
+    serde_json::from_value(json!({
+        "terms": terms,
+        "predicate": {
+            "with": {
+                "name": { "the": "xyz.tonk.layout/workspace-name", "as": "Text", "cardinality": "one" }
+            }
+        }
+    }))
+}
+
+/// Build the focus subscription query for a known workspace entity.
+/// Returns zero or one row — `None` if no tile is focused yet.
+pub fn focus_query(workspace_entity: &str) -> Result<Query, serde_json::Error> {
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(workspace_entity));
     terms.insert("focus".into(), json!({ "?": { "name": "focus" } }));
-    serde_json::from_value(json!({ "terms": terms, "predicate": workspace_predicate() }))
+    serde_json::from_value(json!({
+        "terms": terms,
+        "predicate": {
+            "with": {
+                "focus": { "the": "xyz.tonk.layout/workspace-focus", "as": "Entity", "cardinality": "one" }
+            }
+        }
+    }))
 }
 
 /// Build the live columns subscription query. Pins `workspace` to
@@ -72,17 +100,6 @@ pub fn tiles_query() -> Result<Query, serde_json::Error> {
         terms.insert(field.into(), json!({ "?": { "name": field } }));
     }
     serde_json::from_value(json!({ "terms": terms, "predicate": tile_predicate() }))
-}
-
-/// The workspace concept descriptor — the predicate the worker
-/// dispatches against to find workspace rows.
-fn workspace_predicate() -> Value {
-    json!({
-        "with": {
-            "name":  { "the": "xyz.tonk.layout/workspace-name",  "as": "Text",   "cardinality": "one" },
-            "focus": { "the": "xyz.tonk.layout/workspace-focus", "as": "Entity", "cardinality": "one" }
-        }
-    })
 }
 
 /// The column concept descriptor.
@@ -126,9 +143,25 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_projects_this_and_focus_as_variables_in_the_workspace_query() {
+    fn it_projects_this_as_a_variable_in_the_workspace_query() {
         let q = workspace_query("default").expect("workspace_query");
         assert_eq!(term_value(&q, "this"), json!({ "?": { "name": "this" } }));
+    }
+
+    #[dialog_common::test]
+    fn it_omits_focus_from_the_workspace_query_predicate() {
+        // Including focus would require the matched entity to carry
+        // a workspace-focus claim, but fresh workspaces don't have
+        // one until a tile is picked. Focus is fetched separately
+        // via `focus_query`.
+        let q = workspace_query("default").expect("workspace_query");
+        assert!(q.terms.get("focus").is_none(), "focus must not be a term of workspace_query");
+    }
+
+    #[dialog_common::test]
+    fn it_pins_workspace_entity_in_the_focus_query() {
+        let q = focus_query("id:01HMW...").expect("focus_query");
+        assert_eq!(term_value(&q, "this"), json!("id:01HMW..."));
         assert_eq!(term_value(&q, "focus"), json!({ "?": { "name": "focus" } }));
     }
 
