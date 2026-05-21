@@ -28,10 +28,19 @@ use tonk_schema::query::Query;
 /// path routes the request to a specific repository / branch via the
 /// worker's REST endpoint.
 pub fn query_url(space: Option<&str>, branch: Option<&str>) -> String {
+    endpoint_url(space, branch, "query")
+}
+
+/// Build the `/evaluate` URL the writer POSTs mutation documents to.
+pub fn evaluate_url(space: Option<&str>, branch: Option<&str>) -> String {
+    endpoint_url(space, branch, "evaluate")
+}
+
+fn endpoint_url(space: Option<&str>, branch: Option<&str>, route: &str) -> String {
     match (space, branch) {
-        (None, None) => "/query".to_owned(),
+        (None, None) => format!("/{route}"),
         _ => format!(
-            "/api/repository/{}/branch/{}/query",
+            "/api/repository/{}/branch/{}/{route}",
             space.unwrap_or("home"),
             branch.unwrap_or("main"),
         ),
@@ -205,6 +214,19 @@ mod tests {
             query_url(Some("staging"), None),
             "/api/repository/staging/branch/main/query",
         );
+    }
+
+    #[dialog_common::test]
+    fn it_routes_evaluate_to_the_repository_endpoint() {
+        assert_eq!(
+            evaluate_url(Some("home"), Some("main")),
+            "/api/repository/home/branch/main/evaluate",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_routes_evaluate_to_relative_when_no_attributes_are_set() {
+        assert_eq!(evaluate_url(None, None), "/evaluate");
     }
 
     #[dialog_common::test]

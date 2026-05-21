@@ -29,6 +29,10 @@ mod model;
 // Wire-query builders; native-testable.
 mod resolve;
 
+// Notation-document builders + /evaluate POST; doc builders
+// native-testable.
+mod writer;
+
 #[cfg(target_arch = "wasm32")]
 mod element;
 

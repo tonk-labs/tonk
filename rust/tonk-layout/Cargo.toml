@@ -24,9 +24,13 @@ web-sys = { workspace = true, features = [
   "CustomEventInit",
   "Document",
   "Element",
+  "Headers",
   "HtmlCollection",
   "HtmlElement",
   "Node",
+  "Request",
+  "RequestInit",
+  "Response",
   "Window",
 ] }
 
