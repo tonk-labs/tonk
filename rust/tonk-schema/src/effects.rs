@@ -149,10 +149,8 @@ impl<'a> Induce<'a> {
     /// retract emitted into the transaction so they cancel at
     /// the durable commit boundary.
     ///
-    /// V1 limits:
-    ///
-    /// - Retract-polarity effects aren't dispatched yet (see
-    ///   [`fire_effect`]).
+    /// Both `assert!:` and `retract!:` rule polarities are
+    /// dispatched (see [`fire_effect`]).
     pub async fn perform<Env: InduceEnv>(self, env: &Env) -> Result<Transaction<'a>, InduceError> {
         let Induce {
             mut txn,
@@ -378,26 +376,22 @@ struct FireOutcome<'a> {
 
 /// Evaluate one effect's body against the transaction overlay,
 /// instantiate the head per match, and apply to the transaction.
-/// Classify each emitted head by its concept's transient flag
-/// so the caller can promote transient heads to the next round
-/// of the fixpoint.
 ///
-/// V1: only `Assert`-polarity heads are dispatched. Retract
-/// polarity is recognized at install time but its head
-/// dispatch isn't wired yet.
+/// For `Assert`-polarity rules each emitted head's facts land
+/// in the transaction; transient-concept heads also accumulate
+/// in [`FireOutcome::transient_heads`] so the cascade loop can
+/// promote them to the next round.
+///
+/// For `Retract`-polarity rules each emitted head's facts land
+/// as retracts. The head concept is expected to be durable —
+/// retracts of a transient have no observable effect — so the
+/// `transient_heads` bucket is always empty for this polarity.
 async fn fire_effect<'a, Env: InduceEnv>(
     effect: Effect,
     mut txn: Transaction<'a>,
     env: &Env,
 ) -> Result<FireOutcome<'a>, InduceError> {
-    if effect.polarity() != EffectPolarity::Assert {
-        // V1: retract-polarity dispatch lands later.
-        return Ok(FireOutcome {
-            txn,
-            transient_heads: Changes::new(),
-        });
-    }
-
+    let polarity = effect.polarity();
     let rule = effect.into_rule();
 
     // Evaluate the body against the transaction overlay.
@@ -410,11 +404,14 @@ async fn fire_effect<'a, Env: InduceEnv>(
         .await
         .map_err(|e| InduceError::Query(format!("body evaluation failed: {e:?}")))?;
 
-    // Is the head concept marked transient? One overlay query
-    // per fire — cheaper than per-match since the head's concept
-    // is fixed.
-    let head_concept_entity = rule.conclusion().this();
-    let head_is_transient = is_transient(&txn, head_concept_entity, env).await?;
+    // Is the head concept marked transient? Only relevant for
+    // assert-polarity heads (transient retracts have no
+    // observable effect). One overlay query per fire — cheaper
+    // than per-match since the head's concept is fixed.
+    let head_is_transient = match polarity {
+        EffectPolarity::Assert => is_transient(&txn, rule.conclusion().this(), env).await?,
+        EffectPolarity::Retract => false,
+    };
 
     let head = rule.conclusion().clone();
     let mut transient_heads = Changes::new();
@@ -436,14 +433,21 @@ async fn fire_effect<'a, Env: InduceEnv>(
 
         // V1 inductive rules produce concept-shaped heads. Walk
         // the predicate and emit one `(attr, this, value)` per
-        // bound field into the transaction. Transient heads also
-        // accumulate in the bucket the caller propagates to the
-        // next round.
+        // bound field into the transaction. For asserts, transient
+        // heads also accumulate in the bucket the caller
+        // propagates to the next round.
         if let Proposition::Concept(concept_query) = proposition {
-            if head_is_transient {
-                accumulate_head_facts(&concept_query, &mut transient_heads);
+            match polarity {
+                EffectPolarity::Assert => {
+                    if head_is_transient {
+                        accumulate_head_facts(&concept_query, &mut transient_heads);
+                    }
+                    txn = emit_head_facts(concept_query, txn);
+                }
+                EffectPolarity::Retract => {
+                    txn = retract_head_facts(concept_query, txn);
+                }
             }
-            txn = emit_head_facts(concept_query, txn);
         }
     }
 
@@ -545,6 +549,40 @@ fn emit_head_facts<'a>(concept_query: ConceptQuery, mut txn: Transaction<'a>) ->
     txn
 }
 
+/// Retract-polarity sibling of [`emit_head_facts`]. Walks a
+/// fully-bound head and emits one retract per bound field so
+/// the body's match-bound values are dissociated from the
+/// underlying entity. Cardinality doesn't change the retract
+/// path — both one and many fields dissociate by the exact
+/// `(attr, this, value)` triple.
+fn retract_head_facts<'a>(
+    concept_query: ConceptQuery,
+    mut txn: Transaction<'a>,
+) -> Transaction<'a> {
+    let Some(this_term) = concept_query.terms.get("this") else {
+        return txn;
+    };
+    let this_entity = match this_term {
+        Term::Constant(Value::Entity(e)) => e.clone(),
+        _ => return txn,
+    };
+    for (field_name, attribute) in concept_query.predicate.with().iter() {
+        let Some(term) = concept_query.terms.get(field_name) else {
+            continue;
+        };
+        let Term::Constant(value) = term else {
+            continue;
+        };
+        let the: Attribute = attribute.the().clone().into();
+        txn = txn.retract(RawClaim {
+            the,
+            of: this_entity.clone(),
+            is: value.clone(),
+        });
+    }
+    txn
+}
+
 /// Wrap an [`InductiveRule`] as a [`dialog_query::Application`]
 /// so its body can be evaluated against a [`Transaction::query`]
 /// overlay. The conclusion is the raw [`Match`] — the induce
@@ -623,18 +661,35 @@ mod tests {
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::{AttributeDescriptor, InductiveRule, Parameters as DialogParameters};
 
-    /// A 1-field concept descriptor. Helper because tests below
-    /// build several.
-    fn one_text_field_concept(domain: &str, name: &str) -> ConceptDescriptor {
+    /// A 1-field concept descriptor with a configurable field
+    /// type. Helper because tests below build several.
+    fn one_field_concept(domain: &str, name: &str, ty: Type) -> ConceptDescriptor {
         ConceptDescriptor::from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
                 "",
                 DialogCardinality::One,
-                Some(Type::String),
+                Some(ty),
             ),
         )])
+    }
+
+    /// Shorthand for the common String case used by the early
+    /// tests below.
+    fn one_text_field_concept(domain: &str, name: &str) -> ConceptDescriptor {
+        one_field_concept(domain, name, Type::String)
+    }
+
+    /// The string form dialog stores in `dialog.attribute/type`
+    /// for each `Type` variant the tests need.
+    fn type_storage_string(ty: Type) -> &'static str {
+        match ty {
+            Type::String => "String",
+            Type::Entity => "Entity",
+            Type::UnsignedInt => "UnsignedInt",
+            _ => "String",
+        }
     }
 
     /// Install the attribute-side facts a concept's fields need
@@ -647,6 +702,11 @@ mod tests {
     ) -> dialog_repository::Transaction<'a> {
         for (_, attr) in descriptor.with().iter() {
             let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+            let type_label = attr
+                .content_type()
+                .map(type_storage_string)
+                .unwrap_or("String")
+                .to_string();
             txn = txn
                 .assert(
                     the!("dialog.attribute/id")
@@ -656,7 +716,7 @@ mod tests {
                 .assert(
                     the!("dialog.attribute/type")
                         .of(attr_entity.clone())
-                        .is("String".to_string()),
+                        .is(type_label),
                 )
                 .assert(
                     the!("dialog.attribute/cardinality")
@@ -999,5 +1059,126 @@ mod tests {
                 "expected NonTerminating; loop unexpectedly settled"
             )),
         }
+    }
+
+    /// Retract-polarity rule, mailbox-with-ack shape.
+    ///
+    /// A durable `message{body}` exists on the branch. A
+    /// transient `ack{target}` arrives. The rule
+    /// `retract!: message{this: ?m, body: ?b} when ack{target:
+    /// ?m}, message{this: ?m, body: ?b}` removes the message
+    /// for that target. After commit the message is gone and
+    /// the ack — being transient — never persisted.
+    #[dialog_common::test]
+    async fn it_fires_a_retract_rule_on_an_ack() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let message = one_text_field_concept("io.gozala.mailbox", "body");
+        let ack = one_field_concept("io.gozala.mailbox", "target", Type::Entity);
+
+        // Body: ack{target: ?this}, message{this: ?this, body:
+        // ?body}. Sharing the variable name `this` between
+        // ack.target and message.this joins them: the engine
+        // will only emit matches where ack's target equals the
+        // message entity. Variable names align with the head's
+        // operand names so the conclusion-variable check passes
+        // (`this` and `body` are the message descriptor's
+        // operands).
+        let mut ack_terms = DialogParameters::new();
+        ack_terms.insert("this".to_string(), Term::var("__ack_this"));
+        ack_terms.insert("target".to_string(), Term::var("this"));
+        let ack_premise = DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+            terms: ack_terms,
+            predicate: ack.clone(),
+        }));
+        let mut msg_terms = DialogParameters::new();
+        msg_terms.insert("this".to_string(), Term::var("this"));
+        msg_terms.insert("body".to_string(), Term::var("body"));
+        let message_premise =
+            DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+                terms: msg_terms,
+                predicate: message.clone(),
+            }));
+
+        let rule = InductiveRule::new(message.clone(), vec![ack_premise, message_premise])
+            .expect("rule compiles");
+        let effect = Effect::new(rule, EffectPolarity::Retract);
+
+        // Install: attributes, durable message concept, transient ack
+        // concept, effect.
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &message);
+        install = install_attribute_facts(install, &ack);
+        install = install.assert(AnonymousConcept::new(message.clone()));
+        install = install.assert(TransientConcept::new(ack.clone()));
+        install = install.assert(effect);
+        install.commit().perform(&operator).await?;
+
+        // Seed a durable message{this: m1, body: "hello"}.
+        let m1: Entity = "did:key:zMailboxM1".parse()?;
+        let body_attr = the!("io.gozala.mailbox/body");
+        branch
+            .transaction()
+            .assert(body_attr.clone().of(m1.clone()).is("hello".to_string()))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Submit transient ack{this: <anon>, target: m1}.
+        let ack_subject: Entity = "did:key:zMailboxAck".parse()?;
+        let target_attr = the!("io.gozala.mailbox/target");
+        let mut transients = Changes::new();
+        target_attr
+            .clone()
+            .of(ack_subject.clone())
+            .is(m1.clone())
+            .assert(&mut transients);
+
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Message must be gone from durable state.
+        let msg_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(body_attr)
+                    .of(Term::from(m1.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            msg_claims.is_empty(),
+            "retract!: message should have removed the message body; saw {msg_claims:?}"
+        );
+
+        // Ack must have been swept.
+        let ack_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(target_attr)
+                    .of(Term::from(ack_subject))
+                    .is(Term::<Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            ack_claims.is_empty(),
+            "transient ack should have been swept; saw {ack_claims:?}"
+        );
+
+        Ok(())
     }
 }
