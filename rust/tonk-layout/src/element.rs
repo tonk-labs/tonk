@@ -62,6 +62,11 @@ struct Inner {
     /// Latest folded layout — stashed so step 6's reconciler can
     /// diff against it without re-folding from scratch.
     layout: Option<Layout>,
+    /// `layout.focus` from the previous refold. Compared against the
+    /// new value so `scrollIntoView` only fires on actual focus
+    /// changes (avoids fighting a user who scrolled the strip
+    /// after a remote-driven refold left focus untouched).
+    last_focus: Option<String>,
     /// Live keyboard listener. Held so the closure stays alive for
     /// the duration of this element's connection.
     keydown_listener: Option<Closure<dyn FnMut(KeyboardEvent)>>,
@@ -105,6 +110,7 @@ impl Inner {
             columns_frame: Vec::new(),
             tiles_frame: Vec::new(),
             layout: None,
+            last_focus: None,
             keydown_listener: None,
             click_listener: None,
             pointerdown_listener: None,
@@ -452,7 +458,9 @@ where
 }
 
 /// Re-fold the three latest frames into a [`Layout`], patch the
-/// DOM via the reconciler, and update `data-state`.
+/// DOM via the reconciler, and update `data-state`. Also scrolls
+/// the focused column into view when focus changed since the last
+/// refold.
 fn refold(host: &Element, inner: &Rc<RefCell<Inner>>) {
     let mut i = inner.borrow_mut();
     let layout = fold_layout(&i.workspace_frame, &i.columns_frame, &i.tiles_frame);
@@ -471,8 +479,42 @@ fn refold(host: &Element, inner: &Rc<RefCell<Inner>>) {
         mount_skeleton(host);
     }
     state::set(host, next_state);
+
+    // Scroll on focus change. Done after reconcile so the focused
+    // tile's column node exists in the DOM (the reconciler may
+    // have just inserted it).
+    let new_focus = layout.as_ref().and_then(|l| l.focus.clone());
+    if new_focus != i.last_focus
+        && let Some(focus) = new_focus.as_deref()
+    {
+        scroll_focused_into_view(host, focus);
+        // Also dispatch the focus event the SPEC promises.
+        let detail = serde_wasm_bindgen::to_value(&serde_json::json!({ "tile": focus }))
+            .unwrap_or(JsValue::NULL);
+        dispatch(host, "tonk-layout:focus", Some(detail));
+    }
+    i.last_focus = new_focus;
+
     i.layout = layout;
     dispatch(host, "tonk-layout:layout", None);
+}
+
+/// Find the focused tile's column element and scroll it into view
+/// with niri's "nearest edge" semantics — only scrolls if the
+/// column isn't already fully visible, never moves vertically.
+fn scroll_focused_into_view(host: &Element, focus_tile: &str) {
+    let selector = format!(".niri-tile[data-entity=\"{focus_tile}\"]");
+    let Some(tile_el) = host.query_selector(&selector).ok().flatten() else {
+        return;
+    };
+    let Some(column_el) = tile_el.parent_element() else {
+        return;
+    };
+    let opts = web_sys::ScrollIntoViewOptions::new();
+    opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+    opts.set_inline(web_sys::ScrollLogicalPosition::Nearest);
+    opts.set_block(web_sys::ScrollLogicalPosition::Nearest);
+    column_el.scroll_into_view_with_scroll_into_view_options(&opts);
 }
 
 /// Transition to error state and dispatch the failure event.
