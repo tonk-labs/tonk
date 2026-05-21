@@ -158,6 +158,12 @@ pub(crate) fn parse_attribute_fields(
 pub(crate) struct ConceptBody {
     pub descriptor: ConceptDescriptor,
     pub entity: Entity,
+    /// `true` when the body carried the `transient:` tag (bare
+    /// key with no value, or the explicit `transient: true`).
+    /// Drives emission of the `dialog.concept/transient` marker
+    /// fact in [`concept_application`] so the reactor's effects
+    /// loop classifies this concept's facts as transient.
+    pub transient: bool,
     /// Attributes defined inline in the `with:` map (as opposed
     /// to referenced by name / URI). Each carries the descriptor
     /// needed to emit `dialog.attribute/{id,type,cardinality}`
@@ -171,6 +177,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
     scope: &Scope<'_, R>,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
+    let mut transient: bool = false;
     let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
     for field in &assertion.fields {
@@ -183,6 +190,9 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
         match field.name.as_str() {
             "description" => {
                 description = Some(require_string_description(field)?);
+            }
+            "transient" => {
+                transient = parse_transient_tag(field)?;
             }
             "with" => {
                 let FieldValue::Nested(inner) = &field.value else {
@@ -253,6 +263,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
     Ok(ConceptBody {
         descriptor,
         entity,
+        transient,
         inline_attributes,
     })
 }
@@ -390,6 +401,7 @@ pub(crate) fn concept_application(
     descriptor: &ConceptDescriptor,
     entity: &Entity,
     name: Option<String>,
+    transient: bool,
 ) -> Application {
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
@@ -417,6 +429,21 @@ pub(crate) fn concept_application(
         terms.insert(
             "description".into(),
             Term::Constant(Value::String(desc.to_owned())),
+        );
+    }
+    // `transient: true` adds a `(this, dialog.concept/transient,
+    // db:transient)` marker fact. The synthesized
+    // `concept_schema` includes a matching field; durable
+    // concepts skip the term so no claim is emitted (the
+    // emitter ignores fields whose term is absent).
+    if transient {
+        terms.insert(
+            "transient".into(),
+            Term::Constant(Value::Entity(
+                "db:transient"
+                    .parse()
+                    .expect("`db:transient` is a valid entity URI"),
+            )),
         );
     }
     Application::Concept {
@@ -485,6 +512,14 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
         serde_json::json!({
             "the": "dialog.meta/description",
             "as": "Text",
+            "cardinality": "one",
+        }),
+    );
+    with.insert(
+        "transient".into(),
+        serde_json::json!({
+            "the": "dialog.concept/transient",
+            "as": "Entity",
             "cardinality": "one",
         }),
     );
@@ -571,6 +606,36 @@ fn require_string_description(field: &tonk_notation::Field) -> Result<String, An
         .into()),
         _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: "`description:` must be a string".into(),
+        }
+        .into()),
+    }
+}
+
+/// Interpret a `transient:` field on a `concept!:` body as a
+/// presence tag. The bare key (`transient:` with no value)
+/// parses as a YAML null and tags the concept as transient.
+/// `transient: true` is also accepted for the user who reaches
+/// for the explicit form. `transient: false` is rejected —
+/// omit the key for durable concepts (the default) so the
+/// surface stays uniform: presence means transient, absence
+/// means durable.
+fn parse_transient_tag(field: &tonk_notation::Field) -> Result<bool, AnalyzeError> {
+    match &field.value {
+        // `transient:` (no value) parses as Null. Treat the
+        // bare key as the tag.
+        FieldValue::Literal(Scalar::Null) => Ok(true),
+        FieldValue::Literal(Scalar::Boolean(true)) => Ok(true),
+        FieldValue::Literal(Scalar::Boolean(false)) => Err(AnalyzeErrorKind::InvalidConceptBody {
+            reason: "`transient: false` isn't meaningful — omit the `transient:` \
+                         field entirely to declare a durable concept (the default)"
+                .into(),
+        }
+        .into()),
+        _ => Err(AnalyzeErrorKind::InvalidConceptBody {
+            reason: "`transient:` is a tag — write `transient:` (bare key, no value) \
+                     to mark the concept transient, or omit the key for a durable \
+                     concept (the default)"
+                .into(),
         }
         .into()),
     }

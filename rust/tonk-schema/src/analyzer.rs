@@ -219,7 +219,8 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         .into_iter()
                         .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
                         .collect();
-                    let application = concept_application(&plan.descriptor, &entity, name);
+                    let application =
+                        concept_application(&plan.descriptor, &entity, name, plan.transient);
                     declared.insert(
                         index,
                         DeclaredApplication {

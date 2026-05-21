@@ -1234,4 +1234,168 @@ rule!:\n\
 
         Ok(())
     }
+
+    /// Pure-notation flow: a single document declares the
+    /// transient `ping` and durable `pong` concepts (using
+    /// `concept!: …, transient: true`), installs a `rule!:
+    /// assert!: pong when ping`, and the second commit submits
+    /// the transient through raw Changes (notation doesn't yet
+    /// have a sugar for asserting a transient instance via the
+    /// /transact wire path, but the durable-claim shape works
+    /// directly).
+    ///
+    /// Verifies the `transient:` field on `concept!:` flows all
+    /// the way to the `dialog.concept/transient` marker fact —
+    /// without it, the rule would fail validate (no transient
+    /// trigger) and the body wouldn't classify head emissions
+    /// correctly.
+    #[dialog_common::test]
+    async fn it_declares_transient_concept_via_notation() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // One commit: declare two concepts (one transient, one
+        // durable) + the rule. Concept!: declarations carry
+        // their own inline attribute definitions, so the
+        // attributes get registered alongside.
+        let doc = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+rule!:\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        branch
+            .transaction()
+            .evaluate(&syntax)
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        // Sanity: the transient marker landed on ping's
+        // descriptor entity.
+        let ping_descriptor = one_text_field("io.gozala.ping", "tag");
+        let ping_entity = ping_descriptor.this();
+        let marker_target: dialog_artifacts::Entity =
+            "db:transient".parse().expect("db:transient is valid");
+        let marker_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                    .of(Term::from(ping_entity.clone()))
+                    .is(Term::from(marker_target.clone())),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            marker_claims.len(),
+            1,
+            "expected one dialog.concept/transient claim on ping; saw {marker_claims:?}"
+        );
+
+        // And the durable pong concept has no marker.
+        let pong_descriptor = one_text_field("io.gozala.pong", "tag");
+        let pong_entity = pong_descriptor.this();
+        let pong_marker_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.concept/transient"))
+                    .of(Term::from(pong_entity))
+                    .is(Term::from(marker_target)),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            pong_marker_claims.is_empty(),
+            "durable pong should have no transient marker; saw {pong_marker_claims:?}"
+        );
+
+        // Second commit: submit a transient ping and verify
+        // the rule fires through induce.
+        let subject: dialog_artifacts::Entity = "did:key:zPureNotationSubject".parse()?;
+        let ping_tag = the!("io.gozala.ping/tag");
+        let mut transients = Changes::new();
+        ping_tag
+            .clone()
+            .of(subject.clone())
+            .is("hi".to_string())
+            .assert(&mut transients);
+
+        use crate::effects::TransactionExt as _;
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let pong_tag = the!("io.gozala.pong/tag");
+        let pong_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(pong_tag)
+                    .of(Term::from(subject.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            pong_claims.len(),
+            1,
+            "expected one durable pong claim; saw {pong_claims:?}"
+        );
+
+        let ping_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(ping_tag)
+                    .of(Term::from(subject))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            ping_claims.is_empty(),
+            "transient ping should have been swept; saw {ping_claims:?}"
+        );
+
+        Ok(())
+    }
 }
