@@ -318,92 +318,136 @@ Walks the syntax tree; resolves every reference through the
 `ResolvedConcept::resolve`); attaches descriptors; records
 `declarations` / `variables`; emits diagnostics carrying source
 spans. **Output keeps source shape** — `concept!`, `rule!`, domain
-heads, anchors all still distinct — plus resolution annotations
-and a stable per-expression id.
+heads, anchors all still distinct — plus resolution annotations.
 
-The IR types drop the `Resolved` prefix — they are the analyzer's
-own `Expression` / `Document`, in the `tonk-analyzer` namespace,
-distinct from `tonk_notation::Expression` (the *parsed* node) one
-import away. The analyzer's `Expression` is the *resolved* form.
+#### `Analysis<T>` — source-paired by construction
+
+Rather than mirror types (`ResolvedExpression`, `ResolvedQuery`,
+…) plus a side `ExpressionId` back-pointer, sub-phase 1's IR pairs
+each *parsed* syntax node with its analysis through one generic:
 
 ```rust
-// tonk-analyzer. `Expression` here = resolved expression; the
-// parsed `tonk_notation::Expression` is a different type, never
-// imported unqualified alongside it.
-struct Document {
-    expressions: Vec<Expression>,        // document order
-    diagnostics: Vec<AnalyzeDiagnostic>, // carry source spans
-    declarations: HashMap<String, Entity>,
-    variables: HashMap<String, Entity>,
+// tonk-analyzer.
+pub trait Analyzable {
+    /// The analysis payload computed for this syntax node.
+    type Analysis;
 }
 
-#[derive(Copy, Clone)]
-struct ExpressionId(usize);              // stable source back-pointer
-
-struct Expression { id: ExpressionId, label: String, span: Range, kind: ExpressionKind }
-
-enum ExpressionKind {
-    Query(Query),
-    Assertion(Assertion),       // source shape: concept|domain predicate, this, anchor
-    Declaration(Declaration),   // concept! / attribute! — stay special for now
-    Rule(Rule),
-}
-
-struct Assertion {
-    predicate: Predicate,       // Concept | Domain — was `head`
-    this: ThisIntent,           // consumed by expand; not in the expanded Document
-    anchor: Option<String>,     // consumed by expand; not in the expanded Document
-    fields: Vec<Field>,
-}
-
-enum Predicate {
-    Concept { descriptor: PredicateDescriptor },  // Durable | Transient
-    Domain  { domain: String },                   // descriptor synthesized in expand
+/// A syntax node paired with its analysis. The source pairing is
+/// structural — no `ExpressionId`, no parallel `Vec`. Diagnostics
+/// and result projection read the span / label straight off
+/// `.source`.
+pub struct Analysis<T: Analyzable> {
+    pub source: T,
+    pub analysis: T::Analysis,
 }
 ```
 
-(`head` is gone — the predicate of an assertion is the
-`predicate` field, matching `mutation.rs`'s `PredicateDescriptor`
-vocabulary that Part C consolidates onto.)
+So the "resolved expression" is `Analysis<Expression>`, a resolved
+assertion is `Analysis<Assertion>`, and the whole document is
+`Analysis<Syntax>` whose `.analysis` holds
+`Vec<Analysis<Expression>>`. The type *is* the back-pointer —
+`ExpressionId` is gone.
+
+`tonk_notation` already exposes the per-variant payloads
+(`Query`, `Assertion`, `Rule`) under the `Expression` enum, so the
+`Analyzable` impls land on those concrete types. The per-node
+analysis payloads still have to be written — `Assertion::Analysis`
+is a struct — but the *wrapper* types and the back-pointer
+plumbing are gone.
+
+```rust
+impl Analyzable for Assertion {
+    type Analysis = AssertionAnalysis;
+}
+struct AssertionAnalysis {
+    predicate: Predicate,       // Concept | Domain — was `head`
+    this: ThisIntent,           // consumed by expand
+    anchor: Option<String>,     // consumed by expand
+    fields: Vec<FieldAnalysis>,
+}
+enum Predicate {
+    Concept { descriptor: PredicateDescriptor },  // Durable | Transient
+    Domain  { domain: String },                   // synthesized in expand
+}
+```
+
+(`head` is gone — an assertion's predicate is the `predicate`
+field, matching `mutation.rs`'s `PredicateDescriptor` vocabulary
+Part C consolidates onto.)
+
+#### One-to-many is just the associated type
+
+Expansion can turn one source assertion into several mutations (an
+anchored assertion → assert + `Name` assert). This does **not**
+break `Analysis<T>`: the multiplicity lives in the associated
+type. `Assertion::Analysis` simply *contains* the lowered
+mutations — a `Vec` — so the several mutations are **nested under**
+the one `Analysis<Assertion>` rather than flattened into a list
+that each needs a back-pointer.
+
+So `Analysis<T>` carries all the way through, sub-phase 2
+included:
+
+- `Analysis<Syntax>` — `.analysis` holds `Vec<Analysis<Expression>>`.
+- `Analysis<Expression>` — `.analysis` dispatches per variant.
+- `Analysis<Assertion>` — `.analysis` is the resolved-then-expanded
+  payload, which *includes* the `Vec<Mutation>` it lowered to.
+
+The source pairing is structural at every level, and there is no
+`ExpressionId` and no per-mutation back-pointer — a lowered
+mutation belongs to its source assertion by *containment*.
+
+The one consequence: downstream (the evaluator,
+`render_match_blocks`) iterates a *tree* — `Analysis<Syntax>` →
+expressions → per-assertion mutations — rather than a flat
+`Vec<MutationAnalysis>`. That mirrors the document structure and
+is if anything cleaner; the evaluator's current flat
+`analysis.mutate.statements` walk becomes a nested walk.
+
+> Open: the exact name of the `Analyzable` trait. Recorded as the
+> user's earlier `Analysis<T>` design; pin against any existing
+> convention before executing Part B.
 
 ### B.3 Sub-phase 2 — expand
 
-Lowers the annotated tree into **kernel-shaped** forms: every
-mutation is a concept-assert. No `Domain`, no `anchor`, no
-`ThisIntent`. The output reuses the same `Document` /
-`Expression` types — expansion rewrites expressions in place; the
-post-expansion invariant is "every `Assertion` predicate is
-`Concept`, `anchor` is `None`".
+Lowers the sub-phase-1 tree into **kernel-shaped** forms: every
+mutation is a concept-assert — no `Domain`, no `anchor`, no
+`ThisIntent`.
 
 Expansion **only touches mutations.** A query has no anchor, no
-derived-`this:` write, no durability — there is nothing to lower.
-A query `Expression` passes through sub-phase 2 unchanged. (Hence
-no separate "expanded query" type — that was a phantom in the
-draft sketch; dropped.)
+derived-`this:` write, no durability — nothing to lower. A query's
+`Analysis<Query>` passes through unchanged. (Hence no separate
+"expanded query" type — a phantom in the draft sketch; dropped.)
 
-The write side becomes a list of **`MutationAnalysis`** — the
-per-mutation analysis: a kernel `Mutation` (reused verbatim from
-`tonk-schema::mutation`, the same type `/transact` uses) plus the
-source expression it came from.
+For an assertion, expansion fills in `Assertion::Analysis` — the
+resolved-then-lowered payload. Because one assertion can lower to
+several mutations, that payload *contains* a `Vec` of kernel
+`Mutation`s (reused verbatim from `tonk-schema::mutation` — the
+same type `/transact` uses):
 
 ```rust
-/// Per-mutation analysis: a kernel mutation + its source
-/// expression. One source expression can yield several
-/// (an anchor → assert + Name assert); they share `source`.
-struct MutationAnalysis {
-    mutation: Mutation,          // tonk-schema::mutation — concept-only
-    source: ExpressionId,
+impl Analyzable for Assertion {
+    type Analysis = AssertionAnalysis;
+}
+struct AssertionAnalysis {
+    /// The kernel mutations this assertion lowered to. Usually
+    /// one; an anchored assertion lowers to two (the assert plus
+    /// a `Name` assert). All belong to the enclosing
+    /// `Analysis<Assertion>` by containment — no back-pointer.
+    mutations: Vec<Mutation>,
 }
 ```
 
 > Naming note. The *current* `transact::MutationAnalysis`
 > (`{ statements, requires, transient }` — the whole write-side
-> bundle) is **removed** by Part C: `statements` becomes
-> `Vec<MutationAnalysis>` on `Analysis`, `transient` is gone
-> (durability rides on `PredicateDescriptor`), `requires` either
-> moves onto `Analysis` or is recomputed. So the name
-> `MutationAnalysis` is freed up and re-used for the *element*
-> type — there is no collision in the final state.
+> bundle) is **removed** by Part C. Durability is gone from it
+> (it rides on `PredicateDescriptor`); the flat `statements` list
+> is replaced by the nested `Analysis<Syntax>` tree; `requires`
+> either moves onto the top-level analysis or is recomputed. The
+> `MutationAnalysis` *name* is not reused — the per-assertion
+> payload is `AssertionAnalysis` and the kernel unit is plain
+> `Mutation`. No collision; the old bundle simply ceases to exist.
 
 Lowerings (the fixed set):
 
@@ -414,8 +458,8 @@ Lowerings (the fixed set):
   Always `PredicateDescriptor::Durable`.
 - **`&anchor` → paired `Name` assert.** The assert, plus a second
   assert of the built-in `Name` concept publishing `id:<anchor>` →
-  the subject entity. Both `MutationAnalysis` entries share the
-  source `ExpressionId`.
+  the subject entity. Both land in the one assertion's
+  `AssertionAnalysis::mutations` vec.
 - **omitted `this:` → injected `id:<body-digest>`.** `ThisIntent`
   is consumed here: `Uri` → that entity, `Variable` → a var term,
   `Derived` → `id:<digest>`.
@@ -447,12 +491,14 @@ shared `mutation.rs` types:
   shims (Part A).
 - `tonk_schema::evaluate::BranchResolver` (Part A).
 - `transact::Application` enum (`Concept | Domain`).
-- `transact::Statement` enum → replaced by `MutationAnalysis`
-  (the per-mutation element type).
+- `transact::Statement` enum → gone. The write side is the
+  `Vec<Mutation>` nested in each `AssertionAnalysis`.
 - `transact::ThisIntent` survives only inside sub-phase 1→2; never
   reaches `Analysis`.
-- `MutationAnalysis::transient` side-set — durability now rides on
-  `PredicateDescriptor` inside each `Mutation`.
+- `transact::MutationAnalysis` (the `{ statements, requires,
+  transient }` bundle) — gone. Durability rides on
+  `PredicateDescriptor`; the flat statement list becomes the
+  nested `Analysis<Syntax>` tree.
 - `ApplicationPlan::name` + `emit_name_assertion` — anchors are
   ordinary mutations.
 - `DomainApplication` + plan-time `From<DomainApplication>` — the
@@ -482,11 +528,12 @@ Downstream needs three things, all kept *beside* the IR, not in
 its variant shape:
 
 1. **Projection labels** (`render_match_blocks`) — kept parallel to
-   forms today as `labels`; in the new IR each `MutationAnalysis`
-   carries an `ExpressionId`, and the analyzer `Expression` holds
-   `(id, label, span)`. Grouping by `ExpressionId` recovers the
-   block structure even when one source expression lowers to two
-   mutations (the anchor case).
+   forms today as `labels`; in the new IR every `Analysis<T>`
+   carries its `source: T` (the parsed node), which holds the
+   span / head name. The anchor case — one assertion, two
+   mutations — needs no special handling: the mutations are
+   nested under the one `Analysis<Assertion>`, so they project as
+   one block by construction.
 2. **`declarations` / `variables`** — built in sub-phase 1, copied
    through.
 3. **Diagnostics** — produced in sub-phase 1 against source spans;
@@ -511,8 +558,8 @@ its variant shape:
    two sub-phases. `ConditionalSend` / `ConditionalSync` on all
    new bounds.
 4. **Part C** — collapse `Application` / `Statement` onto
-   `mutation::Mutation` + `MutationAnalysis`; delete the listed
-   types.
+   `mutation::Mutation` nested in the `Analysis<T>` tree; delete
+   the listed types.
 5. Each step: `cargo fmt --all`, `clippy --all-targets
    --all-features -D warnings`, native + wasm tests.
 
@@ -529,10 +576,10 @@ its variant shape:
   lookups take a `&Branch` for the schema (schema rarely changes
   mid-document) and the analyzer's in-doc `Scope` continues to
   cover same-document declarations — i.e. keep today's split.
-- `ExpressionId` representation — a plain `usize` index into
-  the analyzer `Document`'s `expressions`. Sturdier than today's
-  positional `labels` parallelism once one source expression
-  lowers to several forms.
+- `Analyzable` / `Analysis<T>` ergonomics — confirm the nested
+  tree (`Analysis<Syntax>` → `Vec<Analysis<Expression>>` → …) is
+  comfortable for the evaluator and `render_match_blocks` to
+  walk, versus the flat statement list they use today.
 - Whether `concept!` / `rule!` lower through expansion too (the
   2026-05-16 ambition) or stay analyzer-special. This spec keeps
   them special; only domain / anchor / derived-`this:` lower.
