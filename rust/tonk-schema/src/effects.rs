@@ -1181,4 +1181,315 @@ mod tests {
 
         Ok(())
     }
+
+    /// Silent drop: an effect is installed reading concept A,
+    /// but the submitted transient is concept B. The reverse
+    /// index doesn't match, no rule fires, and the submitted
+    /// transient is still swept by the end-of-loop sweep.
+    /// Confirms that "no candidates" is the loop's natural
+    /// no-op state and that an unrelated transient doesn't leak
+    /// into durable storage.
+    #[dialog_common::test]
+    async fn it_silently_drops_unrelated_transients() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Effect reads `io.gozala.ping/tag` only. Unrelated
+        // attribute `io.gozala.noise/tag` won't match.
+        let ping = one_text_field_concept("io.gozala.ping", "tag");
+        let pong = one_text_field_concept("io.gozala.pong", "tag");
+        let noise = one_text_field_concept("io.gozala.noise", "tag");
+
+        let mut body_terms = DialogParameters::new();
+        body_terms.insert("this".to_string(), Term::var("this"));
+        body_terms.insert("tag".to_string(), Term::var("tag"));
+        let body_premise =
+            DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+                terms: body_terms,
+                predicate: ping.clone(),
+            }));
+        let rule = InductiveRule::new(pong.clone(), vec![body_premise]).expect("rule compiles");
+        let effect = Effect::new(rule, EffectPolarity::Assert);
+
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &ping);
+        install = install_attribute_facts(install, &pong);
+        install = install_attribute_facts(install, &noise);
+        install = install.assert(AnonymousConcept::new(pong.clone()));
+        install = install.assert(TransientConcept::new(ping.clone()));
+        install = install.assert(TransientConcept::new(noise.clone()));
+        install = install.assert(effect);
+        install.commit().perform(&operator).await?;
+
+        let subject: Entity = "did:key:zNoiseSubject".parse()?;
+        let noise_attr = the!("io.gozala.noise/tag");
+        let mut transients = Changes::new();
+        noise_attr
+            .clone()
+            .of(subject.clone())
+            .is("ignored".to_string())
+            .assert(&mut transients);
+
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // No pong claim — the effect didn't fire.
+        let pong_attr = the!("io.gozala.pong/tag");
+        let pong_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(pong_attr)
+                    .of(Term::from(subject.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            pong_claims.is_empty(),
+            "no pong should have landed; saw {pong_claims:?}"
+        );
+
+        // And the unrelated transient was still swept.
+        let noise_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(noise_attr)
+                    .of(Term::from(subject))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            noise_claims.is_empty(),
+            "noise transient should have been swept; saw {noise_claims:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Increment-counter via a formula in the body. A durable
+    /// `counter{this: ?c, count: ?prev}` exists; submitting a
+    /// transient `increment{this: ?c}` triggers the rule whose
+    /// body reads `counter.count` and uses `math/sum` to bind
+    /// `?count = ?prev + 1`. The head re-asserts the counter
+    /// (cardinality-one `count`, so the prior value is
+    /// replaced). After commit the counter holds the new value.
+    #[dialog_common::test]
+    async fn it_fires_a_rule_with_a_formula_body() -> anyhow::Result<()> {
+        use dialog_query::formula::Formula;
+        use dialog_query::formula::math::Sum;
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let counter = one_field_concept("io.gozala.counter", "count", Type::UnsignedInt);
+        let increment = one_field_concept("io.gozala.increment", "subject", Type::Entity);
+
+        // Body: counter{this: ?this, count: ?prev},
+        //       increment{target: ?this},
+        //       Sum{of: ?prev, with: 1, is: ?count}.
+        let mut counter_terms = DialogParameters::new();
+        counter_terms.insert("this".to_string(), Term::var("this"));
+        counter_terms.insert("count".to_string(), Term::var("prev"));
+        let counter_premise =
+            DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+                terms: counter_terms,
+                predicate: counter.clone(),
+            }));
+        let mut inc_terms = DialogParameters::new();
+        inc_terms.insert("this".to_string(), Term::var("__inc_this"));
+        inc_terms.insert("subject".to_string(), Term::var("this"));
+        let inc_premise = DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+            terms: inc_terms,
+            predicate: increment.clone(),
+        }));
+        let mut sum_terms = DialogParameters::new();
+        sum_terms.insert("of".to_string(), Term::var("prev"));
+        sum_terms.insert("with".to_string(), Term::constant(1u64));
+        sum_terms.insert("is".to_string(), Term::var("count"));
+        let sum_premise = Sum::apply(sum_terms).expect("Sum::apply compiles").into();
+
+        let rule = InductiveRule::new(
+            counter.clone(),
+            vec![counter_premise, inc_premise, sum_premise],
+        )
+        .expect("rule compiles");
+        let effect = Effect::new(rule, EffectPolarity::Assert);
+
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &counter);
+        install = install_attribute_facts(install, &increment);
+        install = install.assert(AnonymousConcept::new(counter.clone()));
+        install = install.assert(TransientConcept::new(increment.clone()));
+        install = install.assert(effect);
+        install.commit().perform(&operator).await?;
+
+        // Seed the counter at 41.
+        let c1: Entity = "did:key:zCounterC1".parse()?;
+        let count_attr = the!("io.gozala.counter/count");
+        branch
+            .transaction()
+            .assert(count_attr.clone().of(c1.clone()).is(41u64))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Submit transient increment{this: <anon>, subject: c1}.
+        let inc_subject: Entity = "did:key:zIncrementCmd".parse()?;
+        let subject_attr = the!("io.gozala.increment/subject");
+        let mut transients = Changes::new();
+        subject_attr
+            .of(inc_subject)
+            .is(c1.clone())
+            .assert(&mut transients);
+
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce failed: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(count_attr)
+                    .of(Term::from(c1))
+                    .is(Term::<u64>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            claims.len(),
+            1,
+            "expected exactly one count claim post-cardinality-one supersede; saw {claims:?}"
+        );
+        let Value::UnsignedInt(n) = &claims[0].is else {
+            return Err(anyhow::anyhow!(
+                "expected UnsignedInt count value; saw {:?}",
+                claims[0].is
+            ));
+        };
+        assert_eq!(*n, 42, "increment should bump 41 → 42");
+
+        Ok(())
+    }
+
+    /// Cardinality-many head field: a rule with a many-cardinality
+    /// `tag` accumulates values instead of replacing. Fire the
+    /// rule twice (two transients with different tags) and
+    /// verify both tags survive in the durable head.
+    #[dialog_common::test]
+    async fn it_accumulates_many_cardinality_head_facts() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Both fields are cardinality-many. The bag head field
+        // accumulates, so two firings should leave two claims.
+        let cmd = ConceptDescriptor::from(vec![(
+            "tag",
+            AttributeDescriptor::new(
+                "io.gozala.bag-cmd/tag".parse().unwrap(),
+                "",
+                DialogCardinality::Many,
+                Some(Type::String),
+            ),
+        )]);
+        let bag = ConceptDescriptor::from(vec![(
+            "tag",
+            AttributeDescriptor::new(
+                "io.gozala.bag/tag".parse().unwrap(),
+                "",
+                DialogCardinality::Many,
+                Some(Type::String),
+            ),
+        )]);
+
+        let mut body_terms = DialogParameters::new();
+        body_terms.insert("this".to_string(), Term::var("this"));
+        body_terms.insert("tag".to_string(), Term::var("tag"));
+        let body_premise =
+            DialogPremise::Assert(dialog_query::Proposition::Concept(ConceptQuery {
+                terms: body_terms,
+                predicate: cmd.clone(),
+            }));
+        let rule = InductiveRule::new(bag.clone(), vec![body_premise]).expect("rule compiles");
+        let effect = Effect::new(rule, EffectPolarity::Assert);
+
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &cmd);
+        install = install_attribute_facts(install, &bag);
+        install = install.assert(AnonymousConcept::new(bag.clone()));
+        install = install.assert(TransientConcept::new(cmd.clone()));
+        install = install.assert(effect);
+        install.commit().perform(&operator).await?;
+
+        let subject: Entity = "did:key:zBagSubject".parse()?;
+        let cmd_attr = the!("io.gozala.bag-cmd/tag");
+
+        // Two separate commits, each submitting a different tag.
+        for tag in ["first", "second"] {
+            let mut transients = Changes::new();
+            cmd_attr
+                .clone()
+                .of(subject.clone())
+                .is(tag.to_string())
+                .assert(&mut transients);
+            branch
+                .transaction()
+                .integrate(transients.clone())
+                .induce(transients)
+                .perform(&operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("induce failed: {e}"))?
+                .commit()
+                .perform(&operator)
+                .await?;
+        }
+
+        let bag_attr = the!("io.gozala.bag/tag");
+        let claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(bag_attr)
+                    .of(Term::from(subject))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let mut values: Vec<String> = claims
+            .iter()
+            .filter_map(|c| match &c.is {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+        values.sort();
+        assert_eq!(
+            values,
+            vec!["first".to_string(), "second".to_string()],
+            "many-cardinality head should accumulate both tags; saw {claims:?}"
+        );
+
+        Ok(())
+    }
 }
