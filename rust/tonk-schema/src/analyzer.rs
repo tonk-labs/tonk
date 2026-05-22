@@ -2097,6 +2097,21 @@ concept:
         assert!(analysis.query.is_some());
     }
 
+    /// Built-in `rule:` resolves through the registry without a
+    /// branch. Returns the rule-of-rule descriptor whose entity
+    /// is `db:rule`; the query side is populated.
+    #[dialog_common::test]
+    async fn it_resolves_builtin_rule_under_noop_resolver() {
+        let syntax = must_parse(
+            r#"
+rule:
+  this: ?r
+"#,
+        );
+        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        assert!(analysis.query.is_some());
+    }
+
     #[dialog_common::test]
     async fn it_resolves_builtin_replica_under_noop_resolver() {
         let syntax = must_parse(

@@ -41,6 +41,7 @@ use thiserror::Error;
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
 
 use crate::builtin::concept_registry;
+use crate::effect::{AnonymousRuleQuery, rule_of_rule_descriptor};
 use crate::meta::AnonymousAttribute;
 use crate::query_source::Source;
 
@@ -841,16 +842,29 @@ pub enum QueryPlan {
     Standard(ConceptQuery),
     /// Concept-of-concept enumeration via [`AnonymousConceptQuery`].
     AnonymousConcept(AnonymousConceptQuery),
+    /// Rule-of-rule enumeration via [`AnonymousRuleQuery`].
+    AnonymousRule(AnonymousRuleQuery),
 }
 
 impl From<ConceptQuery> for QueryPlan {
     fn from(query: ConceptQuery) -> Self {
         if &query.predicate.this() == concept_of_concept_entity() {
             QueryPlan::AnonymousConcept(AnonymousConceptQuery::new(query.terms))
+        } else if &query.predicate.this() == rule_of_rule_entity() {
+            QueryPlan::AnonymousRule(AnonymousRuleQuery::new(query.terms))
         } else {
             QueryPlan::Standard(query)
         }
     }
+}
+
+/// Cached `this()` of [`rule_of_rule_descriptor`] — the dispatch
+/// sentinel for [`QueryPlan::from`] that routes a `rule:` head to
+/// [`AnonymousRuleQuery`]. Computing it once avoids re-hashing
+/// the descriptor on every query.
+fn rule_of_rule_entity() -> &'static Entity {
+    static ENTITY: std::sync::OnceLock<Entity> = std::sync::OnceLock::new();
+    ENTITY.get_or_init(|| rule_of_rule_descriptor().this())
 }
 
 impl Application for QueryPlan {
@@ -874,6 +888,12 @@ impl Application for QueryPlan {
                         yield each?;
                     }
                 }
+                QueryPlan::AnonymousRule(q) => {
+                    let stream = q.evaluate(selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
             }
         }
     }
@@ -882,6 +902,7 @@ impl Application for QueryPlan {
         match self {
             QueryPlan::Standard(q) => Application::realize(q, source),
             QueryPlan::AnonymousConcept(q) => Application::realize(q, source),
+            QueryPlan::AnonymousRule(q) => Application::realize(q, source),
         }
     }
 }

@@ -25,6 +25,8 @@ use std::sync::OnceLock;
 use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 
+use crate::concept::concept_of_concept_descriptor;
+use crate::effect::rule_of_rule_descriptor;
 use crate::meta::{AnonymousAttributeQuery, NameQuery};
 use crate::mutation::ConceptDescriptor;
 use crate::resolution::ConceptDefinition;
@@ -54,6 +56,7 @@ fn build_registry() -> Vec<(&'static str, ConceptDefinition)> {
     vec![
         ("attribute", builtin::<AnonymousAttributeQuery>("attribute")),
         ("concept", concept_descriptor()),
+        ("rule", rule_descriptor()),
         ("name", builtin::<NameQuery>("name")),
         ("branch", builtin::<BranchQuery>("branch")),
         ("replica", builtin::<ReplicaQuery>("replica")),
@@ -83,9 +86,26 @@ fn concept_descriptor() -> ConceptDefinition {
         entity: "db:concept"
             .parse()
             .expect("`db:concept` is a valid entity URI"),
-        descriptor: ConceptDescriptor::Durable(
-            crate::concept::concept_of_concept_descriptor().clone(),
-        ),
+        descriptor: ConceptDescriptor::Durable(concept_of_concept_descriptor().clone()),
+    }
+}
+
+/// Built-in `rule` view — the rule-of-rule descriptor.
+///
+/// Resolves to the sentinel descriptor whose `this()` triggers
+/// dispatch to [`crate::effect::AnonymousRuleQuery`] in
+/// [`crate::concept::QueryPlan::from`], so a `rule:` head at
+/// query time enumerates *every* installed inductive rule with a
+/// synthesised `definition` field. The rule-side parallel of
+/// [`concept_descriptor`].
+///
+/// Kept as a hand-built descriptor (rather than `derive(Concept)`)
+/// for the same reason `concept_descriptor` is: its synthesised
+/// fields have no fixed-record Rust shape the derive can express.
+fn rule_descriptor() -> ConceptDefinition {
+    ConceptDefinition {
+        entity: "db:rule".parse().expect("`db:rule` is a valid entity URI"),
+        descriptor: ConceptDescriptor::Durable(rule_of_rule_descriptor().clone()),
     }
 }
 
