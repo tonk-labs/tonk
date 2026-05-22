@@ -17,15 +17,14 @@ are the analyzer. `plan` + `commit` are evaluation.
 ## Crate layout
 
 - **`tonk-notation`** — pure syntax. Parse → `Syntax`. No branch,
-  no `Source`. Unchanged.
+  no `Source`.
 - **`tonk-schema`** — schema types: concepts, attributes,
   `claim.rs` (the `Claim` type — see Part C), `effect.rs`, and
   the resolution surface (Part A). No pipeline driving.
 - **`tonk-analyzer`** — `analyze` + `expand`. Depends on
   `tonk-notation` and `tonk-schema`. Produces an `Analysis`.
 - **`tonk-evaluator`** — `evaluate`: plan + commit. Depends on
-  `tonk-analyzer`. The notation pipeline driver. (`evaluate`
-  currently lives in `tonk-schema`; it moves here.)
+  `tonk-analyzer`. The notation pipeline driver.
 
 All trait bounds use `dialog_common::ConditionalSend` /
 `ConditionalSync`, so the same source compiles native and
@@ -273,55 +272,29 @@ tracking. Every claim reaching the plan stage is concept-shaped;
 domain heads and `&anchor` are notation sugar that expansion
 lowers away first.
 
-`Claim` is the rebrand of the current `mutation.rs` `Mutation`.
-dialog's own `Claim` (a raw `(the, of, is)` EAV triple) is a
-different thing — and dialog is renaming *its* `Claim` to `Fact`
-upstream. The end state is unambiguous and collision-free:
-`dialog_query::Fact` is the EAV triple, tonk's `Claim` is the
-typed assert/retract.
-
-Until the dialog dep is bumped past that rename, tonk references
-dialog's type as `use dialog_query::Claim as Fact` — a
-transitional alias across the ~8 files that use it, so tonk code
-already reads in the final vocabulary. The alias is deleted when
-the dep carries `Fact` directly.
+`Claim` lives in `claim.rs`. It is distinct from
+`dialog_query::Fact` — the raw `(the, of, is)` EAV triple dialog
+deals in. `Claim` is the typed, concept-shaped write; `Fact` is
+the untyped triple it ultimately emits. The two names never
+collide.
 
 ## Open items
 
-- **`Transaction` → `Source`.** Confirm how the
-  `dialog_query::Transaction` overlay surfaces as `Source` so
-  `evaluate`'s internal analysis resolves through it. Fallback if
-  awkward: resolve schema against the underlying `&Branch` and
-  keep the in-document `Scope` for same-document declarations.
-- **`Analyzable` trait name** — pin against any existing
-  convention before implementing.
-- **`concept!` / `rule!` expansion.** They stay analyzer-special
-  for now; only domain / anchor / derived-`this:` lower. The
-  `2026-05-16` macro-system note would lower these too.
-- **`rule!:` premises** — if domain premises are allowed, the
-  domain→anonymous-concept lowering must also run inside rule
-  expansion.
-- **`tonk-introspect` crate fate** — once it holds only the
-  resolved-schema types, decide whether to fold them into
-  `tonk-schema` and drop the crate.
-- **Macro fixpoint.** A real macro system needs
-  `resolve → expand → …` to iterate (a macro can expand into a new
-  symbol). The sub-phase split makes that a loop around the same
-  two functions later. Not built now.
-
-## Execution order
-
-1. **Part A** — `ConceptReference` / `AttributeReference` +
-   `ConceptDefinition` / `AttributeDefinition` resolution handles,
-   `NamedReference`, `EmptyStore`; rewire the language server.
-2. **Part B** — carve out `tonk-analyzer`; the `syntax.analyze`
-   chain; the `Analysis<T>` IR and the two sub-phases.
-3. **Part C** — rename `mutation.rs` `Mutation` to `claim.rs`
-   `Claim`; alias `dialog_query::Claim` to `Fact`; fold the
-   notation path's write-side IR onto `Claim`.
-4. **Crate move** — extract `evaluate` from `tonk-schema` into
-   `tonk-evaluator`; the `syntax.evaluate` chain lives there.
-   Rewire `tonk-worker`'s `/evaluate` route.
-
-Each step: `cargo fmt --all`, `clippy --all-targets
---all-features -D warnings`, native + wasm tests.
+- **`Transaction` as `Source`.** `evaluate` analyzes against the
+  transaction's overlay so a concept declared earlier in the same
+  document resolves for a later statement. This requires the
+  `Transaction` overlay to satisfy `Source`. If it cannot, schema
+  resolution falls back to the underlying `&Branch` and an
+  in-document `Scope` covers same-document declarations.
+- **`concept!` / `rule!` expansion.** This spec lowers only domain
+  predicates, `&anchor`, and derived-`this:`. `concept!` and
+  `rule!` are handled directly by the analyzer. A macro system
+  (`2026-05-16` note) would lower these the same way.
+- **`rule!:` premises.** If a `rule!:` premise may name a domain
+  predicate, the domain→anonymous-concept lowering runs inside
+  rule expansion as well.
+- **Macro fixpoint.** A macro system needs `resolve → expand → …`
+  to iterate — a macro can expand into a new symbol that itself
+  needs resolution. The two-sub-phase split makes that a loop
+  around `resolve` and `expand`. This spec's lowerings are
+  terminal, so a single pass suffices.
