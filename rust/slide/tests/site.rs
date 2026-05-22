@@ -561,34 +561,41 @@ mod when_listing_concepts {
     use crate::common::{self, ATTRIBUTE_DECL, CONCEPT_DECL};
 
     #[dialog_common::test]
-    async fn it_returns_user_defined_concepts_only() -> Result<()> {
+    async fn it_includes_user_defined_concepts() -> Result<()> {
         let test = common::TestSite::new().await?;
         test.eval_inline(ATTRIBUTE_DECL).await?;
         test.eval_inline(CONCEPT_DECL).await?;
 
         let concepts = schema::list_concepts(&test.site).await?;
-        assert_eq!(concepts.len(), 1);
-        assert_eq!(concepts[0].name, "task");
+        let task = concepts
+            .iter()
+            .find(|c| c.name == "task")
+            .expect("the user-defined `task` concept should appear in the listing");
         // Concept descriptions don't round-trip through the
         // anonymous-concept dispatch path the listing uses; see
         // the fidelity-gap note on `slide::schema`. Asserting
         // `None` pins that behaviour so a future fix lights up
         // the test as a reminder to revisit.
-        assert!(concepts[0].description.is_none());
-        let mut fields = concepts[0].fields.clone();
+        assert!(task.description.is_none());
+        let mut fields = task.fields.clone();
         fields.sort();
         assert_eq!(fields, vec!["done", "title"]);
         Ok(())
     }
 
     #[dialog_common::test]
-    async fn it_returns_empty_when_only_builtins_are_present() -> Result<()> {
-        // A fresh site has no user-defined concepts; built-in
-        // `attribute` and `concept` are filtered out by the
-        // listing.
+    async fn it_excludes_user_defined_concepts_absent_on_a_fresh_site() -> Result<()> {
+        // A fresh site has no user-defined `task` concept — only
+        // built-ins are seeded. This pins that the user-defined
+        // concept the sibling test relies on is genuinely
+        // user-introduced, not present by default.
         let test = common::TestSite::new().await?;
         let concepts = schema::list_concepts(&test.site).await?;
-        assert!(concepts.is_empty());
+        assert!(
+            !concepts.iter().any(|c| c.name == "task"),
+            "fresh site should not list a user-defined `task` concept; saw {:?}",
+            concepts.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
         Ok(())
     }
 }

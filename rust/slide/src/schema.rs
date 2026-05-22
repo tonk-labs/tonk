@@ -295,7 +295,14 @@ concept:
 fn is_builtin_concept(name: &str) -> bool {
     matches!(
         name,
-        "attribute" | "concept" | "name" | "branch" | "replica" | "remote" | "tracking-branch"
+        "attribute"
+            | "concept"
+            | "name"
+            | "rule"
+            | "branch"
+            | "replica"
+            | "remote"
+            | "tracking-branch"
     )
 }
 
