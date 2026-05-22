@@ -385,16 +385,21 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         transient,
     };
 
-    // ---- Phase 3b: lift rule!: expressions into Effects ----
-    // Rules don't contribute to the query/mutation pipeline;
-    // they install effects on the branch. Each lift resolves
-    // the rule's head + premise concepts through the scope,
-    // translates premise bindings into dialog Terms, and runs
-    // dialog's planner to catch unbound-head-variable etc.
+    // ---- Phase 3b: lift rule!: expressions into mutations ----
+    // A `rule!:` carries the `!` mutation marker — evaluating it
+    // installs `dialog.effect/*` facts on the branch — so it is
+    // just another mutation statement. Each lift resolves the
+    // rule's head + premise concepts through the scope, translates
+    // premise bindings into dialog Terms, and runs dialog's
+    // planner to catch unbound-head-variable etc.; the resulting
+    // effect lands as a `Statement::InstallEffect`.
     for expression in &syntax.expressions {
         if let Expression::Rule(rule_expr) = expression {
             let effect = rule::lift_rule(rule_expr, &scope, &analysis).await?;
-            analysis.effects.push(effect);
+            analysis
+                .mutate
+                .statements
+                .push(Statement::InstallEffect(effect));
         }
     }
 
@@ -455,7 +460,12 @@ fn synthesize_implicit_queries(
         if declaration_statement_indexes.contains(&index) {
             continue;
         }
-        let application = statement.application();
+        // `InstallEffect` statements carry no application — a
+        // rule installs an effect, it doesn't write a snapshotable
+        // entity — so they contribute no implicit query.
+        let Some(application) = statement.application() else {
+            continue;
+        };
         // Two cases of "we know which entity to snapshot":
         //
         // 1. **Update existing thing** — `this:` is a constant

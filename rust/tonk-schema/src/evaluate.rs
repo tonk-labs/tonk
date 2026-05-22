@@ -265,15 +265,15 @@ impl<'s, S> Compile<'s, S> {
 /// runnable operations.
 ///
 /// `Compiled` is a thin handle over the [`Analysis`] tree: the
-/// read side is the query plans in [`Analysis::query`], the
+/// read side is the query plans in [`Analysis::query`], and the
 /// write side is the planned [`Statement`]s in
-/// [`Analysis::mutate`], and the installed effects in
-/// [`Analysis::effects`]. `evaluate` runs these against a
+/// [`Analysis::mutate`] — including the [`Statement::InstallEffect`]
+/// each `rule!:` lifts into. `evaluate` runs these against a
 /// transaction; today there is no separate IR, so `Compiled`
 /// wraps the analyzer's output directly.
 pub struct Compiled {
     /// The resolved, lowered document — query plans + planned
-    /// statements + effects.
+    /// statements.
     pub analysis: Analysis,
 }
 
@@ -370,13 +370,12 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                     frame.insert(k.clone(), v.clone());
                 }
                 for statement in &analysis.mutate.statements {
-                    let plan = statement
-                        .application()
-                        .clone()
-                        .plan(&frame)
-                        .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
                     match statement {
-                        Statement::Assert(_) => {
+                        Statement::Assert(application) => {
+                            let plan = application
+                                .clone()
+                                .plan(&frame)
+                                .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
                             claim_count += count_emitted_claims(&plan);
                             // A transient-concept assertion also
                             // seeds the transient bucket so the
@@ -394,10 +393,26 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             }
                             txn = txn.assert(plan);
                         }
-                        Statement::Retract(_) => {
+                        Statement::Retract(application) => {
+                            let plan = application
+                                .clone()
+                                .plan(&frame)
+                                .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
                             let resolved = resolve_retraction_targets(plan, branch, env).await?;
                             claim_count += resolved.len();
                             retract_claims.extend(resolved);
+                        }
+                        Statement::InstallEffect(effect) => {
+                            // A `rule!:` is a mutation: installing
+                            // it writes the `dialog.effect/*` facts
+                            // the reactor's induce loop reads. Each
+                            // effect emits a constant set of claims
+                            // (marker + source + conclusion +
+                            // polarity + one `on:` entry per
+                            // attribute the body reads) — bump the
+                            // count by 4 + premise-attribute count.
+                            claim_count += 4 + effect.on_entities().len();
+                            txn = txn.assert(effect.clone());
                         }
                     }
                 }
@@ -407,24 +422,6 @@ impl<'s, 'a> Evaluate<'s, 'a> {
             }
         }
         commits.claims = claim_count;
-
-        // ---- Install effects ----
-        // Each rule!: expression lifted in the analyzer's
-        // Phase 3b lands here as an `Effect`. The
-        // `Effect: Statement` impl writes the
-        // `dialog.effect/*` facts that the reactor's `induce`
-        // loop reads on every subsequent commit.
-        //
-        // Each effect emits a constant set of claims (marker +
-        // source + conclusion + polarity + one `on:` entry per
-        // attribute the body reads) — bump the claim count by
-        // a flat 4 + premise-attribute count so the response's
-        // `commits.claims` reflects what's about to land
-        // durably.
-        for effect in analysis.effects.iter().cloned() {
-            commits.claims += 4 + effect.on_entities().len();
-            txn = txn.assert(effect);
-        }
 
         let matches = render_match_blocks(&analysis, pre_results.as_ref());
 
@@ -985,7 +982,9 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::concept::{AnonymousConcept, TransientConcept};
-    use dialog_artifacts::Statement;
+    // Aliased so the `.assert()` trait method stays in scope
+    // without shadowing the analyzer's `Statement` enum.
+    use dialog_artifacts::Statement as ArtifactsStatement;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
@@ -1442,13 +1441,14 @@ rule!:\n\
         Ok(())
     }
 
-    /// Regression: a document containing only a `rule!:` has no
-    /// mutate statements, but its lifted effect must still drive a
-    /// commit. The `/evaluate` route used to gate the commit on
-    /// `mutate.statements` alone, silently dropping rule-only
-    /// documents — the rule never reached the branch. The analyzer
-    /// must surface the effect in `analysis.effects` so the route's
-    /// commit guard can see it.
+    /// Regression: a document containing only a `rule!:` is a
+    /// mutation document — the `!` marker says so. The lifted
+    /// effect must land in `mutate.statements` as a
+    /// `Statement::InstallEffect`, so the `/evaluate` route's
+    /// commit guard (`!mutate.statements.is_empty()`) sees it and
+    /// drives the commit. Before this, rules lived in a parallel
+    /// `analysis.effects` bucket and rule-only documents were
+    /// silently dropped — the rule never reached the branch.
     #[dialog_common::test]
     async fn it_lifts_an_effect_from_a_rule_only_document() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
@@ -1500,16 +1500,24 @@ rule!:\n\
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
 
-        // The lifted effect must be visible — this is the signal
-        // the route's commit guard relies on.
+        // The lifted rule must land in `mutate.statements` as a
+        // `Statement::InstallEffect` — this is the committable
+        // mutation the route's commit guard relies on.
         assert_eq!(
-            evaluated.analysis.effects.len(),
+            evaluated.analysis.mutate.statements.len(),
             1,
-            "rule-only document should surface one lifted effect"
+            "rule-only document should carry one mutation statement"
         );
-        assert!(
-            evaluated.analysis.mutate.statements.is_empty(),
-            "rule-only document has no mutate statements"
+        let Statement::InstallEffect(effect) = &evaluated.analysis.mutate.statements[0] else {
+            panic!(
+                "rule-only document should carry a Statement::InstallEffect, got {:?}",
+                evaluated.analysis.mutate.statements[0]
+            );
+        };
+        assert_eq!(
+            effect.conclusion(),
+            one_text_field("io.gozala.pong", "tag").this(),
+            "the installed effect's head concept should be pong"
         );
 
         Ok(())

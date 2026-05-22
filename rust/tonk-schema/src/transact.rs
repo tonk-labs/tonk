@@ -61,16 +61,9 @@ pub struct Analysis {
     pub query: Option<QueryAnalysis>,
 
     /// Write side. `mutate.statements` is empty for pure-query
-    /// documents.
+    /// documents. A `rule!:` expression lands here as a
+    /// [`Statement::InstallEffect`] — a rule is a mutation.
     pub mutate: MutationAnalysis,
-
-    /// Inductive effects lifted from `rule!:` expressions.
-    /// Empty for documents that declare no rules. Each entry
-    /// is installed against the branch at commit time by the
-    /// evaluator (writing the `dialog.effect/*` facts via the
-    /// `Effect: Statement` impl) and participates in the
-    /// reactor's induce loop on every subsequent commit.
-    pub effects: Vec<crate::effect::Effect>,
 
     /// Non-fatal findings the analyzer accumulated during the
     /// pass. Always present (empty when nothing surfaced); the
@@ -165,21 +158,31 @@ pub struct MutationAnalysis {
     pub transient: HashSet<Entity>,
 }
 
-/// One element of [`MutationAnalysis::statements`] — either an
-/// assertion or a retraction of an [`Application`].
+/// One element of [`MutationAnalysis::statements`] — an
+/// assertion, a retraction of an [`Application`], or the
+/// installation of an effect lifted from a `rule!:` expression.
 #[derive(Debug, Clone)]
 pub enum Statement {
     /// `head! …:` — write the facts.
     Assert(Application),
     /// `head! …: _` (or `field: _`) — dissociate matching facts.
     Retract(Application),
+    /// `rule!:` — install an inductive effect on the branch. The
+    /// `!` marker makes a rule a mutation: evaluating it writes
+    /// the `dialog.effect/*` facts (via the `Effect: Statement`
+    /// impl) that the reactor's induce loop reads on every
+    /// subsequent commit.
+    InstallEffect(crate::effect::Effect),
 }
 
 impl Statement {
-    /// The wrapped [`Application`], regardless of variant.
-    pub fn application(&self) -> &Application {
+    /// The wrapped [`Application`], if this statement carries one.
+    /// `InstallEffect` has no application — it installs an effect
+    /// rather than applying a predicate to terms.
+    pub fn application(&self) -> Option<&Application> {
         match self {
-            Self::Assert(a) | Self::Retract(a) => a,
+            Self::Assert(a) | Self::Retract(a) => Some(a),
+            Self::InstallEffect(_) => None,
         }
     }
 }

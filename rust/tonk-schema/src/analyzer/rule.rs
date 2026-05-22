@@ -261,9 +261,20 @@ mod tests {
         )])
     }
 
+    /// Extract the lone `Statement::InstallEffect` from an
+    /// analysis, panicking if the mutation side does not hold
+    /// exactly one and it is not an effect install.
+    fn only_installed_effect(analysis: &Analysis) -> &crate::effect::Effect {
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        match &analysis.mutate.statements[0] {
+            crate::transact::Statement::InstallEffect(effect) => effect,
+            other => panic!("expected Statement::InstallEffect, got {other:?}"),
+        }
+    }
+
     /// End-to-end happy path: a `rule!:` with one positive
     /// `when` premise lifts into a compiled `Effect` and lands
-    /// in `analysis.effects`.
+    /// in `analysis.mutate.statements` as a `Statement::InstallEffect`.
     #[dialog_common::test]
     async fn it_lifts_a_rule_into_an_effect() {
         let mut resolver = TestResolver::new();
@@ -288,8 +299,7 @@ rule!:\n\
             .await
             .expect("analyze should succeed");
 
-        assert_eq!(analysis.effects.len(), 1);
-        let effect = &analysis.effects[0];
+        let effect = only_installed_effect(&analysis);
         assert_eq!(effect.polarity(), EffectPolarity::Assert);
         // Head concept entity matches the pong descriptor.
         assert_eq!(
@@ -329,8 +339,10 @@ rule!:\n\
             .await
             .expect("analyze should succeed");
 
-        assert_eq!(analysis.effects.len(), 1);
-        assert_eq!(analysis.effects[0].polarity(), EffectPolarity::Retract);
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            EffectPolarity::Retract
+        );
     }
 
     /// Unknown head concept name surfaces as
