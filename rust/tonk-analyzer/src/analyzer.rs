@@ -3375,6 +3375,169 @@ pong!:
         }
     }
 
+    /// `DocumentAnalysis::statements()` projects the tree into
+    /// apply order: every assertion's lowered claims in document
+    /// order, then a trailing `InstallEffect` per `rule!:`. A
+    /// rule declared *before* an assertion in source still sorts
+    /// after it — the evaluator depends on this ordering.
+    #[dialog_common::test]
+    async fn it_orders_statements_assertions_before_rule_effects() {
+        use tonk_core::transact::Statement;
+
+        let syntax = must_parse(
+            r#"
+rule!:
+  assert!: person
+  when:
+    - assert: person
+      where: { this: ?this, name: ?name }
+person!:
+  this: did:key:zStatementOrder
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let tree = analyze(&syntax, &resolver).await.unwrap();
+        let statements = tree.analysis.statements();
+
+        // The rule is the first expression in source, but its
+        // InstallEffect must sort last.
+        assert!(
+            !statements.is_empty(),
+            "the document produced planned statements"
+        );
+        let last = statements.last().expect("at least one statement");
+        assert!(
+            matches!(last.statement, Statement::InstallEffect(_)),
+            "the rule!: InstallEffect sorts after every assertion statement, \
+             got {:?}",
+            last.statement
+        );
+        assert!(
+            statements[..statements.len() - 1]
+                .iter()
+                .all(|s| !matches!(s.statement, Statement::InstallEffect(_))),
+            "only the trailing statement is an InstallEffect"
+        );
+    }
+
+    /// `transient_entities()` returns exactly the concept
+    /// entities asserted against a `transient:` concept — the
+    /// durable concept's entity is absent.
+    #[dialog_common::test]
+    async fn it_collects_only_transient_concept_entities() {
+        let syntax = must_parse(
+            r#"
+concept!: &ping
+  transient:
+  with:
+    tag:
+      description: "Tag"
+      the:         io.gozala.ping/tag
+      as:          Text
+      cardinality: one
+concept!: &pong
+  with:
+    tag:
+      description: "Tag"
+      the:         io.gozala.pong/tag
+      as:          Text
+      cardinality: one
+ping!:
+  this: did:key:zPingSubject
+  tag:  "hi"
+pong!:
+  this: did:key:zPongSubject
+  tag:  "bye"
+"#,
+        );
+        let tree = analyze(&syntax, &NoopResolver).await.unwrap();
+        let transient = tree.analysis.transient_entities();
+
+        assert_eq!(
+            transient.len(),
+            1,
+            "exactly one concept — ping — is transient; got {transient:?}"
+        );
+    }
+
+    /// `has_statements()` is the `/evaluate` route's commit
+    /// signal. A query-only document reports `false`; a
+    /// `rule!:`-only document reports `true` (a rule is a
+    /// mutation). `has_no_queries()` is the mirror for the read
+    /// side.
+    #[dialog_common::test]
+    async fn it_reports_statement_and_query_presence() {
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+
+        // Query-only — no statements, has a query.
+        let query_only = analyze(&must_parse("person:\n  this: ?p\n  name: ?n\n"), &resolver)
+            .await
+            .unwrap();
+        assert!(
+            !query_only.analysis.has_statements(),
+            "a query-only document has no planned statements"
+        );
+        assert!(
+            !query_only.analysis.has_no_queries(),
+            "a query-only document carries a query"
+        );
+
+        // Rule-only — has statements (the rule is a mutation),
+        // no query.
+        let rule_only = analyze(
+            &must_parse(
+                "rule!:\n  assert!: person\n  when:\n    - assert: person\n      \
+                 where: { this: ?this, name: ?name }\n",
+            ),
+            &resolver,
+        )
+        .await
+        .unwrap();
+        assert!(
+            rule_only.analysis.has_statements(),
+            "a rule-only document has a planned statement — the rule is a mutation"
+        );
+        assert!(
+            rule_only.analysis.has_no_queries(),
+            "a rule-only document carries no query"
+        );
+    }
+
+    /// `queries()` yields the user-written query expressions in
+    /// document order, skipping assertions and rules.
+    #[dialog_common::test]
+    async fn it_yields_query_nodes_in_document_order() {
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let syntax = must_parse(
+            r#"
+person:
+  this: ?a
+  name: ?n
+person!:
+  this: did:key:zQueryOrder
+  name: "Alice"
+person:
+  this: ?b
+  name: ?m
+"#,
+        );
+        let tree = analyze(&syntax, &resolver).await.unwrap();
+        let labels: Vec<&str> = tree
+            .analysis
+            .queries()
+            .map(|q| q.analysis.label.as_str())
+            .collect();
+
+        // Two query expressions, the assertion between them
+        // skipped — order preserved.
+        assert_eq!(
+            labels,
+            vec!["person", "person"],
+            "queries() yields both query nodes, in document order, skipping the assertion"
+        );
+    }
+
     /// Meta-head declarations (`attribute!` / `concept!`) don't
     /// get auto-snapshots. Their state lives in the schema
     /// branch; user-facing snapshots would surface schema noise.
