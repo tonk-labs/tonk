@@ -224,9 +224,9 @@ Enumeration serves editor completion — offering every concept, or every publis
 
 ### The language server
 
-The language server has two paths, and they resolve against different sources.
+The language server resolves against the **live branch** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics get real `UnknownConcept` findings, completion enumerates the branch's actual concepts and names, hover resolves the real symbol. One source, one path — no fact-less fallback, no discarding of branch-dependent findings.
 
-**Completion and hover resolve against the live branch.** The document being edited belongs to a branch; completion enumerates that branch's concepts and names, hover resolves the symbol under the cursor. The branch is late-bound — `IntrospectionFactory::for_uri` maps the document URI to a branch per request and hands back a bundle of boxed async closures, one per lookup, each capturing that request's concrete source:
+The branch is late-bound: `IntrospectionFactory::for_uri` maps the document URI to a branch per request and hands back a bundle of boxed async closures, one per lookup, each capturing that request's concrete source:
 
 ```rust
 type ConceptLookup =
@@ -235,7 +235,7 @@ type ConceptLookup =
 
 This is the one `dyn` boundary in the runtime; everything else stays fully monomorphic.
 
-**Diagnostics resolve against an empty source.** The diagnostics pass runs `analyze` against `EmptyStore` — a fact-less source — to catch *structural* errors (an assertion with no fields, a malformed rule) without a branch round-trip. Against an empty source a branch-dependent check would be a false positive — every concept reference looks unknown — so the diagnostics pass *discards* the branch-dependent findings (`UnknownConcept` and kin). Those are the worker's responsibility: `/evaluate` resolves them against the real branch.
+A concept referenced before it is committed — declared earlier in the same document — still resolves: the document's own declarations are threaded through `analyze` (the in-document scope), so a name is unknown only when it is genuinely absent from both the document and the branch.
 
 The resolution surface — `ConceptReference` / `AttributeReference`, `ConceptDefinition` / `AttributeDefinition`, `NamedReference`, `IntrospectionError` — lives in `tonk-schema`, alongside the `meta::Name` concept it enumerates.
 
@@ -334,7 +334,7 @@ flowchart TD
 
 - **`/evaluate`** takes a notation document and runs the whole lifecycle through `tonk-evaluator`'s `syntax.evaluate(txn)` chain, then commits via the reactor. The notation write path.
 - **`/transact`** takes a `TransactRequest` — a `Claim` batch — and *bypasses* notation: no parse, no analyze, no compile. The claims arrive already kernel-shaped, so the route hands them straight to the reactor. The structured write path. It is `/evaluate` with the front of the lifecycle already done by the caller.
-- **the language server** never `compile`s, `evaluate`s, or `commit`s — it produces diagnostics and completions, not facts. Its diagnostics pass runs `analyze` against an empty source for structural errors; its completion and hover use the resolution surface (`resolve` / `list`) against the live branch. The read-only path, tapping the front of the lifecycle.
+- **the language server** never `compile`s, `evaluate`s, or `commit`s — it produces diagnostics and completions, not facts. It runs `analyze` and the resolution surface against the live branch: diagnostics, completion, and hover all from one source. The read-only path, tapping the front of the lifecycle.
 
 `/evaluate` and `/transact` converge on the reactor, which acquires the branch session and commits — the commit runs the effects fixpoint (`induce`) and the dialog commit. The language server never reaches the reactor; it reaches a branch only for completion and hover, through the resolution surface via the late-bound `IntrospectionFactory` boundary.
 
