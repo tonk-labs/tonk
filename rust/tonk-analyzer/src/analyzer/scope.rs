@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::resolver::Resolver;
-use crate::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
+use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
 
 /// Layered name index built during analysis.
 ///
@@ -162,7 +162,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Ok(Some(found));
         }
-        if let Some(found) = crate::builtin::lookup_concept(name) {
+        if let Some(found) = tonk_schema::builtin::lookup_concept(name) {
             return Ok(Some(found));
         }
         self.inner.resolve_concept(name).await

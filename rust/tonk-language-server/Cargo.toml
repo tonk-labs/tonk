@@ -15,6 +15,7 @@ lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tonk-analyzer = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
 

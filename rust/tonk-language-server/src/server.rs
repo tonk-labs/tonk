@@ -373,7 +373,7 @@ impl Server {
     ///    colon, etc.). The parser is permissive: it produces a
     ///    `Syntax` tree even when there are recoverable errors.
     /// 2. **Analyzer** — when the parser returns *no* diagnostics,
-    ///    we run `tonk_schema::analyzer::analyze` against the live
+    ///    we run `tonk_analyzer::analyzer::analyze` against the live
     ///    environment (when the host opens one) to catch structural
     ///    errors the parser accepts (`AssertionWithoutFields`,
     ///    `ClaimWithoutFields`, etc.) plus `UnknownConcept` for a
@@ -438,7 +438,7 @@ impl Server {
 /// 1. **Variable scan** — purely structural, no resolver work,
 ///    runs unconditionally so warnings surface even when the
 ///    main analyzer short-circuits.
-/// 2. **`tonk_schema::analyzer::analyze`** — catches structural
+/// 2. **`tonk_analyzer::analyzer::analyze`** — catches structural
 ///    errors the parser accepts. When the host opened a live
 ///    `environment` the analyzer resolves against it, so
 ///    `UnknownConcept` reflects what the branch actually defines.
@@ -451,7 +451,7 @@ async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + 
     syntax: &tonk_notation::Syntax,
     environment: Option<&E>,
 ) -> Vec<lsp_types::Diagnostic> {
-    use tonk_schema::analyzer::{EnvironmentResolver, NoopResolver, analyze, scan_variables};
+    use tonk_analyzer::analyzer::{EnvironmentResolver, NoopResolver, analyze, scan_variables};
 
     let mut out: Vec<lsp_types::Diagnostic> = scan_variables(syntax)
         .into_iter()
@@ -496,10 +496,10 @@ async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + 
 /// when the diagnostic carries no source span.
 fn diagnostic_from_analyze_diagnostic(
     syntax: &tonk_notation::Syntax,
-    diagnostic: tonk_schema::analyzer::AnalyzeDiagnostic,
+    diagnostic: tonk_analyzer::analyzer::AnalyzeDiagnostic,
 ) -> lsp_types::Diagnostic {
     use lsp_types::{Diagnostic, DiagnosticSeverity as LspSeverity, NumberOrString};
-    use tonk_schema::analyzer::DiagnosticSeverity;
+    use tonk_analyzer::analyzer::DiagnosticSeverity;
 
     let severity = match diagnostic.severity {
         DiagnosticSeverity::Warning => LspSeverity::WARNING,
@@ -529,11 +529,11 @@ fn diagnostic_from_analyze_diagnostic(
 /// so every error category is accurate and kept.
 fn diagnostic_from_analyze_error(
     syntax: &tonk_notation::Syntax,
-    err: tonk_schema::analyzer::AnalyzeError,
+    err: tonk_analyzer::analyzer::AnalyzeError,
     live: bool,
 ) -> Option<lsp_types::Diagnostic> {
     use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
-    use tonk_schema::analyzer::AnalyzeErrorKind;
+    use tonk_analyzer::analyzer::AnalyzeErrorKind;
 
     // Without a live environment, skip kinds that depend on a
     // real branch resolver — the worker's evaluate route is the

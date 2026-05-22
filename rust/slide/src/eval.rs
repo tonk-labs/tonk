@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
+use tonk_analyzer::evaluate::{EvaluateError, SyntaxEvaluateExt};
 use tonk_notation::{Parsed, Syntax, parse};
-use tonk_schema::evaluate::{EvaluateError, SyntaxEvaluateExt};
 
 use crate::ExitCode;
 use crate::output::{self, EvaluateResponse, Format};

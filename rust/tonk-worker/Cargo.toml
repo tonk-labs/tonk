@@ -48,6 +48,7 @@ serde-wasm-bindgen = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
+tonk-analyzer = { workspace = true }
 tonk-common = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-language-server = { workspace = true }

@@ -5,11 +5,11 @@
 //! [`NoopResolver`] is provided for document-only analysis paths
 //! (no branch) and for unit tests. [`SourceResolver`] is the
 //! live-environment implementation: it wraps a
-//! [`crate::query_source::Source`] and a query environment and
-//! delegates every lookup to the [`crate::resolution`] surface.
+//! [`tonk_schema::query_source::Source`] and a query environment and
+//! delegates every lookup to the [`tonk_schema::resolution`] surface.
 //!
 //! The resolved values are [`ConceptDefinition`] and
-//! [`AttributeDefinition`] from [`crate::resolution`] — the
+//! [`AttributeDefinition`] from [`tonk_schema::resolution`] — the
 //! single resolved-concept / resolved-attribute types in
 //! `tonk-schema`. `Resolver` is the analyzer's vocabulary: it
 //! keeps the analyzer agnostic of *where* names resolve from.
@@ -18,9 +18,9 @@ use async_trait::async_trait;
 use dialog_artifacts::Entity;
 use dialog_common::ConditionalSync;
 
-use crate::concept::{QueryEnv, lookup_named_entity};
-use crate::query_source::Source;
-use crate::resolution::{
+use tonk_schema::concept::{QueryEnv, lookup_named_entity};
+use tonk_schema::query_source::Source;
+use tonk_schema::resolution::{
     AttributeDefinition, AttributeReference, ConceptDefinition, ConceptReference, Environment,
     NamedReference, ResolveError,
 };
@@ -66,7 +66,7 @@ pub trait Resolver {
 /// `&Transaction` overlay — and the query environment its
 /// operations take.
 ///
-/// Every `resolve_*` method delegates to the [`crate::resolution`]
+/// Every `resolve_*` method delegates to the [`tonk_schema::resolution`]
 /// surface (`ConceptReference::resolve(...).perform(env)`, etc.).
 /// This is the type the evaluator and the language server both
 /// hand to [`super::analyze`] when resolving against real data.

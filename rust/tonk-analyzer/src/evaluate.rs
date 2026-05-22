@@ -5,7 +5,7 @@
 //! [`tonk_notation::Syntax`], each a nested prefix of the next:
 //!
 //! ```ignore
-//! use tonk_schema::evaluate::{SyntaxAnalyzeExt, SyntaxCompileExt, SyntaxEvaluateExt};
+//! use tonk_analyzer::evaluate::{SyntaxAnalyzeExt, SyntaxCompileExt, SyntaxEvaluateExt};
 //!
 //! syntax.analyze(source).perform(env).await?;   // -> Analysis
 //! syntax.compile(source).perform(env).await?;   // -> Compiled
@@ -69,10 +69,10 @@ use tonk_notation::Syntax;
 
 use crate::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use crate::analyzer;
-use crate::concept::{QueryEnv, application_to_plan};
-use crate::effect_query::EffectStatement;
-use crate::query_source::Source;
 use tonk_core::transact::{Application, ApplicationPlan, Planner as _, Statement};
+use tonk_schema::concept::{QueryEnv, application_to_plan};
+use tonk_schema::effect_query::EffectStatement;
+use tonk_schema::query_source::Source;
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -391,7 +391,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // effects fixpoint fires on it and it's
                             // swept before the durable commit.
                             if transient_entities.contains(&plan.statement.predicate.this()) {
-                                crate::effects::accumulate_head_facts(
+                                tonk_schema::effects::accumulate_head_facts(
                                     &plan.statement,
                                     &mut transients,
                                 );
@@ -452,7 +452,7 @@ pub struct Evaluated<'a> {
     /// Transient claims the document asserted — one entry per
     /// field of every assertion whose concept is declared
     /// `transient:`. Hand to
-    /// [`crate::effects::TransactionExt::induce`] as the
+    /// [`tonk_schema::effects::TransactionExt::induce`] as the
     /// effects-fixpoint seed; `induce` fires the installed rules
     /// on these and sweeps them so they never reach durable
     /// storage. Empty when the document asserts no transient
@@ -495,7 +495,7 @@ impl<'a> EvaluatedCommit<'a> {
         branch: &Branch,
         env: &Env,
     ) -> Result<EvaluateResult, EvaluateError> {
-        use crate::effects::TransactionExt as _;
+        use tonk_schema::effects::TransactionExt as _;
 
         let Evaluated {
             txn,
@@ -613,7 +613,7 @@ struct QueryResults {
 /// their frames on shared user-named variables.
 ///
 /// `Application` impls `dialog_query::Application` and dispatches
-/// internally to the right [`crate::concept::QueryPlan`] (built-in
+/// internally to the right [`tonk_schema::concept::QueryPlan`] (built-in
 /// or branch concept), so this loop is uniform across head kinds.
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
@@ -1016,7 +1016,7 @@ fn value_to_json(value: &Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::concept::{AnonymousConcept, TransientConcept};
+    use tonk_schema::concept::{AnonymousConcept, TransientConcept};
     // Aliased so the `.assert()` trait method stays in scope
     // without shadowing the analyzer's `Statement` enum.
     use dialog_artifacts::Statement as ArtifactsStatement;
@@ -1264,7 +1264,7 @@ rule!:\n\
             .is("hi".to_string())
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
+        use tonk_schema::effects::TransactionExt as _;
         branch
             .transaction()
             .integrate(transients.clone())
@@ -1429,7 +1429,7 @@ rule!:\n\
             .is("hi".to_string())
             .assert(&mut transients);
 
-        use crate::effects::TransactionExt as _;
+        use tonk_schema::effects::TransactionExt as _;
         branch
             .transaction()
             .integrate(transients.clone())

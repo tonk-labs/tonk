@@ -24,8 +24,8 @@
 //! - [`error`] — [`AnalyzeError`] enum
 //! - [`resolver`] — [`Resolver`] trait + [`NoopResolver`] +
 //!   [`SourceResolver`], the name-lookup seam; resolved values are
-//!   [`crate::resolution::ConceptDefinition`] /
-//!   [`crate::resolution::AttributeDefinition`]
+//!   [`tonk_schema::resolution::ConceptDefinition`] /
+//!   [`tonk_schema::resolution::AttributeDefinition`]
 //! - [`scope`] — in-document name index used during analysis
 //! - [`declaration`] — `attribute!` / `concept!` body parsing +
 //!   their `Application` builders
@@ -64,10 +64,9 @@ pub use error::{
 pub use resolver::{EnvironmentResolver, NoopResolver, Resolver, SourceResolver};
 pub use scan::scan_variables;
 
-use crate::resolution::{AttributeDefinition, ConceptDefinition};
 use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
+use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
 
-use crate::prelude::EntityExt;
 use assertion::{body_digest, build_assertion_application, derive_head_intent};
 use declaration::{
     DeclaredApplication, attribute_application, concept_application, parse_attribute_body,
@@ -77,6 +76,7 @@ use dialog_artifacts::Entity;
 use field::collect_unbound_variables;
 use query::build_query_application;
 use scope::Scope;
+use tonk_schema::prelude::EntityExt;
 
 /// The analyzer's per-pass working state — the scratch the build
 /// phases read and mutate as they walk the document.
@@ -697,11 +697,11 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolution::ResolveError;
     use async_trait::async_trait;
     use dialog_artifacts::{Entity, Value};
     use dialog_query::{ConceptDescriptor, Term};
     use tonk_notation::parse;
+    use tonk_schema::resolution::ResolveError;
 
     /// Wrap a dialog descriptor as a durable [`ConceptDefinition`]
     /// — the resolved shape the analyzer's `Resolver` returns.

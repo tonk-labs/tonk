@@ -183,7 +183,6 @@ async fn lift_premise<R: Resolver>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
     use async_trait::async_trait;
     use dialog_artifacts::Entity;
     use dialog_query::AttributeDescriptor;
@@ -193,6 +192,7 @@ mod tests {
     use std::collections::HashMap;
     use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
     use tonk_notation::parse;
+    use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
 
     /// Resolver backed by an in-memory map of concept name →
     /// descriptor. Lets the test feed pre-built concepts to the

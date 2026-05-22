@@ -53,13 +53,7 @@ pub mod effects;
 
 pub mod rule;
 
-pub mod analysis;
-
-pub mod analyzer;
-
 pub mod builtin;
-
-pub mod evaluate;
 
 pub mod query;
 

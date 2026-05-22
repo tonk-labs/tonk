@@ -13,8 +13,8 @@ use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute}
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
-use crate::prelude::EntityExt;
 use tonk_core::transact::{Application, DomainApplication, ThisIntent};
+use tonk_schema::prelude::EntityExt;
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:
