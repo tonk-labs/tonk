@@ -69,7 +69,8 @@ use tonk_notation::Syntax;
 
 use crate::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use crate::analyzer;
-use crate::concept::QueryEnv;
+use crate::concept::{QueryEnv, application_to_plan};
+use crate::effect_query::EffectStatement;
 use crate::query_source::Source;
 use crate::transact::{Application, ApplicationPlan, Planner as _, Statement};
 
@@ -416,7 +417,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // attribute the body reads) — bump the
                             // count by 4 + premise-attribute count.
                             claim_count += 4 + effect.on_entities().len();
-                            txn = txn.assert(effect.clone());
+                            txn = txn.assert(EffectStatement(effect.clone()));
                         }
                     }
                 }
@@ -814,7 +815,7 @@ async fn collect_matches<Env: EvaluateEnv>(
 
     let conclusions: Vec<ConceptConclusion> = branch
         .query()
-        .select(application)
+        .select(application_to_plan(application))
         .perform(env)
         .try_vec()
         .await

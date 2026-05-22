@@ -266,7 +266,7 @@ fn the(domain: &str, name: &str) -> dialog_query::attribute::The {
 
 /// Query the transaction's overlay for effect entities whose
 /// `dialog.effect/on` index lists the given attribute name.
-/// Equivalent to [`effects_by_on`](crate::effect::effects_by_on)
+/// Equivalent to [`effects_by_on`](crate::effect_query::effects_by_on)
 /// but reads through the transaction so in-flight effect
 /// installs and retracts are visible.
 async fn effects_on<Env: InduceEnv>(
@@ -298,7 +298,7 @@ async fn effects_on<Env: InduceEnv>(
 
 /// Query the transaction's overlay for an effect's `source`
 /// and `polarity` claims, rehydrating it. Mirrors
-/// [`Effect::by_entity`](crate::effect::Effect::by_entity)'s
+/// [`Effect::by_entity`](crate::effect_query::effect_by_entity)'s
 /// resolve path but reads through the transaction.
 async fn load_effect<Env: InduceEnv>(
     txn: &Transaction<'_>,
@@ -654,6 +654,7 @@ mod tests {
 
     use crate::concept::{AnonymousConcept, TransientConcept};
     use crate::effect::{Effect, EffectPolarity};
+    use crate::effect_query::EffectStatement;
     use dialog_artifacts::Statement;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
@@ -826,7 +827,7 @@ mod tests {
         install = install_attribute_facts(install, &pong);
         install = install.assert(AnonymousConcept::new(pong.clone()));
         install = install.assert(TransientConcept::new(ping.clone()));
-        install = install.assert(effect);
+        install = install.assert(EffectStatement(effect));
         install.commit().perform(&operator).await?;
 
         // Submit a transient `ping{this: e1, tag: "hello"}`.
@@ -936,8 +937,8 @@ mod tests {
         install = install.assert(TransientConcept::new(cmd_a.clone()));
         install = install.assert(TransientConcept::new(cmd_b.clone()));
         install = install.assert(AnonymousConcept::new(target.clone()));
-        install = install.assert(effect_a);
-        install = install.assert(effect_b);
+        install = install.assert(EffectStatement(effect_a));
+        install = install.assert(EffectStatement(effect_b));
         install.commit().perform(&operator).await?;
 
         // Seed a single transient cmd_a.
@@ -1035,7 +1036,7 @@ mod tests {
         let mut install = branch.transaction();
         install = install_attribute_facts(install, &tick);
         install = install.assert(TransientConcept::new(tick.clone()));
-        install = install.assert(effect);
+        install = install.assert(EffectStatement(effect));
         install.commit().perform(&operator).await?;
 
         let subject: Entity = "did:key:zRunawaySubject".parse()?;
@@ -1117,7 +1118,7 @@ mod tests {
         install = install_attribute_facts(install, &ack);
         install = install.assert(AnonymousConcept::new(message.clone()));
         install = install.assert(TransientConcept::new(ack.clone()));
-        install = install.assert(effect);
+        install = install.assert(EffectStatement(effect));
         install.commit().perform(&operator).await?;
 
         // Seed a durable message{this: m1, body: "hello"}.
@@ -1223,7 +1224,7 @@ mod tests {
         install = install.assert(AnonymousConcept::new(pong.clone()));
         install = install.assert(TransientConcept::new(ping.clone()));
         install = install.assert(TransientConcept::new(noise.clone()));
-        install = install.assert(effect);
+        install = install.assert(EffectStatement(effect));
         install.commit().perform(&operator).await?;
 
         let subject: Entity = "did:key:zNoiseSubject".parse()?;
@@ -1337,7 +1338,7 @@ mod tests {
         install = install_attribute_facts(install, &increment);
         install = install.assert(AnonymousConcept::new(counter.clone()));
         install = install.assert(TransientConcept::new(increment.clone()));
-        install = install.assert(effect);
+        install = install.assert(EffectStatement(effect));
         install.commit().perform(&operator).await?;
 
         // Seed the counter at 41.
@@ -1443,7 +1444,7 @@ mod tests {
         install = install_attribute_facts(install, &bag);
         install = install.assert(AnonymousConcept::new(bag.clone()));
         install = install.assert(TransientConcept::new(cmd.clone()));
-        install = install.assert(effect);
+        install = install.assert(EffectStatement(effect));
         install.commit().perform(&operator).await?;
 
         let subject: Entity = "did:key:zBagSubject".parse()?;

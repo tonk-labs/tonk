@@ -19,18 +19,12 @@
 
 use std::collections::HashSet;
 
-use dialog_artifacts::{Entity, Select, Statement as ArtifactsStatement, Update, Value};
-use dialog_capability::Provider;
-use dialog_common::ConditionalSync;
-use dialog_query::concept::descriptor::ConceptConclusion;
-use dialog_query::source::SelectRules;
-use dialog_query::{
-    Application as DialogApplication, EvaluationError, Match, Parameters, Selection, Term,
-    concept::query::ConceptQuery, try_stream,
-};
+use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
+use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
-use crate::concept::QueryPlan;
+use crate::effect::Effect;
+use crate::meta::{Name, name};
 
 /// One lowered write — an assertion, a retraction of an
 /// [`Application`], or the installation of an effect lifted from
@@ -43,10 +37,10 @@ pub enum Statement {
     Retract(Application),
     /// `rule!:` — install an inductive effect on the branch. The
     /// `!` marker makes a rule a mutation: evaluating it writes
-    /// the `dialog.effect/*` facts (via the `Effect: Statement`
-    /// impl) that the reactor's induce loop reads on every
-    /// subsequent commit.
-    InstallEffect(crate::effect::Effect),
+    /// the `dialog.effect/*` facts (via
+    /// [`assert_effect`](crate::effect_query::assert_effect)) that
+    /// the reactor's induce loop reads on every subsequent commit.
+    InstallEffect(Effect),
 }
 
 impl Statement {
@@ -322,7 +316,6 @@ fn emit_name_assertion<U: Update>(
     update: &mut U,
     assert: bool,
 ) {
-    use crate::meta::{Name, name};
     use dialog_artifacts::Statement as _;
 
     let Some(name_str) = name else {
@@ -430,59 +423,6 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
         } else {
             update.dissociate(the, this_entity.clone(), value.clone());
         }
-    }
-}
-
-// ---------------------------------------------------------------- //
-// Read-side evaluation: an Application as a query.                  //
-// ---------------------------------------------------------------- //
-//
-// [`Application`] impls `dialog_query::Application`, running one
-// expression at a time — delegating to [`QueryPlan`] so built-in
-// heads dispatch transparently. Its conclusion is a
-// `ConceptConclusion` (one entity per row). The evaluator drives
-// the per-expression natural join itself, walking the analysis
-// tree's query nodes.
-
-/// Convert an [`Application`] into the [`QueryPlan`] it should be
-/// evaluated as. `Concept` carries a `ConceptQuery` directly;
-/// `Domain` synthesises one from its parameter map.
-fn application_to_plan(application: Application) -> QueryPlan {
-    match application {
-        Application::Concept { query, .. } => QueryPlan::from(query),
-        Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
-    }
-}
-
-/// Like [`application_to_plan`] but borrows. Needed for
-/// [`DialogApplication::realize`] which receives `&self`.
-fn application_to_plan_cloned(application: &Application) -> QueryPlan {
-    match application {
-        Application::Concept { query, .. } => QueryPlan::from(query.clone()),
-        Application::Domain { application, .. } => {
-            QueryPlan::from(ConceptQuery::from(application.clone()))
-        }
-    }
-}
-
-impl DialogApplication for Application {
-    type Conclusion = ConceptConclusion;
-
-    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
-    where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
-    {
-        let plan = application_to_plan(self);
-        try_stream! {
-            let stream = plan.evaluate(selection, env);
-            for await each in stream {
-                yield each?;
-            }
-        }
-    }
-
-    fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
-        DialogApplication::realize(&application_to_plan_cloned(self), source)
     }
 }
 

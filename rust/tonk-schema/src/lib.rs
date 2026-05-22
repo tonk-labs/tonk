@@ -46,6 +46,8 @@ pub mod resolution;
 
 pub mod effect;
 
+pub mod effect_query;
+
 pub mod effects;
 
 pub mod rule;

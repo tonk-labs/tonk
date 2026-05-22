@@ -41,7 +41,7 @@ use thiserror::Error;
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
 
 use crate::builtin::concept_registry;
-use crate::effect::{AnonymousRuleQuery, rule_of_rule_descriptor};
+use crate::effect_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
 use crate::meta::AnonymousAttribute;
 use crate::query_source::Source;
 
@@ -844,6 +844,22 @@ pub enum QueryPlan {
     AnonymousConcept(AnonymousConceptQuery),
     /// Rule-of-rule enumeration via [`AnonymousRuleQuery`].
     AnonymousRule(AnonymousRuleQuery),
+}
+
+/// Convert an [`Application`](crate::transact::Application) into
+/// the [`QueryPlan`] it should be evaluated as.
+///
+/// `Concept` carries a [`ConceptQuery`] directly; `Domain`
+/// synthesises one from its parameter map. This lowering is the
+/// read-side interpretation of an operation type — kept here,
+/// outside `transact.rs`, so the operation types stay
+/// dependency-free of query/resolution machinery.
+pub fn application_to_plan(application: crate::transact::Application) -> QueryPlan {
+    use crate::transact::Application;
+    match application {
+        Application::Concept { query, .. } => QueryPlan::from(query),
+        Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
+    }
 }
 
 impl From<ConceptQuery> for QueryPlan {
