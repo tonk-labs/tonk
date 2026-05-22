@@ -1287,26 +1287,82 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
 /// rather than the generic field-by-field record.
 const CONCEPT_LABEL: &str = "concept";
 
+/// Render an attribute `Type` discriminant the way it is *typed*
+/// in notation.
+///
+/// A descriptor stores `as` as dialog's PascalCase serde
+/// discriminant (`Text`, `UnsignedInteger`, …), but the analyzer
+/// accepts — and the guide teaches — the kebab-case surface form
+/// (`text`, `unsigned-integer`, …). The concept view shows what a
+/// user would type, so it translates back. An unrecognized value
+/// is passed through unchanged.
+fn type_name_to_notation(stored: &str) -> &str {
+    match stored {
+        "Text" => "text",
+        "UnsignedInteger" => "unsigned-integer",
+        "SignedInteger" => "signed-integer",
+        "Float" => "float",
+        "Boolean" => "boolean",
+        "Entity" => "entity",
+        "Bytes" => "bytes",
+        other => other,
+    }
+}
+
+/// Rewrite every `as` value in a descriptor tree to its
+/// notation surface form (see [`type_name_to_notation`]). Walks
+/// objects and arrays so the `as` inside each `with` attribute is
+/// caught regardless of nesting depth.
+fn notation_normalize(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "as"
+                    && let serde_json::Value::String(s) = child
+                {
+                    *s = type_name_to_notation(s).to_owned();
+                } else {
+                    notation_normalize(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                notation_normalize(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Extract a concept result's descriptor as an object map.
 ///
 /// The `source` attribute of `db:concept` is typed `Text`, so the
 /// descriptor arrives as a *stringified* JSON object, not a
 /// structured value — it has to be parsed before its keys can be
-/// expanded. Returns `None` when there's no `source` field or it
-/// doesn't parse as a JSON object.
+/// expanded. The `as` discriminants are rewritten to their
+/// notation surface form so the rendered concept reads as the
+/// user would type it. Returns `None` when there's no `source`
+/// field or it doesn't parse as a JSON object.
 fn concept_descriptor(
     result: &tonk_worker::QueryResult,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     let value = result.fields.get("source")?.clone();
-    match value {
+    let map = match value {
         // Already structured (a future schema might store it so).
-        serde_json::Value::Object(map) => Some(map),
+        serde_json::Value::Object(map) => map,
         // Stringified JSON — the current `Text`-typed shape.
         serde_json::Value::String(s) => match serde_json::from_str(&s) {
-            Ok(serde_json::Value::Object(map)) => Some(map),
-            _ => None,
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return None,
         },
-        _ => None,
+        _ => return None,
+    };
+    let mut value = serde_json::Value::Object(map);
+    notation_normalize(&mut value);
+    match value {
+        serde_json::Value::Object(map) => Some(map),
+        _ => unreachable!("value was constructed as an object"),
     }
 }
 
@@ -1361,9 +1417,18 @@ fn render_notation_field(name: String, value: serde_json::Value) -> AnyView {
     render_notation_field_at(1, name, value)
 }
 
+/// Two spaces of notation indent per nesting level, as a literal
+/// string. Indentation is real text — not CSS padding — so a
+/// selection copied out of the result keeps its structure when
+/// pasted elsewhere.
+fn notation_indent(depth: usize) -> String {
+    "  ".repeat(depth)
+}
+
 /// Render one field at nesting `depth` (1 = directly under the
-/// head). Indentation is `depth` levels of `2ch`, applied inline
-/// so arbitrarily-deep concept descriptors stay aligned.
+/// head). Each row opens with a literal-space indent span so the
+/// rendered text is copy-paste faithful — `depth` levels of two
+/// spaces, the same as the notation a user would type.
 ///
 /// - A nested object recurses: a bare `key:` row followed by its
 ///   children one level deeper, so a `with:` block reads as
@@ -1372,10 +1437,11 @@ fn render_notation_field(name: String, value: serde_json::Value) -> AnyView {
 ///   indented one level past the key.
 /// - Every other value sits inline on the `key: value` row.
 fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value) -> AnyView {
-    let key_indent = format!("padding-inline-start: {}ch", depth * 2);
+    let indent = notation_indent(depth);
     if let serde_json::Value::Object(map) = value {
         return view! {
-            <div class="notation-row notation-field" style=key_indent>
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ indent }</span>
                 <span class="tonk-cm-key">{ name }</span>
                 <span class="tonk-cm-plain">":"</span>
             </div>
@@ -1390,26 +1456,32 @@ fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value
     if let serde_json::Value::String(s) = &value
         && s.contains('\n')
     {
-        let line_indent = format!("padding-inline-start: {}ch", (depth + 1) * 2);
+        let line_indent = notation_indent(depth + 1);
         let lines: Vec<String> = s.split('\n').map(str::to_owned).collect();
         return view! {
-            <div class="notation-row notation-field" style=key_indent>
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ indent }</span>
                 <span class="tonk-cm-key">{ name }</span>
                 <span class="tonk-cm-plain">":"</span>
             </div>
-            { lines.into_iter().map(move |line| view! {
-                <div class="notation-row notation-value-line" style=line_indent.clone()>
-                    <span class="tonk-cm-string">{ line }</span>
-                </div>
+            { lines.into_iter().map(move |line| {
+                let line_indent = line_indent.clone();
+                view! {
+                    <div class="notation-row notation-value-line">
+                        <span class="notation-indent">{ line_indent }</span>
+                        <span class="tonk-cm-string">{ line }</span>
+                    </div>
+                }
             }).collect_view() }
         }
         .into_any();
     }
     view! {
-        <div class="notation-row notation-field" style=key_indent>
+        <div class="notation-row notation-field">
+            <span class="notation-indent">{ indent }</span>
             <span class="tonk-cm-key">{ name }</span>
             <span class="tonk-cm-plain">": "</span>
-            { render_field_value(value, true) }
+            { render_field_value(value) }
         </div>
     }
     .into_any()
@@ -1453,7 +1525,7 @@ fn render_result_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
                 <wa-tree-item expanded>
                     <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
                     <wa-tree-item>
-                        { render_field_value(value, false) }
+                        { render_field_value(value) }
                     </wa-tree-item>
                 </wa-tree-item>
             }).collect_view() }
@@ -1501,31 +1573,24 @@ fn render_notation_tree_item(name: String, value: serde_json::Value) -> AnyView 
         <wa-tree-item expanded>
             <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
             <wa-tree-item>
-                { render_field_value(value, false) }
+                { render_field_value(value) }
             </wa-tree-item>
         </wa-tree-item>
     }
     .into_any()
 }
 
-/// Threshold (characters) past which a single-line value renders
-/// ellipsized with a click-to-expand. Long enough that ordinary
-/// names, URIs, and numbers stay inline; short enough that a
-/// descriptor blob or prose paragraph gets folded.
-const LONG_VALUE_CHARS: usize = 80;
-
 /// Render a single field value as a highlighted `<span>`, applying
 /// the `tonk-cm-*` decoration class that matches the value's
 /// shape. Mirrors the notation formatter's value rules: URIs bare
 /// and entity-tinted, strings quoted, numbers/bools/null plain.
 ///
-/// When `collapsible` is set, a long single-line value renders
-/// ellipsized — clicking it expands the full text inline. The
-/// listed view uses that; the grouped tree passes `false` so a
-/// long value just wraps in full. Multi-line strings are handled
-/// by the caller (each line gets its own row), so by the time a
-/// string reaches here it is single-line.
-fn render_field_value(value: serde_json::Value, collapsible: bool) -> impl IntoView {
+/// The span is inline and wraps on overflow: rows are plain text
+/// so a selection copied out of the result keeps its structure.
+/// Multi-line strings are handled by the caller (each line gets
+/// its own row), so by the time a string reaches here it is
+/// single-line.
+fn render_field_value(value: serde_json::Value) -> impl IntoView {
     use serde_json::Value;
     let (class, text) = match value {
         Value::Null => ("tonk-cm-variable", "_".to_owned()),
@@ -1547,27 +1612,7 @@ fn render_field_value(value: serde_json::Value, collapsible: bool) -> impl IntoV
             serde_json::to_string(&other).unwrap_or_else(|_| "<?>".to_owned()),
         ),
     };
-    // Plain decorated span for short values, and for every value
-    // when the caller opted out of collapsing. Long collapsible
-    // values render with a click-to-expand affordance instead.
-    if !collapsible || text.chars().count() <= LONG_VALUE_CHARS {
-        return Either::Left(view! { <span class=class>{ text }</span> });
-    }
-    let expanded = RwSignal::new(false);
-    Either::Right(view! {
-        <span
-            class=move || format!(
-                "{class} value-truncated{}",
-                if expanded.get() { " is-expanded" } else { "" },
-            )
-            role="button"
-            tabindex="0"
-            title="Click to expand"
-            on:click=move |_| expanded.update(|e| *e = !*e)
-        >
-            { text }
-        </span>
-    })
+    view! { <span class=class>{ text }</span> }
 }
 
 /// Render a `<wa-tag>` chip describing the current `SyncState`.

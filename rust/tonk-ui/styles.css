@@ -308,48 +308,28 @@ tonk-notation .tonk-cm-variable {
 
 /* Listed view — each result is a `notation-record`; every row
    (head, field, value line) is its own block so lines stay
-   independently selectable. Indentation is set inline per row by
-   `render_notation_field_at` (`padding-inline-start: Nch`), since
-   a concept descriptor nests to arbitrary depth — the renderer,
-   not a fixed stylesheet rule, owns how deep each row sits. */
+   independently selectable. Rows are plain blocks with inline
+   children — not flex — so a selection copied out of the result
+   reads as one line per row. Indentation is a literal-space
+   `.notation-indent` span the renderer prepends, not CSS padding,
+   so the copied text keeps its structure when pasted elsewhere. */
 .notation-record + .notation-record {
     margin-block-start: var(--wa-space-s);
 }
 .notation-row {
     user-select: text;
 }
-/* Field rows are flex lines: the key and `:` separator size to
-   content, the value takes the rest. Without the flex row a long
-   inline-block value can't share the line with the key and drops
-   to its own line. `min-width: 0` lets the value actually shrink
-   so `text-overflow` engages instead of overflowing the row. */
-.notation-field {
-    display: flex;
-    align-items: baseline;
-}
-.notation-field > .value-truncated,
-.notation-field > span:last-child {
-    min-width: 0;
-    flex: 1 1 auto;
-}
+/* Field/value rows wrap on overflow rather than truncating, so a
+   long value stays fully visible and fully copyable. */
+.notation-field,
 .notation-value-line {
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
-
-/* Long single-line value — collapsed to one ellipsized line
-   until clicked. `is-expanded` (toggled in `render_field_value`)
-   drops the clamp and wraps the full text. */
-.value-truncated {
-    cursor: pointer;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.value-truncated.is-expanded {
-    overflow: visible;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+/* The indent prefix carries real spaces; `pre` keeps them from
+   collapsing so each row's content starts at a consistent column,
+   on screen and in copied text. */
+.notation-indent {
+    white-space: pre;
 }
 
 /* A `<wa-tree-item>`'s `label` part is a flex item; its default
