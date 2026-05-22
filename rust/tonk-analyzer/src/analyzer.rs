@@ -2,23 +2,24 @@
 //! [`Analysis<Syntax>`][crate::analysis::Analysis] tree ready for
 //! evaluation against a branch.
 //!
-//! See `analysis-spec.md` (sibling to this crate) for the full
-//! design. Analysis runs in three phases:
+//! See `analysis-spec.md` (sibling to this crate) and
+//! `plan/runtime.md` for the full design. Analysis runs in two
+//! named sub-phases — [`resolve`] then [`expand`]:
 //!
-//! 1. **Derive.** Walk every head; populate `declarations`
-//!    (anchor-form heads) and `variables` (variable-form heads)
-//!    with content-derived entities. For `attribute!` /
-//!    `concept!` heads the body is parsed in this phase to
-//!    compute the descriptor's content-addressed entity, and the
-//!    full `Application` is built up front.
-//! 2. **Build the query.** For each query expression, build an
-//!    [`Application`] with bare-symbol and analysis-time `?var`
-//!    references substituted to constants.
-//! 3. **Build the mutation plan.** For each mutation expression,
-//!    emit cached meta `Application`s and, for non-meta heads,
-//!    build a fresh `Application` with bare-symbol references
-//!    substituted but `?var` references kept as variables — they
-//!    bind at planning time against query results.
+//! - **resolve** — walk the document, bind every concept /
+//!   attribute reference through the [`Resolver`], record
+//!   content-derived entities into `declarations` (anchor-form
+//!   heads) and `variables` (variable-form heads), and scan for
+//!   diagnostics. For `attribute!` / `concept!` heads the body
+//!   is parsed here so the descriptor's content-addressed entity
+//!   is known up front. Output keeps the source shape.
+//! - **expand** — lower notation sugar into kernel-shaped
+//!   claims: a domain predicate becomes an anonymous concept, an
+//!   `&anchor` pairs with a built-in `Name` assert, an omitted
+//!   `this:` is injected as `id:<body-digest>`. This builds the
+//!   query [`Application`]s, the mutation [`Statement`]s, the
+//!   `rule!:`-to-[`Statement::InstallEffect`] lift, and the
+//!   implicit snapshot queries.
 //!
 //! Sub-modules:
 //! - [`error`] — [`AnalyzeError`] enum
@@ -78,23 +79,23 @@ use query::build_query_application;
 use scope::Scope;
 use tonk_schema::prelude::EntityExt;
 
-/// The analyzer's per-pass working state — the scratch the build
-/// phases read and mutate as they walk the document.
+/// The analyzer's per-pass working state — the scratch `expand`
+/// reads and mutates as it walks the document.
 ///
 /// Not the analyzer's product (that is the [`Analysis<Syntax>`][Tree]
-/// tree); this is internal accumulator state. Phase 1 fills
-/// `declarations` / `variables`, Phase 2 fills `queries`, Phase 3
-/// reads all three.
+/// tree); this is internal accumulator state. `resolve` seeds
+/// `declarations` / `variables`; `expand`'s query pass fills
+/// `queries`, and its mutation pass reads all three.
 #[derive(Debug, Default)]
 pub(crate) struct Working {
-    /// `name` → entity. Anchor-form heads.
+    /// `name` → entity. Anchor-form heads. Seeded by `resolve`.
     pub declarations: HashMap<String, Entity>,
     /// `?foo` → entity. Variable-form heads with content-derived
-    /// entities.
+    /// entities. Seeded by `resolve`.
     pub variables: HashMap<String, Entity>,
-    /// The user-written query [`Application`]s built in Phase 2,
-    /// in document order. Read by Phase 3 to decide which `?var`
-    /// references a preceding query binds.
+    /// The user-written query [`Application`]s built by `expand`'s
+    /// query pass, in document order. Read by the mutation pass
+    /// to decide which `?var` references a preceding query binds.
     pub queries: Vec<Application>,
 }
 
@@ -135,6 +136,10 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
 
 /// Analyze a parsed [`Syntax`] tree into the [`Analysis<Syntax>`][Tree]
 /// tree — each syntax node paired with its computed analysis.
+///
+/// The body reads as the spec's two sub-phases: [`resolve`] binds
+/// references and seeds the scope, then [`expand`] lowers the
+/// notation sugar and assembles the tree.
 pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     syntax: &Syntax,
     resolver: &R,
@@ -147,23 +152,51 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     }
 
     let scope = Scope::new(resolver);
+    let resolved = resolve(syntax, &scope).await?;
+    expand(syntax, &scope, resolved).await
+}
 
-    // ---- Phase 1: derive declarations and variables ----
-    //
-    // For `attribute!` / `concept!` heads this also parses the
-    // body so the descriptor's content-addressed entity is known
-    // up front, then builds the `Application` on the spot. The
-    // built application is stashed by source-expression index
-    // so Phase 3 just emits it.
+/// The product of the **resolve** sub-phase — everything `expand`
+/// needs from the resolution walk, beyond the [`Scope`] that
+/// `resolve` mutated in place.
+struct Resolved {
+    /// For `attribute!` / `concept!` heads, the `Application`
+    /// already built from the parsed body, stashed by
+    /// source-expression index so `expand` just emits it.
+    declared: HashMap<usize, DeclaredApplication>,
+    /// Variable-scan diagnostics with source spans.
+    diagnostics: Vec<AnalyzeDiagnostic>,
+}
+
+/// **resolve** — walk the document, bind every concept /
+/// attribute reference through the [`Resolver`], and record the
+/// content-derived entities into the [`Scope`] (`declarations`
+/// for anchor-form heads, `variables` for variable-form heads).
+///
+/// For `attribute!` / `concept!` heads the body is parsed here:
+/// the descriptor's content-addressed entity has to be known
+/// before the head can be declared, and parsing the body is what
+/// computes it. Building the desugared `Application` for those
+/// heads is `expand`'s job, but it cannot be cleanly split from
+/// the parse — `parse_attribute_body` / `parse_concept_body`
+/// already produce the descriptor `expand` would build from — so
+/// the eager `attribute_application` / `concept_application`
+/// calls stay here, stashed in [`Resolved::declared`] for `expand`
+/// to emit. This is the one place resolve and expand genuinely
+/// interleave.
+async fn resolve<R: Resolver + ConditionalSync>(
+    syntax: &Syntax,
+    scope: &Scope<'_, R>,
+) -> Result<Resolved, AnalyzeError> {
     let mut declared: HashMap<usize, DeclaredApplication> = HashMap::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         let (head, has_effect) = match expression {
             Expression::Query(q) => (&q.head, false),
             Expression::Assertion(a) => (&a.head, true),
-            // Rule expressions are lifted in a separate analyzer
-            // pass (Phase 3 notation surface). They contribute no
-            // declarations to the query/mutation pipeline.
+            // Rule expressions are lifted by `expand`'s rule
+            // pass. They contribute no declarations to the
+            // query/mutation pipeline, so `resolve` skips them.
             Expression::Rule(_) => continue,
         };
 
@@ -184,7 +217,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                         descriptor: plan.descriptor.clone(),
                     };
                     let (this, name) =
-                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), &scope)
+                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope)
                             .await?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
@@ -219,16 +252,15 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                     continue;
                 }
                 "concept" => {
-                    // Concept body resolution may need the
-                    // resolver — defer to Phase 3 and resolve
-                    // here too. The body references attributes
-                    // via bare-symbol / URIs that may live in
-                    // either the in-doc map or the branch.
+                    // The body references attributes via
+                    // bare-symbol / URIs that may live in either
+                    // the in-doc map or the branch, so concept
+                    // body parsing goes through the resolver.
                     let assertion = match expression {
                         Expression::Assertion(a) => a,
                         _ => continue,
                     };
-                    let plan = parse_concept_body(assertion, &scope).await?;
+                    let plan = parse_concept_body(assertion, scope).await?;
                     let entity = plan.entity.clone();
                     let descriptor = if plan.transient {
                         DurableConceptDescriptor::Transient(plan.descriptor.clone())
@@ -240,7 +272,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                         descriptor,
                     };
                     let (this, name) =
-                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), &scope)
+                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope)
                             .await?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
@@ -294,14 +326,15 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
         // `this: <anchor-name>` (or use the bare symbol in
         // field position) to the body-derived entity.
         //
-        // The same registration happens again in Phase 3 via
-        // `this_term_for_assertion`'s `Derived + name` branch
-        // (it's the source of truth for `analysis.declarations`),
-        // but Phase 3 runs after Phase 2's query build, which is
-        // too late for in-doc symbol resolution. Pre-registering
-        // here keeps doc-order semantics consistent. The two
-        // computations agree on the entity because `body_digest`
-        // is a pure function of the field literals.
+        // The same registration happens again in `expand`'s
+        // mutation pass via `this_term_for_assertion`'s
+        // `Derived + name` branch (it's the source of truth for
+        // `analysis.declarations`), but that pass runs after the
+        // query build, which is too late for in-doc symbol
+        // resolution. Pre-registering here keeps doc-order
+        // semantics consistent. The two computations agree on the
+        // entity because `body_digest` is a pure function of the
+        // field literals.
         if let Expression::Assertion(a) = expression
             && let Some(anchor) = &a.anchor
         {
@@ -310,16 +343,48 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
         }
     }
 
-    // ---- Phase 2: build query Applications ----
-    //
-    // The `Working` scratch carries the cross-phase accumulator
-    // state: Phases 2 and 3 read it as they build
+    Ok(Resolved {
+        declared,
+        diagnostics: scan::scan_variables(syntax),
+    })
+}
+
+/// **expand** — lower the resolved document's notation sugar into
+/// kernel-shaped claims and assemble the [`Analysis<Syntax>`][Tree]
+/// tree. Three passes over the document, then snapshot synthesis:
+///
+/// 1. **query** — build a query [`Application`] per query
+///    expression.
+/// 2. **mutation** — build the desugared mutation [`Statement`]s
+///    per assertion: domain predicate → anonymous concept,
+///    `&anchor` → paired `Name` assert, omitted `this:` → injected
+///    `id:<body-digest>`. `attribute!` / `concept!` heads emit the
+///    `Application` `resolve` already built.
+/// 3. **rule** — lift each `rule!:` into a
+///    [`Statement::InstallEffect`].
+///
+/// Then [`synthesize_implicit_queries`] fills the implicit
+/// snapshot queries. Every lowering is terminal — it emits only
+/// resolved entities and substituted terms — so `expand`'s output
+/// never needs re-resolution.
+async fn expand<R: Resolver + ConditionalSync>(
+    syntax: &Syntax,
+    scope: &Scope<'_, R>,
+    resolved: Resolved,
+) -> Result<Tree<Syntax>, AnalyzeError> {
+    let Resolved {
+        mut declared,
+        diagnostics,
+    } = resolved;
+
+    // The `Working` scratch carries the cross-pass accumulator
+    // state: the query and mutation passes read it as they build
     // (`build_query_application`, `build_assertion_application`,
     // `collect_unbound_variables` all take `&Working`). The
     // per-expression results are captured alongside into tree
     // nodes, indexed by source expression; the `Analysis<Syntax>`
-    // tree is assembled once the phases finish.
-    let diagnostics = scan::scan_variables(syntax);
+    // tree is assembled once the passes finish. `declarations` /
+    // `variables` are seeded from the scope `resolve` filled.
     let mut working = Working {
         declarations: scope.declarations.lock().clone(),
         variables: scope.variables.lock().clone(),
@@ -330,9 +395,10 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     let mut nodes: Vec<Option<ExpressionAnalysis>> =
         (0..syntax.expressions.len()).map(|_| None).collect();
 
+    // ---- query pass: build query Applications ----
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
-            let application = build_query_application(q, &scope, &working).await?;
+            let application = build_query_application(q, scope, &working).await?;
             working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
                 source: q.clone(),
@@ -344,13 +410,13 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
         }
     }
 
-    // ---- Phase 3: build mutation Statements ----
+    // ---- mutation pass: build mutation Statements ----
     let mut requires: HashSet<String> = HashSet::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         match expression {
             Expression::Query(_) => {}
-            // Rule expressions are lifted in Phase 3b.
+            // Rule expressions are lifted in the rule pass below.
             Expression::Rule(_) => {}
             Expression::Assertion(a) => {
                 let mut claims: Vec<Statement> = Vec::new();
@@ -362,7 +428,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                 let is_declaration;
 
                 if let Some(declaration) = declared.remove(&index) {
-                    // `attribute!` / `concept!` head — Phase 1
+                    // `attribute!` / `concept!` head — `resolve`
                     // already built the application. Inline
                     // attribute definitions inside a `concept!`'s
                     // `with:` map are emitted as their own
@@ -397,7 +463,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                     // present, retract first so the dissociate
                     // sees the prior state before the new
                     // assert lands.
-                    let plan = build_assertion_application(a, &scope, &mut working).await?;
+                    let plan = build_assertion_application(a, scope, &mut working).await?;
                     let probe = plan.assert.as_ref().or(plan.retract.as_ref());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
@@ -443,7 +509,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
         }
     }
 
-    // ---- Phase 3b: lift rule!: expressions into mutations ----
+    // ---- rule pass: lift rule!: expressions into mutations ----
     // A `rule!:` carries the `!` mutation marker — evaluating it
     // installs `dialog.effect/*` facts on the branch — so it is
     // just another mutation statement. Each lift resolves the
@@ -453,7 +519,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     // effect lands as a `Statement::InstallEffect`.
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Rule(rule_expr) = expression {
-            let effect = rule::lift_rule(rule_expr, &scope, &working).await?;
+            let effect = rule::lift_rule(rule_expr, scope, &working).await?;
             nodes[index] = Some(ExpressionAnalysis::Rule(Box::new(Tree {
                 source: rule_expr.clone(),
                 analysis: RuleAnalysis { effect },
@@ -481,7 +547,7 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     // Assemble the document tree, in source order.
     let mut expressions: Vec<Tree<Expression>> = Vec::new();
     for (expression, node) in syntax.expressions.iter().zip(nodes) {
-        let analysis = node.expect("every expression is analyzed in phases 2/3/3b");
+        let analysis = node.expect("every expression is analyzed by the expand passes");
         expressions.push(Tree {
             source: expression.clone(),
             analysis,
@@ -495,9 +561,9 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
         diagnostics,
     };
 
-    // Phase 4 — implicit snapshot-query synthesis. Reads the
-    // assembled tree's statements and the user queries, fills
-    // `document.synthesized`.
+    // ---- snapshot synthesis: implicit snapshot queries ----
+    // Reads the assembled tree's statements and the user queries,
+    // fills `document.synthesized`.
     synthesize_implicit_queries(&mut document);
 
     Ok(Tree {
