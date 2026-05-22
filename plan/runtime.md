@@ -6,7 +6,8 @@ lifecycle a document passes through.
 
 ## Lifecycle
 
-A document moves through six stages, owned by four crates:
+A document moves through six stages. The first five are tonk's;
+the last, `commit`, is a plain dialog branch operation:
 
 ```mermaid
 flowchart LR
@@ -24,6 +25,8 @@ flowchart LR
     subgraph tonk-evaluator
         compile
         evaluate
+    end
+    subgraph dialog
         commit
     end
 ```
@@ -31,11 +34,14 @@ flowchart LR
 The three `Syntax` entry points are nested prefixes — each runs
 the prior under the hood:
 
-| Entry point        | Runs stages                                    |
-|--------------------|------------------------------------------------|
-| `syntax.analyze()` | resolve, expand                                |
-| `syntax.compile()` | resolve, expand, compile                       |
-| `syntax.evaluate()`| resolve, expand, compile, evaluate, commit     |
+| Entry point        | Runs stages                          |
+|--------------------|--------------------------------------|
+| `syntax.analyze()` | resolve, expand                      |
+| `syntax.compile()` | resolve, expand, compile             |
+| `syntax.evaluate()`| resolve, expand, compile, evaluate   |
+
+`evaluate` hands back a transaction with its overlay populated;
+`commit` is then the caller's separate step (`txn.commit()`).
 
 - **parse** — document text → a `Syntax` tree. Pure syntax: no
   branch, no schema.
@@ -52,15 +58,19 @@ the prior under the hood:
 - **evaluate** — run those operations against a transaction
   overlay: execute the queries, run the effects fixpoint
   (`induce`), integrate the claims. The overlay now reflects
-  every read result and pending write.
+  every read result and pending write. Yields the transaction —
+  it does *not* commit.
 - **commit** — seal the overlay into a durable branch revision.
+  This is dialog's own branch operation, not part of the
+  notation runtime. The runtime's job ends at a populated
+  transaction; whoever drove the evaluation decides to commit it,
+  inspect it, or drop it.
 
 The stages group into named umbrellas:
 
 - **analyze** = `resolve` + `expand`.
 - **compile** runs `analyze` first, then lowers to operations.
-- **evaluate** runs `compile` first, then runs the operations and
-  commits.
+- **evaluate** runs `compile` first, then runs the operations.
 
 Each is a prefix of the next, so each is a usable entry point on
 its own (see "Driving the lifecycle").
@@ -97,8 +107,10 @@ flowchart LR
   the evaluator.
 - **`tonk-analyzer`** — performs `resolve` + `expand`. Turns a
   `Syntax` tree into an `Analysis`.
-- **`tonk-evaluator`** — performs `compile`, `evaluate`, `commit`.
-  Lowers an `Analysis` to operations, runs them, seals the result.
+- **`tonk-evaluator`** — performs `compile` + `evaluate`. Lowers
+  an `Analysis` to operations and runs them, yielding a populated
+  transaction. Committing that transaction is dialog's, left to
+  the caller.
 
 A `Source` (dialog's query target — a `Branch` or a `Transaction`
 overlay) flows in from the side: every crate from `tonk-schema`
@@ -120,7 +132,9 @@ runs it. Each is a prefix of the next:
 ```rust
 syntax.analyze(source).perform(env)   // -> Analysis   resolve + expand
 syntax.compile(source).perform(env)   // -> Compiled   analyze, then compile
-syntax.evaluate(txn).perform(env)     // -> Evaluated  compile, run, commit
+syntax.evaluate(txn).perform(env)     // -> Evaluated  compile, run
+
+evaluated.txn.commit().perform(env)   // dialog — the caller's step
 ```
 
 - **`analyze`** is pure-read: takes a `Source` (a `Branch` for the
@@ -128,10 +142,13 @@ syntax.evaluate(txn).perform(env)     // -> Evaluated  compile, run, commit
 - **`compile`** runs `analyze` under the hood, then lowers the
   tree to runnable operations — also pure-read, also a `Source`.
 - **`evaluate`** runs `compile` under the hood, then *runs* the
-  operations and commits. It writes, so the caller creates a
-  `Transaction` and hands it in; `evaluate` resolves against that
-  transaction's overlay, so a concept declared earlier in the
-  same document resolves for a later statement.
+  operations. It writes into a transaction overlay, so the caller
+  creates a `Transaction` and hands it in; `evaluate` resolves
+  against that transaction's overlay, so a concept declared
+  earlier in the same document resolves for a later statement.
+  `evaluate` yields an `Evaluated` carrying the transaction — it
+  does not commit. The caller commits it (`txn.commit()`, a
+  dialog operation), or inspects it, or drops it.
 
 ```rust
 // tonk-analyzer
@@ -149,7 +166,9 @@ pub trait SyntaxCompileExt {
 pub trait SyntaxEvaluateExt {
     fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a>;
 }
-// .perform(env) -> Evaluated       — runs compile internally
+// .perform(env) -> Evaluated       — runs compile internally;
+//                                    Evaluated holds the txn,
+//                                    uncommitted
 ```
 
 ## Resolution
@@ -397,12 +416,46 @@ batch). It is an operation, not a concept; it carries a
 concept-shaped write; `Fact` is the untyped triple it ultimately
 emits.
 
-## compile and commit
+## compile and evaluate
 
 `compile` turns the `Analysis<T>` tree into runnable operations:
 the query side becomes query plans, the write side is the
-`Claim`s already nested in the tree. `commit` applies them to the
-transaction and commits the branch.
+`Claim`s already nested in the tree. `evaluate` runs them against
+the transaction overlay and yields the populated transaction.
+Committing it is dialog's `txn.commit()`, the caller's step.
+
+## Hosting the runtime
+
+`tonk-worker` hosts the runtime behind HTTP. Its **reactor** owns
+the branch sessions and the commit machinery — it is the worker's
+branch layer, below both routes. Two routes feed the runtime at
+two different points:
+
+```mermaid
+flowchart TD
+    eval["POST /evaluate<br/>(notation document)"]
+    txn["POST /transact<br/>(Claim batch)"]
+
+    eval --> evaluator["tonk-evaluator<br/>parse → resolve → expand →<br/>compile → evaluate"]
+    evaluator --> reactor
+    txn --> reactor["reactor<br/>branch session + commit"]
+    reactor --> commit["dialog commit<br/>(+ effects fixpoint)"]
+    commit --> branch[(branch)]
+```
+
+- **`/evaluate`** takes a notation document and runs the whole
+  lifecycle through `tonk-evaluator`'s `syntax.evaluate(txn)`
+  chain. This is the notation entry point.
+- **`/transact`** takes a `TransactRequest` — a `Claim` batch —
+  and *bypasses* notation: no parse, no analyze, no compile. The
+  claims arrive already kernel-shaped, so the route hands them
+  straight to the reactor. This is the structured entry point.
+
+Both converge on the reactor: it acquires the branch session,
+applies the claims to a transaction, and commits — the commit
+step runs the effects fixpoint (`induce`) and the dialog commit.
+`/transact` is `/evaluate` with the front of the lifecycle
+already done by the caller.
 
 ## Open items
 
