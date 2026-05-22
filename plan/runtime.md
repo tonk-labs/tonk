@@ -4,7 +4,7 @@ Status: spec. Describes the runtime that turns a tonk-notation document into com
 
 ## Lifecycle
 
-A document moves through six stages. The first five are tonk's; the last, `commit`, is a plain dialog branch operation:
+A document moves through six stages. The first five are tonk's; the last, `commit`, is dialog's.
 
 ```mermaid
 flowchart LR
@@ -43,7 +43,7 @@ The three `Syntax` entry points are nested prefixes — each runs the prior unde
 - **expand** — lower notation sugar (domain predicates, `&anchor`, omitted `this:`) into kernel-shaped forms. After expand every write is a concept-shaped `Claim`.
 - **compile** — turn the resolved, expanded tree into runnable operations: query plans for the read side, `Claim` batches for the write side.
 - **evaluate** — run those operations against a transaction: execute the queries, run the effects fixpoint (`induce`), stage the claims onto the transaction. Yields the transaction with the document's changes staged — it does *not* commit.
-- **commit** — write the staged changes into a durable branch revision. This is dialog's own branch operation, not part of the runtime. The runtime's job ends at a transaction with changes staged; whoever drove the evaluation decides to commit it, inspect it, or drop it.
+- **commit** — write the staged changes into a durable revision. This is dialog's own operation, not part of the runtime. The runtime's job ends at a transaction with changes staged; whoever drove the evaluation decides to commit it, inspect it, or drop it.
 
 The stages group into named umbrellas:
 
@@ -68,13 +68,13 @@ flowchart LR
     notation --> schema --> core --> analyzer --> evaluator
 ```
 
-- **`tonk-notation`** — the syntax layer. Parses document text into a `Syntax` tree. Knows nothing of branches or schema.
+- **`tonk-notation`** — the syntax layer. Parses document text into a `Syntax` tree. Knows nothing of the environment or the schema.
 - **`tonk-schema`** — the *definitions*: the concepts the runtime is seeded with — concept / attribute / rule definitions, the built-in registry, the meta-branch concepts (replica, branch, remote, tracking branch) — plus the resolution surface that reconstructs a definition from a source. Everything here is a schema definition or resolves one.
 - **`tonk-core`** — the *operations*: `Claim` (a typed write), `Query` (a read request), `Conclusion` (a read result), `TransactRequest` (a `Claim` batch). Not concepts — reads and writes *over* concepts. Sits below everything that issues an operation: the worker, the UI crates, the analyzer, the evaluator.
 - **`tonk-analyzer`** — performs `resolve` + `expand`. Turns a `Syntax` tree into an `Analysis`.
 - **`tonk-evaluator`** — performs `compile` + `evaluate`. Lowers an `Analysis` to operations and runs them, yielding a transaction with the document's changes staged. Committing it is dialog's, left to the caller.
 
-A `Source` (dialog's query target — a `Branch` or a `Transaction` overlay) flows in from the side: every crate from `tonk-schema` rightward is generic over it. The UI crates (`tonk-display`, `tonk-concept`) and the worker depend on `tonk-core` for `Query` / `Conclusion` / `Claim`; they do not depend on the analyzer or evaluator.
+A **source** (`dialog_query::Source`, the query environment a definition is reconstructed from) flows in from the side: every crate from `tonk-schema` rightward is generic over it. The UI crates (`tonk-display`, `tonk-concept`) and the worker depend on `tonk-core` for `Query` / `Conclusion` / `Claim`; they do not depend on the analyzer or evaluator.
 
 All trait bounds use `dialog_common::ConditionalSend` / `ConditionalSync`, so the same source compiles native and `wasm32`.
 
@@ -90,9 +90,9 @@ syntax.evaluate(txn).perform(env)     // -> Evaluated  compile, run
 evaluated.txn.commit().perform(env)   // dialog — the caller's step
 ```
 
-- **`analyze`** is pure-read: takes a `Source` (a `Branch` for the common case), runs `resolve` + `expand`, yields an `Analysis`.
+- **`analyze`** is pure-read: takes a source, runs `resolve` + `expand`, yields an `Analysis`.
 - **`compile`** runs `analyze` under the hood, then lowers the tree to runnable operations — also pure-read, also a `Source`.
-- **`evaluate`** runs `compile` under the hood, then *runs* the operations and stages the resulting changes. The caller creates a `Transaction` and hands it in; `evaluate` stages the document's changes onto it, and resolves against it too — a `Transaction` overlays branch state, so a concept declared earlier in the same document resolves for a later statement. `evaluate` yields an `Evaluated` holding the transaction with its changes staged — it does not commit. The caller commits it (`txn.commit()`, a dialog operation), or inspects it, or drops it.
+- **`evaluate`** runs `compile` under the hood, then *runs* the operations and stages the resulting changes. The caller creates a `Transaction` and hands it in; `evaluate` stages the document's changes onto it, and resolves against it too — a `Transaction` is itself a source that overlays the pending changes, so a concept declared earlier in the same document resolves for a later statement. `evaluate` yields an `Evaluated` holding the transaction with its changes staged — it does not commit. The caller commits it (`txn.commit()`, a dialog operation), or inspects it, or drops it.
 
 ```rust
 // tonk-analyzer
@@ -117,7 +117,7 @@ pub trait SyntaxEvaluateExt {
 
 ## Resolution
 
-`resolve` reconstructs schema definitions from a **source** — anything that answers queries, **`dialog_query::Source`**. Both a branch and a transaction overlay are sources. Each lookup is a chain handle: a `resolve` method stages the work, `.perform(env)` runs it.
+`resolve` reconstructs schema definitions from a **source** — the query environment, **`dialog_query::Source`**. Each lookup is a chain handle: a `resolve` method stages the work, `.perform(env)` runs it.
 
 A **reference** names a thing; resolving it yields the thing's **definition**:
 
@@ -144,7 +144,7 @@ impl ConceptReference {
 pub struct ResolveConcept<'a, S> { source: &'a S, reference: ConceptReference }
 impl<'a, S: Source> ResolveConcept<'a, S> {
     pub async fn perform<Env: QueryEnv + ConditionalSync>(self, env: &Env)
-        -> Result<Option<ConceptDefinition>, IntrospectionError>;
+        -> Result<Option<ConceptDefinition>, ResolveError>;
 }
 ```
 
@@ -224,20 +224,20 @@ Enumeration serves editor completion — offering every concept, or every publis
 
 ### The language server
 
-The language server resolves against the **live branch** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics report `UnknownConcept` for a name absent from the branch, completion enumerates the branch's concepts and names, hover resolves the symbol under the cursor.
+The language server resolves against the **live environment** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics report `UnknownConcept` for a name the environment does not define, completion enumerates the environment's concepts and names, hover resolves the symbol under the cursor.
 
-The branch is late-bound: `IntrospectionFactory::for_uri` maps the document URI to a branch per request and hands back a bundle of boxed async closures, one per lookup, each capturing that request's concrete source:
+The source is late-bound — which environment a document belongs to is known only per request, from the document URI. The host (the worker) resolves the URI to an environment and hands the language server a **resolver bundle**: a small set of boxed async closures, one per lookup, each built where the concrete source is known and capturing it.
 
 ```rust
 type ConceptLookup =
     Arc<dyn Fn(&str) -> BoxFuture<Option<ConceptDefinition>> + Send + Sync>;
 ```
 
-This is the one `dyn` boundary in the runtime; everything else stays fully monomorphic.
+The closure's body is the resolution chain — `ConceptReference::from(name).resolve(source).perform(env)` — run on the host side of the seam. The bundle is the *only* `dyn` boundary in the runtime: it exists because the language server cannot name the host's concrete source type, and `Source` is not object-safe. Everything else stays monomorphic.
 
-A concept referenced before it is committed — declared earlier in the same document — still resolves: the document's own declarations are threaded through `analyze` (the in-document scope), so a name is unknown only when it is genuinely absent from both the document and the branch.
+A concept referenced before it is committed — declared earlier in the same document — still resolves: the document's own declarations are threaded through `analyze` (the in-document scope), so a name is unknown only when it is genuinely absent from both the document and the environment.
 
-The resolution surface — `ConceptReference` / `AttributeReference`, `ConceptDefinition` / `AttributeDefinition`, `NamedReference`, `IntrospectionError` — lives in `tonk-schema`, alongside the `meta::Name` concept it enumerates.
+The resolution surface — `ConceptReference` / `AttributeReference`, `ConceptDefinition` / `AttributeDefinition`, `NamedReference`, `ResolveError` — lives in `tonk-schema`, alongside the `meta::Name` concept it enumerates. It is plain free-standing chain handles — no resolver trait, nothing for the bundle to be a `dyn` *of*; the bundle is closures over those handles.
 
 ## The `Analysis<T>` tree
 
@@ -315,7 +315,7 @@ A **`Claim`** is the typed assert/retract of a concept application — `Assert |
 
 ## Hosting the runtime
 
-`tonk-worker` hosts the runtime behind HTTP. Its **reactor** owns the branch sessions and the commit machinery — it is the worker's branch layer. Three consumers feed the runtime, each tapping a different part of the lifecycle:
+`tonk-worker` hosts the runtime behind HTTP. Its **reactor** owns the environment sessions and the commit machinery. Three consumers feed the runtime, each tapping a different part of the lifecycle:
 
 ```mermaid
 flowchart TD
@@ -326,21 +326,21 @@ flowchart TD
     eval --> evaluator["tonk-evaluator<br/>compile → evaluate"]
     lsp --> analyzer["tonk-analyzer<br/>resolve → expand"]
     evaluator --> analyzer
-    evaluator --> reactor["reactor<br/>branch session + commit"]
+    evaluator --> reactor["reactor<br/>session + commit"]
     txn --> reactor
     reactor --> commit["commit<br/>(+ effects fixpoint)"]
-    commit --> branch[(branch)]
+    commit --> store[(store)]
 ```
 
 - **`/evaluate`** takes a notation document and runs the whole lifecycle through `tonk-evaluator`'s `syntax.evaluate(txn)` chain, then commits via the reactor. The notation write path.
 - **`/transact`** takes a `TransactRequest` — a `Claim` batch — and *bypasses* notation: no parse, no analyze, no compile. The claims arrive already kernel-shaped, so the route hands them straight to the reactor. The structured write path. It is `/evaluate` with the front of the lifecycle already done by the caller.
-- **the language server** never `compile`s, `evaluate`s, or `commit`s — it produces diagnostics and completions, not facts. It runs `analyze` and the resolution surface against the live branch: diagnostics, completion, and hover all from one source. The read-only path, tapping the front of the lifecycle.
+- **the language server** never `compile`s, `evaluate`s, or `commit`s — it produces diagnostics and completions, not facts. It runs `analyze` and the resolution surface against the live environment: diagnostics, completion, and hover all from one source. The read-only path, tapping the front of the lifecycle.
 
-`/evaluate` and `/transact` converge on the reactor, which acquires the branch session and commits — the commit runs the effects fixpoint (`induce`) and the dialog commit. The language server never reaches the reactor; it reaches a branch only for completion and hover, through the resolution surface via the late-bound `IntrospectionFactory` boundary.
+`/evaluate` and `/transact` converge on the reactor, which acquires the environment session and commits — the commit runs the effects fixpoint (`induce`) and the dialog commit. The language server never reaches the reactor; it reaches the environment only for resolution, through the resolver bundle the host hands it per document.
 
 ## Open items
 
-- **`Transaction` as `Source`.** `evaluate` resolves against the transaction's overlay so a concept declared earlier in the same document resolves for a later statement. This requires the `Transaction` overlay to satisfy `Source`. If it cannot, schema resolution falls back to the underlying `&Branch` and an in-document `Scope` covers same-document declarations.
+- **`Transaction` as a source.** `evaluate` resolves against the transaction so a concept declared earlier in the same document resolves for a later statement. This requires a `Transaction` to satisfy `Source`. If it cannot, schema resolution runs against the underlying environment and an in-document `Scope` covers same-document declarations.
 - **`concept!` / `rule!` expansion.** `expand` lowers only domain predicates, `&anchor`, and derived-`this:`. `concept!` and `rule!` are handled directly by the analyzer. A macro system (`2026-05-16` note) would lower these the same way.
 - **`rule!:` premises.** If a `rule!:` premise may name a domain predicate, the domain→anonymous-concept lowering runs inside rule expansion as well.
 - **Macro fixpoint.** A macro system needs `resolve → expand → …` to iterate — a macro can expand into a new symbol that itself needs resolution. The split into two passes makes that a loop around `resolve` and `expand`. The lowerings here are terminal, so a single pass suffices.
