@@ -305,3 +305,216 @@ fn map_evaluate_error(error: EvaluateError) -> TonkWorkerError {
         }
     }
 }
+
+/// Route-level regression tests for `/evaluate`.
+///
+/// These drive [`evaluate_body`] — the cfg-`wasm32` seam that runs
+/// the *same* `evaluate_on_branch` logic the HTTP handler runs,
+/// including the commit guard. They guard the two bug classes that
+/// escaped to manual browser testing this session: a `rule!:`-only
+/// document silently not committing, and a rule never firing on a
+/// transient instance.
+///
+/// wasm32-only — `evaluate_body` is cfg-`wasm32` and the worker's
+/// test `TonkState` is built from the service-worker harness.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use super::{EvaluateResponse, evaluate_body};
+    use crate::router::{AppState, api_router_with_state, tests::test_state};
+
+    /// Create the test repository via `PUT /api/repository/{name}`,
+    /// then hand back the wrapped [`AppState`] so tests can call
+    /// [`evaluate_body`] against the same `TonkState` the route
+    /// would. The reactor only *loads* repositories — it never
+    /// creates them — so the repo must exist before the first
+    /// `evaluate_body` call acquires a branch on it.
+    ///
+    /// Tolerates `412 Precondition Failed`: IndexedDB survives the
+    /// single-process wasm test run, so a name reused by a prior
+    /// run is already present.
+    async fn state_with_repo(repo: &str) -> AppState {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}"))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .header("if-none-match", "*")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        assert!(
+            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
+            "expected 201 or 412 from PUT /api/repository/{repo}, got {status}",
+        );
+        state
+    }
+
+    /// Run a document through [`evaluate_body`] against the test
+    /// state's `main` branch.
+    async fn evaluate(
+        state: &AppState,
+        repo: &str,
+        body: &str,
+        transact: bool,
+    ) -> EvaluateResponse {
+        let guard = state.read().await;
+        evaluate_body(&guard, repo, "main", body.to_owned(), transact)
+            .await
+            .unwrap_or_else(|e| panic!("evaluate_body failed: {e}"))
+    }
+
+    /// A document declaring the transient `person-entered` concept,
+    /// the durable `person` concept, and the attributes the rule's
+    /// premise and head bind. Committing this first lets a separate
+    /// `rule!:` document resolve both concepts by bookmark name.
+    const CONCEPTS: &str = "\
+concept!: &person-entered
+  transient:
+  with:
+    name:
+      the: xyz.tonk.env/name
+      as: text
+      cardinality: one
+      description: \"name\"
+    age:
+      the: xyz.tonk.env/age
+      as: unsigned-integer
+      cardinality: one
+      description: \"age\"
+
+attribute!: &person-name
+  description: The person's name
+  the: xyz.tonk.person/name
+  as: text
+  cardinality: one
+
+attribute!: &person-age
+  description: The person's age
+  the: xyz.tonk.person/age
+  as: unsigned-integer
+  cardinality: one
+
+concept!: &person
+  description: \"A person\"
+  with:
+    name: person-name
+    age: person-age
+";
+
+    /// The rule person <- person-entered, as its own document.
+    const RULE: &str = "\
+rule!:
+  assert!: person
+  when:
+    - assert: person-entered
+      where: { this: ?this, name: ?name, age: ?age }
+";
+
+    /// Regression: a document that is *only* a `rule!:` is a
+    /// mutation document — the `!` says so. It must commit. Before
+    /// the fix the commit guard checked the wrong condition and
+    /// rule-only documents were silently dropped: the rule never
+    /// reached the branch.
+    #[dialog_common::test]
+    async fn it_commits_a_rule_only_document() {
+        let repo = "test-evaluate-rule-only";
+        let state = state_with_repo(repo).await;
+
+        // First document: install the concepts the rule references.
+        let concepts = evaluate(&state, repo, CONCEPTS, true).await;
+        assert!(
+            concepts.commits.claims > 0,
+            "concepts document should commit claims",
+        );
+
+        // Second document: only the rule.
+        let rule = evaluate(&state, repo, RULE, true).await;
+        assert!(
+            rule.commits.claims > 0,
+            "rule-only document must commit; saw {} claims",
+            rule.commits.claims,
+        );
+        assert_ne!(
+            rule.revision_after, rule.revision_before,
+            "rule-only document must advance the branch revision",
+        );
+    }
+
+    /// Regression: a rule must fire on a transient concept instance
+    /// asserted through notation. Install concepts + rule, assert a
+    /// transient `person-entered`, then query the durable `person`
+    /// and confirm the rule produced a row. Mirrors the real
+    /// `person-entered → person` browser scenario.
+    #[dialog_common::test]
+    async fn it_fires_a_rule_on_a_transient_instance() {
+        let repo = "test-evaluate-rule-fires";
+        let state = state_with_repo(repo).await;
+
+        evaluate(&state, repo, CONCEPTS, true).await;
+        evaluate(&state, repo, RULE, true).await;
+
+        // Assert a transient `person-entered` instance. The write
+        // seeds the effects fixpoint that drives the rule.
+        let instance = "\
+person-entered!:
+  this: did:key:zPersonEnteredSubject
+  name: \"Tester Joe\"
+  age: 42
+";
+        let asserted = evaluate(&state, repo, instance, true).await;
+        assert!(
+            asserted.commits.claims > 0,
+            "transient instance assertion must commit claims; saw {}",
+            asserted.commits.claims,
+        );
+
+        // Query the durable `person` — the rule should have landed
+        // a row driven by the transient.
+        let query = evaluate(&state, repo, "person:\n", false).await;
+        assert_eq!(
+            query.matches_after.len(),
+            1,
+            "expected one query match block for `person:`",
+        );
+        assert_eq!(
+            query.matches_after[0].results.len(),
+            1,
+            "rule should have produced one durable person row; got {:?}",
+            query.matches_after[0].results,
+        );
+    }
+
+    /// A pure-query document must not advance the branch even with
+    /// `transact=true`: nothing is written, so `commits.claims` is
+    /// zero and the revision is unchanged.
+    #[dialog_common::test]
+    async fn it_does_not_commit_a_query_only_document() {
+        let repo = "test-evaluate-query-only";
+        let state = state_with_repo(repo).await;
+
+        // Install a concept so the query resolves.
+        evaluate(&state, repo, CONCEPTS, true).await;
+
+        let query = evaluate(&state, repo, "person:\n", true).await;
+        assert_eq!(
+            query.commits.claims, 0,
+            "query-only document must not commit any claims",
+        );
+        assert_eq!(
+            query.revision_after, query.revision_before,
+            "query-only document must not advance the branch revision",
+        );
+    }
+}
