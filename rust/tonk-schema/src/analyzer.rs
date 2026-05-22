@@ -50,13 +50,13 @@ use std::collections::{HashMap, HashSet};
 use dialog_common::ConditionalSync;
 use tonk_notation::{Expression, HeadName, Syntax};
 
-use crate::transact::{Application, DomainApplication, Statement, ThisIntent};
+use tonk_core::transact::{Application, DomainApplication, Statement, ThisIntent};
 
 use crate::analysis::{
     Analysis as Tree, AssertionAnalysis, DocumentAnalysis, ExpressionAnalysis, Predicate,
     QueryNodeAnalysis, RuleAnalysis,
 };
-use crate::mutation::ConceptDescriptor;
+use tonk_core::mutation::ConceptDescriptor;
 
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
@@ -64,8 +64,8 @@ pub use error::{
 pub use resolver::{EnvironmentResolver, NoopResolver, Resolver, SourceResolver};
 pub use scan::scan_variables;
 
-use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;
 use crate::resolution::{AttributeDefinition, ConceptDefinition};
+use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
 
 use crate::prelude::EntityExt;
 use assertion::{body_digest, build_assertion_application, derive_head_intent};
@@ -1384,7 +1384,7 @@ xyz.tonk:
         let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
-        let crate::transact::Application::Domain { application: d, .. } = &q.queries[0] else {
+        let tonk_core::transact::Application::Domain { application: d, .. } = &q.queries[0] else {
             panic!("expected Domain application");
         };
         assert_eq!(d.domain, "xyz.tonk");
@@ -3251,7 +3251,7 @@ rule!:
     #[dialog_common::test]
     async fn it_tags_the_assertion_predicate_with_its_durability() {
         use crate::analysis::{ExpressionAnalysis, Predicate};
-        use crate::mutation::ConceptDescriptor;
+        use tonk_core::mutation::ConceptDescriptor;
 
         let syntax = must_parse(
             r#"

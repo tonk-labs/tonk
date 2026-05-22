@@ -32,9 +32,9 @@ use dialog_artifacts::Entity;
 use tonk_notation::{Assertion, Expression, Query, Rule, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
-use crate::effect::Effect;
-use crate::mutation::ConceptDescriptor;
-use crate::transact::{Application, Statement, ThisIntent};
+use tonk_core::effect::Effect;
+use tonk_core::mutation::ConceptDescriptor;
+use tonk_core::transact::{Application, Statement, ThisIntent};
 
 /// A syntax node type that carries a computed analysis payload.
 ///

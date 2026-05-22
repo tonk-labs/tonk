@@ -4841,6 +4841,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-core"
+version = "0.1.0"
+dependencies = [
+ "base58",
+ "dialog-artifacts",
+ "dialog-common",
+ "dialog-query",
+ "serde",
+ "serde_ipld_dagcbor",
+ "serde_json",
+ "thiserror 2.0.18",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "tonk-display"
 version = "0.1.0"
 dependencies = [
@@ -4934,6 +4949,7 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.18",
  "tokio",
+ "tonk-core",
  "tonk-notation",
  "wasm-bindgen-test",
 ]

@@ -27,10 +27,10 @@ use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 
 use crate::concept::concept_of_concept_descriptor;
 use crate::effect_query::rule_of_rule_descriptor;
-use crate::meta::{AnonymousAttributeQuery, NameQuery};
-use crate::mutation::ConceptDescriptor;
 use crate::resolution::ConceptDefinition;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
+use tonk_core::meta::{AnonymousAttributeQuery, NameQuery};
+use tonk_core::mutation::ConceptDescriptor;
 
 /// Look up a built-in concept by head-name as a durability-tagged
 /// [`ConceptDefinition`]. Returns `None` for names that fall

@@ -14,7 +14,7 @@ use super::field::{is_meta_field, scalar_to_string};
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::resolution::AttributeDefinition;
-use crate::transact::{Application, ThisIntent};
+use tonk_core::transact::{Application, ThisIntent};
 
 /// Cached output of building an `attribute!` or `concept!` head
 /// into its `Application`. Phase 1 builds these so the entity

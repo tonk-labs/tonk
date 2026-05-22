@@ -1,14 +1,10 @@
 [package]
-name = "tonk-schema"
-description = "Typed schema for facts stored on a repository's meta branch"
+name = "tonk-core"
+description = "Operation-type primitives — mutations, transactions, effects, and meta facts"
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-
-[features]
-integration-tests = []
-web-integration-tests = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
@@ -18,32 +14,16 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [dependencies]
-async-trait = { workspace = true }
 base58 = { workspace = true }
-bs58 = { workspace = true }
 dialog-artifacts = { workspace = true }
-dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
-dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
-dialog-repository = { workspace = true }
-dialog-varsig = { workspace = true }
-futures-util = { workspace = true }
-lsp-types = { workspace = true }
-parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
-serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tonk-core = { workspace = true }
-tonk-notation = { workspace = true }
 
 [dev-dependencies]
-anyhow = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
-dialog-repository = { workspace = true, features = ["helpers"] }
-lsp-types = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
-tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

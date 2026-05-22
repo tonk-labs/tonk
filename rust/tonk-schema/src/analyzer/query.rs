@@ -13,7 +13,7 @@ use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute}
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
-use crate::transact::{Application, DomainApplication, ThisIntent};
+use tonk_core::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) async fn build_query_application<R: Resolver>(
     query: &Query,

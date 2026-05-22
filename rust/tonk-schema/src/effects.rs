@@ -39,7 +39,7 @@ use dialog_query::{Cardinality, InductiveRule, Output as _, Parameters, Proposit
 use dialog_repository::{RemoteSite, Transaction};
 use thiserror::Error;
 
-use crate::effect::{Effect, EffectError, EffectPolarity};
+use tonk_core::effect::{Effect, EffectError, EffectPolarity};
 
 /// Upper bound on fixpoint rounds. A rule set whose cascade
 /// keeps emitting fresh transients beyond this is rejected as
@@ -256,7 +256,7 @@ fn merge_changes(dst: &mut Changes, src: Changes) {
 
 /// Parse a `<domain>/<name>` pair into the typed
 /// [`dialog_query::attribute::The`] form. Mirrors the helper in
-/// [`crate::effect`] so the two modules share a single style of
+/// [`tonk_core::effect`] so the two modules share a single style of
 /// building dialog meta-attribute selectors.
 fn the(domain: &str, name: &str) -> dialog_query::attribute::The {
     format!("{domain}/{name}")
@@ -515,7 +515,7 @@ pub(crate) fn accumulate_head_facts(concept_query: &ConceptQuery, sink: &mut Cha
 /// Walk a fully-bound [`ConceptQuery`] (the instantiated head
 /// of an assert-polarity rule) and emit one assertion per
 /// non-blank field. Mirrors the same emission logic the
-/// asserted-notation planner uses in `crate::transact`, but
+/// asserted-notation planner uses in `tonk_core::transact`, but
 /// writes directly into a dialog `Transaction` since the
 /// induce path doesn't go through `ApplicationPlan`.
 fn emit_head_facts<'a>(concept_query: ConceptQuery, mut txn: Transaction<'a>) -> Transaction<'a> {
@@ -653,7 +653,6 @@ mod tests {
     use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
     use crate::concept::{AnonymousConcept, TransientConcept};
-    use crate::effect::{Effect, EffectPolarity};
     use crate::effect_query::EffectStatement;
     use dialog_artifacts::Statement;
     use dialog_query::artifact::Type;
@@ -662,6 +661,7 @@ mod tests {
     use dialog_query::concept::query::ConceptQuery;
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::{AttributeDescriptor, InductiveRule, Parameters as DialogParameters};
+    use tonk_core::effect::{Effect, EffectPolarity};
 
     /// A 1-field concept descriptor with a configurable field
     /// type. Helper because tests below build several.

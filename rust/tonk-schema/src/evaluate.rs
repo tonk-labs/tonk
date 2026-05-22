@@ -72,7 +72,7 @@ use crate::analyzer;
 use crate::concept::{QueryEnv, application_to_plan};
 use crate::effect_query::EffectStatement;
 use crate::query_source::Source;
-use crate::transact::{Application, ApplicationPlan, Planner as _, Statement};
+use tonk_core::transact::{Application, ApplicationPlan, Planner as _, Statement};
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //

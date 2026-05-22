@@ -2,11 +2,10 @@
 //!
 //! This module holds the pure [`Effect`] data type and its
 //! storage-shape projections. It depends only on `dialog-*`
-//! crates so the operation types can move into a leaf crate
-//! later. The query and resolution machinery — loading effects
-//! back from a branch, the install-time trigger check, the
-//! `AnonymousRuleQuery` — lives in
-//! [`effect_query`](crate::effect_query).
+//! crates and lives in the `tonk-core` leaf crate. The query
+//! and resolution machinery — loading effects back from a
+//! branch, the install-time trigger check, the
+//! `AnonymousRuleQuery` — lives in `tonk_schema::effect_query`.
 //!
 //! An [`Effect`] pairs a compiled
 //! [`InductiveRule`](dialog_query::InductiveRule) with a
@@ -338,7 +337,7 @@ mod tests {
     //! determinism, and source round-trip. The V1 transient-
     //! trigger check is enforced at install time against a
     //! branch; tests covering that live with the install path
-    //! ([`crate::effect_query`]).
+    //! (`tonk_schema::effect_query`).
 
     use super::*;
     use dialog_artifacts::Value;

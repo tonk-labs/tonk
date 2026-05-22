@@ -38,7 +38,7 @@ pub enum Statement {
     /// `rule!:` — install an inductive effect on the branch. The
     /// `!` marker makes a rule a mutation: evaluating it writes
     /// the `dialog.effect/*` facts (via
-    /// [`assert_effect`](crate::effect_query::assert_effect)) that
+    /// `tonk_schema::effect_query::assert_effect`) that
     /// the reactor's induce loop reads on every subsequent commit.
     InstallEffect(Effect),
 }

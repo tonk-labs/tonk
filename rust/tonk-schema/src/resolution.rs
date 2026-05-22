@@ -33,9 +33,9 @@ pub use dialog_artifacts::Entity;
 use crate::concept::{
     AttributeByEntity, Concept, ConceptLookupError, QueryEnv, TransientConcept, lookup_named_entity,
 };
-use crate::meta::Name;
-use crate::mutation::ConceptDescriptor;
 use crate::query_source::Source;
+use tonk_core::meta::Name;
+use tonk_core::mutation::ConceptDescriptor;
 
 pub use dialog_query::AttributeDescriptor;
 
@@ -481,10 +481,10 @@ impl ListNames<'_> {
 mod tests {
     use super::*;
     use crate::concept::{AnonymousConcept, TransientConcept};
-    use crate::meta::name;
     use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
     use dialog_query::the;
     use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+    use tonk_core::meta::name;
 
     /// Assert a concept's backing attribute facts plus the concept
     /// itself onto a branch. Mirrors the inline emission used by

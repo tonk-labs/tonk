@@ -13,7 +13,7 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
-use crate::transact::Application;
+use tonk_core::transact::Application;
 
 /// Reserved body field names that don't correspond to schema
 /// fields: `this:` (entity selection), `..:` (rest-of-attributes

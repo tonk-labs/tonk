@@ -42,8 +42,8 @@ pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
 
 use crate::builtin::concept_registry;
 use crate::effect_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
-use crate::meta::AnonymousAttribute;
 use crate::query_source::Source;
+use tonk_core::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.
 const WITH_DOMAIN: &str = "dialog.concept.with";
@@ -846,7 +846,7 @@ pub enum QueryPlan {
     AnonymousRule(AnonymousRuleQuery),
 }
 
-/// Convert an [`Application`](crate::transact::Application) into
+/// Convert an [`Application`](tonk_core::transact::Application) into
 /// the [`QueryPlan`] it should be evaluated as.
 ///
 /// `Concept` carries a [`ConceptQuery`] directly; `Domain`
@@ -854,8 +854,8 @@ pub enum QueryPlan {
 /// read-side interpretation of an operation type — kept here,
 /// outside `transact.rs`, so the operation types stay
 /// dependency-free of query/resolution machinery.
-pub fn application_to_plan(application: crate::transact::Application) -> QueryPlan {
-    use crate::transact::Application;
+pub fn application_to_plan(application: tonk_core::transact::Application) -> QueryPlan {
+    use tonk_core::transact::Application;
     match application {
         Application::Concept { query, .. } => QueryPlan::from(query),
         Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
@@ -1034,8 +1034,8 @@ async fn lookup_entity_name<'a, Env>(
 where
     Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
 {
-    use crate::meta::Name;
     use dialog_query::Output as _;
+    use tonk_core::meta::Name;
 
     let rows: Vec<Name> = Query::<Name> {
         this: Term::<Entity>::var("__concept_query_id"),
@@ -1100,8 +1100,8 @@ pub async fn lookup_named_entity<'a, Env: QueryEnv>(
     source: impl Into<Source<'a>>,
     env: &Env,
 ) -> Result<Option<Entity>, ConceptLookupError> {
-    use crate::meta::Name;
     use dialog_query::Output as _;
+    use tonk_core::meta::Name;
 
     let source = source.into();
     let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
@@ -1788,9 +1788,9 @@ mod tests {
     /// direction, so v1 disappears.
     #[dialog_common::test]
     async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
-        use crate::meta::{Name, name};
         use dialog_query::Output as _;
         use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use tonk_core::meta::{Name, name};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;

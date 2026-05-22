@@ -59,7 +59,7 @@ impl ConceptDescriptor {
 }
 
 /// A predicate applied to parameter bindings — the mutation
-/// counterpart of [`crate::query::Query`]. `parameters` mirrors
+/// counterpart of `tonk_schema::query::Query`. `parameters` mirrors
 /// the dialog-query [`Parameters`] shape (`terms` in
 /// [`dialog_query::ConceptQuery`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]

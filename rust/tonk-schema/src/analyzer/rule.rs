@@ -1,6 +1,6 @@
 //! Rule-side analysis — lifts a parsed
 //! [`tonk_notation::Rule`] into a compiled
-//! [`crate::effect::Effect`].
+//! [`tonk_core::effect::Effect`].
 //!
 //! The lift resolves the head concept and each premise's
 //! concept against the in-doc scope + branch, translates each
@@ -24,7 +24,7 @@ use super::field::field_value_to_term;
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
-use crate::effect::{Effect, EffectPolarity};
+use tonk_core::effect::{Effect, EffectPolarity};
 
 /// Lift a parsed [`Rule`] into an [`Effect`] ready to install.
 ///
@@ -183,7 +183,6 @@ async fn lift_premise<R: Resolver>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;
     use crate::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
     use async_trait::async_trait;
     use dialog_artifacts::Entity;
@@ -192,6 +191,7 @@ mod tests {
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
     use std::collections::HashMap;
+    use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
     use tonk_notation::parse;
 
     /// Resolver backed by an in-memory map of concept name →
@@ -266,11 +266,11 @@ mod tests {
     /// exactly one statement and it is not an effect install.
     fn only_installed_effect(
         tree: &crate::analysis::Analysis<tonk_notation::Syntax>,
-    ) -> crate::effect::Effect {
+    ) -> tonk_core::effect::Effect {
         let statements = tree.analysis.statements();
         assert_eq!(statements.len(), 1);
         match &statements[0].statement {
-            crate::transact::Statement::InstallEffect(effect) => effect.clone(),
+            tonk_core::transact::Statement::InstallEffect(effect) => effect.clone(),
             other => panic!("expected Statement::InstallEffect, got {other:?}"),
         }
     }

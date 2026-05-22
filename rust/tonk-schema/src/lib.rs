@@ -38,13 +38,14 @@ pub mod prelude;
 
 pub mod domain;
 
-pub mod meta;
+/// Re-export of the operation-type primitives from [`tonk_core`], so that
+/// existing `tonk_schema::{mutation, transact, conclusion, effect, meta}`
+/// paths continue to resolve after the crate split.
+pub use tonk_core::{conclusion, effect, meta, mutation, transact};
 
 pub mod concept;
 
 pub mod resolution;
-
-pub mod effect;
 
 pub mod effect_query;
 
@@ -58,17 +59,11 @@ pub mod analyzer;
 
 pub mod builtin;
 
-pub mod transact;
-
 pub mod evaluate;
-
-pub mod mutation;
 
 pub mod query;
 
 pub mod query_source;
-
-pub mod conclusion;
 
 pub mod replica;
 pub use replica::*;

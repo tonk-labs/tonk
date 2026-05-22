@@ -14,7 +14,7 @@ use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
 use crate::prelude::EntityExt;
-use crate::transact::{Application, DomainApplication, ThisIntent};
+use tonk_core::transact::{Application, DomainApplication, ThisIntent};
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:
