@@ -10,7 +10,7 @@ A document moves through six stages. The first five are tonk's; the last, `commi
 flowchart LR
     text([document text]) --> parse
     parse --> resolve --> expand --> compile --> evaluate --> commit
-    commit --> rev([branch revision])
+    commit --> rev([revision])
 
     subgraph tonk-notation
         parse
@@ -38,12 +38,12 @@ The three `Syntax` entry points are nested prefixes — each runs the prior unde
 
 `evaluate` hands back a transaction with the document's changes staged; `commit` is then the caller's separate step (`txn.commit()`).
 
-- **parse** — document text → a `Syntax` tree. Pure syntax: no branch, no schema.
-- **resolve** — bind every reference in the tree against a branch. A bare concept name becomes a resolved `ConceptDefinition`; a `?var` is recorded; descriptors are attached. Source shape is preserved.
+- **parse** — document text → a `Syntax` tree. Pure syntax: no source, no schema.
+- **resolve** — bind every reference in the tree against a source. A bare concept name becomes a resolved `ConceptDefinition`; a `?var` is recorded; descriptors are attached. Source shape is preserved.
 - **expand** — lower notation sugar (domain predicates, `&anchor`, omitted `this:`) into kernel-shaped forms. After expand every write is a concept-shaped `Claim`.
 - **compile** — turn the resolved, expanded tree into runnable operations: query plans for the read side, `Claim` batches for the write side.
 - **evaluate** — run those operations against a transaction: execute the queries, run the effects fixpoint (`induce`), stage the claims onto the transaction. Yields the transaction with the document's changes staged — it does *not* commit.
-- **commit** — write the staged changes into a durable branch revision. This is dialog's own branch operation, not part of the notation runtime. The runtime's job ends at a transaction with changes staged; whoever drove the evaluation decides to commit it, inspect it, or drop it.
+- **commit** — write the staged changes into a durable branch revision. This is dialog's own branch operation, not part of the runtime. The runtime's job ends at a transaction with changes staged; whoever drove the evaluation decides to commit it, inspect it, or drop it.
 
 The stages group into named umbrellas:
 
@@ -69,8 +69,8 @@ flowchart LR
 ```
 
 - **`tonk-notation`** — the syntax layer. Parses document text into a `Syntax` tree. Knows nothing of branches or schema.
-- **`tonk-schema`** — the *definitions*: the concepts the runtime is seeded with — concept / attribute / rule definitions, the built-in registry, the meta-branch concepts (replica, branch, remote, tracking branch) — plus the resolution surface that reconstructs a definition from a branch. Everything here is a schema definition or resolves one.
-- **`tonk-core`** — the *operations* against a branch: `Claim` (a typed write), `Query` (a read request), `Conclusion` (a read result), `TransactRequest` (a `Claim` batch). Not concepts — reads and writes *over* concepts. Sits below everything that issues an operation: the worker, the UI crates, the analyzer, the evaluator.
+- **`tonk-schema`** — the *definitions*: the concepts the runtime is seeded with — concept / attribute / rule definitions, the built-in registry, the meta-branch concepts (replica, branch, remote, tracking branch) — plus the resolution surface that reconstructs a definition from a source. Everything here is a schema definition or resolves one.
+- **`tonk-core`** — the *operations*: `Claim` (a typed write), `Query` (a read request), `Conclusion` (a read result), `TransactRequest` (a `Claim` batch). Not concepts — reads and writes *over* concepts. Sits below everything that issues an operation: the worker, the UI crates, the analyzer, the evaluator.
 - **`tonk-analyzer`** — performs `resolve` + `expand`. Turns a `Syntax` tree into an `Analysis`.
 - **`tonk-evaluator`** — performs `compile` + `evaluate`. Lowers an `Analysis` to operations and runs them, yielding a transaction with the document's changes staged. Committing it is dialog's, left to the caller.
 
@@ -117,7 +117,7 @@ pub trait SyntaxEvaluateExt {
 
 ## Resolution
 
-`resolve` reconstructs schema definitions from a branch. Schema lookups query through **`dialog_query::Source`**, which both `Branch` and the `Transaction` overlay provide. Each lookup is a chain handle: a `resolve` method stages the work, `.perform(env)` runs it.
+`resolve` reconstructs schema definitions from a **source** — anything that answers queries, **`dialog_query::Source`**. Both a branch and a transaction overlay are sources. Each lookup is a chain handle: a `resolve` method stages the work, `.perform(env)` runs it.
 
 A **reference** names a thing; resolving it yields the thing's **definition**:
 
@@ -169,10 +169,13 @@ pub struct NamedReference(pub String);
 ### Definitions
 
 ```rust
-pub struct ConceptDefinition {
-    pub entity: Entity,
-    pub descriptor: ConceptDescriptor,
-    pub transient: bool,
+pub enum ConceptDefinition {
+    /// Facts of this concept persist across commits until retracted.
+    Durable { entity: Entity, descriptor: ConceptDescriptor },
+    /// Facts of this concept exist only for the current timestep —
+    /// staged so effects can read them, then stripped before the
+    /// durable commit.
+    Transient { entity: Entity, descriptor: ConceptDescriptor },
 }
 pub struct AttributeDefinition {
     pub entity: Entity,
@@ -180,9 +183,11 @@ pub struct AttributeDefinition {
 }
 ```
 
-`ConceptDefinition` and `AttributeDefinition` are the resolved result — a concept / attribute reconstructed from a branch: entity + descriptor, a concept also carrying its transient flag. One type per kind, in `tonk-schema`.
+`ConceptDefinition` and `AttributeDefinition` are the resolved result — a concept / attribute reconstructed from a source. Durability is binary state of the whole concept, so `ConceptDefinition` is an enum, not a descriptor plus a flag: a concept is `Durable` or `Transient`, never half of each.
 
-`resolve`'s `perform` reconstructs the descriptor from the entity's EAV facts; a concept's `perform` resolves each field attribute via `AttributeReference::from(attr_entity).resolve(source).perform(env)`.
+The `Durable | Transient(descriptor)` shape is the same one a `Claim` carries as `PredicateDescriptor` — a durability-tagged `ConceptDescriptor` is a single idea, named once and used on both the definition side and the operation side.
+
+`resolve`'s `perform` reconstructs the descriptor from the entity's EAV facts and reads the `dialog.concept/transient` marker to pick the variant; a concept's `perform` resolves each field attribute via `AttributeReference::from(attr_entity).resolve(source).perform(env)`.
 
 ### Enumeration
 
@@ -190,7 +195,7 @@ pub struct AttributeDefinition {
 
 ```rust
 impl ConceptDefinition {
-    /// Every concept on the branch, fully resolved.
+    /// Every concept the source holds, fully resolved.
     pub fn list<S: Source>(source: &S) -> ListConcepts<'_, S>;
     // .perform(env) -> Vec<ConceptDefinition>
 }
@@ -206,9 +211,9 @@ impl NamedReference {
 
 Enumeration serves editor completion — offering every concept, or every published name, for the symbol under the cursor.
 
-### Resolving without a branch
+### Resolving against an empty source
 
-The language server's parse-diagnostics path has no branch. It resolves against `EmptyStore` — a fact-less `Source` — so every `perform` returns `Ok(None)` / empty.
+The language server's parse-diagnostics path has no branch to resolve against. It resolves against `EmptyStore` — a fact-less source — so every `perform` returns `Ok(None)` / empty.
 
 ### The language-server boundary
 
@@ -287,9 +292,9 @@ Lowerings:
 
 ## `Claim` — the unit of a write
 
-A **`Claim`** is the typed assert/retract of a concept application — `Assert | Retract` over a `PredicateApplication` (`PredicateDescriptor` + terms; `Durable | Transient`). It is the single representation for a fact-write, shared by the structured-transaction path and the notation path. Durability rides on `PredicateDescriptor` — no side-set, no separate transient tracking. Every claim reaching `compile` is concept-shaped: domain predicates and `&anchor` are sugar that `expand` lowers away first.
+A **`Claim`** is the typed assert/retract of a concept application — `Assert | Retract` over a `PredicateApplication` (a durability-tagged `ConceptDescriptor` + terms). It is the single representation for a fact-write, shared by the structured-transaction path and the notation path. Durability is carried in the descriptor's `Durable | Transient` tag — the same enum shape `ConceptDefinition` has — so there is no side-set and no separate transient tracking. Every claim reaching `compile` is concept-shaped: domain predicates and `&anchor` are sugar that `expand` lowers away first.
 
-`Claim` lives in `tonk-core` (with `PredicateApplication` — `PredicateDescriptor` + terms — and `TransactRequest`, a `Claim` batch). It is an operation, not a concept; it carries a `PredicateDescriptor`, so `tonk-core` depends on `tonk-schema`.
+`Claim` lives in `tonk-core` (with `PredicateApplication` and `TransactRequest`, a `Claim` batch). It is an operation, not a concept; it carries a `ConceptDescriptor`, so `tonk-core` depends on `tonk-schema`.
 
 `Claim` is distinct from `dialog_query::Fact` — the raw `(the, of, is)` EAV triple dialog deals in. `Claim` is the typed, concept-shaped write; `Fact` is the untyped triple it ultimately emits.
 
