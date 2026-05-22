@@ -122,14 +122,33 @@ resolves each field attribute via
 
 ### Enumeration
 
-`list_concepts` / `list_named_entities` are handles of the same
-shape:
+`resolve` answers "this one"; `list` answers "all of them" — the
+same chain shape, hung off the type it produces:
 
 ```rust
-pub fn list_concepts<S: Source>(source: &S) -> ListConcepts<'_, S>;
-pub fn list_named_entities<S: Source>(source: &S) -> ListNamedEntities<'_, S>;
-// .perform(env) -> Vec<ConceptDefinition> / Vec<NamedEntity>
+impl ConceptDefinition {
+    /// Every concept on the branch, fully resolved.
+    pub fn list<S: Source>(source: &S) -> ListConcepts<'_, S>;
+    // .perform(env) -> Vec<ConceptDefinition>
+}
+
+impl NamedReference {
+    /// Every published name and the entity it points at.
+    pub fn list<S: Source>(source: &S) -> ListNames<'_, S>;
+    // .perform(env) -> Vec<NamedEntity>
+}
 ```
+
+`NamedReference::list` does not yield definitions — a published
+name can point at any entity (a concept, a concept instance, an
+attribute), so it yields `NamedEntity` bindings:
+
+```rust
+pub struct NamedEntity { pub name: String, pub entity: Entity }
+```
+
+Enumeration serves editor completion — offering every concept, or
+every published name, for the symbol under the cursor.
 
 ### Document-only resolution
 
