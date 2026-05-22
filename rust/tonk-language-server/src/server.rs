@@ -273,6 +273,14 @@ impl Server {
             return head_completions(environment.as_ref()).await;
         }
 
+        // A premise's `assert:` value accepts a concept name or a
+        // built-in formula name — offer both.
+        if is_premise_assert_position(&line_prefix) {
+            let mut out = head_completions(environment.as_ref()).await;
+            out.extend(formula_completions_items());
+            return out;
+        }
+
         if is_variable_position(&line_prefix) {
             return variable_completions(text, position);
         }
@@ -659,6 +667,27 @@ fn is_body_position(line_prefix: &str) -> bool {
     true
 }
 
+/// True when the cursor sits in the value of a rule premise's
+/// `assert:` key — `  - assert: <cursor>` — where a concept name
+/// or a built-in formula name belongs.
+///
+/// Matches the premise list item shape: leading indent, an
+/// optional `-` sequence marker, the `assert` key, its `:`, and
+/// then the (possibly partial) value the user is typing. The
+/// formula names carry `/`, so the value charset is permissive —
+/// anything up to the first whitespace after the `:`.
+fn is_premise_assert_position(line_prefix: &str) -> bool {
+    let trimmed = line_prefix.trim_start();
+    // Drop a leading `-` sequence marker and the space after it.
+    let trimmed = trimmed.strip_prefix('-').map_or(trimmed, str::trim_start);
+    let Some(value) = trimmed.strip_prefix("assert:") else {
+        return false;
+    };
+    // The cursor is in the value only while no second `:` has
+    // been typed (which would mean we're past the value).
+    !value.contains(':')
+}
+
 /// True when the user has typed a `?` and the cursor is sitting
 /// at the start of (or inside) the variable name that follows
 /// it. Matches `?` and `?ali`, rejects `? ` and `name: ?alice ` —
@@ -904,6 +933,26 @@ async fn head_completions<E: Environment + ?Sized>(environment: Option<&E>) -> V
     }
 
     out
+}
+
+/// Built-in formula names as completion items for a premise's
+/// `assert:` value. Sourced from the analyzer's formula registry
+/// so the list never drifts from what the analyzer accepts.
+fn formula_completions_items() -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_analyzer::analyzer::formula_completions;
+
+    formula_completions()
+        .into_iter()
+        .map(|formula| CompletionItem {
+            label: formula.name.to_owned(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(formula.detail.clone()),
+            documentation: Some(Documentation::String(formula.detail)),
+            insert_text: Some(formula.name.to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
 }
 
 /// Find the identifier surrounding `col` on a single line. Returns
@@ -1328,6 +1377,83 @@ mod tests {
             assert!(
                 labels.contains(&builtin),
                 "expected `{builtin}` in completion list, got {labels:?}",
+            );
+        }
+    }
+
+    /// `is_premise_assert_position` recognises the cursor sitting
+    /// in a premise's `assert:` value, whether or not a `-`
+    /// sequence marker precedes it, and rejects body / head /
+    /// past-the-value prefixes.
+    #[test]
+    fn it_detects_premise_assert_position() {
+        assert!(is_premise_assert_position("    - assert: "));
+        assert!(is_premise_assert_position("    - assert: math/"));
+        assert!(is_premise_assert_position("      assert: math/sum"));
+        // Not an assert value.
+        assert!(!is_premise_assert_position("  count: "));
+        assert!(!is_premise_assert_position("person"));
+        // Past the value — a second `:` means we've moved on.
+        assert!(!is_premise_assert_position("    - assert: ping\n  where:"));
+    }
+
+    /// In a premise's `assert:` value the completion list carries
+    /// the built-in formulas (`math/sum`, …) alongside concepts.
+    #[dialog_common::test]
+    async fn it_offers_formulas_in_premise_assert_position() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        let text = "rule!:\n  assert!: counter\n  when:\n    - assert: ";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test" },
+                "position": { "line": 3, "character": 14 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default())
+            .collect();
+        for formula in [
+            "math/sum",
+            "math/difference",
+            "boolean/and",
+            "text/concatenate",
+        ] {
+            assert!(
+                labels.contains(&formula),
+                "expected `{formula}` in completion list, got {labels:?}",
             );
         }
     }

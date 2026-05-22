@@ -40,6 +40,7 @@ mod assertion;
 mod declaration;
 mod error;
 mod field;
+mod formula;
 mod query;
 mod resolver;
 mod rule;
@@ -62,6 +63,7 @@ use tonk_core::mutation::ConceptDescriptor;
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
+pub use formula::{FormulaCompletion, formula_completions};
 pub use resolver::{EnvironmentResolver, NoopResolver, Resolver, SourceResolver};
 pub use scan::scan_variables;
 

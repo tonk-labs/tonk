@@ -15,12 +15,14 @@
 //! commit step where a branch is available.
 
 use dialog_query::concept::query::ConceptQuery;
+use dialog_query::formula::query::FormulaQuery;
 use dialog_query::premise::Premise as DialogPremise;
 use dialog_query::{InductiveRule, Negation, Parameters, Proposition, Term};
 use tonk_notation::{Premise as NotationPremise, Rule, RulePolarity};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
+use super::formula::{FormulaInfo, lookup_formula};
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
@@ -94,14 +96,24 @@ pub(crate) async fn lift_rule<R: Resolver>(
     Ok(Effect::new(inductive, polarity))
 }
 
-/// Resolve one notation premise into a dialog
-/// [`Proposition::Concept`].
+/// Resolve one notation premise into a dialog [`Proposition`].
+///
+/// A premise head names either a built-in formula (`math/sum`,
+/// `boolean/and`, …) or a concept. Formula names are recognised
+/// first — they're a fixed set that never lives on the branch, so
+/// the registry lookup is authoritative. Anything else resolves
+/// as a concept.
 async fn lift_premise<R: Resolver>(
     premise: &NotationPremise,
     scope: &Scope<'_, R>,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     let name = premise.concept.value.as_str();
+
+    if let Some(formula) = lookup_formula(name) {
+        return lift_formula_premise(premise, formula, scope, analysis).await;
+    }
+
     let resolved = scope
         .resolve_concept(name)
         .await
@@ -178,6 +190,89 @@ async fn lift_premise<R: Resolver>(
         terms,
         predicate: descriptor,
     }))
+}
+
+/// Lift a premise whose head names a built-in formula into a
+/// dialog [`Proposition::Formula`].
+///
+/// Unlike concepts, a formula's operand set is fixed and known
+/// up front (from its [`FormulaInfo`] cells), so validation is
+/// strict in both directions:
+///
+/// - An operand the user wrote that the formula doesn't have is
+///   an [`AnalyzeErrorKind::UnknownFormulaOperand`].
+/// - A required input operand the user *didn't* write is a
+///   [`AnalyzeErrorKind::MissingFormulaOperand`] — formulas can't
+///   compute without their inputs, so unlike concept fields these
+///   don't get auto-filled with anonymous variables.
+///
+/// Optional (`#[output]`) operands the user omits are filled with
+/// a unique anonymous variable: the formula still computes the
+/// value, it just isn't joined anywhere.
+async fn lift_formula_premise<R: Resolver>(
+    premise: &NotationPremise,
+    formula: FormulaInfo,
+    scope: &Scope<'_, R>,
+    analysis: &Working,
+) -> Result<Proposition, AnalyzeError> {
+    // Reject `where:` operands the formula doesn't declare. Done
+    // first so an obvious typo surfaces before missing-operand
+    // noise.
+    for field in &premise.bindings {
+        if !formula.operands().any(|operand| operand == field.name) {
+            let mut valid: Vec<&str> = formula.operands().collect();
+            valid.sort_unstable();
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnknownFormulaOperand {
+                    formula: formula.name.to_owned(),
+                    operand: field.name.clone(),
+                    valid: valid.join(", "),
+                },
+                field.name_range,
+            ));
+        }
+    }
+
+    // Translate every operand the formula declares. Required
+    // operands must be bound; optional/output operands default
+    // to a fresh anonymous variable.
+    let mut terms = Parameters::new();
+    for (operand, cell) in formula.cells.iter() {
+        let term = match premise.bindings.iter().find(|f| f.name == operand) {
+            Some(field) => {
+                field_value_to_term(operand, &field.value, field.value_range, scope, analysis)
+                    .await?
+            }
+            None if cell.requirement().is_required() => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::MissingFormulaOperand {
+                        formula: formula.name.to_owned(),
+                        operand: operand.to_owned(),
+                    },
+                    premise.concept.range,
+                ));
+            }
+            None => Term::<dialog_query::Any>::unique(),
+        };
+        terms.insert(operand.to_string(), term);
+    }
+
+    // Construct the typed `FormulaQuery` through its name-keyed
+    // serde representation: `{"assert": <name>, "where": <terms>}`.
+    // dialog-query owns the formula↔name mapping, so routing
+    // through serde keeps the analyzer from having to match every
+    // formula type by hand.
+    let value = serde_json::json!({ "assert": formula.name, "where": terms });
+    let query: FormulaQuery = serde_json::from_value(value).map_err(|e| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::RuleCompileFailed {
+                reason: format!("formula {:?}: {e}", formula.name),
+            },
+            premise.concept.range,
+        )
+    })?;
+
+    Ok(Proposition::Formula(query))
 }
 
 #[cfg(test)]
@@ -427,6 +522,116 @@ rule!:\n\
                     if concept == "ping" && field == "wrong-field"
             ),
             "expected UnknownField(ping, wrong-field), got {err:?}"
+        );
+    }
+
+    /// Build a `ConceptDescriptor` with one cardinality-one
+    /// unsigned-integer field — counters and other numeric
+    /// concepts the formula tests assert against.
+    fn one_uint_field(domain: &str, name: &str) -> ConceptDescriptor {
+        ConceptDescriptor::from(vec![(
+            name,
+            AttributeDescriptor::new(
+                format!("{domain}/{name}").parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::UnsignedInt),
+            ),
+        )])
+    }
+
+    /// A `rule!:` whose body uses the `math/sum` formula lifts
+    /// into an effect — the counter-increment shape from the
+    /// feature request.
+    #[dialog_common::test]
+    async fn it_lifts_a_rule_with_a_formula_premise() {
+        let mut resolver = TestResolver::new();
+        resolver.declare("counter", one_uint_field("io.gozala.counter", "count"));
+        resolver.declare("increment", one_uint_field("io.gozala.increment", "by"));
+
+        let doc = "\
+rule!:\n\
+\x20 assert!: counter\n\
+\x20 when:\n\
+\x20   - assert: counter\n\
+\x20     where: { this: ?this, count: ?value }\n\
+\x20   - assert: increment\n\
+\x20     where: { this: ?this, by: 1 }\n\
+\x20   - assert: math/sum\n\
+\x20     where: { of: ?value, with: 1, is: ?count }\n";
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let analysis = crate::analyzer::analyze(&syntax, &resolver)
+            .await
+            .expect("analyze should succeed");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            EffectPolarity::Assert
+        );
+    }
+
+    /// A `where:` operand the formula doesn't have surfaces as
+    /// [`AnalyzeErrorKind::UnknownFormulaOperand`].
+    #[dialog_common::test]
+    async fn it_rejects_unknown_formula_operand() {
+        let mut resolver = TestResolver::new();
+        resolver.declare("counter", one_uint_field("io.gozala.counter", "count"));
+
+        let doc = "\
+rule!:\n\
+\x20 assert!: counter\n\
+\x20 when:\n\
+\x20   - assert: counter\n\
+\x20     where: { this: ?this, count: ?value }\n\
+\x20   - assert: math/sum\n\
+\x20     where: { of: ?value, plus: 1, is: ?count }\n";
+        let parsed = parse(doc);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let err = crate::analyzer::analyze(&syntax, &resolver)
+            .await
+            .expect_err("should fail");
+        assert!(
+            matches!(
+                err.kind,
+                AnalyzeErrorKind::UnknownFormulaOperand { ref formula, ref operand, .. }
+                    if formula == "math/sum" && operand == "plus"
+            ),
+            "expected UnknownFormulaOperand(math/sum, plus), got {err:?}"
+        );
+    }
+
+    /// Omitting a required input operand surfaces as
+    /// [`AnalyzeErrorKind::MissingFormulaOperand`].
+    #[dialog_common::test]
+    async fn it_rejects_missing_formula_operand() {
+        let mut resolver = TestResolver::new();
+        resolver.declare("counter", one_uint_field("io.gozala.counter", "count"));
+
+        let doc = "\
+rule!:\n\
+\x20 assert!: counter\n\
+\x20 when:\n\
+\x20   - assert: counter\n\
+\x20     where: { this: ?this, count: ?value }\n\
+\x20   - assert: math/sum\n\
+\x20     where: { of: ?value, is: ?count }\n";
+        let parsed = parse(doc);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let err = crate::analyzer::analyze(&syntax, &resolver)
+            .await
+            .expect_err("should fail");
+        assert!(
+            matches!(
+                err.kind,
+                AnalyzeErrorKind::MissingFormulaOperand { ref formula, ref operand }
+                    if formula == "math/sum" && operand == "with"
+            ),
+            "expected MissingFormulaOperand(math/sum, with), got {err:?}"
         );
     }
 }
