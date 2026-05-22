@@ -22,8 +22,10 @@
 //!
 //! Sub-modules:
 //! - [`error`] — [`AnalyzeError`] enum
-//! - [`resolver`] — [`Resolver`] trait, [`ResolvedAttribute`],
-//!   [`ResolvedConcept`], [`NoopResolver`], [`ResolverError`]
+//! - [`resolver`] — [`Resolver`] trait + [`NoopResolver`], the
+//!   name-lookup seam; resolved values are
+//!   [`crate::resolution::ConceptDefinition`] /
+//!   [`crate::resolution::AttributeDefinition`]
 //! - [`scope`] — in-document name index used during analysis
 //! - [`declaration`] — `attribute!` / `concept!` body parsing +
 //!   their `Application` builders
@@ -32,15 +34,6 @@
 //!   `derive_head_intent`
 //! - [`field`] — field-value translation, scalar coercion,
 //!   small utilities
-
-// The analyzer's own consumers reference the `Resolver` trait by
-// name — that trait is now deprecated in favour of
-// `tonk_introspect::BranchIntrospection` (with a blanket impl
-// supplying `Resolver`), but it stays as the analyzer's
-// internal vocabulary. Silencing the warning crate-side keeps
-// downstream consumers seeing the deprecation while not flooding
-// our own build.
-#![allow(deprecated)]
 
 mod assertion;
 mod declaration;
@@ -65,8 +58,11 @@ use crate::transact::{
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
-pub use resolver::{NoopResolver, ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
+pub use resolver::{NoopResolver, Resolver};
 pub use scan::scan_variables;
+
+use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;
+use crate::resolution::{AttributeDefinition, ConceptDefinition};
 
 use crate::prelude::EntityExt;
 use assertion::{body_digest, build_assertion_application, derive_head_intent};
@@ -130,7 +126,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     };
                     let plan = parse_attribute_body(assertion)?;
                     let entity = plan.entity.clone();
-                    let attribute = ResolvedAttribute {
+                    let attribute = AttributeDefinition {
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
@@ -181,10 +177,14 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     };
                     let plan = parse_concept_body(assertion, &scope).await?;
                     let entity = plan.entity.clone();
-                    let concept = ResolvedConcept {
+                    let descriptor = if plan.transient {
+                        DurableConceptDescriptor::Transient(plan.descriptor.clone())
+                    } else {
+                        DurableConceptDescriptor::Durable(plan.descriptor.clone())
+                    };
+                    let concept = ConceptDefinition {
                         entity: entity.clone(),
-                        descriptor: plan.descriptor.clone(),
-                        transient: plan.transient,
+                        descriptor,
                     };
                     let (this, name) =
                         derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), &scope)
@@ -590,10 +590,20 @@ fn as_constant_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<En
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resolution::ResolveError;
     use async_trait::async_trait;
     use dialog_artifacts::{Entity, Value};
     use dialog_query::{ConceptDescriptor, Term};
     use tonk_notation::parse;
+
+    /// Wrap a dialog descriptor as a durable [`ConceptDefinition`]
+    /// — the resolved shape the analyzer's `Resolver` returns.
+    fn durable(entity: Entity, descriptor: ConceptDescriptor) -> ConceptDefinition {
+        ConceptDefinition {
+            entity,
+            descriptor: DurableConceptDescriptor::Durable(descriptor),
+        }
+    }
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -625,13 +635,12 @@ mod tests {
         async fn resolve_concept(
             &self,
             name: &str,
-        ) -> Result<Option<ResolvedConcept>, ResolverError> {
+        ) -> Result<Option<ConceptDefinition>, ResolveError> {
             if name == self.name {
-                Ok(Some(ResolvedConcept {
-                    entity: self.descriptor.this(),
-                    descriptor: self.descriptor.clone(),
-                    transient: false,
-                }))
+                Ok(Some(durable(
+                    self.descriptor.this(),
+                    self.descriptor.clone(),
+                )))
             } else {
                 Ok(None)
             }
@@ -639,16 +648,16 @@ mod tests {
         async fn resolve_attribute(
             &self,
             _name: &str,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
             Ok(None)
         }
         async fn resolve_attribute_by_entity(
             &self,
             _entity: &Entity,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
             Ok(None)
         }
-        async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
+        async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolveError> {
             Ok(None)
         }
     }
@@ -1412,18 +1421,14 @@ person!:
             async fn resolve_concept(
                 &self,
                 name: &str,
-            ) -> Result<Option<ResolvedConcept>, ResolverError> {
+            ) -> Result<Option<ConceptDefinition>, ResolveError> {
                 if name == "person" {
                     let descriptor: ConceptDescriptor =
                         serde_json::from_value(serde_json::json!({
                             "with": { "name": { "the": "x.y/name", "as": "Text", "cardinality": "one" } }
                         }))
                         .unwrap();
-                    Ok(Some(ResolvedConcept {
-                        entity: descriptor.this(),
-                        descriptor,
-                        transient: false,
-                    }))
+                    Ok(Some(durable(descriptor.this(), descriptor)))
                 } else {
                     Ok(None)
                 }
@@ -1431,19 +1436,19 @@ person!:
             async fn resolve_attribute(
                 &self,
                 _name: &str,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            ) -> Result<Option<AttributeDefinition>, ResolveError> {
                 Ok(None)
             }
             async fn resolve_attribute_by_entity(
                 &self,
                 _entity: &Entity,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            ) -> Result<Option<AttributeDefinition>, ResolveError> {
                 Ok(None)
             }
             async fn resolve_named_entity(
                 &self,
                 name: &str,
-            ) -> Result<Option<Entity>, ResolverError> {
+            ) -> Result<Option<Entity>, ResolveError> {
                 if name == "evil" {
                     Ok(Some("db:concept".parse().unwrap()))
                 } else {
@@ -1559,13 +1564,9 @@ person!:
             async fn resolve_concept(
                 &self,
                 name: &str,
-            ) -> Result<Option<ResolvedConcept>, ResolverError> {
+            ) -> Result<Option<ConceptDefinition>, ResolveError> {
                 if name == self.concept_name {
-                    Ok(Some(ResolvedConcept {
-                        entity: self.concept.this(),
-                        descriptor: self.concept.clone(),
-                        transient: false,
-                    }))
+                    Ok(Some(durable(self.concept.this(), self.concept.clone())))
                 } else {
                     Ok(None)
                 }
@@ -1573,19 +1574,19 @@ person!:
             async fn resolve_attribute(
                 &self,
                 _name: &str,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            ) -> Result<Option<AttributeDefinition>, ResolveError> {
                 Ok(None)
             }
             async fn resolve_attribute_by_entity(
                 &self,
                 _entity: &Entity,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            ) -> Result<Option<AttributeDefinition>, ResolveError> {
                 Ok(None)
             }
             async fn resolve_named_entity(
                 &self,
                 name: &str,
-            ) -> Result<Option<Entity>, ResolverError> {
+            ) -> Result<Option<Entity>, ResolveError> {
                 if name == "alice" {
                     Ok(Some(self.named_entity.clone()))
                 } else {
@@ -2032,25 +2033,25 @@ xyz.tonk:
             async fn resolve_concept(
                 &self,
                 _name: &str,
-            ) -> Result<Option<ResolvedConcept>, ResolverError> {
-                Err(ResolverError::new("simulated I/O failure"))
+            ) -> Result<Option<ConceptDefinition>, ResolveError> {
+                Err(ResolveError::query("simulated I/O failure"))
             }
             async fn resolve_attribute(
                 &self,
                 _name: &str,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            ) -> Result<Option<AttributeDefinition>, ResolveError> {
                 Ok(None)
             }
             async fn resolve_attribute_by_entity(
                 &self,
                 _entity: &Entity,
-            ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+            ) -> Result<Option<AttributeDefinition>, ResolveError> {
                 Ok(None)
             }
             async fn resolve_named_entity(
                 &self,
                 _name: &str,
-            ) -> Result<Option<Entity>, ResolverError> {
+            ) -> Result<Option<Entity>, ResolveError> {
                 Ok(None)
             }
         }

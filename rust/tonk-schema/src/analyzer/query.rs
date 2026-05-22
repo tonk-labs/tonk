@@ -33,7 +33,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
                     AnalyzeError::at(
                         AnalyzeErrorKind::ResolverFailed {
                             context: format!("concept {concept_name:?}"),
-                            reason: e.message,
+                            reason: e.to_string(),
                         },
                         head_range,
                     )
@@ -46,9 +46,13 @@ pub(crate) async fn build_query_application<R: Resolver>(
                         head_range,
                     )
                 })?;
+            // Queries don't carry durability — unwrap the plain
+            // dialog descriptor from the durability-tagged
+            // [`ConceptDefinition`].
+            let descriptor = resolved.descriptor.concept().clone();
             let mut terms = Parameters::new();
             terms.insert("this".into(), this_term_for_query(&this));
-            for (field_name, _attr) in resolved.descriptor.with().iter() {
+            for (field_name, _attr) in descriptor.with().iter() {
                 // Fields the user mentioned use whatever they
                 // wrote (literal, variable, blank, etc.). Fields
                 // they *omitted* default to a named variable so
@@ -78,12 +82,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
                 if is_meta_field(&field.name) {
                     continue;
                 }
-                if resolved
-                    .descriptor
-                    .with()
-                    .iter()
-                    .all(|(n, _)| n != field.name)
-                {
+                if descriptor.with().iter().all(|(n, _)| n != field.name) {
                     return Err(AnalyzeError::at(
                         AnalyzeErrorKind::UnknownField {
                             concept: concept_name.clone(),
@@ -96,7 +95,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
             Ok(Application::Concept {
                 query: ConceptQuery {
                     terms,
-                    predicate: resolved.descriptor,
+                    predicate: descriptor,
                 },
                 this,
                 name: None,

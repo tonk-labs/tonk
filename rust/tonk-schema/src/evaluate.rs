@@ -161,11 +161,11 @@ impl<T> EvaluateEnv for T where
 // Branch-backed Resolver                                           //
 // ---------------------------------------------------------------- //
 
-/// [`Resolver`] backed by an open dialog branch — looks up
-/// concepts and attributes via [`crate::concept`]'s builder
-/// family. Exposed publicly so callers don't have to reimplement
-/// the same four lookups every time they want to drive
-/// [`analyzer::analyze`].
+/// [`tonk_introspect::BranchIntrospection`] backed by an open
+/// dialog branch — looks up concepts and attributes via
+/// [`crate::concept`]'s builder family. Exposed publicly so
+/// callers (the worker's LSP introspection factory) don't have
+/// to reimplement the same lookups.
 pub struct BranchResolver<'a, Env> {
     /// Open branch the lookups query against.
     pub branch: &'a Branch,
@@ -173,10 +173,11 @@ pub struct BranchResolver<'a, Env> {
     pub env: &'a Env,
 }
 
-// `BranchResolver` no longer implements `Resolver` directly —
-// the blanket `impl<T: BranchIntrospection> Resolver for T` in
-// `analyzer::resolver` provides it via the introspection
-// implementation below.
+// `BranchResolver` implements `BranchIntrospection` (below). The
+// analyzer's `Resolver` is satisfied for free via the blanket
+// `impl<T: BranchIntrospection> Resolver for T` in
+// `analyzer::resolver`, so `analyzer::analyze` accepts it
+// directly.
 
 impl<'a, Env: EvaluateEnv> BranchResolver<'a, Env> {
     /// The branch wrapped as a [`Source`] for the `concept` builders.
@@ -297,7 +298,7 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
             out.push(tonk_introspect::ResolvedConcept {
                 entity: resolved.entity.clone(),
                 descriptor: resolved.descriptor.clone(),
-                transient: false,
+                transient: resolved.transient,
             });
         }
 

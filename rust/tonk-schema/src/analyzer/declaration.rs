@@ -11,8 +11,9 @@ use tonk_notation::{Assertion, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
-use super::resolver::{ResolvedAttribute, Resolver};
+use super::resolver::Resolver;
 use super::scope::Scope;
+use crate::resolution::AttributeDefinition;
 use crate::transact::{Application, ThisIntent};
 
 /// Cached output of building an `attribute!` or `concept!` head
@@ -178,7 +179,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
-    let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
+    let mut with_fields: Vec<(String, AttributeDefinition)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
     for field in &assertion.fields {
         // `this:` and `..:` are reserved meta-keys handled by
@@ -213,7 +214,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
                         // for emission as a separate meta-head
                         // plan.
                         let plan = parse_attribute_fields(attr_fields)?;
-                        let resolved = ResolvedAttribute {
+                        let resolved = AttributeDefinition {
                             entity: plan.entity.clone(),
                             descriptor: plan.descriptor.clone(),
                         };
@@ -272,14 +273,14 @@ async fn resolve_concept_field<R: Resolver>(
     field_name: &str,
     value: &FieldValue,
     scope: &Scope<'_, R>,
-) -> Result<ResolvedAttribute, AnalyzeError> {
+) -> Result<AttributeDefinition, AnalyzeError> {
     match value {
         FieldValue::Variable(name) => scope
             .resolve_attribute(name)
             .await
             .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("variable ?{name}"),
-                reason: e.message,
+                reason: e.to_string(),
             })?
             .ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
@@ -293,7 +294,7 @@ async fn resolve_concept_field<R: Resolver>(
             .await
             .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("symbol {name}"),
-                reason: e.message,
+                reason: e.to_string(),
             })?
             .ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
@@ -316,7 +317,7 @@ async fn resolve_concept_field<R: Resolver>(
                 .await
                 .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                     context: format!("attribute entity {uri}"),
-                    reason: e.message,
+                    reason: e.to_string(),
                 })?
                 .ok_or_else(|| {
                     AnalyzeErrorKind::UnknownBookmark {

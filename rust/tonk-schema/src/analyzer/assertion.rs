@@ -98,7 +98,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     AnalyzeError::at(
                         AnalyzeErrorKind::ResolverFailed {
                             context: format!("concept {concept_name:?}"),
-                            reason: e.message,
+                            reason: e.to_string(),
                         },
                         head_range,
                     )
@@ -111,6 +111,11 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                         head_range,
                     )
                 })?;
+            // `ConceptDefinition::descriptor` is durability-tagged;
+            // the assertion builder works with the plain dialog
+            // descriptor and the transient flag separately.
+            let transient = resolved.descriptor.is_transient();
+            let descriptor = resolved.descriptor.concept().clone();
 
             // Walk user-supplied fields, separating asserts from
             // retracts. `..: _` and per-field `_` blanks go
@@ -135,7 +140,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             if let Some(error) = check_complete_when_unbound(
                 concept_name,
                 &this,
-                &resolved.descriptor,
+                &descriptor,
                 &user_fields,
                 has_rest_retraction,
                 analysis,
@@ -151,7 +156,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             let mut any_assert = false;
             let mut any_retract = false;
 
-            for (field_name, _attr) in resolved.descriptor.with().iter() {
+            for (field_name, _attr) in descriptor.with().iter() {
                 match user_fields.remove(field_name) {
                     Some((FieldValue::Blank, _)) => {
                         // Per-field retraction: planner walks the
@@ -219,7 +224,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 Some(Application::Concept {
                     query: ConceptQuery {
                         terms: assert_terms,
-                        predicate: resolved.descriptor.clone(),
+                        predicate: descriptor.clone(),
                     },
                     this: this.clone(),
                     name: name.clone(),
@@ -233,12 +238,12 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                         terms: {
                             let mut t = Parameters::new();
                             t.insert("this".into(), this_term.clone());
-                            for (field_name, _) in resolved.descriptor.with().iter() {
+                            for (field_name, _) in descriptor.with().iter() {
                                 t.insert(field_name.into(), Term::<dialog_query::Any>::blank());
                             }
                             t
                         },
-                        predicate: resolved.descriptor.clone(),
+                        predicate: descriptor.clone(),
                     },
                     this: this.clone(),
                     name: name.clone(),
@@ -250,7 +255,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 Some(Application::Concept {
                     query: ConceptQuery {
                         terms: retract_terms,
-                        predicate: resolved.descriptor,
+                        predicate: descriptor,
                     },
                     this,
                     name: None,
@@ -261,7 +266,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             Ok(AssertionPlan {
                 assert: assert_app,
                 retract: retract_app,
-                transient: resolved.transient,
+                transient,
             })
         }
         HeadName::Claim(domain) => {
@@ -369,7 +374,7 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                     AnalyzeError::at(
                         AnalyzeErrorKind::ResolverFailed {
                             context: format!("symbol {name}"),
-                            reason: e.message,
+                            reason: e.to_string(),
                         },
                         field.value_range,
                     )
@@ -380,7 +385,7 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                         AnalyzeError::at(
                             AnalyzeErrorKind::ResolverFailed {
                                 context: format!("symbol {name}"),
-                                reason: e.message,
+                                reason: e.to_string(),
                             },
                             field.value_range,
                         )

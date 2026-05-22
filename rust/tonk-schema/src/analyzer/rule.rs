@@ -50,7 +50,7 @@ pub(crate) async fn lift_rule<R: Resolver>(
                 AnalyzeError::at(
                     AnalyzeErrorKind::ResolverFailed {
                         context: format!("rule head concept {name:?}"),
-                        reason: e.message,
+                        reason: e.to_string(),
                     },
                     rule.conclusion.range,
                 )
@@ -61,7 +61,7 @@ pub(crate) async fn lift_rule<R: Resolver>(
                     rule.conclusion.range,
                 )
             })?;
-        resolved.descriptor
+        resolved.descriptor.concept().clone()
     };
 
     // ---- Premises ----
@@ -109,7 +109,7 @@ async fn lift_premise<R: Resolver>(
             AnalyzeError::at(
                 AnalyzeErrorKind::ResolverFailed {
                     context: format!("rule premise concept {name:?}"),
-                    reason: e.message,
+                    reason: e.to_string(),
                 },
                 premise.concept.range,
             )
@@ -120,7 +120,7 @@ async fn lift_premise<R: Resolver>(
                 premise.concept.range,
             )
         })?;
-    let descriptor = resolved.descriptor;
+    let descriptor = resolved.descriptor.concept().clone();
 
     // Build the term map for this premise's `where:` bindings.
     // Every operand of the head concept must be present (either
@@ -183,7 +183,8 @@ async fn lift_premise<R: Resolver>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzer::resolver::{ResolvedAttribute, ResolvedConcept, ResolverError};
+    use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;
+    use crate::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
     use async_trait::async_trait;
     use dialog_artifacts::Entity;
     use dialog_query::AttributeDescriptor;
@@ -197,7 +198,7 @@ mod tests {
     /// descriptor. Lets the test feed pre-built concepts to the
     /// lifter without standing up a branch.
     struct TestResolver {
-        concepts: HashMap<String, ResolvedConcept>,
+        concepts: HashMap<String, ConceptDefinition>,
     }
 
     impl TestResolver {
@@ -211,10 +212,9 @@ mod tests {
             let entity = descriptor.this();
             self.concepts.insert(
                 name.to_string(),
-                ResolvedConcept {
+                ConceptDefinition {
                     entity,
-                    descriptor,
-                    transient: false,
+                    descriptor: DurableConceptDescriptor::Durable(descriptor),
                 },
             );
         }
@@ -226,22 +226,22 @@ mod tests {
         async fn resolve_concept(
             &self,
             name: &str,
-        ) -> Result<Option<ResolvedConcept>, ResolverError> {
+        ) -> Result<Option<ConceptDefinition>, ResolveError> {
             Ok(self.concepts.get(name).cloned())
         }
         async fn resolve_attribute(
             &self,
             _name: &str,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
             Ok(None)
         }
         async fn resolve_attribute_by_entity(
             &self,
             _entity: &Entity,
-        ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+        ) -> Result<Option<AttributeDefinition>, ResolveError> {
             Ok(None)
         }
-        async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolverError> {
+        async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolveError> {
             Ok(None)
         }
     }

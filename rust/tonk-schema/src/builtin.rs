@@ -14,15 +14,28 @@
 //! within their own document, so users can shadow a built-in
 //! locally for testing.
 //!
+//! # Result type
+//!
+//! The registry stores [`tonk_introspect::ResolvedConcept`] —
+//! entity plus a plain dialog descriptor. The analyzer wants the
+//! durability-tagged [`crate::resolution::ConceptDefinition`];
+//! [`lookup_concept_definition`] converts at the boundary (every
+//! built-in is durable). The plain-descriptor [`lookup_concept`] /
+//! [`concept_registry`] accessors stay because the language
+//! server's completion/hover paths consume them directly — a
+//! later slice that owns the LSP boundary collapses them.
+//!
 //! [`Resolver`]: crate::analyzer::Resolver
 
 use std::sync::OnceLock;
 
 use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor;
+use tonk_introspect::ResolvedConcept;
 
-use crate::analyzer::ResolvedConcept;
 use crate::meta::{AnonymousAttributeQuery, NameQuery};
+use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;
+use crate::resolution::ConceptDefinition;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
 
 /// Look up a built-in concept by head-name. Returns `None` for
@@ -35,11 +48,27 @@ pub fn lookup_concept(name: &str) -> Option<ResolvedConcept> {
         .map(|(_, concept)| concept.clone())
 }
 
+/// Look up a built-in concept as a durability-tagged
+/// [`ConceptDefinition`] — the resolved-concept type the analyzer
+/// works with. Built-ins are always durable.
+pub fn lookup_concept_definition(name: &str) -> Option<ConceptDefinition> {
+    lookup_concept(name).map(definition)
+}
+
 /// Iterate every built-in concept as `(name, ResolvedConcept)`
 /// pairs. Used by the concept-of-concept query path to surface
 /// built-ins in a `concept:` query result.
 pub fn concept_registry() -> &'static [(&'static str, ResolvedConcept)] {
     REGISTRY.get_or_init(build_registry).as_slice()
+}
+
+/// Wrap a built-in [`ResolvedConcept`] as a durable
+/// [`ConceptDefinition`].
+fn definition(concept: ResolvedConcept) -> ConceptDefinition {
+    ConceptDefinition {
+        entity: concept.entity,
+        descriptor: DurableConceptDescriptor::Durable(concept.descriptor),
+    }
 }
 
 static REGISTRY: OnceLock<Vec<(&'static str, ResolvedConcept)>> = OnceLock::new();

@@ -10,7 +10,8 @@ use dialog_artifacts::Entity;
 use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::resolver::{ResolvedAttribute, ResolvedConcept, Resolver, ResolverError};
+use super::resolver::Resolver;
+use crate::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
 
 /// Layered name index built during analysis.
 ///
@@ -36,17 +37,17 @@ pub(crate) struct Scope<'a, R: Resolver> {
     /// `concept!` heads in the same document so their `with:`
     /// map can resolve bare-symbol / `?var` references against
     /// uncommitted attributes.
-    pub(crate) in_doc_attributes: Mutex<HashMap<String, ResolvedAttribute>>,
+    pub(crate) in_doc_attributes: Mutex<HashMap<String, AttributeDefinition>>,
     /// `concept!` definitions made in the document, indexed by
     /// the anchor/variable name on the head. Used by later
     /// `person!: &alice` heads in the same document.
-    pub(crate) in_doc_concepts: Mutex<HashMap<String, ResolvedConcept>>,
+    pub(crate) in_doc_concepts: Mutex<HashMap<String, ConceptDefinition>>,
     /// Reverse index: attribute entity → resolved attribute.
     /// Used when a concept body references an attribute via URI
     /// instead of by name.
-    pub(crate) in_doc_attributes_by_entity: Mutex<HashMap<String, ResolvedAttribute>>,
+    pub(crate) in_doc_attributes_by_entity: Mutex<HashMap<String, AttributeDefinition>>,
     /// Reverse index: concept entity → resolved concept.
-    pub(crate) in_doc_concepts_by_entity: Mutex<HashMap<String, ResolvedConcept>>,
+    pub(crate) in_doc_concepts_by_entity: Mutex<HashMap<String, ConceptDefinition>>,
 }
 
 impl<'a, R: Resolver> Scope<'a, R> {
@@ -118,7 +119,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
 
     /// Record an in-document `attribute!` definition for the
     /// given declaration / variable name.
-    pub(crate) fn record_attribute(&self, name: Option<&str>, attribute: ResolvedAttribute) {
+    pub(crate) fn record_attribute(&self, name: Option<&str>, attribute: AttributeDefinition) {
         if let Some(name) = name {
             self.in_doc_attributes
                 .lock()
@@ -130,7 +131,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
     }
 
     /// Record an in-document `concept!` definition.
-    pub(crate) fn record_concept(&self, name: Option<&str>, concept: ResolvedConcept) {
+    pub(crate) fn record_concept(&self, name: Option<&str>, concept: ConceptDefinition) {
         if let Some(name) = name {
             self.in_doc_concepts
                 .lock()
@@ -154,14 +155,14 @@ impl<'a, R: Resolver> Scope<'a, R> {
     pub(crate) async fn resolve_concept(
         &self,
         name: &str,
-    ) -> Result<Option<ResolvedConcept>, ResolverError> {
+    ) -> Result<Option<ConceptDefinition>, ResolveError> {
         // Drop the lock before awaiting the fallback resolver —
         // holding a guard across an await could deadlock if the
         // resolver came back to us.
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Ok(Some(found));
         }
-        if let Some(found) = crate::builtin::lookup_concept(name) {
+        if let Some(found) = crate::builtin::lookup_concept_definition(name) {
             return Ok(Some(found));
         }
         self.inner.resolve_concept(name).await
@@ -175,7 +176,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
     pub(crate) async fn resolve_named_entity(
         &self,
         name: &str,
-    ) -> Result<Option<Entity>, ResolverError> {
+    ) -> Result<Option<Entity>, ResolveError> {
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Ok(Some(found.entity));
         }
@@ -185,7 +186,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
     pub(crate) async fn resolve_attribute(
         &self,
         name: &str,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+    ) -> Result<Option<AttributeDefinition>, ResolveError> {
         if let Some(found) = self.in_doc_attributes.lock().get(name).cloned() {
             return Ok(Some(found));
         }
@@ -195,7 +196,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
     pub(crate) async fn resolve_attribute_by_entity(
         &self,
         entity: &Entity,
-    ) -> Result<Option<ResolvedAttribute>, ResolverError> {
+    ) -> Result<Option<AttributeDefinition>, ResolveError> {
         let key = entity.to_string();
         if let Some(found) = self.in_doc_attributes_by_entity.lock().get(&key).cloned() {
             return Ok(Some(found));

@@ -63,7 +63,7 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
                 AnalyzeError::at(
                     AnalyzeErrorKind::ResolverFailed {
                         context: format!("symbol {name}"),
-                        reason: e.message,
+                        reason: e.to_string(),
                     },
                     range,
                 )
@@ -73,7 +73,7 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
                 AnalyzeError::at(
                     AnalyzeErrorKind::ResolverFailed {
                         context: format!("symbol {name}"),
-                        reason: e.message,
+                        reason: e.to_string(),
                     },
                     range,
                 )
