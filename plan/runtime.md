@@ -226,9 +226,11 @@ Enumeration serves editor completion — offering every concept, or every publis
 
 The language server resolves against the **live environment** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics report `UnknownConcept` for a name the environment does not define, completion enumerates the environment's concepts and names, hover resolves the symbol under the cursor.
 
-The language server is **seeded with the host's environment** — the worker's state, which holds the operator (the query env) and the reactor (which resolves a repo + branch into an environment session). Per request the language server parses the document URI to `(repo, branch)`, acquires that environment session from the reactor, and resolves against it with the concrete chain handles: `ConceptReference::from(name).resolve(session).perform(operator)`.
+The language server is **seeded with the worker's state** — the handle that holds the two things it needs: the **reactor** (names a `(repo, branch)` and opens its environment session) and the **operator** (the query capability every session operation takes). The reactor does not own the operator; the two are seeded together and paired at each call.
 
-No type erasure, no resolver trait object, no injected capability. The language server holds the worker's state directly; resolution uses the same `Source`-generic handles every other consumer uses, monomorphized on the concrete session type. This means `tonk-language-server` depends on the worker (or on whichever crate owns the operator and reactor) — the language server runs inside the worker, so there is no host-agnostic boundary to preserve.
+Per request the language server parses the document URI to `(repo, branch)`, opens that environment session from the reactor, and resolves against it with the concrete chain handles: `ConceptReference::from(name).resolve(session).perform(operator)`.
+
+No type erasure, no resolver trait, no injected capability — the same `Source`-generic handles every other consumer uses, monomorphized on the concrete session type. This means `tonk-language-server` depends on the worker (or on whichever crate owns the reactor and operator). The language server runs inside the worker, so there is no host-agnostic boundary to preserve.
 
 A concept referenced before it is committed — declared earlier in the same document — still resolves: the document's own declarations are threaded through `analyze` (the in-document scope), so a name is unknown only when it is genuinely absent from both the document and the environment.
 
