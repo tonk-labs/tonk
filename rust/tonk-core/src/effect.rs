@@ -4,8 +4,10 @@
 //! storage-shape projections. It depends only on `dialog-*`
 //! crates and lives in the `tonk-core` leaf crate. The query
 //! and resolution machinery — loading effects back from a
-//! branch, the install-time trigger check, the
-//! `AnonymousRuleQuery` — lives in `tonk_schema::effect_query`.
+//! branch and the install-time trigger check — lives in
+//! `tonk_schema::effect_query`, and the `AnonymousRuleQuery`
+//! that surfaces installed rules lives in
+//! `tonk_schema::rule_query`.
 //!
 //! An [`Effect`] pairs a compiled
 //! [`InductiveRule`](dialog_query::InductiveRule) with a

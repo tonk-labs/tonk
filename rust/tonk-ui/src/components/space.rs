@@ -1589,7 +1589,7 @@ fn rule_normalize_terms(value: &mut serde_json::Value) {
 /// layout a `rule!:` head is typed with.
 ///
 /// The `definition` attribute is typed `Text`, so the rule arrives
-/// as a *stringified* JSON [`RuleDefinition`](tonk_schema::effect::RuleDefinition)
+/// as a *stringified* JSON [`RuleDefinition`](tonk_schema::rule_query::RuleDefinition)
 /// — `{ "rule": <InductiveRuleDescriptor>, "polarity": … }`. The
 /// inner descriptor already serializes to the `rule!:` shape
 /// (`assert!` / `when` / `unless`); this lifts those keys to the

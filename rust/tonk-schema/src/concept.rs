@@ -41,8 +41,8 @@ use thiserror::Error;
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
 
 use crate::builtin::concept_registry;
-use crate::effect_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
 use crate::query_source::Source;
+use crate::rule_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
 use tonk_core::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.

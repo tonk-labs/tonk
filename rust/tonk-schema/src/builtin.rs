@@ -26,8 +26,8 @@ use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 
 use crate::concept::concept_of_concept_descriptor;
-use crate::effect_query::rule_of_rule_descriptor;
 use crate::resolution::ConceptDefinition;
+use crate::rule_query::rule_of_rule_descriptor;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
 use tonk_core::meta::{AnonymousAttributeQuery, NameQuery};
 use tonk_core::mutation::ConceptDescriptor;
@@ -93,7 +93,7 @@ fn concept_descriptor() -> ConceptDefinition {
 /// Built-in `rule` view — the rule-of-rule descriptor.
 ///
 /// Resolves to the sentinel descriptor whose `this()` triggers
-/// dispatch to [`crate::effect_query::AnonymousRuleQuery`] in
+/// dispatch to [`crate::rule_query::AnonymousRuleQuery`] in
 /// [`crate::concept::QueryPlan::from`], so a `rule:` head at
 /// query time enumerates *every* installed inductive rule with a
 /// synthesised `definition` field. The rule-side parallel of
