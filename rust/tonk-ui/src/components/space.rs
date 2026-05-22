@@ -600,6 +600,9 @@ where
     let transact_buffer = RwSignal::new(String::new());
     let transact_state = RwSignal::new(TransactState::Idle);
     let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
+    // Result-panel layout. Ephemeral per-cell preference for now;
+    // a future pass backs this with a dialog setting fact.
+    let view_mode = RwSignal::new(ViewMode::default());
 
     // LSP document URI for this specific cell. Including the
     // numeric cell ID keeps every cell distinct on the LSP
@@ -832,7 +835,44 @@ where
                     <wa-icon name="bolt" variant="solid"></wa-icon>
                 </wa-button>
             </div>
-            { move || render_transact_state(transact_state.get(), last_response.get()) }
+            <div
+                class="evaluate-view-toggle"
+                class:is-visible=move || last_response.get().is_some()
+            >
+                <wa-button-group label="Result layout">
+                    <wa-button
+                        type="button"
+                        size="small"
+                        appearance=move || if view_mode.get() == ViewMode::Grouped {
+                            "filled"
+                        } else {
+                            "outlined"
+                        }
+                        title="Grouped by concept"
+                        on:click=move |_| view_mode.set(ViewMode::Grouped)
+                    >
+                        <wa-icon name="list-tree" variant="solid"></wa-icon>
+                    </wa-button>
+                    <wa-button
+                        type="button"
+                        size="small"
+                        appearance=move || if view_mode.get() == ViewMode::Listed {
+                            "filled"
+                        } else {
+                            "outlined"
+                        }
+                        title="Listed as notation"
+                        on:click=move |_| view_mode.set(ViewMode::Listed)
+                    >
+                        <wa-icon name="list" variant="solid"></wa-icon>
+                    </wa-button>
+                </wa-button-group>
+            </div>
+            { move || render_transact_state(
+                transact_state.get(),
+                last_response.get(),
+                view_mode.get(),
+            ) }
         </form>
     }
 }
@@ -1147,9 +1187,23 @@ fn lsp_position_to_js(position: lsp_types::Position) -> wasm_bindgen::JsValue {
 /// in the tree across the Idle → Running → Done cycle prevents
 /// the form from shrinking and re-expanding mid-request, which
 /// otherwise reads as a "flash" as the page reflows.
+/// How an evaluate result panel lays out its match blocks.
+///
+/// `Grouped` is the nested concept → entity → field tree;
+/// `Listed` flattens every result into the same `head!:`
+/// notation the `<tonk-display>` inspector fallback shows.
+/// Default is `Grouped`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ViewMode {
+    #[default]
+    Grouped,
+    Listed,
+}
+
 fn render_transact_state(
     state: TransactState,
     response: Option<Box<EvaluateResponse>>,
+    mode: ViewMode,
 ) -> impl IntoView {
     let failure = match state {
         TransactState::Failed(message) => Either::Left(view! {
@@ -1168,6 +1222,7 @@ fn render_transact_state(
                 response.matches_after,
                 response.revision_before,
                 response.revision_after,
+                mode,
             ))
         }
         None => Either::Right(()),
@@ -1192,6 +1247,7 @@ fn render_evaluate_matches(
     after: Vec<tonk_worker::QueryMatchBlock>,
     revision_before: Option<Revision>,
     revision_after: Option<Revision>,
+    mode: ViewMode,
 ) -> impl IntoView {
     use leptos::either::EitherOf3;
     if after.is_empty() && before.is_empty() {
@@ -1204,7 +1260,7 @@ fn render_evaluate_matches(
         return EitherOf3::B(view! {
             <div class="evaluate-results wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ badge }</div>
-                { render_match_block_list(after) }
+                { render_match_blocks(after, mode) }
             </div>
         });
     }
@@ -1212,14 +1268,49 @@ fn render_evaluate_matches(
         <wa-comparison position="50" class="evaluate-comparison">
             <div slot="before" class="evaluate-side evaluate-side-before wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ revision_badge(revision_before) }</div>
-                { render_match_block_list(before) }
+                { render_match_blocks(before, mode) }
             </div>
             <div slot="after" class="evaluate-side evaluate-side-after wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ revision_badge(revision_after) }</div>
-                { render_match_block_list(after) }
+                { render_match_blocks(after, mode) }
             </div>
         </wa-comparison>
     })
+}
+
+/// Render a list of match blocks in the selected [`ViewMode`].
+fn render_match_blocks(blocks: Vec<tonk_worker::QueryMatchBlock>, mode: ViewMode) -> impl IntoView {
+    match mode {
+        ViewMode::Grouped => Either::Left(render_match_block_list(blocks)),
+        ViewMode::Listed => Either::Right(render_match_block_notation(blocks)),
+    }
+}
+
+/// Listed (inspector) rendering — flatten every result across all
+/// blocks into a stack of `<tonk-notation>` documents, each
+/// formatted as a `head!:` assertion using the block's label as
+/// the head. Mirrors the `<tonk-display>` no-view fallback.
+fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    view! {
+        <div class="query-results-notation wa-stack wa-gap-2xs">
+            { blocks.into_iter().flat_map(|block| {
+                let label = block.label;
+                block.results.into_iter().map(move |result| {
+                    let text = tonk_display::notation_format::format(
+                        &result.this,
+                        &result.fields,
+                        &label,
+                        None,
+                    );
+                    view! {
+                        <tonk-notation>
+                            <script type="text/tonk-notation">{ text }</script>
+                        </tonk-notation>
+                    }
+                }).collect::<Vec<_>>()
+            }).collect_view() }
+        </div>
+    }
 }
 
 /// Render one stack of `<ul>`s for a list of match blocks.

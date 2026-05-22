@@ -25,8 +25,13 @@ pub mod resolve;
 // for the host doesn't flag every internal helper dead.
 #[cfg(any(target_arch = "wasm32", test))]
 mod fold;
+/// Conclusion-to-source notation formatter. `format` turns an
+/// entity (`this` URI + projected `fields`) into a `head!:`
+/// assertion document — the text `<tonk-notation>` renders.
+/// Public so `tonk-ui` can render evaluate results in the same
+/// notation the inspector uses.
 #[cfg(any(target_arch = "wasm32", test))]
-mod notation_format;
+pub mod notation_format;
 #[cfg(any(target_arch = "wasm32", test))]
 mod notation_tokens;
 

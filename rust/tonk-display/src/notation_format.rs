@@ -19,14 +19,23 @@
 //!
 //! When `bookmark` is `None`, the `&anchor` is omitted.
 
-use serde_json::Value;
-use tonk_schema::conclusion::Conclusion;
+use std::collections::BTreeMap;
 
-/// Render `conclusion` as a notation document. `head` is the
-/// concept's short name (e.g. `"greeting"`) — used as the
-/// assertion head. `bookmark` is an optional name to write as
-/// `&bookmark` after the head's `:`.
-pub fn format(conclusion: &Conclusion, head: &str, bookmark: Option<&str>) -> String {
+use serde_json::Value;
+
+/// Render an entity as a notation document. `this` is the entity
+/// URI and `fields` its projected values — the two pieces a
+/// [`Conclusion`][tonk_schema::conclusion::Conclusion] or an
+/// evaluate `QueryResult` carries. `head` is the concept's short
+/// name (e.g. `"greeting"`), used as the assertion head.
+/// `bookmark` is an optional name to write as `&bookmark` after
+/// the head's `:`.
+pub fn format(
+    this: &str,
+    fields: &BTreeMap<String, Value>,
+    head: &str,
+    bookmark: Option<&str>,
+) -> String {
     let mut out = String::new();
     out.push_str(head);
     out.push_str("!:");
@@ -37,10 +46,10 @@ pub fn format(conclusion: &Conclusion, head: &str, bookmark: Option<&str>) -> St
     }
     out.push('\n');
     out.push_str("  this: ");
-    out.push_str(&conclusion.this);
+    out.push_str(this);
     out.push('\n');
 
-    for (name, value) in &conclusion.fields {
+    for (name, value) in fields {
         // `this` is already emitted above; skip it if the query
         // also projected it as a field, otherwise it would appear
         // twice.
@@ -133,63 +142,52 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
-    fn make_conclusion(this: &str, fields: &[(&str, Value)]) -> Conclusion {
+    fn fields(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
         let mut map = BTreeMap::new();
-        for (k, v) in fields {
+        for (k, v) in pairs {
             map.insert((*k).to_owned(), v.clone());
         }
-        Conclusion {
-            this: this.to_owned(),
-            fields: map,
-        }
+        map
     }
 
     #[test]
     fn it_emits_a_head_and_this_field() {
-        let c = make_conclusion("did:key:zX", &[]);
-        let out = format(&c, "greeting", None);
+        let out = format("did:key:zX", &fields(&[]), "greeting", None);
         assert_eq!(out, "greeting!:\n  this: did:key:zX\n");
     }
 
     #[test]
     fn it_emits_an_anchor_when_a_bookmark_is_given() {
-        let c = make_conclusion("did:key:zX", &[]);
-        let out = format(&c, "greeting", Some("demo"));
+        let out = format("did:key:zX", &fields(&[]), "greeting", Some("demo"));
         assert_eq!(out, "greeting!: &demo\n  this: did:key:zX\n");
     }
 
     #[test]
     fn it_quotes_plain_string_values() {
-        let c = make_conclusion("did:key:zX", &[("message", json!("Hello, world"))]);
-        let out = format(&c, "greeting", None);
+        let f = fields(&[("message", json!("Hello, world"))]);
+        let out = format("did:key:zX", &f, "greeting", None);
         assert!(out.contains("message: \"Hello, world\"\n"));
     }
 
     #[test]
     fn it_leaves_uri_values_unquoted() {
-        let c = make_conclusion("did:key:zX", &[("model", json!("xyz.tonk.view/greeting"))]);
-        let out = format(&c, "view", None);
+        let f = fields(&[("model", json!("xyz.tonk.view/greeting"))]);
+        let out = format("did:key:zX", &f, "view", None);
         assert!(out.contains("model: xyz.tonk.view/greeting\n"));
     }
 
     #[test]
     fn it_emits_numbers_and_bools_bare() {
-        let c = make_conclusion(
-            "did:key:zX",
-            &[("count", json!(42)), ("active", json!(true))],
-        );
-        let out = format(&c, "concept", None);
+        let f = fields(&[("count", json!(42)), ("active", json!(true))]);
+        let out = format("did:key:zX", &f, "concept", None);
         assert!(out.contains("count: 42\n"));
         assert!(out.contains("active: true\n"));
     }
 
     #[test]
     fn it_skips_duplicate_this_field() {
-        let c = make_conclusion(
-            "did:key:zX",
-            &[("this", json!("did:key:zX")), ("message", json!("Hi"))],
-        );
-        let out = format(&c, "greeting", None);
+        let f = fields(&[("this", json!("did:key:zX")), ("message", json!("Hi"))]);
+        let out = format("did:key:zX", &f, "greeting", None);
         // `this:` appears exactly once.
         assert_eq!(out.matches("this:").count(), 1);
     }
@@ -199,25 +197,22 @@ mod tests {
         // `null` round-trips to `_` so the rendered notation matches
         // a hand-typed retraction. Other JSON-null sources (missing
         // attribute, explicit null) all collapse to the same shape.
-        let c = make_conclusion("did:key:zX", &[("message", Value::Null)]);
-        let out = format(&c, "greeting", None);
+        let f = fields(&[("message", Value::Null)]);
+        let out = format("did:key:zX", &f, "greeting", None);
         assert!(out.contains("message: _\n"), "unexpected output: {out}");
     }
 
     #[test]
     fn it_preserves_field_order_alphabetically() {
-        // `Conclusion.fields` is a `BTreeMap`, so iteration order is
+        // `fields` is a `BTreeMap`, so iteration order is
         // alphabetical by key. Pin that so the rendered notation is
         // deterministic regardless of insertion order at the source.
-        let c = make_conclusion(
-            "did:key:zX",
-            &[
-                ("zebra", json!("z")),
-                ("apple", json!("a")),
-                ("mango", json!("m")),
-            ],
-        );
-        let out = format(&c, "fruit", None);
+        let f = fields(&[
+            ("zebra", json!("z")),
+            ("apple", json!("a")),
+            ("mango", json!("m")),
+        ]);
+        let out = format("did:key:zX", &f, "fruit", None);
         let apple = out.find("apple:").expect("apple field present");
         let mango = out.find("mango:").expect("mango field present");
         let zebra = out.find("zebra:").expect("zebra field present");
@@ -228,8 +223,7 @@ mod tests {
     fn it_emits_no_extra_fields_for_an_empty_conclusion() {
         // Just `head!:` + `this:` — nothing else. The trailing
         // newline after `this:` is the document terminator.
-        let c = make_conclusion("did:key:zX", &[]);
-        let out = format(&c, "greeting", None);
+        let out = format("did:key:zX", &fields(&[]), "greeting", None);
         assert_eq!(out.lines().count(), 2);
         assert!(out.ends_with('\n'));
     }
@@ -239,22 +233,19 @@ mod tests {
         // `id:` and `db:` URIs come back from the worker for
         // built-in concept references — they need to render as
         // bare URIs, not strings.
-        let c = make_conclusion(
-            "did:key:zX",
-            &[
-                ("kind", json!("id:greeting")),
-                ("schema", json!("db:concept")),
-            ],
-        );
-        let out = format(&c, "thing", None);
+        let f = fields(&[
+            ("kind", json!("id:greeting")),
+            ("schema", json!("db:concept")),
+        ]);
+        let out = format("did:key:zX", &f, "thing", None);
         assert!(out.contains("kind: id:greeting\n"), "got: {out}");
         assert!(out.contains("schema: db:concept\n"), "got: {out}");
     }
 
     #[test]
     fn it_escapes_quotes_in_strings() {
-        let c = make_conclusion("did:key:zX", &[("message", json!("She said \"hi\""))]);
-        let out = format(&c, "greeting", None);
+        let f = fields(&[("message", json!("She said \"hi\""))]);
+        let out = format("did:key:zX", &f, "greeting", None);
         assert!(out.contains("message: \"She said \\\"hi\\\"\"\n"));
     }
 }
