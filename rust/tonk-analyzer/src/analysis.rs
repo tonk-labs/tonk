@@ -155,12 +155,8 @@ impl DocumentAnalysis {
         // statements — the analyzer appends them last.
         for expression in &self.expressions {
             if let ExpressionAnalysis::Rule(node) = &expression.analysis {
-                let statement = match &node.analysis {
-                    RuleAnalysis::Install(effect) => Statement::InstallEffect(effect.clone()),
-                    RuleAnalysis::Retract(entity) => Statement::RetractEffect(entity.clone()),
-                };
                 out.push(PlannedStatement {
-                    statement,
+                    statement: Statement::InstallEffect(node.analysis.effect.clone()),
                     label: None,
                     declaration: false,
                 });
@@ -296,15 +292,11 @@ impl Analyzable for Rule {
     type Analysis = RuleAnalysis;
 }
 
-/// Analysis of a single `rule!:` expression — either an install
-/// (the lifted inductive [`Effect`]) or a retraction (the effect
-/// entity to uninstall).
+/// Analysis of a single `rule!:` expression — the lifted
+/// inductive [`Effect`] it installs.
 #[derive(Debug, Clone)]
-pub enum RuleAnalysis {
-    /// `rule!:` install shape — the effect lifted from the rule,
-    /// installed as a [`Statement::InstallEffect`].
-    Install(Effect),
-    /// `rule!:` retraction shape — the effect entity to
-    /// uninstall, lowered to a [`Statement::RetractEffect`].
-    Retract(Entity),
+pub struct RuleAnalysis {
+    /// The effect lifted from the rule, installed as a
+    /// [`Statement::InstallEffect`].
+    pub effect: Effect,
 }

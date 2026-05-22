@@ -21,5 +21,5 @@ pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_di
 pub use parse::{Parsed, parse};
 pub use syntax::{
     Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Premise, Query, Rule,
-    RuleInstall, RulePolarity, RuleRetract, Scalar, Spanned, Syntax,
+    RulePolarity, Scalar, Spanned, Syntax,
 };

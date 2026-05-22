@@ -14,63 +14,21 @@
 //! transient-trigger check runs separately at the evaluator's
 //! commit step where a branch is available.
 
-use dialog_artifacts::Entity;
 use dialog_query::concept::query::ConceptQuery;
 use dialog_query::formula::query::FormulaQuery;
 use dialog_query::premise::Premise as DialogPremise;
 use dialog_query::{InductiveRule, Negation, Parameters, Proposition, Term};
-use tonk_notation::{Premise as NotationPremise, Rule, RuleInstall, RulePolarity, RuleRetract};
+use tonk_notation::{Premise as NotationPremise, Rule, RulePolarity};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
 use super::formula::{FormulaInfo, lookup_formula};
 use super::resolver::Resolver;
 use super::scope::Scope;
-use crate::analysis::RuleAnalysis;
 use crate::analyzer::Working;
 use tonk_core::effect::{Effect, EffectPolarity};
 
-/// Lift a parsed [`Rule`] into a [`RuleAnalysis`].
-///
-/// A `rule!:` carries one of two shapes:
-///
-/// - [`Rule::Install`] lifts into a compiled [`Effect`]
-///   ([`RuleAnalysis::Install`]).
-/// - [`Rule::Retract`] lifts into the effect entity to uninstall
-///   ([`RuleAnalysis::Retract`]).
-pub(crate) async fn lift_rule<R: Resolver>(
-    rule: &Rule,
-    scope: &Scope<'_, R>,
-    analysis: &Working,
-) -> Result<RuleAnalysis, AnalyzeError> {
-    match rule {
-        Rule::Install(install) => {
-            let effect = lift_rule_install(install, scope, analysis).await?;
-            Ok(RuleAnalysis::Install(effect))
-        }
-        Rule::Retract(retract) => Ok(RuleAnalysis::Retract(lift_rule_retract(retract)?)),
-    }
-}
-
-/// Resolve a [`Rule::Retract`]'s `this:` URI into the effect
-/// entity to uninstall. The parser already constrained `this:`
-/// to a URI form; this re-parses it into a typed [`Entity`].
-fn lift_rule_retract(retract: &RuleRetract) -> Result<Entity, AnalyzeError> {
-    retract.entity.value.parse::<Entity>().map_err(|e| {
-        AnalyzeError::at(
-            AnalyzeErrorKind::RuleCompileFailed {
-                reason: format!(
-                    "rule retraction `this:` {:?} is not a valid entity URI: {e}",
-                    retract.entity.value
-                ),
-            },
-            retract.entity.range,
-        )
-    })
-}
-
-/// Lift a parsed [`RuleInstall`] into an [`Effect`] ready to
-/// install.
+/// Lift a parsed [`Rule`] into an [`Effect`] ready to install.
 ///
 /// Each premise's concept and the head concept are resolved
 /// through `scope`; missing names surface as
@@ -79,8 +37,8 @@ fn lift_rule_retract(retract: &RuleRetract) -> Result<Entity, AnalyzeError> {
 /// [`field_value_to_term`] helper, so `?var` / literal /
 /// symbol / blank forms behave consistently with the rest of
 /// the analyzer.
-async fn lift_rule_install<R: Resolver>(
-    rule: &RuleInstall,
+pub(crate) async fn lift_rule<R: Resolver>(
+    rule: &Rule,
     scope: &Scope<'_, R>,
     analysis: &Working,
 ) -> Result<Effect, AnalyzeError> {
@@ -504,40 +462,6 @@ rule!:\n\
             only_installed_effect(&analysis).polarity(),
             EffectPolarity::Retract
         );
-    }
-
-    /// A `rule!:` retraction (`this: <uri> / ..: _`) lifts to a
-    /// trailing `Statement::RetractEffect` carrying the effect
-    /// entity to uninstall.
-    #[dialog_common::test]
-    async fn it_lifts_a_rule_retraction() {
-        let resolver = TestResolver::new();
-        let doc = "\
-rule!:\n\
-\x20 this: effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8\n\
-\x20 ..: _\n";
-        let parsed = parse(doc);
-        assert!(
-            parsed.diagnostics.is_empty(),
-            "unexpected parse diagnostics: {:?}",
-            parsed.diagnostics
-        );
-        let syntax = parsed.syntax.expect("parsed syntax");
-        let analysis = crate::analyzer::analyze(&syntax, &resolver)
-            .await
-            .expect("analyze should succeed");
-
-        let statements = analysis.analysis.statements();
-        assert_eq!(statements.len(), 1);
-        let expected: Entity = "effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8"
-            .parse()
-            .unwrap();
-        match &statements[0].statement {
-            tonk_core::transact::Statement::RetractEffect(entity) => {
-                assert_eq!(*entity, expected);
-            }
-            other => panic!("expected Statement::RetractEffect, got {other:?}"),
-        }
     }
 
     /// Unknown head concept name surfaces as
