@@ -832,7 +832,10 @@ where
                     <wa-icon name="bolt" variant="solid"></wa-icon>
                 </wa-button>
             </div>
-            { move || render_transact_state(transact_state.get(), last_response.get()) }
+            { move || render_transact_state(
+                transact_state.get(),
+                last_response.get(),
+            ) }
         </form>
     }
 }
@@ -1204,56 +1207,566 @@ fn render_evaluate_matches(
         return EitherOf3::B(view! {
             <div class="evaluate-results wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ badge }</div>
-                { render_match_block_list(after) }
+                { render_result_tabs(after) }
             </div>
         });
     }
+    // Commit changed the result set — a `<wa-comparison>` slider
+    // contrasts pre/post state. Each side stays single-view (the
+    // listed notation); a tab group inside a comparison half
+    // would be too cramped.
     EitherOf3::C(view! {
         <wa-comparison position="50" class="evaluate-comparison">
             <div slot="before" class="evaluate-side evaluate-side-before wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ revision_badge(revision_before) }</div>
-                { render_match_block_list(before) }
+                { render_match_block_notation(before) }
             </div>
             <div slot="after" class="evaluate-side evaluate-side-after wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ revision_badge(revision_after) }</div>
-                { render_match_block_list(after) }
+                { render_match_block_notation(after) }
             </div>
         </wa-comparison>
     })
 }
 
-/// Render one stack of `<ul>`s for a list of match blocks.
-/// Shared between the comparison-slider arms and the no-change
-/// fallback.
+/// `localStorage` key holding the user's preferred result view
+/// (`listed` / `tree` / `table`). Persisting it makes the choice
+/// stick across results and across reloads.
+const RESULT_VIEW_KEY: &str = "tonk:result-view";
+
+/// Read the persisted result-view preference, falling back to
+/// `listed` when nothing is stored (or the stored value isn't a
+/// known panel name).
+fn result_view_pref() -> String {
+    let stored = window()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(RESULT_VIEW_KEY).ok().flatten());
+    match stored.as_deref() {
+        Some(view @ ("listed" | "tree" | "table")) => view.to_owned(),
+        _ => "listed".to_owned(),
+    }
+}
+
+/// Persist the chosen result view so the next result — and the
+/// next session — opens on the same tab.
+fn store_result_view_pref(view: &str) {
+    if let Ok(Some(storage)) = window().local_storage() {
+        let _ = storage.set_item(RESULT_VIEW_KEY, view);
+    }
+}
+
+/// Render the result in three swappable views — listed notation,
+/// grouped tree, and a per-block table — as panels of a
+/// `<wa-tab-group>` with the tabs down the inline-end side. The
+/// active tab is the user's persisted preference; switching tabs
+/// writes the new choice back, so every later result opens on
+/// the same view.
+fn render_result_tabs(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    use wasm_bindgen::closure::Closure;
+
+    let tree_blocks = blocks.clone();
+    let table_blocks = blocks.clone();
+    let active = result_view_pref();
+
+    // The `<wa-tab-group>` is reached by id after mount (a typed
+    // `NodeRef` for a custom element is awkward in Leptos). The
+    // `wa-tab-show` event carries the newly-shown panel name in
+    // `event.detail.name`; persisting it makes the preference
+    // follow the user's last pick. The listener outlives this
+    // function, so its closure is intentionally leaked.
+    let group_id = "evaluate-tabs";
+    Effect::new(move |_| {
+        let Some(el) = window()
+            .document()
+            .and_then(|d| d.get_element_by_id(group_id))
+        else {
+            return;
+        };
+        let cb = Closure::<dyn FnMut(web_sys::CustomEvent)>::new(|ev: web_sys::CustomEvent| {
+            let name = js_sys::Reflect::get(&ev.detail(), &wasm_bindgen::JsValue::from_str("name"))
+                .ok()
+                .and_then(|v| v.as_string());
+            if let Some(name) = name {
+                store_result_view_pref(&name);
+            }
+        });
+        let _ = el.add_event_listener_with_callback("wa-tab-show", cb.as_ref().unchecked_ref());
+        cb.forget();
+    });
+
+    view! {
+        <wa-tab-group
+            id=group_id
+            class="evaluate-tabs"
+            placement="end"
+            prop:active=active
+        >
+            <wa-tab panel="listed">
+                <wa-icon name="list" variant="solid"></wa-icon>
+            </wa-tab>
+            <wa-tab panel="tree">
+                <wa-icon name="folder-tree" variant="solid"></wa-icon>
+            </wa-tab>
+            <wa-tab panel="table">
+                <wa-icon name="table" variant="solid"></wa-icon>
+            </wa-tab>
+            <wa-tab-panel name="listed">
+                { render_match_block_notation(blocks) }
+            </wa-tab-panel>
+            <wa-tab-panel name="tree">
+                { render_match_block_list(tree_blocks) }
+            </wa-tab-panel>
+            <wa-tab-panel name="table">
+                { render_match_block_tables(table_blocks) }
+            </wa-tab-panel>
+        </wa-tab-group>
+    }
+}
+
+/// Table rendering — one `<table>` per query block. The header
+/// row is the projected field names; each result is a row, with
+/// the entity URI in a leading `this` column. The `this` column
+/// is monospaced and hard-clipped to its last few characters
+/// (the unique suffix), the full URI on the cell `title` — the
+/// same treatment the `<tonk-concept>` table uses.
+fn render_match_block_tables(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    view! {
+        <div class="query-tables wa-stack wa-gap-l">
+            { blocks.into_iter().map(render_match_block_table).collect_view() }
+        </div>
+    }
+}
+
+/// One query block as a table. Columns are the union of field
+/// names across the block's results, in first-seen order, with
+/// `this` always leading.
+fn render_match_block_table(block: tonk_worker::QueryMatchBlock) -> impl IntoView {
+    // Column order: every field name in first-seen order across
+    // the block's results. Results in a block share a projection,
+    // but a union keeps the table correct if they ever diverge.
+    let mut columns: Vec<String> = Vec::new();
+    for result in &block.results {
+        for name in result.fields.keys() {
+            if name != "this" && !columns.contains(name) {
+                columns.push(name.clone());
+            }
+        }
+    }
+    let header_columns = columns.clone();
+    view! {
+        <div class="query-table">
+            <table>
+                <thead>
+                    <tr>
+                        // First column is headed by the concept name
+                        // (the query's head) rather than the literal
+                        // `this`; its cells carry the entity URI. The
+                        // name sits in a span so the inverse-color
+                        // cover hugs the text, not the whole cell.
+                        <th class="query-table-this">
+                            <span>{ block.label }</span>
+                        </th>
+                        { header_columns.into_iter()
+                            .map(|name| view! { <th>{ name }</th> })
+                            .collect_view() }
+                    </tr>
+                </thead>
+                <tbody>
+                    { block.results.into_iter().map(move |result| {
+                        let entity = result.this.clone();
+                        let entity_label = entity.clone();
+                        let columns = columns.clone();
+                        view! {
+                            <tr>
+                                // The entity URI is hard-clipped to its
+                                // trailing characters; the full value
+                                // sits on `<wa-copy-button>` so a click
+                                // copies it. The truncated span is the
+                                // button's custom trigger (default slot).
+                                <td class="query-table-this">
+                                    <wa-copy-button value=entity>
+                                        <span>{ entity_label }</span>
+                                    </wa-copy-button>
+                                </td>
+                                { columns.into_iter().map(move |name| {
+                                    let cell = result.fields.get(&name).cloned();
+                                    view! {
+                                        <td>
+                                            { cell.map(|v| view! {
+                                                <span>{ render_field_value(v) }</span>
+                                            }) }
+                                        </td>
+                                    }
+                                }).collect_view() }
+                            </tr>
+                        }
+                    }).collect_view() }
+                </tbody>
+            </table>
+        </div>
+    }
+}
+
+/// Listed (inspector) rendering — flatten every result across all
+/// blocks into a stack of notation-shaped records. Each result
+/// renders as a `<label>!:` head row followed by one row per
+/// field, every row its own element so lines stay independently
+/// styleable and selectable. Values reuse the shared `tonk-cm-*`
+/// classifier; long single-line values ellipsize with a
+/// click-to-expand; multi-line values render one element per
+/// line. Highlighting and typography match the editor.
+fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    view! {
+        <div class="query-notation wa-stack wa-gap-s">
+            { blocks.into_iter().flat_map(|block| {
+                let label = block.label;
+                let is_concept = label == CONCEPT_LABEL;
+                block.results.into_iter().map(move |result| {
+                    if is_concept {
+                        render_concept_record(result).into_any()
+                    } else {
+                        render_notation_record(label.clone(), result).into_any()
+                    }
+                }).collect::<Vec<_>>()
+            }).collect_view() }
+        </div>
+    }
+}
+
+/// Block label of a `concept:` query. Results in a block with this
+/// label are concept definitions and render as `concept!:`
+/// assertions (the `source` descriptor expanded as notation)
+/// rather than the generic field-by-field record.
+const CONCEPT_LABEL: &str = "concept";
+
+/// Render an attribute `Type` discriminant the way it is *typed*
+/// in notation.
+///
+/// A descriptor stores `as` as dialog's PascalCase serde
+/// discriminant (`Text`, `UnsignedInteger`, …), but the analyzer
+/// accepts — and the guide teaches — the kebab-case surface form
+/// (`text`, `unsigned-integer`, …). The concept view shows what a
+/// user would type, so it translates back. An unrecognized value
+/// is passed through unchanged.
+fn type_name_to_notation(stored: &str) -> &str {
+    match stored {
+        "Text" => "text",
+        "UnsignedInteger" => "unsigned-integer",
+        "SignedInteger" => "signed-integer",
+        "Float" => "float",
+        "Boolean" => "boolean",
+        "Entity" => "entity",
+        "Bytes" => "bytes",
+        other => other,
+    }
+}
+
+/// Rewrite every `as` value in a descriptor tree to its
+/// notation surface form (see [`type_name_to_notation`]). Walks
+/// objects and arrays so the `as` inside each `with` attribute is
+/// caught regardless of nesting depth.
+fn notation_normalize(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if key == "as"
+                    && let serde_json::Value::String(s) = child
+                {
+                    *s = type_name_to_notation(s).to_owned();
+                } else {
+                    notation_normalize(child);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                notation_normalize(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract a concept result's descriptor as an object map.
+///
+/// The `source` attribute of `db:concept` is typed `Text`, so the
+/// descriptor arrives as a *stringified* JSON object, not a
+/// structured value — it has to be parsed before its keys can be
+/// expanded. The `as` discriminants are rewritten to their
+/// notation surface form so the rendered concept reads as the
+/// user would type it. Returns `None` when there's no `source`
+/// field or it doesn't parse as a JSON object.
+fn concept_descriptor(
+    result: &tonk_worker::QueryResult,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let value = result.fields.get("source")?.clone();
+    let map = match value {
+        // Already structured (a future schema might store it so).
+        serde_json::Value::Object(map) => map,
+        // Stringified JSON — the current `Text`-typed shape.
+        serde_json::Value::String(s) => match serde_json::from_str(&s) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let mut value = serde_json::Value::Object(map);
+    notation_normalize(&mut value);
+    match value {
+        serde_json::Value::Object(map) => Some(map),
+        _ => unreachable!("value was constructed as an object"),
+    }
+}
+
+/// One concept result as a `concept!:` assertion: the head, a
+/// `this:` row for the concept entity, then the `source`
+/// descriptor's own keys (`description`, `with`, …) expanded as
+/// nested notation. The `name`/`concept` projection fields are
+/// vestigial here — the descriptor in `source` is the definition.
+fn render_concept_record(result: tonk_worker::QueryResult) -> impl IntoView {
+    let descriptor = concept_descriptor(&result);
+    let entity = result.this;
+    view! {
+        <div class="notation-record">
+            <div class="notation-row">
+                <span class="tonk-cm-effect">"concept!:"</span>
+            </div>
+            { render_notation_field_at(
+                1,
+                "this".to_owned(),
+                serde_json::Value::String(entity),
+            ) }
+            { descriptor.map(|map| map
+                .into_iter()
+                .map(|(k, v)| render_notation_field_at(1, k, v))
+                .collect_view()) }
+        </div>
+    }
+}
+
+/// One result as a notation-shaped record: a `head!:` row, the
+/// `this:` entity row, then a row per projected field.
+fn render_notation_record(label: String, result: tonk_worker::QueryResult) -> impl IntoView {
+    let head = format!("{label}!:");
+    let entity = result.this;
+    view! {
+        <div class="notation-record">
+            <div class="notation-row">
+                <span class="tonk-cm-effect">{ head }</span>
+            </div>
+            { render_notation_field("this".to_owned(), serde_json::Value::String(entity)) }
+            { result.fields.into_iter()
+                .filter(|(name, _)| name != "this")
+                .map(|(name, value)| render_notation_field(name, value))
+                .collect_view() }
+        </div>
+    }
+}
+
+/// One field of a notation record at the top level (one indent
+/// under the head). Thin wrapper over [`render_notation_field_at`].
+fn render_notation_field(name: String, value: serde_json::Value) -> AnyView {
+    render_notation_field_at(1, name, value)
+}
+
+/// Two spaces of notation indent per nesting level, as a literal
+/// string. Indentation is real text — not CSS padding — so a
+/// selection copied out of the result keeps its structure when
+/// pasted elsewhere.
+fn notation_indent(depth: usize) -> String {
+    "  ".repeat(depth)
+}
+
+/// Render one field at nesting `depth` (1 = directly under the
+/// head). Each row opens with a literal-space indent span so the
+/// rendered text is copy-paste faithful — `depth` levels of two
+/// spaces, the same as the notation a user would type.
+///
+/// - A nested object recurses: a bare `key:` row followed by its
+///   children one level deeper, so a `with:` block reads as
+///   indented notation rather than JSON.
+/// - A multi-line string drops its lines onto their own rows,
+///   indented one level past the key.
+/// - Every other value sits inline on the `key: value` row.
+fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value) -> AnyView {
+    let indent = notation_indent(depth);
+    if let serde_json::Value::Object(map) = value {
+        return view! {
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ indent }</span>
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { map.into_iter()
+                .map(|(k, v)| render_notation_field_at(depth + 1, k, v))
+                .collect_view() }
+        }
+        .into_any();
+    }
+    // A multi-line string is the only scalar that spills past one
+    // row — its lines sit one level deeper than the key.
+    if let serde_json::Value::String(s) = &value
+        && s.contains('\n')
+    {
+        let line_indent = notation_indent(depth + 1);
+        let lines: Vec<String> = s.split('\n').map(str::to_owned).collect();
+        return view! {
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ indent }</span>
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { lines.into_iter().map(move |line| {
+                let line_indent = line_indent.clone();
+                view! {
+                    <div class="notation-row notation-value-line">
+                        <span class="notation-indent">{ line_indent }</span>
+                        <span class="tonk-cm-string">{ line }</span>
+                    </div>
+                }
+            }).collect_view() }
+        }
+        .into_any();
+    }
+    view! {
+        <div class="notation-row notation-field">
+            <span class="notation-indent">{ indent }</span>
+            <span class="tonk-cm-key">{ name }</span>
+            <span class="tonk-cm-plain">": "</span>
+            { render_field_value(value) }
+        </div>
+    }
+    .into_any()
+}
+
+/// Grouped rendering — a `<wa-tree>` nesting concept → entity →
+/// field → value. Concept, entity, and field rows all expand; the
+/// value is the only leaf. Directory rows carry a trailing `:` so
+/// the tree reads like the YAML notation. Highlighting reuses the
+/// same `tonk-cm-*` palette the notation renderer uses.
 fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
     view! {
-        <ul class="query-results">
-            { blocks.into_iter().map(|block| view! {
-                <li>
-                    <code class="head-label">{ block.label }</code>
-                    <ul class="query-fields">
-                        { block.results.into_iter().map(|result| view! {
-                            <li>
-                                <code class="entity">{ result.this }</code>
-                                <ul>
-                                    { result.fields.into_iter().map(|(name, value)| view! {
-                                        <li>
-                                            <code class="field-name">{ name }</code>
-                                            ": "
-                                            <code class="field-value">{
-                                                serde_json::to_string(&value)
-                                                    .unwrap_or_else(|_| "<?>".to_string())
-                                            }</code>
-                                        </li>
-                                    }).collect_view() }
-                                </ul>
-                            </li>
+        <wa-tree class="query-tree">
+            { blocks.into_iter().map(|block| {
+                let is_concept = block.label == CONCEPT_LABEL;
+                view! {
+                    <wa-tree-item expanded>
+                        <span class="tonk-cm-effect">{ block.label }</span><span class="tonk-cm-plain">":"</span>
+                        { block.results.into_iter().map(move |result| {
+                            if is_concept {
+                                render_concept_tree_item(result).into_any()
+                            } else {
+                                render_result_tree_item(result).into_any()
+                            }
                         }).collect_view() }
-                    </ul>
-                </li>
+                    </wa-tree-item>
+                }
             }).collect_view() }
-        </ul>
+        </wa-tree>
     }
+}
+
+/// One generic query result as a tree item: the entity URI as an
+/// expandable directory, each projected field a child whose value
+/// is the leaf.
+fn render_result_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-entity">{ result.this }</span><span class="tonk-cm-plain">":"</span>
+            { result.fields.into_iter().map(|(name, value)| view! {
+                <wa-tree-item expanded>
+                    <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+                    <wa-tree-item>
+                        { render_field_value(value) }
+                    </wa-tree-item>
+                </wa-tree-item>
+            }).collect_view() }
+        </wa-tree-item>
+    }
+}
+
+/// One concept result as a `concept!:` tree item: a `this:` child
+/// for the entity, then the `source` descriptor's keys expanded as
+/// nested tree items so `with:` reads as a notation block.
+fn render_concept_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
+    let descriptor = concept_descriptor(&result);
+    let entity = result.this;
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-effect">"concept!"</span><span class="tonk-cm-plain">":"</span>
+            { render_notation_tree_item(
+                "this".to_owned(),
+                serde_json::Value::String(entity),
+            ) }
+            { descriptor.map(|map| map
+                .into_iter()
+                .map(|(k, v)| render_notation_tree_item(k, v))
+                .collect_view()) }
+        </wa-tree-item>
+    }
+}
+
+/// Render `name: value` as a tree item. A nested object becomes an
+/// expandable `key:` directory whose children recurse; every other
+/// value is a `key:` directory with the value as its single leaf.
+fn render_notation_tree_item(name: String, value: serde_json::Value) -> AnyView {
+    if let serde_json::Value::Object(map) = value {
+        return view! {
+            <wa-tree-item expanded>
+                <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+                { map.into_iter()
+                    .map(|(k, v)| render_notation_tree_item(k, v))
+                    .collect_view() }
+            </wa-tree-item>
+        }
+        .into_any();
+    }
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+            <wa-tree-item>
+                { render_field_value(value) }
+            </wa-tree-item>
+        </wa-tree-item>
+    }
+    .into_any()
+}
+
+/// Render a single field value as a highlighted `<span>`, applying
+/// the `tonk-cm-*` decoration class that matches the value's
+/// shape. Mirrors the notation formatter's value rules: URIs bare
+/// and entity-tinted, strings quoted, numbers/bools/null plain.
+///
+/// The span is inline and wraps on overflow: rows are plain text
+/// so a selection copied out of the result keeps its structure.
+/// Multi-line strings are handled by the caller (each line gets
+/// its own row), so by the time a string reaches here it is
+/// single-line.
+fn render_field_value(value: serde_json::Value) -> impl IntoView {
+    use serde_json::Value;
+    let (class, text) = match value {
+        Value::Null => ("tonk-cm-variable", "_".to_owned()),
+        Value::Bool(b) => ("tonk-cm-number", b.to_string()),
+        Value::Number(n) => ("tonk-cm-number", n.to_string()),
+        Value::String(s) => {
+            if tonk_display::notation_format::looks_like_uri(&s) {
+                ("tonk-cm-entity", s)
+            } else {
+                // Show the string verbatim (the string tint marks
+                // it as text) rather than `\"`-escaping quotes.
+                ("tonk-cm-string", s)
+            }
+        }
+        // Arrays and objects have no notation form — show compact
+        // JSON, undecorated.
+        other => (
+            "tonk-cm-plain",
+            serde_json::to_string(&other).unwrap_or_else(|_| "<?>".to_owned()),
+        ),
+    };
+    view! { <span class=class>{ text }</span> }
 }
 
 /// Render a `<wa-tag>` chip describing the current `SyncState`.

@@ -41,8 +41,10 @@ http-body-util = { workspace = true }
 js-sys = { workspace = true }
 lsp-types = { workspace = true }
 rand = { workspace = true }
+send_wrapper = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -58,9 +60,15 @@ wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
     "BroadcastChannel",
+    "Client",
+    "Clients",
     "CryptoKey",
+    "ExtendableMessageEvent",
     "FetchEvent",
     "Headers",
+    "MessageChannel",
+    "MessageEvent",
+    "MessagePort",
     "Request",
     "RequestInit",
     "RequestMode",

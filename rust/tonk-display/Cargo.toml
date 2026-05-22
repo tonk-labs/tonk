@@ -10,9 +10,7 @@ description = "<tonk-display> custom element — renders a single entity using a
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-bytes = { workspace = true }
 custom-elements = { workspace = true }
-futures = { workspace = true }
 indexmap = { workspace = true }
 js-sys = { workspace = true }
 lsp-types = { workspace = true }
@@ -25,8 +23,6 @@ tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
-    "AbortController",
-    "AbortSignal",
     "Attr",
     "Comment",
     "CustomElementRegistry",
@@ -35,7 +31,6 @@ web-sys = { workspace = true, features = [
     "Document",
     "DocumentFragment",
     "Element",
-    "Headers",
     "HtmlElement",
     "HtmlTemplateElement",
     "MutationObserver",
@@ -43,9 +38,6 @@ web-sys = { workspace = true, features = [
     "NamedNodeMap",
     "Node",
     "NodeList",
-    "Request",
-    "RequestInit",
-    "Response",
     "Text",
     "Window",
 ] }

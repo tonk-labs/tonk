@@ -118,9 +118,7 @@ js-sys = "0.3"
 send_wrapper = "0.6"
 web-sys = { version = "0.3" }
 
-# Dialog DB — pinned to the `tonk-2026-05-19` tag, which folds in
-# InductiveRule (Phase 1), Transaction::query() overlay, and
-# Transaction::integrate.
+# Dialog DB
 dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
 dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-05-19" }

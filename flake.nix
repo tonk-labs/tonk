@@ -46,12 +46,13 @@
         commonBuildInputs =
           with pkgs;
           [
-            tailwindcss_4
-            trunk
             binaryen
             cachix
             cargo-nextest
             esbuild
+            python3
+            tailwindcss_4
+            trunk
             worker-build
           ]
           ++ lib.optionals stdenv.isLinux [

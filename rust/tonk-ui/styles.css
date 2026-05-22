@@ -241,6 +241,107 @@ tonk-notation .tonk-cm-variable {
     font-style: italic;
 }
 
+/* Evaluate results — two views over the same data:
+   `.query-tree` (grouped `<wa-tree>`, concept → entity → field →
+   value) and `.query-notation` (listed, notation-shaped records).
+   Both reuse the dialog-yaml `tonk-cm-*` decoration palette and
+   the editor typography (from the shared `tonk-notation,
+   .query-tree, .query-notation` palette block above) so the two
+   views and the editor read identically. */
+.query-tree,
+.query-notation {
+    font-family: var(--tonk-code-font);
+    font-size: var(--tonk-code-font-size);
+    line-height: 1.5;
+    color: var(--tonk-code-fg);
+}
+.query-tree {
+    --indent-guide-width: 1px;
+}
+/* Tree labels are not interactive content — let the user select
+   and copy entity URIs and values out of the result. */
+.query-tree wa-tree-item::part(label) {
+    user-select: text;
+}
+
+/* `tonk-cm-*` decoration classes — shared by both result views.
+   Mirror the typography in `dialog-yaml.ts`'s `dialectTheme`. */
+.query-tree .tonk-cm-key,
+.query-notation .tonk-cm-key {
+    color: var(--tonk-code-key);
+}
+.query-tree .tonk-cm-effect,
+.query-notation .tonk-cm-effect {
+    color: var(--tonk-code-effect);
+    font-weight: bold;
+}
+.query-tree .tonk-cm-name,
+.query-notation .tonk-cm-name {
+    color: var(--tonk-code-name);
+}
+.query-tree .tonk-cm-entity,
+.query-notation .tonk-cm-entity {
+    color: var(--tonk-code-entity);
+    text-decoration: underline;
+    text-decoration-color: var(--tonk-code-entity);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+.query-tree .tonk-cm-variable,
+.query-notation .tonk-cm-variable {
+    color: var(--tonk-code-variable);
+    font-style: italic;
+}
+.query-tree .tonk-cm-string,
+.query-notation .tonk-cm-string {
+    color: var(--tonk-code-string);
+}
+.query-tree .tonk-cm-number,
+.query-notation .tonk-cm-number {
+    color: var(--tonk-code-number);
+}
+/* Plain — separators and arrays/objects shown as compact JSON. */
+.query-tree .tonk-cm-plain,
+.query-notation .tonk-cm-plain {
+    color: var(--tonk-code-fg-muted);
+}
+
+/* Listed view — each result is a `notation-record`; every row
+   (head, field, value line) is its own block so lines stay
+   independently selectable. Rows are plain blocks with inline
+   children — not flex — so a selection copied out of the result
+   reads as one line per row. Indentation is a literal-space
+   `.notation-indent` span the renderer prepends, not CSS padding,
+   so the copied text keeps its structure when pasted elsewhere. */
+.notation-record + .notation-record {
+    margin-block-start: var(--wa-space-s);
+}
+.notation-row {
+    user-select: text;
+}
+/* Field/value rows wrap on overflow rather than truncating, so a
+   long value stays fully visible and fully copyable. */
+.notation-field,
+.notation-value-line {
+    overflow-wrap: anywhere;
+}
+/* The indent prefix carries real spaces; `pre` keeps them from
+   collapsing so each row's content starts at a consistent column,
+   on screen and in copied text. */
+.notation-indent {
+    white-space: pre;
+}
+
+/* A `<wa-tree-item>`'s `label` part is a flex item; its default
+   `min-width: auto` lets it grow to the value's intrinsic width,
+   so a long value would run the row off-screen. `min-width: 0`
+   lets the label shrink to its flex container, and the value
+   (rendered uncollapsed in the tree) wraps within it. */
+.query-tree wa-tree-item::part(label) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 /* Banner header: the space name as a large display title, sized
    to match the sidebar column. Transparent background so the banner
    and the main body read as one continuous surface — the name
@@ -404,6 +505,18 @@ h6 {
 }
 .concept-view-table td.concept-view-this > span::before {
     content: "\200E"; /* LRM — preserves left-to-right glyph order */
+}
+
+/* Field-cell values still wrap (`word-break` on the `td`), but a
+   `<td>` ignores `max-width`, so an unbounded column stretches
+   the whole table. The block-level inner span *does* honor
+   `max-width`: cap it so a long value wraps within a bounded
+   column instead of dominating the row. `inline-size` on the
+   container query keeps the cap proportional to the table's
+   width rather than the viewport's. */
+.concept-view-table td:not(.concept-view-this) > span {
+    display: inline-block;
+    max-width: clamp(12ch, 30cqi, 40ch);
 }
 .space-viewer-frame {
     border: 0;
@@ -902,12 +1015,18 @@ wa-page::part(drawer) {
    lives where the editor expects it, and consumers opt in by
    adding their selector to this group. */
 tonk-code,
-tonk-notation {
-    /* Match `wa-input` so the editor reads as a form field rather
-       than a panel. The form-control tokens are the right
-       semantic — they describe "what an input surface looks like"
-       and stay aligned with the rest of the form theme if Web
-       Awesome ever retunes them. */
+tonk-notation,
+.query-tree,
+.query-notation {
+    /* Both evaluate-result views (listed `.query-notation` and
+       grouped `.query-tree`) and the `<tonk-notation>` inspector
+       slide share the dialog-yaml editor palette so they read
+       identically to each other and to the editor. Match
+       `wa-input` so the surface reads as a form field rather than
+       a panel. The form-control tokens are the right semantic —
+       they describe "what an input surface looks like" and stay
+       aligned with the rest of the form theme if Web Awesome ever
+       retunes them. */
     --tonk-code-bg: var(--wa-form-control-background-color);
     --tonk-code-fg: var(--wa-color-text-normal);
     --tonk-code-fg-muted: var(--wa-color-text-quiet);
@@ -1086,6 +1205,78 @@ tonk-code:focus-within {
 .evaluate-play.is-visible {
     opacity: 1;
     pointer-events: auto;
+}
+
+/* Result-view switcher — a `<wa-tab-group>` with the tab strip
+   on the inline-end side. The active-tab indicator and the
+   selected tab itself follow the page foreground (black in
+   light mode, white in dark) rather than WA's default brand
+   blue, so the switcher reads as neutral chrome. */
+.evaluate-tabs {
+    --indicator-color: var(--wa-color-text-normal);
+}
+.evaluate-tabs wa-tab[active]::part(base) {
+    color: var(--wa-color-text-normal);
+}
+
+/* Table view — one `<table>` per query block. */
+.query-tables {
+    width: 100%;
+}
+.query-table table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: var(--tonk-code-font-size);
+}
+.query-table th,
+.query-table td {
+    padding: var(--wa-space-2xs) var(--wa-space-s);
+    text-align: start;
+    border-block-end: 1px solid var(--wa-color-surface-border);
+    word-break: break-word;
+}
+/* Headers stand clearly apart from the body — bolder, kept in
+   their natural case. */
+.query-table th {
+    font-weight: 700;
+}
+
+/* The concept-name header sits in a span painted in inverse
+   colors (page foreground as background) — the same
+   headline-cover treatment the page's `h1` uses. The cover hugs
+   the text, not the whole cell. It is the table's title, so it
+   reads a notch larger than the plain field headers. */
+.query-table th.query-table-this > span {
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+    font-size: var(--wa-font-size-l);
+    padding: var(--wa-space-3xs) var(--wa-space-2xs);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+/* The entity URI is monospaced and hard-clipped to its last 8
+   characters (the unique suffix; the `did:key:z6Mk…` prefix is
+   boilerplate). The cell is a `<wa-copy-button>` whose trigger
+   span does the clip — clicking it copies the full URI.
+   `direction: rtl` clips from the start with no ellipsis; a
+   leading LRM keeps the glyphs left-to-right. */
+.query-table td.query-table-this {
+    font-family: var(--wa-font-family-code, ui-monospace, monospace);
+}
+.query-table td.query-table-this wa-copy-button {
+    cursor: pointer;
+}
+.query-table td.query-table-this span {
+    display: inline-block;
+    width: 8ch;
+    overflow: hidden;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: start;
+    vertical-align: bottom;
+}
+.query-table td.query-table-this span::before {
+    content: "\200E"; /* LRM — preserves left-to-right glyph order */
 }
 
 /* The evaluate-result comparison panel.

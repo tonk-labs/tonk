@@ -37,6 +37,7 @@
 //                     `document.baseURI` the same way an
 //                     `<a href>` would.
 
+import { Annotation } from "@codemirror/state";
 import {
   forEachDiagnostic,
   setDiagnostics,
@@ -58,6 +59,16 @@ const DEFAULT_LANGUAGE_SERVER_URL = "/api/language-server";
  *  identify and replace only the entries we own — leaving
  *  LSP-routed diagnostics alone. */
 const PUSH_DIAGNOSTIC_SOURCE = "tonk-push";
+
+/** Marks a transaction as carrying a `tonk-push-diagnostics`
+ *  write rather than an LSP server `publishDiagnostics` frame.
+ *  Both paths dispatch `setDiagnosticsEffect`, so the effect
+ *  alone can't tell them apart — `<tonk-code>` reads this
+ *  annotation to skip firing its `diagnostics` event for our
+ *  own pushes. Without it, a push (e.g. the empty clear after
+ *  a successful auto-evaluate) is misread as a fresh server
+ *  frame and re-triggers auto-evaluate, looping. */
+export const pushDiagnosticsAnnotation = Annotation.define<true>();
 
 /** Detail object accepted by the `tonk-push-diagnostics` event.
  *  Lets external code (e.g. a UI route handler) inject
@@ -213,7 +224,10 @@ class TonkDiagnosticsProvider extends HTMLElement {
         source: PUSH_DIAGNOSTIC_SOURCE,
       });
     }
-    view.dispatch(setDiagnostics(view.state, merged));
+    view.dispatch({
+      ...setDiagnostics(view.state, merged),
+      annotations: pushDiagnosticsAnnotation.of(true),
+    });
   };
 
   #ensureClient(): void {
