@@ -4,7 +4,7 @@
 //!
 //! The actual analyze + plan logic lives in
 //! [`tonk_schema::evaluate`] behind the
-//! [`TransactionEvaluateExt::evaluate`] chain. This module is
+//! [`SyntaxEvaluateExt::evaluate`] chain. This module is
 //! the axum adapter: parse the body, surface parse diagnostics
 //! as 400s, acquire the cached branch via the reactor, drive
 //! the chain, and assemble the JSON response. Subscription
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_notation::{Parsed, Syntax, parse};
-use tonk_schema::evaluate::{EvaluateError, TransactionEvaluateExt};
+use tonk_schema::evaluate::{EvaluateError, SyntaxEvaluateExt};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -184,9 +184,8 @@ async fn evaluate_on_branch<'a>(
     let branch = session.handle();
     let revision_before = branch.revision();
 
-    let evaluated = branch
-        .transaction()
-        .evaluate(&syntax)
+    let evaluated = syntax
+        .evaluate(branch.transaction())
         .perform(branch, &tonk_state.operator)
         .await
         .map_err(map_evaluate_error)?;

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
 use tonk_notation::{Parsed, Syntax, parse};
-use tonk_schema::evaluate::{EvaluateError, TransactionEvaluateExt};
+use tonk_schema::evaluate::{EvaluateError, SyntaxEvaluateExt};
 
 use crate::ExitCode;
 use crate::output::{self, EvaluateResponse, Format};
@@ -150,10 +150,8 @@ pub async fn run_against_site(
     let syntax = parse_or_diagnose(&label, &text)?;
 
     let revision_before = site.branch.revision();
-    let evaluated = site
-        .branch
-        .transaction()
-        .evaluate(&syntax)
+    let evaluated = syntax
+        .evaluate(site.branch.transaction())
         .perform(&site.branch, &site.operator)
         .await
         .map_err(map_evaluate_error)?;

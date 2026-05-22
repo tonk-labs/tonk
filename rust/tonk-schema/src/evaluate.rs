@@ -1,15 +1,32 @@
-//! Shared analyze → query → mutation pipeline for asserted-notation.
+//! Shared analyze → compile → evaluate pipeline for
+//! asserted-notation.
 //!
-//! The public surface is [`TransactionEvaluateExt::evaluate`], which
-//! returns an [`Evaluate`] chain (mirroring dialog's
-//! `Branch::commit(...)` pattern). Callers reach the post-mutation
-//! transaction via `.perform(branch, env).await`:
+//! The lifecycle is driven by three chain handles that hang off
+//! [`tonk_notation::Syntax`], each a nested prefix of the next:
 //!
 //! ```ignore
-//! use tonk_schema::evaluate::TransactionEvaluateExt;
+//! use tonk_schema::evaluate::{SyntaxAnalyzeExt, SyntaxCompileExt, SyntaxEvaluateExt};
 //!
-//! let evaluated = branch.transaction()
-//!     .evaluate(&syntax)
+//! syntax.analyze(source).perform(env).await?;   // -> Analysis
+//! syntax.compile(source).perform(env).await?;   // -> Compiled
+//! syntax.evaluate(txn).perform(&branch, env).await?; // -> Evaluated
+//! ```
+//!
+//! - [`SyntaxAnalyzeExt::analyze`] is pure-read — takes a
+//!   [`Source`] (a `&Branch` or `&Transaction`, anything
+//!   `Into<Source>`) and yields an [`Analysis`].
+//! - [`SyntaxCompileExt::compile`] runs `analyze` under the hood
+//!   and yields a [`Compiled`] — a thin handle over the resolved
+//!   document's runnable operations.
+//! - [`SyntaxEvaluateExt::evaluate`] takes a caller-created
+//!   [`Transaction`], runs `compile` under the hood, runs the
+//!   operations, and yields an [`Evaluated`] holding the
+//!   transaction with the document's changes staged. It does
+//!   *not* commit.
+//!
+//! ```ignore
+//! let evaluated = syntax
+//!     .evaluate(branch.transaction())
 //!     .perform(&branch, env).await?;
 //! // evaluated.txn — overlay reflects pending mutations
 //! // evaluated.transients — bucket to hand to `induce`
@@ -22,8 +39,8 @@
 //! durable commit:
 //!
 //! ```ignore
-//! let result = branch.transaction()
-//!     .evaluate(&syntax)
+//! let result = syntax
+//!     .evaluate(branch.transaction())
 //!     .perform(&branch, env).await?
 //!     .commit()
 //!     .perform(&branch, env).await?;
@@ -51,6 +68,8 @@ use thiserror::Error;
 use tonk_notation::Syntax;
 
 use crate::analyzer;
+use crate::concept::QueryEnv;
+use crate::query_source::Source;
 use crate::transact::{
     Analysis, Application, ApplicationPlan, Planner as _, QueryAnalysis, Statement,
 };
@@ -152,32 +171,137 @@ impl<T> EvaluateEnv for T where
 }
 
 // ---------------------------------------------------------------- //
-// Public entry point — txn.evaluate(syntax).perform(branch, env)   //
+// Lifecycle entry points — three Syntax-hung chain handles          //
+//                                                                   //
+//   syntax.analyze(source).perform(env)   -> Analysis               //
+//   syntax.compile(source).perform(env)   -> Compiled               //
+//   syntax.evaluate(txn).perform(branch, env) -> Evaluated          //
+//                                                                   //
+// Each runs the prior under the hood. `Syntax` is a foreign type    //
+// (`tonk_notation::Syntax`), so these are local extension traits    //
+// `impl`'d for it here — local trait, foreign type.                 //
 // ---------------------------------------------------------------- //
 
-/// Extension trait that adds [`Self::evaluate`] to dialog's
-/// [`Transaction`]. Imported at call sites to use the chain.
-pub trait TransactionEvaluateExt<'a> {
-    /// Stage an evaluation of `syntax` against this transaction.
-    /// Returns a chain handle; call `.perform(branch, env)` to
-    /// execute.
-    fn evaluate<'s>(self, syntax: &'s Syntax) -> Evaluate<'a, 's>;
+/// Adds [`Self::analyze`] to [`tonk_notation::Syntax`]. The first
+/// lifecycle entry point: resolve the document against a source.
+pub trait SyntaxAnalyzeExt {
+    /// Stage an analysis of this document against `source`.
+    /// Returns a chain handle; call `.perform(env)` to run
+    /// `resolve` + `expand` and get an [`Analysis`].
+    fn analyze<S>(&self, source: S) -> Analyze<'_, S>;
 }
 
-impl<'a> TransactionEvaluateExt<'a> for Transaction<'a> {
-    fn evaluate<'s>(self, syntax: &'s Syntax) -> Evaluate<'a, 's> {
-        Evaluate { txn: self, syntax }
+impl SyntaxAnalyzeExt for Syntax {
+    fn analyze<S>(&self, source: S) -> Analyze<'_, S> {
+        Analyze {
+            syntax: self,
+            source,
+        }
     }
 }
 
-/// Chain handle for an evaluation. Holds the transaction and
-/// syntax until `.perform(branch, env)` consumes them.
-pub struct Evaluate<'a, 's> {
-    txn: Transaction<'a>,
+/// Chain handle for [`SyntaxAnalyzeExt::analyze`]. Holds the
+/// syntax and the source until `.perform(env)` consumes them.
+pub struct Analyze<'s, S> {
     syntax: &'s Syntax,
+    source: S,
 }
 
-impl<'a, 's> Evaluate<'a, 's> {
+impl<'s, S> Analyze<'s, S> {
+    /// Run `resolve` + `expand` against the source, yielding the
+    /// document's [`Analysis`]. Pure-read — no mutation, no
+    /// commit.
+    pub async fn perform<'e, Env: QueryEnv>(self, env: &'e Env) -> Result<Analysis, EvaluateError>
+    where
+        S: Into<Source<'e>>,
+    {
+        let Analyze { syntax, source } = self;
+        let resolver = analyzer::SourceResolver::new(source, env);
+        analyzer::analyze(syntax, &resolver)
+            .await
+            .map_err(EvaluateError::Analyze)
+    }
+}
+
+/// Adds [`Self::compile`] to [`tonk_notation::Syntax`]. The
+/// second lifecycle entry point: `analyze`, then lower the
+/// resolved document to runnable operations.
+pub trait SyntaxCompileExt {
+    /// Stage a compilation of this document against `source`.
+    /// Returns a chain handle; call `.perform(env)` to run
+    /// `analyze` and lower the result to a [`Compiled`].
+    fn compile<S>(&self, source: S) -> Compile<'_, S>;
+}
+
+impl SyntaxCompileExt for Syntax {
+    fn compile<S>(&self, source: S) -> Compile<'_, S> {
+        Compile {
+            syntax: self,
+            source,
+        }
+    }
+}
+
+/// Chain handle for [`SyntaxCompileExt::compile`].
+pub struct Compile<'s, S> {
+    syntax: &'s Syntax,
+    source: S,
+}
+
+impl<'s, S> Compile<'s, S> {
+    /// Run `analyze` under the hood, then carry the resolved
+    /// document's runnable operations in a [`Compiled`]. Pure-read.
+    pub async fn perform<'e, Env: QueryEnv>(self, env: &'e Env) -> Result<Compiled, EvaluateError>
+    where
+        S: Into<Source<'e>>,
+    {
+        let Compile { syntax, source } = self;
+        let analysis = syntax.analyze(source).perform(env).await?;
+        Ok(Compiled { analysis })
+    }
+}
+
+/// Result of [`Compile::perform`] — the resolved document's
+/// runnable operations.
+///
+/// `Compiled` is a thin handle over the [`Analysis`] tree: the
+/// read side is the query plans in [`Analysis::query`], the
+/// write side is the planned [`Statement`]s in
+/// [`Analysis::mutate`], and the installed effects in
+/// [`Analysis::effects`]. `evaluate` runs these against a
+/// transaction; today there is no separate IR, so `Compiled`
+/// wraps the analyzer's output directly.
+pub struct Compiled {
+    /// The resolved, lowered document — query plans + planned
+    /// statements + effects.
+    pub analysis: Analysis,
+}
+
+/// Adds [`Self::evaluate`] to [`tonk_notation::Syntax`]. The
+/// third lifecycle entry point: `compile`, then run the
+/// operations against a caller-created transaction.
+pub trait SyntaxEvaluateExt {
+    /// Stage an evaluation of this document against `txn`.
+    /// Returns a chain handle; call `.perform(branch, env)` to
+    /// run `compile`, execute the operations, and stage the
+    /// document's changes onto the transaction.
+    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a>;
+}
+
+impl SyntaxEvaluateExt for Syntax {
+    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a> {
+        Evaluate { syntax: self, txn }
+    }
+}
+
+/// Chain handle for an evaluation. Holds the syntax and the
+/// transaction until `.perform(branch, env)` consumes them.
+pub struct Evaluate<'s, 'a> {
+    syntax: &'s Syntax,
+    txn: Transaction<'a>,
+}
+
+impl<'s, 'a> Evaluate<'s, 'a> {
     /// Analyze the syntax, run pre-mutation queries, plan every
     /// mutation `Statement` per match frame, and apply the
     /// resulting claims to `self.txn`. The transaction is
@@ -194,12 +318,11 @@ impl<'a, 's> Evaluate<'a, 's> {
         branch: &Branch,
         env: &Env,
     ) -> Result<Evaluated<'a>, EvaluateError> {
-        let Evaluate { mut txn, syntax } = self;
+        let Evaluate { syntax, mut txn } = self;
 
-        let resolver = analyzer::SourceResolver::new(branch, env);
-        let analysis = analyzer::analyze(syntax, &resolver)
-            .await
-            .map_err(EvaluateError::Analyze)?;
+        // Run `compile` under the hood — `analyze` + lowering to
+        // runnable operations — then run those operations below.
+        let Compiled { analysis } = syntax.compile(branch).perform(env).await?;
 
         // ---- Build base bindings frame from analysis-derived vars ----
         let mut base = Parameters::new();
@@ -1000,9 +1123,8 @@ name!:\n\
         );
         let syntax = parsed.syntax.expect("syntax");
 
-        branch
-            .transaction()
-            .evaluate(&syntax)
+        syntax
+            .evaluate(branch.transaction())
             .perform(&branch, &operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
@@ -1067,9 +1189,8 @@ rule!:\n\
         let syntax = parsed.syntax.expect("syntax");
 
         // First commit: install the rule.
-        let evaluated = branch
-            .transaction()
-            .evaluate(&syntax)
+        let evaluated = syntax
+            .evaluate(branch.transaction())
             .perform(&branch, &operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?;
@@ -1213,9 +1334,8 @@ rule!:\n\
         );
         let syntax = parsed.syntax.expect("syntax");
 
-        branch
-            .transaction()
-            .evaluate(&syntax)
+        syntax
+            .evaluate(branch.transaction())
             .perform(&branch, &operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -1319,6 +1439,58 @@ rule!:\n\
             "transient ping should have been swept; saw {ping_claims:?}"
         );
 
+        Ok(())
+    }
+
+    /// `syntax.analyze(source).perform(env)` standalone — the
+    /// first lifecycle entry point used on its own, with no
+    /// `compile` or `evaluate` step. Installs a concept on the
+    /// branch, then resolves a query document against the
+    /// committed branch as the [`Source`]. The chain yields the
+    /// document's [`Analysis`] directly.
+    #[dialog_common::test]
+    async fn it_analyzes_a_document_via_the_syntax_chain() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Install a `person` concept so the query head resolves
+        // against the branch source.
+        let person = one_text_field("io.gozala.person", "name");
+        let mut install = branch.transaction();
+        install = install_attribute_facts(install, &person);
+        install = install_named_concept(install, "person", &person, /*transient=*/ false);
+        install.commit().perform(&operator).await?;
+
+        let parsed = parse("person:\n  this: ?alice\n  name: \"Alice\"\n");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        // `analyze` alone — pure-read, takes the branch as the
+        // source, yields the Analysis with no commit.
+        let analysis = syntax
+            .analyze(&branch)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("analyze: {e}"))?;
+
+        // A pure-query document: the query side is populated, the
+        // mutation side is empty.
+        assert!(analysis.query.is_some(), "expected a resolved query");
+        assert!(
+            analysis.mutate.statements.is_empty(),
+            "pure-query document has no mutation statements"
+        );
+        let query = analysis.query.as_ref().unwrap();
+        assert_eq!(query.queries.len(), 1);
+        assert!(
+            query.bindings().contains("alice"),
+            "the ?alice variable should be bound by the query"
+        );
         Ok(())
     }
 }

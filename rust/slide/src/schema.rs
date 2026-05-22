@@ -40,7 +40,7 @@ use dialog_query::{
 };
 use serde_json::Value as Json;
 use tonk_notation::parse;
-use tonk_schema::evaluate::{QueryMatchBlock, TransactionEvaluateExt};
+use tonk_schema::evaluate::{QueryMatchBlock, SyntaxEvaluateExt};
 
 use crate::output::EvaluateResponse;
 
@@ -412,10 +412,8 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
         ));
     }
     let revision = site.branch.revision();
-    let evaluated = site
-        .branch
-        .transaction()
-        .evaluate(&syntax)
+    let evaluated = syntax
+        .evaluate(site.branch.transaction())
         .perform(&site.branch, &site.operator)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
