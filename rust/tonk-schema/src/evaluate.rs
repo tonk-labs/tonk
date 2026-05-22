@@ -1442,6 +1442,79 @@ rule!:\n\
         Ok(())
     }
 
+    /// Regression: a document containing only a `rule!:` has no
+    /// mutate statements, but its lifted effect must still drive a
+    /// commit. The `/evaluate` route used to gate the commit on
+    /// `mutate.statements` alone, silently dropping rule-only
+    /// documents — the rule never reached the branch. The analyzer
+    /// must surface the effect in `analysis.effects` so the route's
+    /// commit guard can see it.
+    #[dialog_common::test]
+    async fn it_lifts_an_effect_from_a_rule_only_document() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit the concepts the rule references.
+        let concepts = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n";
+        parse(concepts)
+            .syntax
+            .expect("concepts syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
+
+        // A document that is *only* a rule.
+        let rule_doc = "\
+rule!:\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let evaluated = parse(rule_doc)
+            .syntax
+            .expect("rule syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
+
+        // The lifted effect must be visible — this is the signal
+        // the route's commit guard relies on.
+        assert_eq!(
+            evaluated.analysis.effects.len(),
+            1,
+            "rule-only document should surface one lifted effect"
+        );
+        assert!(
+            evaluated.analysis.mutate.statements.is_empty(),
+            "rule-only document has no mutate statements"
+        );
+
+        Ok(())
+    }
+
     /// Repro mirroring the user's report: transient `person-entered`
     /// (two fields, one numeric), a durable `person` concept, a
     /// rule person <- person-entered, then a notation instance

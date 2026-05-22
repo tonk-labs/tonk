@@ -190,7 +190,17 @@ async fn evaluate_on_branch<'a>(
         .await
         .map_err(map_evaluate_error)?;
 
-    let response = if query.transact && !evaluated.analysis.mutate.statements.is_empty() {
+    // A document commits when it writes anything. `rule!:` is a
+    // mutation (the `!` says so), but the analyzer lifts it into
+    // `analysis.effects` rather than `mutate.statements`, so a
+    // pure-`rule!:` document has empty `statements`. Both buckets
+    // must be consulted, otherwise the rule is silently dropped.
+    // (The deeper fix — folding effects into the mutation analysis
+    // so `rule!:` is just another statement — rides with the
+    // analyzer IR rework.)
+    let has_work =
+        !evaluated.analysis.mutate.statements.is_empty() || !evaluated.analysis.effects.is_empty();
+    let response = if query.transact && has_work {
         let result = evaluated
             .commit()
             .perform(branch, &tonk_state.operator)
