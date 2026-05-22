@@ -50,6 +50,8 @@ pub mod effects;
 
 pub mod rule;
 
+pub mod analysis;
+
 pub mod analyzer;
 
 pub mod builtin;

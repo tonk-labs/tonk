@@ -55,6 +55,12 @@ use crate::transact::{
     ThisIntent,
 };
 
+use crate::analysis::{
+    Analysis as Tree, AssertionAnalysis, DocumentAnalysis, ExpressionAnalysis, Predicate,
+    QueryNodeAnalysis, RuleAnalysis,
+};
+use crate::mutation::ConceptDescriptor;
+
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
@@ -82,10 +88,27 @@ use scope::Scope;
 /// (so async-trait-generated futures stay `Send` for axum
 /// handlers) and to nothing on wasm (single-threaded runtime,
 /// `Resolver` itself is `?Send` there).
+///
+/// Returns the flat [`Analysis`] every current consumer reads —
+/// reconstructed from the [`Analysis<Syntax>`][Tree] tree
+/// [`analyze_tree`] builds, via [`Tree::flatten`].
 pub async fn analyze<R: Resolver + ConditionalSync>(
     syntax: &Syntax,
     resolver: &R,
 ) -> Result<Analysis, AnalyzeError> {
+    Ok(analyze_tree(syntax, resolver).await?.flatten())
+}
+
+/// Analyze a parsed [`Syntax`] tree into the [`Analysis<Syntax>`][Tree]
+/// tree — each syntax node paired with its computed analysis.
+///
+/// This is the analyzer's primary product. [`analyze`] wraps it
+/// and calls [`Tree::flatten`] to hand the existing flat-`Analysis`
+/// consumers the shape they still expect.
+pub async fn analyze_tree<R: Resolver + ConditionalSync>(
+    syntax: &Syntax,
+    resolver: &R,
+) -> Result<Tree<Syntax>, AnalyzeError> {
     if syntax.expressions.is_empty() {
         return Err(AnalyzeError::at(
             AnalyzeErrorKind::EmptyDocument,
@@ -258,6 +281,14 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     }
 
     // ---- Phase 2: build query Applications ----
+    //
+    // The flat `Analysis` is still assembled here — Phases 2 and
+    // 3 read it as they build (`build_query_application`,
+    // `build_assertion_application`, `collect_unbound_variables`
+    // all take `&Analysis`). The per-expression results are
+    // captured alongside into tree nodes, indexed by source
+    // expression; the `Analysis<Syntax>` tree is assembled once
+    // the phases finish and returned via `flatten()`.
     let mut analysis = Analysis {
         declarations: scope.declarations.lock().clone(),
         variables: scope.variables.lock().clone(),
@@ -265,13 +296,24 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         ..Analysis::default()
     };
 
+    // Per-expression tree node, by source-expression index.
+    let mut nodes: Vec<Option<ExpressionAnalysis>> =
+        (0..syntax.expressions.len()).map(|_| None).collect();
+
     let mut queries: Vec<Application> = Vec::new();
     let mut labels: Vec<String> = Vec::new();
-    for expression in &syntax.expressions {
+    for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
             let application = build_query_application(q, &scope, &analysis).await?;
-            queries.push(application);
+            queries.push(application.clone());
             labels.push(q.head.source.clone());
+            nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
+                source: q.clone(),
+                analysis: QueryNodeAnalysis {
+                    application,
+                    label: q.head.source.clone(),
+                },
+            })));
         }
     }
     if !queries.is_empty() {
@@ -283,33 +325,22 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
     }
 
     // ---- Phase 3: build mutation Statements ----
-    let mut statements: Vec<Statement> = Vec::new();
     let mut requires: HashSet<String> = HashSet::new();
-    // Concept entities whose asserted facts are transient — the
-    // evaluator routes these into the effects-fixpoint seed
-    // bucket. Populated from each assertion's resolved concept.
-    let mut transient: HashSet<Entity> = HashSet::new();
-    // Indexes (within `statements`) of statements that came
-    // from `attribute!` / `concept!` declarations. These are
-    // excluded from auto-snapshot synthesis (Phase 4) because
-    // their state lives in the schema branch, not user-facing
-    // facts the editor wants to project.
-    let mut declaration_statement_indexes: HashSet<usize> = HashSet::new();
-    // Per-statement display label, populated from the assertion's
-    // head source name. `None` for statements derived from a
-    // declaration head (`attribute!` / `concept!`) — those are
-    // skipped by the implicit-query synthesizer anyway.
-    let mut statement_labels: Vec<Option<String>> = Vec::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         match expression {
             Expression::Query(_) => {}
-            // Rule expressions are lifted by a separate pass and
-            // contribute no statements to the query/mutation
-            // pipeline today. Skipping here keeps the loop's
-            // statement counter consistent with the query phase.
+            // Rule expressions are lifted in Phase 3b.
             Expression::Rule(_) => {}
             Expression::Assertion(a) => {
+                let mut claims: Vec<Statement> = Vec::new();
+                let mut claim_labels: Vec<Option<String>> = Vec::new();
+                let predicate;
+                let this;
+                let anchor;
+                let mut transient_entity: Option<Entity> = None;
+                let is_declaration;
+
                 if let Some(declaration) = declared.remove(&index) {
                     // `attribute!` / `concept!` head — Phase 1
                     // already built the application. Inline
@@ -321,14 +352,16 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     // time anything reads back.
                     for inline in declaration.inline_attributes {
                         collect_unbound_variables(&inline, &analysis, &mut requires);
-                        declaration_statement_indexes.insert(statements.len());
-                        statements.push(Statement::Assert(inline));
-                        statement_labels.push(None);
+                        claims.push(Statement::Assert(inline));
+                        claim_labels.push(None);
                     }
                     collect_unbound_variables(&declaration.application, &analysis, &mut requires);
-                    declaration_statement_indexes.insert(statements.len());
-                    statements.push(Statement::Assert(declaration.application));
-                    statement_labels.push(None);
+                    predicate = predicate_of(&declaration.application);
+                    this = declaration.application.this().clone();
+                    anchor = declaration.application.name().map(str::to_owned);
+                    claims.push(Statement::Assert(declaration.application));
+                    claim_labels.push(None);
+                    is_declaration = true;
                 } else {
                     // An assertion expression can produce up to
                     // two statements: an assert side (explicit
@@ -340,10 +373,18 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                     // sees the prior state before the new
                     // assert lands.
                     let plan = build_assertion_application(a, &scope, &mut analysis).await?;
+                    let probe = plan.assert.as_ref().or(plan.retract.as_ref());
+                    predicate = probe
+                        .map(predicate_of)
+                        .unwrap_or(Predicate::Domain(a.head.source.clone()));
+                    this = probe
+                        .map(|app| app.this().clone())
+                        .unwrap_or(ThisIntent::Derived);
+                    anchor = a.anchor.as_ref().map(|anchor| anchor.name.clone());
                     if let Some(retract_app) = plan.retract {
                         collect_unbound_variables(&retract_app, &analysis, &mut requires);
-                        statements.push(Statement::Retract(retract_app));
-                        statement_labels.push(Some(a.head.source.clone()));
+                        claims.push(Statement::Retract(retract_app));
+                        claim_labels.push(Some(a.head.source.clone()));
                     }
                     if let Some(assert_app) = plan.assert {
                         collect_unbound_variables(&assert_app, &analysis, &mut requires);
@@ -353,15 +394,68 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
                         if plan.transient
                             && let Application::Concept { query, .. } = &assert_app
                         {
-                            transient.insert(query.predicate.this());
+                            transient_entity = Some(query.predicate.this());
                         }
-                        statements.push(Statement::Assert(assert_app));
-                        statement_labels.push(Some(a.head.source.clone()));
+                        claims.push(Statement::Assert(assert_app));
+                        claim_labels.push(Some(a.head.source.clone()));
                     }
+                    is_declaration = false;
                 }
+
+                nodes[index] = Some(ExpressionAnalysis::Assertion(Box::new(Tree {
+                    source: a.clone(),
+                    analysis: AssertionAnalysis {
+                        predicate,
+                        this,
+                        anchor,
+                        claims,
+                        declaration: is_declaration,
+                        labels: claim_labels,
+                        transient: transient_entity,
+                    },
+                })));
             }
         }
     }
+
+    analysis.mutate = MutationAnalysis::default();
+
+    // ---- Phase 3b: lift rule!: expressions into mutations ----
+    // A `rule!:` carries the `!` mutation marker — evaluating it
+    // installs `dialog.effect/*` facts on the branch — so it is
+    // just another mutation statement. Each lift resolves the
+    // rule's head + premise concepts through the scope, translates
+    // premise bindings into dialog Terms, and runs dialog's
+    // planner to catch unbound-head-variable etc.; the resulting
+    // effect lands as a `Statement::InstallEffect`.
+    for (index, expression) in syntax.expressions.iter().enumerate() {
+        if let Expression::Rule(rule_expr) = expression {
+            let effect = rule::lift_rule(rule_expr, &scope, &analysis).await?;
+            nodes[index] = Some(ExpressionAnalysis::Rule(Box::new(Tree {
+                source: rule_expr.clone(),
+                analysis: RuleAnalysis { effect },
+            })));
+        }
+    }
+
+    // Assemble the document tree, in source order.
+    let mut expressions: Vec<Tree<Expression>> = Vec::new();
+    for (expression, node) in syntax.expressions.iter().zip(nodes) {
+        let analysis = node.expect("every expression is analyzed in phases 2/3/3b");
+        expressions.push(Tree {
+            source: expression.clone(),
+            analysis,
+        });
+    }
+    let tree = Tree {
+        source: syntax.clone(),
+        analysis: DocumentAnalysis {
+            expressions,
+            declarations: analysis.declarations,
+            variables: analysis.variables,
+            diagnostics: analysis.diagnostics,
+        },
+    };
 
     // requires must be subset of query bindings (analysis-time
     // variables already filtered out by `collect_unbound_variables`).
@@ -379,44 +473,26 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
         return Err(AnalyzeErrorKind::UnboundMutationVariable { name }.into());
     }
 
-    analysis.mutate = MutationAnalysis {
-        statements,
-        requires,
-        transient,
-    };
+    // Phase 4 (implicit snapshot-query synthesis) lives inside
+    // `Tree::flatten` — it runs as the flat `Analysis` is
+    // reconstructed for the existing consumers.
+    Ok(tree)
+}
 
-    // ---- Phase 3b: lift rule!: expressions into mutations ----
-    // A `rule!:` carries the `!` mutation marker — evaluating it
-    // installs `dialog.effect/*` facts on the branch — so it is
-    // just another mutation statement. Each lift resolves the
-    // rule's head + premise concepts through the scope, translates
-    // premise bindings into dialog Terms, and runs dialog's
-    // planner to catch unbound-head-variable etc.; the resulting
-    // effect lands as a `Statement::InstallEffect`.
-    for expression in &syntax.expressions {
-        if let Expression::Rule(rule_expr) = expression {
-            let effect = rule::lift_rule(rule_expr, &scope, &analysis).await?;
-            analysis
-                .mutate
-                .statements
-                .push(Statement::InstallEffect(effect));
+/// Classify an [`Application`]'s head as a [`Predicate`] for the
+/// tree's [`AssertionAnalysis`]. `Concept` carries a resolved
+/// descriptor (durability cannot be recovered from a built
+/// `Application` alone — it always reads as `Durable` here; the
+/// transient routing is carried separately on
+/// `AssertionAnalysis::transient`). `Domain` carries the claim
+/// domain prefix.
+fn predicate_of(application: &Application) -> Predicate {
+    match application {
+        Application::Concept { query, .. } => {
+            Predicate::Concept(ConceptDescriptor::Durable(query.predicate.clone()))
         }
+        Application::Domain { application, .. } => Predicate::Domain(application.domain.clone()),
     }
-
-    // ---- Phase 4: synthesize implicit queries for touched entities ----
-    // For every mutation statement that targets a known entity
-    // and isn't already covered by a user-written query, mint an
-    // auto-snapshot query so the editor's before/after view
-    // surfaces the change. Skips meta-head declarations
-    // (`attribute!` / `concept!`) — their state lives in the
-    // schema branch, not in user-facing facts.
-    synthesize_implicit_queries(
-        &mut analysis,
-        &statement_labels,
-        &declaration_statement_indexes,
-    );
-
-    Ok(analysis)
 }
 
 /// Add `Application` entries to `analysis.query` so that every
@@ -429,7 +505,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
 ///
 /// Entities that already appear as a `this:` constant in some
 /// existing query are skipped: the user query will pick them up.
-fn synthesize_implicit_queries(
+pub(crate) fn synthesize_implicit_queries(
     analysis: &mut Analysis,
     statement_labels: &[Option<String>],
     declaration_statement_indexes: &HashSet<usize>,
@@ -2955,6 +3031,111 @@ person!:
             1,
             "unbound `?alice` should still seed a synthesized snapshot for the body-derived entity"
         );
+    }
+
+    /// `analyze_tree` builds a genuine `Analysis<Syntax>` tree:
+    /// one analyzed node per top-level expression, in document
+    /// order, each carrying its variant-specific analysis. The
+    /// document here mixes a `concept!` declaration, an
+    /// assertion, a query, and a `rule!:`.
+    #[dialog_common::test]
+    async fn it_builds_a_populated_analysis_tree() {
+        use crate::analysis::{ExpressionAnalysis, Predicate};
+
+        let syntax = must_parse(
+            r#"
+concept!: &thing
+  description: "Thing concept"
+  with:
+    label:
+      description: "Label of the thing"
+      the:         xyz.tonk.thing/label
+      as:          Text
+      cardinality: one
+person!:
+  this: did:key:zPersonAlice
+  name: "Alice"
+person:
+  this: ?p
+  name: ?n
+rule!:
+  assert!: person
+  when:
+    - assert: person
+      where: { this: ?this, name: ?name }
+"#,
+        );
+        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let tree = analyze_tree(&syntax, &resolver).await.unwrap();
+
+        // The tree mirrors the document — one node per expression.
+        assert_eq!(
+            tree.analysis.expressions.len(),
+            4,
+            "tree must hold one analyzed node per top-level expression"
+        );
+        assert!(
+            tree.analysis.declarations.contains_key("thing"),
+            "document-level declarations are threaded onto the tree"
+        );
+
+        // Node 0 — `concept!` declaration assertion.
+        match &tree.analysis.expressions[0].analysis {
+            ExpressionAnalysis::Assertion(node) => {
+                assert!(
+                    node.analysis.declaration,
+                    "concept! head is flagged as a declaration"
+                );
+                assert!(
+                    !node.analysis.claims.is_empty(),
+                    "the concept! declaration produced lowered statements"
+                );
+            }
+            other => panic!("expected an assertion node, got {other:?}"),
+        }
+
+        // Node 1 — `person!` assertion: a concept predicate, a
+        // URI `this`, and at least one lowered claim.
+        match &tree.analysis.expressions[1].analysis {
+            ExpressionAnalysis::Assertion(node) => {
+                assert!(
+                    matches!(node.analysis.predicate, Predicate::Concept(_)),
+                    "person! resolved to a concept predicate"
+                );
+                assert!(
+                    !node.analysis.claims.is_empty(),
+                    "person! produced lowered claims"
+                );
+            }
+            other => panic!("expected an assertion node, got {other:?}"),
+        }
+
+        // Node 2 — `person:` query carries its built application.
+        match &tree.analysis.expressions[2].analysis {
+            ExpressionAnalysis::Query(node) => {
+                assert_eq!(node.analysis.label, "person");
+            }
+            other => panic!("expected a query node, got {other:?}"),
+        }
+
+        // Node 3 — `rule!:` carries the lifted effect.
+        assert!(
+            matches!(
+                tree.analysis.expressions[3].analysis,
+                ExpressionAnalysis::Rule(_)
+            ),
+            "the rule!: expression is a rule node"
+        );
+
+        // The tree flattens to the same flat `Analysis` `analyze`
+        // would have returned directly.
+        let flat = analyze(&syntax, &resolver).await.unwrap();
+        let flattened = tree.flatten();
+        assert_eq!(
+            flat.mutate.statements.len(),
+            flattened.mutate.statements.len()
+        );
+        assert_eq!(flat.declarations, flattened.declarations);
     }
 
     /// Meta-head declarations (`attribute!` / `concept!`) don't
