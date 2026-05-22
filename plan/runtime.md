@@ -226,11 +226,22 @@ Enumeration serves editor completion — offering every concept, or every publis
 
 The language server resolves against the **live environment** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics report `UnknownConcept` for a name the environment does not define, completion enumerates the environment's concepts and names, hover resolves the symbol under the cursor.
 
-The language server is **seeded with the worker's state** — the handle that holds the two things it needs: the **reactor** (names a `(repo, branch)` and opens its environment session) and the **operator** (the query capability every session operation takes). The reactor does not own the operator; the two are seeded together and paired at each call.
+The seam is a trait the language server *defines* and the host *implements* — the dependency points from host to language server, so the language server stays host-agnostic without an erased capability:
 
-Per request the language server parses the document URI to `(repo, branch)`, opens that environment session from the reactor, and resolves against it with the concrete chain handles: `ConceptReference::from(name).resolve(session).perform(operator)`.
+```rust
+// tonk-language-server defines the port it needs.
+trait EnvProvider {
+    type Env: Source;
+    /// Open the environment for a (repo, branch), or None if absent.
+    async fn environment(&self, repo: &str, branch: &str) -> Option<Self::Env>;
+}
+```
 
-No type erasure, no resolver trait, no injected capability — the same `Source`-generic handles every other consumer uses, monomorphized on the concrete session type. This means `tonk-language-server` depends on the worker (or on whichever crate owns the reactor and operator). The language server runs inside the worker, so there is no host-agnostic boundary to preserve.
+The worker implements `EnvProvider` for its state handle — the implementation opens the reactor's session for the `(repo, branch)` and pairs it with the operator the session's operations take. The language server's `Server` is **generic** over the provider, `Server<E: EnvProvider>` — not a trait object. The worker monomorphizes it by choosing `E`; resolution then uses the plain `Source`-generic chain handles on `E::Env`. No `dyn` anywhere.
+
+`Server<E>` holds `Option<E>`: with a provider it resolves against the live environment; without one it sees only the document's own declarations — the path tests and a standalone editor use.
+
+Per request the language server parses the document URI to `(repo, branch)`, calls `environment(repo, branch)` to open the session, and resolves: `ConceptReference::from(name).resolve(session).perform(operator)`.
 
 A concept referenced before it is committed — declared earlier in the same document — still resolves: the document's own declarations are threaded through `analyze` (the in-document scope), so a name is unknown only when it is genuinely absent from both the document and the environment.
 
