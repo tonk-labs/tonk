@@ -1728,18 +1728,25 @@ fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value
             { items.into_iter().map(move |item| {
                 let dash_indent = dash_indent.clone();
                 match item {
-                    // An object item: a bare `- ` row, then its
-                    // fields rendered one level deeper.
-                    serde_json::Value::Object(map) => view! {
-                        <div class="notation-row notation-field">
-                            <span class="notation-indent">{ dash_indent.clone() }</span>
-                            <span class="tonk-cm-plain">"-"</span>
-                        </div>
-                        { map.into_iter()
-                            .map(|(k, v)| render_notation_field_at(depth + 2, k, v))
-                            .collect_view() }
+                    // An object item: the first field shares the
+                    // `- ` row; the remaining fields align under it
+                    // (the dash's indent plus the two-char dash
+                    // width), so a premise reads `- assert:` with
+                    // `where:` lined up beneath `assert`.
+                    serde_json::Value::Object(map) => {
+                        let mut fields = map.into_iter();
+                        let first = fields.next();
+                        let rest: Vec<_> = fields.collect();
+                        view! {
+                            { first.map(|(k, v)| render_dash_field(
+                                dash_indent.clone(), depth + 2, k, v,
+                            )) }
+                            { rest.into_iter()
+                                .map(|(k, v)| render_notation_field_at(depth + 2, k, v))
+                                .collect_view() }
+                        }
+                        .into_any()
                     }
-                    .into_any(),
                     // A scalar item sits inline after the dash.
                     other => view! {
                         <div class="notation-row notation-field">
@@ -1782,6 +1789,64 @@ fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value
     view! {
         <div class="notation-row notation-field">
             <span class="notation-indent">{ indent }</span>
+            <span class="tonk-cm-key">{ name }</span>
+            <span class="tonk-cm-plain">": "</span>
+            { render_field_value(value) }
+        </div>
+    }
+    .into_any()
+}
+
+/// Render the first field of a YAML block-sequence object item —
+/// the one that shares the `- ` marker's row. `dash_indent` is the
+/// indent before the dash; `child_depth` is where this field's
+/// nested values (and its object/array children) recurse, which is
+/// also where the item's *sibling* fields align. Mirrors
+/// [`render_notation_field_at`] but the leading run is
+/// `dash_indent` + `"- "` instead of a plain indent.
+fn render_dash_field(
+    dash_indent: String,
+    child_depth: usize,
+    name: String,
+    value: serde_json::Value,
+) -> AnyView {
+    if let serde_json::Value::Object(map) = value {
+        return view! {
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ dash_indent }</span>
+                <span class="tonk-cm-plain">"- "</span>
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { map.into_iter()
+                .map(|(k, v)| render_notation_field_at(child_depth + 1, k, v))
+                .collect_view() }
+        }
+        .into_any();
+    }
+    if let serde_json::Value::Array(items) = value {
+        // A nested array under a dash-row key is rare in rule
+        // notation, but render it correctly: the key on the dash
+        // row, the sequence one level deeper.
+        return view! {
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ dash_indent }</span>
+                <span class="tonk-cm-plain">"- "</span>
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { render_notation_field_at(
+                child_depth,
+                String::new(),
+                serde_json::Value::Array(items),
+            ) }
+        }
+        .into_any();
+    }
+    view! {
+        <div class="notation-row notation-field">
+            <span class="notation-indent">{ dash_indent }</span>
+            <span class="tonk-cm-plain">"- "</span>
             <span class="tonk-cm-key">{ name }</span>
             <span class="tonk-cm-plain">": "</span>
             { render_field_value(value) }
