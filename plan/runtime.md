@@ -226,18 +226,13 @@ Enumeration serves editor completion — offering every concept, or every publis
 
 The language server resolves against the **live environment** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics report `UnknownConcept` for a name the environment does not define, completion enumerates the environment's concepts and names, hover resolves the symbol under the cursor.
 
-The source is late-bound — which environment a document belongs to is known only per request, from the document URI. The host (the worker) resolves the URI to an environment and hands the language server a **resolver bundle**: a small set of boxed async closures, one per lookup, each built where the concrete source is known and capturing it.
+The language server is **seeded with the host's environment** — the worker's state, which holds the operator (the query env) and the reactor (which resolves a repo + branch into an environment session). Per request the language server parses the document URI to `(repo, branch)`, acquires that environment session from the reactor, and resolves against it with the concrete chain handles: `ConceptReference::from(name).resolve(session).perform(operator)`.
 
-```rust
-type ConceptLookup =
-    Arc<dyn Fn(&str) -> BoxFuture<Option<ConceptDefinition>> + Send + Sync>;
-```
-
-The closure's body is the resolution chain — `ConceptReference::from(name).resolve(source).perform(env)` — run on the host side of the seam. The bundle is the *only* `dyn` boundary in the runtime: it exists because the language server cannot name the host's concrete source type, and `Source` is not object-safe. Everything else stays monomorphic.
+No type erasure, no resolver trait object, no injected capability. The language server holds the worker's state directly; resolution uses the same `Source`-generic handles every other consumer uses, monomorphized on the concrete session type. This means `tonk-language-server` depends on the worker (or on whichever crate owns the operator and reactor) — the language server runs inside the worker, so there is no host-agnostic boundary to preserve.
 
 A concept referenced before it is committed — declared earlier in the same document — still resolves: the document's own declarations are threaded through `analyze` (the in-document scope), so a name is unknown only when it is genuinely absent from both the document and the environment.
 
-The resolution surface — `ConceptReference` / `AttributeReference`, `ConceptDefinition` / `AttributeDefinition`, `NamedReference`, `ResolveError` — lives in `tonk-schema`, alongside the `meta::Name` concept it enumerates. It is plain free-standing chain handles — no resolver trait, nothing for the bundle to be a `dyn` *of*; the bundle is closures over those handles.
+The resolution surface — `ConceptReference` / `AttributeReference`, `ConceptDefinition` / `AttributeDefinition`, `NamedReference`, `ResolveError` — lives in `tonk-schema`, alongside the `meta::Name` concept it enumerates. Plain free-standing chain handles, generic over `Source` — no resolver trait anywhere in the runtime.
 
 ## The `Analysis<T>` tree
 
@@ -336,7 +331,7 @@ flowchart TD
 - **`/transact`** takes a `TransactRequest` — a `Claim` batch — and *bypasses* notation: no parse, no analyze, no compile. The claims arrive already kernel-shaped, so the route hands them straight to the reactor. The structured write path. It is `/evaluate` with the front of the lifecycle already done by the caller.
 - **the language server** never `compile`s, `evaluate`s, or `commit`s — it produces diagnostics and completions, not facts. It runs `analyze` and the resolution surface against the live environment: diagnostics, completion, and hover all from one source. The read-only path, tapping the front of the lifecycle.
 
-`/evaluate` and `/transact` converge on the reactor, which acquires the environment session and commits — the commit runs the effects fixpoint (`induce`) and the dialog commit. The language server never reaches the reactor; it reaches the environment only for resolution, through the resolver bundle the host hands it per document.
+`/evaluate` and `/transact` converge on the reactor, which acquires the environment session and commits — the commit runs the effects fixpoint (`induce`) and the dialog commit. The language server also acquires sessions from the reactor — that is how it resolves — but only for reads; it never commits.
 
 ## Open items
 
