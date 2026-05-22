@@ -308,8 +308,10 @@ tonk-notation .tonk-cm-variable {
 
 /* Listed view — each result is a `notation-record`; every row
    (head, field, value line) is its own block so lines stay
-   independently selectable. Field rows indent one level under
-   the head; value lines of a multi-line string indent again. */
+   independently selectable. Indentation is set inline per row by
+   `render_notation_field_at` (`padding-inline-start: Nch`), since
+   a concept descriptor nests to arbitrary depth — the renderer,
+   not a fixed stylesheet rule, owns how deep each row sits. */
 .notation-record + .notation-record {
     margin-block-start: var(--wa-space-s);
 }
@@ -324,7 +326,6 @@ tonk-notation .tonk-cm-variable {
 .notation-field {
     display: flex;
     align-items: baseline;
-    padding-inline-start: 2ch;
 }
 .notation-field > .value-truncated,
 .notation-field > span:last-child {
@@ -332,7 +333,6 @@ tonk-notation .tonk-cm-variable {
     flex: 1 1 auto;
 }
 .notation-value-line {
-    padding-inline-start: 4ch;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
@@ -1227,12 +1227,13 @@ tonk-code:focus-within {
     pointer-events: auto;
 }
 
-/* Result-layout toggle (grouped tree vs. listed notation). The
-   markup toggles `is-visible` once a response exists, so it stays
-   hidden until there's something to switch between. When shown
-   it's a small icon-button pair tucked against the inline-end
-   edge, sitting just above the result rather than claiming a
-   full-width row of its own. */
+/* Result-layout toggle (grouped tree vs. listed notation) — a
+   `<wa-radio-group>` of `appearance="button"` radios, which WA
+   renders as a native segmented control with its own checked
+   state. The markup toggles `is-visible` once a response exists,
+   so it stays hidden until there's something to switch between,
+   and the group is tucked against the inline-end edge above the
+   result rather than claiming a full-width row. */
 .evaluate-view-toggle {
     display: none;
 }
@@ -1241,29 +1242,10 @@ tonk-code:focus-within {
     justify-content: flex-end;
     margin-block-end: var(--wa-space-2xs);
 }
-
-/* WA's default `<wa-button size="small">` is still a 38px box
-   with 14px side padding and a loud filled/outlined chrome — too
-   heavy for a view switcher. Shrink each toggle button to a tight
-   icon square and strip the chrome down to a quiet hairline so it
-   reads as a control, not a primary action. The selected side is
-   marked by a subtle fill (the `filled` appearance the markup
-   already toggles) rather than a loud one. */
-.evaluate-view-toggle wa-button::part(base) {
-    width: 1.75rem;
-    height: 1.75rem;
-    min-height: 0;
-    padding: 0;
-    border-color: var(--wa-color-neutral-border-quiet);
-    font-size: var(--wa-font-size-s);
-}
-.evaluate-view-toggle wa-button[appearance="filled"]::part(base) {
-    background: var(--wa-color-neutral-fill-quiet);
-    color: var(--wa-color-text-normal);
-}
-.evaluate-view-toggle wa-button[appearance="outlined"]::part(base) {
-    background: transparent;
-    color: var(--wa-color-text-quiet);
+/* The group's `label` is for assistive tech only — there's no
+   room for a visible caption next to a two-icon switcher. */
+.evaluate-view-radios::part(form-control-label) {
+    display: none;
 }
 
 /* The evaluate-result comparison panel.

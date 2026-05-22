@@ -600,8 +600,9 @@ where
     let transact_buffer = RwSignal::new(String::new());
     let transact_state = RwSignal::new(TransactState::Idle);
     let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
-    // Result-panel layout. Ephemeral per-cell preference for now;
-    // a future pass backs this with a dialog setting fact.
+    // Result-panel layout. Fixed at the default for now; a future
+    // pass drives it from a settings subscription so the view
+    // mode follows a dialog setting fact.
     let view_mode = RwSignal::new(ViewMode::default());
 
     // LSP document URI for this specific cell. Including the
@@ -834,39 +835,6 @@ where
                 >
                     <wa-icon name="bolt" variant="solid"></wa-icon>
                 </wa-button>
-            </div>
-            <div
-                class="evaluate-view-toggle"
-                class:is-visible=move || last_response.get().is_some()
-            >
-                <wa-button-group label="Result layout">
-                    <wa-button
-                        type="button"
-                        size="small"
-                        appearance=move || if view_mode.get() == ViewMode::Grouped {
-                            "filled"
-                        } else {
-                            "outlined"
-                        }
-                        title="Grouped by concept"
-                        on:click=move |_| view_mode.set(ViewMode::Grouped)
-                    >
-                        <wa-icon name="list-tree" variant="solid"></wa-icon>
-                    </wa-button>
-                    <wa-button
-                        type="button"
-                        size="small"
-                        appearance=move || if view_mode.get() == ViewMode::Listed {
-                            "filled"
-                        } else {
-                            "outlined"
-                        }
-                        title="Listed as notation"
-                        on:click=move |_| view_mode.set(ViewMode::Listed)
-                    >
-                        <wa-icon name="list" variant="solid"></wa-icon>
-                    </wa-button>
-                </wa-button-group>
             </div>
             { move || render_transact_state(
                 transact_state.get(),
@@ -1192,11 +1160,12 @@ fn lsp_position_to_js(position: lsp_types::Position) -> wasm_bindgen::JsValue {
 /// `Grouped` is the nested concept → entity → field tree;
 /// `Listed` flattens every result into the same `head!:`
 /// notation the `<tonk-display>` inspector fallback shows.
-/// Default is `Grouped`.
+/// Default is `Listed` — the notation form reads closest to what
+/// the user typed in the editor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ViewMode {
-    #[default]
     Grouped,
+    #[default]
     Listed,
 }
 
@@ -1299,10 +1268,70 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
         <div class="query-notation wa-stack wa-gap-s">
             { blocks.into_iter().flat_map(|block| {
                 let label = block.label;
+                let is_concept = label == CONCEPT_LABEL;
                 block.results.into_iter().map(move |result| {
-                    render_notation_record(label.clone(), result)
+                    if is_concept {
+                        render_concept_record(result).into_any()
+                    } else {
+                        render_notation_record(label.clone(), result).into_any()
+                    }
                 }).collect::<Vec<_>>()
             }).collect_view() }
+        </div>
+    }
+}
+
+/// Block label of a `concept:` query. Results in a block with this
+/// label are concept definitions and render as `concept!:`
+/// assertions (the `source` descriptor expanded as notation)
+/// rather than the generic field-by-field record.
+const CONCEPT_LABEL: &str = "concept";
+
+/// Extract a concept result's descriptor as an object map.
+///
+/// The `source` attribute of `db:concept` is typed `Text`, so the
+/// descriptor arrives as a *stringified* JSON object, not a
+/// structured value — it has to be parsed before its keys can be
+/// expanded. Returns `None` when there's no `source` field or it
+/// doesn't parse as a JSON object.
+fn concept_descriptor(
+    result: &tonk_worker::QueryResult,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let value = result.fields.get("source")?.clone();
+    match value {
+        // Already structured (a future schema might store it so).
+        serde_json::Value::Object(map) => Some(map),
+        // Stringified JSON — the current `Text`-typed shape.
+        serde_json::Value::String(s) => match serde_json::from_str(&s) {
+            Ok(serde_json::Value::Object(map)) => Some(map),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// One concept result as a `concept!:` assertion: the head, a
+/// `this:` row for the concept entity, then the `source`
+/// descriptor's own keys (`description`, `with`, …) expanded as
+/// nested notation. The `name`/`concept` projection fields are
+/// vestigial here — the descriptor in `source` is the definition.
+fn render_concept_record(result: tonk_worker::QueryResult) -> impl IntoView {
+    let descriptor = concept_descriptor(&result);
+    let entity = result.this;
+    view! {
+        <div class="notation-record">
+            <div class="notation-row">
+                <span class="tonk-cm-effect">"concept!:"</span>
+            </div>
+            { render_notation_field_at(
+                1,
+                "this".to_owned(),
+                serde_json::Value::String(entity),
+            ) }
+            { descriptor.map(|map| map
+                .into_iter()
+                .map(|(k, v)| render_notation_field_at(1, k, v))
+                .collect_view()) }
         </div>
     }
 }
@@ -1326,35 +1355,64 @@ fn render_notation_record(label: String, result: tonk_worker::QueryResult) -> im
     }
 }
 
-/// One field of a notation record. Short scalar values sit inline
-/// on the `key: value` row; a multi-line string drops its lines
-/// onto their own indented rows under a bare `key:` row.
-fn render_notation_field(name: String, value: serde_json::Value) -> impl IntoView {
-    // A multi-line string is the only value that spills past one
-    // row — every other shape renders inline.
-    if let serde_json::Value::String(s) = &value
-        && s.contains('\n')
-    {
-        let lines: Vec<String> = s.split('\n').map(str::to_owned).collect();
-        return Either::Left(view! {
-            <div class="notation-row notation-field">
+/// One field of a notation record at the top level (one indent
+/// under the head). Thin wrapper over [`render_notation_field_at`].
+fn render_notation_field(name: String, value: serde_json::Value) -> AnyView {
+    render_notation_field_at(1, name, value)
+}
+
+/// Render one field at nesting `depth` (1 = directly under the
+/// head). Indentation is `depth` levels of `2ch`, applied inline
+/// so arbitrarily-deep concept descriptors stay aligned.
+///
+/// - A nested object recurses: a bare `key:` row followed by its
+///   children one level deeper, so a `with:` block reads as
+///   indented notation rather than JSON.
+/// - A multi-line string drops its lines onto their own rows,
+///   indented one level past the key.
+/// - Every other value sits inline on the `key: value` row.
+fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value) -> AnyView {
+    let key_indent = format!("padding-inline-start: {}ch", depth * 2);
+    if let serde_json::Value::Object(map) = value {
+        return view! {
+            <div class="notation-row notation-field" style=key_indent>
                 <span class="tonk-cm-key">{ name }</span>
                 <span class="tonk-cm-plain">":"</span>
             </div>
-            { lines.into_iter().map(|line| view! {
-                <div class="notation-row notation-value-line">
+            { map.into_iter()
+                .map(|(k, v)| render_notation_field_at(depth + 1, k, v))
+                .collect_view() }
+        }
+        .into_any();
+    }
+    // A multi-line string is the only scalar that spills past one
+    // row — its lines sit one level deeper than the key.
+    if let serde_json::Value::String(s) = &value
+        && s.contains('\n')
+    {
+        let line_indent = format!("padding-inline-start: {}ch", (depth + 1) * 2);
+        let lines: Vec<String> = s.split('\n').map(str::to_owned).collect();
+        return view! {
+            <div class="notation-row notation-field" style=key_indent>
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { lines.into_iter().map(move |line| view! {
+                <div class="notation-row notation-value-line" style=line_indent.clone()>
                     <span class="tonk-cm-string">{ line }</span>
                 </div>
             }).collect_view() }
-        });
+        }
+        .into_any();
     }
-    Either::Right(view! {
-        <div class="notation-row notation-field">
+    view! {
+        <div class="notation-row notation-field" style=key_indent>
             <span class="tonk-cm-key">{ name }</span>
             <span class="tonk-cm-plain">": "</span>
             { render_field_value(value, true) }
         </div>
-    })
+    }
+    .into_any()
 }
 
 /// Grouped rendering — a `<wa-tree>` nesting concept → entity →
@@ -1365,26 +1423,89 @@ fn render_notation_field(name: String, value: serde_json::Value) -> impl IntoVie
 fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
     view! {
         <wa-tree class="query-tree">
-            { blocks.into_iter().map(|block| view! {
-                <wa-tree-item expanded>
-                    <span class="tonk-cm-effect">{ block.label }</span><span class="tonk-cm-plain">":"</span>
-                    { block.results.into_iter().map(|result| view! {
-                        <wa-tree-item expanded>
-                            <span class="tonk-cm-entity">{ result.this }</span><span class="tonk-cm-plain">":"</span>
-                            { result.fields.into_iter().map(|(name, value)| view! {
-                                <wa-tree-item expanded>
-                                    <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
-                                    <wa-tree-item>
-                                        { render_field_value(value, false) }
-                                    </wa-tree-item>
-                                </wa-tree-item>
-                            }).collect_view() }
-                        </wa-tree-item>
-                    }).collect_view() }
-                </wa-tree-item>
+            { blocks.into_iter().map(|block| {
+                let is_concept = block.label == CONCEPT_LABEL;
+                view! {
+                    <wa-tree-item expanded>
+                        <span class="tonk-cm-effect">{ block.label }</span><span class="tonk-cm-plain">":"</span>
+                        { block.results.into_iter().map(move |result| {
+                            if is_concept {
+                                render_concept_tree_item(result).into_any()
+                            } else {
+                                render_result_tree_item(result).into_any()
+                            }
+                        }).collect_view() }
+                    </wa-tree-item>
+                }
             }).collect_view() }
         </wa-tree>
     }
+}
+
+/// One generic query result as a tree item: the entity URI as an
+/// expandable directory, each projected field a child whose value
+/// is the leaf.
+fn render_result_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-entity">{ result.this }</span><span class="tonk-cm-plain">":"</span>
+            { result.fields.into_iter().map(|(name, value)| view! {
+                <wa-tree-item expanded>
+                    <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+                    <wa-tree-item>
+                        { render_field_value(value, false) }
+                    </wa-tree-item>
+                </wa-tree-item>
+            }).collect_view() }
+        </wa-tree-item>
+    }
+}
+
+/// One concept result as a `concept!:` tree item: a `this:` child
+/// for the entity, then the `source` descriptor's keys expanded as
+/// nested tree items so `with:` reads as a notation block.
+fn render_concept_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
+    let descriptor = concept_descriptor(&result);
+    let entity = result.this;
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-effect">"concept!"</span><span class="tonk-cm-plain">":"</span>
+            { render_notation_tree_item(
+                "this".to_owned(),
+                serde_json::Value::String(entity),
+            ) }
+            { descriptor.map(|map| map
+                .into_iter()
+                .map(|(k, v)| render_notation_tree_item(k, v))
+                .collect_view()) }
+        </wa-tree-item>
+    }
+}
+
+/// Render `name: value` as a tree item. A nested object becomes an
+/// expandable `key:` directory whose children recurse; every other
+/// value is a `key:` directory with the value as its single leaf.
+fn render_notation_tree_item(name: String, value: serde_json::Value) -> AnyView {
+    if let serde_json::Value::Object(map) = value {
+        return view! {
+            <wa-tree-item expanded>
+                <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+                { map.into_iter()
+                    .map(|(k, v)| render_notation_tree_item(k, v))
+                    .collect_view() }
+            </wa-tree-item>
+        }
+        .into_any();
+    }
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+            <wa-tree-item>
+                { render_field_value(value, false) }
+            </wa-tree-item>
+        </wa-tree-item>
+    }
+    .into_any()
 }
 
 /// Threshold (characters) past which a single-line value renders
