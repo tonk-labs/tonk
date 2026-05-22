@@ -4,14 +4,14 @@
 //!
 //! See `plan/transact-endpoint.md` for the design. The short
 //! version: every assertion or retraction names a predicate
-//! ([`PredicateDescriptor`]) along with its parameter bindings
+//! ([`ConceptDescriptor`]) along with its parameter bindings
 //! ([`PredicateApplication`]); the predicate wrapper carries
 //! whether the concept is durable (carries forward across
 //! commits) or transient (one-timestep lifetime, retracted
 //! before durable write). The reactor reads this classification
 //! to bucket transients without re-querying the schema.
 
-use dialog_query::{ConceptDescriptor, ConceptQuery, Parameters};
+use dialog_query::{ConceptDescriptor as DialogConceptDescriptor, ConceptQuery, Parameters};
 use serde::{Deserialize, Serialize};
 
 use crate::transact::ApplicationPlan;
@@ -27,26 +27,26 @@ use crate::transact::ApplicationPlan;
 /// storage.
 ///
 /// The wrapper lives here, on the wire side, rather than as a
-/// `transient: bool` field on [`ConceptDescriptor`] upstream.
+/// `transient: bool` field on [`DialogConceptDescriptor`] upstream.
 /// Validating the end-to-end mechanism this way means we can
 /// keep dialog's descriptor untouched until we're sure of the
 /// design.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "concept", rename_all = "lowercase")]
-pub enum PredicateDescriptor {
+pub enum ConceptDescriptor {
     /// Facts of this concept persist across commits until
     /// retracted.
-    Durable(ConceptDescriptor),
+    Durable(DialogConceptDescriptor),
     /// Facts of this concept exist only at the current
     /// timestep. The reactor strips them before the durable
     /// commit.
-    Transient(ConceptDescriptor),
+    Transient(DialogConceptDescriptor),
 }
 
-impl PredicateDescriptor {
-    /// Borrow the inner [`ConceptDescriptor`], discarding the
+impl ConceptDescriptor {
+    /// Borrow the inner [`DialogConceptDescriptor`], discarding the
     /// durability wrapper.
-    pub fn concept(&self) -> &ConceptDescriptor {
+    pub fn concept(&self) -> &DialogConceptDescriptor {
         match self {
             Self::Durable(c) | Self::Transient(c) => c,
         }
@@ -65,7 +65,7 @@ impl PredicateDescriptor {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredicateApplication {
     /// The predicate, with its durability classification.
-    pub predicate: PredicateDescriptor,
+    pub predicate: ConceptDescriptor,
     /// Term bindings for this application. The `"this"` slot
     /// names the subject entity; other slots bind the
     /// predicate's attribute fields.
@@ -87,7 +87,7 @@ impl PredicateApplication {
             statement: ConceptQuery {
                 terms: self.parameters,
                 predicate: match self.predicate {
-                    PredicateDescriptor::Durable(c) | PredicateDescriptor::Transient(c) => c,
+                    ConceptDescriptor::Durable(c) | ConceptDescriptor::Transient(c) => c,
                 },
             },
             name: None,
