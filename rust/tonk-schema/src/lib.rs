@@ -42,6 +42,8 @@ pub mod meta;
 
 pub mod concept;
 
+pub mod resolution;
+
 pub mod effect;
 
 pub mod effects;

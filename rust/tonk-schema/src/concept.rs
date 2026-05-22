@@ -144,7 +144,8 @@ pub enum ConceptLookupError {
 }
 
 impl ConceptLookupError {
-    fn query(message: impl Into<String>) -> Self {
+    /// Wrap an underlying query failure as a [`ConceptLookupError`].
+    pub fn query(message: impl Into<String>) -> Self {
         Self::Query {
             message: message.into(),
         }
