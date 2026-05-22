@@ -224,7 +224,7 @@ Enumeration serves editor completion — offering every concept, or every publis
 
 ### The language server
 
-The language server resolves against the **live branch** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics get real `UnknownConcept` findings, completion enumerates the branch's actual concepts and names, hover resolves the real symbol. One source, one path — no fact-less fallback, no discarding of branch-dependent findings.
+The language server resolves against the **live branch** — the one the document being edited belongs to. Diagnostics, completion, and hover all run against that source: diagnostics report `UnknownConcept` for a name absent from the branch, completion enumerates the branch's concepts and names, hover resolves the symbol under the cursor.
 
 The branch is late-bound: `IntrospectionFactory::for_uri` maps the document URI to a branch per request and hands back a bundle of boxed async closures, one per lookup, each capturing that request's concrete source:
 
