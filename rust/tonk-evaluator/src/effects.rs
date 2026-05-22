@@ -110,7 +110,7 @@ pub trait TransactionExt<'a> {
 impl<'a> TransactionExt<'a> for Transaction<'a> {
     fn induce(self, transients: Changes) -> Induce<'a> {
         Induce {
-            txn: self,
+            transaction: self,
             transients,
         }
     }
@@ -120,7 +120,7 @@ impl<'a> TransactionExt<'a> for Transaction<'a> {
 /// and the transient bucket until `.perform(env)` consumes
 /// them.
 pub struct Induce<'a> {
-    txn: Transaction<'a>,
+    transaction: Transaction<'a>,
     transients: Changes,
 }
 
@@ -153,7 +153,7 @@ impl<'a> Induce<'a> {
     /// dispatched (see [`fire_effect`]).
     pub async fn perform<Env: InduceEnv>(self, env: &Env) -> Result<Transaction<'a>, InduceError> {
         let Induce {
-            mut txn,
+            mut transaction,
             transients,
         } = self;
 
@@ -163,13 +163,10 @@ impl<'a> Induce<'a> {
         // their assert+retract pairs cancel at commit and the
         // next round's bodies don't see them (a transient is a
         // one-shot trigger, by design).
-        let mut round_transients = transients;
         let mut round: u32 = 0;
+        let mut stimulus = transients;
 
-        loop {
-            if round_transients.is_empty() {
-                break;
-            }
+        while !stimulus.is_empty() {
             if round >= MAX_ROUNDS {
                 return Err(InduceError::NonTerminating(MAX_ROUNDS));
             }
@@ -177,7 +174,7 @@ impl<'a> Induce<'a> {
 
             // 1. From the current round's transients, collect
             //    attribute names → on:<name> reverse-index keys.
-            let attribute_names: BTreeSet<String> = round_transients
+            let attribute_names: BTreeSet<String> = stimulus
                 .clone()
                 .into_instructions()
                 .into_iter()
@@ -191,30 +188,30 @@ impl<'a> Induce<'a> {
             // 2. Walk effects_on per touched attribute.
             let mut effect_entities: BTreeSet<Entity> = BTreeSet::new();
             for name in &attribute_names {
-                let hits = effects_on(&txn, name, env).await?;
+                let hits = effects_on(&transaction, name, env).await?;
                 effect_entities.extend(hits);
             }
 
             // 3. Load and fire each candidate against the FROZEN
             //    round-input transaction. Each fire returns its
-            //    derived heads as a `Changes` batch (durable +
-            //    transient) without mutating `txn`; rule N's
-            //    derivations are therefore NOT visible to rule
-            //    N+1 in the same round — sibling rules read the
-            //    same input. We collect every fire's heads into
-            //    `round_changes`, integrate them into `txn` once
-            //    after the for-loop, and propagate the transient
-            //    subset as next-round triggers.
+            //    derived facts as a `Changes` batch (durable +
+            //    transient) without mutating `transaction`; rule
+            //    N's derivations are NOT visible to rule N+1 in
+            //    the same round — sibling rules read the same
+            //    input. We collect every fire's facts into
+            //    `novelty`, integrate them into `transaction`
+            //    once after the for-loop, and propagate the
+            //    transient subset as the next round's stimulus.
             //
             //    This is standard semi-naive Datalog: derivations
             //    within an iteration don't see each other; the
             //    iteration's input is frozen. Cross-round
             //    chaining still works because round N+1 sees
-            //    round N's integrated heads.
-            let mut next_transients = Changes::new();
-            let mut round_changes = Changes::new();
+            //    round N's integrated novelty.
+            let mut transients = Changes::new();
+            let mut novelty = Changes::new();
             for entity in effect_entities {
-                let Some(effect) = load_effect(&txn, entity, env).await? else {
+                let Some(effect) = load_effect(&transaction, entity, env).await? else {
                     // The reverse index pointed at an entity
                     // whose source claim is missing or
                     // unparseable. Skip — the install path is
@@ -223,9 +220,9 @@ impl<'a> Induce<'a> {
                     // commit.
                     continue;
                 };
-                let outcome = fire_effect(effect, &txn, env).await?;
-                merge_changes(&mut round_changes, outcome.head_changes);
-                merge_changes(&mut next_transients, outcome.transient_heads);
+                let outcome = fire_effect(effect, &transaction, env).await?;
+                merge_changes(&mut novelty, outcome.novelty);
+                merge_changes(&mut transients, outcome.transients);
             }
 
             // 4. Sweep the round's incoming transients — they've
@@ -234,29 +231,48 @@ impl<'a> Induce<'a> {
             //    novelty so a new transient emitted by an effect
             //    in this round is not accidentally swept by an
             //    incoming-transient retract for the same triple.
-            txn = sweep_transients(round_transients, txn);
+            transaction = sweep_transients(stimulus, transaction);
 
             // 5. Integrate all this round's novelty — durable and
             //    transient — into txn. The newly-emitted transients
             //    sit in txn until *their* round sweeps them; durable
             //    derivations stay for the commit.
-            txn = txn.integrate(round_changes);
+            transaction = transaction.integrate(novelty);
 
             // 6. Promote this round's emitted transients as the
-            //    next round's trigger bucket. Empty → loop ends:
+            //    next round's stimulus bucket. Empty → loop ends:
             //    no new triggers means no further rules can fire.
-            round_transients = next_transients;
+            stimulus = transients;
         }
 
-        Ok(txn)
+        Ok(transaction)
     }
 }
 
-/// Retract every transient in `transients` against `txn` so the
-/// assert+retract pair cancels at commit. Called at end-of-round
-/// (after firing, before integrating the round's novelty) so the
-/// round's incoming triggers leave before the new transients
-/// emitted by this round are integrated.
+/// Sweep this round's transient instructions by emitting each
+/// one's *inverse* into the transaction — assert+retract pairs
+/// cancel at commit, so a transient that triggered this round
+/// leaves no durable trace.
+///
+/// Called at end-of-round, AFTER firing and BEFORE integrating
+/// the round's novelty, so an incoming-transient retract can't
+/// accidentally cancel an identical new transient an effect
+/// just emitted in the same round.
+///
+/// Each `Instruction` is inverted:
+///
+/// - `Assert` / `Replace` → emit a `Retract` of the same triple.
+///   The fact was added as a one-shot trigger; remove it.
+/// - `Retract` → emit an `Assert` of the same triple. A
+///   transient-concept retraction (a user `retract!:` against a
+///   transient concept, or a `retract!:`-polarity rule whose
+///   head is a transient concept) made a fact temporarily
+///   absent; restore it. No test exercises this path today, but
+///   the symmetric inverse keeps the invariant "sweep undoes
+///   the round's transient action, whatever its direction" —
+///   without the arm a transient retraction would persist
+///   durably, which contradicts the "transients leave no trace"
+///   contract.
 fn sweep_transients<'a>(transients: Changes, mut txn: Transaction<'a>) -> Transaction<'a> {
     for instruction in transients.into_instructions() {
         txn = match instruction {
@@ -402,31 +418,36 @@ async fn load_effect<Env: InduceEnv>(
 /// bucket of just the *transient* heads (one entry per claim)
 /// for the fixpoint to use as next-round trigger input.
 struct FireOutcome {
-    /// All head facts derived by this fire — durable + transient,
+    /// All the facts derived by this fire — durable + transient,
     /// asserts + retracts, accumulated as a `Changes` batch the
     /// caller integrates into the transaction AFTER the whole
     /// round's effects have fired. Keeping the round's input txn
     /// frozen during fires is the Dedalus-semantics fix:
     /// sibling rules read the same state, derived facts batch.
-    head_changes: Changes,
-    /// Subset of `head_changes`: just the transient-head asserts,
-    /// so the cascade loop can promote them to the next round's
-    /// trigger bucket.
-    transient_heads: Changes,
+    novelty: Changes,
+    /// Subset of `novelty`: just the transient-head asserts, so
+    /// the cascade loop can promote them to the next round's
+    /// stimulus bucket.
+    transients: Changes,
 }
 
-/// Evaluate one effect's body against the transaction overlay,
-/// instantiate the head per match, and apply to the transaction.
+/// Evaluate one effect's body against the transaction overlay
+/// and instantiate the head per match. Returns the derived facts
+/// as a [`FireOutcome`] WITHOUT mutating the transaction — the
+/// cascade loop in [`Induce::perform`] batches every fire's
+/// outcome and integrates them after the round so sibling rules
+/// in one round can't read each other's mid-round writes.
 ///
-/// For `Assert`-polarity rules each emitted head's facts land
-/// in the transaction; transient-concept heads also accumulate
-/// in [`FireOutcome::transient_heads`] so the cascade loop can
-/// promote them to the next round.
+/// For `Assert`-polarity rules each emitted head's facts land in
+/// [`FireOutcome::novelty`]; transient-concept heads ALSO land
+/// in [`FireOutcome::transients`] so the cascade loop can
+/// promote them as the next round's stimulus.
 ///
 /// For `Retract`-polarity rules each emitted head's facts land
-/// as retracts. The head concept is expected to be durable —
-/// retracts of a transient have no observable effect — so the
-/// `transient_heads` bucket is always empty for this polarity.
+/// in `novelty` as retracts. The head concept is expected to be
+/// durable — retracts of a transient have no observable effect
+/// — so the `transients` bucket is always empty for this
+/// polarity.
 async fn fire_effect<Env: InduceEnv>(
     effect: Effect,
     txn: &Transaction<'_>,
@@ -455,8 +476,8 @@ async fn fire_effect<Env: InduceEnv>(
     };
 
     let head = rule.conclusion().clone();
-    let mut transient_heads = Changes::new();
-    let mut head_changes = Changes::new();
+    let mut transients = Changes::new();
+    let mut novelty = Changes::new();
     for frame in matches {
         // Project the match into a `Parameters` map of the head's
         // operands. The conclusion-variable check at rule-compile
@@ -482,20 +503,20 @@ async fn fire_effect<Env: InduceEnv>(
             match polarity {
                 EffectPolarity::Assert => {
                     if head_is_transient {
-                        accumulate_head_facts(&concept_query, &mut transient_heads);
+                        accumulate_head_facts(&concept_query, &mut transients);
                     }
-                    emit_head_facts_into(concept_query, &mut head_changes);
+                    emit_head_facts_into(concept_query, &mut novelty);
                 }
                 EffectPolarity::Retract => {
-                    retract_head_facts_into(concept_query, &mut head_changes);
+                    retract_head_facts_into(concept_query, &mut novelty);
                 }
             }
         }
     }
 
     Ok(FireOutcome {
-        head_changes,
-        transient_heads,
+        novelty,
+        transients,
     })
 }
 
