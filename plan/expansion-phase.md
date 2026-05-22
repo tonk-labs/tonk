@@ -18,9 +18,12 @@ are the analyzer. `plan` + `commit` are evaluation.
 
 - **`tonk-notation`** — pure syntax. Parse → `Syntax`. No branch,
   no `Source`.
-- **`tonk-schema`** — schema types: concepts, attributes,
-  `claim.rs` (the `Claim` type — see Part C), `effect.rs`, and
-  the resolution surface (Part A). No pipeline driving.
+- **`tonk-schema`** — the shared lower layer for facts and their
+  shapes: concept / attribute descriptors, `effect.rs` rule
+  types, the resolution surface (Part A), and `claim.rs` (the
+  `Claim` type — Part C). `Claim` lives here because it is
+  consumed by every write path and must sit below all of them;
+  it carries a concept descriptor, so it is schema-adjacent.
 - **`tonk-analyzer`** — `analyze` + `expand`. Depends on
   `tonk-notation` and `tonk-schema`. Produces an `Analysis`.
 - **`tonk-evaluator`** — `evaluate`: plan + commit. Depends on
@@ -272,11 +275,12 @@ tracking. Every claim reaching the plan stage is concept-shaped;
 domain heads and `&anchor` are notation sugar that expansion
 lowers away first.
 
-`Claim` lives in `claim.rs`. It is distinct from
-`dialog_query::Fact` — the raw `(the, of, is)` EAV triple dialog
-deals in. `Claim` is the typed, concept-shaped write; `Fact` is
-the untyped triple it ultimately emits. The two names never
-collide.
+`Claim` lives in `tonk-schema`'s `claim.rs`, alongside
+`PredicateApplication` (`PredicateDescriptor` + terms). It is
+distinct from `dialog_query::Fact` — the raw `(the, of, is)` EAV
+triple dialog deals in. `Claim` is the typed, concept-shaped
+write; `Fact` is the untyped triple it ultimately emits. The two
+names never collide.
 
 ## Open items
 
