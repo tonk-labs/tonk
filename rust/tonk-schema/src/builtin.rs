@@ -78,6 +78,7 @@ fn concept_descriptor() -> ResolvedConcept {
             .parse()
             .expect("`db:concept` is a valid entity URI"),
         descriptor: crate::concept::concept_of_concept_descriptor().clone(),
+        transient: false,
     }
 }
 
@@ -101,5 +102,6 @@ where
     ResolvedConcept {
         entity,
         descriptor: ConceptDescriptor::from(Q::default()),
+        transient: false,
     }
 }

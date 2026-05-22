@@ -486,9 +486,10 @@ async fn is_transient<Env: InduceEnv>(
 /// `(attr, this, value)` instruction per bound field into the
 /// given [`Changes`] bucket. Used to record an effect's transient
 /// head emissions for the next fixpoint round's reverse-index
-/// walk. Mirrors [`emit_head_facts`] but emits into a `Changes`
-/// rather than into a `Transaction`.
-fn accumulate_head_facts(concept_query: &ConceptQuery, sink: &mut Changes) {
+/// walk, and by [`crate::evaluate`] to seed the transient bucket
+/// from a transient-concept assertion. Mirrors [`emit_head_facts`]
+/// but emits into a `Changes` rather than into a `Transaction`.
+pub(crate) fn accumulate_head_facts(concept_query: &ConceptQuery, sink: &mut Changes) {
     let Some(this_term) = concept_query.terms.get("this") else {
         return;
     };

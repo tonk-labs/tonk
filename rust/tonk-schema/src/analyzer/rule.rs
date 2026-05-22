@@ -209,8 +209,14 @@ mod tests {
 
         fn declare(&mut self, name: &str, descriptor: ConceptDescriptor) {
             let entity = descriptor.this();
-            self.concepts
-                .insert(name.to_string(), ResolvedConcept { entity, descriptor });
+            self.concepts.insert(
+                name.to_string(),
+                ResolvedConcept {
+                    entity,
+                    descriptor,
+                    transient: false,
+                },
+            );
         }
     }
 

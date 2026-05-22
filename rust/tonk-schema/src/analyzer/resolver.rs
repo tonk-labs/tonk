@@ -29,6 +29,11 @@ pub struct ResolvedConcept {
     pub entity: Entity,
     /// The reconstructed descriptor.
     pub descriptor: ConceptDescriptor,
+    /// `true` when the concept is marked transient — facts of
+    /// this concept live one timestep and get swept before the
+    /// durable commit. The evaluator reads this to bucket
+    /// transient assertions for the effects fixpoint.
+    pub transient: bool,
 }
 
 /// Look up names against a backing store (typically the branch).
@@ -107,6 +112,7 @@ impl From<tonk_introspect::ResolvedConcept> for ResolvedConcept {
         Self {
             entity: c.entity,
             descriptor: c.descriptor,
+            transient: c.transient,
         }
     }
 }

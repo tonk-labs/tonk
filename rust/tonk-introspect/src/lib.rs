@@ -51,6 +51,11 @@ pub struct ResolvedConcept {
     pub entity: Entity,
     /// The reconstructed descriptor.
     pub descriptor: ConceptDescriptor,
+    /// `true` when the concept carries the
+    /// `dialog.concept/transient` marker — facts of this concept
+    /// live for one timestep and are swept before the durable
+    /// commit. Drives transient bucketing in the evaluator.
+    pub transient: bool,
 }
 
 /// A published name — the user-facing label and the entity it

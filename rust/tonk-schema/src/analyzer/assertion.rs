@@ -36,6 +36,12 @@ use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
 pub(crate) struct AssertionPlan {
     pub assert: Option<Application>,
     pub retract: Option<Application>,
+    /// `true` when the head concept is marked transient. Phase 3
+    /// records the concept entity in `MutationAnalysis::transient`
+    /// so the evaluator routes the asserted claims into the
+    /// effects-fixpoint seed bucket. Always `false` for domain /
+    /// URI heads — those name no concept.
+    pub transient: bool,
 }
 
 pub(crate) async fn build_assertion_application<R: Resolver>(
@@ -255,6 +261,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             Ok(AssertionPlan {
                 assert: assert_app,
                 retract: retract_app,
+                transient: resolved.transient,
             })
         }
         HeadName::Claim(domain) => {
@@ -290,6 +297,9 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     name,
                 }),
                 retract: None,
+                // Domain (`xyz.tonk …:`) heads name no concept,
+                // so there's no transient marker to consult.
+                transient: false,
             })
         }
         HeadName::Uri(uri) => Err(AnalyzeError::at(
