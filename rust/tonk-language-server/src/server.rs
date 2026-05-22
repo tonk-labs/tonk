@@ -472,7 +472,7 @@ async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + 
             // The analyzer's own diagnostics duplicate the scan
             // we already did above — `scan_variables` is also
             // called inside `analyze`. Dedup by (code, range).
-            for diag in analysis.diagnostics {
+            for diag in analysis.analysis.diagnostics {
                 let mapped = diagnostic_from_analyze_diagnostic(syntax, diag);
                 if !out
                     .iter()

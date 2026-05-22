@@ -159,7 +159,7 @@ pub async fn run_against_site(
     // Slide always commits when there are mutation statements
     // (the CLI doesn't have a dry-run mode today). Pure-query
     // docs short-circuit so we don't pay for a no-op commit.
-    let (response, committed) = if !evaluated.analysis.mutate.statements.is_empty() {
+    let (response, committed) = if evaluated.analysis.analysis.has_statements() {
         let result = evaluated
             .commit()
             .perform(&site.branch, &site.operator)

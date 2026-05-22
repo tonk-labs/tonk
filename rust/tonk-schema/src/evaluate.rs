@@ -67,12 +67,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
 
+use crate::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use crate::analyzer;
 use crate::concept::QueryEnv;
 use crate::query_source::Source;
-use crate::transact::{
-    Analysis, Application, ApplicationPlan, Planner as _, QueryAnalysis, Statement,
-};
+use crate::transact::{Application, ApplicationPlan, Planner as _, Statement};
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -209,9 +208,12 @@ pub struct Analyze<'s, S> {
 
 impl<'s, S> Analyze<'s, S> {
     /// Run `resolve` + `expand` against the source, yielding the
-    /// document's [`Analysis`]. Pure-read — no mutation, no
-    /// commit.
-    pub async fn perform<'e, Env: QueryEnv>(self, env: &'e Env) -> Result<Analysis, EvaluateError>
+    /// document's [`Analysis<Syntax>`][Analysis] tree. Pure-read
+    /// — no mutation, no commit.
+    pub async fn perform<'e, Env: QueryEnv>(
+        self,
+        env: &'e Env,
+    ) -> Result<Analysis<Syntax>, EvaluateError>
     where
         S: Into<Source<'e>>,
     {
@@ -264,17 +266,15 @@ impl<'s, S> Compile<'s, S> {
 /// Result of [`Compile::perform`] — the resolved document's
 /// runnable operations.
 ///
-/// `Compiled` is a thin handle over the [`Analysis`] tree: the
-/// read side is the query plans in [`Analysis::query`], and the
-/// write side is the planned [`Statement`]s in
-/// [`Analysis::mutate`] — including the [`Statement::InstallEffect`]
-/// each `rule!:` lifts into. `evaluate` runs these against a
-/// transaction; today there is no separate IR, so `Compiled`
-/// wraps the analyzer's output directly.
+/// `Compiled` is a thin handle over the [`Analysis<Syntax>`][Analysis]
+/// tree: the read side is the per-expression query nodes, the
+/// write side is the planned [`Statement`]s nested under each
+/// assertion — including the [`Statement::InstallEffect`] each
+/// `rule!:` lifts into. `evaluate` walks the tree and runs those
+/// operations against a transaction.
 pub struct Compiled {
-    /// The resolved, lowered document — query plans + planned
-    /// statements.
-    pub analysis: Analysis,
+    /// The resolved, lowered document tree.
+    pub analysis: Analysis<Syntax>,
 }
 
 /// Adds [`Self::evaluate`] to [`tonk_notation::Syntax`]. The
@@ -321,19 +321,22 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         let Evaluate { syntax, mut txn } = self;
 
         // Run `compile` under the hood — `analyze` + lowering to
-        // runnable operations — then run those operations below.
+        // runnable operations — then walk the tree below.
         let Compiled { analysis } = syntax.compile(branch).perform(env).await?;
+        let document = &analysis.analysis;
 
         // ---- Build base bindings frame from analysis-derived vars ----
         let mut base = Parameters::new();
-        for (name, entity) in &analysis.variables {
+        for (name, entity) in &document.variables {
             base.insert(name.clone(), Term::Constant(Value::Entity(entity.clone())));
         }
 
         // ---- Per-expression queries + post-join ----
-        let pre_results = match &analysis.query {
-            Some(q) => Some(run_query(q, branch, env).await?),
-            None => None,
+        let user_queries = collect_queries(document);
+        let pre_results = if user_queries.is_empty() && document.synthesized.is_empty() {
+            None
+        } else {
+            Some(run_query(&user_queries, &document.synthesized, branch, env).await?)
         };
         let pre_matches: Vec<Parameters> = match &pre_results {
             Some(r) if !r.joined.is_empty() => r.joined.clone(),
@@ -342,16 +345,24 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 
         // ---- Commit-summary seed: published declarations + analysis variables ----
         let mut commits = CommitSummary::default();
-        for (key, entity) in &analysis.declarations {
+        for (key, entity) in &document.declarations {
             commits.entities.insert(key.clone(), entity.to_string());
         }
-        for (key, entity) in &analysis.variables {
+        for (key, entity) in &document.variables {
             commits
                 .entities
                 .insert(format!("?{key}"), entity.to_string());
         }
 
         // ---- Plan + apply mutations to the caller's transaction ----
+        let statements: Vec<Statement> = document
+            .statements()
+            .into_iter()
+            .map(|p| p.statement)
+            .collect();
+        // Concept entities whose facts are transient — an `Assert`
+        // against one of these seeds the effects-fixpoint bucket.
+        let transient_entities = document.transient_entities();
         let mut claim_count = 0usize;
         // Retraction targets resolved by querying the branch
         // up-front so we don't interleave reads with mutation
@@ -359,17 +370,14 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         let mut retract_claims: Vec<RawClaim> = Vec::new();
         // Transient-concept assertions, accumulated so the caller
         // can hand them to `induce` as the effects-fixpoint seed.
-        // An assertion's concept entity is in
-        // `analysis.mutate.transient` when the concept was
-        // declared `transient:`.
         let mut transients = Changes::new();
-        if !analysis.mutate.statements.is_empty() {
+        if !statements.is_empty() {
             for match_frame in &pre_matches {
                 let mut frame = base.clone();
                 for (k, v) in match_frame.iter() {
                     frame.insert(k.clone(), v.clone());
                 }
-                for statement in &analysis.mutate.statements {
+                for statement in &statements {
                     match statement {
                         Statement::Assert(application) => {
                             let plan = application
@@ -381,11 +389,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // seeds the transient bucket so the
                             // effects fixpoint fires on it and it's
                             // swept before the durable commit.
-                            if analysis
-                                .mutate
-                                .transient
-                                .contains(&plan.statement.predicate.this())
-                            {
+                            if transient_entities.contains(&plan.statement.predicate.this()) {
                                 crate::effects::accumulate_head_facts(
                                     &plan.statement,
                                     &mut transients,
@@ -423,7 +427,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         }
         commits.claims = claim_count;
 
-        let matches = render_match_blocks(&analysis, pre_results.as_ref());
+        let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
 
         Ok(Evaluated {
             txn,
@@ -460,10 +464,10 @@ pub struct Evaluated<'a> {
     /// Commit-side summary — claim count + entity bindings
     /// surfaced to response envelopes.
     pub commits: CommitSummary,
-    /// The analyzer's output. Callers re-run its queries
+    /// The analyzer's output tree. Callers re-run its queries
     /// against the transaction overlay (or the post-commit
     /// branch) to compute post-mutation matches.
-    pub analysis: Analysis,
+    pub analysis: Analysis<Syntax>,
 }
 
 impl<'a> Evaluated<'a> {
@@ -512,13 +516,16 @@ impl<'a> EvaluatedCommit<'a> {
             .map_err(|e| EvaluateError::Query(format!("commit failed: {e}")))?;
 
         // Post-commit re-query for matches_after. For
-        // pure-mutation docs (no `analysis.query`), the after
+        // pure-mutation docs (no queries at all), the after
         // block is empty.
-        let post_results = match &analysis.query {
-            Some(q) => Some(run_query(q, branch, env).await?),
-            None => None,
+        let document = &analysis.analysis;
+        let user_queries = collect_queries(document);
+        let post_results = if user_queries.is_empty() && document.synthesized.is_empty() {
+            None
+        } else {
+            Some(run_query(&user_queries, &document.synthesized, branch, env).await?)
         };
-        let matches_after = render_match_blocks(&analysis, post_results.as_ref());
+        let matches_after = render_match_blocks(document, post_results.as_ref());
 
         Ok(EvaluateResult {
             revision,
@@ -543,9 +550,35 @@ pub struct EvaluateResult {
     pub matches_after: Vec<QueryMatchBlock>,
     /// Commit-side summary.
     pub commits: CommitSummary,
-    /// The analyzer's output, in case the caller wants further
-    /// queries against the analysis.
-    pub analysis: Analysis,
+    /// The analyzer's output tree, in case the caller wants
+    /// further queries against the analysis.
+    pub analysis: Analysis<Syntax>,
+}
+
+/// A query application paired with its display label — the
+/// per-expression unit `run_query` / `render_match_blocks` work
+/// over. Projected from the tree's query nodes (and from its
+/// synthesized snapshots).
+#[derive(Clone)]
+struct LabeledQuery {
+    application: Application,
+    label: String,
+}
+
+/// The user-written query expressions, in document order,
+/// projected from the analysis tree.
+fn collect_queries(document: &crate::analysis::DocumentAnalysis) -> Vec<LabeledQuery> {
+    document
+        .expressions
+        .iter()
+        .filter_map(|expression| match &expression.analysis {
+            ExpressionAnalysis::Query(node) => Some(LabeledQuery {
+                application: node.analysis.application.clone(),
+                label: node.analysis.label.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Per-expression query results plus the joined frames for
@@ -569,9 +602,9 @@ struct QueryResults {
     joined: Vec<Parameters>,
     /// Per-expression frames for the analyzer's *synthesized*
     /// snapshot queries (Phase 4), parallel to
-    /// `QueryAnalysis::synthesized`. Each snapshot runs
-    /// standalone — never joined — and is rendered as its own
-    /// match block.
+    /// [`DocumentAnalysis::synthesized`][crate::analysis::DocumentAnalysis::synthesized].
+    /// Each snapshot runs standalone — never joined — and is
+    /// rendered as its own match block.
     synthesized_per_expression: Vec<Vec<Parameters>>,
 }
 
@@ -582,13 +615,14 @@ struct QueryResults {
 /// internally to the right [`crate::concept::QueryPlan`] (built-in
 /// or branch concept), so this loop is uniform across head kinds.
 async fn run_query<Env: EvaluateEnv>(
-    query: &QueryAnalysis,
+    queries: &[LabeledQuery],
+    synthesized: &[SynthesizedQuery],
     branch: &Branch,
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
-    let mut per_expression = Vec::with_capacity(query.queries.len());
-    for application in &query.queries {
-        let frames = collect_matches(application.clone(), branch, env).await?;
+    let mut per_expression = Vec::with_capacity(queries.len());
+    for query in queries {
+        let frames = collect_matches(query.application.clone(), branch, env).await?;
         per_expression.push(frames);
     }
     let joined = natural_join(&per_expression);
@@ -596,9 +630,9 @@ async fn run_query<Env: EvaluateEnv>(
     // Synthesized snapshots run standalone — never joined into
     // `joined`, so an empty snapshot can't zero mutation
     // planning's binding set.
-    let mut synthesized_per_expression = Vec::with_capacity(query.synthesized.len());
-    for application in &query.synthesized {
-        let frames = collect_matches(application.clone(), branch, env).await?;
+    let mut synthesized_per_expression = Vec::with_capacity(synthesized.len());
+    for snapshot in synthesized {
+        let frames = collect_matches(snapshot.application.clone(), branch, env).await?;
         synthesized_per_expression.push(frames);
     }
 
@@ -817,27 +851,24 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// avoid showing the same row repeatedly when an unrelated
 /// expression's cross-product introduces duplicates.
 fn render_match_blocks(
-    analysis: &Analysis,
+    document: &crate::analysis::DocumentAnalysis,
     results: Option<&QueryResults>,
 ) -> Vec<QueryMatchBlock> {
-    let Some(query) = &analysis.query else {
-        return Vec::new();
-    };
     let Some(results) = results else {
         return Vec::new();
     };
 
-    let mut blocks = Vec::with_capacity(query.queries.len() + query.synthesized.len());
+    let user_queries = collect_queries(document);
+    if user_queries.is_empty() && document.synthesized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut blocks = Vec::with_capacity(user_queries.len() + document.synthesized.len());
 
     // User-written queries: each block draws from the joined
     // frames so connected queries display the filtered
     // intersection.
-    for (i, application) in query.queries.iter().enumerate() {
-        let label = query
-            .labels
-            .get(i)
-            .cloned()
-            .unwrap_or_else(|| "?".to_owned());
+    for (i, query) in user_queries.iter().enumerate() {
         // Source frames: prefer joined when non-empty (so
         // connected queries see the filter); otherwise fall back
         // to the expression's own frames so disjoint expressions
@@ -852,23 +883,26 @@ fn render_match_blocks(
                 .map(Vec::as_slice)
                 .unwrap_or(&[])
         };
-        blocks.push(render_block(label, application, source_frames));
+        blocks.push(render_block(
+            query.label.clone(),
+            &query.application,
+            source_frames,
+        ));
     }
 
     // Synthesized snapshot queries: each runs standalone (no
     // join), rendered from its own per-expression frames.
-    for (i, application) in query.synthesized.iter().enumerate() {
-        let label = query
-            .synthesized_labels
-            .get(i)
-            .cloned()
-            .unwrap_or_else(|| "?".to_owned());
+    for (i, snapshot) in document.synthesized.iter().enumerate() {
         let source_frames: &[Parameters] = results
             .synthesized_per_expression
             .get(i)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        blocks.push(render_block(label, application, source_frames));
+        blocks.push(render_block(
+            snapshot.label.clone(),
+            &snapshot.application,
+            source_frames,
+        ));
     }
     blocks
 }
@@ -1086,8 +1120,8 @@ mod tests {
     /// the assert target (`id:demo-copy`), which does not exist
     /// pre-commit and returns zero rows. That snapshot must stay
     /// out of the join that feeds mutation planning — it lives in
-    /// `QueryAnalysis::synthesized`, not `queries` — or it zeroes
-    /// the join and the assert's `?var` goes unbound.
+    /// `DocumentAnalysis::synthesized`, not the query nodes — or it
+    /// zeroes the join and the assert's `?var` goes unbound.
     #[dialog_common::test]
     async fn it_binds_assert_var_from_query_for_distinct_target() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
@@ -1500,18 +1534,19 @@ rule!:\n\
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
 
-        // The lifted rule must land in `mutate.statements` as a
-        // `Statement::InstallEffect` — this is the committable
-        // mutation the route's commit guard relies on.
+        // The lifted rule must lower to one statement — a
+        // `Statement::InstallEffect` — so the route's commit
+        // guard (`has_statements`) sees it.
+        let statements = evaluated.analysis.analysis.statements();
         assert_eq!(
-            evaluated.analysis.mutate.statements.len(),
+            statements.len(),
             1,
             "rule-only document should carry one mutation statement"
         );
-        let Statement::InstallEffect(effect) = &evaluated.analysis.mutate.statements[0] else {
+        let Statement::InstallEffect(effect) = &statements[0].statement else {
             panic!(
                 "rule-only document should carry a Statement::InstallEffect, got {:?}",
-                evaluated.analysis.mutate.statements[0]
+                statements[0].statement
             );
         };
         assert_eq!(
@@ -1789,17 +1824,18 @@ rule!:\n\
             .await
             .map_err(|e| anyhow::anyhow!("analyze: {e}"))?;
 
-        // A pure-query document: the query side is populated, the
-        // mutation side is empty.
-        assert!(analysis.query.is_some(), "expected a resolved query");
+        // A pure-query document: one query expression, no
+        // lowered statements.
+        let document = &analysis.analysis;
+        let queries: Vec<_> = document.queries().collect();
+        assert_eq!(queries.len(), 1, "expected one resolved query");
         assert!(
-            analysis.mutate.statements.is_empty(),
+            document.statements().is_empty(),
             "pure-query document has no mutation statements"
         );
-        let query = analysis.query.as_ref().unwrap();
-        assert_eq!(query.queries.len(), 1);
+        let bindings = queries[0].analysis.application.bindings();
         assert!(
-            query.bindings().contains("alice"),
+            bindings.contains("alice"),
             "the ?alice variable should be bound by the query"
         );
         Ok(())

@@ -12,7 +12,8 @@ use tonk_notation::{FieldValue, Scalar};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::resolver::Resolver;
 use super::scope::Scope;
-use crate::transact::{Analysis, Application};
+use crate::analyzer::Working;
+use crate::transact::Application;
 
 /// Reserved body field names that don't correspond to schema
 /// fields: `this:` (entity selection), `..:` (rest-of-attributes
@@ -33,7 +34,7 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
     value: &FieldValue,
     range: lsp_types::Range,
     scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    analysis: &Working,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match value {
         FieldValue::Literal(scalar) => {
@@ -181,7 +182,7 @@ pub(crate) fn validate_claim_attribute(
 
 pub(crate) fn collect_unbound_variables(
     application: &Application,
-    analysis: &Analysis,
+    analysis: &Working,
     out: &mut HashSet<String>,
 ) {
     for name in application.bindings() {

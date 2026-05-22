@@ -88,9 +88,10 @@ pub enum DiagnosticSeverity {
 /// severity so the editor can color them differently.
 ///
 /// Distinct from [`AnalyzeError`] because diagnostics are
-/// *accumulated* into [`crate::transact::Analysis`] alongside a
-/// successful analysis, whereas [`AnalyzeError`] short-circuits
-/// the whole pass.
+/// *accumulated* into the analysis tree's
+/// [`DocumentAnalysis`][crate::analysis::DocumentAnalysis]
+/// alongside a successful analysis, whereas [`AnalyzeError`]
+/// short-circuits the whole pass.
 #[derive(Debug, Clone)]
 pub struct AnalyzeDiagnostic {
     /// What the diagnostic is about.

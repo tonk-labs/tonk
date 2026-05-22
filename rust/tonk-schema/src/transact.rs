@@ -1,16 +1,14 @@
-//! Asserted-notation analysis output and the planner that turns it
-//! into committable statements.
+//! Operation types the analysis tree's nodes hold — the predicate
+//! application, the mutation statement, and the planner that turns
+//! a statement into committable claims.
 //!
-//! See `analysis-spec.md` (sibling to this crate) for the full
-//! design. Quick orientation:
+//! Quick orientation:
 //!
-//! - [`Analysis`] is what [`crate::analyzer::analyze`] returns —
-//!   one struct holding both the read side ([`QueryAnalysis`]) and
-//!   the write side ([`MutationAnalysis`]) of the document.
 //! - [`Application`] captures "predicate applied to terms," shared
 //!   between queries and mutations.
 //! - [`Statement::Assert`] / [`Statement::Retract`] are the
-//!   mutation-side wrappers.
+//!   mutation-side wrappers; [`Statement::InstallEffect`] installs
+//!   a `rule!:`-lifted effect.
 //! - [`Planner::plan`] substitutes query-bound variables in
 //!   the parameters of an [`Application`] and produces an
 //!   [`ApplicationPlan`] ready for `tx.assert` / `tx.retract`.
@@ -19,7 +17,7 @@
 //!   onto every branch at repo creation, so they resolve like
 //!   any other concept.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use dialog_artifacts::{Entity, Select, Statement as ArtifactsStatement, Update, Value};
 use dialog_capability::Provider;
@@ -34,133 +32,9 @@ use thiserror::Error;
 
 use crate::concept::QueryPlan;
 
-/// Result of analyzing a parsed asserted-notation document.
-///
-/// One struct, not an enum — a document may contain queries,
-/// mutations, or both. Query-only docs leave `mutate.statements`
-/// empty; mutation-only docs leave `query` as `None`.
-///
-/// See `analysis-spec.md` for the three-phase derivation.
-#[derive(Debug, Clone, Default)]
-pub struct Analysis {
-    /// `name` → entity. Anchor-form heads
-    /// (`attribute!: &foo`, `concept!: &foo`, `person!: &alice`).
-    /// Substituted at analysis time into both queries and
-    /// mutations; kept here for the editor's "you defined these
-    /// names" introspection view.
-    pub declarations: HashMap<String, Entity>,
-
-    /// `?foo` → entity. Variable-form heads (`this: ?foo` on
-    /// any meta or non-meta assertion) where the entity is
-    /// content-derived. Used as parameter substitutions when
-    /// building the unified query (Phase 2), and merged with
-    /// query-bound values when planning mutations (Phase 3).
-    pub variables: HashMap<String, Entity>,
-
-    /// Read side. `None` for pure-mutation documents.
-    pub query: Option<QueryAnalysis>,
-
-    /// Write side. `mutate.statements` is empty for pure-query
-    /// documents. A `rule!:` expression lands here as a
-    /// [`Statement::InstallEffect`] — a rule is a mutation.
-    pub mutate: MutationAnalysis,
-
-    /// Non-fatal findings the analyzer accumulated during the
-    /// pass. Always present (empty when nothing surfaced); the
-    /// LSP and worker convert these to editor diagnostics.
-    pub diagnostics: Vec<crate::analyzer::AnalyzeDiagnostic>,
-}
-
-// ---------------------------------------------------------------- //
-// Read side                                                        //
-// ---------------------------------------------------------------- //
-
-/// Per-source-expression `Application`s, in document order, with
-/// `declarations` and `variables` already substituted in.
-///
-/// The renderer uses these to project each match back into the
-/// user's view ("for the `person:\n  this: ?alice` expression, here are
-/// the matches"). The unified [`ConceptQuery`] the engine
-/// evaluates is derived on demand via
-/// `ConceptQuery::from(&query_analysis)`.
-#[derive(Debug, Clone, Default)]
-pub struct QueryAnalysis {
-    /// One [`Application`] per *user-written* query expression.
-    /// These are the only queries that contribute bindings to
-    /// mutation planning — the evaluator joins them and the
-    /// joined frames feed each statement's `.plan(...)`.
-    pub queries: Vec<Application>,
-    /// Display label for each entry of `queries`, parallel to it.
-    /// The head's source name (`person`, `attribute`, …).
-    pub labels: Vec<String>,
-    /// Implicit snapshot queries synthesized from assertions so
-    /// the editor's before/after view surfaces a mutated entity
-    /// even when the user wrote no query for it.
-    ///
-    /// **Kept separate from `queries` on purpose.** A snapshot of
-    /// an assertion's target may read an entity that does not yet
-    /// exist (a fresh `id:…`), so it returns zero rows; if it
-    /// were joined with the user queries it would zero the join
-    /// that feeds mutation planning. Renderers read `queries`
-    /// *and* `synthesized`; the evaluator's planning path reads
-    /// only `queries`.
-    pub synthesized: Vec<Application>,
-    /// Display label for each entry of `synthesized`, parallel
-    /// to it — the originating assertion's head name.
-    pub synthesized_labels: Vec<String>,
-}
-
-impl QueryAnalysis {
-    /// Names of user-named `Term::Variable` slots that survived
-    /// `variables` substitution — i.e., what this query binds at
-    /// evaluation time. Auto-generated [`Term::unique`] variables
-    /// (whose names start with `__`) are excluded; they're an
-    /// implementation detail of anonymous-head bindings, not
-    /// user-visible bindings.
-    ///
-    /// Only `queries` (user-written) count — synthesized snapshot
-    /// queries are display projections, not a binding source.
-    pub fn bindings(&self) -> HashSet<String> {
-        let mut out = HashSet::new();
-        for application in &self.queries {
-            collect_user_variable_names(application.parameters(), &mut out);
-        }
-        out
-    }
-}
-
-// ---------------------------------------------------------------- //
-// Write side                                                       //
-// ---------------------------------------------------------------- //
-
-/// Document order. Each `Application` has had `.bookmark`
-/// references substituted to constants but keeps `?var`
-/// references as variables — substitution happens at planning
-/// time.
-#[derive(Debug, Clone, Default)]
-pub struct MutationAnalysis {
-    /// In document order.
-    pub statements: Vec<Statement>,
-    /// Variable names this plan reads from query bindings.
-    /// Disjoint from `Analysis::variables.keys()` (the analyzer
-    /// enforces). Subset of `query.bindings()` (the analyzer
-    /// also enforces).
-    pub requires: HashSet<String>,
-    /// Concept entities (`descriptor.this()`) whose facts are
-    /// transient — declared with `transient:` either in the same
-    /// document or on the branch. An `Assert` statement whose
-    /// concept entity is in this set has its emitted claims
-    /// routed into the evaluator's transient seed bucket so the
-    /// effects fixpoint fires on them and they're swept before
-    /// the durable commit. Lives on the write side rather than
-    /// on the shared [`Application`] because transience only
-    /// matters for mutations.
-    pub transient: HashSet<Entity>,
-}
-
-/// One element of [`MutationAnalysis::statements`] — an
-/// assertion, a retraction of an [`Application`], or the
-/// installation of an effect lifted from a `rule!:` expression.
+/// One lowered write — an assertion, a retraction of an
+/// [`Application`], or the installation of an effect lifted from
+/// a `rule!:` expression.
 #[derive(Debug, Clone)]
 pub enum Statement {
     /// `head! …:` — write the facts.
@@ -512,22 +386,6 @@ fn collect_variable_names(params: &Parameters, out: &mut HashSet<String>) {
     }
 }
 
-/// Like [`collect_variable_names`] but skips auto-generated
-/// `Term::unique` names (which start with `__`). Used by the
-/// component-grouping logic so anonymous-head bindings do not
-/// accidentally connect unrelated expressions.
-fn collect_user_variable_names(params: &Parameters, out: &mut HashSet<String>) {
-    for (_, term) in params.iter() {
-        if let Term::Variable {
-            name: Some(name), ..
-        } = term
-            && !name.starts_with("__")
-        {
-            out.insert(name.clone());
-        }
-    }
-}
-
 /// Walk a substituted [`ConceptQuery`] and emit one
 /// `(attribute, this, value)` per non-blank parameter — used by
 /// `assert` and `retract` on an [`ApplicationPlan`].
@@ -576,23 +434,15 @@ fn emit_predicate_facts<U: Update>(query: &ConceptQuery, update: &mut U, assert:
 }
 
 // ---------------------------------------------------------------- //
-// Read-side evaluation: Application + QueryAnalysis as queries.    //
+// Read-side evaluation: an Application as a query.                  //
 // ---------------------------------------------------------------- //
 //
-// Both [`Application`] and [`QueryAnalysis`] are analyzer outputs
-// and both impl `dialog_query::Application`. `Application` runs
-// one expression at a time (delegating to [`QueryPlan`] so
-// built-in heads dispatch transparently). `QueryAnalysis` chains
-// every expression's evaluation through a shared selection
-// stream, which gives the engine's variable-binding consistency
-// check the role of a natural join: matches that disagree on a
-// shared user-named variable never reach the conclusion.
-//
-// Conclusions:
-// - `Application::Conclusion = ConceptConclusion` (one entity per
-//   row).
-// - `QueryAnalysis::Conclusion = QueryNotationConclusion` (a
-//   `Parameters` row over every user-named variable).
+// [`Application`] impls `dialog_query::Application`, running one
+// expression at a time — delegating to [`QueryPlan`] so built-in
+// heads dispatch transparently. Its conclusion is a
+// `ConceptConclusion` (one entity per row). The evaluator drives
+// the per-expression natural join itself, walking the analysis
+// tree's query nodes.
 
 /// Convert an [`Application`] into the [`QueryPlan`] it should be
 /// evaluated as. `Concept` carries a `ConceptQuery` directly;
@@ -633,90 +483,6 @@ impl DialogApplication for Application {
 
     fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
         DialogApplication::realize(&application_to_plan_cloned(self), source)
-    }
-}
-
-/// One joined frame produced by a [`QueryAnalysis`] evaluation.
-///
-/// A document's `query:` block can hold multiple expressions; each
-/// expression contributes user-named variable bindings, and the
-/// engine natural-joins them on shared names. This type is the
-/// realized form of a single joined row.
-#[derive(Debug, Clone)]
-pub struct QueryNotationConclusion {
-    /// User-named variable bindings carried by this row. Keys are
-    /// the user's `?var` names; values are constants.
-    pub bindings: Parameters,
-}
-
-/// Variable names (`Term::Variable { name: Some(_) }`) appearing
-/// in a parameter map, deduplicated.
-fn collect_named_variables(params: &Parameters) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for (_, term) in params.iter() {
-        if let Term::Variable {
-            name: Some(name), ..
-        } = term
-            && !names.contains(name)
-        {
-            names.push(name.clone());
-        }
-    }
-    names
-}
-
-/// Every user-named variable across every expression in this
-/// analysis, deduplicated. Used by the realize step to know which
-/// keys to project from the joined match into the conclusion's
-/// `bindings`.
-fn collect_analysis_variables(analysis: &QueryAnalysis) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for application in &analysis.queries {
-        for n in collect_named_variables(application.parameters()) {
-            if !names.contains(&n) {
-                names.push(n);
-            }
-        }
-    }
-    names
-}
-
-impl DialogApplication for QueryAnalysis {
-    type Conclusion = QueryNotationConclusion;
-
-    /// Evaluate every expression in document order, threading the
-    /// upstream selection through each. A `Selection` is itself a
-    /// stream of `Match` values; chaining `Application::evaluate`
-    /// on each expression performs the natural join automatically
-    /// because shared variable names re-bind to the same value
-    /// (consistency-preserving) and disagreement aborts the row.
-    fn evaluate<'a, Env, M: Selection + 'a>(self, selection: M, env: &'a Env) -> impl Selection + 'a
-    where
-        Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
-    {
-        try_stream! {
-            // Box::pin once per expression so the chained stream
-            // type stays sized as the chain grows.
-            let mut current: std::pin::Pin<Box<dyn Selection<Item = Result<Match, EvaluationError>> + 'a>> =
-                Box::pin(selection);
-            for application in self.queries {
-                let next = application.evaluate(current, env);
-                current = Box::pin(next);
-            }
-            for await each in current {
-                yield each?;
-            }
-        }
-    }
-
-    fn realize(&self, source: Match) -> Result<Self::Conclusion, EvaluationError> {
-        let mut bindings = Parameters::new();
-        for name in collect_analysis_variables(self) {
-            if let Ok(value) = source.lookup(&Term::<dialog_query::Any>::var(name.clone())) {
-                bindings.insert(name, Term::Constant(value));
-            }
-        }
-        Ok(QueryNotationConclusion { bindings })
     }
 }
 

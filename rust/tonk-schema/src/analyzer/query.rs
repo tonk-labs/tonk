@@ -12,12 +12,13 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::resolver::Resolver;
 use super::scope::Scope;
-use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
+use crate::analyzer::Working;
+use crate::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) async fn build_query_application<R: Resolver>(
     query: &Query,
     scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    analysis: &Working,
 ) -> Result<Application, AnalyzeError> {
     // Queries can't carry an `&anchor` (parser rejects that), so
     // intent derivation only inspects `this:`. The returned name

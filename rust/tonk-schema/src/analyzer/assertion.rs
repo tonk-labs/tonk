@@ -12,8 +12,9 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::resolver::Resolver;
 use super::scope::Scope;
+use crate::analyzer::Working;
 use crate::prelude::EntityExt;
-use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
+use crate::transact::{Application, DomainApplication, ThisIntent};
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:
@@ -37,8 +38,9 @@ pub(crate) struct AssertionPlan {
     pub assert: Option<Application>,
     pub retract: Option<Application>,
     /// `true` when the head concept is marked transient. Phase 3
-    /// records the concept entity in `MutationAnalysis::transient`
-    /// so the evaluator routes the asserted claims into the
+    /// records the concept entity on `AssertionAnalysis::transient`
+    /// and tags `AssertionAnalysis::predicate` `Transient`, so the
+    /// evaluator routes the asserted claims into the
     /// effects-fixpoint seed bucket. Always `false` for domain /
     /// URI heads — those name no concept.
     pub transient: bool,
@@ -47,7 +49,7 @@ pub(crate) struct AssertionPlan {
 pub(crate) async fn build_assertion_application<R: Resolver>(
     assertion: &Assertion,
     scope: &Scope<'_, R>,
-    analysis: &mut Analysis,
+    analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
     let head_label = match &assertion.head.name {
         HeadName::Concept(name) => name.clone(),
@@ -445,7 +447,7 @@ fn this_term_for_assertion(
     this: &ThisIntent,
     name: &Option<String>,
     fields: &[Field],
-    analysis: &mut Analysis,
+    analysis: &mut Working,
     name_range: lsp_types::Range,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match this {
@@ -558,7 +560,7 @@ fn check_complete_when_unbound(
     descriptor: &dialog_query::ConceptDescriptor,
     user_fields: &BTreeMap<&str, (&FieldValue, lsp_types::Range)>,
     has_rest_retraction: bool,
-    analysis: &Analysis,
+    analysis: &Working,
     range: lsp_types::Range,
 ) -> Option<AnalyzeError> {
     // `..: _` is the user's explicit "I know what I'm doing
@@ -624,15 +626,11 @@ fn check_complete_when_unbound(
     ))
 }
 
-/// Does `analysis.query` bind `?name`? Used by
+/// Does some preceding query bind `?name`? Used by
 /// [`this_term_for_assertion`] to decide between minting a
 /// body-derived entity and leaving the variable for planning.
-fn query_binds(analysis: &Analysis, name: &str) -> bool {
-    analysis
-        .query
-        .as_ref()
-        .map(|q| q.bindings().contains(name))
-        .unwrap_or(false)
+fn query_binds(analysis: &Working, name: &str) -> bool {
+    analysis.query_bindings().contains(name)
 }
 
 /// Reject assertions targeting a system-reserved URI scheme.

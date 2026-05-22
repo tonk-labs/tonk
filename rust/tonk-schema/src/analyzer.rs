@@ -1,6 +1,6 @@
-//! Analyzer — turns a [`tonk_notation::Syntax`] tree into a
-//! [`crate::transact::Analysis`] ready for evaluation against a
-//! branch.
+//! Analyzer — turns a [`tonk_notation::Syntax`] tree into an
+//! [`Analysis<Syntax>`][crate::analysis::Analysis] tree ready for
+//! evaluation against a branch.
 //!
 //! See `analysis-spec.md` (sibling to this crate) for the full
 //! design. Analysis runs in three phases:
@@ -50,10 +50,7 @@ use std::collections::{HashMap, HashSet};
 use dialog_common::ConditionalSync;
 use tonk_notation::{Expression, HeadName, Syntax};
 
-use crate::transact::{
-    Analysis, Application, DomainApplication, MutationAnalysis, QueryAnalysis, Statement,
-    ThisIntent,
-};
+use crate::transact::{Application, DomainApplication, Statement, ThisIntent};
 
 use crate::analysis::{
     Analysis as Tree, AssertionAnalysis, DocumentAnalysis, ExpressionAnalysis, Predicate,
@@ -81,7 +78,44 @@ use field::collect_unbound_variables;
 use query::build_query_application;
 use scope::Scope;
 
-/// Analyze a parsed [`Syntax`] tree.
+/// The analyzer's per-pass working state — the scratch the build
+/// phases read and mutate as they walk the document.
+///
+/// Not the analyzer's product (that is the [`Analysis<Syntax>`][Tree]
+/// tree); this is internal accumulator state. Phase 1 fills
+/// `declarations` / `variables`, Phase 2 fills `queries`, Phase 3
+/// reads all three.
+#[derive(Debug, Default)]
+pub(crate) struct Working {
+    /// `name` → entity. Anchor-form heads.
+    pub declarations: HashMap<String, Entity>,
+    /// `?foo` → entity. Variable-form heads with content-derived
+    /// entities.
+    pub variables: HashMap<String, Entity>,
+    /// The user-written query [`Application`]s built in Phase 2,
+    /// in document order. Read by Phase 3 to decide which `?var`
+    /// references a preceding query binds.
+    pub queries: Vec<Application>,
+}
+
+impl Working {
+    /// User-named variable slots the document's queries bind at
+    /// evaluation time; auto-generated `__N` names are excluded.
+    pub fn query_bindings(&self) -> HashSet<String> {
+        let mut out = HashSet::new();
+        for application in &self.queries {
+            for name in application.bindings() {
+                if !name.starts_with("__") {
+                    out.insert(name);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Analyze a parsed [`Syntax`] tree into the [`Analysis<Syntax>`][Tree]
+/// tree — each syntax node paired with its computed analysis.
 ///
 /// `R: Resolver + ConditionalSync` works on both native and
 /// wasm: [`ConditionalSync`] expands to `Send + Sync` on native
@@ -89,22 +123,18 @@ use scope::Scope;
 /// handlers) and to nothing on wasm (single-threaded runtime,
 /// `Resolver` itself is `?Send` there).
 ///
-/// Returns the flat [`Analysis`] every current consumer reads —
-/// reconstructed from the [`Analysis<Syntax>`][Tree] tree
-/// [`analyze_tree`] builds, via [`Tree::flatten`].
+/// The tree is the analyzer's product and the interface every
+/// consumer reads. [`analyze`] is the alias retained for the
+/// lifecycle naming.
 pub async fn analyze<R: Resolver + ConditionalSync>(
     syntax: &Syntax,
     resolver: &R,
-) -> Result<Analysis, AnalyzeError> {
-    Ok(analyze_tree(syntax, resolver).await?.flatten())
+) -> Result<Tree<Syntax>, AnalyzeError> {
+    analyze_tree(syntax, resolver).await
 }
 
 /// Analyze a parsed [`Syntax`] tree into the [`Analysis<Syntax>`][Tree]
 /// tree — each syntax node paired with its computed analysis.
-///
-/// This is the analyzer's primary product. [`analyze`] wraps it
-/// and calls [`Tree::flatten`] to hand the existing flat-`Analysis`
-/// consumers the shape they still expect.
 pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     syntax: &Syntax,
     resolver: &R,
@@ -282,31 +312,28 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
 
     // ---- Phase 2: build query Applications ----
     //
-    // The flat `Analysis` is still assembled here — Phases 2 and
-    // 3 read it as they build (`build_query_application`,
-    // `build_assertion_application`, `collect_unbound_variables`
-    // all take `&Analysis`). The per-expression results are
-    // captured alongside into tree nodes, indexed by source
-    // expression; the `Analysis<Syntax>` tree is assembled once
-    // the phases finish and returned via `flatten()`.
-    let mut analysis = Analysis {
+    // The `Working` scratch carries the cross-phase accumulator
+    // state: Phases 2 and 3 read it as they build
+    // (`build_query_application`, `build_assertion_application`,
+    // `collect_unbound_variables` all take `&Working`). The
+    // per-expression results are captured alongside into tree
+    // nodes, indexed by source expression; the `Analysis<Syntax>`
+    // tree is assembled once the phases finish.
+    let diagnostics = scan::scan_variables(syntax);
+    let mut working = Working {
         declarations: scope.declarations.lock().clone(),
         variables: scope.variables.lock().clone(),
-        diagnostics: scan::scan_variables(syntax),
-        ..Analysis::default()
+        queries: Vec::new(),
     };
 
     // Per-expression tree node, by source-expression index.
     let mut nodes: Vec<Option<ExpressionAnalysis>> =
         (0..syntax.expressions.len()).map(|_| None).collect();
 
-    let mut queries: Vec<Application> = Vec::new();
-    let mut labels: Vec<String> = Vec::new();
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
-            let application = build_query_application(q, &scope, &analysis).await?;
-            queries.push(application.clone());
-            labels.push(q.head.source.clone());
+            let application = build_query_application(q, &scope, &working).await?;
+            working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
                 source: q.clone(),
                 analysis: QueryNodeAnalysis {
@@ -315,13 +342,6 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                 },
             })));
         }
-    }
-    if !queries.is_empty() {
-        analysis.query = Some(QueryAnalysis {
-            queries,
-            labels,
-            ..Default::default()
-        });
     }
 
     // ---- Phase 3: build mutation Statements ----
@@ -351,12 +371,17 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                     // branch (queryable via `attribute:`) by the
                     // time anything reads back.
                     for inline in declaration.inline_attributes {
-                        collect_unbound_variables(&inline, &analysis, &mut requires);
+                        collect_unbound_variables(&inline, &working, &mut requires);
                         claims.push(Statement::Assert(inline));
                         claim_labels.push(None);
                     }
-                    collect_unbound_variables(&declaration.application, &analysis, &mut requires);
-                    predicate = predicate_of(&declaration.application);
+                    collect_unbound_variables(&declaration.application, &working, &mut requires);
+                    // A declaration head applies the built-in
+                    // `concept` / `attribute` schema — that schema
+                    // is durable; the declared concept's own
+                    // transience is a field of the body, not the
+                    // predicate this assertion applies.
+                    predicate = predicate_of(&declaration.application, false);
                     this = declaration.application.this().clone();
                     anchor = declaration.application.name().map(str::to_owned);
                     claims.push(Statement::Assert(declaration.application));
@@ -372,22 +397,22 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
                     // present, retract first so the dissociate
                     // sees the prior state before the new
                     // assert lands.
-                    let plan = build_assertion_application(a, &scope, &mut analysis).await?;
+                    let plan = build_assertion_application(a, &scope, &mut working).await?;
                     let probe = plan.assert.as_ref().or(plan.retract.as_ref());
                     predicate = probe
-                        .map(predicate_of)
+                        .map(|app| predicate_of(app, plan.transient))
                         .unwrap_or(Predicate::Domain(a.head.source.clone()));
                     this = probe
                         .map(|app| app.this().clone())
                         .unwrap_or(ThisIntent::Derived);
                     anchor = a.anchor.as_ref().map(|anchor| anchor.name.clone());
                     if let Some(retract_app) = plan.retract {
-                        collect_unbound_variables(&retract_app, &analysis, &mut requires);
+                        collect_unbound_variables(&retract_app, &working, &mut requires);
                         claims.push(Statement::Retract(retract_app));
                         claim_labels.push(Some(a.head.source.clone()));
                     }
                     if let Some(assert_app) = plan.assert {
-                        collect_unbound_variables(&assert_app, &analysis, &mut requires);
+                        collect_unbound_variables(&assert_app, &working, &mut requires);
                         // A transient-concept assertion: record the
                         // concept entity so the evaluator buckets
                         // its claims for the effects fixpoint.
@@ -418,8 +443,6 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
         }
     }
 
-    analysis.mutate = MutationAnalysis::default();
-
     // ---- Phase 3b: lift rule!: expressions into mutations ----
     // A `rule!:` carries the `!` mutation marker — evaluating it
     // installs `dialog.effect/*` facts on the branch — so it is
@@ -430,11 +453,28 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
     // effect lands as a `Statement::InstallEffect`.
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Rule(rule_expr) = expression {
-            let effect = rule::lift_rule(rule_expr, &scope, &analysis).await?;
+            let effect = rule::lift_rule(rule_expr, &scope, &working).await?;
             nodes[index] = Some(ExpressionAnalysis::Rule(Box::new(Tree {
                 source: rule_expr.clone(),
                 analysis: RuleAnalysis { effect },
             })));
+        }
+    }
+
+    // requires must be subset of query bindings (analysis-time
+    // variables already filtered out by `collect_unbound_variables`).
+    if working.queries.is_empty() {
+        if let Some(name) = requires.iter().next().cloned() {
+            return Err(AnalyzeErrorKind::UnboundMutationVariable { name }.into());
+        }
+    } else {
+        let bindings = working.query_bindings();
+        for name in &requires {
+            if !bindings.contains(name) {
+                return Err(
+                    AnalyzeErrorKind::UnboundMutationVariable { name: name.clone() }.into(),
+                );
+            }
         }
     }
 
@@ -447,57 +487,50 @@ pub async fn analyze_tree<R: Resolver + ConditionalSync>(
             analysis,
         });
     }
-    let tree = Tree {
-        source: syntax.clone(),
-        analysis: DocumentAnalysis {
-            expressions,
-            declarations: analysis.declarations,
-            variables: analysis.variables,
-            diagnostics: analysis.diagnostics,
-        },
+    let mut document = DocumentAnalysis {
+        expressions,
+        synthesized: Vec::new(),
+        declarations: working.declarations,
+        variables: working.variables,
+        diagnostics,
     };
 
-    // requires must be subset of query bindings (analysis-time
-    // variables already filtered out by `collect_unbound_variables`).
-    if let Some(query) = &analysis.query {
-        let bindings = query.bindings();
-        for name in &requires {
-            if !bindings.contains(name) {
-                return Err(
-                    AnalyzeErrorKind::UnboundMutationVariable { name: name.clone() }.into(),
-                );
-            }
-        }
-    } else if !requires.is_empty() {
-        let name = requires.iter().next().cloned().unwrap_or_default();
-        return Err(AnalyzeErrorKind::UnboundMutationVariable { name }.into());
-    }
+    // Phase 4 — implicit snapshot-query synthesis. Reads the
+    // assembled tree's statements and the user queries, fills
+    // `document.synthesized`.
+    synthesize_implicit_queries(&mut document);
 
-    // Phase 4 (implicit snapshot-query synthesis) lives inside
-    // `Tree::flatten` — it runs as the flat `Analysis` is
-    // reconstructed for the existing consumers.
-    Ok(tree)
+    Ok(Tree {
+        source: syntax.clone(),
+        analysis: document,
+    })
 }
 
 /// Classify an [`Application`]'s head as a [`Predicate`] for the
-/// tree's [`AssertionAnalysis`]. `Concept` carries a resolved
-/// descriptor (durability cannot be recovered from a built
-/// `Application` alone — it always reads as `Durable` here; the
-/// transient routing is carried separately on
-/// `AssertionAnalysis::transient`). `Domain` carries the claim
-/// domain prefix.
-fn predicate_of(application: &Application) -> Predicate {
+/// tree's [`AssertionAnalysis`]. `Concept` carries the resolved
+/// descriptor tagged with its true durability — `transient` is
+/// the flag the analyzer recovered from the head concept's
+/// `dialog.concept/transient` marker. `Domain` carries the claim
+/// domain prefix; a domain head names no concept, so it is
+/// always durable (and the [`Predicate::Domain`] arm carries no
+/// descriptor anyway).
+fn predicate_of(application: &Application, transient: bool) -> Predicate {
     match application {
         Application::Concept { query, .. } => {
-            Predicate::Concept(ConceptDescriptor::Durable(query.predicate.clone()))
+            let descriptor = query.predicate.clone();
+            Predicate::Concept(if transient {
+                ConceptDescriptor::Transient(descriptor)
+            } else {
+                ConceptDescriptor::Durable(descriptor)
+            })
         }
         Application::Domain { application, .. } => Predicate::Domain(application.domain.clone()),
     }
 }
 
-/// Add `Application` entries to `analysis.query` so that every
-/// mutation-touched entity gets read back into the response, even
-/// when the user wrote no explicit query for it.
+/// Synthesize snapshot queries so every mutation-touched entity
+/// gets read back into the response, even when the user wrote no
+/// explicit query for it. Fills [`DocumentAnalysis::synthesized`].
 ///
 /// Skipped entirely for `attribute!` / `concept!` declarations
 /// (the meta heads — their state is in the schema branch, not
@@ -505,15 +538,13 @@ fn predicate_of(application: &Application) -> Predicate {
 ///
 /// Entities that already appear as a `this:` constant in some
 /// existing query are skipped: the user query will pick them up.
-pub(crate) fn synthesize_implicit_queries(
-    analysis: &mut Analysis,
-    statement_labels: &[Option<String>],
-    declaration_statement_indexes: &HashSet<usize>,
-) {
+fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
+    use crate::analysis::SynthesizedQuery;
     use dialog_artifacts::Value;
     use dialog_query::Term;
 
-    if analysis.mutate.statements.is_empty() {
+    let statements = document.statements();
+    if statements.is_empty() {
         return;
     }
 
@@ -521,25 +552,24 @@ pub(crate) fn synthesize_implicit_queries(
     // form) does some existing query enumerate via a constant
     // `this:` term?
     let mut covered: HashSet<String> = HashSet::new();
-    if let Some(query) = &analysis.query {
-        for application in &query.queries {
-            if let Some(Term::Constant(Value::Entity(e))) = application.parameters().get("this") {
-                covered.insert(e.to_string());
-            }
+    for query in document.queries() {
+        if let Some(Term::Constant(Value::Entity(e))) =
+            query.analysis.application.parameters().get("this")
+        {
+            covered.insert(e.to_string());
         }
     }
 
-    let mut implicit: Vec<Application> = Vec::new();
-    let mut implicit_labels: Vec<String> = Vec::new();
+    let mut implicit: Vec<SynthesizedQuery> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    for (index, statement) in analysis.mutate.statements.iter().enumerate() {
-        if declaration_statement_indexes.contains(&index) {
+    for planned in &statements {
+        if planned.declaration {
             continue;
         }
         // `InstallEffect` statements carry no application — a
         // rule installs an effect, it doesn't write a snapshotable
         // entity — so they contribute no implicit query.
-        let Some(application) = statement.application() else {
+        let Some(application) = planned.statement.application() else {
             continue;
         };
         // Two cases of "we know which entity to snapshot":
@@ -630,34 +660,25 @@ pub(crate) fn synthesize_implicit_queries(
                 }
             }
         };
-        implicit.push(snapshot);
         // Reuse the assertion's head name so the rendered
         // result block carries `person` (or whatever) instead
         // of the `?` fallback. `entity_key` (a URI) is the
-        // worst-case fallback; the assertion's head should
-        // always be present, but the `unwrap_or_else` keeps
-        // the synthesizer from panicking if a future caller
-        // forgets to populate `statement_labels`.
-        let label = statement_labels
-            .get(index)
-            .and_then(|l| l.clone())
-            .unwrap_or(entity_key);
-        implicit_labels.push(label);
+        // worst-case fallback; the originating assertion's head
+        // should always be present.
+        let label = planned.label.clone().unwrap_or(entity_key);
+        implicit.push(SynthesizedQuery {
+            application: snapshot,
+            label,
+        });
     }
 
-    if implicit.is_empty() {
-        return;
-    }
-    // Snapshot queries land in `synthesized`, NOT `queries` — a
-    // snapshot of a fresh assert target reads a not-yet-existing
-    // entity and returns zero rows; joining it into `queries`
-    // would zero the join that feeds mutation planning. The
-    // renderer reads both; the evaluator's planning path reads
-    // only `queries`.
-    let mut query = analysis.query.clone().unwrap_or_default();
-    query.synthesized.extend(implicit);
-    query.synthesized_labels.extend(implicit_labels);
-    analysis.query = Some(query);
+    // Snapshot queries land in `synthesized`, kept apart from the
+    // user-written queries — a snapshot of a fresh assert target
+    // reads a not-yet-existing entity and returns zero rows;
+    // joining it into the user queries would zero the join that
+    // feeds mutation planning. The renderer reads both; the
+    // evaluator's planning path reads only the user queries.
+    document.synthesized = implicit;
 }
 
 /// Pull a concrete `Entity` out of a `Term::Constant(Value::Entity(_))`,
@@ -694,6 +715,100 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// A flat view of the analysis tree — the document-order
+    /// projections the analyzer tests assert against. Built from
+    /// the [`Tree<Syntax>`] via its accessor methods; lets the
+    /// tests read `statements` / `queries` / `requires` without
+    /// each one walking the tree by hand.
+    #[derive(Debug)]
+    struct Flat {
+        declarations: HashMap<String, Entity>,
+        variables: HashMap<String, Entity>,
+        query: Option<FlatQuery>,
+        mutate: FlatMutate,
+    }
+
+    #[derive(Debug)]
+    struct FlatQuery {
+        queries: Vec<Application>,
+        synthesized: Vec<Application>,
+    }
+
+    impl FlatQuery {
+        /// User-named variable slots the user-written queries
+        /// bind at evaluation time; auto-generated `__N` names
+        /// are excluded.
+        fn bindings(&self) -> HashSet<String> {
+            let mut out = HashSet::new();
+            for application in &self.queries {
+                for name in application.bindings() {
+                    if !name.starts_with("__") {
+                        out.insert(name);
+                    }
+                }
+            }
+            out
+        }
+    }
+
+    #[derive(Debug)]
+    struct FlatMutate {
+        statements: Vec<Statement>,
+        requires: HashSet<String>,
+    }
+
+    /// Project the analysis tree into its flat, document-order
+    /// view. `requires` is recomputed from the planned
+    /// statements exactly as the analyzer enforces it: variable
+    /// names a statement reads that are not analysis-time
+    /// `variables`.
+    fn flat(tree: Tree<Syntax>) -> Flat {
+        let document = tree.analysis;
+        let statements: Vec<Statement> = document
+            .statements()
+            .into_iter()
+            .map(|p| p.statement)
+            .collect();
+        let mut requires: HashSet<String> = HashSet::new();
+        for statement in &statements {
+            if let Some(application) = statement.application() {
+                for name in application.bindings() {
+                    if !document.variables.contains_key(&name) {
+                        requires.insert(name);
+                    }
+                }
+            }
+        }
+        let queries: Vec<Application> = document
+            .queries()
+            .map(|q| q.analysis.application.clone())
+            .collect();
+        let synthesized: Vec<Application> = document
+            .synthesized
+            .iter()
+            .map(|s| s.application.clone())
+            .collect();
+        // `query` is present when the document carries any
+        // query — user-written or analyzer-synthesized.
+        let query = if queries.is_empty() && synthesized.is_empty() {
+            None
+        } else {
+            Some(FlatQuery {
+                queries,
+                synthesized,
+            })
+        };
+        Flat {
+            declarations: document.declarations.clone(),
+            variables: document.variables.clone(),
+            query,
+            mutate: FlatMutate {
+                statements,
+                requires,
+            },
+        }
+    }
 
     /// `parse` returns `Parsed`; tests want the `Syntax` and panic on diagnostics.
     fn must_parse(src: &str) -> Syntax {
@@ -788,7 +903,7 @@ attribute!: &person-name
   description: "Person's name"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.declarations.contains_key("person-name"));
         assert!(analysis.variables.is_empty());
         assert!(analysis.query.is_none());
@@ -823,7 +938,7 @@ concept!: &person
     age:  person-age
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.declarations.contains_key("person-name"));
         assert!(analysis.declarations.contains_key("person-age"));
         assert!(analysis.declarations.contains_key("person"));
@@ -857,7 +972,7 @@ concept!: &person
       cardinality: one
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // 3 statements: 2 inline attrs + 1 concept.
         assert_eq!(analysis.mutate.statements.len(), 3);
         // First two are anonymous attributes (no published name).
@@ -905,7 +1020,7 @@ view!: &title
   source: person
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // The view's `source` term should be a constant entity
         // pointing at the `person` concept's entity, not a
         // variable.
@@ -960,7 +1075,7 @@ attribute!:
   description: "Person's name"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // Variable-form `this:` (no anchor) registers the name
         // in `variables`, not `declarations`. The meta-pass
         // resolves the variable to the body-derived attribute
@@ -993,7 +1108,7 @@ attribute!: &person-name
   description: "Person's name"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, name, .. }) =
             &analysis.mutate.statements[0]
         else {
@@ -1070,7 +1185,7 @@ person:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert!(analysis.query.is_some());
         assert!(analysis.mutate.statements.is_empty());
         assert!(analysis.mutate.requires.is_empty());
@@ -1095,7 +1210,7 @@ person!:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert!(analysis.query.is_some());
         assert_eq!(analysis.mutate.statements.len(), 1);
         assert!(analysis.mutate.requires.contains("alice"));
@@ -1138,7 +1253,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         // Stage 2.7: `..: _` produces a `Statement::Retract`
         // since every field is blank and no `&anchor` publishes
         // a name on the assert side.
@@ -1189,7 +1304,7 @@ attribute:
   description: ?d
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
         let Application::Concept { query, .. } = &q.queries[0] else {
@@ -1218,7 +1333,7 @@ branch:
   name: ?name
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
@@ -1234,7 +1349,7 @@ branch:
     #[dialog_common::test]
     async fn it_defaults_every_attribute_field_to_a_variable_on_empty_body() {
         let syntax = must_parse("attribute:\n");
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
@@ -1266,7 +1381,7 @@ xyz.tonk:
   contact: "alice"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
         let crate::transact::Application::Domain { application: d, .. } = &q.queries[0] else {
@@ -1290,7 +1405,7 @@ person:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
@@ -1313,7 +1428,7 @@ name:
   entity: ?e
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         let Application::Concept { query, .. } = &q.queries[0] else {
             panic!("expected Concept application");
@@ -1342,7 +1457,7 @@ concept!: &foo
       cardinality: one
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // Last statement is the concept itself — its `concept`
         // term should be the marker entity.
         let last = analysis.mutate.statements.last().unwrap();
@@ -1373,7 +1488,7 @@ person!: &alice
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert_eq!(analysis.mutate.statements.len(), 1);
         let Statement::Assert(Application::Concept { name, this, .. }) =
             &analysis.mutate.statements[0]
@@ -1402,7 +1517,7 @@ person!: &alice
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { name, this, query }) =
             &analysis.mutate.statements[0]
         else {
@@ -1440,7 +1555,7 @@ person!: &latest-alice
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         // The mutation expression is the second statement.
         let Statement::Assert(Application::Concept { name, this, .. }) =
             &analysis.mutate.statements[0]
@@ -1464,7 +1579,7 @@ person!:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
@@ -1567,7 +1682,7 @@ attribute:
   description: ?d
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.query.is_some());
     }
 
@@ -1608,7 +1723,7 @@ person!:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         // First expression declares `&alice`. Second uses
         // `this: alice` — should resolve to the same body-derived
         // entity that first expression registered.
@@ -1701,7 +1816,7 @@ person!:
   name: "Renamed"
 "#,
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { this, .. }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
@@ -1726,7 +1841,7 @@ person:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let alice_entity = analysis
             .declarations
             .get("alice")
@@ -1763,7 +1878,7 @@ my-thing!:
   label: "hi"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         let concept_entity = analysis
             .declarations
             .get("my-thing")
@@ -1861,7 +1976,7 @@ person!: &alice
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert!(
             analysis.declarations.contains_key("alice"),
             "expected `alice` in declarations: {:?}",
@@ -1890,7 +2005,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
@@ -1911,7 +2026,7 @@ thing!:
 "#,
         );
         let resolver = fixed_concept("thing", &[("active", "x.y/active")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
@@ -1932,7 +2047,7 @@ thing!:
 "#,
         );
         let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
             panic!("expected Assert(Concept)");
@@ -1987,7 +2102,7 @@ concept!:
     name: ?person-name
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // The concept assertion is the second statement.
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[1]
         else {
@@ -2169,7 +2284,7 @@ concept:
   this: ?c
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.query.is_some());
     }
 
@@ -2184,7 +2299,7 @@ rule:
   this: ?r
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.query.is_some());
     }
 
@@ -2196,7 +2311,7 @@ replica:
   this: ?r
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.query.is_some());
     }
 
@@ -2208,7 +2323,7 @@ remote:
   this: ?r
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.query.is_some());
     }
 
@@ -2220,7 +2335,7 @@ tracking-branch:
   this: ?t
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.query.is_some());
     }
 
@@ -2252,7 +2367,7 @@ concept!: &person
       cardinality: one
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // 2 inline attrs + 1 concept = 3 statements.
         assert_eq!(analysis.mutate.statements.len(), 3);
 
@@ -2292,7 +2407,7 @@ attribute!: &age
   description: "Person's age"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         assert!(analysis.declarations.contains_key("age"));
     }
 
@@ -2406,7 +2521,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         // Two statements: retract first (drop age), then assert
         // (set name).
         assert_eq!(analysis.mutate.statements.len(), 2);
@@ -2439,7 +2554,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         // Two statements — retract (drop age, the unmentioned
         // field), assert (set name).
         assert_eq!(analysis.mutate.statements.len(), 2);
@@ -2476,7 +2591,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert_eq!(analysis.mutate.statements.len(), 1);
         assert!(matches!(
             &analysis.mutate.statements[0],
@@ -2496,7 +2611,7 @@ person!:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert_eq!(analysis.mutate.statements.len(), 1);
         assert!(matches!(
             &analysis.mutate.statements[0],
@@ -2894,7 +3009,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         let synthesized = analysis
             .query
             .as_ref()
@@ -2929,7 +3044,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert_eq!(
             analysis
                 .query
@@ -2963,7 +3078,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         // Only the user's explicit query — no synthesized
         // duplicate for the already-covered URI.
         let query = analysis.query.as_ref().unwrap();
@@ -2985,7 +3100,7 @@ person:
 "#,
         );
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert!(analysis.mutate.statements.is_empty());
         assert_eq!(
             analysis
@@ -3021,7 +3136,7 @@ person!:
                 ("age", "io.gozala.person/age"),
             ],
         );
-        let analysis = analyze(&syntax, &resolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
         assert_eq!(
             analysis
                 .query
@@ -3126,16 +3241,72 @@ rule!:
             ),
             "the rule!: expression is a rule node"
         );
+    }
 
-        // The tree flattens to the same flat `Analysis` `analyze`
-        // would have returned directly.
-        let flat = analyze(&syntax, &resolver).await.unwrap();
-        let flattened = tree.flatten();
-        assert_eq!(
-            flat.mutate.statements.len(),
-            flattened.mutate.statements.len()
+    /// An assertion against a transient concept carries the
+    /// `Transient` variant on `AssertionAnalysis::predicate`;
+    /// one against a durable concept carries `Durable`. The
+    /// analyzer recovers the tag from the head concept's
+    /// `dialog.concept/transient` marker at tree-build time.
+    #[dialog_common::test]
+    async fn it_tags_the_assertion_predicate_with_its_durability() {
+        use crate::analysis::{ExpressionAnalysis, Predicate};
+        use crate::mutation::ConceptDescriptor;
+
+        let syntax = must_parse(
+            r#"
+concept!: &ping
+  transient:
+  with:
+    tag:
+      description: "Tag"
+      the:         io.gozala.ping/tag
+      as:          Text
+      cardinality: one
+concept!: &pong
+  with:
+    tag:
+      description: "Tag"
+      the:         io.gozala.pong/tag
+      as:          Text
+      cardinality: one
+ping!:
+  this: did:key:zPingSubject
+  tag:  "hi"
+pong!:
+  this: did:key:zPongSubject
+  tag:  "bye"
+"#,
         );
-        assert_eq!(flat.declarations, flattened.declarations);
+        let tree = analyze(&syntax, &NoopResolver).await.unwrap();
+
+        // Node 2 — `ping!` instance: transient concept predicate.
+        match &tree.analysis.expressions[2].analysis {
+            ExpressionAnalysis::Assertion(node) => assert!(
+                matches!(
+                    node.analysis.predicate,
+                    Predicate::Concept(ConceptDescriptor::Transient(_))
+                ),
+                "ping! resolved to a transient concept; predicate must carry Transient, \
+                 got {:?}",
+                node.analysis.predicate
+            ),
+            other => panic!("expected an assertion node, got {other:?}"),
+        }
+
+        // Node 3 — `pong!` instance: durable concept predicate.
+        match &tree.analysis.expressions[3].analysis {
+            ExpressionAnalysis::Assertion(node) => assert!(
+                matches!(
+                    node.analysis.predicate,
+                    Predicate::Concept(ConceptDescriptor::Durable(_))
+                ),
+                "pong! resolved to a durable concept; predicate must carry Durable, \
+                 got {:?}",
+                node.analysis.predicate
+            ),
+            other => panic!("expected an assertion node, got {other:?}"),
+        }
     }
 
     /// Meta-head declarations (`attribute!` / `concept!`) don't
@@ -3152,7 +3323,7 @@ attribute!:
   description: "Optional short name"
 "#,
         );
-        let analysis = analyze(&syntax, &NoopResolver).await.unwrap();
+        let analysis = flat(analyze(&syntax, &NoopResolver).await.unwrap());
         // The declaration produces a Statement::Assert but
         // synthesizer skips it — no implicit query.
         assert_eq!(analysis.mutate.statements.len(), 1);

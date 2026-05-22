@@ -23,8 +23,8 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
 use super::resolver::Resolver;
 use super::scope::Scope;
+use crate::analyzer::Working;
 use crate::effect::{Effect, EffectPolarity};
-use crate::transact::Analysis;
 
 /// Lift a parsed [`Rule`] into an [`Effect`] ready to install.
 ///
@@ -38,7 +38,7 @@ use crate::transact::Analysis;
 pub(crate) async fn lift_rule<R: Resolver>(
     rule: &Rule,
     scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    analysis: &Working,
 ) -> Result<Effect, AnalyzeError> {
     // ---- Head concept ----
     let head_descriptor = {
@@ -99,7 +99,7 @@ pub(crate) async fn lift_rule<R: Resolver>(
 async fn lift_premise<R: Resolver>(
     premise: &NotationPremise,
     scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     let name = premise.concept.value.as_str();
     let resolved = scope
@@ -262,12 +262,15 @@ mod tests {
     }
 
     /// Extract the lone `Statement::InstallEffect` from an
-    /// analysis, panicking if the mutation side does not hold
-    /// exactly one and it is not an effect install.
-    fn only_installed_effect(analysis: &Analysis) -> &crate::effect::Effect {
-        assert_eq!(analysis.mutate.statements.len(), 1);
-        match &analysis.mutate.statements[0] {
-            crate::transact::Statement::InstallEffect(effect) => effect,
+    /// analysis tree, panicking if the document does not lower to
+    /// exactly one statement and it is not an effect install.
+    fn only_installed_effect(
+        tree: &crate::analysis::Analysis<tonk_notation::Syntax>,
+    ) -> crate::effect::Effect {
+        let statements = tree.analysis.statements();
+        assert_eq!(statements.len(), 1);
+        match &statements[0].statement {
+            crate::transact::Statement::InstallEffect(effect) => effect.clone(),
             other => panic!("expected Statement::InstallEffect, got {other:?}"),
         }
     }

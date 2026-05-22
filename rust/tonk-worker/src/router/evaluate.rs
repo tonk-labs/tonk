@@ -191,10 +191,10 @@ async fn evaluate_on_branch<'a>(
         .map_err(map_evaluate_error)?;
 
     // A document commits when it writes anything. `rule!:` is a
-    // mutation (the `!` says so) and the analyzer lifts it into
-    // `mutate.statements` as a `Statement::InstallEffect`, so a
-    // non-empty `statements` is the single commit signal.
-    let response = if query.transact && !evaluated.analysis.mutate.statements.is_empty() {
+    // mutation (the `!` says so) and the analyzer lifts it into a
+    // `Statement::InstallEffect`, so a document with any planned
+    // statement is the single commit signal.
+    let response = if query.transact && evaluated.analysis.analysis.has_statements() {
         let result = evaluated
             .commit()
             .perform(branch, &tonk_state.operator)

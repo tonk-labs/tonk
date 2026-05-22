@@ -20,11 +20,11 @@
 //! one [`Analysis<Assertion>`], so there is no back-pointer and
 //! no flat claim list.
 //!
-//! This increment lands the tree types and has the analyzer
-//! produce the tree internally; [`Analysis::flatten`] reconstructs
-//! the flat [`crate::transact::Analysis`] every existing consumer
-//! still expects. Migrating consumers to walk the tree directly
-//! is a later increment.
+//! The tree is the interface every consumer reads — `evaluate.rs`,
+//! `effects.rs`, the worker route all walk it directly. The
+//! accessor methods on [`DocumentAnalysis`] project the
+//! per-expression nodes into the document-order views (queries,
+//! statements, transient entities) the evaluator drives off.
 
 use std::collections::{HashMap, HashSet};
 
@@ -34,7 +34,7 @@ use tonk_notation::{Assertion, Expression, Query, Rule, Syntax};
 use crate::analyzer::AnalyzeDiagnostic;
 use crate::effect::Effect;
 use crate::mutation::ConceptDescriptor;
-use crate::transact::{self, Application, MutationAnalysis, QueryAnalysis, Statement, ThisIntent};
+use crate::transact::{Application, Statement, ThisIntent};
 
 /// A syntax node type that carries a computed analysis payload.
 ///
@@ -76,14 +76,121 @@ pub struct DocumentAnalysis {
     /// One analysed node per top-level expression, in document
     /// order — the tree mirrors the document.
     pub expressions: Vec<Analysis<Expression>>,
-    /// `name` → entity. Anchor-form heads. Mirrors
-    /// [`transact::Analysis::declarations`].
+    /// Implicit snapshot queries the analyzer synthesized so the
+    /// editor's before/after view surfaces a mutated entity even
+    /// when the user wrote no query for it. Kept separate from
+    /// the user-written queries inside `expressions`: a snapshot
+    /// of a fresh assert target reads a not-yet-existing entity
+    /// and returns zero rows, so it must never join into the
+    /// frame set that feeds mutation planning.
+    pub synthesized: Vec<SynthesizedQuery>,
+    /// `name` → entity. Anchor-form heads.
     pub declarations: HashMap<String, Entity>,
     /// `?foo` → entity. Variable-form heads with content-derived
-    /// entities. Mirrors [`transact::Analysis::variables`].
+    /// entities.
     pub variables: HashMap<String, Entity>,
     /// Non-fatal findings accumulated during the pass.
     pub diagnostics: Vec<AnalyzeDiagnostic>,
+}
+
+/// An analyzer-synthesized snapshot query — an [`Application`]
+/// plus the originating assertion's head name for display.
+#[derive(Debug, Clone)]
+pub struct SynthesizedQuery {
+    /// The snapshot query to evaluate.
+    pub application: Application,
+    /// Display label — the originating assertion's head name.
+    pub label: String,
+}
+
+/// One planned statement in document-apply order, with its
+/// display label and the declaration flag.
+///
+/// The flat projection of the tree's write side: walking
+/// [`DocumentAnalysis::statements`] yields these in the order the
+/// evaluator must apply them.
+#[derive(Debug, Clone)]
+pub struct PlannedStatement {
+    /// The lowered statement.
+    pub statement: Statement,
+    /// Display label — `None` for declaration-head statements.
+    pub label: Option<String>,
+    /// `true` when this came from an `attribute!` / `concept!`
+    /// declaration head.
+    pub declaration: bool,
+}
+
+impl DocumentAnalysis {
+    /// The user-written query expressions, in document order.
+    pub fn queries(&self) -> impl Iterator<Item = &Analysis<Query>> {
+        self.expressions.iter().filter_map(|e| match &e.analysis {
+            ExpressionAnalysis::Query(node) => Some(node.as_ref()),
+            _ => None,
+        })
+    }
+
+    /// `true` when the document carries no query expression.
+    pub fn has_no_queries(&self) -> bool {
+        self.queries().next().is_none()
+    }
+
+    /// Every planned statement, in the order the evaluator must
+    /// apply them — each assertion's `claims` in document order,
+    /// then a trailing [`Statement::InstallEffect`] per `rule!:`.
+    pub fn statements(&self) -> Vec<PlannedStatement> {
+        let mut out = Vec::new();
+        for expression in &self.expressions {
+            if let ExpressionAnalysis::Assertion(node) = &expression.analysis {
+                let assertion = &node.analysis;
+                for (statement, label) in assertion.claims.iter().zip(&assertion.labels) {
+                    out.push(PlannedStatement {
+                        statement: statement.clone(),
+                        label: label.clone(),
+                        declaration: assertion.declaration,
+                    });
+                }
+            }
+        }
+        // Rule-lifted effects land after every assertion's
+        // statements — the analyzer appends them last.
+        for expression in &self.expressions {
+            if let ExpressionAnalysis::Rule(node) = &expression.analysis {
+                out.push(PlannedStatement {
+                    statement: Statement::InstallEffect(node.analysis.effect.clone()),
+                    label: None,
+                    declaration: false,
+                });
+            }
+        }
+        out
+    }
+
+    /// `true` when the document has at least one planned
+    /// statement — the single commit signal for the `/evaluate`
+    /// route. A `rule!:` is a mutation, so a rule-only document
+    /// reports `true`.
+    pub fn has_statements(&self) -> bool {
+        self.expressions.iter().any(|e| match &e.analysis {
+            ExpressionAnalysis::Assertion(node) => !node.analysis.claims.is_empty(),
+            ExpressionAnalysis::Rule(_) => true,
+            ExpressionAnalysis::Query(_) => false,
+        })
+    }
+
+    /// Concept entities whose facts are transient — an `Assert`
+    /// against one of these is routed into the effects-fixpoint
+    /// seed and swept before the durable commit.
+    pub fn transient_entities(&self) -> HashSet<Entity> {
+        let mut out = HashSet::new();
+        for expression in &self.expressions {
+            if let ExpressionAnalysis::Assertion(node) = &expression.analysis
+                && let Some(entity) = &node.analysis.transient
+            {
+                out.insert(entity.clone());
+            }
+        }
+        out
+    }
 }
 
 // ---------------------------------------------------------------- //
@@ -192,143 +299,4 @@ pub struct RuleAnalysis {
     /// The effect lifted from the rule, installed as a
     /// [`Statement::InstallEffect`].
     pub effect: Effect,
-}
-
-// ---------------------------------------------------------------- //
-// flatten — the bridge to the flat transact::Analysis              //
-// ---------------------------------------------------------------- //
-
-impl Analysis<Syntax> {
-    /// Reconstruct the flat [`transact::Analysis`] from the tree.
-    ///
-    /// The bridge for this increment: every existing consumer
-    /// (`evaluate.rs`, `effects.rs`, the renderer, the tests)
-    /// reads the flat struct, so `analyze` walks the tree it built
-    /// and reassembles the flat form bit-for-bit.
-    ///
-    /// Reassembly order matters and mirrors the analyzer's phases:
-    ///
-    /// - **queries** — every `Analysis<Query>` in document order
-    ///   contributes one entry to `query.queries` / `query.labels`.
-    /// - **statements** — every `Analysis<Assertion>` contributes
-    ///   its `claims` (retract before assert, declaration inline
-    ///   attributes already ordered inside `claims`); every
-    ///   `Analysis<Rule>` contributes a trailing
-    ///   `Statement::InstallEffect`.
-    /// - **synthesized** — auto-snapshot queries are derived from
-    ///   the assembled statements, exactly as the analyzer's
-    ///   Phase 4 does.
-    pub fn flatten(self) -> transact::Analysis {
-        let DocumentAnalysis {
-            expressions,
-            declarations,
-            variables,
-            diagnostics,
-        } = self.analysis;
-
-        let mut queries: Vec<Application> = Vec::new();
-        let mut labels: Vec<String> = Vec::new();
-        let mut statements: Vec<Statement> = Vec::new();
-        let mut statement_labels: Vec<Option<String>> = Vec::new();
-        let mut declaration_statement_indexes: HashSet<usize> = HashSet::new();
-        let mut requires: HashSet<String> = HashSet::new();
-        let mut transient: HashSet<Entity> = HashSet::new();
-        let mut effects: Vec<Effect> = Vec::new();
-
-        for expression in expressions {
-            match expression.analysis {
-                ExpressionAnalysis::Query(node) => {
-                    queries.push(node.analysis.application);
-                    labels.push(node.analysis.label);
-                }
-                ExpressionAnalysis::Assertion(node) => {
-                    let assertion = node.analysis;
-                    if let Some(entity) = assertion.transient {
-                        transient.insert(entity);
-                    }
-                    for (statement, label) in assertion.claims.into_iter().zip(assertion.labels) {
-                        if let Some(application) = statement.application() {
-                            collect_unbound(application, &variables, &mut requires);
-                        }
-                        if assertion.declaration {
-                            declaration_statement_indexes.insert(statements.len());
-                        }
-                        statements.push(statement);
-                        statement_labels.push(label);
-                    }
-                }
-                ExpressionAnalysis::Rule(node) => {
-                    effects.push(node.analysis.effect);
-                }
-            }
-        }
-
-        // Rule-lifted effects land after every assertion's
-        // statements — the analyzer appends them in Phase 3b.
-        for effect in effects {
-            statements.push(Statement::InstallEffect(effect));
-            statement_labels.push(None);
-        }
-
-        let query = if queries.is_empty() {
-            None
-        } else {
-            Some(QueryAnalysis {
-                queries,
-                labels,
-                ..Default::default()
-            })
-        };
-
-        let mut analysis = transact::Analysis {
-            declarations,
-            variables,
-            query,
-            mutate: MutationAnalysis {
-                statements,
-                requires,
-                transient,
-            },
-            diagnostics,
-        };
-
-        synthesize_implicit_queries(
-            &mut analysis,
-            &statement_labels,
-            &declaration_statement_indexes,
-        );
-
-        analysis
-    }
-}
-
-/// Variable names an [`Application`] reads that are not bound by
-/// an analysis-time `variables` entry — they must be supplied by
-/// a query at planning time. Mirrors the analyzer's
-/// `collect_unbound_variables`.
-fn collect_unbound(
-    application: &Application,
-    variables: &HashMap<String, Entity>,
-    out: &mut HashSet<String>,
-) {
-    for name in application.bindings() {
-        if !variables.contains_key(&name) {
-            out.insert(name);
-        }
-    }
-}
-
-/// Synthesize auto-snapshot queries for mutation-touched
-/// entities. A re-export of the analyzer's Phase 4 so `flatten`
-/// produces the exact same `synthesized` block.
-fn synthesize_implicit_queries(
-    analysis: &mut transact::Analysis,
-    statement_labels: &[Option<String>],
-    declaration_statement_indexes: &HashSet<usize>,
-) {
-    crate::analyzer::synthesize_implicit_queries(
-        analysis,
-        statement_labels,
-        declaration_statement_indexes,
-    );
 }
