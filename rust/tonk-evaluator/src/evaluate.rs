@@ -1618,6 +1618,146 @@ counter!: &counter-demo\n\
         Ok(())
     }
 
+    /// Regression for the counter type-mismatch: a transient
+    /// `increment` submitted *through notation* (not raw
+    /// `Changes`) must drive the `math/sum` rule, and — crucially —
+    /// `math/sum`'s written-back `count` must itself be an
+    /// unsigned integer so a *second* increment feeds it back into
+    /// `math/sum` without `TypeMismatch { expected: UnsignedInt,
+    /// actual: SignedInt }`.
+    ///
+    /// The earlier `it_induces_unsigned_sum_from_transient_increment`
+    /// injects the increment as a raw `1u128` `Changes` entry and
+    /// runs one round — it never exercises the notation literal
+    /// `by: 1` (which parses signed-first) nor the round-2
+    /// read-back of `math/sum`'s own output. This test does both:
+    /// it is the path the live `/evaluate` bug actually hit.
+    #[dialog_common::test]
+    async fn it_chains_unsigned_sum_across_two_notation_increments() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit 1: concepts + the summing rule + a counter seeded
+        // at 0. The literal `count: 0` goes through the analyzer's
+        // schema-directed coercion → an unsigned 0.
+        let setup = "\
+concept!: &counter\n\
+\x20 with:\n\
+\x20   count:\n\
+\x20     the: xyz.tonk.counter/count\n\
+\x20     as: unsigned-integer\n\
+\x20     cardinality: one\n\
+\x20     description: \"count\"\n\
+\n\
+concept!: &increment\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   by:\n\
+\x20     the: xyz.tonk.command/increment\n\
+\x20     as: unsigned-integer\n\
+\x20     cardinality: one\n\
+\x20     description: \"by\"\n\
+\n\
+rule!:\n\
+\x20 assert!: counter\n\
+\x20 when:\n\
+\x20   - assert: increment\n\
+\x20     where: { this: ?this, by: ?n }\n\
+\x20   - assert: counter\n\
+\x20     where: { this: ?this, count: ?m }\n\
+\x20   - assert: math/sum\n\
+\x20     where: { of: ?n, with: ?m, is: ?count }\n\
+\n\
+counter!: &counter-demo\n\
+\x20 count: 0\n";
+        let parsed = parse(setup);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "setup parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        parsed
+            .syntax
+            .expect("setup syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
+
+        // Two transient increments submitted through notation —
+        // the literal `by: 1` parses signed-first, so this is the
+        // path schema coercion must rescue. The second increment
+        // reads `math/sum`'s own round-1 output (`count: 1`) back
+        // as `?m`; if that output were signed, induction fails.
+        let increment = "\
+increment!:\n\
+\x20 this: counter-demo\n\
+\x20 by: 1\n";
+        for round in 1..=2 {
+            let parsed = parse(increment);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "increment parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            parsed
+                .syntax
+                .expect("increment syntax")
+                .evaluate(branch.transaction())
+                .perform(&branch, &operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate (increment {round}): {e}"))?
+                .commit()
+                .perform(&branch, &operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit (increment {round}): {e}"))?;
+        }
+
+        // Resolve counter-demo's entity via its name referent.
+        let counter_demo: dialog_artifacts::Entity =
+            "id:counter-demo".parse().expect("id:<name> entity");
+        let referent: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                    .of(Term::from(counter_demo))
+                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(referent.len(), 1, "counter-demo referent should resolve");
+        let counter_entity = match &referent[0].is {
+            Value::Entity(e) => e.clone(),
+            other => panic!("referent should be an entity, got {other:?}"),
+        };
+
+        // After two increments of 1, the durable count is an
+        // unsigned 2 — proving math/sum's output stayed unsigned
+        // across the round-trip.
+        let count_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.counter/count"))
+                    .of(Term::from(counter_entity))
+                    .is(Term::<u128>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            count_claims.iter().any(|c| c.is == Value::UnsignedInt(2)),
+            "counter count should be an unsigned 2 after two increments; saw {count_claims:?}"
+        );
+
+        Ok(())
+    }
+
     /// Regression: a document containing only a `rule!:` is a
     /// mutation document — the `!` marker says so. The lifted
     /// effect must land in `mutate.statements` as a
