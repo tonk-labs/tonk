@@ -8,10 +8,8 @@
 //!
 //! It sits above [`tonk_schema`] in the dependency graph: the analyzer
 //! resolves notation against the schema's concepts and attributes, and
-//! [`evaluate`] drives the analyzer's output against a repository.
+//! `tonk_evaluator` drives the analyzer's output against a repository.
 
 pub mod analysis;
 
 pub mod analyzer;
-
-pub mod evaluate;

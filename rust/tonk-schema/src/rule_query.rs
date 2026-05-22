@@ -11,7 +11,7 @@
 //! queryable concept dispatched through `concept::QueryPlan`. This
 //! query/definition machinery belongs with `concept` in
 //! `tonk-schema`. The effect storage / lookup / evaluation side
-//! lives in [`effect_query`](crate::effect_query).
+//! lives in `tonk_evaluator::effect_query`.
 
 use dialog_artifacts::{Entity, Select, Value};
 use dialog_capability::Provider;
@@ -265,7 +265,6 @@ pub fn rule_of_rule_descriptor() -> &'static ConceptDescriptor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effect_query::EffectStatement;
     use dialog_query::artifact::{Entity as ArtifactsEntity, Type};
     use dialog_query::attribute::{AttributeDescriptor, Cardinality};
     use dialog_query::concept::descriptor::ConceptDescriptor;
@@ -278,6 +277,7 @@ mod tests {
     use dialog_query::{InductiveRule, Proposition};
 
     use crate::effect::EFFECT_SYSTEM;
+    use tonk_evaluator::effect_query::EffectStatement;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;

@@ -5,7 +5,7 @@
 //! crates and lives in the `tonk-core` leaf crate. The query
 //! and resolution machinery — loading effects back from a
 //! branch and the install-time trigger check — lives in
-//! `tonk_schema::effect_query`, and the `AnonymousRuleQuery`
+//! `tonk_evaluator::effect_query`, and the `AnonymousRuleQuery`
 //! that surfaces installed rules lives in
 //! `tonk_schema::rule_query`.
 //!
@@ -339,7 +339,7 @@ mod tests {
     //! determinism, and source round-trip. The V1 transient-
     //! trigger check is enforced at install time against a
     //! branch; tests covering that live with the install path
-    //! (`tonk_schema::effect_query`).
+    //! (`tonk_evaluator::effect_query`).
 
     use super::*;
     use dialog_artifacts::Value;

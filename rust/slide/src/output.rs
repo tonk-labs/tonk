@@ -20,7 +20,7 @@ use std::fmt::Write as _;
 use anyhow::{Context, Result};
 use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
-use tonk_analyzer::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
 
 /// JSON wire shape returned by both slide and the worker's
 /// `/evaluate` route. Slide owns its own copy so the JSON
@@ -228,7 +228,7 @@ fn render_json(response: &EvaluateResponse, quiet: bool) -> Result<String> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use tonk_analyzer::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+    use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
 
     use super::*;
 

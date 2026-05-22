@@ -20,8 +20,8 @@ use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_analyzer::evaluate::CommitSummary;
 use tonk_common::log;
+use tonk_evaluator::evaluate::CommitSummary;
 use tonk_schema::mutation::TransactRequest;
 
 use super::AppState;
@@ -46,7 +46,7 @@ pub struct ProfileTransactPath {
 }
 
 /// Response body for `/transact`. Mirrors the commit-side
-/// surface of [`tonk_analyzer::evaluate::EvaluateResponse`] minus
+/// surface of [`tonk_evaluator::evaluate::EvaluateResponse`] minus
 /// the query blocks: revision before/after and a claim count.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactResponse {

@@ -1,6 +1,6 @@
 //! Effect storage, lookup, and install-time validation.
 //!
-//! [`effect`](crate::effect) holds the pure [`Effect`] data type
+//! [`effect`](tonk_core::effect) holds the pure [`Effect`] data type
 //! and its storage-shape projections. This module holds the
 //! interpretation side: loading effects back from a branch,
 //! validating the V1 transient-trigger requirement, and writing
@@ -11,7 +11,7 @@
 //! (`concept`, `query_source`, …) — it may freely depend on them.
 //! The schema definition layer must NOT depend on this module;
 //! the `rule:` query that surfaces installed rules as concept
-//! rows lives separately in [`rule_query`](crate::rule_query).
+//! rows lives separately in [`rule_query`](tonk_schema::rule_query).
 //!
 //! Splitting this out keeps `effect.rs` a leaf module that only
 //! depends on `dialog-*` crates, so the operation types it
@@ -27,7 +27,7 @@ use dialog_query::{Output as _, Term};
 use dialog_repository::{Branch, RemoteSite};
 use thiserror::Error;
 
-use crate::effect::{Effect, EffectError, EffectPolarity};
+use tonk_core::effect::{Effect, EffectError, EffectPolarity};
 
 /// Look up an effect by its entity URI.
 pub fn effect_by_entity(entity: Entity) -> EffectByEntity {
@@ -47,8 +47,8 @@ pub async fn validate_effect<Env: EffectEnv>(
     branch: &Branch,
     env: &Env,
 ) -> Result<(), EffectValidationError> {
-    use crate::concept::TransientConcept;
-    use crate::query_source::Source;
+    use tonk_schema::concept::TransientConcept;
+    use tonk_schema::query_source::Source;
 
     let concepts = effect.when_concept_entities();
     let source = Source::from(branch);
@@ -385,7 +385,7 @@ pub fn retract_effect(effect: &Effect, update: &mut impl dialog_artifacts::Updat
 
 /// Adapter wrapping an [`Effect`] so a branch transaction can
 /// `assert` / `retract` it through the `dialog_artifacts::Statement`
-/// trait. [`Statement::InstallEffect`](crate::transact::Statement)
+/// trait. [`Statement::InstallEffect`](tonk_core::transact::Statement)
 /// carries the bare [`Effect`]; the evaluator wraps it here when
 /// committing.
 pub struct EffectStatement(pub Effect);
@@ -402,7 +402,6 @@ impl dialog_artifacts::Statement for EffectStatement {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::concept::TransientConcept;
     use dialog_query::artifact::{Entity as ArtifactsEntity, Type};
     use dialog_query::attribute::{AttributeDescriptor, Cardinality};
     use dialog_query::concept::descriptor::ConceptDescriptor;
@@ -413,8 +412,9 @@ mod tests {
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::the;
     use dialog_query::{InductiveRule, Proposition};
+    use tonk_schema::concept::TransientConcept;
 
-    use crate::effect::EFFECT_SYSTEM;
+    use tonk_core::effect::EFFECT_SYSTEM;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;

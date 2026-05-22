@@ -1,7 +1,7 @@
 use dialog_query::EvaluationError;
 use dialog_repository::{CommitError, PullError, PushError};
 use thiserror::Error;
-use tonk_schema::effects::InduceError;
+use tonk_evaluator::effects::InduceError;
 
 /// Errors surfaced by the reactor's chain effects. Routes map
 /// these into the existing [`crate::TonkWorkerError`] envelope.

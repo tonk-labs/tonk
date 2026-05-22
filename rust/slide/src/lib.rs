@@ -9,9 +9,9 @@
 //!
 //! - [`site`] — `.tonk/` discovery, repo+branch open/init.
 //! - [`identity`] — local profile management.
-//! - [`eval`] — read source, drive [`tonk_analyzer::evaluate`],
+//! - [`eval`] — read source, drive [`tonk_evaluator::evaluate`],
 //!   render output.
-//! - [`output`] — render an [`tonk_analyzer::evaluate::EvaluateResponse`]
+//! - [`output`] — render an [`tonk_evaluator::evaluate::EvaluateResponse`]
 //!   as YAML notation or JSON.
 //! - [`schema`] — branch introspection: dump every named
 //!   attribute and concept as a re-submittable notation document.

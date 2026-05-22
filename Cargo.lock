@@ -4310,7 +4310,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tonk-analyzer",
+ "tonk-evaluator",
  "tonk-invite",
  "tonk-notation",
  "tonk-schema",
@@ -4903,6 +4903,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-evaluator"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dialog-artifacts",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-effects",
+ "dialog-query",
+ "dialog-repository",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonk-analyzer",
+ "tonk-core",
+ "tonk-notation",
+ "tonk-schema",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "tonk-invite"
 version = "0.1.0"
 dependencies = [
@@ -4976,6 +4998,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-core",
+ "tonk-evaluator",
  "tonk-notation",
  "wasm-bindgen-test",
 ]
@@ -5082,6 +5105,7 @@ dependencies = [
  "tonk-access-service",
  "tonk-analyzer",
  "tonk-common",
+ "tonk-evaluator",
  "tonk-invite",
  "tonk-language-server",
  "tonk-notation",

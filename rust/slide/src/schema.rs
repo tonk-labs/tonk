@@ -39,7 +39,7 @@ use dialog_query::{
     AttributeQuery, Cardinality, ConceptDescriptor, Output as _, Term, Type, attribute,
 };
 use serde_json::Value as Json;
-use tonk_analyzer::evaluate::{QueryMatchBlock, SyntaxEvaluateExt};
+use tonk_evaluator::evaluate::{QueryMatchBlock, SyntaxEvaluateExt};
 use tonk_notation::parse;
 
 use crate::output::EvaluateResponse;

@@ -5,7 +5,7 @@
 //! [`tonk_notation::Syntax`], each a nested prefix of the next:
 //!
 //! ```ignore
-//! use tonk_analyzer::evaluate::{SyntaxAnalyzeExt, SyntaxCompileExt, SyntaxEvaluateExt};
+//! use tonk_evaluator::evaluate::{SyntaxAnalyzeExt, SyntaxCompileExt, SyntaxEvaluateExt};
 //!
 //! syntax.analyze(source).perform(env).await?;   // -> Analysis
 //! syntax.compile(source).perform(env).await?;   // -> Compiled
@@ -67,12 +67,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
 
-use crate::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
-use crate::analyzer;
+use tonk_analyzer::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
+use tonk_analyzer::analyzer;
 use tonk_core::transact::{Application, ApplicationPlan, Planner as _, Statement};
 use tonk_schema::concept::{QueryEnv, application_to_plan};
-use tonk_schema::effect_query::EffectStatement;
 use tonk_schema::query_source::Source;
+
+use crate::effect_query::EffectStatement;
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -391,7 +392,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // effects fixpoint fires on it and it's
                             // swept before the durable commit.
                             if transient_entities.contains(&plan.statement.predicate.this()) {
-                                tonk_schema::effects::accumulate_head_facts(
+                                crate::effects::accumulate_head_facts(
                                     &plan.statement,
                                     &mut transients,
                                 );
@@ -452,7 +453,7 @@ pub struct Evaluated<'a> {
     /// Transient claims the document asserted — one entry per
     /// field of every assertion whose concept is declared
     /// `transient:`. Hand to
-    /// [`tonk_schema::effects::TransactionExt::induce`] as the
+    /// [`crate::effects::TransactionExt::induce`] as the
     /// effects-fixpoint seed; `induce` fires the installed rules
     /// on these and sweeps them so they never reach durable
     /// storage. Empty when the document asserts no transient
@@ -495,7 +496,7 @@ impl<'a> EvaluatedCommit<'a> {
         branch: &Branch,
         env: &Env,
     ) -> Result<EvaluateResult, EvaluateError> {
-        use tonk_schema::effects::TransactionExt as _;
+        use crate::effects::TransactionExt as _;
 
         let Evaluated {
             txn,
@@ -568,7 +569,7 @@ struct LabeledQuery {
 
 /// The user-written query expressions, in document order,
 /// projected from the analysis tree.
-fn collect_queries(document: &crate::analysis::DocumentAnalysis) -> Vec<LabeledQuery> {
+fn collect_queries(document: &tonk_analyzer::analysis::DocumentAnalysis) -> Vec<LabeledQuery> {
     document
         .expressions
         .iter()
@@ -603,7 +604,7 @@ struct QueryResults {
     joined: Vec<Parameters>,
     /// Per-expression frames for the analyzer's *synthesized*
     /// snapshot queries (Phase 4), parallel to
-    /// [`DocumentAnalysis::synthesized`][crate::analysis::DocumentAnalysis::synthesized].
+    /// [`DocumentAnalysis::synthesized`][tonk_analyzer::analysis::DocumentAnalysis::synthesized].
     /// Each snapshot runs standalone — never joined — and is
     /// rendered as its own match block.
     synthesized_per_expression: Vec<Vec<Parameters>>,
@@ -852,7 +853,7 @@ async fn collect_matches<Env: EvaluateEnv>(
 /// avoid showing the same row repeatedly when an unrelated
 /// expression's cross-product introduces duplicates.
 fn render_match_blocks(
-    document: &crate::analysis::DocumentAnalysis,
+    document: &tonk_analyzer::analysis::DocumentAnalysis,
     results: Option<&QueryResults>,
 ) -> Vec<QueryMatchBlock> {
     let Some(results) = results else {
@@ -1264,7 +1265,7 @@ rule!:\n\
             .is("hi".to_string())
             .assert(&mut transients);
 
-        use tonk_schema::effects::TransactionExt as _;
+        use crate::effects::TransactionExt as _;
         branch
             .transaction()
             .integrate(transients.clone())
@@ -1429,7 +1430,7 @@ rule!:\n\
             .is("hi".to_string())
             .assert(&mut transients);
 
-        use tonk_schema::effects::TransactionExt as _;
+        use crate::effects::TransactionExt as _;
         branch
             .transaction()
             .integrate(transients.clone())

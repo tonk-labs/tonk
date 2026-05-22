@@ -3,7 +3,7 @@
 //! branch.
 //!
 //! The actual analyze + plan logic lives in
-//! [`tonk_analyzer::evaluate`] behind the
+//! [`tonk_evaluator::evaluate`] behind the
 //! [`SyntaxEvaluateExt::evaluate`] chain. This module is
 //! the axum adapter: parse the body, surface parse diagnostics
 //! as 400s, acquire the cached branch via the reactor, drive
@@ -22,8 +22,8 @@ use dialog_repository::Revision;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
-use tonk_analyzer::evaluate::{EvaluateError, SyntaxEvaluateExt};
 use tonk_common::log;
+use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
 use tonk_notation::{Parsed, Syntax, parse};
 
 use super::AppState;
@@ -32,7 +32,7 @@ use crate::TonkWorkerError;
 // Re-export the response and match types so router consumers
 // (router.rs, browser clients via wasm-bindgen) name them
 // through this module rather than reaching into tonk-schema.
-pub use tonk_analyzer::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
+pub use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
 
 /// Wire-shape returned by `/evaluate`. Local to the worker so
 /// the JSON contract is owned at the HTTP boundary, not in the

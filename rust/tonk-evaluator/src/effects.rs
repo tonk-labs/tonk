@@ -14,7 +14,7 @@
 //! `&Branch` is needed at the boundary.
 //!
 //! ```ignore
-//! use tonk_schema::effects::TransactionExt;
+//! use tonk_evaluator::effects::TransactionExt;
 //!
 //! let txn = branch.transaction()
 //!     .assert(...)
@@ -486,7 +486,7 @@ async fn is_transient<Env: InduceEnv>(
 /// `(attr, this, value)` instruction per bound field into the
 /// given [`Changes`] bucket. Used to record an effect's transient
 /// head emissions for the next fixpoint round's reverse-index
-/// walk, and by `tonk_analyzer::evaluate` to seed the transient bucket
+/// walk, and by `tonk_evaluator::evaluate` to seed the transient bucket
 /// from a transient-concept assertion. Mirrors [`emit_head_facts`]
 /// but emits into a `Changes` rather than into a `Transaction`.
 pub fn accumulate_head_facts(concept_query: &ConceptQuery, sink: &mut Changes) {
@@ -652,7 +652,6 @@ mod tests {
     use dialog_query::{Term, the};
     use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
-    use crate::concept::{AnonymousConcept, TransientConcept};
     use crate::effect_query::EffectStatement;
     use dialog_artifacts::Statement;
     use dialog_query::artifact::Type;
@@ -662,6 +661,7 @@ mod tests {
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::{AttributeDescriptor, InductiveRule, Parameters as DialogParameters};
     use tonk_core::effect::{Effect, EffectPolarity};
+    use tonk_schema::concept::{AnonymousConcept, TransientConcept};
 
     /// A 1-field concept descriptor with a configurable field
     /// type. Helper because tests below build several.

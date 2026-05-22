@@ -15,7 +15,7 @@
 
 use dialog_artifacts::{Changes, Statement};
 use dialog_repository::Revision;
-use tonk_schema::effects::TransactionExt;
+use tonk_evaluator::effects::TransactionExt;
 use tonk_schema::mutation::{Mutation, PredicateApplication};
 
 use super::BranchReference;
