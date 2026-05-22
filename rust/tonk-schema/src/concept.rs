@@ -35,13 +35,14 @@ use dialog_query::{
     Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Selection, Term,
     the, try_stream,
 };
-use dialog_repository::{Branch, RemoteSite};
+use dialog_repository::RemoteSite;
 use thiserror::Error;
 
 pub use dialog_query::{AttributeDescriptor, ConceptDescriptor};
 
 use crate::builtin::concept_registry;
 use crate::meta::AnonymousAttribute;
+use crate::query_source::Source;
 
 /// Domain prefix for required-field claims.
 const WITH_DOMAIN: &str = "dialog.concept.with";
@@ -152,7 +153,7 @@ impl ConceptLookupError {
     }
 }
 
-/// Standard environment bound for any [`Branch::query`]
+/// Standard environment bound for any `Branch::query`
 /// invocation. Mirrors what dialog-repository's `SelectQuery`
 /// requires; surfacing it as a single trait alias keeps the
 /// builder signatures readable.
@@ -216,13 +217,13 @@ impl ConceptByName {
     ///    field-list reconstruction.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Concept>, ConceptLookupError> {
-        let Some(target) = lookup_named_entity(&self.name, branch, env).await? else {
+        let Some(target) = lookup_named_entity(&self.name, source, env).await? else {
             return Ok(None);
         };
-        Concept::by_entity(target).resolve(branch, env).await
+        Concept::by_entity(target).resolve(source, env).await
     }
 }
 
@@ -237,15 +238,14 @@ impl ConceptByEntity {
     /// referenced [`AttributeDescriptor`].
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Concept>, ConceptLookupError> {
         // Pull every claim where `(*entity, the, value)` matches
         // — `the` is left as a variable so the engine returns the
         // full set; we filter to the `dialog.concept.with/*`
         // namespace in Rust.
-        let raw_claims: Vec<dialog_query::Claim> = branch
-            .query()
+        let raw_claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::The>::var("the")
                     .of(Term::from(self.entity.clone()))
@@ -266,7 +266,7 @@ impl ConceptByEntity {
                 continue;
             };
             let Some(facts) = AttributeByEntity::new(attribute_entity.clone())
-                .resolve(branch, env)
+                .resolve(source, env)
                 .await?
             else {
                 return Err(ConceptLookupError::MissingAttribute {
@@ -321,11 +321,10 @@ impl AttributeByEntity {
     /// and reconstruct the descriptor.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        let facts: Vec<AnonymousAttribute> = branch
-            .query()
+        let facts: Vec<AnonymousAttribute> = source
             .select(Query::<AnonymousAttribute> {
                 this: Term::from(self.entity.clone()),
                 id: Term::var("id"),
@@ -373,13 +372,13 @@ impl AttributeByName {
     /// reconstruction.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        let Some(target) = lookup_named_entity(&self.name, branch, env).await? else {
+        let Some(target) = lookup_named_entity(&self.name, source, env).await? else {
             return Ok(None);
         };
-        AttributeByEntity::new(target).resolve(branch, env).await
+        AttributeByEntity::new(target).resolve(source, env).await
     }
 }
 
@@ -546,12 +545,11 @@ impl IsTransient {
     /// Resolve against a branch.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<bool, ConceptLookupError> {
         let marker: Entity = transient_marker_entity();
-        let claims: Vec<dialog_query::Claim> = branch
-            .query()
+        let claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::The>::from(meta_attr_typed(
                     "dialog.concept",
@@ -1017,19 +1015,19 @@ fn name_from_id_uri(entity: &Entity) -> Option<String> {
 /// - The branch has no `dialog.meta/name` claim attached to
 ///   that entity (no name was ever published with this label,
 ///   or the prior publication was retracted).
-pub async fn lookup_named_entity<Env: QueryEnv>(
+pub async fn lookup_named_entity<'a, Env: QueryEnv>(
     name: &str,
-    branch: &Branch,
+    source: impl Into<Source<'a>>,
     env: &Env,
 ) -> Result<Option<Entity>, ConceptLookupError> {
     use crate::meta::Name;
     use dialog_query::Output as _;
 
+    let source = source.into();
     let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
         return Ok(None);
     };
-    let rows: Vec<Name> = branch
-        .query()
+    let rows: Vec<Name> = source
         .select(Query::<Name> {
             this: Term::from(id_entity),
             entity: Term::<Entity>::var("__concept_query_target"),
@@ -1508,7 +1506,7 @@ mod tests {
             .perform(&operator)
             .await?;
 
-        let resolved = lookup_named_entity("alice", &branch, &operator).await?;
+        let resolved = lookup_named_entity("alice", &Source::from(&branch), &operator).await?;
         assert_eq!(resolved, Some(target));
         Ok(())
     }
@@ -1524,7 +1522,7 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        let resolved = lookup_named_entity("ghost", &branch, &operator).await?;
+        let resolved = lookup_named_entity("ghost", &Source::from(&branch), &operator).await?;
         assert!(resolved.is_none());
         Ok(())
     }

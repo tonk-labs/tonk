@@ -62,6 +62,8 @@ pub mod mutation;
 
 pub mod query;
 
+pub mod query_source;
+
 pub mod conclusion;
 
 pub mod replica;

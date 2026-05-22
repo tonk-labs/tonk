@@ -56,6 +56,7 @@ use crate::concept::{
     AttributeByEntity, AttributeByName, Concept as ConceptLookup, TransientConcept,
     lookup_named_entity,
 };
+use crate::query_source::Source;
 use crate::transact::{
     Analysis, Application, ApplicationPlan, Planner as _, QueryAnalysis, Statement,
 };
@@ -178,6 +179,11 @@ pub struct BranchResolver<'a, Env> {
 // implementation below.
 
 impl<'a, Env: EvaluateEnv> BranchResolver<'a, Env> {
+    /// The branch wrapped as a [`Source`] for the `concept` builders.
+    fn source(&self) -> Source<'a> {
+        Source::from(self.branch)
+    }
+
     /// Resolve a concept entity's `dialog.concept/transient`
     /// marker — `true` iff the concept is transient. Shared by
     /// `lookup_concept` and `list_concepts` so every resolved
@@ -187,7 +193,7 @@ impl<'a, Env: EvaluateEnv> BranchResolver<'a, Env> {
         entity: &Entity,
     ) -> Result<bool, tonk_introspect::IntrospectionError> {
         TransientConcept::is_transient(entity.clone())
-            .resolve(self.branch, self.env)
+            .resolve(&self.source(), self.env)
             .await
             .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))
     }
@@ -212,7 +218,7 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
         name: &str,
     ) -> Result<Option<tonk_introspect::ResolvedConcept>, tonk_introspect::IntrospectionError> {
         let resolved = ConceptLookup::by_name(name)
-            .resolve(self.branch, self.env)
+            .resolve(&self.source(), self.env)
             .await
             .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
         let Some(c) = resolved else {
@@ -232,7 +238,7 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
     ) -> Result<Option<tonk_introspect::ResolvedAttribute>, tonk_introspect::IntrospectionError>
     {
         let resolved = AttributeByName::new(name)
-            .resolve(self.branch, self.env)
+            .resolve(&self.source(), self.env)
             .await
             .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
         Ok(resolved.map(|a| tonk_introspect::ResolvedAttribute {
@@ -247,7 +253,7 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
     ) -> Result<Option<tonk_introspect::ResolvedAttribute>, tonk_introspect::IntrospectionError>
     {
         let resolved = AttributeByEntity::new(entity.clone())
-            .resolve(self.branch, self.env)
+            .resolve(&self.source(), self.env)
             .await
             .map_err(|e| tonk_introspect::IntrospectionError::new(e.to_string()))?;
         Ok(resolved.map(|a| tonk_introspect::ResolvedAttribute {
@@ -260,7 +266,7 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
         &self,
         name: &str,
     ) -> Result<Option<Entity>, tonk_introspect::IntrospectionError> {
-        lookup_named_entity(name, self.branch, self.env)
+        lookup_named_entity(name, &self.source(), self.env)
             .await
             .map_err(|e| {
                 tonk_introspect::IntrospectionError::new(format!("name lookup failed: {e:?}"))
@@ -325,7 +331,7 @@ impl<'a, Env: EvaluateEnv> tonk_introspect::BranchIntrospection for BranchResolv
             // Reuse the existing branch-side builder rather
             // than reaching into `concept.rs` private helpers.
             let resolved = ConceptLookup::by_entity(entity.clone())
-                .resolve(self.branch, self.env)
+                .resolve(&self.source(), self.env)
                 .await
                 .map_err(|e| {
                     tonk_introspect::IntrospectionError::new(format!(

@@ -18,27 +18,24 @@
 //!
 //! # Source generality
 //!
-//! `plan/runtime.md` specifies these handles generic over
-//! `S: dialog_query::Source`. That generalization does not hold
-//! against the dialog API at tag `tonk-2026-05-19`: `Branch` and
-//! `Transaction` do not implement `dialog_query::Source` (an
-//! engine-internal trait carrying `acquire`), and nothing in the
-//! published API does. Branch-or-transaction queries instead go
-//! through `branch.query().select(q).perform(env)` /
-//! `transaction.query().select(q).perform(env)` — two distinct
-//! concrete handle types with no shared trait. The handles below
-//! are therefore hard-wired to `&Branch`, matching the existing
-//! `concept` builders; widening to a branch-or-transaction seam is
-//! deferred until the dialog API offers one.
+//! `Branch` and `Transaction` do not implement
+//! `dialog_query::Source` (an engine-internal trait carrying
+//! `acquire`), so the handles cannot be generic over that trait.
+//! Instead they resolve against a [`Source`] — a tonk-local enum
+//! that unifies `branch.query().select(q)` and
+//! `transaction.query().select(q)` behind one `select` method (see
+//! [`crate::query_source`]). A caller resolves against a branch or a
+//! transaction overlay by passing whichever — both `&Branch` and
+//! `&Transaction` are `Into<Source>`.
 
 use dialog_artifacts::Entity;
-use dialog_repository::Branch;
 
 use crate::concept::{
     AttributeByEntity, Concept, ConceptLookupError, QueryEnv, TransientConcept, lookup_named_entity,
 };
 use crate::meta::Name;
 use crate::mutation::ConceptDescriptor;
+use crate::query_source::Source;
 
 pub use dialog_query::AttributeDescriptor;
 
@@ -88,10 +85,11 @@ impl From<NamedReference> for ConceptReference {
 }
 
 impl ConceptReference {
-    /// Stage resolution of this reference against a source.
-    pub fn resolve(self, source: &Branch) -> ResolveConcept<'_> {
+    /// Stage resolution of this reference against a source — a
+    /// `&Branch` or a `&Transaction` (anything `Into<Source>`).
+    pub fn resolve<'a>(self, source: impl Into<Source<'a>>) -> ResolveConcept<'a> {
         ResolveConcept {
-            source,
+            source: source.into(),
             reference: self,
         }
     }
@@ -117,10 +115,11 @@ impl From<NamedReference> for AttributeReference {
 }
 
 impl AttributeReference {
-    /// Stage resolution of this reference against a source.
-    pub fn resolve(self, source: &Branch) -> ResolveAttribute<'_> {
+    /// Stage resolution of this reference against a source — a
+    /// `&Branch` or a `&Transaction` (anything `Into<Source>`).
+    pub fn resolve<'a>(self, source: impl Into<Source<'a>>) -> ResolveAttribute<'a> {
         ResolveAttribute {
-            source,
+            source: source.into(),
             reference: self,
         }
     }
@@ -165,7 +164,7 @@ pub struct AttributeDefinition {
 /// Staged concept resolution — call [`perform`](Self::perform) to
 /// run it against an environment.
 pub struct ResolveConcept<'a> {
-    source: &'a Branch,
+    source: Source<'a>,
     reference: ConceptReference,
 }
 
@@ -184,19 +183,19 @@ impl ResolveConcept<'_> {
         self,
         env: &Env,
     ) -> Result<Option<ConceptDefinition>, ResolveError> {
-        let Some(entity) = resolve_target(self.reference.0, self.source, env).await? else {
+        let Some(entity) = resolve_target(self.reference.0, &self.source, env).await? else {
             return Ok(None);
         };
 
         let Some(concept) = Concept::by_entity(entity.clone())
-            .resolve(self.source, env)
+            .resolve(&self.source, env)
             .await?
         else {
             return Ok(None);
         };
 
         let transient = TransientConcept::is_transient(entity)
-            .resolve(self.source, env)
+            .resolve(&self.source, env)
             .await?;
         let descriptor = if transient {
             ConceptDescriptor::Transient(concept.descriptor)
@@ -214,7 +213,7 @@ impl ResolveConcept<'_> {
 /// Staged attribute resolution — call [`perform`](Self::perform) to
 /// run it against an environment.
 pub struct ResolveAttribute<'a> {
-    source: &'a Branch,
+    source: Source<'a>,
     reference: AttributeReference,
 }
 
@@ -229,12 +228,12 @@ impl ResolveAttribute<'_> {
         self,
         env: &Env,
     ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        let Some(entity) = resolve_target(self.reference.0, self.source, env).await? else {
+        let Some(entity) = resolve_target(self.reference.0, &self.source, env).await? else {
             return Ok(None);
         };
 
         let Some(attribute) = AttributeByEntity::new(entity)
-            .resolve(self.source, env)
+            .resolve(&self.source, env)
             .await?
         else {
             return Ok(None);
@@ -251,7 +250,7 @@ impl ResolveAttribute<'_> {
 /// passes through, a name is chased through `dialog.name/referent`.
 async fn resolve_target<Env: QueryEnv>(
     target: Target,
-    source: &Branch,
+    source: &Source<'_>,
     env: &Env,
 ) -> Result<Option<Entity>, ResolveError> {
     match target {
@@ -265,24 +264,29 @@ async fn resolve_target<Env: QueryEnv>(
 // -----------------------------------------------------------------
 
 impl ConceptDefinition {
-    /// Stage enumeration of every concept the source holds.
-    pub fn list(source: &Branch) -> ListConcepts<'_> {
-        ListConcepts { source }
+    /// Stage enumeration of every concept the source holds — a
+    /// `&Branch` or a `&Transaction` (anything `Into<Source>`).
+    pub fn list<'a>(source: impl Into<Source<'a>>) -> ListConcepts<'a> {
+        ListConcepts {
+            source: source.into(),
+        }
     }
 }
 
 impl NamedReference {
     /// Stage enumeration of every published name and the entity it
-    /// points at.
-    pub fn list(source: &Branch) -> ListNames<'_> {
-        ListNames { source }
+    /// points at — against a `&Branch` or a `&Transaction`.
+    pub fn list<'a>(source: impl Into<Source<'a>>) -> ListNames<'a> {
+        ListNames {
+            source: source.into(),
+        }
     }
 }
 
 /// Staged concept enumeration — call [`perform`](Self::perform) to
 /// run it.
 pub struct ListConcepts<'a> {
-    source: &'a Branch,
+    source: Source<'a>,
 }
 
 impl ListConcepts<'_> {
@@ -303,7 +307,6 @@ impl ListConcepts<'_> {
             .expect("`db:concept` is a valid entity URI");
         let claims: Vec<dialog_query::Claim> = self
             .source
-            .query()
             .select(AttributeQuery::from(
                 Term::<The>::from(
                     "dialog.meta/concept"
@@ -321,7 +324,7 @@ impl ListConcepts<'_> {
         let mut definitions = Vec::with_capacity(claims.len());
         for claim in claims {
             if let Some(definition) = ConceptReference::from(claim.of)
-                .resolve(self.source)
+                .resolve(self.source.clone())
                 .perform(env)
                 .await?
             {
@@ -335,7 +338,7 @@ impl ListConcepts<'_> {
 /// Staged published-name enumeration — call
 /// [`perform`](Self::perform) to run it.
 pub struct ListNames<'a> {
-    source: &'a Branch,
+    source: Source<'a>,
 }
 
 impl ListNames<'_> {
@@ -349,7 +352,6 @@ impl ListNames<'_> {
 
         let names: Vec<Name> = self
             .source
-            .query()
             .select(Query::<Name> {
                 this: Term::<Entity>::var("name"),
                 entity: Term::<Entity>::var("entity"),

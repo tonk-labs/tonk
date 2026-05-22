@@ -347,10 +347,14 @@ impl Effect {
         branch: &Branch,
         env: &Env,
     ) -> Result<(), EffectValidationError> {
+        use crate::concept::TransientConcept;
+        use crate::query_source::Source;
+
         let concepts = self.when_concept_entities();
+        let source = Source::from(branch);
         for entity in concepts {
-            let transient = crate::concept::TransientConcept::is_transient(entity)
-                .resolve(branch, env)
+            let transient = TransientConcept::is_transient(entity)
+                .resolve(&source, env)
                 .await
                 .map_err(|e| EffectValidationError::Query(format!("{e}")))?;
             if transient {

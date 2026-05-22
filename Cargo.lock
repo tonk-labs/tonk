@@ -4938,6 +4938,7 @@ dependencies = [
  "dialog-query",
  "dialog-repository",
  "dialog-varsig",
+ "futures-util",
  "lsp-types",
  "parking_lot",
  "serde",
