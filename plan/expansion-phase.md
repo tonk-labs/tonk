@@ -16,18 +16,34 @@ are the analyzer. `plan` + `commit` are evaluation.
 
 ## Crate layout
 
+Five crates, each with one charter:
+
 - **`tonk-notation`** — pure syntax. Parse → `Syntax`. No branch,
   no `Source`.
-- **`tonk-schema`** — the shared lower layer for facts and their
-  shapes: concept / attribute descriptors, `effect.rs` rule
-  types, the resolution surface (Part A), and `claim.rs` (the
-  `Claim` type — Part C). `Claim` lives here because it is
-  consumed by every write path and must sit below all of them;
-  it carries a concept descriptor, so it is schema-adjacent.
-- **`tonk-analyzer`** — `analyze` + `expand`. Depends on
-  `tonk-notation` and `tonk-schema`. Produces an `Analysis`.
-- **`tonk-evaluator`** — `evaluate`: plan + commit. Depends on
-  `tonk-analyzer`. The notation pipeline driver.
+- **`tonk-schema`** — the concepts the evaluation runtime is
+  seeded with: concept / attribute / rule definitions, the
+  built-in registry, the meta-branch concepts (replica, branch,
+  remote, tracking branch), and the resolution surface (Part A)
+  that reconstructs a definition from a branch. Everything here
+  *is* a schema definition or resolves one.
+- **`tonk-core`** — the operations performed against a branch:
+  `Claim` (a typed write — Part C), `Query` (a read request),
+  `Conclusion` (a read result), `TransactRequest` (a `Claim`
+  batch). These are not concepts — they are reads and writes
+  *over* concepts. `tonk-core` sits below everything that issues
+  an operation: the worker, the UI crates (`tonk-display` /
+  `tonk-concept` build a `Query` and render `Conclusion`s), and
+  `tonk-evaluator`.
+- **`tonk-analyzer`** — `analyze` + `expand`: notation → an
+  `Analysis` whose write side is `Claim`s. Depends on
+  `tonk-notation`, `tonk-schema`, `tonk-core`.
+- **`tonk-evaluator`** — `evaluate`: plan + commit. Runs the
+  operations a document resolves to. Depends on `tonk-analyzer`.
+
+The split that matters: `tonk-schema` holds *definitions*
+(what shapes exist), `tonk-core` holds *operations* (what you do
+against them), `tonk-analyzer` *derives* operations from notation,
+`tonk-evaluator` *runs* them.
 
 All trait bounds use `dialog_common::ConditionalSend` /
 `ConditionalSync`, so the same source compiles native and
@@ -135,12 +151,13 @@ type ConceptLookup =
 This is the one `dyn` boundary; the rest of the pipeline stays
 fully monomorphic.
 
-### `tonk-introspect`
+### Where the resolution types live
 
-`tonk-introspect` holds the schema-resolution types —
-`ConceptReference` / `AttributeReference`, `ConceptDefinition` /
-`AttributeDefinition`, `NamedReference`, `NamedEntity`,
-`IntrospectionError`.
+The resolution surface — `ConceptReference` / `AttributeReference`,
+`ConceptDefinition` / `AttributeDefinition`, `NamedReference`,
+`NamedEntity`, `IntrospectionError` — lives in `tonk-schema`. A
+definition *is* schema; a reference resolves one; resolution
+reconstructs one from a branch. All of it is the schema layer.
 
 ## Part B — analyze / evaluate chains
 
@@ -275,12 +292,16 @@ tracking. Every claim reaching the plan stage is concept-shaped;
 domain heads and `&anchor` are notation sugar that expansion
 lowers away first.
 
-`Claim` lives in `tonk-schema`'s `claim.rs`, alongside
-`PredicateApplication` (`PredicateDescriptor` + terms). It is
-distinct from `dialog_query::Fact` — the raw `(the, of, is)` EAV
-triple dialog deals in. `Claim` is the typed, concept-shaped
-write; `Fact` is the untyped triple it ultimately emits. The two
-names never collide.
+`Claim` lives in `tonk-core` (with `PredicateApplication` —
+`PredicateDescriptor` + terms — and `TransactRequest`, a `Claim`
+batch). It is an operation, not a concept, so it is not in
+`tonk-schema`; it carries a `PredicateDescriptor`, so `tonk-core`
+depends on `tonk-schema`.
+
+`Claim` is distinct from `dialog_query::Fact` — the raw
+`(the, of, is)` EAV triple dialog deals in. `Claim` is the typed,
+concept-shaped write; `Fact` is the untyped triple it ultimately
+emits. The two names never collide.
 
 ## Open items
 
