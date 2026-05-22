@@ -45,6 +45,20 @@ The split that matters: `tonk-schema` holds *definitions*
 against them), `tonk-analyzer` *derives* operations from notation,
 `tonk-evaluator` *runs* them.
 
+Dependency edges form a line — each crate depends only on those
+to its left:
+
+```
+tonk-notation → tonk-schema → tonk-core → tonk-analyzer → tonk-evaluator
+   syntax        definitions   operations   notation→ops    run ops
+```
+
+A `Source` (dialog's query target) flows in from the side: every
+crate from `tonk-schema` rightward is generic over it. The UI
+crates (`tonk-display`, `tonk-concept`) and the worker depend on
+`tonk-core` for `Query` / `Conclusion` / `Claim`; they do not
+depend on `tonk-analyzer` or `tonk-evaluator`.
+
 All trait bounds use `dialog_common::ConditionalSend` /
 `ConditionalSync`, so the same source compiles native and
 `wasm32`.
@@ -54,8 +68,8 @@ All trait bounds use `dialog_common::ConditionalSend` /
 Schema lookups query through **`dialog_query::Source`**, which
 both `Branch` and the `Transaction` overlay provide. Resolution is
 expressed as chain handles — a `resolve` method stages the work,
-`.perform(env)` runs it — matching the existing `evaluate` /
-`induce` idiom.
+`.perform(env)` runs it — the same shape as `evaluate` and
+`induce`.
 
 A **reference** names a thing; resolving it yields the thing's
 **definition**:
@@ -125,15 +139,10 @@ pub struct AttributeDefinition {
 }
 ```
 
-`ConceptDefinition` and `AttributeDefinition` are *the* types for
-"a concept / attribute resolved from a branch" — entity +
-reconstructed descriptor (a concept also carries its transient
-flag). Each is the **consolidation** of the several existing
-`{ entity, descriptor }` resolved types into one canonical
-definition: today a resolved concept exists as three near-clones
-(a `concept`-module type, a `tonk-introspect` type, an analyzer
-mirror), and a resolved attribute likewise. After this, one type
-per kind, in `tonk-schema`.
+`ConceptDefinition` and `AttributeDefinition` are the resolved
+result — a concept / attribute reconstructed from a branch:
+entity + descriptor, a concept also carrying its transient flag.
+One type per kind, in `tonk-schema`.
 
 `resolve`'s `perform` reconstructs the descriptor from the
 entity's EAV facts; a concept's `perform` resolves each field
@@ -161,9 +170,8 @@ impl NamedReference {
 
 `NamedReference::list` does not yield definitions — a published
 name can point at any entity (a concept, a concept instance, an
-attribute). It yields `meta::Name`, the existing concept that
-already models a name → target binding (`{ this, entity }`); no
-separate type is introduced.
+attribute). It yields `meta::Name`, the concept that models a
+name → target binding (`{ this, entity }`).
 
 Enumeration serves editor completion — offering every concept, or
 every published name, for the symbol under the cursor.
