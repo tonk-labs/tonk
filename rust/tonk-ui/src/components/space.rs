@@ -1313,38 +1313,64 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
     }
 }
 
-/// Render one stack of `<ul>`s for a list of match blocks.
-/// Shared between the comparison-slider arms and the no-change
-/// fallback.
+/// Grouped rendering — a `<wa-tree>` nesting concept → entity →
+/// field → value. Concept, entity, and field rows all expand; the
+/// value is the only leaf. Directory rows carry a trailing `:` so
+/// the tree reads like the YAML notation. Highlighting reuses the
+/// same `tonk-cm-*` palette the notation renderer uses.
 fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
     view! {
-        <ul class="query-results">
+        <wa-tree class="query-tree">
             { blocks.into_iter().map(|block| view! {
-                <li>
-                    <code class="head-label">{ block.label }</code>
-                    <ul class="query-fields">
-                        { block.results.into_iter().map(|result| view! {
-                            <li>
-                                <code class="entity">{ result.this }</code>
-                                <ul>
-                                    { result.fields.into_iter().map(|(name, value)| view! {
-                                        <li>
-                                            <code class="field-name">{ name }</code>
-                                            ": "
-                                            <code class="field-value">{
-                                                serde_json::to_string(&value)
-                                                    .unwrap_or_else(|_| "<?>".to_string())
-                                            }</code>
-                                        </li>
-                                    }).collect_view() }
-                                </ul>
-                            </li>
-                        }).collect_view() }
-                    </ul>
-                </li>
+                <wa-tree-item expanded>
+                    <span class="tonk-cm-effect">{ block.label }</span><span class="tonk-cm-plain">":"</span>
+                    { block.results.into_iter().map(|result| view! {
+                        <wa-tree-item expanded>
+                            <span class="tonk-cm-entity">{ result.this }</span><span class="tonk-cm-plain">":"</span>
+                            { result.fields.into_iter().map(|(name, value)| view! {
+                                <wa-tree-item expanded>
+                                    <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+                                    <wa-tree-item>
+                                        { render_field_value(value) }
+                                    </wa-tree-item>
+                                </wa-tree-item>
+                            }).collect_view() }
+                        </wa-tree-item>
+                    }).collect_view() }
+                </wa-tree-item>
             }).collect_view() }
-        </ul>
+        </wa-tree>
     }
+}
+
+/// Render a single field value as a highlighted `<span>`, applying
+/// the `tonk-cm-*` decoration class that matches the value's
+/// shape. Mirrors the notation formatter's value rules: URIs bare
+/// and entity-tinted, strings quoted, numbers/bools/null plain.
+fn render_field_value(value: serde_json::Value) -> impl IntoView {
+    use serde_json::Value;
+    let (class, text) = match value {
+        Value::Null => ("tonk-cm-variable", "_".to_owned()),
+        Value::Bool(b) => ("tonk-cm-number", b.to_string()),
+        Value::Number(n) => ("tonk-cm-number", n.to_string()),
+        Value::String(s) => {
+            if tonk_display::notation_format::looks_like_uri(&s) {
+                ("tonk-cm-entity", s)
+            } else {
+                // A tree leaf is one line — show the string
+                // verbatim (the string tint marks it as text)
+                // rather than `\"`-escaping embedded quotes.
+                ("tonk-cm-string", s)
+            }
+        }
+        // Arrays and objects have no notation form — show compact
+        // JSON, undecorated.
+        other => (
+            "tonk-cm-plain",
+            serde_json::to_string(&other).unwrap_or_else(|_| "<?>".to_owned()),
+        ),
+    };
+    view! { <span class=class>{ text }</span> }
 }
 
 /// Render a `<wa-tag>` chip describing the current `SyncState`.

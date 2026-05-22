@@ -241,6 +241,57 @@ tonk-notation .tonk-cm-variable {
     font-style: italic;
 }
 
+/* Grouped evaluate results — a `<wa-tree>` nesting concept →
+   entity → field → value. Directory rows carry a trailing `:` so
+   the tree reads like the YAML notation; the value row is the
+   leaf. Typography and the `tonk-cm-*` decoration palette come
+   from the shared `tonk-notation, .query-tree` block above, so
+   the grouped view is tinted and set in the same monospace as the
+   notation (listed) view and the editor. */
+.query-tree {
+    --indent-guide-width: 1px;
+    font-family: var(--tonk-code-font);
+    font-size: var(--tonk-code-font-size);
+    line-height: 1.5;
+    color: var(--tonk-code-fg);
+}
+/* Tree labels are not interactive content — let the user select
+   and copy entity URIs and values out of the result. */
+.query-tree wa-tree-item::part(label) {
+    user-select: text;
+}
+.query-tree .tonk-cm-key {
+    color: var(--tonk-code-key);
+}
+.query-tree .tonk-cm-effect {
+    color: var(--tonk-code-effect);
+    font-weight: bold;
+}
+.query-tree .tonk-cm-name {
+    color: var(--tonk-code-name);
+}
+.query-tree .tonk-cm-entity {
+    color: var(--tonk-code-entity);
+    text-decoration: underline;
+    text-decoration-color: var(--tonk-code-entity);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+.query-tree .tonk-cm-variable {
+    color: var(--tonk-code-variable);
+    font-style: italic;
+}
+.query-tree .tonk-cm-string {
+    color: var(--tonk-code-string);
+}
+.query-tree .tonk-cm-number {
+    color: var(--tonk-code-number);
+}
+/* Plain — arrays/objects shown as compact JSON, no tint. */
+.query-tree .tonk-cm-plain {
+    color: var(--tonk-code-fg-muted);
+}
+
 /* Banner header: the space name as a large display title, sized
    to match the sidebar column. Transparent background so the banner
    and the main body read as one continuous surface — the name
@@ -902,12 +953,16 @@ wa-page::part(drawer) {
    lives where the editor expects it, and consumers opt in by
    adding their selector to this group. */
 tonk-code,
-tonk-notation {
-    /* Match `wa-input` so the editor reads as a form field rather
-       than a panel. The form-control tokens are the right
-       semantic — they describe "what an input surface looks like"
-       and stay aligned with the rest of the form theme if Web
-       Awesome ever retunes them. */
+tonk-notation,
+.query-tree {
+    /* Both evaluate-result views (listed `<tonk-notation>` and
+       grouped `<wa-tree class="query-tree">`) share the dialog-yaml
+       editor palette so they read identically to each other and to
+       the editor. Match `wa-input` so the surface reads as a form
+       field rather than a panel. The form-control tokens are the
+       right semantic — they describe "what an input surface looks
+       like" and stay aligned with the rest of the form theme if
+       Web Awesome ever retunes them. */
     --tonk-code-bg: var(--wa-form-control-background-color);
     --tonk-code-fg: var(--wa-color-text-normal);
     --tonk-code-fg-muted: var(--wa-color-text-quiet);

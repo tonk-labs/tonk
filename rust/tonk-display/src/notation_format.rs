@@ -61,20 +61,31 @@ pub fn format(
     out
 }
 
+/// Indent (in spaces) of a top-level field line. Fields sit one
+/// level under the head; block-scalar content sits one level
+/// under the field.
+const FIELD_INDENT: usize = 2;
+
 fn write_field(out: &mut String, name: &str, value: &Value) {
-    out.push_str("  ");
+    for _ in 0..FIELD_INDENT {
+        out.push(' ');
+    }
     out.push_str(name);
     out.push_str(": ");
-    write_value(out, value);
+    write_value(out, value, FIELD_INDENT);
     out.push('\n');
 }
 
-fn write_value(out: &mut String, value: &Value) {
+/// Render `value` after the `name: ` of a field whose key sits at
+/// `indent` spaces. `indent` is only consulted for multi-line
+/// strings, which become YAML literal block scalars whose content
+/// lines align one level deeper.
+fn write_value(out: &mut String, value: &Value, indent: usize) {
     match value {
         Value::Null => out.push('_'),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => write_string(out, s),
+        Value::String(s) => write_string(out, s, indent),
         Value::Array(items) => {
             // Notation has no inline list syntax; fall back to a
             // bracketed JSON-ish form so the value is at least
@@ -86,7 +97,7 @@ fn write_value(out: &mut String, value: &Value) {
                 if i > 0 {
                     out.push_str(", ");
                 }
-                write_value(out, item);
+                write_value(out, item, indent);
             }
             out.push(']');
         }
@@ -98,7 +109,7 @@ fn write_value(out: &mut String, value: &Value) {
     }
 }
 
-fn write_string(out: &mut String, s: &str) {
+fn write_string(out: &mut String, s: &str, indent: usize) {
     // Entity URIs are bare; everything else is quoted. A URI is
     // anything with a `:` and no whitespace — that catches `did:`,
     // `id:`, `db:`, attribute URIs, etc.
@@ -106,12 +117,19 @@ fn write_string(out: &mut String, s: &str) {
         out.push_str(s);
         return;
     }
+    // A string that would need escaping inside a double-quoted
+    // scalar — one carrying a newline or a `"` — renders as a YAML
+    // literal block scalar (`|`) instead. Block style lets both
+    // stand bare, which reads far better than `\n`/`\"`. Plain
+    // single-line strings stay double-quoted.
+    if s.contains('\n') || s.contains('"') {
+        write_block_scalar(out, s, indent);
+        return;
+    }
     out.push('"');
     for c in s.chars() {
         match c {
-            '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c => out.push(c),
@@ -120,7 +138,38 @@ fn write_string(out: &mut String, s: &str) {
     out.push('"');
 }
 
-fn looks_like_uri(s: &str) -> bool {
+/// Write `s` as a YAML literal block scalar. The `|` indicator
+/// goes on the field line; every content line is indented one
+/// level (two spaces) past the field's key indent.
+fn write_block_scalar(out: &mut String, s: &str, indent: usize) {
+    let content_indent = indent + 2;
+    // `|-` strips the final newline so a value without a trailing
+    // newline round-trips; `|` (clip) keeps exactly one. Pick the
+    // chomping indicator from whether the source ends in `\n`.
+    if s.ends_with('\n') {
+        out.push('|');
+    } else {
+        out.push_str("|-");
+    }
+    for line in s.split('\n') {
+        out.push('\n');
+        // Empty lines stay empty — trailing indentation on a blank
+        // line is just noise and some YAML linters flag it.
+        if !line.is_empty() {
+            for _ in 0..content_indent {
+                out.push(' ');
+            }
+            out.push_str(line.trim_end_matches('\r'));
+        }
+    }
+}
+
+/// True when `s` should render as a bare entity URI rather than a
+/// quoted string — a scheme-prefixed value (`did:key:…`, `id:foo`)
+/// or a reverse-dotted attribute URI (`xyz.tonk.view/greeting`).
+/// Public so consumers classifying values (e.g. the grouped
+/// evaluate view) decorate URIs the same way this formatter does.
+pub fn looks_like_uri(s: &str) -> bool {
     if s.chars().any(char::is_whitespace) {
         return false;
     }
@@ -243,9 +292,45 @@ mod tests {
     }
 
     #[test]
-    fn it_escapes_quotes_in_strings() {
+    fn it_renders_a_single_line_quoted_string_as_a_block_scalar() {
+        // A `"` anywhere — even on one line — pushes the value to
+        // block style so the quotes stand bare instead of `\"`.
         let f = fields(&[("message", json!("She said \"hi\""))]);
         let out = format("did:key:zX", &f, "greeting", None);
-        assert!(out.contains("message: \"She said \\\"hi\\\"\"\n"));
+        assert!(out.contains("message: |-\n"), "got: {out}");
+        assert!(out.contains("\n    She said \"hi\"\n"), "got: {out}");
+        assert!(!out.contains("\\\""), "no escaped quotes: {out}");
+    }
+
+    #[test]
+    fn it_renders_multiline_strings_as_a_block_scalar() {
+        // A newline-bearing string becomes a YAML literal block
+        // scalar — content indented one level past the `message`
+        // key (4 spaces), not an unreadable `\n`-escaped one-liner.
+        let f = fields(&[("message", json!("line one\nline two"))]);
+        let out = format("did:key:zX", &f, "greeting", None);
+        assert!(out.contains("message: |-\n"), "got: {out}");
+        assert!(out.contains("\n    line one\n"), "got: {out}");
+        assert!(out.contains("\n    line two\n"), "got: {out}");
+        assert!(!out.contains("\\n"), "should not escape newlines: {out}");
+    }
+
+    #[test]
+    fn it_keeps_a_trailing_newline_with_clip_chomping() {
+        // A source string that ends in `\n` uses `|` (clip) so the
+        // final newline round-trips; one without uses `|-` (strip).
+        let f = fields(&[("body", json!("paragraph\n"))]);
+        let out = format("did:key:zX", &f, "doc", None);
+        assert!(out.contains("body: |\n"), "expected clip indicator: {out}");
+    }
+
+    #[test]
+    fn it_leaves_quotes_bare_inside_a_block_scalar() {
+        // Block scalars need no escaping — a multi-line string with
+        // quotes renders them literally rather than `\"`.
+        let f = fields(&[("quote", json!("she said\n\"hello\""))]);
+        let out = format("did:key:zX", &f, "note", None);
+        assert!(out.contains("\n    \"hello\""), "got: {out}");
+        assert!(!out.contains("\\\""), "no escaped quotes in block: {out}");
     }
 }
