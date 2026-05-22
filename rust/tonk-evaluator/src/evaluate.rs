@@ -73,7 +73,7 @@ use tonk_core::transact::{Application, ApplicationPlan, Planner as _, Statement}
 use tonk_schema::concept::{QueryEnv, application_to_plan};
 use tonk_schema::query_source::Source;
 
-use crate::effect_query::EffectStatement;
+use crate::effect_query::{EffectStatement, effect_by_entity};
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -419,6 +419,28 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // count by 4 + premise-attribute count.
                             claim_count += 4 + effect.on_entities().len();
                             txn = txn.assert(EffectStatement(effect.clone()));
+                        }
+                        Statement::RetractEffect(entity) => {
+                            // A `rule!:` retraction (`this: <effect>
+                            // / ..: _`) uninstalls the effect at
+                            // `entity`. `retract_effect` derives the
+                            // facts to dissociate from the full
+                            // `Effect`, so load it from the branch
+                            // first. A missing effect is a no-op —
+                            // there is nothing to dissociate.
+                            let effect = effect_by_entity(entity.clone())
+                                .resolve(branch, env)
+                                .await
+                                .map_err(|e| {
+                                    EvaluateError::Plan(format!(
+                                        "rule retraction effect lookup failed: {e}"
+                                    ))
+                                })?;
+                            if let Some(effect) = effect {
+                                eprintln!("DBG retract source={}", effect.source());
+                                claim_count += 4 + effect.on_entities().len();
+                                txn = txn.retract(EffectStatement(effect));
+                            }
                         }
                     }
                 }
@@ -1836,6 +1858,126 @@ rule!:\n\
             effect.conclusion(),
             one_text_field("io.gozala.pong", "tag").this(),
             "the installed effect's head concept should be pong"
+        );
+
+        Ok(())
+    }
+
+    /// End-to-end: install a rule, commit it, then uninstall it
+    /// with `rule!: this: <effect> / ..: _`. After the retraction
+    /// commits, the effect's facts are gone — the
+    /// `dialog.effect/source` claim no longer resolves.
+    #[dialog_common::test]
+    async fn it_uninstalls_a_rule_via_notation_retraction() -> anyhow::Result<()> {
+        /// Count the `dialog.effect/source` claims on `entity` —
+        /// `assert_effect` writes exactly one, `retract_effect`
+        /// dissociates it.
+        async fn effect_source_claims(
+            branch: &dialog_repository::Branch,
+            env: &impl crate::effect_query::EffectEnv,
+            entity: &dialog_artifacts::Entity,
+        ) -> anyhow::Result<usize> {
+            let the: dialog_query::attribute::The =
+                "dialog.effect/source".parse().expect("valid attribute");
+            let claims: Vec<dialog_query::Claim> = branch
+                .query()
+                .select(dialog_query::AttributeQuery::from(
+                    Term::<dialog_query::attribute::The>::from(the)
+                        .of(Term::from(entity.clone()))
+                        .is(Term::<String>::var("source")),
+                ))
+                .perform(env)
+                .try_vec()
+                .await
+                .map_err(|e| anyhow::anyhow!("source query: {e:?}"))?;
+            Ok(claims.len())
+        }
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit the concepts the rule references.
+        let concepts = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n";
+        parse(concepts)
+            .syntax
+            .expect("concepts syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
+
+        // Install the rule and commit it.
+        let rule_doc = "\
+rule!:\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let evaluated = parse(rule_doc)
+            .syntax
+            .expect("rule syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
+        let statements = evaluated.analysis.analysis.statements();
+        let Statement::InstallEffect(effect) = &statements[0].statement else {
+            panic!("expected InstallEffect, got {:?}", statements[0].statement);
+        };
+        let effect_entity = effect.this();
+        evaluated
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (rule): {e}"))?;
+
+        // The effect is installed — its source claim is present.
+        assert_eq!(
+            effect_source_claims(&branch, &operator, &effect_entity).await?,
+            1,
+            "effect source claim should be present after install"
+        );
+
+        // Uninstall it via a `rule!:` retraction.
+        let retract_doc = format!("rule!:\n  this: {effect_entity}\n  ..: _\n");
+        parse(&retract_doc)
+            .syntax
+            .expect("retract syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (retract): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (retract): {e}"))?;
+
+        // The effect's facts are gone.
+        assert_eq!(
+            effect_source_claims(&branch, &operator, &effect_entity).await?,
+            0,
+            "effect source claim should be dissociated after retraction"
         );
 
         Ok(())

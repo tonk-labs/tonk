@@ -41,16 +41,23 @@ pub enum Statement {
     /// `tonk_evaluator::effect_query::assert_effect`) that
     /// the reactor's induce loop reads on every subsequent commit.
     InstallEffect(Effect),
+    /// `rule!:` retraction shape (`this: <effect> / ..: _`) —
+    /// uninstall the effect at the given entity. Carries only the
+    /// effect entity; the evaluator loads the `Effect`'s current
+    /// facts from the branch and dissociates them (via
+    /// `tonk_evaluator::effect_query::retract_effect`).
+    RetractEffect(Entity),
 }
 
 impl Statement {
     /// The wrapped [`Application`], if this statement carries one.
-    /// `InstallEffect` has no application — it installs an effect
-    /// rather than applying a predicate to terms.
+    /// `InstallEffect` / `RetractEffect` have no application —
+    /// they install or uninstall an effect rather than applying a
+    /// predicate to terms.
     pub fn application(&self) -> Option<&Application> {
         match self {
             Self::Assert(a) | Self::Retract(a) => Some(a),
-            Self::InstallEffect(_) => None,
+            Self::InstallEffect(_) | Self::RetractEffect(_) => None,
         }
     }
 }

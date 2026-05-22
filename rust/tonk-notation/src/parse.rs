@@ -18,7 +18,7 @@ use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiv
 
 use crate::syntax::{
     Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Premise, Query, Rule,
-    RulePolarity, Scalar, Spanned, Syntax,
+    RuleInstall, RulePolarity, RuleRetract, Scalar, Spanned, Syntax,
 };
 
 /// Outcome of a parse.
@@ -470,16 +470,18 @@ fn is_rule_head(head: &Head) -> bool {
 
 /// Parse a `rule!:` body into a [`Rule`] expression.
 ///
-/// The body must be a mapping with these keys:
+/// `rule!:` carries one of two body shapes, distinguished by
+/// which keys appear:
 ///
-/// - exactly one of `assert!:` or `retract!:` — value is the
-///   head concept name
-/// - `when:` — required, list of premises
-/// - `unless:` — optional, list of premises
-/// - `description:` — optional, string
+/// - **install** — a mapping with exactly one of `assert!:` /
+///   `retract!:` (head concept name), `when:` (required premise
+///   list), optional `unless:` and `description:`.
+/// - **retraction** — a mapping with `this:` (the effect entity
+///   to uninstall) and `..: _` (the rest-retraction marker).
 ///
-/// Unknown top-level keys raise a diagnostic but don't reject
-/// the rule.
+/// `this:` present selects the retraction shape; `assert!:` /
+/// `retract!:` present selects the install shape. Both together,
+/// or neither, is a parse error.
 fn parse_rule_body(
     head: &Head,
     value: &MarkedYaml<'_>,
@@ -489,11 +491,47 @@ fn parse_rule_body(
     let Some(pairs) = mapping_of(value) else {
         out.push(error(
             range_of(value),
-            "`rule!:` body must be a mapping with `assert!:` or \
-             `retract!:` plus a `when:` list.",
+            "`rule!:` body must be a mapping — either `assert!:` / \
+             `retract!:` plus a `when:` list (install), or `this:` \
+             plus `..: _` (uninstall).",
         ));
         return None;
     };
+
+    // Distinguish the two body shapes by which keys appear.
+    let mut has_this = false;
+    let mut has_polarity = false;
+    for (k, _) in pairs {
+        if let Some(key) = string_of(k) {
+            match key {
+                "this" => has_this = true,
+                "assert!" | "retract!" => has_polarity = true,
+                _ => {}
+            }
+        }
+    }
+    match (has_this, has_polarity) {
+        (true, true) => {
+            out.push(error(
+                block_range,
+                "`rule!:` body mixes the install shape (`assert!:` / \
+                 `retract!:`) with the uninstall shape (`this:`). Use \
+                 one: install a rule, or uninstall the rule at a \
+                 `this:` entity.",
+            ));
+            return None;
+        }
+        (false, false) => {
+            out.push(error(
+                block_range,
+                "`rule!:` body must declare either `assert!:` / \
+                 `retract!:` (install) or `this:` (uninstall).",
+            ));
+            return None;
+        }
+        (true, false) => return parse_rule_retract_body(head, pairs, block_range, out),
+        (false, true) => {}
+    }
 
     let mut polarity: Option<(RulePolarity, Spanned<String>, Range)> = None;
     let mut when: Option<(Vec<Premise>, Range)> = None;
@@ -615,7 +653,7 @@ fn parse_rule_body(
         return None;
     }
 
-    Some(Expression::Rule(Rule {
+    Some(Expression::Rule(Rule::Install(RuleInstall {
         head: head.clone(),
         polarity,
         conclusion,
@@ -623,7 +661,100 @@ fn parse_rule_body(
         unless: unless.map(|(p, _)| p).unwrap_or_default(),
         description,
         range: block_range,
-    }))
+    })))
+}
+
+/// Parse a `rule!:` retraction body — `this: <effect-entity>`
+/// plus `..: _`. Surfaced by [`parse_rule_body`] once it has
+/// classified the body as the uninstall shape.
+fn parse_rule_retract_body<'b>(
+    head: &Head,
+    pairs: &saphyr::AnnotatedMapping<'b, MarkedYaml<'b>>,
+    block_range: Range,
+    out: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    let mut entity: Option<Spanned<String>> = None;
+    let mut saw_rest_retraction = false;
+
+    for (k, v) in pairs {
+        let Some(key) = string_of(k) else {
+            out.push(error(
+                range_of(k),
+                "Rule retraction body key must be a string (`this:` or `..:`).",
+            ));
+            continue;
+        };
+        let key_range = range_of(k);
+        match key {
+            "this" => {
+                if entity.is_some() {
+                    out.push(error(
+                        key_range,
+                        "Rule retraction already declared `this:`. \
+                         A retraction names one effect entity.",
+                    ));
+                    continue;
+                }
+                let value = walk_field_value(v, out)?;
+                match value {
+                    FieldValue::Uri(uri) => {
+                        entity = Some(Spanned::new(uri, range_of(v)));
+                    }
+                    _ => {
+                        out.push(error(
+                            range_of(v),
+                            "Rule retraction `this:` must be an effect entity URI \
+                             (e.g. `effect:7Egd…`).",
+                        ));
+                        continue;
+                    }
+                }
+            }
+            ".." => {
+                if !matches!(walk_field_value(v, out)?, FieldValue::Blank) {
+                    out.push(error(
+                        range_of(v),
+                        "Rule retraction `..:` must be `_` — the \
+                         rest-retraction marker.",
+                    ));
+                    continue;
+                }
+                saw_rest_retraction = true;
+            }
+            other => {
+                out.push(error(
+                    key_range,
+                    format!(
+                        "Unknown rule retraction body key `{other}`. A \
+                         rule retraction has exactly `this:` and `..: _`."
+                    ),
+                ));
+            }
+        }
+    }
+
+    let Some(entity) = entity else {
+        out.push(error(
+            block_range,
+            "Rule retraction must declare `this:` with the effect \
+             entity to uninstall.",
+        ));
+        return None;
+    };
+    if !saw_rest_retraction {
+        out.push(error(
+            block_range,
+            "Rule retraction must declare `..: _` — the \
+             rest-retraction marker.",
+        ));
+        return None;
+    }
+
+    Some(Expression::Rule(Rule::Retract(RuleRetract {
+        head: head.clone(),
+        entity,
+        range: block_range,
+    })))
 }
 
 /// Parse a `when:` or `unless:` value into a list of premises.
@@ -2291,8 +2422,8 @@ page!:
         let syntax =
             parse_clean("rule!:\n  assert!: pong\n  when:\n    - assert: ping\n      where: {}\n");
         assert_eq!(syntax.expressions.len(), 1);
-        let Expression::Rule(rule) = &syntax.expressions[0] else {
-            panic!("expected Rule");
+        let Expression::Rule(Rule::Install(rule)) = &syntax.expressions[0] else {
+            panic!("expected Rule::Install");
         };
         assert_eq!(rule.polarity, RulePolarity::Assert);
         assert_eq!(rule.conclusion.value, "pong");
@@ -2315,8 +2446,8 @@ page!:
              \x20   - assert: message\n\
              \x20     where: { this: ?m, body: ?b }\n",
         );
-        let Expression::Rule(rule) = &syntax.expressions[0] else {
-            panic!("expected Rule");
+        let Expression::Rule(Rule::Install(rule)) = &syntax.expressions[0] else {
+            panic!("expected Rule::Install");
         };
         assert_eq!(rule.polarity, RulePolarity::Retract);
         assert_eq!(rule.conclusion.value, "message");
@@ -2343,8 +2474,8 @@ page!:
              \x20   - assert: counter-paused\n\
              \x20     where: { this: ?c }\n",
         );
-        let Expression::Rule(rule) = &syntax.expressions[0] else {
-            panic!("expected Rule");
+        let Expression::Rule(Rule::Install(rule)) = &syntax.expressions[0] else {
+            panic!("expected Rule::Install");
         };
         assert_eq!(rule.unless.len(), 1);
         assert_eq!(rule.unless[0].concept.value, "counter-paused");
@@ -2422,6 +2553,69 @@ page!:
         assert!(
             messages.iter().any(|m| m.contains("one polarity")),
             "expected diagnostic about duplicate polarity, got {messages:?}",
+        );
+    }
+
+    /// `rule!: this: <uri> ..: _` parses to a rule retraction
+    /// carrying the effect entity to uninstall.
+    #[dialog_common::test]
+    fn it_parses_rule_retraction() {
+        let syntax = parse_clean(
+            "rule!:\n\
+             \x20 this: effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8\n\
+             \x20 ..: _\n",
+        );
+        assert_eq!(syntax.expressions.len(), 1);
+        let Expression::Rule(Rule::Retract(rule)) = &syntax.expressions[0] else {
+            panic!("expected Rule::Retract");
+        };
+        assert_eq!(
+            rule.entity.value,
+            "effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8"
+        );
+    }
+
+    /// Mixing the install shape (`assert!:`) with the uninstall
+    /// shape (`this:`) is a hard error.
+    #[dialog_common::test]
+    fn it_rejects_rule_mixing_install_and_retract_keys() {
+        let parsed = parse(
+            "rule!:\n\
+             \x20 this: effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8\n\
+             \x20 ..: _\n\
+             \x20 assert!: pong\n\
+             \x20 when:\n\
+             \x20   - assert: ping\n\
+             \x20     where: {}\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("mixes the install shape")),
+            "expected diagnostic about mixed shapes, got {messages:?}",
+        );
+    }
+
+    /// A rule retraction missing `..: _` is rejected.
+    #[dialog_common::test]
+    fn it_rejects_rule_retraction_without_rest_marker() {
+        let parsed = parse(
+            "rule!:\n\
+             \x20 this: effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages.iter().any(|m| m.contains("`..: _`")),
+            "expected diagnostic about missing `..: _`, got {messages:?}",
         );
     }
 

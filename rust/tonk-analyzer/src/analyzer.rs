@@ -56,7 +56,7 @@ use tonk_core::transact::{Application, DomainApplication, Statement, ThisIntent}
 
 use crate::analysis::{
     Analysis as Tree, AssertionAnalysis, DocumentAnalysis, ExpressionAnalysis, Predicate,
-    QueryNodeAnalysis, RuleAnalysis,
+    QueryNodeAnalysis,
 };
 use tonk_core::mutation::ConceptDescriptor;
 
@@ -521,10 +521,10 @@ async fn expand<R: Resolver + ConditionalSync>(
     // effect lands as a `Statement::InstallEffect`.
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Rule(rule_expr) = expression {
-            let effect = rule::lift_rule(rule_expr, scope, &working).await?;
+            let analysis = rule::lift_rule(rule_expr, scope, &working).await?;
             nodes[index] = Some(ExpressionAnalysis::Rule(Box::new(Tree {
                 source: rule_expr.clone(),
-                analysis: RuleAnalysis { effect },
+                analysis,
             })));
         }
     }

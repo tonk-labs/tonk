@@ -64,7 +64,7 @@ impl Expression {
         match self {
             Expression::Query(q) => q.range,
             Expression::Assertion(a) => a.range,
-            Expression::Rule(r) => r.range,
+            Expression::Rule(r) => r.range(),
         }
     }
 }
@@ -100,8 +100,37 @@ pub struct Assertion {
     pub range: Range,
 }
 
-/// `rule!:` with a structured body. The body's shape is fixed
-/// by the rule grammar rather than free-form `Field`s:
+/// `rule!:` with a structured body. A `rule!:` carries one of
+/// two body shapes, distinguished by which keys appear:
+///
+/// - [`Rule::Install`] — installs an inductive rule. The body
+///   has `assert!:` or `retract!:` (the head concept), `when:`
+///   (positive premises), and optionally `unless:` /
+///   `description:`.
+/// - [`Rule::Retract`] — uninstalls a previously installed rule.
+///   The body has `this: <effect-entity>` and `..: _`, mirroring
+///   how a concept instance is retracted.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Rule {
+    /// `rule!:` install shape — an inductive rule definition.
+    Install(RuleInstall),
+    /// `rule!:` retraction shape — uninstall the effect at the
+    /// given entity.
+    Retract(RuleRetract),
+}
+
+impl Rule {
+    /// Source range of the whole `rule!: …` block.
+    pub fn range(&self) -> Range {
+        match self {
+            Rule::Install(r) => r.range,
+            Rule::Retract(r) => r.range,
+        }
+    }
+}
+
+/// `rule!:` install shape. The body's shape is fixed by the rule
+/// grammar rather than free-form `Field`s:
 ///
 /// ```yaml
 /// rule!:
@@ -122,7 +151,7 @@ pub struct Assertion {
 /// `when` list must be non-empty; each premise binds variables
 /// that the head reads.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Rule {
+pub struct RuleInstall {
     /// The `rule!:` head itself (always concept `rule` with
     /// `effect = true`).
     pub head: Head,
@@ -137,6 +166,30 @@ pub struct Rule {
     pub unless: Vec<Premise>,
     /// Optional human-readable description.
     pub description: Option<Spanned<String>>,
+    /// Span of the whole `rule!: …` block.
+    pub range: Range,
+}
+
+/// `rule!:` retraction shape — uninstall the installed rule
+/// (effect) stored at `entity`:
+///
+/// ```yaml
+/// rule!:
+///   this: effect:7Egd23og28aqm1dkPbyQBE6YZXbNDWraiggU2Uq7rwj8
+///   ..: _
+/// ```
+///
+/// `entity` is the effect entity a `rule:` query surfaces as its
+/// `this` field. `..: _` is the rest-retraction marker, mirroring
+/// how a concept instance is retracted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuleRetract {
+    /// The `rule!:` head itself (always concept `rule` with
+    /// `effect = true`).
+    pub head: Head,
+    /// The effect entity to uninstall — the value of the `this:`
+    /// field.
+    pub entity: Spanned<String>,
     /// Span of the whole `rule!: …` block.
     pub range: Range,
 }
