@@ -1442,6 +1442,236 @@ rule!:\n\
         Ok(())
     }
 
+    /// Repro mirroring the user's report: transient `person-entered`
+    /// (two fields, one numeric), a durable `person` concept, a
+    /// rule person <- person-entered, then a notation instance
+    /// `person-entered!:`. Expect a durable `person` to appear.
+    #[dialog_common::test]
+    async fn it_fires_a_rule_on_a_two_field_notation_transient() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit each document separately, as a user would across
+        // editor cells / sessions: concepts first, then the rule,
+        // then the instance.
+        let commit_doc = async |doc: &str, label: &str| -> anyhow::Result<()> {
+            let parsed = parse(doc);
+            assert!(
+                parsed.diagnostics.is_empty(),
+                "{label} parse diagnostics: {:?}",
+                parsed.diagnostics
+            );
+            let syntax = parsed.syntax.expect("syntax");
+            syntax
+                .evaluate(branch.transaction())
+                .perform(&branch, &operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("evaluate ({label}): {e}"))?
+                .commit()
+                .perform(&branch, &operator)
+                .await
+                .map_err(|e| anyhow::anyhow!("commit ({label}): {e}"))?;
+            Ok(())
+        };
+
+        // Commit 1: the transient concept + the durable concept.
+        commit_doc(
+            "\
+concept!: &person-entered\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   name:\n\
+\x20     the: xyz.tonk.env/name\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"name\"\n\
+\x20   age:\n\
+\x20     the: xyz.tonk.env/age\n\
+\x20     as: unsigned-integer\n\
+\x20     cardinality: one\n\
+\x20     description: \"age\"\n\
+\n\
+attribute!: &person-name\n\
+\x20 description: The person's name\n\
+\x20 the: xyz.tonk.person/name\n\
+\x20 as: text\n\
+\x20 cardinality: one\n\
+\n\
+attribute!: &person-age\n\
+\x20 description: The person's age\n\
+\x20 the: xyz.tonk.person/age\n\
+\x20 as: unsigned-integer\n\
+\x20 cardinality: one\n\
+\n\
+concept!: &person\n\
+\x20 description: \"A person\"\n\
+\x20 with:\n\
+\x20   name: person-name\n\
+\x20   age: person-age\n",
+            "concepts",
+        )
+        .await?;
+
+        // Commit 2: the rule — a separate document.
+        commit_doc(
+            "\
+rule!:\n\
+\x20 assert!: person\n\
+\x20 when:\n\
+\x20   - assert: person-entered\n\
+\x20     where: { this: ?this, name: ?name, age: ?age }\n",
+            "rule",
+        )
+        .await?;
+
+        let parsed = parse(
+            "person-entered!:\n  this: did:key:zPersonEnteredSubject\n  name: \"Tester Joe\"\n  age: 42\n",
+        );
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "instance parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let instance = parsed.syntax.expect("instance syntax");
+
+        // Re-open the branch from storage before the instance
+        // commit — the rule must be *loaded* from the branch's
+        // dialog.effect/* facts, not held in memory. This is what
+        // a separate /evaluate request does.
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        instance
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
+
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // A durable person.name claim should exist.
+        let person_name: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.person/name"))
+                    .of(Term::<dialog_artifacts::Entity>::var("p"))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            person_name.len(),
+            1,
+            "rule should have produced a durable person; saw {person_name:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Repro: a transient concept *instance* asserted through
+    /// notation (`ping!:`) — not raw `Changes` — must seed the
+    /// effects fixpoint so the installed rule fires and the
+    /// durable head lands.
+    #[dialog_common::test]
+    async fn it_fires_a_rule_on_a_notation_transient_instance() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let install = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+rule!:\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let syntax = parse(install).syntax.expect("install syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        // Assert a transient `ping` instance via notation — the
+        // path the worker's /evaluate route runs.
+        let parsed = parse("ping!:\n  this: did:key:zNotationTransientSubject\n  tag: \"hi\"\n");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let instance = parsed.syntax.expect("instance syntax");
+        instance
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
+
+        let subject: dialog_artifacts::Entity = "did:key:zNotationTransientSubject".parse()?;
+
+        let pong_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("io.gozala.pong/tag"))
+                    .of(Term::from(subject.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            pong_claims.len(),
+            1,
+            "rule should have produced a durable pong; saw {pong_claims:?}"
+        );
+
+        let ping_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("io.gozala.ping/tag"))
+                    .of(Term::from(subject))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            ping_claims.is_empty(),
+            "transient ping should have been swept; saw {ping_claims:?}"
+        );
+
+        Ok(())
+    }
+
     /// `syntax.analyze(source).perform(env)` standalone — the
     /// first lifecycle entry point used on its own, with no
     /// `compile` or `evaluate` step. Installs a concept on the
