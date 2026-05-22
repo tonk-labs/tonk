@@ -31,7 +31,7 @@ use std::sync::Arc;
 use axum::{
     Extension,
     body::{Body, Bytes},
-    extract::Request,
+    extract::{Request, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -47,7 +47,10 @@ use tokio::sync::{Mutex, broadcast};
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::BroadcastStream;
 use tonk_common::log;
-use tonk_language_server::{IntrospectionFactory, Server};
+use tonk_language_server::Server;
+
+use crate::router::AppState;
+use crate::router::lsp_env::LspEnvProvider;
 
 /// Channel capacity for outbound LSP notifications.
 ///
@@ -100,27 +103,17 @@ impl LspHub {
         })
     }
 
-    /// Variant of [`LspHub::new`] that wires a host-supplied
-    /// [`IntrospectionFactory`] into the server. The factory
-    /// turns a document URI into a branch-bound
-    /// [`tonk_introspect::BranchIntrospection`], which the
-    /// completion handler uses to surface branch-published
-    /// concepts.
-    pub fn with_introspection(factory: Arc<dyn IntrospectionFactory>) -> Arc<Self> {
-        let (outbound, _drop) = broadcast::channel(OUTBOUND_BUFFER);
-        Arc::new(Self {
-            server: Mutex::new(Server::with_introspection(factory)),
-            outbound: Mutex::new(Some(outbound)),
-        })
-    }
-
     /// Run an LSP message through the server and queue any
     /// resulting outbound notifications onto the broadcast.
     /// Returns the JSON-RPC response (for requests) or `None`
     /// (for notifications and unparseable messages).
-    async fn dispatch(&self, raw: &[u8]) -> Option<Vec<u8>> {
+    ///
+    /// `env` is the per-request [`LspEnvProvider`] — the language
+    /// server resolves diagnostics, completion, and hover against
+    /// whatever live branch it opens through it.
+    async fn dispatch(&self, raw: &[u8], env: &LspEnvProvider) -> Option<Vec<u8>> {
         let mut server = self.server.lock().await;
-        let reply = server.handle_message(raw).await;
+        let reply = server.handle_message(raw, env).await;
         let outbound = self.outbound.lock().await;
         for note in server.take_outbound() {
             let bytes = match serde_json::to_vec(&note) {
@@ -180,35 +173,31 @@ impl LspHub {
     }
 }
 
-/// Mount the LSP route onto an axum router. Returns both the
-/// router *and* a handle to the [`LspHub`] so the worker entry
-/// point can call [`LspHub::shutdown`] when a newer service worker
-/// version begins installing.
-pub fn lsp_router() -> (axum::Router, Arc<LspHub>) {
-    mount(LspHub::new())
-}
-
-/// Variant of [`lsp_router`] that wires a host-supplied
-/// [`IntrospectionFactory`] into the underlying [`Server`] so
-/// completion can surface branch-published concepts.
-pub fn lsp_router_with_introspection(
-    factory: Arc<dyn IntrospectionFactory>,
-) -> (axum::Router, Arc<LspHub>) {
-    mount(LspHub::with_introspection(factory))
-}
-
-fn mount(hub: Arc<LspHub>) -> (axum::Router, Arc<LspHub>) {
+/// Mount the LSP route onto an axum router. Takes the worker's
+/// [`AppState`] so the POST handler can open the live environment
+/// for completion / hover / diagnostics. Returns both the router
+/// *and* a handle to the [`LspHub`] so the worker entry point can
+/// call [`LspHub::shutdown`] when a newer service worker version
+/// begins installing.
+pub fn lsp_router(state: AppState) -> (axum::Router, Arc<LspHub>) {
+    let hub = LspHub::new();
     let router = axum::Router::new()
         .route("/api/language-server", get(handle_events).post(handle_post))
-        .layer(Extension(hub.clone()));
+        .layer(Extension(hub.clone()))
+        .with_state(state);
     (router, hub)
 }
 
 /// `POST /api/language-server` handler. Reads the entire request
-/// body as a JSON-RPC message, dispatches it, and returns the
+/// body as a JSON-RPC message, dispatches it against the live
+/// environment opened from the worker state, and returns the
 /// reply (empty body for notifications).
 #[wasm_compat]
-async fn handle_post(Extension(hub): Extension<Arc<LspHub>>, request: Request) -> Response {
+async fn handle_post(
+    Extension(hub): Extension<Arc<LspHub>>,
+    State(state): State<AppState>,
+    request: Request,
+) -> Response {
     let bytes = match request.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(err) => {
@@ -223,7 +212,8 @@ async fn handle_post(Extension(hub): Extension<Arc<LspHub>>, request: Request) -
     // (`router::axum`) attaches a body stream for every response,
     // and 204 forbids one — the browser would throw. Empty 200 is
     // the JSON-RPC "no reply" signal anyway.
-    let body = hub.dispatch(&bytes).await.unwrap_or_default();
+    let env = LspEnvProvider::new(state);
+    let body = hub.dispatch(&bytes, &env).await.unwrap_or_default();
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")

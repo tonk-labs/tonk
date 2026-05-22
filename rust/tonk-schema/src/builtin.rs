@@ -4,10 +4,10 @@
 //! describe the meta-schema itself ([`attribute`], [`concept`]) or
 //! repository state written by the worker as native Rust types
 //! ([`branch`], [`replica`], [`remote`], [`tracking-branch`]). The
-//! [`Resolver`] can't fetch them because nothing on the branch
-//! tags them as concepts; instead the analyzer consults this
-//! registry first and falls through to the resolver only when no
-//! built-in matches.
+//! resolution surface can't fetch them because nothing on the
+//! branch tags them as concepts; instead the analyzer consults
+//! this registry first and falls through to the live environment
+//! only when no built-in matches.
 //!
 //! Built-ins win over branch-defined concepts of the same name.
 //! In-document `concept!` definitions still win over built-ins
@@ -16,31 +16,24 @@
 //!
 //! # Result type
 //!
-//! The registry stores [`tonk_introspect::ResolvedConcept`] —
-//! entity plus a plain dialog descriptor. The analyzer wants the
-//! durability-tagged [`crate::resolution::ConceptDefinition`];
-//! [`lookup_concept_definition`] converts at the boundary (every
-//! built-in is durable). The plain-descriptor [`lookup_concept`] /
-//! [`concept_registry`] accessors stay because the language
-//! server's completion/hover paths consume them directly — a
-//! later slice that owns the LSP boundary collapses them.
-//!
-//! [`Resolver`]: crate::analyzer::Resolver
+//! The registry stores [`crate::resolution::ConceptDefinition`] —
+//! entity plus a durability-tagged descriptor. Every built-in is
+//! durable.
 
 use std::sync::OnceLock;
 
 use dialog_artifacts::Entity;
-use dialog_query::ConceptDescriptor;
-use tonk_introspect::ResolvedConcept;
+use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 
 use crate::meta::{AnonymousAttributeQuery, NameQuery};
-use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;
+use crate::mutation::ConceptDescriptor;
 use crate::resolution::ConceptDefinition;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
 
-/// Look up a built-in concept by head-name. Returns `None` for
-/// names that fall through to the resolver.
-pub fn lookup_concept(name: &str) -> Option<ResolvedConcept> {
+/// Look up a built-in concept by head-name as a durability-tagged
+/// [`ConceptDefinition`]. Returns `None` for names that fall
+/// through to the live environment. Built-ins are always durable.
+pub fn lookup_concept(name: &str) -> Option<ConceptDefinition> {
     REGISTRY
         .get_or_init(build_registry)
         .iter()
@@ -48,32 +41,16 @@ pub fn lookup_concept(name: &str) -> Option<ResolvedConcept> {
         .map(|(_, concept)| concept.clone())
 }
 
-/// Look up a built-in concept as a durability-tagged
-/// [`ConceptDefinition`] — the resolved-concept type the analyzer
-/// works with. Built-ins are always durable.
-pub fn lookup_concept_definition(name: &str) -> Option<ConceptDefinition> {
-    lookup_concept(name).map(definition)
-}
-
-/// Iterate every built-in concept as `(name, ResolvedConcept)`
+/// Iterate every built-in concept as `(name, ConceptDefinition)`
 /// pairs. Used by the concept-of-concept query path to surface
 /// built-ins in a `concept:` query result.
-pub fn concept_registry() -> &'static [(&'static str, ResolvedConcept)] {
+pub fn concept_registry() -> &'static [(&'static str, ConceptDefinition)] {
     REGISTRY.get_or_init(build_registry).as_slice()
 }
 
-/// Wrap a built-in [`ResolvedConcept`] as a durable
-/// [`ConceptDefinition`].
-fn definition(concept: ResolvedConcept) -> ConceptDefinition {
-    ConceptDefinition {
-        entity: concept.entity,
-        descriptor: DurableConceptDescriptor::Durable(concept.descriptor),
-    }
-}
+static REGISTRY: OnceLock<Vec<(&'static str, ConceptDefinition)>> = OnceLock::new();
 
-static REGISTRY: OnceLock<Vec<(&'static str, ResolvedConcept)>> = OnceLock::new();
-
-fn build_registry() -> Vec<(&'static str, ResolvedConcept)> {
+fn build_registry() -> Vec<(&'static str, ConceptDefinition)> {
     vec![
         ("attribute", builtin::<AnonymousAttributeQuery>("attribute")),
         ("concept", concept_descriptor()),
@@ -96,22 +73,23 @@ fn build_registry() -> Vec<(&'static str, ResolvedConcept)> {
 /// query time enumerates *every* concept (built-in + branch) with
 /// a synthesised `source` field.
 ///
-/// Kept as a hand-built [`ConceptDescriptor`] (rather than
-/// `derive(Concept)`) because the concept-of-concept's `with:` is
-/// a dictionary — an arbitrary map of names to attribute
-/// references — not a fixed record of named fields. Rust struct
-/// derives can't express that shape, so this one stays JSON.
-fn concept_descriptor() -> ResolvedConcept {
-    ResolvedConcept {
+/// Kept as a hand-built descriptor (rather than `derive(Concept)`)
+/// because the concept-of-concept's `with:` is a dictionary — an
+/// arbitrary map of names to attribute references — not a fixed
+/// record of named fields. Rust struct derives can't express that
+/// shape, so this one stays JSON.
+fn concept_descriptor() -> ConceptDefinition {
+    ConceptDefinition {
         entity: "db:concept"
             .parse()
             .expect("`db:concept` is a valid entity URI"),
-        descriptor: crate::concept::concept_of_concept_descriptor().clone(),
-        transient: false,
+        descriptor: ConceptDescriptor::Durable(
+            crate::concept::concept_of_concept_descriptor().clone(),
+        ),
     }
 }
 
-/// Build a built-in `ResolvedConcept` from a
+/// Build a built-in [`ConceptDefinition`] from a
 /// `#[derive(Concept)]` Rust type's `Query` newtype.
 ///
 /// The `Query` type's `Default` impl is generated by the derive
@@ -120,17 +98,16 @@ fn concept_descriptor() -> ResolvedConcept {
 /// content-derived hash; built-ins instead live at the stable
 /// `db:<name>` URI so the `db:` scheme protection covers them
 /// and the row remains identifiable without knowing the hash.
-fn builtin<Q>(name: &str) -> ResolvedConcept
+fn builtin<Q>(name: &str) -> ConceptDefinition
 where
     Q: Default,
-    ConceptDescriptor: From<Q>,
+    DialogConceptDescriptor: From<Q>,
 {
     let entity: Entity = format!("db:{name}")
         .parse()
         .expect("`db:<builtin>` is a valid entity URI");
-    ResolvedConcept {
+    ConceptDefinition {
         entity,
-        descriptor: ConceptDescriptor::from(Q::default()),
-        transient: false,
+        descriptor: ConceptDescriptor::Durable(DialogConceptDescriptor::from(Q::default())),
     }
 }

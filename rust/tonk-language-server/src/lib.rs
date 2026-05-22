@@ -37,7 +37,9 @@
 //! method and an entry in the capability advertisement, without
 //! touching the dispatch layer.
 
+mod env;
 mod jsonrpc;
 mod server;
 
-pub use server::{IntrospectionFactory, Server};
+pub use env::{EnvProvider, NoEnv, NoEnvironment};
+pub use server::Server;

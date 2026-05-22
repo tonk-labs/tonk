@@ -22,8 +22,8 @@
 //!
 //! Sub-modules:
 //! - [`error`] — [`AnalyzeError`] enum
-//! - [`resolver`] — [`Resolver`] trait + [`NoopResolver`], the
-//!   name-lookup seam; resolved values are
+//! - [`resolver`] — [`Resolver`] trait + [`NoopResolver`] +
+//!   [`SourceResolver`], the name-lookup seam; resolved values are
 //!   [`crate::resolution::ConceptDefinition`] /
 //!   [`crate::resolution::AttributeDefinition`]
 //! - [`scope`] — in-document name index used during analysis
@@ -58,7 +58,7 @@ use crate::transact::{
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
-pub use resolver::{NoopResolver, Resolver};
+pub use resolver::{EnvironmentResolver, NoopResolver, Resolver, SourceResolver};
 pub use scan::scan_variables;
 
 use crate::mutation::ConceptDescriptor as DurableConceptDescriptor;

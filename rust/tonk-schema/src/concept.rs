@@ -38,7 +38,7 @@ use dialog_query::{
 use dialog_repository::RemoteSite;
 use thiserror::Error;
 
-pub use dialog_query::{AttributeDescriptor, ConceptDescriptor};
+pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
 
 use crate::builtin::concept_registry;
 use crate::meta::AnonymousAttribute;
@@ -704,7 +704,7 @@ impl Application for AnonymousConceptQuery {
                         m.bind(t, dialog_query::Value::String((*builtin_name).to_string()))?;
                     }
                     if let Some(ref t) = source_term {
-                        let json = serde_json::to_string(&resolved.descriptor)
+                        let json = serde_json::to_string(resolved.descriptor.concept())
                             .map_err(|e| EvaluationError::Store(e.to_string()))?;
                         m.bind(t, dialog_query::Value::String(json))?;
                     }

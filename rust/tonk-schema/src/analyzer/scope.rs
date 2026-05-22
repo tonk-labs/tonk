@@ -162,7 +162,7 @@ impl<'a, R: Resolver> Scope<'a, R> {
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
             return Ok(Some(found));
         }
-        if let Some(found) = crate::builtin::lookup_concept_definition(name) {
+        if let Some(found) = crate::builtin::lookup_concept(name) {
             return Ok(Some(found));
         }
         self.inner.resolve_concept(name).await
