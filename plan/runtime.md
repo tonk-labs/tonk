@@ -168,14 +168,29 @@ pub struct NamedReference(pub String);
 
 ### Definitions
 
+A **`ConceptDescriptor`** is a concept's field-set together with whether its facts are durable or transient. Durability is intrinsic to what a concept descriptor *is* — a tag on the type, not a flag beside it:
+
 ```rust
-pub enum ConceptDefinition {
+use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
+
+pub enum ConceptDescriptor {
     /// Facts of this concept persist across commits until retracted.
-    Durable { entity: Entity, descriptor: ConceptDescriptor },
+    Durable(DialogConceptDescriptor),
     /// Facts of this concept exist only for the current timestep —
     /// staged so effects can read them, then stripped before the
     /// durable commit.
-    Transient { entity: Entity, descriptor: ConceptDescriptor },
+    Transient(DialogConceptDescriptor),
+}
+```
+
+The inner field-set is dialog's own descriptor, imported under the alias `DialogConceptDescriptor` so `ConceptDescriptor` names the durability-tagged enum. The alias is transitional — durability belongs on dialog's descriptor itself, and once it lands there this enum dissolves (see open items).
+
+A **definition** is a descriptor reconstructed from a source, paired with the entity it was reconstructed from:
+
+```rust
+pub struct ConceptDefinition {
+    pub entity: Entity,
+    pub descriptor: ConceptDescriptor,
 }
 pub struct AttributeDefinition {
     pub entity: Entity,
@@ -183,11 +198,7 @@ pub struct AttributeDefinition {
 }
 ```
 
-`ConceptDefinition` and `AttributeDefinition` are the resolved result — a concept / attribute reconstructed from a source. Durability is binary state of the whole concept, so `ConceptDefinition` is an enum, not a descriptor plus a flag: a concept is `Durable` or `Transient`, never half of each.
-
-The `Durable | Transient(descriptor)` shape is the same one a `Claim` carries as `PredicateDescriptor` — a durability-tagged `ConceptDescriptor` is a single idea, named once and used on both the definition side and the operation side.
-
-`resolve`'s `perform` reconstructs the descriptor from the entity's EAV facts and reads the `dialog.concept/transient` marker to pick the variant; a concept's `perform` resolves each field attribute via `AttributeReference::from(attr_entity).resolve(source).perform(env)`.
+`resolve`'s `perform` reconstructs the descriptor from the entity's EAV facts, reading the `dialog.concept/transient` marker to pick the `Durable` / `Transient` variant; a concept's `perform` resolves each field attribute via `AttributeReference::from(attr_entity).resolve(source).perform(env)`.
 
 ### Enumeration
 
@@ -273,7 +284,7 @@ struct AssertionAnalysis {
     claims: Vec<Claim>,      // filled by expand
 }
 enum Predicate {
-    Concept(PredicateDescriptor),  // Durable | Transient
+    Concept(ConceptDescriptor),  // Durable | Transient
     Domain(String),
 }
 ```
@@ -284,7 +295,7 @@ enum Predicate {
 
 Lowerings:
 
-- **domain predicate → anonymous concept** — synthesize a `ConceptDescriptor` (one `<domain>/<field>` attribute per field, cardinality one). Always `PredicateDescriptor::Durable`.
+- **domain predicate → anonymous concept** — synthesize a `ConceptDescriptor` (one `<domain>/<field>` attribute per field, cardinality one). Always `ConceptDescriptor::Durable`.
 - **`&anchor` → paired `Name` assert** — the assert, plus a second assert of the built-in `Name` concept publishing `id:<anchor>` → the subject entity. Both land in `AssertionAnalysis::claims`.
 - **omitted `this:` → injected `id:<body-digest>`** — `ThisIntent` is consumed: `Uri` → that entity, `Variable` → a var term, `Derived` → `id:<digest>`.
 
@@ -292,7 +303,7 @@ Lowerings:
 
 ## `Claim` — the unit of a write
 
-A **`Claim`** is the typed assert/retract of a concept application — `Assert | Retract` over a `PredicateApplication` (a durability-tagged `ConceptDescriptor` + terms). It is the single representation for a fact-write, shared by the structured-transaction path and the notation path. Durability is carried in the descriptor's `Durable | Transient` tag — the same enum shape `ConceptDefinition` has — so there is no side-set and no separate transient tracking. Every claim reaching `compile` is concept-shaped: domain predicates and `&anchor` are sugar that `expand` lowers away first.
+A **`Claim`** is the typed assert/retract of a concept application — `Assert | Retract` over a `PredicateApplication` (a `ConceptDescriptor` + terms). It is the single representation for a fact-write, shared by the structured-transaction path and the notation path. Durability rides in the `ConceptDescriptor`'s `Durable | Transient` tag — the same enum a `ConceptDefinition` holds — so there is no side-set and no separate transient tracking. Every claim reaching `compile` is concept-shaped: domain predicates and `&anchor` are sugar that `expand` lowers away first.
 
 `Claim` lives in `tonk-core` (with `PredicateApplication` and `TransactRequest`, a `Claim` batch). It is an operation, not a concept; it carries a `ConceptDescriptor`, so `tonk-core` depends on `tonk-schema`.
 
@@ -333,3 +344,4 @@ flowchart TD
 - **`concept!` / `rule!` expansion.** `expand` lowers only domain predicates, `&anchor`, and derived-`this:`. `concept!` and `rule!` are handled directly by the analyzer. A macro system (`2026-05-16` note) would lower these the same way.
 - **`rule!:` premises.** If a `rule!:` premise may name a domain predicate, the domain→anonymous-concept lowering runs inside rule expansion as well.
 - **Macro fixpoint.** A macro system needs `resolve → expand → …` to iterate — a macro can expand into a new symbol that itself needs resolution. The split into two passes makes that a loop around `resolve` and `expand`. The lowerings here are terminal, so a single pass suffices.
+- **Durability in dialog.** The durability tag belongs on dialog's own concept descriptor — a concept *is* durable or transient at the substrate level. Until dialog carries it, `ConceptDescriptor` is defined in `tonk-schema` as the `Durable | Transient` enum wrapping dialog's plain field-set descriptor (imported under an alias to free the name). When dialog's descriptor carries durability directly, this local enum dissolves and tonk uses dialog's.
