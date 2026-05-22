@@ -135,17 +135,15 @@ impl ConceptDefinition {
 impl NamedReference {
     /// Every published name and the entity it points at.
     pub fn list<S: Source>(source: &S) -> ListNames<'_, S>;
-    // .perform(env) -> Vec<NamedEntity>
+    // .perform(env) -> Vec<Name>
 }
 ```
 
 `NamedReference::list` does not yield definitions — a published
 name can point at any entity (a concept, a concept instance, an
-attribute), so it yields `NamedEntity` bindings:
-
-```rust
-pub struct NamedEntity { pub name: String, pub entity: Entity }
-```
+attribute). It yields `meta::Name`, the existing concept that
+already models a name → target binding (`{ this, entity }`); no
+separate type is introduced.
 
 Enumeration serves editor completion — offering every concept, or
 every published name, for the symbol under the cursor.
@@ -174,9 +172,10 @@ fully monomorphic.
 
 The resolution surface — `ConceptReference` / `AttributeReference`,
 `ConceptDefinition` / `AttributeDefinition`, `NamedReference`,
-`NamedEntity`, `IntrospectionError` — lives in `tonk-schema`. A
-definition *is* schema; a reference resolves one; resolution
-reconstructs one from a branch. All of it is the schema layer.
+`IntrospectionError` — lives in `tonk-schema`, alongside the
+`meta::Name` concept it enumerates. A definition *is* schema; a
+reference resolves one; resolution reconstructs one from a branch.
+All of it is the schema layer.
 
 ## Part B — analyze / evaluate chains
 
