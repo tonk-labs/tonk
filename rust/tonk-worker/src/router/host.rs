@@ -9,7 +9,7 @@
 //! URL the service worker:
 //!
 //! - records `resulting_client_id → {repo, branch}` in the
-//!   [`GuestBindings`] map hanging off `TonkState`, so any
+//!   [`ViewBindings`] map hanging off `TonkState`, so any
 //!   subsequent subresource fetch from the same iframe can be
 //!   identified by client id alone without re-parsing the URL;
 //! - serves the entity's body by selecting the claim
@@ -25,8 +25,6 @@
 //! it was loaded from, so `<script src="/foo.js">` resolves to
 //! `/api/repository/{repo}/branch/{branch}/foo.js`.
 
-use std::{collections::HashMap, sync::Arc};
-
 use ::axum::{
     body::Body,
     extract::{Path, Request, State},
@@ -38,7 +36,6 @@ use dialog_artifacts::{ArtifactSelector, Attribute, Entity, Value};
 use dialog_repository::RepositoryExt as _;
 use futures_util::StreamExt;
 use serde::Deserialize;
-use tokio::sync::RwLock;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
@@ -56,25 +53,22 @@ use crate::TonkWorkerError;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ClientId(pub String);
 
-/// Binding that records which repository and branch an iframe
-/// client is associated with.
-///
-/// Populated on the iframe's initial navigation fetch; looked up
-/// on every subsequent subresource fetch from the same client.
+/// Binding that records which repository and branch an iframe is
+/// bound to. Populated on the iframe's initial navigation fetch;
+/// looked up when `on_message` receives a `hello` from the same
+/// client.
 #[derive(Clone, Debug)]
-pub struct GuestBinding {
+pub struct ViewBinding {
     /// The repository name the iframe is scoped to.
     pub repo: String,
     /// The branch name the iframe is scoped to.
     pub branch: String,
 }
 
-/// Shared map of guest `ClientId → GuestBinding`.
-///
-/// Lives on [`TonkState::guests`] behind its own interior
-/// `RwLock`, so guest registration / lookup doesn't serialize
-/// against profile or operator access on the outer state lock.
-pub type GuestBindings = Arc<RwLock<HashMap<ClientId, GuestBinding>>>;
+/// Shared map of `ClientId → ViewBinding`. Lives on
+/// `TonkState::view_bindings` (renamed from `guests`).
+pub type ViewBindings =
+    std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<ClientId, ViewBinding>>>;
 
 /// Path parameters for the bridge route.
 #[derive(Debug, Deserialize)]
@@ -164,20 +158,32 @@ fn body_for(value: Value) -> Body {
 /// `<body>` content; we provide the doctype, the script, and the
 /// `<body>` boundary.
 ///
-/// The script imports the standalone `<tonk-concept>` web-target
-/// build from `/tonk-concept.js`. `init()` instantiates the wasm
-/// module and the bin shim's `main` registers the element in the
+/// The bridge module's top-level installs `globalThis.tonk` and
+/// posts the `hello` handshake to the SW — loading it as a plain
+/// `<script type="module" src>` is enough.
+///
+/// `tonk-concept.js` is a wasm-bindgen web-target build: importing
+/// it merely binds the exports, so we use an inline module to
+/// `await init()`. That instantiates the wasm and runs the bin
+/// shim's `#[wasm_bindgen(main)]`, which calls
+/// `tonk_concept::register()` and defines `<tonk-concept>` in the
 /// iframe's own `customElements` registry — the parent shell's
 /// registration doesn't reach across documents. The path is
 /// exempted from the iframe-branch rewrite in the worker's fetch
 /// router so the request reaches the dist-root asset rather than
 /// a guest entity lookup.
+///
+/// Module-script order matters: bridge.js's `<script>` tag comes
+/// first so `globalThis.tonk` is populated before the
+/// `tonk_concept` element's `connected_callback` runs and reaches
+/// for it.
 fn wrap_html_body(body: &str) -> String {
     format!(
         "<!doctype html>\n\
          <html>\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
+         <script type=\"module\" src=\"/__tonk/bridge.js\"></script>\n\
          <script type=\"module\">\n\
          import init from '/tonk-concept.js';\n\
          await init();\n\
@@ -221,23 +227,23 @@ pub async fn guest(
         client_id,
     );
 
-    if let Some(client) = client_id {
-        let guests = state.read().await.guests.clone();
-        guests.write().await.insert(
-            client,
-            GuestBinding {
-                repo: params.repo.clone(),
-                branch: params.branch.clone(),
-            },
-        );
-    }
-
     let attribute: Attribute = attribute_str.parse().map_err(|e| {
         TonkWorkerError::Router(format!("Invalid attribute '{}': {}", attribute_str, e))
     })?;
     let entity: Entity = entity_str
         .parse()
         .map_err(|e| TonkWorkerError::Router(format!("Invalid entity '{}': {}", entity_str, e)))?;
+
+    if let Some(client) = client_id {
+        let bindings = state.read().await.view_bindings.clone();
+        bindings.write().await.insert(
+            client,
+            ViewBinding {
+                repo: params.repo.clone(),
+                branch: params.branch.clone(),
+            },
+        );
+    }
 
     let tonk = state.read().await;
 
@@ -273,12 +279,6 @@ pub async fn guest(
     while let Some(result) = stream.next().await {
         match result {
             Ok(artifact) => {
-                // Agent-authored HTML is treated as a body
-                // fragment: wrap it with the doctype, the
-                // `<tonk-concept>` runtime, and the `<body>`
-                // boundary before serving. The agent never sees
-                // these — it writes the body of a layout and the
-                // host hydrates it.
                 let body = if attribute_str == "text/html"
                     && let Value::String(s) = &artifact.is
                 {
@@ -302,4 +302,64 @@ pub async fn guest(
         "No claim found for entity={} attribute={}",
         entity_str, attribute_str,
     )))
+}
+
+#[cfg(test)]
+mod wrapper_tests {
+    use super::*;
+
+    #[dialog_common::test]
+    fn it_injects_the_bridge_module_in_head() {
+        let body = "<h1>hi</h1>";
+        let wrapped = wrap_html_body(body);
+        assert!(wrapped.contains("<!doctype html>"));
+        assert!(wrapped.contains("<head>"));
+        assert!(
+            wrapped.contains("src=\"/__tonk/bridge.js\""),
+            "bridge module script tag missing: {wrapped}",
+        );
+        assert!(wrapped.contains("<body>"));
+        assert!(wrapped.contains("<h1>hi</h1>"));
+    }
+
+    #[dialog_common::test]
+    fn it_also_loads_tonk_concept_runtime() {
+        let wrapped = wrap_html_body("");
+        // Both the bridge module and the tonk-concept module are
+        // loaded. The bridge MUST come first so `globalThis.tonk` is
+        // populated by the time tonk-concept's init runs.
+        let bridge_idx = wrapped
+            .find("/__tonk/bridge.js")
+            .expect("bridge loader missing");
+        let concept_idx = wrapped
+            .find("/tonk-concept.js")
+            .expect("tonk-concept loader missing");
+        assert!(
+            bridge_idx < concept_idx,
+            "bridge module must be loaded before tonk-concept runtime: {wrapped}",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_invokes_tonk_concept_init() {
+        // The trunk-built `tonk-concept.js` (data-type="worker") only
+        // exports `__wbg_init`/`initSync`; nothing in the file
+        // auto-instantiates the wasm module. A bare
+        // `<script type="module" src="/tonk-concept.js">` therefore
+        // binds the exports but never runs `#[wasm_bindgen(main)]`,
+        // so `tonk_concept::register()` never fires and
+        // `<tonk-concept>` is never defined.
+        //
+        // Guard against that regression by asserting the wrapper
+        // imports the default export and awaits it.
+        let wrapped = wrap_html_body("");
+        assert!(
+            wrapped.contains("import init from '/tonk-concept.js'"),
+            "wrapper must import init from /tonk-concept.js: {wrapped}",
+        );
+        assert!(
+            wrapped.contains("await init()"),
+            "wrapper must await init() to instantiate wasm: {wrapped}",
+        );
+    }
 }

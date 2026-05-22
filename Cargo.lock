@@ -4843,10 +4843,8 @@ dependencies = [
 name = "tonk-display"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "custom-elements",
  "dialog-common",
- "futures",
  "indexmap",
  "js-sys",
  "lsp-types",
@@ -5042,7 +5040,9 @@ dependencies = [
  "lsp-types",
  "parking_lot",
  "rand 0.9.2",
+ "send_wrapper",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

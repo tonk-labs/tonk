@@ -46,8 +46,11 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 mod query;
 pub use query::QueryPath;
 
+pub mod bridge;
+pub use bridge::BridgeRegistry;
+
 mod host;
-pub use host::{ClientId, GuestBinding, GuestBindings};
+pub use host::{ClientId, ViewBinding, ViewBindings};
 
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
@@ -254,7 +257,8 @@ pub mod tests {
             operator,
             profile_name: "test-tonk".to_string(),
             reactor,
-            guests: Default::default(),
+            view_bindings: Default::default(),
+            bridges: Default::default(),
         }
     }
 
