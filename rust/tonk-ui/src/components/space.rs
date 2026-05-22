@@ -1423,9 +1423,12 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
             { blocks.into_iter().flat_map(|block| {
                 let label = block.label;
                 let is_concept = label == CONCEPT_LABEL;
+                let is_rule = label == RULE_LABEL;
                 block.results.into_iter().map(move |result| {
                     if is_concept {
                         render_concept_record(result).into_any()
+                    } else if is_rule {
+                        render_rule_record(result).into_any()
                     } else {
                         render_notation_record(label.clone(), result).into_any()
                     }
@@ -1440,6 +1443,12 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
 /// assertions (the `source` descriptor expanded as notation)
 /// rather than the generic field-by-field record.
 const CONCEPT_LABEL: &str = "concept";
+
+/// Block label of a `rule:` query. Results in a block with this
+/// label are inductive-rule definitions and render as `rule!:`
+/// assertions (the `definition` descriptor expanded as notation)
+/// rather than the generic field-by-field record.
+const RULE_LABEL: &str = "rule";
 
 /// Render an attribute `Type` discriminant the way it is *typed*
 /// in notation.
@@ -1546,6 +1555,105 @@ fn render_concept_record(result: tonk_worker::QueryResult) -> impl IntoView {
     }
 }
 
+/// Rewrite every term in a rule descriptor tree to its notation
+/// surface form. A serialized [`Term`](dialog_query::Term)
+/// variable is `{ "?": { "name": "foo" } }` (named) or `{ "?":
+/// {} }` (anonymous); notation writes those as `?foo` and `?`.
+/// Walks objects and arrays so a `where` binding at any depth is
+/// caught — the rule-side parallel of [`notation_normalize`].
+fn rule_normalize_terms(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    if let Value::Object(map) = value {
+        // A single-key `{"?": …}` object is a variable term.
+        if map.len() == 1
+            && let Some(inner) = map.get("?")
+        {
+            let name = inner.get("name").and_then(Value::as_str).map(str::to_owned);
+            *value = match name {
+                Some(name) => Value::String(format!("?{name}")),
+                None => Value::String("?".to_owned()),
+            };
+            return;
+        }
+        for child in map.values_mut() {
+            rule_normalize_terms(child);
+        }
+    } else if let Value::Array(items) = value {
+        for item in items {
+            rule_normalize_terms(item);
+        }
+    }
+}
+
+/// Expand a `rule:` result's `definition` field into the field
+/// layout a `rule!:` head is typed with.
+///
+/// The `definition` attribute is typed `Text`, so the rule arrives
+/// as a *stringified* JSON [`RuleDefinition`](tonk_schema::effect::RuleDefinition)
+/// — `{ "rule": <InductiveRuleDescriptor>, "polarity": … }`. The
+/// inner descriptor already serializes to the `rule!:` shape
+/// (`assert!` / `when` / `unless`); this lifts those keys to the
+/// top, renames the head to `retract!` when the polarity is
+/// `Retract`, rewrites variable terms to `?name` form, and
+/// normalizes `as` discriminants. Returns `None` when there is no
+/// `definition` field or it doesn't parse.
+fn rule_definition(
+    result: &tonk_worker::QueryResult,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    use serde_json::Value;
+    let value = result.fields.get("definition")?.clone();
+    let outer = match value {
+        Value::Object(map) => map,
+        Value::String(s) => match serde_json::from_str(&s) {
+            Ok(Value::Object(map)) => map,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // The inner `rule` object is the InductiveRuleDescriptor.
+    let mut rule = match outer.get("rule") {
+        Some(Value::Object(map)) => map.clone(),
+        _ => return None,
+    };
+    // Retract-polarity rules type their head as `retract!`.
+    let retract = matches!(outer.get("polarity"), Some(Value::String(s)) if s == "Retract");
+    if retract && let Some(head) = rule.remove("assert!") {
+        rule.insert("retract!".to_owned(), head);
+    }
+    let mut value = Value::Object(rule);
+    rule_normalize_terms(&mut value);
+    notation_normalize(&mut value);
+    match value {
+        Value::Object(map) => Some(map),
+        _ => unreachable!("value was constructed as an object"),
+    }
+}
+
+/// One rule result as a `rule!:` assertion: the head, a `this:`
+/// row for the effect entity, then the `definition` descriptor's
+/// own keys (`assert!` / `when` / `unless`, …) expanded as nested
+/// notation. Mirrors [`render_concept_record`].
+fn render_rule_record(result: tonk_worker::QueryResult) -> impl IntoView {
+    let definition = rule_definition(&result);
+    let entity = result.this;
+    view! {
+        <div class="notation-record">
+            <div class="notation-row">
+                <span class="tonk-cm-effect">"rule!:"</span>
+            </div>
+            { render_notation_field_at(
+                1,
+                "this".to_owned(),
+                serde_json::Value::String(entity),
+            ) }
+            { definition.map(|map| map
+                .into_iter()
+                .map(|(k, v)| render_notation_field_at(1, k, v))
+                .collect_view()) }
+        </div>
+    }
+}
+
 /// One result as a notation-shaped record: a `head!:` row, the
 /// `this:` entity row, then a row per projected field.
 fn render_notation_record(label: String, result: tonk_worker::QueryResult) -> impl IntoView {
@@ -1605,6 +1713,47 @@ fn render_notation_field_at(depth: usize, name: String, value: serde_json::Value
         }
         .into_any();
     }
+    // An array renders as a YAML block sequence: the key row, then
+    // one `- ` marker row per item followed by the item's fields
+    // indented under it. This is what makes a rule's `when:`
+    // premise list read as notation instead of a JSON blob.
+    if let serde_json::Value::Array(items) = value {
+        let dash_indent = notation_indent(depth + 1);
+        return view! {
+            <div class="notation-row notation-field">
+                <span class="notation-indent">{ indent }</span>
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { items.into_iter().map(move |item| {
+                let dash_indent = dash_indent.clone();
+                match item {
+                    // An object item: a bare `- ` row, then its
+                    // fields rendered one level deeper.
+                    serde_json::Value::Object(map) => view! {
+                        <div class="notation-row notation-field">
+                            <span class="notation-indent">{ dash_indent.clone() }</span>
+                            <span class="tonk-cm-plain">"-"</span>
+                        </div>
+                        { map.into_iter()
+                            .map(|(k, v)| render_notation_field_at(depth + 2, k, v))
+                            .collect_view() }
+                    }
+                    .into_any(),
+                    // A scalar item sits inline after the dash.
+                    other => view! {
+                        <div class="notation-row notation-field">
+                            <span class="notation-indent">{ dash_indent.clone() }</span>
+                            <span class="tonk-cm-plain">"- "</span>
+                            { render_field_value(other) }
+                        </div>
+                    }
+                    .into_any(),
+                }
+            }).collect_view() }
+        }
+        .into_any();
+    }
     // A multi-line string is the only scalar that spills past one
     // row — its lines sit one level deeper than the key.
     if let serde_json::Value::String(s) = &value
@@ -1651,12 +1800,15 @@ fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl In
         <wa-tree class="query-tree">
             { blocks.into_iter().map(|block| {
                 let is_concept = block.label == CONCEPT_LABEL;
+                let is_rule = block.label == RULE_LABEL;
                 view! {
                     <wa-tree-item expanded>
                         <span class="tonk-cm-effect">{ block.label }</span><span class="tonk-cm-plain">":"</span>
                         { block.results.into_iter().map(move |result| {
                             if is_concept {
                                 render_concept_tree_item(result).into_any()
+                            } else if is_rule {
+                                render_rule_tree_item(result).into_any()
                             } else {
                                 render_result_tree_item(result).into_any()
                             }
@@ -1708,6 +1860,28 @@ fn render_concept_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
     }
 }
 
+/// One rule result as a `rule!:` tree item: a `this:` child for
+/// the effect entity, then the `definition` descriptor's keys
+/// expanded as nested tree items. Mirrors
+/// [`render_concept_tree_item`].
+fn render_rule_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
+    let definition = rule_definition(&result);
+    let entity = result.this;
+    view! {
+        <wa-tree-item expanded>
+            <span class="tonk-cm-effect">"rule!"</span><span class="tonk-cm-plain">":"</span>
+            { render_notation_tree_item(
+                "this".to_owned(),
+                serde_json::Value::String(entity),
+            ) }
+            { definition.map(|map| map
+                .into_iter()
+                .map(|(k, v)| render_notation_tree_item(k, v))
+                .collect_view()) }
+        </wa-tree-item>
+    }
+}
+
 /// Render `name: value` as a tree item. A nested object becomes an
 /// expandable `key:` directory whose children recurse; every other
 /// value is a `key:` directory with the value as its single leaf.
@@ -1719,6 +1893,34 @@ fn render_notation_tree_item(name: String, value: serde_json::Value) -> AnyView 
                 { map.into_iter()
                     .map(|(k, v)| render_notation_tree_item(k, v))
                     .collect_view() }
+            </wa-tree-item>
+        }
+        .into_any();
+    }
+    // An array: the key as a directory, one `-` child per item.
+    // An object item nests its fields; a scalar is the leaf.
+    if let serde_json::Value::Array(items) = value {
+        return view! {
+            <wa-tree-item expanded>
+                <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
+                { items.into_iter().map(|item| match item {
+                    serde_json::Value::Object(map) => view! {
+                        <wa-tree-item expanded>
+                            <span class="tonk-cm-plain">"-"</span>
+                            { map.into_iter()
+                                .map(|(k, v)| render_notation_tree_item(k, v))
+                                .collect_view() }
+                        </wa-tree-item>
+                    }
+                    .into_any(),
+                    other => view! {
+                        <wa-tree-item>
+                            <span class="tonk-cm-plain">"- "</span>
+                            { render_field_value(other) }
+                        </wa-tree-item>
+                    }
+                    .into_any(),
+                }).collect_view() }
             </wa-tree-item>
         }
         .into_any();
@@ -2081,5 +2283,111 @@ where
                 }),
             } }
         </main>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::{Value, json};
+    use tonk_worker::QueryResult;
+
+    use super::rule_definition;
+
+    /// Build a `rule:` result row whose `definition` field carries
+    /// the JSON-stringified `RuleDefinition` an `AnonymousRuleQuery`
+    /// emits — `{ "rule": <InductiveRuleDescriptor>, "polarity": … }`.
+    fn rule_row(polarity: &str) -> QueryResult {
+        let definition = json!({
+            "rule": {
+                "assert!": {
+                    "with": {
+                        "name": { "the": "person/name", "as": "Text" }
+                    }
+                },
+                "when": [
+                    {
+                        "assert": {
+                            "with": {
+                                "name": { "the": "person-entered/name", "as": "Text" },
+                                "age":  { "the": "person-entered/age",  "as": "UnsignedInteger" }
+                            }
+                        },
+                        "where": {
+                            "this": { "?": { "name": "this" } },
+                            "name": { "?": { "name": "name" } },
+                            "age":  { "?": { "name": "age" } }
+                        }
+                    }
+                ]
+            },
+            "polarity": polarity
+        });
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "definition".to_owned(),
+            Value::String(definition.to_string()),
+        );
+        QueryResult {
+            this: "effect:E9vvYmyd".to_owned(),
+            fields,
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_projects_a_rule_row_into_rule_notation_fields() {
+        let map = rule_definition(&rule_row("Assert")).expect("definition projects");
+
+        // Assert polarity keeps the head as `assert!`.
+        assert!(map.contains_key("assert!"), "head should be `assert!`");
+        assert!(!map.contains_key("retract!"));
+
+        // The `when` array surfaces at the top level.
+        let when = map
+            .get("when")
+            .and_then(Value::as_array)
+            .expect("when array");
+        assert_eq!(when.len(), 1);
+
+        // A premise's `where` bindings render variable terms as
+        // `?name` strings, not nested `{"?": …}` objects.
+        let where_map = when[0]
+            .get("where")
+            .and_then(Value::as_object)
+            .expect("premise where map");
+        assert_eq!(where_map.get("this"), Some(&json!("?this")));
+        assert_eq!(where_map.get("name"), Some(&json!("?name")));
+        assert_eq!(where_map.get("age"), Some(&json!("?age")));
+
+        // `as` discriminants are normalized to the surface form.
+        let head_with = map
+            .get("assert!")
+            .and_then(|h| h.get("with"))
+            .and_then(Value::as_object)
+            .expect("head with map");
+        assert_eq!(
+            head_with.get("name").and_then(|n| n.get("as")),
+            Some(&json!("text")),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renames_the_head_to_retract_for_retract_polarity() {
+        let map = rule_definition(&rule_row("Retract")).expect("definition projects");
+        assert!(
+            map.contains_key("retract!"),
+            "retract polarity should rename head to `retract!`",
+        );
+        assert!(!map.contains_key("assert!"));
+    }
+
+    #[dialog_common::test]
+    fn it_returns_none_without_a_definition_field() {
+        let row = QueryResult {
+            this: "effect:none".to_owned(),
+            fields: BTreeMap::new(),
+        };
+        assert!(rule_definition(&row).is_none());
     }
 }
