@@ -114,6 +114,7 @@ import type { LSPClient } from "@codemirror/lsp-client";
 // custom element alongside `<tonk-code>` so a single `<script>`
 // tag wires up both elements.
 import "./diagnostics-provider";
+import { pushDiagnosticsAnnotation } from "./diagnostics-provider";
 
 /** Detail object dispatched on the `change` event. */
 export type ChangeDetail = {
@@ -686,8 +687,19 @@ class TonkCodeElement extends HTMLElement {
           // remapping diagnostic ranges through the change) carry
           // the *previous* verdict on the *new* buffer — that's
           // staleness, so we don't fire on them.
-          const freshFrame = update.transactions.some((tr) =>
-            tr.effects.some((e) => e.is(setDiagnosticsEffect)),
+          //
+          // `<tonk-diagnostics-provider>`'s `tonk-push-diagnostics`
+          // path *also* dispatches `setDiagnosticsEffect` (via
+          // `@codemirror/lint`'s `setDiagnostics`) — those are our
+          // own writes, not server frames. The provider tags those
+          // transactions with `pushDiagnosticsAnnotation`; skip
+          // them, otherwise the clear-on-success a consumer issues
+          // after auto-evaluating would be misread as a fresh
+          // frame and loop the auto-evaluate.
+          const freshFrame = update.transactions.some(
+            (tr) =>
+              tr.annotation(pushDiagnosticsAnnotation) === undefined &&
+              tr.effects.some((e) => e.is(setDiagnosticsEffect)),
           );
           if (freshFrame) {
             this.#dispatchDiagnostics();
