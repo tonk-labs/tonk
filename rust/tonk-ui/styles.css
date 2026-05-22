@@ -1207,25 +1207,76 @@ tonk-code:focus-within {
     pointer-events: auto;
 }
 
-/* Result-layout toggle (grouped tree vs. listed notation) — a
-   `<wa-radio-group>` of `appearance="button"` radios, which WA
-   renders as a native segmented control with its own checked
-   state. The markup toggles `is-visible` once a response exists,
-   so it stays hidden until there's something to switch between,
-   and the group is tucked against the inline-end edge above the
-   result rather than claiming a full-width row. */
-.evaluate-view-toggle {
-    display: none;
+/* Result-view switcher — a `<wa-tab-group>` with the tab strip
+   on the inline-end side. The active-tab indicator and the
+   selected tab itself follow the page foreground (black in
+   light mode, white in dark) rather than WA's default brand
+   blue, so the switcher reads as neutral chrome. */
+.evaluate-tabs {
+    --indicator-color: var(--wa-color-text-normal);
 }
-.evaluate-view-toggle.is-visible {
-    display: flex;
-    justify-content: flex-end;
-    margin-block-end: var(--wa-space-2xs);
+.evaluate-tabs wa-tab[active]::part(base) {
+    color: var(--wa-color-text-normal);
 }
-/* The group's `label` is for assistive tech only — there's no
-   room for a visible caption next to a two-icon switcher. */
-.evaluate-view-radios::part(form-control-label) {
-    display: none;
+
+/* Table view — one `<table>` per query block. */
+.query-tables {
+    width: 100%;
+}
+.query-table table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: var(--tonk-code-font-size);
+}
+.query-table th,
+.query-table td {
+    padding: var(--wa-space-2xs) var(--wa-space-s);
+    text-align: start;
+    border-block-end: 1px solid var(--wa-color-surface-border);
+    word-break: break-word;
+}
+/* Headers stand clearly apart from the body — bolder, kept in
+   their natural case. */
+.query-table th {
+    font-weight: 700;
+}
+
+/* The concept-name header sits in a span painted in inverse
+   colors (page foreground as background) — the same
+   headline-cover treatment the page's `h1` uses. The cover hugs
+   the text, not the whole cell. It is the table's title, so it
+   reads a notch larger than the plain field headers. */
+.query-table th.query-table-this > span {
+    background: var(--wa-color-text-normal);
+    color: var(--wa-color-neutral-fill-quiet);
+    font-size: var(--wa-font-size-l);
+    padding: var(--wa-space-3xs) var(--wa-space-2xs);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+/* The entity URI is monospaced and hard-clipped to its last 8
+   characters (the unique suffix; the `did:key:z6Mk…` prefix is
+   boilerplate). The cell is a `<wa-copy-button>` whose trigger
+   span does the clip — clicking it copies the full URI.
+   `direction: rtl` clips from the start with no ellipsis; a
+   leading LRM keeps the glyphs left-to-right. */
+.query-table td.query-table-this {
+    font-family: var(--wa-font-family-code, ui-monospace, monospace);
+}
+.query-table td.query-table-this wa-copy-button {
+    cursor: pointer;
+}
+.query-table td.query-table-this span {
+    display: inline-block;
+    width: 8ch;
+    overflow: hidden;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: start;
+    vertical-align: bottom;
+}
+.query-table td.query-table-this span::before {
+    content: "\200E"; /* LRM — preserves left-to-right glyph order */
 }
 
 /* The evaluate-result comparison panel.

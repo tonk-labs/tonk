@@ -600,10 +600,6 @@ where
     let transact_buffer = RwSignal::new(String::new());
     let transact_state = RwSignal::new(TransactState::Idle);
     let last_response = RwSignal::new(None::<Box<EvaluateResponse>>);
-    // Result-panel layout. Fixed at the default for now; a future
-    // pass drives it from a settings subscription so the view
-    // mode follows a dialog setting fact.
-    let view_mode = RwSignal::new(ViewMode::default());
 
     // LSP document URI for this specific cell. Including the
     // numeric cell ID keeps every cell distinct on the LSP
@@ -839,7 +835,6 @@ where
             { move || render_transact_state(
                 transact_state.get(),
                 last_response.get(),
-                view_mode.get(),
             ) }
         </form>
     }
@@ -1155,24 +1150,9 @@ fn lsp_position_to_js(position: lsp_types::Position) -> wasm_bindgen::JsValue {
 /// in the tree across the Idle → Running → Done cycle prevents
 /// the form from shrinking and re-expanding mid-request, which
 /// otherwise reads as a "flash" as the page reflows.
-/// How an evaluate result panel lays out its match blocks.
-///
-/// `Grouped` is the nested concept → entity → field tree;
-/// `Listed` flattens every result into the same `head!:`
-/// notation the `<tonk-display>` inspector fallback shows.
-/// Default is `Listed` — the notation form reads closest to what
-/// the user typed in the editor.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum ViewMode {
-    Grouped,
-    #[default]
-    Listed,
-}
-
 fn render_transact_state(
     state: TransactState,
     response: Option<Box<EvaluateResponse>>,
-    mode: ViewMode,
 ) -> impl IntoView {
     let failure = match state {
         TransactState::Failed(message) => Either::Left(view! {
@@ -1191,7 +1171,6 @@ fn render_transact_state(
                 response.matches_after,
                 response.revision_before,
                 response.revision_after,
-                mode,
             ))
         }
         None => Either::Right(()),
@@ -1216,7 +1195,6 @@ fn render_evaluate_matches(
     after: Vec<tonk_worker::QueryMatchBlock>,
     revision_before: Option<Revision>,
     revision_after: Option<Revision>,
-    mode: ViewMode,
 ) -> impl IntoView {
     use leptos::either::EitherOf3;
     if after.is_empty() && before.is_empty() {
@@ -1229,29 +1207,205 @@ fn render_evaluate_matches(
         return EitherOf3::B(view! {
             <div class="evaluate-results wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ badge }</div>
-                { render_match_blocks(after, mode) }
+                { render_result_tabs(after) }
             </div>
         });
     }
+    // Commit changed the result set — a `<wa-comparison>` slider
+    // contrasts pre/post state. Each side stays single-view (the
+    // listed notation); a tab group inside a comparison half
+    // would be too cramped.
     EitherOf3::C(view! {
         <wa-comparison position="50" class="evaluate-comparison">
             <div slot="before" class="evaluate-side evaluate-side-before wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ revision_badge(revision_before) }</div>
-                { render_match_blocks(before, mode) }
+                { render_match_block_notation(before) }
             </div>
             <div slot="after" class="evaluate-side evaluate-side-after wa-stack wa-gap-2xs">
                 <div class="evaluate-revision">{ revision_badge(revision_after) }</div>
-                { render_match_blocks(after, mode) }
+                { render_match_block_notation(after) }
             </div>
         </wa-comparison>
     })
 }
 
-/// Render a list of match blocks in the selected [`ViewMode`].
-fn render_match_blocks(blocks: Vec<tonk_worker::QueryMatchBlock>, mode: ViewMode) -> impl IntoView {
-    match mode {
-        ViewMode::Grouped => Either::Left(render_match_block_list(blocks)),
-        ViewMode::Listed => Either::Right(render_match_block_notation(blocks)),
+/// `localStorage` key holding the user's preferred result view
+/// (`listed` / `tree` / `table`). Persisting it makes the choice
+/// stick across results and across reloads.
+const RESULT_VIEW_KEY: &str = "tonk:result-view";
+
+/// Read the persisted result-view preference, falling back to
+/// `listed` when nothing is stored (or the stored value isn't a
+/// known panel name).
+fn result_view_pref() -> String {
+    let stored = window()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(RESULT_VIEW_KEY).ok().flatten());
+    match stored.as_deref() {
+        Some(view @ ("listed" | "tree" | "table")) => view.to_owned(),
+        _ => "listed".to_owned(),
+    }
+}
+
+/// Persist the chosen result view so the next result — and the
+/// next session — opens on the same tab.
+fn store_result_view_pref(view: &str) {
+    if let Ok(Some(storage)) = window().local_storage() {
+        let _ = storage.set_item(RESULT_VIEW_KEY, view);
+    }
+}
+
+/// Render the result in three swappable views — listed notation,
+/// grouped tree, and a per-block table — as panels of a
+/// `<wa-tab-group>` with the tabs down the inline-end side. The
+/// active tab is the user's persisted preference; switching tabs
+/// writes the new choice back, so every later result opens on
+/// the same view.
+fn render_result_tabs(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    use wasm_bindgen::closure::Closure;
+
+    let tree_blocks = blocks.clone();
+    let table_blocks = blocks.clone();
+    let active = result_view_pref();
+
+    // The `<wa-tab-group>` is reached by id after mount (a typed
+    // `NodeRef` for a custom element is awkward in Leptos). The
+    // `wa-tab-show` event carries the newly-shown panel name in
+    // `event.detail.name`; persisting it makes the preference
+    // follow the user's last pick. The listener outlives this
+    // function, so its closure is intentionally leaked.
+    let group_id = "evaluate-tabs";
+    Effect::new(move |_| {
+        let Some(el) = window()
+            .document()
+            .and_then(|d| d.get_element_by_id(group_id))
+        else {
+            return;
+        };
+        let cb = Closure::<dyn FnMut(web_sys::CustomEvent)>::new(|ev: web_sys::CustomEvent| {
+            let name = js_sys::Reflect::get(&ev.detail(), &wasm_bindgen::JsValue::from_str("name"))
+                .ok()
+                .and_then(|v| v.as_string());
+            if let Some(name) = name {
+                store_result_view_pref(&name);
+            }
+        });
+        let _ = el.add_event_listener_with_callback("wa-tab-show", cb.as_ref().unchecked_ref());
+        cb.forget();
+    });
+
+    view! {
+        <wa-tab-group
+            id=group_id
+            class="evaluate-tabs"
+            placement="end"
+            prop:active=active
+        >
+            <wa-tab panel="listed">
+                <wa-icon name="list" variant="solid"></wa-icon>
+            </wa-tab>
+            <wa-tab panel="tree">
+                <wa-icon name="folder-tree" variant="solid"></wa-icon>
+            </wa-tab>
+            <wa-tab panel="table">
+                <wa-icon name="table" variant="solid"></wa-icon>
+            </wa-tab>
+            <wa-tab-panel name="listed">
+                { render_match_block_notation(blocks) }
+            </wa-tab-panel>
+            <wa-tab-panel name="tree">
+                { render_match_block_list(tree_blocks) }
+            </wa-tab-panel>
+            <wa-tab-panel name="table">
+                { render_match_block_tables(table_blocks) }
+            </wa-tab-panel>
+        </wa-tab-group>
+    }
+}
+
+/// Table rendering — one `<table>` per query block. The header
+/// row is the projected field names; each result is a row, with
+/// the entity URI in a leading `this` column. The `this` column
+/// is monospaced and hard-clipped to its last few characters
+/// (the unique suffix), the full URI on the cell `title` — the
+/// same treatment the `<tonk-concept>` table uses.
+fn render_match_block_tables(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
+    view! {
+        <div class="query-tables wa-stack wa-gap-l">
+            { blocks.into_iter().map(render_match_block_table).collect_view() }
+        </div>
+    }
+}
+
+/// One query block as a table. Columns are the union of field
+/// names across the block's results, in first-seen order, with
+/// `this` always leading.
+fn render_match_block_table(block: tonk_worker::QueryMatchBlock) -> impl IntoView {
+    // Column order: every field name in first-seen order across
+    // the block's results. Results in a block share a projection,
+    // but a union keeps the table correct if they ever diverge.
+    let mut columns: Vec<String> = Vec::new();
+    for result in &block.results {
+        for name in result.fields.keys() {
+            if name != "this" && !columns.contains(name) {
+                columns.push(name.clone());
+            }
+        }
+    }
+    let header_columns = columns.clone();
+    view! {
+        <div class="query-table">
+            <table>
+                <thead>
+                    <tr>
+                        // First column is headed by the concept name
+                        // (the query's head) rather than the literal
+                        // `this`; its cells carry the entity URI. The
+                        // name sits in a span so the inverse-color
+                        // cover hugs the text, not the whole cell.
+                        <th class="query-table-this">
+                            <span>{ block.label }</span>
+                        </th>
+                        { header_columns.into_iter()
+                            .map(|name| view! { <th>{ name }</th> })
+                            .collect_view() }
+                    </tr>
+                </thead>
+                <tbody>
+                    { block.results.into_iter().map(move |result| {
+                        let entity = result.this.clone();
+                        let entity_label = entity.clone();
+                        let columns = columns.clone();
+                        view! {
+                            <tr>
+                                // The entity URI is hard-clipped to its
+                                // trailing characters; the full value
+                                // sits on `<wa-copy-button>` so a click
+                                // copies it. The truncated span is the
+                                // button's custom trigger (default slot).
+                                <td class="query-table-this">
+                                    <wa-copy-button value=entity>
+                                        <span>{ entity_label }</span>
+                                    </wa-copy-button>
+                                </td>
+                                { columns.into_iter().map(move |name| {
+                                    let cell = result.fields.get(&name).cloned();
+                                    view! {
+                                        <td>
+                                            { cell.map(|v| view! {
+                                                <span>{ render_field_value(v) }</span>
+                                            }) }
+                                        </td>
+                                    }
+                                }).collect_view() }
+                            </tr>
+                        }
+                    }).collect_view() }
+                </tbody>
+            </table>
+        </div>
     }
 }
 
