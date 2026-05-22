@@ -835,10 +835,27 @@ where
     }
 
     if fields.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(ConceptDescriptor::from(fields)))
+        return Ok(None);
     }
+    let descriptor = ConceptDescriptor::from(fields);
+    // `ConceptDescriptor::from` leaves `description` as `None`.
+    // The concept's own `dialog.meta/description` claim carries
+    // it, so fetch that and fold it in — a JSON round-trip is the
+    // only way in since the field has no public setter.
+    let Some(description) = lookup_entity_description(entity, env).await? else {
+        return Ok(Some(descriptor));
+    };
+    let mut json =
+        serde_json::to_value(&descriptor).map_err(|e| EvaluationError::Store(e.to_string()))?;
+    if let Some(map) = json.as_object_mut() {
+        map.insert(
+            "description".to_owned(),
+            serde_json::Value::String(description),
+        );
+    }
+    let descriptor =
+        serde_json::from_value(json).map_err(|e| EvaluationError::Store(e.to_string()))?;
+    Ok(Some(descriptor))
 }
 
 /// Look up the published name of `entity`, if any.
@@ -869,6 +886,32 @@ where
         .into_iter()
         .next()
         .and_then(|row| name_from_id_uri(&row.this)))
+}
+
+/// Read the `dialog.meta/description` claim attached to a concept
+/// entity, if any.
+///
+/// `emit_concept_facts` writes this claim only when the asserted
+/// descriptor carried a non-empty description, so a concept
+/// without one simply has no claim and this returns `None`.
+async fn lookup_entity_description<'a, Env>(
+    entity: &Entity,
+    env: &'a Env,
+) -> Result<Option<String>, EvaluationError>
+where
+    Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
+{
+    let claims: Vec<Claim> = the!("dialog.meta/description")
+        .of(Term::<Entity>::from(entity.clone()))
+        .is(Term::<String>::var("__concept_query_description"))
+        .perform(env)
+        .try_vec()
+        .await?;
+    Ok(claims
+        .into_iter()
+        .next()
+        .and_then(|claim| String::try_from(claim.is).ok())
+        .filter(|s| !s.is_empty()))
 }
 
 /// Strip the `id:` scheme prefix from a name URI to recover the

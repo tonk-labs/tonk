@@ -620,7 +620,7 @@ fn update_notation(host: &Element, inner: &Inner, conclusion: &Conclusion) {
         .get_attribute("model")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "concept".to_owned());
-    let text = crate::notation_format::format(conclusion, &head, None);
+    let text = crate::notation_format::format(&conclusion.this, &conclusion.fields, &head, None);
     script.set_text_content(Some(&text));
 }
 

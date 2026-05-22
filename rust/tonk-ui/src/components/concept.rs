@@ -272,6 +272,11 @@ fn render_concept_view(
 /// truncates it with an ellipsis so a long `did:key:…` string
 /// can't push the table off-screen. The cell's `title` attribute
 /// holds the full value for hover-to-reveal.
+///
+/// Every field cell wraps its value in a `<span>` too — a `<td>`
+/// ignores `max-width`, but a block-level inner span honors it,
+/// so the stylesheet can cap a column's width and keep one long
+/// value from stretching the whole table.
 fn build_template_html(descriptor: &ResolvedDescriptor) -> String {
     let header_cells: String = descriptor
         .fields
@@ -281,7 +286,7 @@ fn build_template_html(descriptor: &ResolvedDescriptor) -> String {
     let row_cells: String = descriptor
         .fields
         .iter()
-        .map(|n| format!("<td>{{{}}}</td>", html_escape(n)))
+        .map(|n| format!("<td><span>{{{}}}</span></td>", html_escape(n)))
         .collect();
     format!(
         "<table>\
