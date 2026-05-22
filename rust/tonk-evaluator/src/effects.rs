@@ -157,12 +157,12 @@ impl<'a> Induce<'a> {
             transients,
         } = self;
 
-        // Track every transient that has flowed through the
-        // loop (user-submitted seed plus each round's
-        // effect-emitted heads) so we can sweep them at the end.
-        // Pre-seeded with the user bucket; each round appends
-        // its own emitted transients before they propagate.
-        let mut all_transients = transients.clone();
+        // Each round's transient bucket — the user-submitted seed
+        // initially, then this round's effect-emitted heads as
+        // the next round's triggers. Swept at end-of-round so
+        // their assert+retract pairs cancel at commit and the
+        // next round's bodies don't see them (a transient is a
+        // one-shot trigger, by design).
         let mut round_transients = transients;
         let mut round: u32 = 0;
 
@@ -195,11 +195,24 @@ impl<'a> Induce<'a> {
                 effect_entities.extend(hits);
             }
 
-            // 3. Load and fire each candidate. Each fire returns
-            //    the transaction with durable + transient heads
-            //    integrated, plus a `next` bucket of just the
-            //    transient heads it emitted.
+            // 3. Load and fire each candidate against the FROZEN
+            //    round-input transaction. Each fire returns its
+            //    derived heads as a `Changes` batch (durable +
+            //    transient) without mutating `txn`; rule N's
+            //    derivations are therefore NOT visible to rule
+            //    N+1 in the same round — sibling rules read the
+            //    same input. We collect every fire's heads into
+            //    `round_changes`, integrate them into `txn` once
+            //    after the for-loop, and propagate the transient
+            //    subset as next-round triggers.
+            //
+            //    This is standard semi-naive Datalog: derivations
+            //    within an iteration don't see each other; the
+            //    iteration's input is frozen. Cross-round
+            //    chaining still works because round N+1 sees
+            //    round N's integrated heads.
             let mut next_transients = Changes::new();
+            let mut round_changes = Changes::new();
             for entity in effect_entities {
                 let Some(effect) = load_effect(&txn, entity, env).await? else {
                     // The reverse index pointed at an entity
@@ -210,37 +223,56 @@ impl<'a> Induce<'a> {
                     // commit.
                     continue;
                 };
-                let outcome = fire_effect(effect, txn, env).await?;
-                txn = outcome.txn;
-                merge_changes(&mut next_transients, outcome.transient_heads.clone());
-                merge_changes(&mut all_transients, outcome.transient_heads);
+                let outcome = fire_effect(effect, &txn, env).await?;
+                merge_changes(&mut round_changes, outcome.head_changes);
+                merge_changes(&mut next_transients, outcome.transient_heads);
             }
 
-            // 4. Promote next round's transients. If empty, the
-            //    loop's "no transients emitted" terminator fires
-            //    on the next iteration's check.
-            round_transients = next_transients;
-        }
+            // 4. Sweep the round's incoming transients — they've
+            //    served their purpose as triggers, retract them so
+            //    they cancel at commit. Done BEFORE integrating
+            //    novelty so a new transient emitted by an effect
+            //    in this round is not accidentally swept by an
+            //    incoming-transient retract for the same triple.
+            txn = sweep_transients(round_transients, txn);
 
-        // Sweep every transient (user-submitted + effect-emitted)
-        // so the assert+retract pairs cancel at commit.
-        for instruction in all_transients.into_instructions() {
-            txn = match instruction {
-                Instruction::Assert(a) | Instruction::Replace(a) => txn.retract(RawClaim {
-                    the: a.the,
-                    of: a.of,
-                    is: a.is,
-                }),
-                Instruction::Retract(a) => txn.assert(RawClaim {
-                    the: a.the,
-                    of: a.of,
-                    is: a.is,
-                }),
-            };
+            // 5. Integrate all this round's novelty — durable and
+            //    transient — into txn. The newly-emitted transients
+            //    sit in txn until *their* round sweeps them; durable
+            //    derivations stay for the commit.
+            txn = txn.integrate(round_changes);
+
+            // 6. Promote this round's emitted transients as the
+            //    next round's trigger bucket. Empty → loop ends:
+            //    no new triggers means no further rules can fire.
+            round_transients = next_transients;
         }
 
         Ok(txn)
     }
+}
+
+/// Retract every transient in `transients` against `txn` so the
+/// assert+retract pair cancels at commit. Called at end-of-round
+/// (after firing, before integrating the round's novelty) so the
+/// round's incoming triggers leave before the new transients
+/// emitted by this round are integrated.
+fn sweep_transients<'a>(transients: Changes, mut txn: Transaction<'a>) -> Transaction<'a> {
+    for instruction in transients.into_instructions() {
+        txn = match instruction {
+            Instruction::Assert(a) | Instruction::Replace(a) => txn.retract(RawClaim {
+                the: a.the,
+                of: a.of,
+                is: a.is,
+            }),
+            Instruction::Retract(a) => txn.assert(RawClaim {
+                the: a.the,
+                of: a.of,
+                is: a.is,
+            }),
+        };
+    }
+    txn
 }
 
 /// Merge the contents of `src` into `dst` instruction-by-instruction.
@@ -369,8 +401,17 @@ async fn load_effect<Env: InduceEnv>(
 /// effect's emitted head facts integrated, plus a `Changes`
 /// bucket of just the *transient* heads (one entry per claim)
 /// for the fixpoint to use as next-round trigger input.
-struct FireOutcome<'a> {
-    txn: Transaction<'a>,
+struct FireOutcome {
+    /// All head facts derived by this fire — durable + transient,
+    /// asserts + retracts, accumulated as a `Changes` batch the
+    /// caller integrates into the transaction AFTER the whole
+    /// round's effects have fired. Keeping the round's input txn
+    /// frozen during fires is the Dedalus-semantics fix:
+    /// sibling rules read the same state, derived facts batch.
+    head_changes: Changes,
+    /// Subset of `head_changes`: just the transient-head asserts,
+    /// so the cascade loop can promote them to the next round's
+    /// trigger bucket.
     transient_heads: Changes,
 }
 
@@ -386,11 +427,11 @@ struct FireOutcome<'a> {
 /// as retracts. The head concept is expected to be durable —
 /// retracts of a transient have no observable effect — so the
 /// `transient_heads` bucket is always empty for this polarity.
-async fn fire_effect<'a, Env: InduceEnv>(
+async fn fire_effect<Env: InduceEnv>(
     effect: Effect,
-    mut txn: Transaction<'a>,
+    txn: &Transaction<'_>,
     env: &Env,
-) -> Result<FireOutcome<'a>, InduceError> {
+) -> Result<FireOutcome, InduceError> {
     let polarity = effect.polarity();
     let rule = effect.into_rule();
 
@@ -409,12 +450,13 @@ async fn fire_effect<'a, Env: InduceEnv>(
     // observable effect). One overlay query per fire — cheaper
     // than per-match since the head's concept is fixed.
     let head_is_transient = match polarity {
-        EffectPolarity::Assert => is_transient(&txn, rule.conclusion().this(), env).await?,
+        EffectPolarity::Assert => is_transient(txn, rule.conclusion().this(), env).await?,
         EffectPolarity::Retract => false,
     };
 
     let head = rule.conclusion().clone();
     let mut transient_heads = Changes::new();
+    let mut head_changes = Changes::new();
     for frame in matches {
         // Project the match into a `Parameters` map of the head's
         // operands. The conclusion-variable check at rule-compile
@@ -442,17 +484,17 @@ async fn fire_effect<'a, Env: InduceEnv>(
                     if head_is_transient {
                         accumulate_head_facts(&concept_query, &mut transient_heads);
                     }
-                    txn = emit_head_facts(concept_query, txn);
+                    emit_head_facts_into(concept_query, &mut head_changes);
                 }
                 EffectPolarity::Retract => {
-                    txn = retract_head_facts(concept_query, txn);
+                    retract_head_facts_into(concept_query, &mut head_changes);
                 }
             }
         }
     }
 
     Ok(FireOutcome {
-        txn,
+        head_changes,
         transient_heads,
     })
 }
@@ -518,13 +560,13 @@ pub fn accumulate_head_facts(concept_query: &ConceptQuery, sink: &mut Changes) {
 /// asserted-notation planner uses in `tonk_core::transact`, but
 /// writes directly into a dialog `Transaction` since the
 /// induce path doesn't go through `ApplicationPlan`.
-fn emit_head_facts<'a>(concept_query: ConceptQuery, mut txn: Transaction<'a>) -> Transaction<'a> {
+fn emit_head_facts_into(concept_query: ConceptQuery, changes: &mut Changes) {
     let Some(this_term) = concept_query.terms.get("this") else {
-        return txn;
+        return;
     };
     let this_entity = match this_term {
         Term::Constant(Value::Entity(e)) => e.clone(),
-        _ => return txn,
+        _ => return,
     };
     for (field_name, attribute) in concept_query.predicate.with().iter() {
         let Some(term) = concept_query.terms.get(field_name) else {
@@ -534,20 +576,21 @@ fn emit_head_facts<'a>(concept_query: ConceptQuery, mut txn: Transaction<'a>) ->
             continue;
         };
         let the: Attribute = attribute.the().clone().into();
-        txn = match attribute.cardinality() {
-            Cardinality::One => txn.assert(RawReplace {
+        match attribute.cardinality() {
+            Cardinality::One => RawReplace {
                 the,
                 of: this_entity.clone(),
                 is: value.clone(),
-            }),
-            Cardinality::Many => txn.assert(RawClaim {
+            }
+            .assert(changes),
+            Cardinality::Many => RawClaim {
                 the,
                 of: this_entity.clone(),
                 is: value.clone(),
-            }),
-        };
+            }
+            .assert(changes),
+        }
     }
-    txn
 }
 
 /// Retract-polarity sibling of [`emit_head_facts`]. Walks a
@@ -556,16 +599,13 @@ fn emit_head_facts<'a>(concept_query: ConceptQuery, mut txn: Transaction<'a>) ->
 /// underlying entity. Cardinality doesn't change the retract
 /// path — both one and many fields dissociate by the exact
 /// `(attr, this, value)` triple.
-fn retract_head_facts<'a>(
-    concept_query: ConceptQuery,
-    mut txn: Transaction<'a>,
-) -> Transaction<'a> {
+fn retract_head_facts_into(concept_query: ConceptQuery, changes: &mut Changes) {
     let Some(this_term) = concept_query.terms.get("this") else {
-        return txn;
+        return;
     };
     let this_entity = match this_term {
         Term::Constant(Value::Entity(e)) => e.clone(),
-        _ => return txn,
+        _ => return,
     };
     for (field_name, attribute) in concept_query.predicate.with().iter() {
         let Some(term) = concept_query.terms.get(field_name) else {
@@ -575,13 +615,13 @@ fn retract_head_facts<'a>(
             continue;
         };
         let the: Attribute = attribute.the().clone().into();
-        txn = txn.retract(RawClaim {
+        RawClaim {
             the,
             of: this_entity.clone(),
             is: value.clone(),
-        });
+        }
+        .retract(changes);
     }
-    txn
 }
 
 /// Wrap an [`InductiveRule`] as a [`dialog_query::Application`]
