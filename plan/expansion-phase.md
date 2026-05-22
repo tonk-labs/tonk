@@ -19,8 +19,8 @@ are the analyzer. `plan` + `commit` are evaluation.
 - **`tonk-notation`** — pure syntax. Parse → `Syntax`. No branch,
   no `Source`. Unchanged.
 - **`tonk-schema`** — schema types: concepts, attributes,
-  `mutation.rs`, `effect.rs`, and the resolution surface
-  (Part A). No pipeline driving.
+  `claim.rs` (the `Claim` type — see Part C), `effect.rs`, and
+  the resolution surface (Part A). No pipeline driving.
 - **`tonk-analyzer`** — `analyze` + `expand`. Depends on
   `tonk-notation` and `tonk-schema`. Produces an `Analysis`.
 - **`tonk-evaluator`** — `evaluate`: plan + commit. Depends on
@@ -205,10 +205,10 @@ The tree:
 - `Analysis<Assertion>` — `.analysis` is `AssertionAnalysis`.
 
 `Analysis<T>` carries through both sub-phases. One-to-many lowering
-(an anchored assertion → two mutations) is just the associated
-type holding a `Vec`: the mutations nest *under* the one
+(an anchored assertion → two claims) is just the associated type
+holding a `Vec`: the claims nest *under* the one
 `Analysis<Assertion>`, so there is no back-pointer and no flat
-mutation list — the structure mirrors the document.
+claim list — the structure mirrors the document.
 
 ### Sub-phase 1 — resolve + annotate
 
@@ -228,7 +228,7 @@ struct AssertionAnalysis {
     this: ThisIntent,        // consumed by sub-phase 2
     anchor: Option<String>,  // consumed by sub-phase 2
     fields: Vec<FieldAnalysis>,
-    mutations: Vec<Mutation>,// filled by sub-phase 2
+    claims: Vec<Claim>,      // filled by sub-phase 2
 }
 enum Predicate {
     Concept(PredicateDescriptor),  // Durable | Transient
@@ -238,10 +238,10 @@ enum Predicate {
 
 ### Sub-phase 2 — expand
 
-Lowers each assertion into kernel-shaped mutations and fills
-`AssertionAnalysis::mutations` with the resulting `Vec<Mutation>`
-(`Mutation` is `tonk-schema::mutation`'s type — the same one
-`/transact` uses). Expansion touches only mutations; a query's
+Lowers each assertion into kernel-shaped claims and fills
+`AssertionAnalysis::claims` with the resulting `Vec<Claim>`
+(`Claim` is the typed assert/retract — see Part C, the same one
+`/transact` uses). Expansion touches only assertions; a query's
 `Analysis<Query>` passes through unchanged.
 
 Lowerings:
@@ -251,7 +251,7 @@ Lowerings:
   cardinality one). Always `PredicateDescriptor::Durable`.
 - **`&anchor` → paired `Name` assert** — the assert, plus a second
   assert of the built-in `Name` concept publishing `id:<anchor>` →
-  the subject entity. Both land in `AssertionAnalysis::mutations`.
+  the subject entity. Both land in `AssertionAnalysis::claims`.
 - **omitted `this:` → injected `id:<body-digest>`** — `ThisIntent`
   is consumed: `Uri` → that entity, `Variable` → a var term,
   `Derived` → `id:<digest>`.
@@ -261,18 +261,30 @@ terminal (emits only resolved entities, computed URIs, substituted
 terms — no new symbolic references), so expansion output never
 needs re-resolution.
 
-## Part C — mutation representation
+## Part C — the `Claim` representation
 
-Every mutation reaching the plan stage is a concept-assert.
-`mutation.rs`'s `PredicateDescriptor` / `PredicateApplication` /
-`Mutation` (concept-only, `Durable | Transient`) are the single
-mutation representation, shared by the `/transact` wire path and
-the notation path. Durability rides on `PredicateDescriptor` — no
-side-set, no separate transient tracking.
+A **`Claim`** is the typed assert/retract of a concept
+application — `Assert | Retract` over a `PredicateApplication`
+(`PredicateDescriptor` + terms; `Durable | Transient`). It is the
+single representation for a fact-write, shared by the `/transact`
+wire path and the notation path. Durability rides on
+`PredicateDescriptor` — no side-set, no separate transient
+tracking. Every claim reaching the plan stage is concept-shaped;
+domain heads and `&anchor` are notation sugar that expansion
+lowers away first.
 
-Domain heads and `&anchor` are notation sugar; expansion lowers
-them away, so they never reach `Mutation`. The kernel stays
-concept-only.
+`Claim` is the rebrand of the current `mutation.rs` `Mutation`.
+dialog's own `Claim` (a raw `(the, of, is)` EAV triple) is a
+different thing — and dialog is renaming *its* `Claim` to `Fact`
+upstream. The end state is unambiguous and collision-free:
+`dialog_query::Fact` is the EAV triple, tonk's `Claim` is the
+typed assert/retract.
+
+Until the dialog dep is bumped past that rename, tonk references
+dialog's type as `use dialog_query::Claim as Fact` — a
+transitional alias across the ~8 files that use it, so tonk code
+already reads in the final vocabulary. The alias is deleted when
+the dep carries `Fact` directly.
 
 ## Open items
 
@@ -304,8 +316,9 @@ concept-only.
    `NamedReference`, `EmptyStore`; rewire the language server.
 2. **Part B** — carve out `tonk-analyzer`; the `syntax.analyze`
    chain; the `Analysis<T>` IR and the two sub-phases.
-3. **Part C** — fold the mutation representation onto
-   `mutation.rs`'s types.
+3. **Part C** — rename `mutation.rs` `Mutation` to `claim.rs`
+   `Claim`; alias `dialog_query::Claim` to `Fact`; fold the
+   notation path's write-side IR onto `Claim`.
 4. **Crate move** — extract `evaluate` from `tonk-schema` into
    `tonk-evaluator`; the `syntax.evaluate` chain lives there.
    Rewire `tonk-worker`'s `/evaluate` route.
