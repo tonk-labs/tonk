@@ -241,55 +241,125 @@ tonk-notation .tonk-cm-variable {
     font-style: italic;
 }
 
-/* Grouped evaluate results — a `<wa-tree>` nesting concept →
-   entity → field → value. Directory rows carry a trailing `:` so
-   the tree reads like the YAML notation; the value row is the
-   leaf. Typography and the `tonk-cm-*` decoration palette come
-   from the shared `tonk-notation, .query-tree` block above, so
-   the grouped view is tinted and set in the same monospace as the
-   notation (listed) view and the editor. */
-.query-tree {
-    --indent-guide-width: 1px;
+/* Evaluate results — two views over the same data:
+   `.query-tree` (grouped `<wa-tree>`, concept → entity → field →
+   value) and `.query-notation` (listed, notation-shaped records).
+   Both reuse the dialog-yaml `tonk-cm-*` decoration palette and
+   the editor typography (from the shared `tonk-notation,
+   .query-tree, .query-notation` palette block above) so the two
+   views and the editor read identically. */
+.query-tree,
+.query-notation {
     font-family: var(--tonk-code-font);
     font-size: var(--tonk-code-font-size);
     line-height: 1.5;
     color: var(--tonk-code-fg);
+}
+.query-tree {
+    --indent-guide-width: 1px;
 }
 /* Tree labels are not interactive content — let the user select
    and copy entity URIs and values out of the result. */
 .query-tree wa-tree-item::part(label) {
     user-select: text;
 }
-.query-tree .tonk-cm-key {
+
+/* `tonk-cm-*` decoration classes — shared by both result views.
+   Mirror the typography in `dialog-yaml.ts`'s `dialectTheme`. */
+.query-tree .tonk-cm-key,
+.query-notation .tonk-cm-key {
     color: var(--tonk-code-key);
 }
-.query-tree .tonk-cm-effect {
+.query-tree .tonk-cm-effect,
+.query-notation .tonk-cm-effect {
     color: var(--tonk-code-effect);
     font-weight: bold;
 }
-.query-tree .tonk-cm-name {
+.query-tree .tonk-cm-name,
+.query-notation .tonk-cm-name {
     color: var(--tonk-code-name);
 }
-.query-tree .tonk-cm-entity {
+.query-tree .tonk-cm-entity,
+.query-notation .tonk-cm-entity {
     color: var(--tonk-code-entity);
     text-decoration: underline;
     text-decoration-color: var(--tonk-code-entity);
     text-decoration-thickness: 1px;
     text-underline-offset: 2px;
 }
-.query-tree .tonk-cm-variable {
+.query-tree .tonk-cm-variable,
+.query-notation .tonk-cm-variable {
     color: var(--tonk-code-variable);
     font-style: italic;
 }
-.query-tree .tonk-cm-string {
+.query-tree .tonk-cm-string,
+.query-notation .tonk-cm-string {
     color: var(--tonk-code-string);
 }
-.query-tree .tonk-cm-number {
+.query-tree .tonk-cm-number,
+.query-notation .tonk-cm-number {
     color: var(--tonk-code-number);
 }
-/* Plain — arrays/objects shown as compact JSON, no tint. */
-.query-tree .tonk-cm-plain {
+/* Plain — separators and arrays/objects shown as compact JSON. */
+.query-tree .tonk-cm-plain,
+.query-notation .tonk-cm-plain {
     color: var(--tonk-code-fg-muted);
+}
+
+/* Listed view — each result is a `notation-record`; every row
+   (head, field, value line) is its own block so lines stay
+   independently selectable. Field rows indent one level under
+   the head; value lines of a multi-line string indent again. */
+.notation-record + .notation-record {
+    margin-block-start: var(--wa-space-s);
+}
+.notation-row {
+    user-select: text;
+}
+/* Field rows are flex lines: the key and `:` separator size to
+   content, the value takes the rest. Without the flex row a long
+   inline-block value can't share the line with the key and drops
+   to its own line. `min-width: 0` lets the value actually shrink
+   so `text-overflow` engages instead of overflowing the row. */
+.notation-field {
+    display: flex;
+    align-items: baseline;
+    padding-inline-start: 2ch;
+}
+.notation-field > .value-truncated,
+.notation-field > span:last-child {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.notation-value-line {
+    padding-inline-start: 4ch;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Long single-line value — collapsed to one ellipsized line
+   until clicked. `is-expanded` (toggled in `render_field_value`)
+   drops the clamp and wraps the full text. */
+.value-truncated {
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.value-truncated.is-expanded {
+    overflow: visible;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* A `<wa-tree-item>`'s `label` part is a flex item; its default
+   `min-width: auto` lets it grow to the value's intrinsic width,
+   so a long value would run the row off-screen. `min-width: 0`
+   lets the label shrink to its flex container, and the value
+   (rendered uncollapsed in the tree) wraps within it. */
+.query-tree wa-tree-item::part(label) {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 /* Banner header: the space name as a large display title, sized
@@ -455,6 +525,18 @@ h6 {
 }
 .concept-view-table td.concept-view-this > span::before {
     content: "\200E"; /* LRM — preserves left-to-right glyph order */
+}
+
+/* Field-cell values still wrap (`word-break` on the `td`), but a
+   `<td>` ignores `max-width`, so an unbounded column stretches
+   the whole table. The block-level inner span *does* honor
+   `max-width`: cap it so a long value wraps within a bounded
+   column instead of dominating the row. `inline-size` on the
+   container query keeps the cap proportional to the table's
+   width rather than the viewport's. */
+.concept-view-table td:not(.concept-view-this) > span {
+    display: inline-block;
+    max-width: clamp(12ch, 30cqi, 40ch);
 }
 .space-viewer-frame {
     border: 0;
@@ -954,15 +1036,17 @@ wa-page::part(drawer) {
    adding their selector to this group. */
 tonk-code,
 tonk-notation,
-.query-tree {
-    /* Both evaluate-result views (listed `<tonk-notation>` and
-       grouped `<wa-tree class="query-tree">`) share the dialog-yaml
-       editor palette so they read identically to each other and to
-       the editor. Match `wa-input` so the surface reads as a form
-       field rather than a panel. The form-control tokens are the
-       right semantic — they describe "what an input surface looks
-       like" and stay aligned with the rest of the form theme if
-       Web Awesome ever retunes them. */
+.query-tree,
+.query-notation {
+    /* Both evaluate-result views (listed `.query-notation` and
+       grouped `.query-tree`) and the `<tonk-notation>` inspector
+       slide share the dialog-yaml editor palette so they read
+       identically to each other and to the editor. Match
+       `wa-input` so the surface reads as a form field rather than
+       a panel. The form-control tokens are the right semantic —
+       they describe "what an input surface looks like" and stay
+       aligned with the rest of the form theme if Web Awesome ever
+       retunes them. */
     --tonk-code-bg: var(--wa-form-control-background-color);
     --tonk-code-fg: var(--wa-color-text-normal);
     --tonk-code-fg-muted: var(--wa-color-text-quiet);
@@ -1141,6 +1225,45 @@ tonk-code:focus-within {
 .evaluate-play.is-visible {
     opacity: 1;
     pointer-events: auto;
+}
+
+/* Result-layout toggle (grouped tree vs. listed notation). The
+   markup toggles `is-visible` once a response exists, so it stays
+   hidden until there's something to switch between. When shown
+   it's a small icon-button pair tucked against the inline-end
+   edge, sitting just above the result rather than claiming a
+   full-width row of its own. */
+.evaluate-view-toggle {
+    display: none;
+}
+.evaluate-view-toggle.is-visible {
+    display: flex;
+    justify-content: flex-end;
+    margin-block-end: var(--wa-space-2xs);
+}
+
+/* WA's default `<wa-button size="small">` is still a 38px box
+   with 14px side padding and a loud filled/outlined chrome — too
+   heavy for a view switcher. Shrink each toggle button to a tight
+   icon square and strip the chrome down to a quiet hairline so it
+   reads as a control, not a primary action. The selected side is
+   marked by a subtle fill (the `filled` appearance the markup
+   already toggles) rather than a loud one. */
+.evaluate-view-toggle wa-button::part(base) {
+    width: 1.75rem;
+    height: 1.75rem;
+    min-height: 0;
+    padding: 0;
+    border-color: var(--wa-color-neutral-border-quiet);
+    font-size: var(--wa-font-size-s);
+}
+.evaluate-view-toggle wa-button[appearance="filled"]::part(base) {
+    background: var(--wa-color-neutral-fill-quiet);
+    color: var(--wa-color-text-normal);
+}
+.evaluate-view-toggle wa-button[appearance="outlined"]::part(base) {
+    background: transparent;
+    color: var(--wa-color-text-quiet);
 }
 
 /* The evaluate-result comparison panel.

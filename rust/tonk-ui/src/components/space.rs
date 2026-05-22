@@ -1287,30 +1287,74 @@ fn render_match_blocks(blocks: Vec<tonk_worker::QueryMatchBlock>, mode: ViewMode
 }
 
 /// Listed (inspector) rendering — flatten every result across all
-/// blocks into a stack of `<tonk-notation>` documents, each
-/// formatted as a `head!:` assertion using the block's label as
-/// the head. Mirrors the `<tonk-display>` no-view fallback.
+/// blocks into a stack of notation-shaped records. Each result
+/// renders as a `<label>!:` head row followed by one row per
+/// field, every row its own element so lines stay independently
+/// styleable and selectable. Values reuse the shared `tonk-cm-*`
+/// classifier; long single-line values ellipsize with a
+/// click-to-expand; multi-line values render one element per
+/// line. Highlighting and typography match the editor.
 fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
     view! {
-        <div class="query-results-notation wa-stack wa-gap-2xs">
+        <div class="query-notation wa-stack wa-gap-s">
             { blocks.into_iter().flat_map(|block| {
                 let label = block.label;
                 block.results.into_iter().map(move |result| {
-                    let text = tonk_display::notation_format::format(
-                        &result.this,
-                        &result.fields,
-                        &label,
-                        None,
-                    );
-                    view! {
-                        <tonk-notation>
-                            <script type="text/tonk-notation">{ text }</script>
-                        </tonk-notation>
-                    }
+                    render_notation_record(label.clone(), result)
                 }).collect::<Vec<_>>()
             }).collect_view() }
         </div>
     }
+}
+
+/// One result as a notation-shaped record: a `head!:` row, the
+/// `this:` entity row, then a row per projected field.
+fn render_notation_record(label: String, result: tonk_worker::QueryResult) -> impl IntoView {
+    let head = format!("{label}!:");
+    let entity = result.this;
+    view! {
+        <div class="notation-record">
+            <div class="notation-row">
+                <span class="tonk-cm-effect">{ head }</span>
+            </div>
+            { render_notation_field("this".to_owned(), serde_json::Value::String(entity)) }
+            { result.fields.into_iter()
+                .filter(|(name, _)| name != "this")
+                .map(|(name, value)| render_notation_field(name, value))
+                .collect_view() }
+        </div>
+    }
+}
+
+/// One field of a notation record. Short scalar values sit inline
+/// on the `key: value` row; a multi-line string drops its lines
+/// onto their own indented rows under a bare `key:` row.
+fn render_notation_field(name: String, value: serde_json::Value) -> impl IntoView {
+    // A multi-line string is the only value that spills past one
+    // row — every other shape renders inline.
+    if let serde_json::Value::String(s) = &value
+        && s.contains('\n')
+    {
+        let lines: Vec<String> = s.split('\n').map(str::to_owned).collect();
+        return Either::Left(view! {
+            <div class="notation-row notation-field">
+                <span class="tonk-cm-key">{ name }</span>
+                <span class="tonk-cm-plain">":"</span>
+            </div>
+            { lines.into_iter().map(|line| view! {
+                <div class="notation-row notation-value-line">
+                    <span class="tonk-cm-string">{ line }</span>
+                </div>
+            }).collect_view() }
+        });
+    }
+    Either::Right(view! {
+        <div class="notation-row notation-field">
+            <span class="tonk-cm-key">{ name }</span>
+            <span class="tonk-cm-plain">": "</span>
+            { render_field_value(value, true) }
+        </div>
+    })
 }
 
 /// Grouped rendering — a `<wa-tree>` nesting concept → entity →
@@ -1331,7 +1375,7 @@ fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl In
                                 <wa-tree-item expanded>
                                     <span class="tonk-cm-key">{ name }</span><span class="tonk-cm-plain">":"</span>
                                     <wa-tree-item>
-                                        { render_field_value(value) }
+                                        { render_field_value(value, false) }
                                     </wa-tree-item>
                                 </wa-tree-item>
                             }).collect_view() }
@@ -1343,11 +1387,24 @@ fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl In
     }
 }
 
+/// Threshold (characters) past which a single-line value renders
+/// ellipsized with a click-to-expand. Long enough that ordinary
+/// names, URIs, and numbers stay inline; short enough that a
+/// descriptor blob or prose paragraph gets folded.
+const LONG_VALUE_CHARS: usize = 80;
+
 /// Render a single field value as a highlighted `<span>`, applying
 /// the `tonk-cm-*` decoration class that matches the value's
 /// shape. Mirrors the notation formatter's value rules: URIs bare
 /// and entity-tinted, strings quoted, numbers/bools/null plain.
-fn render_field_value(value: serde_json::Value) -> impl IntoView {
+///
+/// When `collapsible` is set, a long single-line value renders
+/// ellipsized — clicking it expands the full text inline. The
+/// listed view uses that; the grouped tree passes `false` so a
+/// long value just wraps in full. Multi-line strings are handled
+/// by the caller (each line gets its own row), so by the time a
+/// string reaches here it is single-line.
+fn render_field_value(value: serde_json::Value, collapsible: bool) -> impl IntoView {
     use serde_json::Value;
     let (class, text) = match value {
         Value::Null => ("tonk-cm-variable", "_".to_owned()),
@@ -1357,9 +1414,8 @@ fn render_field_value(value: serde_json::Value) -> impl IntoView {
             if tonk_display::notation_format::looks_like_uri(&s) {
                 ("tonk-cm-entity", s)
             } else {
-                // A tree leaf is one line — show the string
-                // verbatim (the string tint marks it as text)
-                // rather than `\"`-escaping embedded quotes.
+                // Show the string verbatim (the string tint marks
+                // it as text) rather than `\"`-escaping quotes.
                 ("tonk-cm-string", s)
             }
         }
@@ -1370,7 +1426,27 @@ fn render_field_value(value: serde_json::Value) -> impl IntoView {
             serde_json::to_string(&other).unwrap_or_else(|_| "<?>".to_owned()),
         ),
     };
-    view! { <span class=class>{ text }</span> }
+    // Plain decorated span for short values, and for every value
+    // when the caller opted out of collapsing. Long collapsible
+    // values render with a click-to-expand affordance instead.
+    if !collapsible || text.chars().count() <= LONG_VALUE_CHARS {
+        return Either::Left(view! { <span class=class>{ text }</span> });
+    }
+    let expanded = RwSignal::new(false);
+    Either::Right(view! {
+        <span
+            class=move || format!(
+                "{class} value-truncated{}",
+                if expanded.get() { " is-expanded" } else { "" },
+            )
+            role="button"
+            tabindex="0"
+            title="Click to expand"
+            on:click=move |_| expanded.update(|e| *e = !*e)
+        >
+            { text }
+        </span>
+    })
 }
 
 /// Render a `<wa-tag>` chip describing the current `SyncState`.
