@@ -158,7 +158,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             let mut any_assert = false;
             let mut any_retract = false;
 
-            for (field_name, _attr) in descriptor.with().iter() {
+            for (field_name, attr) in descriptor.with().iter() {
                 match user_fields.remove(field_name) {
                     Some((FieldValue::Blank, _)) => {
                         // Per-field retraction: planner walks the
@@ -172,9 +172,15 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     }
                     Some((value, value_range)) => {
                         // Explicit non-blank field — asserts.
-                        let term =
-                            field_value_to_term(field_name, value, value_range, scope, analysis)
-                                .await?;
+                        let term = field_value_to_term(
+                            field_name,
+                            value,
+                            value_range,
+                            scope,
+                            analysis,
+                            attr.content_type(),
+                        )
+                        .await?;
                         assert_terms.insert(field_name.into(), term);
                         any_assert = true;
                         // Retract side blanks this field — the
@@ -290,6 +296,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     field.value_range,
                     scope,
                     analysis,
+                    None,
                 )
                 .await?;
                 parameters.insert(field.name.clone(), term);

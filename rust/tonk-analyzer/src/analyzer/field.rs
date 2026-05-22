@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use dialog_artifacts::{Entity, Value};
-use dialog_query::{Term, attribute::The as AttributeThe};
+use dialog_query::{Term, Type, attribute::The as AttributeThe};
 use tonk_notation::{FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
@@ -29,16 +29,25 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// otherwise stay as `Term::Variable` so planning can substitute
 /// them later; literals become `Term::Constant`; blanks become
 /// `Term::blank()`.
+///
+/// `expected` carries the field's declared [`Type`] (from the
+/// concept's attribute descriptor) when known. It disambiguates
+/// integer literals: the notation parser always produces a signed
+/// `Scalar::Integer` for a non-negative literal like `1`, so a
+/// field declared `as: unsigned-integer` needs schema-directed
+/// coercion. Pass `None` for slots with no declared type (`this`,
+/// claim attributes, formula operands).
 pub(crate) async fn field_value_to_term<R: Resolver>(
     field_name: &str,
     value: &FieldValue,
     range: lsp_types::Range,
     scope: &Scope<'_, R>,
     analysis: &Working,
+    expected: Option<Type>,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match value {
         FieldValue::Literal(scalar) => {
-            Term::Constant(scalar_to_value(scalar).map_err(|e| e.with_range(range))?)
+            Term::Constant(scalar_to_value(scalar, expected).map_err(|e| e.with_range(range))?)
         }
         FieldValue::Variable(name) => {
             // If this variable was derived in Phase 1, substitute
@@ -128,10 +137,28 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
     })
 }
 
-pub(crate) fn scalar_to_value(scalar: &Scalar) -> Result<Value, AnalyzeError> {
+/// Translate a parsed [`Scalar`] into a [`Value`].
+///
+/// `expected` carries the field's declared [`Type`] when known.
+/// The notation parser always parses a non-negative integer
+/// literal as a signed `Scalar::Integer` (it falls back to
+/// unsigned only for values too large for `i128`). When the
+/// declared type is `Type::UnsignedInt` and the literal is
+/// non-negative, coerce to `Value::UnsignedInt`. Every other case
+/// keeps the parsed scalar's natural mapping: a negative
+/// `Integer` stays signed, an explicit `UnsignedInteger` stays
+/// unsigned, and a `None` or non-integer `expected` changes
+/// nothing.
+pub(crate) fn scalar_to_value(
+    scalar: &Scalar,
+    expected: Option<Type>,
+) -> Result<Value, AnalyzeError> {
     Ok(match scalar {
         Scalar::String(s) => Value::String(s.clone()),
         Scalar::Boolean(b) => Value::Boolean(*b),
+        Scalar::Integer(i) if *i >= 0 && expected == Some(Type::UnsignedInt) => {
+            Value::UnsignedInt(*i as u128)
+        }
         Scalar::Integer(i) => Value::SignedInt(*i),
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),

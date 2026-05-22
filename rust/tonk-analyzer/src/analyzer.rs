@@ -932,11 +932,19 @@ mod tests {
     }
 
     fn fixed_concept(name: &str, fields: &[(&str, &str)]) -> FixedConcept {
+        let typed: Vec<(&str, &str, &str)> =
+            fields.iter().map(|(f, the)| (*f, *the, "Text")).collect();
+        fixed_concept_typed(name, &typed)
+    }
+
+    /// Like [`fixed_concept`] but each field carries an explicit
+    /// `as:` type name (the serde rename, e.g. `"UnsignedInteger"`).
+    fn fixed_concept_typed(name: &str, fields: &[(&str, &str, &str)]) -> FixedConcept {
         let mut with = serde_json::Map::new();
-        for (field, the) in fields {
+        for (field, the, ty) in fields {
             with.insert(
                 (*field).into(),
-                serde_json::json!({ "the": the, "as": "Text", "cardinality": "one" }),
+                serde_json::json!({ "the": the, "as": ty, "cardinality": "one" }),
             );
         }
         let descriptor: ConceptDescriptor =
@@ -1344,6 +1352,73 @@ person!:
                 "field {field:?} should be blank"
             );
         }
+    }
+
+    /// A bare integer literal written into an `unsigned-integer`
+    /// field is schema-coerced to `Value::UnsignedInt`. The
+    /// notation parser always parses `0` as a signed
+    /// `Scalar::Integer`; the analyzer knows the field's declared
+    /// type and must produce an unsigned term so induction over
+    /// `math/sum` (unsigned-only) doesn't fail with `TypeMismatch`.
+    #[dialog_common::test]
+    async fn it_coerces_integer_literal_to_unsigned_for_unsigned_field() {
+        let syntax = must_parse(
+            r#"
+counter!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  count: 0
+"#,
+        );
+        let resolver = fixed_concept_typed(
+            "counter",
+            &[("count", "xyz.tonk.counter/count", "UnsignedInteger")],
+        );
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(
+                q.terms.get("count"),
+                Some(Term::Constant(Value::UnsignedInt(0)))
+            ),
+            "count literal should coerce to UnsignedInt, got {:?}",
+            q.terms.get("count")
+        );
+    }
+
+    /// A bare integer literal in a `signed-integer` field stays
+    /// signed — the coercion is type-directed, not blanket.
+    #[dialog_common::test]
+    async fn it_keeps_integer_literal_signed_for_signed_field() {
+        let syntax = must_parse(
+            r#"
+reading!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  value: 7
+"#,
+        );
+        let resolver = fixed_concept_typed(
+            "reading",
+            &[("value", "xyz.tonk.reading/value", "SignedInteger")],
+        );
+        let analysis = flat(analyze(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(
+                q.terms.get("value"),
+                Some(Term::Constant(Value::SignedInt(7)))
+            ),
+            "value literal should stay SignedInt, got {:?}",
+            q.terms.get("value")
+        );
     }
 
     /// Unknown concept in head position → `UnknownConcept`.

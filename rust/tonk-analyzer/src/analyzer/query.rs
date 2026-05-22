@@ -53,7 +53,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
             let descriptor = resolved.descriptor.concept().clone();
             let mut terms = Parameters::new();
             terms.insert("this".into(), this_term_for_query(&this));
-            for (field_name, _attr) in descriptor.with().iter() {
+            for (field_name, attr) in descriptor.with().iter() {
                 // Fields the user mentioned use whatever they
                 // wrote (literal, variable, blank, etc.). Fields
                 // they *omitted* default to a named variable so
@@ -68,6 +68,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
                             field.value_range,
                             scope,
                             analysis,
+                            attr.content_type(),
                         )
                         .await?
                     }
@@ -130,6 +131,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
                     field.value_range,
                     scope,
                     analysis,
+                    None,
                 )
                 .await?;
                 parameters.insert(field.name.clone(), term);

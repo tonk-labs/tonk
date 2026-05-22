@@ -144,8 +144,15 @@ async fn lift_premise<R: Resolver>(
     // unique anonymous variable so the premise can still match.
     let user_this = premise.bindings.iter().find(|f| f.name == "this");
     if let Some(field) = user_this {
-        let term =
-            field_value_to_term("this", &field.value, field.value_range, scope, analysis).await?;
+        let term = field_value_to_term(
+            "this",
+            &field.value,
+            field.value_range,
+            scope,
+            analysis,
+            None,
+        )
+        .await?;
         terms.insert("this".into(), term);
     } else {
         terms.insert("this".into(), Term::<dialog_query::Any>::unique());
@@ -154,15 +161,22 @@ async fn lift_premise<R: Resolver>(
     // Per-field bindings declared by the user. Fields not
     // mentioned default to anonymous variables (consistent with
     // how `Query` bodies project unmentioned fields).
-    for (field_name, _attr) in descriptor.with().iter() {
+    for (field_name, attr) in descriptor.with().iter() {
         if field_name == "this" {
             continue;
         }
         let user_binding = premise.bindings.iter().find(|f| f.name == *field_name);
         let term = match user_binding {
             Some(field) => {
-                field_value_to_term(field_name, &field.value, field.value_range, scope, analysis)
-                    .await?
+                field_value_to_term(
+                    field_name,
+                    &field.value,
+                    field.value_range,
+                    scope,
+                    analysis,
+                    attr.content_type(),
+                )
+                .await?
             }
             None => Term::<dialog_query::Any>::unique(),
         };
@@ -240,8 +254,15 @@ async fn lift_formula_premise<R: Resolver>(
     for (operand, cell) in formula.cells.iter() {
         let term = match premise.bindings.iter().find(|f| f.name == operand) {
             Some(field) => {
-                field_value_to_term(operand, &field.value, field.value_range, scope, analysis)
-                    .await?
+                field_value_to_term(
+                    operand,
+                    &field.value,
+                    field.value_range,
+                    scope,
+                    analysis,
+                    None,
+                )
+                .await?
             }
             None if cell.requirement().is_required() => {
                 return Err(AnalyzeError::at(

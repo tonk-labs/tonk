@@ -1477,6 +1477,147 @@ rule!:\n\
         Ok(())
     }
 
+    /// End-to-end counter repro: a transient `increment` command
+    /// drives a `rule!:` that sums via `math/sum` into a durable
+    /// `counter`. Both the `count: 0` and `by: 1` literals land in
+    /// `unsigned-integer` fields. The notation parser always emits
+    /// a signed `Scalar::Integer` for a non-negative literal; the
+    /// analyzer's schema-directed coercion produces `UnsignedInt`
+    /// terms instead, so `math/sum` (unsigned-only) doesn't fail
+    /// induction with `TypeMismatch { expected: UnsignedInt,
+    /// actual: SignedInt }`. The counter's durable count must
+    /// update to `1`.
+    #[dialog_common::test]
+    async fn it_induces_unsigned_sum_from_transient_increment() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // First commit: declare the concepts + the summing rule,
+        // and seed the durable counter at 0.
+        let setup = "\
+concept!: &counter\n\
+\x20 with:\n\
+\x20   count:\n\
+\x20     the: xyz.tonk.counter/count\n\
+\x20     as: unsigned-integer\n\
+\x20     cardinality: one\n\
+\x20     description: \"count\"\n\
+\n\
+concept!: &increment\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   by:\n\
+\x20     the: xyz.tonk.command/increment\n\
+\x20     as: unsigned-integer\n\
+\x20     cardinality: one\n\
+\x20     description: \"by\"\n\
+\n\
+rule!:\n\
+\x20 assert!: counter\n\
+\x20 when:\n\
+\x20   - assert: increment\n\
+\x20     where: { this: ?this, by: ?n }\n\
+\x20   - assert: counter\n\
+\x20     where: { this: ?this, count: ?m }\n\
+\x20   - assert: math/sum\n\
+\x20     where: { of: ?n, with: ?m, is: ?count }\n\
+\n\
+counter!: &counter-demo\n\
+\x20 count: 0\n";
+        let parsed = parse(setup);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        parsed
+            .syntax
+            .expect("setup syntax")
+            .evaluate(branch.transaction())
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
+            .commit()
+            .perform(&branch, &operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
+
+        // The seeded counter holds an unsigned 0.
+        let count_attr = the!("xyz.tonk.counter/count");
+        let counter_demo: dialog_artifacts::Entity =
+            "id:counter-demo".parse().expect("id:<name> entity");
+        // Resolve the named counter entity via its referent claim.
+        let referent: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.name/referent"))
+                    .of(Term::from(counter_demo))
+                    .is(Term::<dialog_artifacts::Entity>::var("e")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(referent.len(), 1, "counter-demo referent should resolve");
+        let counter_entity = match &referent[0].is {
+            Value::Entity(e) => e.clone(),
+            other => panic!("referent should be an entity, got {other:?}"),
+        };
+
+        let count_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(count_attr.clone())
+                    .of(Term::from(counter_entity.clone()))
+                    .is(Term::<u128>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(count_claims.len(), 1, "expected the seeded count claim");
+        assert_eq!(count_claims[0].is, Value::UnsignedInt(0));
+
+        // Second commit: submit a transient increment{by: 1} for
+        // the counter entity. The reactor's induce loop fires the
+        // rule, `math/sum` runs on unsigned operands, and the
+        // durable counter count updates to 1.
+        let by_attr = the!("xyz.tonk.command/increment");
+        let mut transients = Changes::new();
+        by_attr
+            .of(counter_entity.clone())
+            .is(1u128)
+            .assert(&mut transients);
+
+        use crate::effects::TransactionExt as _;
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let updated: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(count_attr)
+                    .of(Term::from(counter_entity))
+                    .is(Term::<u128>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            updated.iter().any(|c| c.is == Value::UnsignedInt(1)),
+            "counter count should update to 1; saw {updated:?}"
+        );
+
+        Ok(())
+    }
+
     /// Regression: a document containing only a `rule!:` is a
     /// mutation document — the `!` marker says so. The lifted
     /// effect must land in `mutate.statements` as a
