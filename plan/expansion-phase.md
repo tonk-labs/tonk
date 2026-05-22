@@ -113,11 +113,31 @@ pub struct NamedReference(pub String);
 
 ### Definitions
 
-`ConceptDefinition` / `AttributeDefinition` are the resolved
-result — entity + reconstructed descriptor (a concept also carries
-its transient flag). `resolve`'s `perform` reconstructs the
-descriptor from the entity's EAV facts; a concept's `perform`
-resolves each field attribute via
+```rust
+pub struct ConceptDefinition {
+    pub entity: Entity,
+    pub descriptor: ConceptDescriptor,
+    pub transient: bool,
+}
+pub struct AttributeDefinition {
+    pub entity: Entity,
+    pub descriptor: AttributeDescriptor,
+}
+```
+
+`ConceptDefinition` and `AttributeDefinition` are *the* types for
+"a concept / attribute resolved from a branch" — entity +
+reconstructed descriptor (a concept also carries its transient
+flag). Each is the **consolidation** of the several existing
+`{ entity, descriptor }` resolved types into one canonical
+definition: today a resolved concept exists as three near-clones
+(a `concept`-module type, a `tonk-introspect` type, an analyzer
+mirror), and a resolved attribute likewise. After this, one type
+per kind, in `tonk-schema`.
+
+`resolve`'s `perform` reconstructs the descriptor from the
+entity's EAV facts; a concept's `perform` resolves each field
+attribute via
 `AttributeReference::from(attr_entity).resolve(source).perform(env)`.
 
 ### Enumeration
