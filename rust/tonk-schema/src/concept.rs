@@ -675,6 +675,7 @@ impl Application for AnonymousConceptQuery {
                 let this_term = app.terms.get("this").cloned();
                 let name_term = app.terms.get("name").cloned();
                 let source_term = app.terms.get("source").cloned();
+                let transient_term = app.terms.get("transient").cloned();
 
                 // Resolve filters from constant terms or from
                 // upstream-bound variables.
@@ -709,6 +710,13 @@ impl Application for AnonymousConceptQuery {
                             .map_err(|e| EvaluationError::Store(e.to_string()))?;
                         m.bind(t, dialog_query::Value::String(json))?;
                     }
+                    // Built-ins are always durable. Bind `false`
+                    // only when the caller asked for `transient`
+                    // (i.e. provided a variable term to project
+                    // into); a missing term means "don't project".
+                    if let Some(ref t) = transient_term {
+                        m.bind(t, dialog_query::Value::Boolean(false))?;
+                    }
                     yield m;
                 }
 
@@ -724,6 +732,23 @@ impl Application for AnonymousConceptQuery {
                     .perform(env)
                     .try_vec()
                     .await?;
+
+                // Bulk-load the set of transient-marked entities
+                // once per evaluation pass so the per-row check is
+                // a HashSet lookup, not a fresh query. Only fetch
+                // when the caller actually asked for `transient`.
+                let transient_entities: HashSet<Entity> = if transient_term.is_some() {
+                    let transient_marker = transient_marker_entity();
+                    let transient_claims: Vec<Claim> = the!("dialog.concept/transient")
+                        .of(Term::<Entity>::var("__concept_query_transient_this"))
+                        .is(transient_marker)
+                        .perform(env)
+                        .try_vec()
+                        .await?;
+                    transient_claims.into_iter().map(|c| c.of).collect()
+                } else {
+                    HashSet::new()
+                };
 
                 for claim in claims {
                     let entity = claim.of.clone();
@@ -758,6 +783,10 @@ impl Application for AnonymousConceptQuery {
                         let json = serde_json::to_string(&descriptor)
                             .map_err(|e| EvaluationError::Store(e.to_string()))?;
                         m.bind(t, dialog_query::Value::String(json))?;
+                    }
+                    if let Some(ref t) = transient_term {
+                        let is_transient = transient_entities.contains(&entity);
+                        m.bind(t, dialog_query::Value::Boolean(is_transient))?;
                     }
                     yield m;
                 }
@@ -804,10 +833,11 @@ pub fn concept_of_concept_descriptor() -> &'static ConceptDescriptor {
         serde_json::from_value(serde_json::json!({
             "description": "Every concept asserted on a branch.",
             "with": {
-                "concept":     { "the": "dialog.meta/concept",     "as": "Entity", "cardinality": "one" },
-                "name":        { "the": "dialog.meta/name",        "as": "Text",   "cardinality": "one" },
-                "description": { "the": "dialog.meta/description", "as": "Text",   "cardinality": "one" },
-                "source":      { "the": "dialog.meta/source",      "as": "Text",   "cardinality": "one" }
+                "concept":     { "the": "dialog.meta/concept",     "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "dialog.meta/name",        "as": "Text",    "cardinality": "one" },
+                "description": { "the": "dialog.meta/description", "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "dialog.meta/source",      "as": "Text",    "cardinality": "one" },
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }))
         .expect("concept-of-concept descriptor is well-formed")
@@ -1561,6 +1591,149 @@ mod tests {
             assert_eq!(a_name, b_name);
             assert_eq!(a_attr.to_uri(), b_attr.to_uri());
         }
+        Ok(())
+    }
+
+    /// Asserts a `TransientConcept` onto a branch, queries `concept:`
+    /// with a `transient` binding, and confirms the row carries
+    /// `Boolean(true)`. A second row over a durable concept on the
+    /// same branch must carry `Boolean(false)`.
+    #[dialog_common::test]
+    async fn it_returns_transient_marker_on_transient_concept_rows() -> anyhow::Result<()> {
+        use dialog_query::{Any, Output as _, Parameters, Term};
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Two concepts on the same branch: one transient, one
+        // durable, each backed by its attribute facts so the
+        // anonymous-concept-query can rehydrate both descriptors.
+        let transient_descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "subject": { "the": "xyz.tonk.ping/subject", "as": "Entity", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+        let durable_descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+
+        let (_, t_attr) = transient_descriptor
+            .with()
+            .iter()
+            .next()
+            .expect("one field");
+        let (_, d_attr) = durable_descriptor.with().iter().next().expect("one field");
+        let t_attr_entity: Entity = t_attr.to_uri().parse()?;
+        let d_attr_entity: Entity = d_attr.to_uri().parse()?;
+
+        let transient_concept = TransientConcept::new(transient_descriptor.clone());
+        let durable_concept = AnonymousConcept::new(durable_descriptor.clone());
+        let transient_entity = transient_concept.this.clone();
+        let durable_entity = durable_concept.this.clone();
+
+        branch
+            .transaction()
+            // Transient concept attribute facts.
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(t_attr_entity.clone())
+                    .is(format!("{}/{}", t_attr.domain(), t_attr.name())),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(t_attr_entity.clone())
+                    .is("Entity".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(t_attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(t_attr_entity)
+                    .is(String::new()),
+            )
+            // Durable concept attribute facts.
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(d_attr_entity.clone())
+                    .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(d_attr_entity.clone())
+                    .is("Text".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(d_attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(d_attr_entity)
+                    .is(String::new()),
+            )
+            .assert(transient_concept)
+            .assert(durable_concept)
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".to_string(), Term::<Any>::var("this"));
+        terms.insert("transient".to_string(), Term::<Any>::var("transient"));
+
+        let conclusions: Vec<ConceptConclusion> = branch
+            .query()
+            .select(AnonymousConceptQuery::new(terms))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        let transient_row = conclusions
+            .iter()
+            .find(|c| {
+                c.source()
+                    .lookup(&Term::<Any>::var("this"))
+                    .ok()
+                    .and_then(|v| Entity::try_from(v).ok())
+                    == Some(transient_entity.clone())
+            })
+            .expect("transient concept row present");
+        assert_eq!(
+            transient_row
+                .source()
+                .lookup(&Term::<Any>::var("transient"))?,
+            dialog_query::Value::Boolean(true),
+        );
+
+        let durable_row = conclusions
+            .iter()
+            .find(|c| {
+                c.source()
+                    .lookup(&Term::<Any>::var("this"))
+                    .ok()
+                    .and_then(|v| Entity::try_from(v).ok())
+                    == Some(durable_entity.clone())
+            })
+            .expect("durable concept row present");
+        assert_eq!(
+            durable_row
+                .source()
+                .lookup(&Term::<Any>::var("transient"))?,
+            dialog_query::Value::Boolean(false),
+        );
+
         Ok(())
     }
 

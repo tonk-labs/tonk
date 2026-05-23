@@ -1505,8 +1505,16 @@ fn notation_normalize(value: &mut serde_json::Value) {
 /// structured value — it has to be parsed before its keys can be
 /// expanded. The `as` discriminants are rewritten to their
 /// notation surface form so the rendered concept reads as the
-/// user would type it. Returns `None` when there's no `source`
-/// field or it doesn't parse as a JSON object.
+/// user would type it.
+///
+/// When `result.fields.get("transient")` is `Bool(true)`, a
+/// `transient: true` entry is inserted into the map so the
+/// rendered notation surfaces the marker. Durable concepts
+/// (absent or `Bool(false)`) get no row — the convention is that
+/// `transient: true` is affirmative, absence means durable.
+///
+/// Returns `None` when there's no `source` field or it doesn't
+/// parse as a JSON object.
 fn concept_descriptor(
     result: &tonk_worker::QueryResult,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -1523,10 +1531,17 @@ fn concept_descriptor(
     };
     let mut value = serde_json::Value::Object(map);
     notation_normalize(&mut value);
-    match value {
-        serde_json::Value::Object(map) => Some(map),
+    let mut map = match value {
+        serde_json::Value::Object(map) => map,
         _ => unreachable!("value was constructed as an object"),
+    };
+    if matches!(
+        result.fields.get("transient"),
+        Some(serde_json::Value::Bool(true))
+    ) {
+        map.insert("transient".to_owned(), serde_json::Value::Bool(true));
     }
+    Some(map)
 }
 
 /// One concept result as a `concept!:` assertion: the head, a
@@ -2358,7 +2373,7 @@ mod tests {
     use serde_json::{Value, json};
     use tonk_worker::QueryResult;
 
-    use super::rule_definition;
+    use super::{concept_descriptor, rule_definition};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -2459,5 +2474,53 @@ mod tests {
             fields: BTreeMap::new(),
         };
         assert!(rule_definition(&row).is_none());
+    }
+
+    /// Build a `concept:` result row with the given transient
+    /// marker value. `source` carries the same canonical JSON
+    /// `AnonymousConceptQuery` emits.
+    fn concept_row(transient: Option<bool>) -> QueryResult {
+        let source = json!({
+            "with": {
+                "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" }
+            }
+        });
+        let mut fields = BTreeMap::new();
+        fields.insert("source".to_owned(), Value::String(source.to_string()));
+        if let Some(t) = transient {
+            fields.insert("transient".to_owned(), Value::Bool(t));
+        }
+        QueryResult {
+            this: "concept:abc".to_owned(),
+            fields,
+        }
+    }
+
+    /// `Bool(true)` on the row surfaces as `transient: true` in
+    /// the rendered descriptor map.
+    #[dialog_common::test]
+    fn it_renders_transient_true_on_transient_concept_row() {
+        let map = concept_descriptor(&concept_row(Some(true))).expect("descriptor projects");
+        assert_eq!(map.get("transient"), Some(&Value::Bool(true)));
+    }
+
+    /// `Bool(false)` is the durable case — no `transient:` row
+    /// appears (the notation convention is that absence means
+    /// durable; affirmative is the only marker).
+    #[dialog_common::test]
+    fn it_omits_transient_on_durable_concept_row() {
+        let map = concept_descriptor(&concept_row(Some(false))).expect("descriptor projects");
+        assert!(
+            !map.contains_key("transient"),
+            "durable concepts must not surface a transient row",
+        );
+    }
+
+    /// Missing `transient` binding (caller didn't ask for it)
+    /// behaves the same as `Bool(false)`: no row.
+    #[dialog_common::test]
+    fn it_omits_transient_when_binding_absent() {
+        let map = concept_descriptor(&concept_row(None)).expect("descriptor projects");
+        assert!(!map.contains_key("transient"));
     }
 }
