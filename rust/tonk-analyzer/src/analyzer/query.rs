@@ -10,25 +10,26 @@ use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
-use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::transact::{Application, DomainApplication, ThisIntent};
+use tonk_schema::concept::QueryEnv;
 
-pub(crate) async fn build_query_application<R: Resolver + ?Sized>(
+pub(crate) async fn build_query_application<Env: QueryEnv>(
     query: &SyntaxApplication,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &Working,
 ) -> Result<Application, AnalyzeError> {
     // Queries can't carry an `&anchor` (parser rejects that), so
     // intent derivation only inspects `this:`. The returned name
     // is always `None` here.
-    let (this, _name) = derive_head_intent(&query.fields, None, scope).await?;
+    let (this, _name) = derive_head_intent(&query.fields, None, scope, env).await?;
     let head_range = query.predicate.range;
     match &query.predicate.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
-                .resolve_concept(concept_name)
+                .resolve_concept(concept_name, env)
                 .await
                 .map_err(|e| {
                     AnalyzeError::at(
@@ -67,6 +68,7 @@ pub(crate) async fn build_query_application<R: Resolver + ?Sized>(
                             &field.value,
                             field.value_range,
                             scope,
+                            env,
                             analysis,
                             attr.content_type(),
                         )
@@ -130,6 +132,7 @@ pub(crate) async fn build_query_application<R: Resolver + ?Sized>(
                     &field.value,
                     field.value_range,
                     scope,
+                    env,
                     analysis,
                     None,
                 )

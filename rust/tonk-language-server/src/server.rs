@@ -437,68 +437,29 @@ impl Server {
     }
 }
 
-/// Run the analyzer and the structural variable-occurrence scan
-/// against the parsed syntax, then merge their findings into a
-/// single diagnostic list.
+/// Run the structural variable-occurrence scan against the
+/// parsed syntax. Returns only `scan_variables` findings for now.
 ///
-/// Two passes:
-///
-/// 1. **Variable scan** — purely structural, no resolver work,
-///    runs unconditionally so warnings surface even when the
-///    main analyzer short-circuits.
-/// 2. **`tonk_analyzer::analyzer::analyze`** — catches structural
-///    errors the parser accepts. When the host opened a live
-///    `environment` the analyzer resolves against it, so
-///    `UnknownConcept` reflects what the branch actually defines.
-///    Without an environment the analyzer runs document-only
-///    (`NoopResolver`) and branch-dependent errors
-///    (`UnknownConcept`, `UnknownBookmark`, `ResolverFailed`,
-///    `InvalidClaimAttribute`) are filtered out — they would
-///    false-positive against the noop resolver.
+/// TODO: the full analyzer pass (`tonk_analyzer::analyze`) now
+/// takes a `Source<'a>` rather than an `Environment`, but the LSP
+/// host hands us only an `Environment`. Re-enabling the live
+/// analyzer pass waits on the LSP host seam refactor (the
+/// `EnvProvider` planned to grow a `source()` accessor — see the
+/// scope-env refactor notes). Branch-dependent diagnostics
+/// (`UnknownConcept`, `UnknownBookmark`, `ResolverFailed`,
+/// `InvalidClaimAttribute`) are unavailable in the LSP until that
+/// lands; the `/evaluate` route remains the authoritative source
+/// for them.
 async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + ?Sized>(
     syntax: &tonk_notation::Syntax,
-    environment: Option<&E>,
+    _environment: Option<&E>,
 ) -> Vec<lsp_types::Diagnostic> {
-    use tonk_analyzer::analyzer::{NoopResolver, analyze, scan_variables};
+    use tonk_analyzer::analyzer::scan_variables;
 
-    let mut out: Vec<lsp_types::Diagnostic> = scan_variables(syntax)
+    scan_variables(syntax)
         .into_iter()
         .map(|d| diagnostic_from_analyze_diagnostic(syntax, d))
-        .collect();
-
-    // With a live environment the analyzer's branch-dependent
-    // errors are accurate and must be kept; without one they are
-    // dropped (the noop resolver false-positives every name).
-    let live = environment.is_some();
-    let result = match environment {
-        // Environment auto-implements Resolver via the blanket impl
-        // in tonk_analyzer::analyzer::resolver.
-        Some(env) => analyze(syntax, env).await,
-        None => analyze(syntax, &NoopResolver).await,
-    };
-
-    match result {
-        Ok(analysis) => {
-            // The analyzer's own diagnostics duplicate the scan
-            // we already did above — `scan_variables` is also
-            // called inside `analyze`. Dedup by (code, range).
-            for diag in analysis.analysis.diagnostics {
-                let mapped = diagnostic_from_analyze_diagnostic(syntax, diag);
-                if !out
-                    .iter()
-                    .any(|existing| existing.code == mapped.code && existing.range == mapped.range)
-                {
-                    out.push(mapped);
-                }
-            }
-        }
-        Err(err) => {
-            if let Some(diag) = diagnostic_from_analyze_error(syntax, err, live) {
-                out.push(diag);
-            }
-        }
-    }
-    out
+        .collect()
 }
 
 /// Translate an [`AnalyzeDiagnostic`] (warning/error severity)
@@ -529,54 +490,6 @@ fn diagnostic_from_analyze_diagnostic(
         tags: None,
         data: None,
     }
-}
-
-/// Translate a single [`AnalyzeError`] into an LSP [`Diagnostic`].
-/// When `live` is false the analyzer ran document-only — error
-/// categories that need a real branch are dropped, since they
-/// would false-positive against the noop resolver. When `live`
-/// is true the analyzer resolved against the host environment,
-/// so every error category is accurate and kept.
-fn diagnostic_from_analyze_error(
-    syntax: &tonk_notation::Syntax,
-    err: tonk_analyzer::analyzer::AnalyzeError,
-    live: bool,
-) -> Option<lsp_types::Diagnostic> {
-    use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
-    use tonk_analyzer::analyzer::AnalyzeErrorKind;
-
-    // Without a live environment, skip kinds that depend on a
-    // real branch resolver — the worker's evaluate route is the
-    // source of truth for those.
-    if !live
-        && matches!(
-            err.kind,
-            AnalyzeErrorKind::UnknownConcept { .. }
-                | AnalyzeErrorKind::UnknownBookmark { .. }
-                | AnalyzeErrorKind::ResolverFailed { .. }
-                | AnalyzeErrorKind::InvalidClaimAttribute { .. }
-        )
-    {
-        return None;
-    }
-
-    let code = err.code();
-    let message = err.kind.to_string();
-    // Fall back to the document range when an error has no
-    // span. Better than dropping the diagnostic — the user
-    // still sees the message.
-    let range = err.range.unwrap_or(syntax.range);
-    Some(Diagnostic {
-        range,
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(NumberOrString::String(code.into())),
-        code_description: None,
-        source: Some("tonk-schema".into()),
-        message,
-        related_information: None,
-        tags: None,
-        data: None,
-    })
 }
 
 /// Clamp `range`'s endpoints so neither one points past the
@@ -1289,6 +1202,7 @@ mod tests {
     /// source `range` so the editor can underline the offending
     /// span and route quickfixes by code.
     #[dialog_common::test]
+    #[ignore = "scope-env refactor: LSP analyzer pass disabled until the host seam grows a Source accessor"]
     async fn it_publishes_diagnostic_with_code_and_range_from_analyzer() {
         let mut server = Server::new();
         let _ = run(

@@ -11,9 +11,9 @@ use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
-use super::resolver::Resolver;
 use super::scope::Scope;
 use tonk_core::transact::{Application, ThisIntent};
+use tonk_schema::concept::QueryEnv;
 use tonk_schema::resolution::AttributeDefinition;
 
 /// Cached output of building an `attribute!` or `concept!` head
@@ -175,9 +175,10 @@ pub(crate) struct ConceptBody {
     pub inline_attributes: Vec<AttributeBody>,
 }
 
-pub(crate) async fn parse_concept_body<R: Resolver + ?Sized>(
+pub(crate) async fn parse_concept_body<Env: QueryEnv>(
     assertion: &SyntaxApplication,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
@@ -223,7 +224,8 @@ pub(crate) async fn parse_concept_body<R: Resolver + ?Sized>(
                         with_fields.push((sub.name.clone(), resolved));
                         inline_attributes.push(plan);
                     } else {
-                        let resolved = resolve_concept_field(&sub.name, &sub.value, scope).await?;
+                        let resolved =
+                            resolve_concept_field(&sub.name, &sub.value, scope, env).await?;
                         with_fields.push((sub.name.clone(), resolved));
                     }
                 }
@@ -271,14 +273,15 @@ pub(crate) async fn parse_concept_body<R: Resolver + ?Sized>(
     })
 }
 
-async fn resolve_concept_field<R: Resolver + ?Sized>(
+async fn resolve_concept_field<Env: QueryEnv>(
     field_name: &str,
     value: &FieldValue,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
 ) -> Result<AttributeDefinition, AnalyzeError> {
     match value {
         FieldValue::Variable(name) => scope
-            .resolve_attribute(name)
+            .resolve_attribute(name, env)
             .await
             .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("variable ?{name}"),
@@ -292,7 +295,7 @@ async fn resolve_concept_field<R: Resolver + ?Sized>(
                 .into()
             }),
         FieldValue::Symbol(name) => scope
-            .resolve_attribute(name)
+            .resolve_attribute(name, env)
             .await
             .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("symbol {name}"),
@@ -315,7 +318,7 @@ async fn resolve_concept_field<R: Resolver + ?Sized>(
                         }
                     })?;
             scope
-                .resolve_attribute_by_entity(&entity)
+                .resolve_attribute_by_entity(&entity, env)
                 .await
                 .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                     context: format!("attribute entity {uri}"),

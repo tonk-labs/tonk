@@ -219,8 +219,8 @@ impl<'s, S> Analyze<'s, S> {
         S: Into<Source<'e>>,
     {
         let Analyze { syntax, source } = self;
-        let environment = tonk_schema::resolution::source_env(source, env);
-        analyzer::analyze(syntax, &environment)
+        analyzer::analyze(syntax, source.into())
+            .perform(env)
             .await
             .map_err(EvaluateError::Analyze)
     }

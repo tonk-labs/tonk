@@ -12,10 +12,10 @@ use tonk_notation::{
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
-use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::transact::{Application, DomainApplication, ThisIntent};
+use tonk_schema::concept::QueryEnv;
 use tonk_schema::prelude::EntityExt;
 
 /// Output of analyzing a single `head!:` expression. An
@@ -48,10 +48,11 @@ pub(crate) struct AssertionPlan {
     pub transient: bool,
 }
 
-pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
+pub(crate) async fn build_assertion_application<Env: QueryEnv>(
     assertion: &SyntaxApplication,
     anchor: Option<&Anchor>,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
     let head_label = match &assertion.predicate.name {
@@ -69,7 +70,7 @@ pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
         ));
     }
 
-    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope).await?;
+    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope, env).await?;
     if let ThisIntent::Uri(entity) = &this {
         let this_range = assertion
             .fields
@@ -92,7 +93,7 @@ pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
     match &assertion.predicate.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
-                .resolve_concept(concept_name)
+                .resolve_concept(concept_name, env)
                 .await
                 .map_err(|e| {
                     AnalyzeError::at(
@@ -175,6 +176,7 @@ pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
                             value,
                             value_range,
                             scope,
+                            env,
                             analysis,
                             attr.content_type(),
                         )
@@ -293,6 +295,7 @@ pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
                     &field.value,
                     field.value_range,
                     scope,
+                    env,
                     analysis,
                     None,
                 )
@@ -346,10 +349,11 @@ pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
 /// The two are independent: every combination is meaningful
 /// (e.g. `person!: &alice\n  this: did:key:zX` → publish `id:alice`
 /// pointing at zX without producing a new entity).
-pub(crate) async fn derive_head_intent<R: Resolver + ?Sized>(
+pub(crate) async fn derive_head_intent<Env: QueryEnv>(
     fields: &[Field],
     anchor: Option<&Anchor>,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
 ) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
     let name = anchor.map(|a| a.name.clone());
     let this = match fields.iter().find(|f| f.name == "this") {
@@ -377,18 +381,20 @@ pub(crate) async fn derive_head_intent<R: Resolver + ?Sized>(
                 // doc-local attributes, then branch lookup.
                 let entity = if let Some(entity) = scope.lookup_entity(name) {
                     entity
-                } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::ResolverFailed {
-                            context: format!("symbol {name}"),
-                            reason: e.to_string(),
-                        },
-                        field.value_range,
-                    )
-                })? {
+                } else if let Some(resolved) =
+                    scope.resolve_attribute(name, env).await.map_err(|e| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("symbol {name}"),
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?
+                {
                     resolved.entity
                 } else if let Some(entity) =
-                    scope.resolve_named_entity(name).await.map_err(|e| {
+                    scope.resolve_named_entity(name, env).await.map_err(|e| {
                         AnalyzeError::at(
                             AnalyzeErrorKind::ResolverFailed {
                                 context: format!("symbol {name}"),

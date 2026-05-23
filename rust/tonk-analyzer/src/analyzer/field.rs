@@ -10,10 +10,10 @@ use dialog_query::{Term, Type, attribute::The as AttributeThe};
 use tonk_notation::{FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::transact::Application;
+use tonk_schema::concept::QueryEnv;
 
 /// Reserved body field names that don't correspond to schema
 /// fields: `this:` (entity selection), `..:` (rest-of-attributes
@@ -37,11 +37,12 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// field declared `as: unsigned-integer` needs schema-directed
 /// coercion. Pass `None` for slots with no declared type (`this`,
 /// claim attributes, formula operands).
-pub(crate) async fn field_value_to_term<R: Resolver + ?Sized>(
+pub(crate) async fn field_value_to_term<Env: QueryEnv>(
     field_name: &str,
     value: &FieldValue,
     range: lsp_types::Range,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &Working,
     expected: Option<Type>,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
@@ -69,25 +70,29 @@ pub(crate) async fn field_value_to_term<R: Resolver + ?Sized>(
             //   3. Branch entity with `dialog.meta/name = name`.
             if let Some(entity) = scope.lookup_entity(name) {
                 Term::Constant(Value::Entity(entity))
-            } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::ResolverFailed {
-                        context: format!("symbol {name}"),
-                        reason: e.to_string(),
-                    },
-                    range,
-                )
-            })? {
+            } else if let Some(resolved) =
+                scope.resolve_attribute(name, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.to_string(),
+                        },
+                        range,
+                    )
+                })?
+            {
                 Term::Constant(Value::Entity(resolved.entity))
-            } else if let Some(entity) = scope.resolve_named_entity(name).await.map_err(|e| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::ResolverFailed {
-                        context: format!("symbol {name}"),
-                        reason: e.to_string(),
-                    },
-                    range,
-                )
-            })? {
+            } else if let Some(entity) =
+                scope.resolve_named_entity(name, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.to_string(),
+                        },
+                        range,
+                    )
+                })?
+            {
                 Term::Constant(Value::Entity(entity))
             } else {
                 return Err(AnalyzeError::at(

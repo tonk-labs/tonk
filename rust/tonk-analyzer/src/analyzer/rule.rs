@@ -28,11 +28,11 @@ use tonk_notation::{
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
 use super::formula::{FormulaInfo, lookup_formula};
-use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
 use tonk_core::effect::{Effect, EffectPolarity};
+use tonk_schema::concept::QueryEnv;
 
 /// Outcome of inspecting a `rule!:` claim body — install (lift to
 /// an [`Effect`]) or retract (point at an existing rule entity).
@@ -76,16 +76,17 @@ fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
 /// Dispatch a `rule!:` claim to install or retract, depending on
 /// the body shape. The analyzer calls this once per `rule!:` claim
 /// it encounters.
-pub(crate) async fn lift_rule_claim<R: Resolver + ?Sized>(
+pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
     application: &SyntaxApplication,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &Working,
 ) -> Result<RuleAction, AnalyzeError> {
     if is_rule_retract_body(application) {
         let entity = parse_rule_retract_target(application)?;
         Ok(RuleAction::Retract(entity))
     } else {
-        let effect = lift_rule(application, scope, analysis).await?;
+        let effect = lift_rule(application, scope, env, analysis).await?;
         Ok(RuleAction::Install(effect))
     }
 }
@@ -141,9 +142,10 @@ fn parse_rule_retract_target(application: &SyntaxApplication) -> Result<Entity, 
 /// Validation that used to live in the parser (exactly one
 /// polarity, non-empty `when:`) lives here so each diagnostic
 /// can point at semantically meaningful ranges.
-pub(crate) async fn lift_rule<R: Resolver + ?Sized>(
+pub(crate) async fn lift_rule<Env: QueryEnv>(
     application: &SyntaxApplication,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &Working,
 ) -> Result<Effect, AnalyzeError> {
     let body = parse_rule_body(application)?;
@@ -152,7 +154,7 @@ pub(crate) async fn lift_rule<R: Resolver + ?Sized>(
     let head_descriptor = {
         let name = body.conclusion.as_str();
         let resolved = scope
-            .resolve_concept(name)
+            .resolve_concept(name, env)
             .await
             .map_err(|e| {
                 AnalyzeError::at(
@@ -175,11 +177,11 @@ pub(crate) async fn lift_rule<R: Resolver + ?Sized>(
     // ---- Premises ----
     let mut dialog_premises: Vec<DialogPremise> = Vec::new();
     for premise in body.when {
-        let proposition = lift_premise(premise, scope, analysis).await?;
+        let proposition = lift_premise(premise, scope, env, analysis).await?;
         dialog_premises.push(DialogPremise::Assert(proposition));
     }
     for premise in body.unless {
-        let proposition = lift_premise(premise, scope, analysis).await?;
+        let proposition = lift_premise(premise, scope, env, analysis).await?;
         dialog_premises.push(DialogPremise::Unless(Negation(proposition)));
     }
 
@@ -384,19 +386,20 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
 /// first — they're a fixed set that never lives on the branch, so
 /// the registry lookup is authoritative. Anything else resolves
 /// as a concept.
-async fn lift_premise<R: Resolver + ?Sized>(
+async fn lift_premise<Env: QueryEnv>(
     premise: &NotationPremise,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     let name = premise.concept.value.as_str();
 
     if let Some(formula) = lookup_formula(name) {
-        return lift_formula_premise(premise, formula, scope, analysis).await;
+        return lift_formula_premise(premise, formula, scope, env, analysis).await;
     }
 
     let resolved = scope
-        .resolve_concept(name)
+        .resolve_concept(name, env)
         .await
         .map_err(|e| {
             AnalyzeError::at(
@@ -430,6 +433,7 @@ async fn lift_premise<R: Resolver + ?Sized>(
             &field.value,
             field.value_range,
             scope,
+            env,
             analysis,
             None,
         )
@@ -454,6 +458,7 @@ async fn lift_premise<R: Resolver + ?Sized>(
                     &field.value,
                     field.value_range,
                     scope,
+                    env,
                     analysis,
                     attr.content_type(),
                 )
@@ -504,10 +509,11 @@ async fn lift_premise<R: Resolver + ?Sized>(
 /// Optional (`#[output]`) operands the user omits are filled with
 /// a unique anonymous variable: the formula still computes the
 /// value, it just isn't joined anywhere.
-async fn lift_formula_premise<R: Resolver + ?Sized>(
+async fn lift_formula_premise<Env: QueryEnv>(
     premise: &NotationPremise,
     formula: FormulaInfo,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     // Reject `where:` operands the formula doesn't declare. Done
@@ -540,6 +546,7 @@ async fn lift_formula_premise<R: Resolver + ?Sized>(
                     &field.value,
                     field.value_range,
                     scope,
+                    env,
                     analysis,
                     None,
                 )
@@ -580,66 +587,117 @@ async fn lift_formula_premise<R: Resolver + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use dialog_artifacts::Entity;
     use dialog_query::AttributeDescriptor;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
     use dialog_query::concept::descriptor::ConceptDescriptor;
-    use std::collections::HashMap;
-    use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
+    use dialog_query::the;
+    use dialog_repository::Branch;
+    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use tonk_notation::parse;
-    use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition, ResolveError};
+    use tonk_schema::concept::AnonymousConcept;
+    use tonk_schema::query_source::Source;
 
-    /// Resolver backed by an in-memory map of concept name →
-    /// descriptor. Lets the test feed pre-built concepts to the
-    /// lifter without standing up a branch.
-    struct TestResolver {
-        concepts: HashMap<String, ConceptDefinition>,
+    /// Bound needed to query *and* commit through an operator —
+    /// `QueryEnv` covers the resolution chain; `Provider<Publish>`
+    /// covers the commit path the test fixtures use to assert
+    /// concept facts onto the branch.
+    trait FixtureEnv:
+        tonk_schema::concept::QueryEnv + dialog_query::Provider<dialog_effects::memory::Publish>
+    {
     }
 
-    impl TestResolver {
-        fn new() -> Self {
-            Self {
-                concepts: HashMap::new(),
+    impl<T> FixtureEnv for T where
+        T: tonk_schema::concept::QueryEnv + dialog_query::Provider<dialog_effects::memory::Publish>
+    {
+    }
+
+    /// Branch + operator fixture used by the rule-side tests. The
+    /// rule lifter walks the analyzer's resolution chain, which
+    /// reads through `Source`; the fixture's [`declare`] helper
+    /// asserts a concept on the branch with the right facts +
+    /// published name so the analyzer can find it by name.
+    struct Fixture<Op>
+    where
+        Op: FixtureEnv,
+    {
+        operator: Op,
+        branch: Branch,
+    }
+
+    async fn new_fixture() -> Fixture<impl FixtureEnv> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo
+            .branch("main")
+            .open()
+            .perform(&operator)
+            .await
+            .expect("test branch opens");
+        Fixture { operator, branch }
+    }
+
+    impl<Op> Fixture<Op>
+    where
+        Op: FixtureEnv,
+    {
+        /// Assert one concept on the branch with the right
+        /// attribute facts + an `id:<name>` referent claim so the
+        /// analyzer's name lookup recovers the descriptor.
+        async fn declare(&self, name: &str, descriptor: ConceptDescriptor) {
+            let mut txn = self.branch.transaction();
+            for (_, attr) in descriptor.with().iter() {
+                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                let type_label = attr
+                    .content_type()
+                    .and_then(|t| serde_json::to_value(t).ok())
+                    .and_then(|v| v.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "String".to_owned());
+                txn = txn
+                    .assert(
+                        the!("dialog.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(format!("{}/{}", attr.domain(), attr.name())),
+                    )
+                    .assert(
+                        the!("dialog.attribute/type")
+                            .of(attr_entity.clone())
+                            .is(type_label),
+                    )
+                    .assert(
+                        the!("dialog.attribute/cardinality")
+                            .of(attr_entity.clone())
+                            .is("one".to_owned()),
+                    )
+                    .assert(
+                        the!("dialog.meta/description")
+                            .of(attr_entity)
+                            .is(String::new()),
+                    );
             }
-        }
-
-        fn declare(&mut self, name: &str, descriptor: ConceptDescriptor) {
-            let entity = descriptor.this();
-            self.concepts.insert(
-                name.to_string(),
-                ConceptDefinition {
-                    entity,
-                    descriptor: DurableConceptDescriptor::Durable(descriptor),
-                },
+            let concept_entity = descriptor.this();
+            let id_entity: Entity = format!("id:{name}").parse().expect("id:<name> parses");
+            txn = txn.assert(
+                the!("dialog.name/referent")
+                    .of(id_entity)
+                    .is(concept_entity),
             );
+            txn = txn.assert(AnonymousConcept::new(descriptor.clone()));
+            txn.commit()
+                .perform(&self.operator)
+                .await
+                .expect("concept assertion commits");
         }
-    }
 
-    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-    impl crate::analyzer::resolver::Resolver for TestResolver {
-        async fn resolve_concept(
+        /// Run the analyzer against the fixture's branch.
+        async fn analyze(
             &self,
-            name: &str,
-        ) -> Result<Option<ConceptDefinition>, ResolveError> {
-            Ok(self.concepts.get(name).cloned())
-        }
-        async fn resolve_attribute(
-            &self,
-            _name: &str,
-        ) -> Result<Option<AttributeDefinition>, ResolveError> {
-            Ok(None)
-        }
-        async fn resolve_attribute_by_entity(
-            &self,
-            _entity: &Entity,
-        ) -> Result<Option<AttributeDefinition>, ResolveError> {
-            Ok(None)
-        }
-        async fn resolve_named_entity(&self, _name: &str) -> Result<Option<Entity>, ResolveError> {
-            Ok(None)
+            syntax: &tonk_notation::Syntax,
+        ) -> Result<crate::analysis::Analysis<tonk_notation::Syntax>, AnalyzeError> {
+            crate::analyzer::analyze(syntax, Source::from(&self.branch))
+                .perform(&self.operator)
+                .await
         }
     }
 
@@ -677,9 +735,13 @@ mod tests {
     /// in `analysis.mutate.statements` as a `Statement::InstallEffect`.
     #[dialog_common::test]
     async fn it_lifts_a_rule_into_an_effect() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("ping", one_text_field("io.gozala.ping", "tag"));
-        resolver.declare("pong", one_text_field("io.gozala.pong", "tag"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -695,7 +757,8 @@ rule!:\n\
         );
         let syntax = parsed.syntax.expect("parsed syntax");
 
-        let analysis = crate::analyzer::analyze(&syntax, &resolver)
+        let analysis = fixture
+            .analyze(&syntax)
             .await
             .expect("analyze should succeed");
 
@@ -721,9 +784,13 @@ rule!:\n\
     /// Retract-polarity head lifts to `EffectPolarity::Retract`.
     #[dialog_common::test]
     async fn it_lifts_retract_polarity() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("ack", one_text_field("io.gozala.mailbox", "target"));
-        resolver.declare("message", one_text_field("io.gozala.mailbox", "body"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ack", one_text_field("io.gozala.mailbox", "target"))
+            .await;
+        fixture
+            .declare("message", one_text_field("io.gozala.mailbox", "body"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -735,7 +802,8 @@ rule!:\n\
 \x20     where: { this: ?this, body: ?body }\n";
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
-        let analysis = crate::analyzer::analyze(&syntax, &resolver)
+        let analysis = fixture
+            .analyze(&syntax)
             .await
             .expect("analyze should succeed");
 
@@ -749,8 +817,10 @@ rule!:\n\
     /// [`AnalyzeErrorKind::UnknownConcept`].
     #[dialog_common::test]
     async fn it_rejects_unknown_head_concept() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("ping", one_text_field("io.gozala.ping", "tag"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -760,9 +830,7 @@ rule!:\n\
 \x20     where: {}\n";
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
-        let err = crate::analyzer::analyze(&syntax, &resolver)
-            .await
-            .expect_err("should fail");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
         assert!(
             matches!(
                 err.kind,
@@ -775,8 +843,10 @@ rule!:\n\
     /// Unknown premise concept name also rejects.
     #[dialog_common::test]
     async fn it_rejects_unknown_premise_concept() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("pong", one_text_field("io.gozala.pong", "tag"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -786,9 +856,7 @@ rule!:\n\
 \x20     where: {}\n";
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
-        let err = crate::analyzer::analyze(&syntax, &resolver)
-            .await
-            .expect_err("should fail");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
         assert!(
             matches!(
                 err.kind,
@@ -802,9 +870,13 @@ rule!:\n\
     /// surfaces as [`AnalyzeErrorKind::UnknownField`].
     #[dialog_common::test]
     async fn it_rejects_unknown_premise_field() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("ping", one_text_field("io.gozala.ping", "tag"));
-        resolver.declare("pong", one_text_field("io.gozala.pong", "tag"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -814,9 +886,7 @@ rule!:\n\
 \x20     where: { wrong-field: ?tag }\n";
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
-        let err = crate::analyzer::analyze(&syntax, &resolver)
-            .await
-            .expect_err("should fail");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
         assert!(
             matches!(
                 err.kind,
@@ -847,9 +917,13 @@ rule!:\n\
     /// feature request.
     #[dialog_common::test]
     async fn it_lifts_a_rule_with_a_formula_premise() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("counter", one_uint_field("io.gozala.counter", "count"));
-        resolver.declare("increment", one_uint_field("io.gozala.increment", "by"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
+        fixture
+            .declare("increment", one_uint_field("io.gozala.increment", "by"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -868,7 +942,8 @@ rule!:\n\
             parsed.diagnostics
         );
         let syntax = parsed.syntax.expect("parsed syntax");
-        let analysis = crate::analyzer::analyze(&syntax, &resolver)
+        let analysis = fixture
+            .analyze(&syntax)
             .await
             .expect("analyze should succeed");
         assert_eq!(
@@ -881,8 +956,10 @@ rule!:\n\
     /// [`AnalyzeErrorKind::UnknownFormulaOperand`].
     #[dialog_common::test]
     async fn it_rejects_unknown_formula_operand() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("counter", one_uint_field("io.gozala.counter", "count"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -894,9 +971,7 @@ rule!:\n\
 \x20     where: { of: ?value, plus: 1, is: ?count }\n";
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
-        let err = crate::analyzer::analyze(&syntax, &resolver)
-            .await
-            .expect_err("should fail");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
         assert!(
             matches!(
                 err.kind,
@@ -911,8 +986,10 @@ rule!:\n\
     /// [`AnalyzeErrorKind::MissingFormulaOperand`].
     #[dialog_common::test]
     async fn it_rejects_missing_formula_operand() {
-        let mut resolver = TestResolver::new();
-        resolver.declare("counter", one_uint_field("io.gozala.counter", "count"));
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
 
         let doc = "\
 rule!:\n\
@@ -924,9 +1001,7 @@ rule!:\n\
 \x20     where: { of: ?value, is: ?count }\n";
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
-        let err = crate::analyzer::analyze(&syntax, &resolver)
-            .await
-            .expect_err("should fail");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
         assert!(
             matches!(
                 err.kind,

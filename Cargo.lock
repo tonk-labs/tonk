@@ -4802,7 +4802,6 @@ name = "tonk-analyzer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
