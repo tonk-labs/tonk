@@ -10,6 +10,7 @@ crate-type = ["rlib"]
 
 [dependencies]
 async-trait = { workspace = true }
+dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -21,6 +22,7 @@ tonk-schema = { workspace = true }
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
+dialog-repository = { workspace = true, features = ["helpers"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }
 

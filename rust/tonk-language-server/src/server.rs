@@ -24,9 +24,9 @@ use tonk_schema::concept::{
     AttributeDescriptor, ConceptDescriptor as DialogConceptDescriptor, Type,
 };
 use tonk_schema::mutation::ConceptDescriptor;
-use tonk_schema::resolution::{ConceptReference, Environment, NamedReference};
+use tonk_schema::resolution::{ConceptDefinition, ConceptReference, NamedReference};
 
-use crate::env::EnvProvider;
+use crate::env::{EnvProvider, Opened};
 use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 
 /// Per-URI document state. Today only the latest text is
@@ -264,19 +264,19 @@ impl Server {
             return Vec::new();
         };
 
-        // Open the live environment for this document once.
-        // Built-in completion always works; branch-side sources
-        // only fire when the host opens an environment.
-        let environment = open_environment(uri, env).await;
+        // Open the live `(source, env)` pair for this document
+        // once. Built-in completion always works; branch-side
+        // sources only fire when the host opens one.
+        let opened = open_for(uri, env).await;
 
         if is_head_position(&line_prefix) {
-            return head_completions(environment.as_ref()).await;
+            return head_completions(opened.as_ref()).await;
         }
 
         // A premise's `assert:` value accepts a concept name or a
         // built-in formula name — offer both.
         if is_premise_assert_position(&line_prefix) {
-            let mut out = head_completions(environment.as_ref()).await;
+            let mut out = head_completions(opened.as_ref()).await;
             out.extend(formula_completions_items());
             return out;
         }
@@ -288,7 +288,7 @@ impl Server {
         if let Some(head) = enclosing_head(text, position)
             && is_body_position(&line_prefix)
         {
-            return field_completions(&head, environment.as_ref()).await;
+            return field_completions(&head, opened.as_ref()).await;
         }
 
         Vec::new()
@@ -328,9 +328,9 @@ impl Server {
             },
         });
 
-        // Open the live environment once; head + field hovers
-        // both need it to find branch-published concepts.
-        let environment = open_environment(uri, env).await;
+        // Open the live `(source, env)` pair once; head + field
+        // hovers both need it to find branch-published concepts.
+        let opened = open_for(uri, env).await;
 
         // Decide head vs field by indent: any leading whitespace
         // means we're inside a body. Mirrors the completion
@@ -340,7 +340,7 @@ impl Server {
 
         if !inside_body {
             // Head position. The cursor sits on a concept name.
-            let descriptor = lookup_concept_descriptor(&name, environment.as_ref()).await?;
+            let descriptor = lookup_concept_descriptor(&name, opened.as_ref()).await?;
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -353,7 +353,7 @@ impl Server {
         // Body position. Need the enclosing head's name to look
         // up the concept's field set.
         let head = enclosing_head(text, position)?;
-        let descriptor = lookup_concept_descriptor(&head, environment.as_ref()).await?;
+        let descriptor = lookup_concept_descriptor(&head, opened.as_ref()).await?;
         let attr = descriptor
             .concept()
             .with()
@@ -403,8 +403,8 @@ impl Server {
             && let Some(syntax) = &parsed.syntax
             && !syntax.expressions.is_empty()
         {
-            let environment = open_environment(&uri, env).await;
-            diagnostics.extend(analyzer_diagnostics(syntax, environment.as_ref()).await);
+            let opened = open_for(&uri, env).await;
+            diagnostics.extend(analyzer_diagnostics(syntax, opened.as_ref()).await);
         }
         // Clamp every range against the live text. The parser
         // already clamps its own emissions, but analyzer
@@ -437,29 +437,63 @@ impl Server {
     }
 }
 
-/// Run the structural variable-occurrence scan against the
-/// parsed syntax. Returns only `scan_variables` findings for now.
+/// Run analyzer diagnostics against the parsed syntax. Always
+/// emits the structural variable-occurrence scan
+/// (`scan_variables`); when the host opened an [`Opened`] for
+/// this document, additionally runs the full analyzer pass
+/// (`tonk_analyzer::analyze`) against its `(source, env)` pair
+/// to surface branch-dependent diagnostics (`UnknownConcept`,
+/// `UnknownBookmark`, `ResolverFailed`, `InvalidClaimAttribute`).
 ///
-/// TODO: the full analyzer pass (`tonk_analyzer::analyze`) now
-/// takes a `Source<'a>` rather than an `Environment`, but the LSP
-/// host hands us only an `Environment`. Re-enabling the live
-/// analyzer pass waits on the LSP host seam refactor (the
-/// `EnvProvider` planned to grow a `source()` accessor — see the
-/// scope-env refactor notes). Branch-dependent diagnostics
-/// (`UnknownConcept`, `UnknownBookmark`, `ResolverFailed`,
-/// `InvalidClaimAttribute`) are unavailable in the LSP until that
-/// lands; the `/evaluate` route remains the authoritative source
-/// for them.
-async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + ?Sized>(
+/// Without an opened env the analyzer pass is skipped — there's
+/// no `Source` to resolve references against — and the
+/// `/evaluate` route remains the authoritative source for
+/// branch-dependent verdicts.
+async fn analyzer_diagnostics<O: Opened + ?Sized>(
     syntax: &tonk_notation::Syntax,
-    _environment: Option<&E>,
+    opened: Option<&O>,
 ) -> Vec<lsp_types::Diagnostic> {
-    use tonk_analyzer::analyzer::scan_variables;
+    use tonk_analyzer::analyzer::{analyze, scan_variables};
 
-    scan_variables(syntax)
+    let mut out: Vec<lsp_types::Diagnostic> = scan_variables(syntax)
         .into_iter()
         .map(|d| diagnostic_from_analyze_diagnostic(syntax, d))
-        .collect()
+        .collect();
+
+    if let Some(opened) = opened {
+        // The analyzer surfaces errors as a single `AnalyzeError`
+        // — translate it into one LSP diagnostic pinned to its
+        // source range when present.
+        if let Err(err) = analyze(syntax, opened.source()).perform(opened.env()).await {
+            out.push(diagnostic_from_analyze_error(syntax, err));
+        }
+    }
+    out
+}
+
+/// Translate an [`AnalyzeError`] into an LSP [`Diagnostic`].
+/// Errors are always [`DiagnosticSeverity::ERROR`] and carry the
+/// stable `E_…` code matching the analyzer's error kind.
+fn diagnostic_from_analyze_error(
+    syntax: &tonk_notation::Syntax,
+    error: tonk_analyzer::analyzer::AnalyzeError,
+) -> lsp_types::Diagnostic {
+    use lsp_types::{Diagnostic, DiagnosticSeverity as LspSeverity, NumberOrString};
+
+    let range = error.range.unwrap_or(syntax.range);
+    let code = error.code();
+    let message = error.to_string();
+    Diagnostic {
+        range,
+        severity: Some(LspSeverity::ERROR),
+        code: Some(NumberOrString::String(code.into())),
+        code_description: None,
+        source: Some("tonk-schema".into()),
+        message,
+        related_information: None,
+        tags: None,
+        data: None,
+    }
 }
 
 /// Translate an [`AnalyzeDiagnostic`] (warning/error severity)
@@ -734,15 +768,15 @@ fn enclosing_head(text: &str, position: lsp_types::Position) -> Option<String> {
 /// Field names declared by the head's concept descriptor, plus
 /// the always-available `this:` meta-key. Looks up the concept
 /// in the built-in registry first; falls back to resolving
-/// against the live environment so branch-published concepts
+/// against the live `(source, env)` so branch-published concepts
 /// contribute their fields too.
-async fn field_completions<E: Environment + ?Sized>(
+async fn field_completions<O: Opened + ?Sized>(
     head: &str,
-    environment: Option<&E>,
+    opened: Option<&O>,
 ) -> Vec<CompletionItem> {
     use lsp_types::{CompletionItemKind, Documentation};
 
-    let Some(descriptor) = lookup_concept_descriptor(head, environment).await else {
+    let Some(descriptor) = lookup_concept_descriptor(head, opened).await else {
         return Vec::new();
     };
 
@@ -775,10 +809,10 @@ async fn field_completions<E: Environment + ?Sized>(
 }
 
 /// Concept names available in head position — built-ins plus
-/// every branch-published concept the live environment holds.
-/// The branch source is folded in only when the host opened an
-/// environment; tests and document-only runs stay on built-ins.
-async fn head_completions<E: Environment + ?Sized>(environment: Option<&E>) -> Vec<CompletionItem> {
+/// every branch-published concept the live `(source, env)`
+/// holds. The branch source is folded in only when the host
+/// opened one; tests and document-only runs stay on built-ins.
+async fn head_completions<O: Opened + ?Sized>(opened: Option<&O>) -> Vec<CompletionItem> {
     use lsp_types::{CompletionItemKind, Documentation};
     use std::collections::HashSet;
     use tonk_schema::builtin::concept_registry;
@@ -801,15 +835,21 @@ async fn head_completions<E: Environment + ?Sized>(environment: Option<&E>) -> V
         });
     }
 
-    if let Some(env) = environment {
-        // Branch concepts come back via `list_names` joined with
-        // `list_concepts` — only published names make sense as
-        // head-position completions, since the user types the
-        // name, not the entity URI. Built-in names take
-        // precedence on collision (matches the analyzer's
-        // resolution order).
-        let names = env.list_names().await.unwrap_or_default();
-        let concepts = env.list_concepts().await.unwrap_or_default();
+    if let Some(opened) = opened {
+        // Branch concepts come back via `NamedReference::list`
+        // joined with `ConceptDefinition::list` — only published
+        // names make sense as head-position completions, since
+        // the user types the name, not the entity URI. Built-in
+        // names take precedence on collision (matches the
+        // analyzer's resolution order).
+        let names = NamedReference::list(opened.source())
+            .perform(opened.env())
+            .await
+            .unwrap_or_default();
+        let concepts = ConceptDefinition::list(opened.source())
+            .perform(opened.env())
+            .await
+            .unwrap_or_default();
         let concept_entities: HashSet<_> = concepts.iter().map(|c| c.entity.to_string()).collect();
         for named in names {
             // `Name` carries `this` (`id:<name>`) and `entity`
@@ -906,20 +946,25 @@ fn identifier_at(line: &str, col: usize) -> Option<(usize, usize, String)> {
 }
 
 /// Resolve a concept name to its durability-tagged descriptor —
-/// built-in registry first, then the live environment. Returns
-/// the descriptor (without the surrounding `ConceptDefinition`
-/// envelope) since hover and completion only need the field set.
-async fn lookup_concept_descriptor<E: Environment + ?Sized>(
+/// built-in registry first, then the live `(source, env)` pair.
+/// Returns the descriptor (without the surrounding
+/// `ConceptDefinition` envelope) since hover and completion only
+/// need the field set.
+async fn lookup_concept_descriptor<O: Opened + ?Sized>(
     name: &str,
-    environment: Option<&E>,
+    opened: Option<&O>,
 ) -> Option<ConceptDescriptor> {
     use tonk_schema::builtin::lookup_concept;
     if let Some(definition) = lookup_concept(name) {
         return Some(definition.descriptor);
     }
-    let env = environment?;
+    let opened = opened?;
     let reference = ConceptReference::from(NamedReference(name.to_owned()));
-    match env.resolve_concept(reference).await {
+    match reference
+        .resolve(opened.source())
+        .perform(opened.env())
+        .await
+    {
         Ok(Some(definition)) => Some(definition.descriptor),
         _ => None,
     }
@@ -985,15 +1030,15 @@ fn format_type(ty: &Type) -> String {
     serde_json::to_string(ty).unwrap_or_else(|_| format!("{ty:?}"))
 }
 
-/// Open the host's live environment for a document URI.
+/// Open the host's live `(source, env)` pair for a document URI.
 ///
 /// The URI is parsed to `(repo, branch)` and handed to the
 /// host's [`EnvProvider`]. Returns `None` when the URI doesn't
 /// name a branch the host knows — completion, hover, and
 /// diagnostics then degrade to the document-local sources.
-async fn open_environment<P: EnvProvider>(uri: &Uri, env: &P) -> Option<P::Env> {
+async fn open_for<P: EnvProvider>(uri: &Uri, env: &P) -> Option<P::Opened> {
     let (repo, branch) = parse_repo_branch(uri)?;
-    env.environment(&repo, &branch).await
+    env.open(&repo, &branch).await
 }
 
 /// Pull `(repo, branch)` out of a
@@ -1057,8 +1102,25 @@ fn server_capabilities() -> ServerCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use async_trait::async_trait;
+    use dialog_repository::Branch;
+    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use serde_json::json;
+    use tonk_schema::concept::QueryEnv;
+    use tonk_schema::query_source::Source;
+
+    use super::*;
+    use crate::env::NoEnv;
+
+    /// Refcounted handle to a value that may not be `Send + Sync`
+    /// on wasm. `Arc` everywhere except wasm32, where the test
+    /// operator's storage isn't `Sync` and the runtime is
+    /// single-threaded anyway.
+    #[cfg(not(target_arch = "wasm32"))]
+    type Rc<T> = std::sync::Arc<T>;
+    #[cfg(target_arch = "wasm32")]
+    type Rc<T> = std::rc::Rc<T>;
+
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -1067,9 +1129,82 @@ mod tests {
     async fn run(server: &mut Server, msg: &Value) -> Option<Value> {
         let bytes = serde_json::to_vec(msg).unwrap();
         server
-            .handle_message(&bytes, &crate::env::NoEnv)
+            .handle_message(&bytes, &NoEnv)
             .await
             .map(|reply| serde_json::from_slice(&reply).unwrap())
+    }
+
+    /// Run a message against the server with a live host env
+    /// backed by an empty test branch.
+    async fn run_with<P: EnvProvider>(server: &mut Server, msg: &Value, env: &P) -> Option<Value> {
+        let bytes = serde_json::to_vec(msg).unwrap();
+        server
+            .handle_message(&bytes, env)
+            .await
+            .map(|reply| serde_json::from_slice(&reply).unwrap())
+    }
+
+    /// A test [`EnvProvider`] backed by a real but empty test
+    /// branch — enough for the analyzer pass to surface
+    /// structural errors that don't depend on branch-published
+    /// content. Generic over the operator type so we don't have
+    /// to name `VolatileSpace` in scope.
+    struct TestEnv<Op> {
+        operator: Rc<Op>,
+        branch: Branch,
+    }
+
+    /// The [`Opened`] handed back per request — a cheap clone of
+    /// the underlying branch + a refcount of the operator.
+    struct TestOpened<Op> {
+        operator: Rc<Op>,
+        branch: Branch,
+    }
+
+    impl<Op> Opened for TestOpened<Op>
+    where
+        Op: QueryEnv,
+    {
+        type Env = Op;
+        fn source(&self) -> Source<'_> {
+            Source::from(&self.branch)
+        }
+        fn env(&self) -> &Self::Env {
+            &self.operator
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    impl<Op> EnvProvider for TestEnv<Op>
+    where
+        Op: QueryEnv,
+    {
+        type Opened = TestOpened<Op>;
+        async fn open(&self, _repo: &str, _branch: &str) -> Option<Self::Opened> {
+            Some(TestOpened {
+                operator: self.operator.clone(),
+                branch: self.branch.clone(),
+            })
+        }
+    }
+
+    /// Build a `TestEnv` wrapping a fresh empty test branch.
+    /// `impl Trait` in the return type hides the operator's space
+    /// parameter.
+    async fn new_test_env() -> TestEnv<impl QueryEnv> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo
+            .branch("main")
+            .open()
+            .perform(&operator)
+            .await
+            .expect("test branch opens");
+        TestEnv {
+            operator: Rc::new(operator),
+            branch,
+        }
     }
 
     #[dialog_common::test]
@@ -1200,12 +1335,14 @@ mod tests {
 
     /// Analyzer-derived diagnostics carry a stable `code` and a
     /// source `range` so the editor can underline the offending
-    /// span and route quickfixes by code.
+    /// span and route quickfixes by code. Exercises the live
+    /// analyzer pass — the host opens an empty test branch, and
+    /// the structural error fires before any branch lookup.
     #[dialog_common::test]
-    #[ignore = "scope-env refactor: LSP analyzer pass disabled until the host seam grows a Source accessor"]
     async fn it_publishes_diagnostic_with_code_and_range_from_analyzer() {
         let mut server = Server::new();
-        let _ = run(
+        let env = new_test_env().await;
+        let _ = run_with(
             &mut server,
             &json!({
                 "jsonrpc": "2.0",
@@ -1213,6 +1350,7 @@ mod tests {
                 "method": "initialize",
                 "params": { "capabilities": {} }
             }),
+            &env,
         )
         .await;
         // `person!:` (empty body) — analyzer rejects with
@@ -1222,14 +1360,14 @@ mod tests {
             "method": "textDocument/didOpen",
             "params": {
                 "textDocument": {
-                    "uri": "tonk-buffer:///test",
+                    "uri": "tonk-buffer:///repo/main/test",
                     "languageId": "carry-asserted",
                     "version": 1,
                     "text": "person!:\n"
                 }
             }
         });
-        run(&mut server, &note).await;
+        run_with(&mut server, &note, &env).await;
         let outbound = server.take_outbound();
         let diags = outbound[0].params["diagnostics"].as_array().unwrap();
         assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");

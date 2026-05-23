@@ -4945,7 +4945,9 @@ name = "tonk-language-server"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "dialog-capability",
  "dialog-common",
+ "dialog-repository",
  "lsp-types",
  "serde",
  "serde_json",

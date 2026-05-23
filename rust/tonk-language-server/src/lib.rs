@@ -41,5 +41,5 @@ mod env;
 mod jsonrpc;
 mod server;
 
-pub use env::{EnvProvider, NoEnv, NoEnvironment};
+pub use env::{EnvProvider, NoEnv, NoOpened, NoQueryEnv, Opened};
 pub use server::Server;
