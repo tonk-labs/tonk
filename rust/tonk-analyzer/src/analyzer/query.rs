@@ -24,8 +24,8 @@ pub(crate) async fn build_query_application<R: Resolver>(
     // intent derivation only inspects `this:`. The returned name
     // is always `None` here.
     let (this, _name) = derive_head_intent(&query.fields, None, scope).await?;
-    let head_range = query.head.range;
-    match &query.head.name {
+    let head_range = query.predicate.range;
+    match &query.predicate.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
                 .resolve_concept(concept_name)

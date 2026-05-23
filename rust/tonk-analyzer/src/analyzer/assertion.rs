@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use dialog_artifacts::{Entity, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
-use tonk_notation::{Anchor, Assertion, Field, FieldValue, HeadName, Scalar};
+use tonk_notation::{Anchor, Claim, Field, FieldValue, HeadName, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
@@ -47,17 +47,17 @@ pub(crate) struct AssertionPlan {
 }
 
 pub(crate) async fn build_assertion_application<R: Resolver>(
-    assertion: &Assertion,
+    assertion: &Claim,
     scope: &Scope<'_, R>,
     analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
-    let head_label = match &assertion.head.name {
+    let head_label = match &assertion.predicate.name {
         HeadName::Concept(name) => name.clone(),
         HeadName::Claim(domain) => domain.clone(),
         HeadName::Uri(uri) => uri.clone(),
     };
 
-    let head_range = assertion.head.range;
+    let head_range = assertion.predicate.range;
 
     if assertion.fields.is_empty() {
         return Err(AnalyzeError::at(
@@ -91,7 +91,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
         .iter()
         .any(|f| f.name == ".." && matches!(f.value, FieldValue::Blank));
 
-    match &assertion.head.name {
+    match &assertion.predicate.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
                 .resolve_concept(concept_name)

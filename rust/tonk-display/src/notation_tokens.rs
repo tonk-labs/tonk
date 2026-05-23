@@ -9,7 +9,7 @@
 
 use lsp_types::{Position, Range};
 use tonk_notation::syntax::{
-    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Query, Syntax,
+    Anchor, Claim, Expression, Field, FieldValue, HeadName, Predicate, Query, Syntax,
 };
 
 /// Editor decoration class names. The `class()` method returns
@@ -84,7 +84,7 @@ fn walk_syntax(syntax: &Syntax, text: &str, line_starts: &[usize], out: &mut Vec
     for expr in &syntax.expressions {
         match expr {
             Expression::Query(q) => walk_query(q, text, line_starts, out),
-            Expression::Assertion(a) => walk_assertion(a, text, line_starts, out),
+            Expression::Claim(a) => walk_assertion(a, text, line_starts, out),
             // Rule-expression tokenization will land alongside
             // the editor support for `rule!:`. For now no
             // marks contribute, so the whole rule block falls
@@ -95,14 +95,14 @@ fn walk_syntax(syntax: &Syntax, text: &str, line_starts: &[usize], out: &mut Vec
 }
 
 fn walk_query(q: &Query, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
-    mark_head(&q.head, text, line_starts, out);
+    mark_head(&q.predicate, text, line_starts, out);
     for field in &q.fields {
         walk_field(field, text, line_starts, out);
     }
 }
 
-fn walk_assertion(a: &Assertion, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
-    mark_head(&a.head, text, line_starts, out);
+fn walk_assertion(a: &Claim, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
+    mark_head(&a.predicate, text, line_starts, out);
     if let Some(anchor) = &a.anchor {
         mark_anchor(anchor, line_starts, out);
     }
@@ -111,7 +111,7 @@ fn walk_assertion(a: &Assertion, text: &str, line_starts: &[usize], out: &mut Ve
     }
 }
 
-fn mark_head(head: &Head, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
+fn mark_head(head: &Predicate, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
     if !head.effect {
         return;
     }

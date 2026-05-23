@@ -194,8 +194,8 @@ async fn resolve<R: Resolver + ConditionalSync>(
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         let (head, has_effect) = match expression {
-            Expression::Query(q) => (&q.head, false),
-            Expression::Assertion(a) => (&a.head, true),
+            Expression::Query(q) => (&q.predicate, false),
+            Expression::Claim(a) => (&a.predicate, true),
             // Rule expressions are lifted by `expand`'s rule
             // pass. They contribute no declarations to the
             // query/mutation pipeline, so `resolve` skips them.
@@ -209,7 +209,7 @@ async fn resolve<R: Resolver + ConditionalSync>(
             match name.as_str() {
                 "attribute" => {
                     let assertion = match expression {
-                        Expression::Assertion(a) => a,
+                        Expression::Claim(a) => a,
                         _ => continue,
                     };
                     let plan = parse_attribute_body(assertion)?;
@@ -229,13 +229,13 @@ async fn resolve<R: Resolver + ConditionalSync>(
                         .anchor
                         .as_ref()
                         .map(|a| a.range)
-                        .unwrap_or(assertion.head.range);
+                        .unwrap_or(assertion.predicate.range);
                     let variable_range = assertion
                         .fields
                         .iter()
                         .find(|f| f.name == "this")
                         .map(|f| f.value_range)
-                        .unwrap_or(assertion.head.range);
+                        .unwrap_or(assertion.predicate.range);
                     if let Some(name) = &name {
                         scope.declare(name, entity.clone(), anchor_range)?;
                     }
@@ -259,7 +259,7 @@ async fn resolve<R: Resolver + ConditionalSync>(
                     // the in-doc map or the branch, so concept
                     // body parsing goes through the resolver.
                     let assertion = match expression {
-                        Expression::Assertion(a) => a,
+                        Expression::Claim(a) => a,
                         _ => continue,
                     };
                     let plan = parse_concept_body(assertion, scope).await?;
@@ -284,13 +284,13 @@ async fn resolve<R: Resolver + ConditionalSync>(
                         .anchor
                         .as_ref()
                         .map(|a| a.range)
-                        .unwrap_or(assertion.head.range);
+                        .unwrap_or(assertion.predicate.range);
                     let variable_range = assertion
                         .fields
                         .iter()
                         .find(|f| f.name == "this")
                         .map(|f| f.value_range)
-                        .unwrap_or(assertion.head.range);
+                        .unwrap_or(assertion.predicate.range);
                     if let Some(name) = &name {
                         scope.declare(name, entity.clone(), anchor_range)?;
                     }
@@ -337,7 +337,7 @@ async fn resolve<R: Resolver + ConditionalSync>(
         // semantics consistent. The two computations agree on the
         // entity because `body_digest` is a pure function of the
         // field literals.
-        if let Expression::Assertion(a) = expression
+        if let Expression::Claim(a) = expression
             && let Some(anchor) = &a.anchor
         {
             let entity = Entity::of(&body_digest(&a.fields));
@@ -406,7 +406,7 @@ async fn expand<R: Resolver + ConditionalSync>(
                 source: q.clone(),
                 analysis: QueryNodeAnalysis {
                     application,
-                    label: q.head.source.clone(),
+                    label: q.predicate.source.clone(),
                 },
             })));
         }
@@ -420,7 +420,7 @@ async fn expand<R: Resolver + ConditionalSync>(
             Expression::Query(_) => {}
             // Rule expressions are lifted in the rule pass below.
             Expression::Rule(_) => {}
-            Expression::Assertion(a) => {
+            Expression::Claim(a) => {
                 let mut claims: Vec<Statement> = Vec::new();
                 let mut claim_labels: Vec<Option<String>> = Vec::new();
                 let predicate;
@@ -469,7 +469,7 @@ async fn expand<R: Resolver + ConditionalSync>(
                     let probe = plan.assert.as_ref().or(plan.retract.as_ref());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
-                        .unwrap_or(Predicate::Domain(a.head.source.clone()));
+                        .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
                     this = probe
                         .map(|app| app.this().clone())
                         .unwrap_or(ThisIntent::Derived);
@@ -477,7 +477,7 @@ async fn expand<R: Resolver + ConditionalSync>(
                     if let Some(retract_app) = plan.retract {
                         collect_unbound_variables(&retract_app, &working, &mut requires);
                         claims.push(Statement::Retract(retract_app));
-                        claim_labels.push(Some(a.head.source.clone()));
+                        claim_labels.push(Some(a.predicate.source.clone()));
                     }
                     if let Some(assert_app) = plan.assert {
                         collect_unbound_variables(&assert_app, &working, &mut requires);
@@ -490,7 +490,7 @@ async fn expand<R: Resolver + ConditionalSync>(
                             transient_entity = Some(query.predicate.this());
                         }
                         claims.push(Statement::Assert(assert_app));
-                        claim_labels.push(Some(a.head.source.clone()));
+                        claim_labels.push(Some(a.predicate.source.clone()));
                     }
                     is_declaration = false;
                 }

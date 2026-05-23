@@ -59,7 +59,7 @@ pub fn scan_variables(syntax: &Syntax) -> Vec<AnalyzeDiagnostic> {
                 Position::QueryField,
                 &mut occurrences,
             ),
-            Expression::Assertion(a) => collect_from_fields(
+            Expression::Claim(a) => collect_from_fields(
                 &a.fields,
                 Position::AssertionThis,
                 Position::AssertionField,

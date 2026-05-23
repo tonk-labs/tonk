@@ -50,7 +50,7 @@ pub enum Expression {
     /// selected by the body's `this:` field (or the body-derived
     /// entity if `this:` is omitted). Per-field retractions live
     /// inside the body as `field: _` or `..: _`.
-    Assertion(Assertion),
+    Claim(Claim),
     /// `rule!:` — an inductive rule. The body carries
     /// `assert!:` or `retract!:` (the head concept), `when:` (a
     /// list of positive premises), and optionally `unless:` (a
@@ -63,7 +63,7 @@ impl Expression {
     pub fn range(&self) -> Range {
         match self {
             Expression::Query(q) => q.range,
-            Expression::Assertion(a) => a.range,
+            Expression::Claim(a) => a.range,
             Expression::Rule(r) => r.range,
         }
     }
@@ -73,7 +73,7 @@ impl Expression {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Query {
     /// Concept or claim name with no effect marker.
-    pub head: Head,
+    pub predicate: Predicate,
     /// Field constraints under the head. Empty body (`head:`) is
     /// allowed and means "any entity matching the head's concept".
     pub fields: Vec<Field>,
@@ -83,9 +83,9 @@ pub struct Query {
 
 /// `head!:` with a fields body — an assertion expression.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Assertion {
+pub struct Claim {
     /// Concept or claim name with the effect marker (`!`).
-    pub head: Head,
+    pub predicate: Predicate,
     /// Optional `&anchor` written between the head's `:` and the
     /// body. Desugars to a `name!: this: id:<anchor>, entity:
     /// ?<anchor>` expression so future references to the anchor
@@ -125,7 +125,7 @@ pub struct Assertion {
 pub struct Rule {
     /// The `rule!:` head itself (always concept `rule` with
     /// `effect = true`).
-    pub head: Head,
+    pub head: Predicate,
     /// `Assert` for `assert!:`, `Retract` for `retract!:`.
     pub polarity: RulePolarity,
     /// Head concept name — the value of the `assert!:` /
@@ -201,7 +201,7 @@ pub struct Anchor {
 /// reference to *which* entity the expression operates on lives in
 /// the body (`this:` meta-key) or, for assertions, in a `&anchor`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Head {
+pub struct Predicate {
     /// What kind of entity this head names — concept (bare
     /// identifier) or claim (reverse-dotted domain) or a direct
     /// entity URI (`db:concept`, `id:person`, `did:key:zX`).

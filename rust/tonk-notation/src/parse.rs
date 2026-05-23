@@ -17,7 +17,7 @@ use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
 use crate::syntax::{
-    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Premise, Query, Rule,
+    Anchor, Claim, Expression, Field, FieldValue, HeadName, Predicate, Premise, Query, Rule,
     RulePolarity, Scalar, Spanned, Syntax,
 };
 
@@ -436,8 +436,8 @@ fn walk_expression(
     };
 
     if head.effect {
-        Some(Expression::Assertion(Assertion {
-            head,
+        Some(Expression::Claim(Claim {
+            predicate: head,
             anchor,
             fields: field_nodes,
             range: block_range,
@@ -454,7 +454,7 @@ fn walk_expression(
             ));
         }
         Some(Expression::Query(Query {
-            head,
+            predicate: head,
             fields: field_nodes,
             range: block_range,
         }))
@@ -464,7 +464,7 @@ fn walk_expression(
 /// `rule!:` heads are the only ones whose body is parsed
 /// through [`parse_rule_body`] rather than as a generic field
 /// map.
-fn is_rule_head(head: &Head) -> bool {
+fn is_rule_head(head: &Predicate) -> bool {
     head.effect && matches!(&head.name, HeadName::Concept(name) if name == "rule")
 }
 
@@ -481,7 +481,7 @@ fn is_rule_head(head: &Head) -> bool {
 /// Unknown top-level keys raise a diagnostic but don't reject
 /// the rule.
 fn parse_rule_body(
-    head: &Head,
+    head: &Predicate,
     value: &MarkedYaml<'_>,
     block_range: Range,
     out: &mut Vec<Diagnostic>,
@@ -763,7 +763,7 @@ fn mapping_of<'a, 'b>(
 /// about *which* entity an expression operates on lives in the
 /// body via `this:` (or, for assertions, via a `&anchor` between
 /// the colon and the body).
-fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option<Head> {
+fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option<Predicate> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         out.push(error(key_range, "Head must not be empty."));
@@ -799,7 +799,7 @@ fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option
 
     let name = classify_head_name(name_str);
 
-    Some(Head {
+    Some(Predicate {
         name,
         range: key_range,
         source: name_str.to_owned(),
@@ -1296,8 +1296,8 @@ mod tests {
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query, got {:?}", syntax.expressions[0]);
         };
-        assert!(matches!(&q.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(!q.head.effect);
+        assert!(matches!(&q.predicate.name, HeadName::Concept(n) if n == "person"));
+        assert!(!q.predicate.effect);
         assert!(q.fields.is_empty());
     }
 
@@ -1314,7 +1314,7 @@ person:
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.name, HeadName::Concept(n) if n == "person"));
+        assert!(matches!(&q.predicate.name, HeadName::Concept(n) if n == "person"));
         assert_eq!(q.fields.len(), 3);
         assert_eq!(q.fields[0].name, "this");
         assert!(matches!(&q.fields[0].value, FieldValue::Variable(v) if v == "alice"));
@@ -1337,7 +1337,7 @@ xyz.tonk:
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.name, HeadName::Claim(n) if n == "xyz.tonk"));
+        assert!(matches!(&q.predicate.name, HeadName::Claim(n) if n == "xyz.tonk"));
     }
 
     #[dialog_common::test]
@@ -1350,11 +1350,11 @@ db:concept!:
     foo: bar
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "db:concept"));
-        assert!(a.head.effect);
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "db:concept"));
+        assert!(a.predicate.effect);
     }
 
     #[dialog_common::test]
@@ -1366,11 +1366,11 @@ person!:
   address: "Portland, OR"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(a.head.effect);
+        assert!(matches!(&a.predicate.name, HeadName::Concept(n) if n == "person"));
+        assert!(a.predicate.effect);
         assert!(a.anchor.is_none());
     }
 
@@ -1383,7 +1383,7 @@ person!: &alice
   age: 28
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let anchor = a.anchor.as_ref().expect("anchor present");
@@ -1401,7 +1401,7 @@ attribute!: &person-name
   cardinality: one
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert_eq!(a.anchor.as_ref().unwrap().name, "person-name");
@@ -1442,7 +1442,7 @@ person!:
   age: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert_eq!(a.fields.len(), 2);
@@ -1462,7 +1462,7 @@ person!:
   ..: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let dotdot = a.fields.iter().find(|f| f.name == "..").unwrap();
@@ -1510,7 +1510,7 @@ concept!: &person
     age:  person-age
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let with_field = a.fields.iter().find(|f| f.name == "with").unwrap();
@@ -1547,8 +1547,8 @@ xyz.tonk:
         let Expression::Query(q2) = &syntax.expressions[1] else {
             panic!("expected Query 2");
         };
-        assert!(matches!(&q1.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(matches!(&q2.head.name, HeadName::Claim(n) if n == "xyz.tonk"));
+        assert!(matches!(&q1.predicate.name, HeadName::Concept(n) if n == "person"));
+        assert!(matches!(&q2.predicate.name, HeadName::Claim(n) if n == "xyz.tonk"));
     }
 
     #[dialog_common::test]
@@ -1559,7 +1559,7 @@ person!:
   address: "Portland, OR"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1579,7 +1579,7 @@ concept!:
     name: person-name
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let FieldValue::Nested(inner) = &a.fields[0].value else {
@@ -1600,7 +1600,7 @@ name!:
   entity: did:key:zHjKf
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1620,7 +1620,7 @@ attribute!: &person-name
   description: "name"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let the = a.fields.iter().find(|f| f.name == "the").unwrap();
@@ -1744,7 +1744,7 @@ person!:
     entropy: "Maybe Not"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1765,10 +1765,10 @@ id:person!:
   description: "x"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "id:person"));
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "id:person"));
     }
 
     #[dialog_common::test]
@@ -1779,10 +1779,10 @@ did:key:zHjKf!:
   ..: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "did:key:zHjKf"));
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "did:key:zHjKf"));
     }
 
     #[dialog_common::test]
@@ -1794,7 +1794,7 @@ person!:
   age: 30
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1810,7 +1810,7 @@ name!:
   entity: did:key:zX
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1826,7 +1826,7 @@ person!:
   ..: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1841,7 +1841,7 @@ thing!:
   weight: 1.5
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         match &a.fields[0].value {
@@ -1859,7 +1859,7 @@ thing!:
   no: false
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let yes = a.fields.iter().find(|f| f.name == "yes").unwrap();
@@ -1882,7 +1882,7 @@ thing!:
   nope: null
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         // Plain `null` in field-value position is a Null literal,
@@ -1903,7 +1903,7 @@ thing!:
   name: "alice"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1920,7 +1920,7 @@ thing!:
   name: 'alice'
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1940,7 +1940,7 @@ thing!:
   ref: xyz.tonk.person
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1960,7 +1960,7 @@ thing!:
   greeting: hello world
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1980,7 +1980,7 @@ thing!:
   ref: name_alt
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -2001,7 +2001,7 @@ thing!:
   single: 'person-name'
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let bare = a.fields.iter().find(|f| f.name == "bare").unwrap();
@@ -2033,7 +2033,7 @@ thing!:
   name: Alice
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -2050,7 +2050,7 @@ thing!:
   ref: a-b1.c+d
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -2066,7 +2066,7 @@ thing!:
         // `person!:` with no fields is syntactically valid (no-op
         // semantically; the analyzer may flag it).
         let syntax = parse_clean("person!:\n");
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(a.fields.is_empty());
@@ -2087,13 +2087,13 @@ person!:
         );
         assert_eq!(syntax.expressions.len(), 2);
         assert!(matches!(syntax.expressions[0], Expression::Query(_)));
-        assert!(matches!(syntax.expressions[1], Expression::Assertion(_)));
+        assert!(matches!(syntax.expressions[1], Expression::Claim(_)));
     }
 
     #[dialog_common::test]
     fn it_records_anchor_range_pointing_at_ampersand() {
         let syntax = parse_clean("person!: &alice\n  name: \"Alice\"\n");
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let anchor = a.anchor.as_ref().unwrap();
@@ -2117,7 +2117,7 @@ xyz.tonk.person/name:
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
+        assert!(matches!(&q.predicate.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
     }
 
     /// `|`-style block scalars are unambiguously string literals,
@@ -2137,7 +2137,7 @@ page!:
     </html>
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let content = a
@@ -2166,7 +2166,7 @@ page!:
   type: text/html
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let ty = a
@@ -2191,7 +2191,7 @@ attribute!:
   the: xyz.tonk.person/name
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let the = a
@@ -2217,7 +2217,7 @@ person!:
   scheme: db:concept
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         for name in ["this", "ref", "scheme"] {
@@ -2246,7 +2246,7 @@ page!:
     description
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(a) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let desc = a

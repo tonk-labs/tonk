@@ -7,7 +7,7 @@ use dialog_artifacts::{Entity, Value};
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, Parameters, Term, concept::query::ConceptQuery,
 };
-use tonk_notation::{Assertion, FieldValue, Scalar};
+use tonk_notation::{Claim, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
@@ -42,7 +42,7 @@ pub(crate) struct AttributeBody {
     pub entity: Entity,
 }
 
-pub(crate) fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBody, AnalyzeError> {
+pub(crate) fn parse_attribute_body(assertion: &Claim) -> Result<AttributeBody, AnalyzeError> {
     parse_attribute_fields(&assertion.fields)
 }
 
@@ -174,7 +174,7 @@ pub(crate) struct ConceptBody {
 }
 
 pub(crate) async fn parse_concept_body<R: Resolver>(
-    assertion: &Assertion,
+    assertion: &Claim,
     scope: &Scope<'_, R>,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;

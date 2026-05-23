@@ -991,7 +991,7 @@ fn classify_for_dispatch(body: &str) -> DocDispatch {
     let has_mutation = syntax
         .expressions
         .iter()
-        .any(|e| matches!(e, tonk_notation::Expression::Assertion(_)));
+        .any(|e| matches!(e, tonk_notation::Expression::Claim(_)));
     DocDispatch::Submit { has_mutation }
 }
 

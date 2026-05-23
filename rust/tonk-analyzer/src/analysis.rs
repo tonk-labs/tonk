@@ -29,7 +29,7 @@
 use std::collections::{HashMap, HashSet};
 
 use dialog_artifacts::Entity;
-use tonk_notation::{Assertion, Expression, Query, Rule, Syntax};
+use tonk_notation::{Claim, Expression, Query, Rule, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
 use tonk_core::effect::Effect;
@@ -209,7 +209,7 @@ pub enum ExpressionAnalysis {
     /// A `head:` query expression.
     Query(Box<Analysis<Query>>),
     /// A `head!:` assertion expression.
-    Assertion(Box<Analysis<Assertion>>),
+    Assertion(Box<Analysis<Claim>>),
     /// A `rule!:` inductive-rule expression.
     Rule(Box<Analysis<Rule>>),
 }
@@ -236,7 +236,7 @@ pub struct QueryNodeAnalysis {
 // Assertion                                                        //
 // ---------------------------------------------------------------- //
 
-impl Analyzable for Assertion {
+impl Analyzable for Claim {
     type Analysis = AssertionAnalysis;
 }
 
