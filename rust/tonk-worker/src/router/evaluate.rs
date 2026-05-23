@@ -185,8 +185,8 @@ async fn evaluate_on_branch<'a>(
     let revision_before = branch.revision();
 
     let evaluated = syntax
-        .evaluate(branch.transaction())
-        .perform(branch, &tonk_state.operator)
+        .evaluate(branch)
+        .perform(&tonk_state.operator)
         .await
         .map_err(map_evaluate_error)?;
 
@@ -197,7 +197,7 @@ async fn evaluate_on_branch<'a>(
     let response = if query.transact && evaluated.analysis.analysis.has_statements() {
         let result = evaluated
             .commit()
-            .perform(branch, &tonk_state.operator)
+            .perform(&tonk_state.operator)
             .await
             .map_err(map_evaluate_error)?;
         // Re-poll subscriptions so SSE clients see the new state.

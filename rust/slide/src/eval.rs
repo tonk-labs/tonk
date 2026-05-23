@@ -151,8 +151,8 @@ pub async fn run_against_site(
 
     let revision_before = site.branch.revision();
     let evaluated = syntax
-        .evaluate(site.branch.transaction())
-        .perform(&site.branch, &site.operator)
+        .evaluate(&site.branch)
+        .perform(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
 
@@ -162,7 +162,7 @@ pub async fn run_against_site(
     let (response, committed) = if evaluated.analysis.analysis.has_statements() {
         let result = evaluated
             .commit()
-            .perform(&site.branch, &site.operator)
+            .perform(&site.operator)
             .await
             .map_err(map_evaluate_error)?;
         (

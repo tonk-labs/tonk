@@ -420,8 +420,8 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
     }
     let revision = site.branch.revision();
     let evaluated = syntax
-        .evaluate(site.branch.transaction())
-        .perform(&site.branch, &site.operator)
+        .evaluate(&site.branch)
+        .perform(&site.operator)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
     // schema-internal docs are pure-query; the chain didn't

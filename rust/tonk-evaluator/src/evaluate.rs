@@ -9,7 +9,7 @@
 //!
 //! syntax.analyze(source).perform(env).await?;   // -> Analysis
 //! syntax.compile(source).perform(env).await?;   // -> Compiled
-//! syntax.evaluate(txn).perform(&branch, env).await?; // -> Evaluated
+//! syntax.evaluate(&branch).perform(env).await?; // -> Evaluated
 //! ```
 //!
 //! - [`SyntaxAnalyzeExt::analyze`] is pure-read — takes a
@@ -18,16 +18,16 @@
 //! - [`SyntaxCompileExt::compile`] runs `analyze` under the hood
 //!   and yields a [`Compiled`] — a thin handle over the resolved
 //!   document's runnable operations.
-//! - [`SyntaxEvaluateExt::evaluate`] takes a caller-created
-//!   [`Transaction`], runs `compile` under the hood, runs the
-//!   operations, and yields an [`Evaluated`] holding the
+//! - [`SyntaxEvaluateExt::evaluate`] takes a `&Branch`, opens a
+//!   transaction internally, runs `compile` under the hood, runs
+//!   the operations, and yields an [`Evaluated`] holding the
 //!   transaction with the document's changes staged. It does
 //!   *not* commit.
 //!
 //! ```ignore
 //! let evaluated = syntax
-//!     .evaluate(branch.transaction())
-//!     .perform(&branch, env).await?;
+//!     .evaluate(&branch)
+//!     .perform(env).await?;
 //! // evaluated.txn — overlay reflects pending mutations
 //! // evaluated.transients — bucket to hand to `induce`
 //! // evaluated.matches — pre-mutation per-expression match blocks
@@ -40,10 +40,10 @@
 //!
 //! ```ignore
 //! let result = syntax
-//!     .evaluate(branch.transaction())
-//!     .perform(&branch, env).await?
+//!     .evaluate(&branch)
+//!     .perform(env).await?
 //!     .commit()
-//!     .perform(&branch, env).await?;
+//!     .perform(env).await?;
 //! // result.revision, result.matches_after, ...
 //! ```
 //!
@@ -175,7 +175,7 @@ impl<T> EvaluateEnv for T where
 //                                                                   //
 //   syntax.analyze(source).perform(env)   -> Analysis               //
 //   syntax.compile(source).perform(env)   -> Compiled               //
-//   syntax.evaluate(txn).perform(branch, env) -> Evaluated          //
+//   syntax.evaluate(&branch).perform(env) -> Evaluated              //
 //                                                                   //
 // Each runs the prior under the hood. `Syntax` is a foreign type    //
 // (`tonk_notation::Syntax`), so these are local extension traits    //
@@ -280,46 +280,48 @@ pub struct Compiled {
 
 /// Adds [`Self::evaluate`] to [`tonk_notation::Syntax`]. The
 /// third lifecycle entry point: `compile`, then run the
-/// operations against a caller-created transaction.
+/// operations against a fresh transaction on the branch.
 pub trait SyntaxEvaluateExt {
-    /// Stage an evaluation of this document against `txn`.
-    /// Returns a chain handle; call `.perform(branch, env)` to
-    /// run `compile`, execute the operations, and stage the
-    /// document's changes onto the transaction.
-    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a>;
+    /// Stage an evaluation of this document against `branch`.
+    /// Returns a chain handle; call `.perform(env)` to run
+    /// `compile`, execute the operations, and yield the
+    /// transaction with the document's writes baked into its
+    /// overlay. The chain opens the transaction internally —
+    /// callers that need a pre-staged transaction should call
+    /// `branch.transaction()` themselves and use `induce` /
+    /// `commit` directly instead of going through this entry.
+    fn evaluate<'a>(&self, branch: &'a Branch) -> Evaluate<'_, 'a>;
 }
 
 impl SyntaxEvaluateExt for Syntax {
-    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a> {
-        Evaluate { syntax: self, txn }
+    fn evaluate<'a>(&self, branch: &'a Branch) -> Evaluate<'_, 'a> {
+        Evaluate {
+            syntax: self,
+            branch,
+        }
     }
 }
 
 /// Chain handle for an evaluation. Holds the syntax and the
-/// transaction until `.perform(branch, env)` consumes them.
+/// branch until `.perform(env)` consumes them.
 pub struct Evaluate<'s, 'a> {
     syntax: &'s Syntax,
-    txn: Transaction<'a>,
+    branch: &'a Branch,
 }
 
 impl<'s, 'a> Evaluate<'s, 'a> {
     /// Analyze the syntax, run pre-mutation queries, plan every
     /// mutation `Statement` per match frame, and apply the
-    /// resulting claims to `self.txn`. The transaction is
-    /// returned in [`Evaluated::txn`] with mutations baked into
-    /// its overlay — caller commits, runs `induce`, or drops as
-    /// they see fit.
-    ///
-    /// `branch` is required for analyzer introspection lookups
-    /// and pre-mutation query reads — the same branch the
-    /// transaction is open against. Passing it explicitly until
-    /// dialog exposes a `Transaction::branch()` accessor.
+    /// resulting claims to a fresh transaction on the branch.
+    /// The transaction is returned in [`Evaluated::txn`] with
+    /// mutations baked into its overlay — caller commits, runs
+    /// `induce`, or drops as they see fit.
     pub async fn perform<Env: EvaluateEnv>(
         self,
-        branch: &Branch,
         env: &Env,
     ) -> Result<Evaluated<'a>, EvaluateError> {
-        let Evaluate { syntax, mut txn } = self;
+        let Evaluate { syntax, branch } = self;
+        let mut txn = branch.transaction();
 
         // Run `compile` under the hood — `analyze` + lowering to
         // runnable operations — then walk the tree below.
@@ -459,6 +461,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 
         Ok(Evaluated {
             txn,
+            branch,
             transients,
             matches,
             commits,
@@ -476,6 +479,10 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 pub struct Evaluated<'a> {
     /// Transaction with mutations applied to its overlay.
     pub txn: Transaction<'a>,
+    /// Branch the transaction is open against, retained so
+    /// [`EvaluatedCommit::perform`] can re-query post-commit
+    /// without the caller having to pass it through again.
+    pub(crate) branch: &'a Branch,
     /// Transient claims the document asserted — one entry per
     /// field of every assertion whose concept is declared
     /// `transient:`. Hand to
@@ -519,13 +526,13 @@ impl<'a> EvaluatedCommit<'a> {
     /// `matches_after`.
     pub async fn perform<Env: EvaluateEnv>(
         self,
-        branch: &Branch,
         env: &Env,
     ) -> Result<EvaluateResult, EvaluateError> {
         use crate::effects::TransactionExt as _;
 
         let Evaluated {
             txn,
+            branch,
             transients,
             matches: matches_before,
             commits,
@@ -1185,12 +1192,12 @@ name!:\n\
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
 
@@ -1251,13 +1258,13 @@ rule!:\n\
 
         // First commit: install the rule.
         let evaluated = syntax
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?;
         evaluated
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install rule): {e}"))?;
 
@@ -1396,12 +1403,12 @@ rule!:\n\
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
@@ -1560,12 +1567,12 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
 
@@ -1706,12 +1713,12 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
 
@@ -1734,12 +1741,12 @@ increment!:\n\
             parsed
                 .syntax
                 .expect("increment syntax")
-                .evaluate(branch.transaction())
-                .perform(&branch, &operator)
+                .evaluate(&branch)
+                .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate (increment {round}): {e}"))?
                 .commit()
-                .perform(&branch, &operator)
+                .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit (increment {round}): {e}"))?;
         }
@@ -1842,12 +1849,12 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (setup): {e}"))?;
 
@@ -1856,12 +1863,12 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("increment syntax")
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (increment): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (increment): {e}"))?;
 
@@ -1935,12 +1942,12 @@ concept!: &pong\n\
         parse(concepts)
             .syntax
             .expect("concepts syntax")
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
 
@@ -1954,8 +1961,8 @@ rule!:\n\
         let evaluated = parse(rule_doc)
             .syntax
             .expect("rule syntax")
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
 
@@ -2005,12 +2012,12 @@ rule!:\n\
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(branch.transaction())
-                .perform(&branch, &operator)
+                .evaluate(&branch)
+                .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate ({label}): {e}"))?
                 .commit()
-                .perform(&branch, &operator)
+                .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("commit ({label}): {e}"))?;
             Ok(())
@@ -2083,12 +2090,12 @@ rule!:\n\
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         instance
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
 
@@ -2149,12 +2156,12 @@ rule!:\n\
 \x20     where: { this: ?this, tag: ?tag }\n";
         let syntax = parse(install).syntax.expect("install syntax");
         syntax
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
 
@@ -2168,12 +2175,12 @@ rule!:\n\
         );
         let instance = parsed.syntax.expect("instance syntax");
         instance
-            .evaluate(branch.transaction())
-            .perform(&branch, &operator)
+            .evaluate(&branch)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
             .commit()
-            .perform(&branch, &operator)
+            .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("commit (instance): {e}"))?;
 
