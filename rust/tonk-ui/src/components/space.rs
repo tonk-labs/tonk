@@ -2360,6 +2360,11 @@ mod tests {
 
     use super::rule_definition;
 
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
     /// Build a `rule:` result row whose `definition` field carries
     /// the JSON-stringified `RuleDefinition` an `AnonymousRuleQuery`
     /// emits — `{ "rule": <InductiveRuleDescriptor>, "polarity": … }`.
