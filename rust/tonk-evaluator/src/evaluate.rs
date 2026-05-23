@@ -419,6 +419,33 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             claim_count += 4 + effect.on_entities().len();
                             txn = txn.assert(Rule::asserting(effect.clone()));
                         }
+                        Statement::RetractEffect(entity) => {
+                            // `rule!: this: <entity> ..: _` removes
+                            // an installed rule. The resolver reads
+                            // the stored `dialog.effect/source` and
+                            // `dialog.effect/polarity` claims off
+                            // the branch and bakes those exact
+                            // bytes into the dissociate, so the
+                            // retraction byte-matches what was
+                            // written. Silently no-op if no rule
+                            // lives at that entity (the user may
+                            // be cleaning up a doubly-retracted
+                            // entity in a single document).
+                            use tonk_schema::query_source::Source;
+                            let Some(rule) = Rule::retracting(entity.clone())
+                                .resolve(&Source::from(branch), env)
+                                .await
+                                .map_err(|e| {
+                                    EvaluateError::Plan(format!(
+                                        "rule retract resolve failed at {entity}: {e}"
+                                    ))
+                                })?
+                            else {
+                                continue;
+                            };
+                            claim_count += 4 + rule.effect.on_entities().len();
+                            txn = txn.retract(rule);
+                        }
                     }
                 }
             }

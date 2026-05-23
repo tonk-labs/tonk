@@ -31,7 +31,106 @@ use super::formula::{FormulaInfo, lookup_formula};
 use super::resolver::Resolver;
 use super::scope::Scope;
 use crate::analyzer::Working;
+use dialog_artifacts::Entity;
 use tonk_core::effect::{Effect, EffectPolarity};
+
+/// Outcome of inspecting a `rule!:` claim body — install (lift to
+/// an [`Effect`]) or retract (point at an existing rule entity).
+///
+/// The two shapes live in the same notation:
+///
+/// - Install: `rule!: assert!: <head>, when: [...]` — body carries
+///   polarity + premises, no `..: _`.
+/// - Retract: `rule!: this: effect:<entity>, ..: _` — body carries
+///   the rule's entity in `this:` and `..: _` as the
+///   retract-everything sentinel.
+pub(crate) enum RuleAction {
+    /// Install a new rule. The carried [`Effect`] is the lifted,
+    /// dialog-planner-validated rule.
+    Install(Effect),
+    /// Retract an installed rule. The carried entity URI names the
+    /// effect on the branch whose `dialog.effect/*` facts the
+    /// evaluator should dissociate.
+    Retract(Entity),
+}
+
+/// `true` when the claim body is the rule-retract shape
+/// (`this: <entity>` plus `..: _` and no `assert!:` / `retract!:`).
+///
+/// `..: _` is the syntactic marker that says "retract every
+/// attribute of this entity"; combined with `this:` it identifies a
+/// specific rule. Used by the analyzer to pick between
+/// [`RuleAction::Install`] and [`RuleAction::Retract`].
+fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
+    let has_rest_retract = application
+        .fields
+        .iter()
+        .any(|f| f.name == ".." && matches!(f.value, FieldValue::Blank));
+    let has_polarity = application
+        .fields
+        .iter()
+        .any(|f| f.name == "assert!" || f.name == "retract!");
+    has_rest_retract && !has_polarity
+}
+
+/// Dispatch a `rule!:` claim to install or retract, depending on
+/// the body shape. The analyzer calls this once per `rule!:` claim
+/// it encounters.
+pub(crate) async fn lift_rule_claim<R: Resolver>(
+    application: &SyntaxApplication,
+    scope: &Scope<'_, R>,
+    analysis: &Working,
+) -> Result<RuleAction, AnalyzeError> {
+    if is_rule_retract_body(application) {
+        let entity = parse_rule_retract_target(application)?;
+        Ok(RuleAction::Retract(entity))
+    } else {
+        let effect = lift_rule(application, scope, analysis).await?;
+        Ok(RuleAction::Install(effect))
+    }
+}
+
+/// Read the `this:` field out of a rule-retract body as the effect
+/// entity URI. Rejects missing `this:` or non-URI `this:` values
+/// with a diagnostic.
+fn parse_rule_retract_target(application: &SyntaxApplication) -> Result<Entity, AnalyzeError> {
+    let this = application
+        .fields
+        .iter()
+        .find(|f| f.name == "this")
+        .ok_or_else(|| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: "rule retraction (`rule!: this: <entity> ..: _`) must name a `this:` \
+                             field carrying the effect entity URI"
+                        .into(),
+                },
+                application.range,
+            )
+        })?;
+    let uri = match &this.value {
+        FieldValue::Uri(uri) => uri.clone(),
+        _ => {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: "this".into(),
+                    form: "effect entity URI (e.g. `effect:<base58>`)",
+                },
+                this.value_range,
+            ));
+        }
+    };
+    uri.parse()
+        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::InvalidSubjectUri {
+                    subject: uri,
+                    reason: e.to_string(),
+                },
+                this.value_range,
+            )
+        })
+}
 
 /// Lift a `rule!:` claim's body into an [`Effect`] ready to
 /// install.

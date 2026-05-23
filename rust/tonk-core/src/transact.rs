@@ -27,30 +27,35 @@ use crate::effect::Effect;
 use crate::meta::{Name, name};
 
 /// One lowered write — an assertion, a retraction of an
-/// [`Application`], or the installation of an effect lifted from
-/// a `rule!:` expression.
+/// [`Application`], or the install / retract of a rule.
 #[derive(Debug, Clone)]
 pub enum Statement {
     /// `head! …:` — write the facts.
     Assert(Application),
     /// `head! …: _` (or `field: _`) — dissociate matching facts.
     Retract(Application),
-    /// `rule!:` — install an inductive effect on the branch. The
-    /// `!` marker makes a rule a mutation: evaluating it writes
-    /// the `dialog.effect/*` facts (via
-    /// `tonk_evaluator::effect_query::assert_effect`) that
-    /// the reactor's induce loop reads on every subsequent commit.
+    /// `rule!:` (install) — write a new inductive effect's
+    /// `dialog.effect/*` facts on the branch. The reactor's induce
+    /// loop reads them on every subsequent commit.
     InstallEffect(Effect),
+    /// `rule!: this: <effect entity> ..: _` (retract) — remove an
+    /// installed rule's `dialog.effect/*` facts. The executor
+    /// resolves the stored source string off the branch (via
+    /// `tonk_schema::rule::Rule::retracting`) so the dissociate
+    /// matches the bytes that were written, not whatever a fresh
+    /// `Effect::source()` would produce now.
+    RetractEffect(Entity),
 }
 
 impl Statement {
     /// The wrapped [`Application`], if this statement carries one.
-    /// `InstallEffect` has no application — it installs an effect
-    /// rather than applying a predicate to terms.
+    /// `InstallEffect` / `RetractEffect` have no application — they
+    /// operate on a rule's stored facts rather than applying a
+    /// predicate to terms.
     pub fn application(&self) -> Option<&Application> {
         match self {
             Self::Assert(a) | Self::Retract(a) => Some(a),
-            Self::InstallEffect(_) => None,
+            Self::InstallEffect(_) | Self::RetractEffect(_) => None,
         }
     }
 }

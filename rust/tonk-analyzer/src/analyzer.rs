@@ -444,20 +444,29 @@ async fn expand<R: Resolver + ConditionalSync>(
                     claim_labels.push(None);
                     is_declaration = true;
                 } else if is_rule_claim(a) {
-                    // `rule!:` claims lift to a single
-                    // `Statement::InstallEffect`. The lift reads
-                    // assert!:/retract!:/when:/unless:/description:
-                    // out of the claim body and runs dialog's rule
-                    // planner. Polarity / conclusion / premise
-                    // shape errors come back as diagnostics with
-                    // ranges pointing into the body.
-                    let effect = rule::lift_rule(a, scope, &working).await?;
+                    // `rule!:` claims lower to either a single
+                    // `Statement::InstallEffect` (install path —
+                    // lift the body into an `Effect`) or a single
+                    // `Statement::RetractEffect` (retract path —
+                    // `rule!: this: <entity> ..: _`). The
+                    // dispatcher in `rule::lift_rule_claim` picks
+                    // by inspecting the body for `..: _`.
+                    let action = rule::lift_rule_claim(a, scope, &working).await?;
                     predicate = Predicate::Domain(a.predicate.source.clone());
-                    this = ThisIntent::Derived;
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
-                    claims.push(Statement::InstallEffect(effect.clone()));
-                    claim_labels.push(None);
-                    rule_effect = Some(effect);
+                    match action {
+                        rule::RuleAction::Install(effect) => {
+                            this = ThisIntent::Derived;
+                            claims.push(Statement::InstallEffect(effect.clone()));
+                            claim_labels.push(None);
+                            rule_effect = Some(effect);
+                        }
+                        rule::RuleAction::Retract(entity) => {
+                            this = ThisIntent::Uri(entity.clone());
+                            claims.push(Statement::RetractEffect(entity));
+                            claim_labels.push(None);
+                        }
+                    }
                     is_declaration = false;
                 } else {
                     // An assertion expression can produce up to
