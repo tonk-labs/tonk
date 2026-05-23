@@ -1270,7 +1270,7 @@ person!: &alice
   age: 28
 "#,
         );
-        let Expression::Claim(Effectful { anchor, inner: a }) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let anchor = anchor.as_ref().expect("anchor present");
@@ -1288,7 +1288,7 @@ attribute!: &person-name
   cardinality: one
 "#,
         );
-        let Expression::Claim(Effectful { anchor, inner: a }) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert_eq!(anchor.as_ref().unwrap().name, "person-name");
@@ -2076,7 +2076,7 @@ person!:
     #[dialog_common::test]
     fn it_records_anchor_range_pointing_at_ampersand() {
         let syntax = parse_clean("person!: &alice\n  name: \"Alice\"\n");
-        let Expression::Claim(Effectful { anchor, inner: a }) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         let anchor = anchor.as_ref().unwrap();

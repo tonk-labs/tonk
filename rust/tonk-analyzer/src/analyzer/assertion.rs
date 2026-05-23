@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 
 use dialog_artifacts::{Entity, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
-use tonk_notation::{Anchor, Claim, Field, FieldValue, HeadName, Scalar};
+use tonk_notation::{
+    Anchor, Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar,
+};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
@@ -47,7 +49,8 @@ pub(crate) struct AssertionPlan {
 }
 
 pub(crate) async fn build_assertion_application<R: Resolver>(
-    assertion: &Claim,
+    assertion: &SyntaxApplication,
+    anchor: Option<&Anchor>,
     scope: &Scope<'_, R>,
     analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
@@ -66,8 +69,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
         ));
     }
 
-    let (this, name) =
-        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope).await?;
+    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope).await?;
     if let ThisIntent::Uri(entity) = &this {
         let this_range = assertion
             .fields
@@ -77,11 +79,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             .unwrap_or(head_range);
         check_writable(entity, this_range)?;
     }
-    let name_range = assertion
-        .anchor
-        .as_ref()
-        .map(|a| a.range)
-        .unwrap_or(head_range);
+    let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
     let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis, name_range)?;
 
     // Detect the rest-marker `..: _` once. Per-field `_`
@@ -412,7 +410,10 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                 };
                 ThisIntent::Uri(entity)
             }
-            FieldValue::Literal(_) | FieldValue::Blank | FieldValue::Nested(_) => {
+            FieldValue::Literal(_)
+            | FieldValue::Blank
+            | FieldValue::Nested(_)
+            | FieldValue::Premises(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: "this".into(),

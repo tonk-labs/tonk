@@ -7,7 +7,7 @@ use dialog_artifacts::{Entity, Value};
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, Parameters, Term, concept::query::ConceptQuery,
 };
-use tonk_notation::{Claim, FieldValue, Scalar};
+use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
@@ -42,7 +42,9 @@ pub(crate) struct AttributeBody {
     pub entity: Entity,
 }
 
-pub(crate) fn parse_attribute_body(assertion: &Claim) -> Result<AttributeBody, AnalyzeError> {
+pub(crate) fn parse_attribute_body(
+    assertion: &SyntaxApplication,
+) -> Result<AttributeBody, AnalyzeError> {
     parse_attribute_fields(&assertion.fields)
 }
 
@@ -174,7 +176,7 @@ pub(crate) struct ConceptBody {
 }
 
 pub(crate) async fn parse_concept_body<R: Resolver>(
-    assertion: &Claim,
+    assertion: &SyntaxApplication,
     scope: &Scope<'_, R>,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
@@ -577,7 +579,10 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Literal(other) => scalar_to_string(other)?,
         FieldValue::Uri(s) => s.clone(),
         FieldValue::Symbol(s) => s.clone(),
-        FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
+        FieldValue::Variable(_)
+        | FieldValue::Blank
+        | FieldValue::Nested(_)
+        | FieldValue::Premises(_) => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: field.name.clone(),
                 form: "non-literal (attribute definitions take literals)",

@@ -5,7 +5,7 @@
 
 use dialog_artifacts::Value;
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
-use tonk_notation::{Field, HeadName, Query};
+use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
@@ -16,7 +16,7 @@ use crate::analyzer::Working;
 use tonk_core::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) async fn build_query_application<R: Resolver>(
-    query: &Query,
+    query: &SyntaxApplication,
     scope: &Scope<'_, R>,
     analysis: &Working,
 ) -> Result<Application, AnalyzeError> {

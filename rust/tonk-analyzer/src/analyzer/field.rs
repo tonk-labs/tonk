@@ -134,6 +134,21 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
                 range,
             ));
         }
+        FieldValue::Premises(_) => {
+            // Premises only make sense as the value of `when:` /
+            // `unless:` inside a `rule!:` claim body — the rule
+            // lift consumes them there before this generic
+            // field-to-term path runs. Reaching this arm means
+            // the user put `when:` / `unless:` somewhere it does
+            // not belong.
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: field_name.into(),
+                    form: "premise list (only valid under `when:` / `unless:` inside a `rule!:` body)",
+                },
+                range,
+            ));
+        }
     })
 }
 

@@ -50,13 +50,13 @@ mod scope;
 use std::collections::{HashMap, HashSet};
 
 use dialog_common::ConditionalSync;
-use tonk_notation::{Expression, HeadName, Syntax};
+use tonk_notation::{Effectful, Expression, HeadName, Syntax};
 
 use tonk_core::transact::{Application, DomainApplication, Statement, ThisIntent};
 
 use crate::analysis::{
-    Analysis as Tree, AssertionAnalysis, DocumentAnalysis, ExpressionAnalysis, Predicate,
-    QueryNodeAnalysis, RuleAnalysis,
+    Analysis as Tree, AssertionAnalysis, AssertionNode, DocumentAnalysis, ExpressionAnalysis,
+    Predicate, QueryNode, QueryNodeAnalysis,
 };
 use tonk_core::mutation::ConceptDescriptor;
 
@@ -195,11 +195,7 @@ async fn resolve<R: Resolver + ConditionalSync>(
     for (index, expression) in syntax.expressions.iter().enumerate() {
         let (head, has_effect) = match expression {
             Expression::Query(q) => (&q.predicate, false),
-            Expression::Claim(a) => (&a.predicate, true),
-            // Rule expressions are lifted by `expand`'s rule
-            // pass. They contribute no declarations to the
-            // query/mutation pipeline, so `resolve` skips them.
-            Expression::Rule(_) => continue,
+            Expression::Claim(c) => (&c.inner.predicate, true),
         };
 
         // Meta heads carry their entity in the descriptor, which
@@ -208,8 +204,8 @@ async fn resolve<R: Resolver + ConditionalSync>(
         if has_effect && let HeadName::Concept(name) = &head.name {
             match name.as_str() {
                 "attribute" => {
-                    let assertion = match expression {
-                        Expression::Claim(a) => a,
+                    let (assertion, anchor) = match expression {
+                        Expression::Claim(Effectful { anchor, inner: a }) => (a, anchor.as_ref()),
                         _ => continue,
                     };
                     let plan = parse_attribute_body(assertion)?;
@@ -218,18 +214,12 @@ async fn resolve<R: Resolver + ConditionalSync>(
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
-                    let (this, name) =
-                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope)
-                            .await?;
+                    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope).await?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
                     };
-                    let anchor_range = assertion
-                        .anchor
-                        .as_ref()
-                        .map(|a| a.range)
-                        .unwrap_or(assertion.predicate.range);
+                    let anchor_range = anchor.map(|a| a.range).unwrap_or(assertion.predicate.range);
                     let variable_range = assertion
                         .fields
                         .iter()
@@ -258,8 +248,8 @@ async fn resolve<R: Resolver + ConditionalSync>(
                     // bare-symbol / URIs that may live in either
                     // the in-doc map or the branch, so concept
                     // body parsing goes through the resolver.
-                    let assertion = match expression {
-                        Expression::Claim(a) => a,
+                    let (assertion, anchor) = match expression {
+                        Expression::Claim(Effectful { anchor, inner: a }) => (a, anchor.as_ref()),
                         _ => continue,
                     };
                     let plan = parse_concept_body(assertion, scope).await?;
@@ -273,18 +263,12 @@ async fn resolve<R: Resolver + ConditionalSync>(
                         entity: entity.clone(),
                         descriptor,
                     };
-                    let (this, name) =
-                        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope)
-                            .await?;
+                    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope).await?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
                     };
-                    let anchor_range = assertion
-                        .anchor
-                        .as_ref()
-                        .map(|a| a.range)
-                        .unwrap_or(assertion.predicate.range);
+                    let anchor_range = anchor.map(|a| a.range).unwrap_or(assertion.predicate.range);
                     let variable_range = assertion
                         .fields
                         .iter()
@@ -337,8 +321,10 @@ async fn resolve<R: Resolver + ConditionalSync>(
         // semantics consistent. The two computations agree on the
         // entity because `body_digest` is a pure function of the
         // field literals.
-        if let Expression::Claim(a) = expression
-            && let Some(anchor) = &a.anchor
+        if let Expression::Claim(Effectful {
+            anchor: Some(anchor),
+            inner: a,
+        }) = expression
         {
             let entity = Entity::of(&body_digest(&a.fields));
             scope.declare(&anchor.name, entity, anchor.range)?;
@@ -403,7 +389,7 @@ async fn expand<R: Resolver + ConditionalSync>(
             let application = build_query_application(q, scope, &working).await?;
             working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
-                source: q.clone(),
+                source: QueryNode { source: q.clone() },
                 analysis: QueryNodeAnalysis {
                     application,
                     label: q.predicate.source.clone(),
@@ -418,15 +404,17 @@ async fn expand<R: Resolver + ConditionalSync>(
     for (index, expression) in syntax.expressions.iter().enumerate() {
         match expression {
             Expression::Query(_) => {}
-            // Rule expressions are lifted in the rule pass below.
-            Expression::Rule(_) => {}
-            Expression::Claim(a) => {
+            Expression::Claim(Effectful {
+                anchor: anchor_node,
+                inner: a,
+            }) => {
                 let mut claims: Vec<Statement> = Vec::new();
                 let mut claim_labels: Vec<Option<String>> = Vec::new();
                 let predicate;
                 let this;
                 let anchor;
                 let mut transient_entity: Option<Entity> = None;
+                let mut rule_effect: Option<tonk_core::effect::Effect> = None;
                 let is_declaration;
 
                 if let Some(declaration) = declared.remove(&index) {
@@ -455,6 +443,22 @@ async fn expand<R: Resolver + ConditionalSync>(
                     claims.push(Statement::Assert(declaration.application));
                     claim_labels.push(None);
                     is_declaration = true;
+                } else if is_rule_claim(a) {
+                    // `rule!:` claims lift to a single
+                    // `Statement::InstallEffect`. The lift reads
+                    // assert!:/retract!:/when:/unless:/description:
+                    // out of the claim body and runs dialog's rule
+                    // planner. Polarity / conclusion / premise
+                    // shape errors come back as diagnostics with
+                    // ranges pointing into the body.
+                    let effect = rule::lift_rule(a, scope, &working).await?;
+                    predicate = Predicate::Domain(a.predicate.source.clone());
+                    this = ThisIntent::Derived;
+                    anchor = anchor_node.as_ref().map(|n| n.name.clone());
+                    claims.push(Statement::InstallEffect(effect.clone()));
+                    claim_labels.push(None);
+                    rule_effect = Some(effect);
+                    is_declaration = false;
                 } else {
                     // An assertion expression can produce up to
                     // two statements: an assert side (explicit
@@ -465,7 +469,17 @@ async fn expand<R: Resolver + ConditionalSync>(
                     // present, retract first so the dissociate
                     // sees the prior state before the new
                     // assert lands.
-                    let plan = build_assertion_application(a, scope, &mut working).await?;
+                    // Anchor is passed separately because the
+                    // syntax `Application` no longer carries it
+                    // (it lives on the surrounding `Effectful`).
+                    // For now we thread it through where needed
+                    // and leave `build_assertion_application`'s
+                    // signature unchanged — the body still reads
+                    // `assertion.fields` only, since the anchor
+                    // affects naming downstream.
+                    let plan =
+                        build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)
+                            .await?;
                     let probe = plan.assert.as_ref().or(plan.retract.as_ref());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
@@ -473,7 +487,7 @@ async fn expand<R: Resolver + ConditionalSync>(
                     this = probe
                         .map(|app| app.this().clone())
                         .unwrap_or(ThisIntent::Derived);
-                    anchor = a.anchor.as_ref().map(|anchor| anchor.name.clone());
+                    anchor = anchor_node.as_ref().map(|n| n.name.clone());
                     if let Some(retract_app) = plan.retract {
                         collect_unbound_variables(&retract_app, &working, &mut requires);
                         claims.push(Statement::Retract(retract_app));
@@ -496,7 +510,10 @@ async fn expand<R: Resolver + ConditionalSync>(
                 }
 
                 nodes[index] = Some(ExpressionAnalysis::Assertion(Box::new(Tree {
-                    source: a.clone(),
+                    source: AssertionNode {
+                        source: a.clone(),
+                        anchor: anchor_node.clone(),
+                    },
                     analysis: AssertionAnalysis {
                         predicate,
                         this,
@@ -505,29 +522,16 @@ async fn expand<R: Resolver + ConditionalSync>(
                         declaration: is_declaration,
                         labels: claim_labels,
                         transient: transient_entity,
+                        effect: rule_effect,
                     },
                 })));
             }
         }
     }
 
-    // ---- rule pass: lift rule!: expressions into mutations ----
-    // A `rule!:` carries the `!` mutation marker — evaluating it
-    // installs `dialog.effect/*` facts on the branch — so it is
-    // just another mutation statement. Each lift resolves the
-    // rule's head + premise concepts through the scope, translates
-    // premise bindings into dialog Terms, and runs dialog's
-    // planner to catch unbound-head-variable etc.; the resulting
-    // effect lands as a `Statement::InstallEffect`.
-    for (index, expression) in syntax.expressions.iter().enumerate() {
-        if let Expression::Rule(rule_expr) = expression {
-            let effect = rule::lift_rule(rule_expr, scope, &working).await?;
-            nodes[index] = Some(ExpressionAnalysis::Rule(Box::new(Tree {
-                source: rule_expr.clone(),
-                analysis: RuleAnalysis { effect },
-            })));
-        }
-    }
+    // (Rule lifting now happens inside the Claim arm above:
+    // `rule!:` is a Claim with predicate `rule`; the analyzer
+    // dispatches on the predicate name via `is_rule_claim`.)
 
     // requires must be subset of query bindings (analysis-time
     // variables already filtered out by `collect_unbound_variables`).
@@ -582,6 +586,15 @@ async fn expand<R: Resolver + ConditionalSync>(
 /// domain prefix; a domain head names no concept, so it is
 /// always durable (and the [`Predicate::Domain`] arm carries no
 /// descriptor anyway).
+/// `true` when a claim's predicate is the built-in `rule` concept.
+/// `rule!:` is structurally a [`Expression::Claim`] over `rule`;
+/// the analyzer dispatches on the predicate to decide whether to
+/// lift the body into an inductive rule (via [`rule::lift_rule`])
+/// or treat it as a regular concept assertion.
+fn is_rule_claim(application: &tonk_notation::Application) -> bool {
+    matches!(&application.predicate.name, HeadName::Concept(name) if name == "rule")
+}
+
 fn predicate_of(application: &Application, transient: bool) -> Predicate {
     match application {
         Application::Concept { query, .. } => {
@@ -3376,13 +3389,14 @@ rule!:
             other => panic!("expected a query node, got {other:?}"),
         }
 
-        // Node 3 — `rule!:` carries the lifted effect.
+        // Node 3 — `rule!:` is a Claim whose analysis carries the
+        // lifted effect on `AssertionAnalysis::effect`.
+        let ExpressionAnalysis::Assertion(node) = &tree.analysis.expressions[3].analysis else {
+            panic!("the rule!: expression should be a Claim assertion");
+        };
         assert!(
-            matches!(
-                tree.analysis.expressions[3].analysis,
-                ExpressionAnalysis::Rule(_)
-            ),
-            "the rule!: expression is a rule node"
+            node.analysis.effect.is_some(),
+            "the rule!: claim should carry the lifted Effect"
         );
     }
 

@@ -1,14 +1,17 @@
-//! Rule-side analysis — lifts a parsed
-//! [`tonk_notation::Rule`] into a compiled
-//! [`tonk_core::effect::Effect`].
+//! Rule-side analysis — lifts a `rule!:` claim's body into a
+//! compiled [`tonk_core::effect::Effect`].
 //!
-//! The lift resolves the head concept and each premise's
-//! concept against the in-doc scope + branch, translates each
-//! premise's `where:` bindings into dialog `Term`s, builds the
-//! list of dialog [`Premise`]s, and finally compiles the
-//! [`InductiveRule`] via dialog's planner. The compiled rule is
-//! paired with the parsed [`RulePolarity`] to produce an
-//! [`Effect`].
+//! `rule!:` is structurally a [`tonk_notation::Expression::Claim`]
+//! over the built-in `rule` concept; the analyzer's mutation pass
+//! recognises the predicate name and dispatches to [`lift_rule`].
+//!
+//! The lift extracts the assert!:/retract!: polarity, the head
+//! concept name (the value of that field), the `when:` and
+//! `unless:` premise lists (carried as
+//! [`FieldValue::Premises`][tonk_notation::FieldValue::Premises]),
+//! resolves each premise's concept against the scope, translates
+//! each premise's `where:` bindings into dialog `Term`s, and
+//! finally compiles the [`InductiveRule`] via dialog's planner.
 //!
 //! Resolution and validation happen here; the install-time
 //! transient-trigger check runs separately at the evaluator's
@@ -18,7 +21,9 @@ use dialog_query::concept::query::ConceptQuery;
 use dialog_query::formula::query::FormulaQuery;
 use dialog_query::premise::Premise as DialogPremise;
 use dialog_query::{InductiveRule, Negation, Parameters, Proposition, Term};
-use tonk_notation::{Premise as NotationPremise, Rule, RulePolarity};
+use tonk_notation::{
+    Application as SyntaxApplication, FieldValue, Premise as NotationPremise, Scalar,
+};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
@@ -28,23 +33,25 @@ use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::effect::{Effect, EffectPolarity};
 
-/// Lift a parsed [`Rule`] into an [`Effect`] ready to install.
+/// Lift a `rule!:` claim's body into an [`Effect`] ready to
+/// install.
 ///
-/// Each premise's concept and the head concept are resolved
-/// through `scope`; missing names surface as
-/// [`AnalyzeErrorKind::UnknownConcept`]. Each premise's
-/// `where:` field is translated through the existing
-/// [`field_value_to_term`] helper, so `?var` / literal /
-/// symbol / blank forms behave consistently with the rest of
-/// the analyzer.
+/// `application` is the parsed body of the `rule!:` claim — the
+/// fields list carries the polarity (`assert!:` or `retract!:`),
+/// optional `description:`, and `when:` / `unless:` premise lists.
+/// Validation that used to live in the parser (exactly one
+/// polarity, non-empty `when:`) lives here so each diagnostic
+/// can point at semantically meaningful ranges.
 pub(crate) async fn lift_rule<R: Resolver>(
-    rule: &Rule,
+    application: &SyntaxApplication,
     scope: &Scope<'_, R>,
     analysis: &Working,
 ) -> Result<Effect, AnalyzeError> {
+    let body = parse_rule_body(application)?;
+
     // ---- Head concept ----
     let head_descriptor = {
-        let name = rule.conclusion.value.as_str();
+        let name = body.conclusion.as_str();
         let resolved = scope
             .resolve_concept(name)
             .await
@@ -54,13 +61,13 @@ pub(crate) async fn lift_rule<R: Resolver>(
                         context: format!("rule head concept {name:?}"),
                         reason: e.to_string(),
                     },
-                    rule.conclusion.range,
+                    body.conclusion_range,
                 )
             })?
             .ok_or_else(|| {
                 AnalyzeError::at(
                     AnalyzeErrorKind::UnknownConcept { name: name.into() },
-                    rule.conclusion.range,
+                    body.conclusion_range,
                 )
             })?;
         resolved.descriptor.concept().clone()
@@ -68,11 +75,11 @@ pub(crate) async fn lift_rule<R: Resolver>(
 
     // ---- Premises ----
     let mut dialog_premises: Vec<DialogPremise> = Vec::new();
-    for premise in &rule.when {
+    for premise in body.when {
         let proposition = lift_premise(premise, scope, analysis).await?;
         dialog_premises.push(DialogPremise::Assert(proposition));
     }
-    for premise in &rule.unless {
+    for premise in body.unless {
         let proposition = lift_premise(premise, scope, analysis).await?;
         dialog_premises.push(DialogPremise::Unless(Negation(proposition)));
     }
@@ -85,15 +92,190 @@ pub(crate) async fn lift_rule<R: Resolver>(
             AnalyzeErrorKind::RuleCompileFailed {
                 reason: e.to_string(),
             },
-            rule.range,
+            application.range,
         )
     })?;
 
-    let polarity = match rule.polarity {
-        RulePolarity::Assert => EffectPolarity::Assert,
-        RulePolarity::Retract => EffectPolarity::Retract,
-    };
-    Ok(Effect::new(inductive, polarity))
+    Ok(Effect::new(inductive, body.polarity))
+}
+
+/// Extracted shape of a `rule!:` claim body. Built by walking the
+/// claim's fields once and pulling out the rule-specific slots
+/// (polarity + conclusion, `when:`, `unless:`, `description:`).
+/// Doing this in one place keeps [`lift_rule`] free of grammar
+/// checks.
+struct RuleBody<'a> {
+    polarity: EffectPolarity,
+    conclusion: String,
+    conclusion_range: lsp_types::Range,
+    when: Vec<&'a NotationPremise>,
+    unless: Vec<&'a NotationPremise>,
+}
+
+/// Walk a `rule!:` claim's fields and extract the typed rule
+/// pieces, reporting shape errors with semantic context.
+///
+/// Validation:
+///
+/// - Exactly one of `assert!:` / `retract!:` (more is an error,
+///   none is an error).
+/// - `when:` is required and non-empty.
+/// - `description:` (when present) must be a string literal.
+/// - Unknown body keys raise a diagnostic.
+fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, AnalyzeError> {
+    let mut polarity: Option<(EffectPolarity, String, lsp_types::Range, lsp_types::Range)> = None;
+    let mut when: Option<(Vec<&NotationPremise>, lsp_types::Range)> = None;
+    let mut unless: Vec<&NotationPremise> = Vec::new();
+
+    for field in &application.fields {
+        match field.name.as_str() {
+            "assert!" | "retract!" => {
+                let new_polarity = if field.name == "assert!" {
+                    EffectPolarity::Assert
+                } else {
+                    EffectPolarity::Retract
+                };
+                if let Some((_, _, prior_range, _)) = polarity {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::RuleCompileFailed {
+                            reason: format!(
+                                "rule already declared polarity at \
+                                 {}:{}, a rule has exactly one polarity",
+                                prior_range.start.line + 1,
+                                prior_range.start.character + 1,
+                            ),
+                        },
+                        field.name_range,
+                    ));
+                }
+                let concept = match &field.value {
+                    FieldValue::Symbol(s) => s.clone(),
+                    FieldValue::Literal(Scalar::String(s)) => s.clone(),
+                    _ => {
+                        return Err(AnalyzeError::at(
+                            AnalyzeErrorKind::UnsupportedFieldValue {
+                                field: field.name.clone(),
+                                form: "concept name (bare symbol or string literal)",
+                            },
+                            field.value_range,
+                        ));
+                    }
+                };
+                polarity = Some((new_polarity, concept, field.name_range, field.value_range));
+            }
+            "when" => {
+                if when.is_some() {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::RuleCompileFailed {
+                            reason: "rule already declared `when:`, combine premises into one list"
+                                .into(),
+                        },
+                        field.name_range,
+                    ));
+                }
+                let FieldValue::Premises(items) = &field.value else {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::UnsupportedFieldValue {
+                            field: "when".into(),
+                            form: "a list of `{assert: <concept>, where: {...}}` premises",
+                        },
+                        field.value_range,
+                    ));
+                };
+                when = Some((items.iter().collect(), field.value_range));
+            }
+            "unless" => {
+                if !unless.is_empty() {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::RuleCompileFailed {
+                            reason: "rule already declared `unless:`, combine premises into one \
+                                     list"
+                                .into(),
+                        },
+                        field.name_range,
+                    ));
+                }
+                let FieldValue::Premises(items) = &field.value else {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::UnsupportedFieldValue {
+                            field: "unless".into(),
+                            form: "a list of `{assert: <concept>, where: {...}}` premises",
+                        },
+                        field.value_range,
+                    ));
+                };
+                unless = items.iter().collect();
+            }
+            "description" => {
+                // Description is preserved on the descriptor through
+                // dialog's planner; we don't model it on the analyzer
+                // side beyond shape validation.
+                if !matches!(&field.value, FieldValue::Literal(Scalar::String(_))) {
+                    return Err(AnalyzeError::at(
+                        AnalyzeErrorKind::UnsupportedFieldValue {
+                            field: "description".into(),
+                            form: "quoted string literal",
+                        },
+                        field.value_range,
+                    ));
+                }
+            }
+            "this" | ".." => {
+                // Reserved meta-keys. `this:` selects a target rule
+                // entity for retraction (`rule!: this: effect:abc
+                // ..: _`); `..: _` is the retract-all sentinel. The
+                // outer claim flow handles these; the rule lift
+                // skips them.
+                continue;
+            }
+            other => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::RuleCompileFailed {
+                        reason: format!(
+                            "unknown `rule!:` body key `{other}` (valid keys: assert!, retract!, \
+                             when, unless, description)"
+                        ),
+                    },
+                    field.name_range,
+                ));
+            }
+        }
+    }
+
+    let (polarity, conclusion, _, conclusion_range) = polarity.ok_or_else(|| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::RuleCompileFailed {
+                reason: "rule must declare `assert!:` or `retract!:` with a head concept name"
+                    .into(),
+            },
+            application.range,
+        )
+    })?;
+
+    let (when, when_range) = when.ok_or_else(|| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::RuleCompileFailed {
+                reason: "rule must declare `when:` with at least one premise".into(),
+            },
+            application.range,
+        )
+    })?;
+    if when.is_empty() {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::RuleCompileFailed {
+                reason: "rule's `when:` must list at least one premise".into(),
+            },
+            when_range,
+        ));
+    }
+
+    Ok(RuleBody {
+        polarity,
+        conclusion,
+        conclusion_range,
+        when,
+        unless,
+    })
 }
 
 /// Resolve one notation premise into a dialog [`Proposition`].

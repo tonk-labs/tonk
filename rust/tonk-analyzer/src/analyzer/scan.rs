@@ -52,6 +52,13 @@ struct Occurrence {
 pub fn scan_variables(syntax: &Syntax) -> Vec<AnalyzeDiagnostic> {
     let mut occurrences: HashMap<String, Vec<Occurrence>> = HashMap::new();
     for expression in &syntax.expressions {
+        // `rule!:` claims have their own scoping (each premise's
+        // `where:` binds variables) and don't share the top-level
+        // query/assertion variable namespace, so single-occurrence
+        // scanning treats them like queries for the head-bindings
+        // but skips the `when:`/`unless:` premise bodies (those
+        // variables are joined by the analyzer's rule lift, not by
+        // top-level position tracking).
         match expression {
             Expression::Query(q) => collect_from_fields(
                 &q.fields,
@@ -59,19 +66,12 @@ pub fn scan_variables(syntax: &Syntax) -> Vec<AnalyzeDiagnostic> {
                 Position::QueryField,
                 &mut occurrences,
             ),
-            Expression::Claim(a) => collect_from_fields(
-                &a.fields,
+            Expression::Claim(c) => collect_from_fields(
+                &c.inner.fields,
                 Position::AssertionThis,
                 Position::AssertionField,
                 &mut occurrences,
             ),
-            // Rule expressions have their own scoping (each
-            // premise's `where:` binds variables) and don't
-            // share the top-level query/assertion variable
-            // namespace, so the single-occurrence scan skips
-            // them. A dedicated rule-side scanner will land with
-            // analyzer lifting.
-            Expression::Rule(_) => {}
         }
     }
 
