@@ -9,6 +9,22 @@
 //! Every node carries an [`lsp_types::Range`] so consumers can
 //! attach diagnostics to the source token they came from.
 //!
+//! # Two expression shapes
+//!
+//! Every top-level entry is either a [`Query`] or a [`Claim`].
+//! `Query` is `head:` (no `!`) and reads facts; `Claim` is `head!:`
+//! and writes them. The `rule!:` form is *not* a separate variant —
+//! it's a [`Claim`] whose head's predicate is the built-in `rule`
+//! concept and whose body fields name the rule's parts
+//! (`assert!:` / `retract!:` / `when:` / `unless:` / `description:`).
+//! The analyzer recognises the `rule` predicate and lifts the body
+//! into a [`tonk_schema::rule::Rule`] mutation.
+//!
+//! Retraction sits inside a claim body. `field: _` retracts that one
+//! attribute; `..: _` retracts every attribute the concept declares
+//! (used for whole-entity deletes — including rule deletes via
+//! `rule!: this: <effect entity> ..: _`).
+//!
 //! [analyze]: https://github.com/dialog-db/tonk-workers/tree/main/rust/tonk-schema/src/interpret.rs
 
 use lsp_types::Range;
@@ -24,38 +40,30 @@ pub struct Syntax {
     pub range: Range,
 }
 
-/// One top-level entry. Three flavours, distinguished by the head:
+/// One top-level entry. Two flavours, distinguished by the head's
+/// trailing `!`:
 ///
-/// | Head     | Body shape         | Variant       |
-/// |----------|--------------------|---------------|
-/// | `name`   | fields or empty    | `Query`       |
-/// | `name!`  | fields or empty    | `Assertion`   |
-/// | `rule!`  | `{assert!:|retract!:, when:, unless:?, description:?}` | `Rule` |
+/// | Head     | Variant       |
+/// |----------|---------------|
+/// | `name`   | `Query`       |
+/// | `name!`  | `Claim`       |
 ///
-/// Retraction of a *single fact* (per attribute) is not a separate
-/// top-level variant — it happens inside an assertion body via
-/// `field: _` or `..: _`. The `Rule` variant captures *inductive
-/// rules* whose head is an `assert!:` or `retract!:` directive
-/// against a concept, and whose body is a `when:` / `unless:`
-/// premise list.
+/// `rule!:` is **not** a third variant — it's a [`Claim`] over the
+/// built-in `rule` concept (see the module docs). The analyzer
+/// recognises the predicate and dispatches to its rule-install path.
 ///
-/// A bare `_` body (`head!: _`) is a parse error: with no `this:`
-/// field there's no entity selection mechanism for the operation
-/// to act on.
+/// Per-field retraction lives inside the claim body (`field: _` or
+/// `..: _`). A bare `_` body (`head!: _`) is a parse error: with no
+/// `this:` field there's no entity selection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expression {
     /// `head:` (no `!`) — read facts matching the body's pattern.
-    Query(Query),
-    /// `head!:` — assert each field as a fact about the entity
-    /// selected by the body's `this:` field (or the body-derived
-    /// entity if `this:` is omitted). Per-field retractions live
-    /// inside the body as `field: _` or `..: _`.
-    Claim(Claim),
-    /// `rule!:` — an inductive rule. The body carries
-    /// `assert!:` or `retract!:` (the head concept), `when:` (a
-    /// list of positive premises), and optionally `unless:` (a
-    /// list of negative premises) and `description:`.
-    Rule(Rule),
+    Query(Application),
+    /// `head!:` — write facts of the head's concept. Wraps the
+    /// application in an [`Effectful`] envelope that carries the
+    /// optional `&anchor` and is the structural marker that the head
+    /// had `!`.
+    Claim(Effectful<Application>),
 }
 
 impl Expression {
@@ -63,96 +71,67 @@ impl Expression {
     pub fn range(&self) -> Range {
         match self {
             Expression::Query(q) => q.range,
-            Expression::Claim(a) => a.range,
-            Expression::Rule(r) => r.range,
+            Expression::Claim(c) => c.inner.range,
+        }
+    }
+
+    /// The application underlying this expression — the predicate
+    /// plus its field bindings. Same shape whether the expression
+    /// is a query or a claim; only the wrapper differs.
+    pub fn application(&self) -> &Application {
+        match self {
+            Expression::Query(q) => q,
+            Expression::Claim(c) => &c.inner,
         }
     }
 }
 
-/// `head:` — a query expression.
+/// A predicate applied to a body of field bindings.
+///
+/// The shared shape between queries and claims. Whether this counts
+/// as a read or a write is decided by the wrapping [`Expression`]
+/// variant ([`Expression::Query`] vs [`Expression::Claim`]): inside
+/// a [`Claim`](Expression::Claim) the same `Application` is the
+/// thing being asserted; inside [`Expression::Query`] it is the
+/// thing being matched against.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Query {
-    /// Concept or claim name with no effect marker.
+pub struct Application {
+    /// Concept / claim / URI on the head — *without* the `!` marker
+    /// (which lives on the outer [`Expression`]).
     pub predicate: Predicate,
-    /// Field constraints under the head. Empty body (`head:`) is
-    /// allowed and means "any entity matching the head's concept".
+    /// Body field constraints (queries) or field assignments
+    /// (claims). Empty (`head:` with no body) is allowed for queries
+    /// and means "any entity matching the head's concept". Claims
+    /// require at least one field (`this:` minimum) so they have an
+    /// entity to operate on; the parser enforces this.
     pub fields: Vec<Field>,
-    /// Span of the whole `head: …` block.
+    /// Span of the whole `head … : body` block.
     pub range: Range,
 }
 
-/// `head!:` with a fields body — an assertion expression.
+/// The `!` marker, wrapping whatever the marker decorates.
+///
+/// In tonk-notation grammar a head's trailing `!` is the "this is a
+/// mutation" tag. We give it a dedicated wrapper rather than a
+/// `effect: bool` field on the predicate because the structural
+/// presence/absence of [`Effectful`] is more honest about what `!`
+/// means: a claim *is* an effect; a query is not.
+///
+/// The wrapper also holds the optional `&anchor` written between the
+/// head's `:` and the body — the anchor is the other piece that
+/// only makes sense for effectful expressions (it names the entity
+/// the assertion writes to so later expressions can refer back).
 #[derive(Clone, Debug, PartialEq)]
-pub struct Claim {
-    /// Concept or claim name with the effect marker (`!`).
-    pub predicate: Predicate,
+pub struct Effectful<T> {
     /// Optional `&anchor` written between the head's `:` and the
-    /// body. Desugars to a `name!: this: id:<anchor>, entity:
-    /// ?<anchor>` expression so future references to the anchor
-    /// resolve through the name table.
+    /// body. Desugars to `this: id:<anchor>` plus a name-table
+    /// assertion so subsequent references resolve through it.
     pub anchor: Option<Anchor>,
-    /// Fields to assert. The reserved field `this:` selects which
-    /// entity the assertion operates on; `..: _` retracts every
-    /// other attribute in the concept's `with:` map; `field: _`
-    /// retracts that one attribute. Other fields are asserted.
-    pub fields: Vec<Field>,
-    /// Span of the whole `head!: …` block.
-    pub range: Range,
+    /// What the `!` decorates — typically an [`Application`].
+    pub inner: T,
 }
 
-/// `rule!:` with a structured body. The body's shape is fixed
-/// by the rule grammar rather than free-form `Field`s:
-///
-/// ```yaml
-/// rule!:
-///   assert!: counter        # or retract!: counter
-///   description: "..."      # optional
-///   when:
-///     - assert: counter
-///       where: { this: ?c, count: ?prev }
-///     - assert: increment
-///       where: { subject: ?c }
-///   unless:                 # optional
-///     - assert: counter-paused
-///       where: { this: ?c }
-/// ```
-///
-/// `assert!:` / `retract!:` are mutually exclusive; exactly one
-/// must be present and its value is the head concept name. The
-/// `when` list must be non-empty; each premise binds variables
-/// that the head reads.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Rule {
-    /// The `rule!:` head itself (always concept `rule` with
-    /// `effect = true`).
-    pub head: Predicate,
-    /// `Assert` for `assert!:`, `Retract` for `retract!:`.
-    pub polarity: RulePolarity,
-    /// Head concept name — the value of the `assert!:` /
-    /// `retract!:` field.
-    pub conclusion: Spanned<String>,
-    /// Positive premises (under `when:`).
-    pub when: Vec<Premise>,
-    /// Negative premises (under `unless:`), if any.
-    pub unless: Vec<Premise>,
-    /// Optional human-readable description.
-    pub description: Option<Spanned<String>>,
-    /// Span of the whole `rule!: …` block.
-    pub range: Range,
-}
-
-/// Polarity of a [`Rule`]'s head — whether matches assert or
-/// retract head facts.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RulePolarity {
-    /// `assert!:` head — body matches produce new head facts.
-    Assert,
-    /// `retract!:` head — body matches produce retractions of
-    /// the head concept's facts at the bound entity.
-    Retract,
-}
-
-/// One premise inside a rule's `when` or `unless` list. A
+/// One premise inside a rule's `when:` or `unless:` list. A
 /// premise is a mapping with `assert: <concept>` plus `where:
 /// { … }` field bindings:
 ///
@@ -167,6 +146,11 @@ pub enum RulePolarity {
 /// premises and feed the head — sharing a `?name` joins two
 /// premises, and `?name` reappearing in the head's
 /// (implicit) operand position binds the head's field.
+///
+/// Premises live in the [`syntax`](self) module rather than as
+/// nested fields under the `when:` key because their shape is
+/// structurally distinct (one concept + a where-map) and we want
+/// the diagnostic surface to point at specific premise sub-ranges.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Premise {
     /// Concept name (value of the `assert:` field). For
@@ -195,26 +179,26 @@ pub struct Anchor {
     pub range: Range,
 }
 
-/// Classified head: name + effect marker.
+/// Classified head — name plus lexical class.
 ///
-/// Heads under the new grammar carry no inline binding — every
-/// reference to *which* entity the expression operates on lives in
-/// the body (`this:` meta-key) or, for assertions, in a `&anchor`.
+/// The `!` marker is *not* on `Predicate`; it lives on the outer
+/// [`Expression`] variant (presence of [`Effectful`] = head ended in
+/// `!`). Heads carry no inline binding — every reference to *which*
+/// entity the expression operates on lives in the body (`this:`
+/// meta-key) or, for claims, in a `&anchor` on the [`Effectful`]
+/// wrapper.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Predicate {
     /// What kind of entity this head names — concept (bare
     /// identifier) or claim (reverse-dotted domain) or a direct
     /// entity URI (`db:concept`, `id:person`, `did:key:zX`).
     pub name: HeadName,
-    /// Span of the head text (without the trailing `:`).
+    /// Span of the head text (without the trailing `:` or `!`).
     pub range: Range,
     /// Original text of the name, without trailing `!`. Useful for
     /// diagnostic round-tripping and for builtin-concept dispatch
     /// in the analyzer.
     pub source: String,
-    /// `true` if the head ended in `!`, marking the expression as
-    /// having an effect (assertion or retraction).
-    pub effect: bool,
 }
 
 /// Concept vs claim, distinguished lexically. Concept names are
@@ -224,7 +208,7 @@ pub struct Predicate {
 pub enum HeadName {
     /// A concept name (bare identifier). The analyzer resolves it
     /// through the branch's name table — built-in mappings cover
-    /// `attribute`/`concept`/`name` out of the box.
+    /// `attribute`/`concept`/`name`/`rule` out of the box.
     Concept(String),
     /// A reverse-dotted domain (`xyz.tonk`, `io.gozala.person`).
     /// Each field name combines with the domain to form an
@@ -244,7 +228,8 @@ pub struct Field {
     /// Span of the field name.
     pub name_range: Range,
     /// Field value — literal, variable, blank, symbol reference,
-    /// URI, or a nested map.
+    /// URI, a nested map, or a premise list (for rule bodies'
+    /// `when:` / `unless:` keys).
     pub value: FieldValue,
     /// Span of the value side of the entry.
     pub value_range: Range,
@@ -279,6 +264,13 @@ pub enum FieldValue {
     /// definition, or an explicit content-derivation salt as
     /// `this: { … }`.
     Nested(Vec<Field>),
+    /// A list of premises — the parsed shape of a `when:` or
+    /// `unless:` value inside a `rule!:` claim body. Each premise
+    /// is the structured `{assert: <concept>, where: {…}}` mapping.
+    /// Carried as a typed list (rather than as `Nested(Vec<Field>)`
+    /// with field-named nesting) so the analyzer can rely on
+    /// per-premise ranges for diagnostics.
+    Premises(Vec<Premise>),
 }
 
 /// A primitive value. Mirrors the shapes saphyr produces for

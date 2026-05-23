@@ -20,6 +20,6 @@ pub mod syntax;
 pub use diagnostics::{NOTATION_LANGUAGE_ID, SERVER_INFO, ServerInfo, document_diagnostics};
 pub use parse::{Parsed, parse};
 pub use syntax::{
-    Anchor, Claim, Expression, Field, FieldValue, HeadName, Predicate, Premise, Query, Rule,
-    RulePolarity, Scalar, Spanned, Syntax,
+    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Predicate, Premise,
+    Scalar, Spanned, Syntax,
 };
