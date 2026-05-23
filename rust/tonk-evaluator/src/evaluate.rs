@@ -72,8 +72,7 @@ use tonk_analyzer::analyzer;
 use tonk_core::transact::{Application, ApplicationPlan, Planner as _, Statement};
 use tonk_schema::concept::{QueryEnv, application_to_plan};
 use tonk_schema::query_source::Source;
-
-use crate::effect_query::EffectStatement;
+use tonk_schema::rule::Rule;
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -418,7 +417,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // attribute the body reads) — bump the
                             // count by 4 + premise-attribute count.
                             claim_count += 4 + effect.on_entities().len();
-                            txn = txn.assert(EffectStatement(effect.clone()));
+                            txn = txn.assert(Rule::asserting(effect.clone()));
                         }
                     }
                 }

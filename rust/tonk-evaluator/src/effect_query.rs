@@ -17,7 +17,7 @@
 //! depends on `dialog-*` crates, so the operation types it
 //! defines can move into their own crate later.
 
-use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Value};
+use dialog_artifacts::{Entity, Value};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
@@ -87,17 +87,6 @@ pub enum EffectValidationError {
 // ---------------------------------------------------------------- //
 // Loading effects back from a branch.                              //
 // ---------------------------------------------------------------- //
-
-/// The well-known marker entity asserted as the value of
-/// `dialog.meta/effect` on every effect entity, mirroring how
-/// concept entities carry `(?this, dialog.meta/concept,
-/// db:concept)`. Lets "all effects on this branch" queries start
-/// from a selectable triple.
-fn effect_marker_entity() -> Entity {
-    "db:effect"
-        .parse()
-        .expect("`db:effect` is a valid entity URI")
-}
 
 /// Trait alias gathering the capability bounds every effect
 /// resolver needs. Mirrors `concept::QueryEnv`.
@@ -263,145 +252,10 @@ impl EffectsByOn {
     }
 }
 
-// ---------------------------------------------------------------- //
-// Writing effects into a branch transaction.                       //
-// ---------------------------------------------------------------- //
-
-/// Build a runtime [`ArtifactsAttribute`] from a domain + local
-/// name. Used by the [`assert_effect`] / [`retract_effect`]
-/// statement helpers.
-fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
-    format!("{domain}/{name}")
-        .parse()
-        .expect("dialog meta-attribute names should always be valid")
-}
-
-/// Write an [`Effect`] into a branch transaction — the marker,
-/// the source-of-truth claim, and every derived index claim.
-///
-/// The inverse of [`retract_effect`]. Lives here rather than as a
-/// `dialog_artifacts::Statement` impl on [`Effect`] so the
-/// `effect` module stays a leaf depending only on `dialog-*`.
-pub fn assert_effect(effect: &Effect, update: &mut impl dialog_artifacts::Update) {
-    let this = effect.this();
-    let description = effect.descriptor().description.clone();
-    let source = effect.source();
-    let conclusion = effect.conclusion();
-    let polarity = effect.polarity();
-    let attributes = effect.on_entities();
-
-    // Marker — `(?this, dialog.meta/effect, db:effect)`.
-    update.associate_unique(
-        meta_attr("dialog.meta", "effect"),
-        this.clone(),
-        Value::Entity(effect_marker_entity()),
-    );
-    // Source-of-truth claim.
-    update.associate_unique(
-        meta_attr("dialog.effect", "source"),
-        this.clone(),
-        Value::String(source),
-    );
-    // Head concept index.
-    update.associate_unique(
-        meta_attr("dialog.effect", "conclusion"),
-        this.clone(),
-        Value::Entity(conclusion),
-    );
-    // Polarity tag.
-    update.associate_unique(
-        meta_attr("dialog.effect", "polarity"),
-        this.clone(),
-        Value::String(polarity.as_str().to_owned()),
-    );
-    // Per-attribute reverse index (cardinality-many).
-    for attribute in attributes {
-        update.associate(
-            meta_attr("dialog.effect", "on"),
-            this.clone(),
-            Value::Entity(attribute),
-        );
-    }
-    // Optional description, shared with the rest of tonk-schema
-    // under `dialog.meta/description`.
-    if let Some(description) = description
-        && !description.is_empty()
-    {
-        update.associate_unique(
-            meta_attr("dialog.meta", "description"),
-            this,
-            Value::String(description),
-        );
-    }
-}
-
-/// Retract an [`Effect`]'s facts from a branch transaction — the
-/// inverse of [`assert_effect`].
-pub fn retract_effect(effect: &Effect, update: &mut impl dialog_artifacts::Update) {
-    let this = effect.this();
-    let description = effect.descriptor().description.clone();
-    let source = effect.source();
-    let conclusion = effect.conclusion();
-    let polarity = effect.polarity();
-    let attributes = effect.on_entities();
-
-    update.dissociate(
-        meta_attr("dialog.meta", "effect"),
-        this.clone(),
-        Value::Entity(effect_marker_entity()),
-    );
-    update.dissociate(
-        meta_attr("dialog.effect", "source"),
-        this.clone(),
-        Value::String(source),
-    );
-    update.dissociate(
-        meta_attr("dialog.effect", "conclusion"),
-        this.clone(),
-        Value::Entity(conclusion),
-    );
-    update.dissociate(
-        meta_attr("dialog.effect", "polarity"),
-        this.clone(),
-        Value::String(polarity.as_str().to_owned()),
-    );
-    for attribute in attributes {
-        update.dissociate(
-            meta_attr("dialog.effect", "on"),
-            this.clone(),
-            Value::Entity(attribute),
-        );
-    }
-    if let Some(description) = description
-        && !description.is_empty()
-    {
-        update.dissociate(
-            meta_attr("dialog.meta", "description"),
-            this,
-            Value::String(description),
-        );
-    }
-}
-
-/// Adapter wrapping an [`Effect`] so a branch transaction can
-/// `assert` / `retract` it through the `dialog_artifacts::Statement`
-/// trait. [`Statement::InstallEffect`](tonk_core::transact::Statement)
-/// carries the bare [`Effect`]; the evaluator wraps it here when
-/// committing.
-pub struct EffectStatement(pub Effect);
-
-impl dialog_artifacts::Statement for EffectStatement {
-    fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        assert_effect(&self.0, update);
-    }
-    fn retract(self, update: &mut impl dialog_artifacts::Update) {
-        retract_effect(&self.0, update);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dialog_artifacts::Statement;
     use dialog_query::artifact::{Entity as ArtifactsEntity, Type};
     use dialog_query::attribute::{AttributeDescriptor, Cardinality};
     use dialog_query::concept::descriptor::ConceptDescriptor;
@@ -507,7 +361,7 @@ mod tests {
         let on_set = effect.on_entities();
 
         let mut changes = Changes::default();
-        assert_effect(&effect, &mut changes);
+        tonk_schema::rule::Rule::asserting(effect.clone()).assert(&mut changes);
 
         let asserted: Vec<_> = changes
             .into_instructions()
@@ -518,7 +372,9 @@ mod tests {
             })
             .collect();
 
-        let marker = effect_marker_entity();
+        let marker: Entity = "db:effect"
+            .parse()
+            .expect("`db:effect` is a valid entity URI");
         assert!(
             asserted.iter().any(|c| {
                 c.the.to_string() == "dialog.meta/effect"
@@ -576,7 +432,7 @@ mod tests {
         let this = effect.this();
 
         let mut changes = Changes::default();
-        assert_effect(&effect, &mut changes);
+        tonk_schema::rule::Rule::asserting(effect.clone()).assert(&mut changes);
 
         let asserted: Vec<_> = changes
             .into_instructions()

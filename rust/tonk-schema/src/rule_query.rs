@@ -277,7 +277,7 @@ mod tests {
     use dialog_query::{InductiveRule, Proposition};
 
     use crate::effect::EFFECT_SYSTEM;
-    use tonk_evaluator::effect_query::EffectStatement;
+    use crate::rule::Rule;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -380,7 +380,7 @@ mod tests {
         let expected = effect.descriptor();
         branch
             .transaction()
-            .assert(EffectStatement(effect.clone()))
+            .assert(Rule::asserting(effect.clone()))
             .commit()
             .perform(&operator)
             .await?;

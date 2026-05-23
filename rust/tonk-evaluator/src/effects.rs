@@ -713,7 +713,6 @@ mod tests {
     use dialog_query::{Term, the};
     use dialog_repository::helpers::{test_operator_with_profile, test_repo};
 
-    use crate::effect_query::EffectStatement;
     use dialog_artifacts::Statement;
     use dialog_query::artifact::Type;
     use dialog_query::attribute::Cardinality as DialogCardinality;
@@ -723,6 +722,7 @@ mod tests {
     use dialog_query::{AttributeDescriptor, InductiveRule, Parameters as DialogParameters};
     use tonk_core::effect::{Effect, EffectPolarity};
     use tonk_schema::concept::{AnonymousConcept, TransientConcept};
+    use tonk_schema::rule::Rule;
 
     /// A 1-field concept descriptor with a configurable field
     /// type. Helper because tests below build several.
@@ -888,7 +888,7 @@ mod tests {
         install = install_attribute_facts(install, &pong);
         install = install.assert(AnonymousConcept::new(pong.clone()));
         install = install.assert(TransientConcept::new(ping.clone()));
-        install = install.assert(EffectStatement(effect));
+        install = install.assert(Rule::asserting(effect));
         install.commit().perform(&operator).await?;
 
         // Submit a transient `ping{this: e1, tag: "hello"}`.
@@ -998,8 +998,8 @@ mod tests {
         install = install.assert(TransientConcept::new(cmd_a.clone()));
         install = install.assert(TransientConcept::new(cmd_b.clone()));
         install = install.assert(AnonymousConcept::new(target.clone()));
-        install = install.assert(EffectStatement(effect_a));
-        install = install.assert(EffectStatement(effect_b));
+        install = install.assert(Rule::asserting(effect_a));
+        install = install.assert(Rule::asserting(effect_b));
         install.commit().perform(&operator).await?;
 
         // Seed a single transient cmd_a.
@@ -1097,7 +1097,7 @@ mod tests {
         let mut install = branch.transaction();
         install = install_attribute_facts(install, &tick);
         install = install.assert(TransientConcept::new(tick.clone()));
-        install = install.assert(EffectStatement(effect));
+        install = install.assert(Rule::asserting(effect));
         install.commit().perform(&operator).await?;
 
         let subject: Entity = "did:key:zRunawaySubject".parse()?;
@@ -1179,7 +1179,7 @@ mod tests {
         install = install_attribute_facts(install, &ack);
         install = install.assert(AnonymousConcept::new(message.clone()));
         install = install.assert(TransientConcept::new(ack.clone()));
-        install = install.assert(EffectStatement(effect));
+        install = install.assert(Rule::asserting(effect));
         install.commit().perform(&operator).await?;
 
         // Seed a durable message{this: m1, body: "hello"}.
@@ -1285,7 +1285,7 @@ mod tests {
         install = install.assert(AnonymousConcept::new(pong.clone()));
         install = install.assert(TransientConcept::new(ping.clone()));
         install = install.assert(TransientConcept::new(noise.clone()));
-        install = install.assert(EffectStatement(effect));
+        install = install.assert(Rule::asserting(effect));
         install.commit().perform(&operator).await?;
 
         let subject: Entity = "did:key:zNoiseSubject".parse()?;
@@ -1399,7 +1399,7 @@ mod tests {
         install = install_attribute_facts(install, &increment);
         install = install.assert(AnonymousConcept::new(counter.clone()));
         install = install.assert(TransientConcept::new(increment.clone()));
-        install = install.assert(EffectStatement(effect));
+        install = install.assert(Rule::asserting(effect));
         install.commit().perform(&operator).await?;
 
         // Seed the counter at 41.
@@ -1505,7 +1505,7 @@ mod tests {
         install = install_attribute_facts(install, &bag);
         install = install.assert(AnonymousConcept::new(bag.clone()));
         install = install.assert(TransientConcept::new(cmd.clone()));
-        install = install.assert(EffectStatement(effect));
+        install = install.assert(Rule::asserting(effect));
         install.commit().perform(&operator).await?;
 
         let subject: Entity = "did:key:zBagSubject".parse()?;
