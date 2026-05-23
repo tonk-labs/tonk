@@ -420,12 +420,12 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
     }
     let revision = site.branch.revision();
     let evaluated = syntax
-        .evaluate(&site.branch)
+        .evaluate(site.branch.transaction())
         .perform(&site.operator)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
-    // schema-internal docs are pure-query; the chain didn't
-    // commit, so before == after.
+    // schema-internal docs are pure-query; nothing is committed
+    // and the txn is dropped here. before == after.
     Ok(EvaluateResponse {
         revision_before: revision.clone(),
         revision_after: revision,

@@ -151,8 +151,19 @@ pub async fn run_against_site(
 
     let revision_before = site.branch.revision();
     let evaluated = syntax
-        .evaluate(&site.branch)
+        .evaluate(site.branch.transaction())
         .perform(&site.operator)
+        .await
+        .map_err(map_evaluate_error)?;
+
+    // Compute the post-evaluation match view by re-running the
+    // analyzer's queries against the txn overlay. The overlay
+    // reflects every applied write plus the induce pass, so this
+    // is the same answer a post-commit branch query would give —
+    // computed *before* commit so we don't need the branch after
+    // the txn is consumed.
+    let matches_after = evaluated
+        .matches_after(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
 
@@ -160,18 +171,19 @@ pub async fn run_against_site(
     // (the CLI doesn't have a dry-run mode today). Pure-query
     // docs short-circuit so we don't pay for a no-op commit.
     let (response, committed) = if evaluated.analysis.analysis.has_statements() {
-        let result = evaluated
+        let revision_after = evaluated
+            .txn
             .commit()
             .perform(&site.operator)
             .await
-            .map_err(map_evaluate_error)?;
+            .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
         (
             EvaluateResponse {
                 revision_before,
-                revision_after: Some(result.revision),
-                matches_before: result.matches_before,
-                matches_after: result.matches_after,
-                commits: result.commits,
+                revision_after: Some(revision_after),
+                matches_before: evaluated.matches,
+                matches_after,
+                commits: evaluated.commits,
             },
             true,
         )

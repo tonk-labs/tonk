@@ -185,8 +185,17 @@ async fn evaluate_on_branch<'a>(
     let revision_before = branch.revision();
 
     let evaluated = syntax
-        .evaluate(branch)
+        .evaluate(branch.transaction())
         .perform(&tonk_state.operator)
+        .await
+        .map_err(map_evaluate_error)?;
+
+    // Compute the post-evaluation matches before any commit
+    // decision: the txn's overlay already reflects every mutation
+    // and induce-pass derivation, so this is the same answer a
+    // post-commit branch query would give.
+    let matches_after = evaluated
+        .matches_after(&tonk_state.operator)
         .await
         .map_err(map_evaluate_error)?;
 
@@ -195,21 +204,22 @@ async fn evaluate_on_branch<'a>(
     // `Statement::InstallEffect`, so a document with any planned
     // statement is the single commit signal.
     let response = if query.transact && evaluated.analysis.analysis.has_statements() {
-        let result = evaluated
+        let revision_after = evaluated
+            .txn
             .commit()
             .perform(&tonk_state.operator)
             .await
-            .map_err(map_evaluate_error)?;
+            .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("commit: {e}"))))?;
         // Re-poll subscriptions so SSE clients see the new state.
         // The chain commits via dialog directly; the reactor's
         // subscription registry is the worker's responsibility.
         session.poll(&tonk_state.operator).await;
         EvaluateResponse {
             revision_before,
-            revision_after: Some(result.revision),
-            matches_before: result.matches_before,
-            matches_after: result.matches_after,
-            commits: result.commits,
+            revision_after: Some(revision_after),
+            matches_before: evaluated.matches,
+            matches_after,
+            commits: evaluated.commits,
         }
     } else {
         // Pure-query or dry-run: drop the transaction without

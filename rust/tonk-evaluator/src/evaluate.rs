@@ -9,7 +9,7 @@
 //!
 //! syntax.analyze(source).perform(env).await?;   // -> Analysis
 //! syntax.compile(source).perform(env).await?;   // -> Compiled
-//! syntax.evaluate(&branch).perform(env).await?; // -> Evaluated
+//! syntax.evaluate(branch.transaction()).perform(env).await?; // -> Evaluated
 //! ```
 //!
 //! - [`SyntaxAnalyzeExt::analyze`] is pure-read — takes a
@@ -26,7 +26,7 @@
 //!
 //! ```ignore
 //! let evaluated = syntax
-//!     .evaluate(&branch)
+//!     .evaluate(branch.transaction())
 //!     .perform(env).await?;
 //! // evaluated.txn — overlay reflects pending mutations
 //! // evaluated.transients — bucket to hand to `induce`
@@ -40,7 +40,7 @@
 //!
 //! ```ignore
 //! let result = syntax
-//!     .evaluate(&branch)
+//!     .evaluate(branch.transaction())
 //!     .perform(env).await?
 //!     .commit()
 //!     .perform(env).await?;
@@ -62,7 +62,7 @@ use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::{ConceptDescriptor, ConceptQuery, Output as _, Parameters, Term};
-use dialog_repository::{Branch, RemoteSite, Revision, Transaction};
+use dialog_repository::{RemoteSite, Transaction};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tonk_notation::Syntax;
@@ -175,7 +175,7 @@ impl<T> EvaluateEnv for T where
 //                                                                   //
 //   syntax.analyze(source).perform(env)   -> Analysis               //
 //   syntax.compile(source).perform(env)   -> Compiled               //
-//   syntax.evaluate(&branch).perform(env) -> Evaluated              //
+//   syntax.evaluate(branch.transaction()).perform(env) -> Evaluated              //
 //                                                                   //
 // Each runs the prior under the hood. `Syntax` is a foreign type    //
 // (`tonk_notation::Syntax`), so these are local extension traits    //
@@ -280,52 +280,56 @@ pub struct Compiled {
 
 /// Adds [`Self::evaluate`] to [`tonk_notation::Syntax`]. The
 /// third lifecycle entry point: `compile`, then run the
-/// operations against a fresh transaction on the branch.
+/// operations against a caller-provided transaction.
 pub trait SyntaxEvaluateExt {
-    /// Stage an evaluation of this document against `branch`.
+    /// Stage an evaluation of this document against `txn`.
     /// Returns a chain handle; call `.perform(env)` to run
-    /// `compile`, execute the operations, and yield the
-    /// transaction with the document's writes baked into its
-    /// overlay. The chain opens the transaction internally —
-    /// callers that need a pre-staged transaction should call
-    /// `branch.transaction()` themselves and use `induce` /
-    /// `commit` directly instead of going through this entry.
-    fn evaluate<'a>(&self, branch: &'a Branch) -> Evaluate<'_, 'a>;
+    /// `compile`, execute the operations (including effect
+    /// induction), and yield the transaction with the writes
+    /// baked into its overlay. The chain does *not* commit —
+    /// the caller decides whether to commit, drop, or compose
+    /// further on `Evaluated::txn`.
+    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a>;
 }
 
 impl SyntaxEvaluateExt for Syntax {
-    fn evaluate<'a>(&self, branch: &'a Branch) -> Evaluate<'_, 'a> {
-        Evaluate {
-            syntax: self,
-            branch,
-        }
+    fn evaluate<'a>(&self, txn: Transaction<'a>) -> Evaluate<'_, 'a> {
+        Evaluate { syntax: self, txn }
     }
 }
 
 /// Chain handle for an evaluation. Holds the syntax and the
-/// branch until `.perform(env)` consumes them.
+/// transaction until `.perform(env)` consumes them.
 pub struct Evaluate<'s, 'a> {
     syntax: &'s Syntax,
-    branch: &'a Branch,
+    txn: Transaction<'a>,
 }
 
 impl<'s, 'a> Evaluate<'s, 'a> {
     /// Analyze the syntax, run pre-mutation queries, plan every
-    /// mutation `Statement` per match frame, and apply the
-    /// resulting claims to a fresh transaction on the branch.
-    /// The transaction is returned in [`Evaluated::txn`] with
-    /// mutations baked into its overlay — caller commits, runs
-    /// `induce`, or drops as they see fit.
+    /// mutation `Statement` per match frame, apply the resulting
+    /// claims, and run effect induction. The transaction is
+    /// returned in [`Evaluated::txn`] with every mutation baked
+    /// into its overlay — including the rules' induced heads and
+    /// the transient-sweep retracts. The caller decides whether
+    /// to commit, drop, or query `evaluated.txn` further.
+    ///
+    /// All reads (resolver lookups, pre-mutation match queries,
+    /// retract-target resolution, rule-retract source resolution)
+    /// go through the transaction's overlay so the chain never
+    /// needs a `&Branch`.
     pub async fn perform<Env: EvaluateEnv>(
         self,
         env: &Env,
     ) -> Result<Evaluated<'a>, EvaluateError> {
-        let Evaluate { syntax, branch } = self;
-        let mut txn = branch.transaction();
+        use crate::effects::TransactionExt as _;
 
-        // Run `compile` under the hood — `analyze` + lowering to
-        // runnable operations — then walk the tree below.
-        let Compiled { analysis } = syntax.compile(branch).perform(env).await?;
+        let Evaluate { syntax, mut txn } = self;
+
+        // Run `compile` under the hood. Resolution reads through
+        // the txn overlay; pre-mutation overlay is empty so this
+        // sees branch state.
+        let Compiled { analysis } = syntax.compile(&txn).perform(env).await?;
         let document = &analysis.analysis;
 
         // ---- Build base bindings frame from analysis-derived vars ----
@@ -335,11 +339,13 @@ impl<'s, 'a> Evaluate<'s, 'a> {
         }
 
         // ---- Per-expression queries + post-join ----
+        // Pre-mutation reads go through the txn's overlay, which
+        // is empty at this point so the answer matches the branch.
         let user_queries = collect_queries(document);
         let pre_results = if user_queries.is_empty() && document.synthesized.is_empty() {
             None
         } else {
-            Some(run_query(&user_queries, &document.synthesized, branch, env).await?)
+            Some(run_query(&user_queries, &document.synthesized, &txn, env).await?)
         };
         let pre_matches: Vec<Parameters> = match &pre_results {
             Some(r) if !r.joined.is_empty() => r.joined.clone(),
@@ -405,7 +411,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 .clone()
                                 .plan(&frame)
                                 .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
-                            let resolved = resolve_retraction_targets(plan, branch, env).await?;
+                            let resolved = resolve_retraction_targets(plan, &txn, env).await?;
                             claim_count += resolved.len();
                             retract_claims.extend(resolved);
                         }
@@ -435,7 +441,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // entity in a single document).
                             use tonk_schema::query_source::Source;
                             let Some(rule) = Rule::retracting(entity.clone())
-                                .resolve(&Source::from(branch), env)
+                                .resolve(&Source::from(&txn), env)
                                 .await
                                 .map_err(|e| {
                                     EvaluateError::Plan(format!(
@@ -459,10 +465,20 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 
         let matches = render_match_blocks(&analysis.analysis, pre_results.as_ref());
 
+        // Effect induction is part of "evaluate the document":
+        // installed rules fire on the just-applied transients,
+        // their head facts land in the overlay, and user-submitted
+        // transients sweep so they never reach durable storage.
+        // The caller's txn is returned with the post-induction
+        // overlay; they commit or drop.
+        let txn = txn
+            .induce(transients)
+            .perform(env)
+            .await
+            .map_err(|e| EvaluateError::Query(format!("induce failed: {e}")))?;
+
         Ok(Evaluated {
             txn,
-            branch,
-            transients,
             matches,
             commits,
             analysis,
@@ -473,121 +489,61 @@ impl<'s, 'a> Evaluate<'s, 'a> {
 /// Result of [`Evaluate::perform`].
 ///
 /// The transaction's overlay reflects every mutation the
-/// document carried; querying `txn.query()` sees the
-/// post-mutation state. To run effects + commit, call
-/// [`Self::commit`].
+/// document carried — user-written writes, rule-induced heads,
+/// transient sweeps. Caller chooses to commit (`txn.commit()`),
+/// drop (rollback), or query (`txn.query()`) further. Post-
+/// mutation matches are computed by the caller from the txn;
+/// the chain itself never commits and never re-queries.
 pub struct Evaluated<'a> {
-    /// Transaction with mutations applied to its overlay.
+    /// Transaction with the document's mutations + induction
+    /// applied to its overlay. Caller drives commit / drop /
+    /// further composition.
     pub txn: Transaction<'a>,
-    /// Branch the transaction is open against, retained so
-    /// [`EvaluatedCommit::perform`] can re-query post-commit
-    /// without the caller having to pass it through again.
-    pub(crate) branch: &'a Branch,
-    /// Transient claims the document asserted — one entry per
-    /// field of every assertion whose concept is declared
-    /// `transient:`. Hand to
-    /// [`crate::effects::TransactionExt::induce`] as the
-    /// effects-fixpoint seed; `induce` fires the installed rules
-    /// on these and sweeps them so they never reach durable
-    /// storage. Empty when the document asserts no transient
-    /// concepts.
-    pub transients: Changes,
     /// Pre-mutation per-source-expression match blocks. For
-    /// post-mutation matches, re-run the analyzer's queries
-    /// against `txn.query()` using the analysis carried below.
+    /// post-mutation matches, call [`Self::matches_after`].
     pub matches: Vec<QueryMatchBlock>,
     /// Commit-side summary — claim count + entity bindings
     /// surfaced to response envelopes.
     pub commits: CommitSummary,
     /// The analyzer's output tree. Callers re-run its queries
-    /// against the transaction overlay (or the post-commit
-    /// branch) to compute post-mutation matches.
+    /// against the transaction overlay to compute post-mutation
+    /// matches.
     pub analysis: Analysis<Syntax>,
 }
 
 impl<'a> Evaluated<'a> {
-    /// Shortcut: run effects (via `induce`) and commit the
-    /// transaction. Re-queries the branch post-commit so the
-    /// returned [`EvaluateResult`] carries both `matches_before`
-    /// (from `self.matches`) and `matches_after`.
-    pub fn commit(self) -> EvaluatedCommit<'a> {
-        EvaluatedCommit { evaluated: self }
-    }
-}
-
-/// Chain handle for committing an [`Evaluated`].
-pub struct EvaluatedCommit<'a> {
-    evaluated: Evaluated<'a>,
-}
-
-impl<'a> EvaluatedCommit<'a> {
-    /// Run `induce` against the transaction, commit, and
-    /// re-query the post-commit branch state for
-    /// `matches_after`.
-    pub async fn perform<Env: EvaluateEnv>(
-        self,
+    /// Post-mutation per-source-expression match blocks. Runs
+    /// the analyzer's queries against the transaction overlay,
+    /// which already reflects every applied write plus the
+    /// induce pass, so this returns the same view a post-commit
+    /// branch query would — without needing to commit first.
+    ///
+    /// Pure-mutation documents (no queries at all) get an empty
+    /// vec.
+    pub async fn matches_after<Env: EvaluateEnv>(
+        &self,
         env: &Env,
-    ) -> Result<EvaluateResult, EvaluateError> {
-        use crate::effects::TransactionExt as _;
-
-        let Evaluated {
-            txn,
-            branch,
-            transients,
-            matches: matches_before,
-            commits,
-            analysis,
-        } = self.evaluated;
-
-        let txn = txn
-            .induce(transients)
-            .perform(env)
-            .await
-            .map_err(|e| EvaluateError::Query(format!("induce failed: {e}")))?;
-        let revision = txn
-            .commit()
-            .perform(env)
-            .await
-            .map_err(|e| EvaluateError::Query(format!("commit failed: {e}")))?;
-
-        // Post-commit re-query for matches_after. For
-        // pure-mutation docs (no queries at all), the after
-        // block is empty.
-        let document = &analysis.analysis;
+    ) -> Result<Vec<QueryMatchBlock>, EvaluateError> {
+        let document = &self.analysis.analysis;
         let user_queries = collect_queries(document);
         let post_results = if user_queries.is_empty() && document.synthesized.is_empty() {
             None
         } else {
-            Some(run_query(&user_queries, &document.synthesized, branch, env).await?)
+            Some(run_query(&user_queries, &document.synthesized, &self.txn, env).await?)
         };
-        let matches_after = render_match_blocks(document, post_results.as_ref());
-
-        Ok(EvaluateResult {
-            revision,
-            matches_before,
-            matches_after,
-            commits,
-            analysis,
-        })
+        Ok(render_match_blocks(document, post_results.as_ref()))
     }
-}
 
-/// Result of [`EvaluatedCommit::perform`] — the durable
-/// revision plus both before/after match views and the
-/// analyzer's output.
-pub struct EvaluateResult {
-    /// Durable revision the commit produced.
-    pub revision: Revision,
-    /// Pre-mutation per-source-expression matches.
-    pub matches_before: Vec<QueryMatchBlock>,
-    /// Post-commit per-source-expression matches — the user's
-    /// view of what's now in the branch.
-    pub matches_after: Vec<QueryMatchBlock>,
-    /// Commit-side summary.
-    pub commits: CommitSummary,
-    /// The analyzer's output tree, in case the caller wants
-    /// further queries against the analysis.
-    pub analysis: Analysis<Syntax>,
+    /// Convenience: hand the underlying transaction to dialog's
+    /// commit chain. Same as `self.txn.commit()` — exposed on
+    /// `Evaluated` so the common `.evaluate(...).perform(...)?
+    /// .commit().perform(...)` chain composes without an
+    /// intermediate destructure. The chain itself never commits;
+    /// callers who want to commit call this (or drive
+    /// `evaluated.txn.commit()` directly).
+    pub fn commit(self) -> dialog_repository::Commit<'a, dialog_artifacts::ChangeStream> {
+        self.txn.commit()
+    }
 }
 
 /// A query application paired with its display label — the
@@ -652,12 +608,12 @@ struct QueryResults {
 async fn run_query<Env: EvaluateEnv>(
     queries: &[LabeledQuery],
     synthesized: &[SynthesizedQuery],
-    branch: &Branch,
+    txn: &Transaction<'_>,
     env: &Env,
 ) -> Result<QueryResults, EvaluateError> {
     let mut per_expression = Vec::with_capacity(queries.len());
     for query in queries {
-        let frames = collect_matches(query.application.clone(), branch, env).await?;
+        let frames = collect_matches(query.application.clone(), txn, env).await?;
         per_expression.push(frames);
     }
     let joined = natural_join(&per_expression);
@@ -667,7 +623,7 @@ async fn run_query<Env: EvaluateEnv>(
     // planning's binding set.
     let mut synthesized_per_expression = Vec::with_capacity(synthesized.len());
     for snapshot in synthesized {
-        let frames = collect_matches(snapshot.application.clone(), branch, env).await?;
+        let frames = collect_matches(snapshot.application.clone(), txn, env).await?;
         synthesized_per_expression.push(frames);
     }
 
@@ -751,7 +707,7 @@ impl dialog_artifacts::Statement for RawClaim {
 /// `age: _` is the only field dissociated.
 async fn resolve_retraction_targets<Env: EvaluateEnv>(
     plan: ApplicationPlan,
-    branch: &Branch,
+    txn: &Transaction<'_>,
     env: &Env,
 ) -> Result<Vec<RawClaim>, EvaluateError> {
     let Some(this_term) = plan.statement.terms.get("this") else {
@@ -782,7 +738,7 @@ async fn resolve_retraction_targets<Env: EvaluateEnv>(
             Term::<dialog_query::attribute::Cause>::blank(),
             None,
         );
-        let claims: Vec<dialog_query::Claim> = branch
+        let claims: Vec<dialog_query::Claim> = txn
             .query()
             .select(query)
             .perform(env)
@@ -831,7 +787,7 @@ fn count_emitted_claims(plan: &ApplicationPlan) -> usize {
 /// [`ConceptConclusion`].
 async fn collect_matches<Env: EvaluateEnv>(
     application: Application,
-    branch: &Branch,
+    txn: &Transaction<'_>,
     env: &Env,
 ) -> Result<Vec<Parameters>, EvaluateError> {
     // Capture the variable names present in the application's
@@ -847,7 +803,7 @@ async fn collect_matches<Env: EvaluateEnv>(
         }
     }
 
-    let conclusions: Vec<ConceptConclusion> = branch
+    let conclusions: Vec<ConceptConclusion> = txn
         .query()
         .select(application_to_plan(application))
         .perform(env)
@@ -1192,7 +1148,7 @@ name!:\n\
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
@@ -1258,7 +1214,7 @@ rule!:\n\
 
         // First commit: install the rule.
         let evaluated = syntax
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install rule): {e}"))?;
@@ -1403,7 +1359,7 @@ rule!:\n\
         let syntax = parsed.syntax.expect("syntax");
 
         syntax
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -1567,7 +1523,7 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
@@ -1713,7 +1669,7 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
@@ -1741,7 +1697,7 @@ increment!:\n\
             parsed
                 .syntax
                 .expect("increment syntax")
-                .evaluate(&branch)
+                .evaluate(branch.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate (increment {round}): {e}"))?
@@ -1849,7 +1805,7 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("setup syntax")
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (setup): {e}"))?
@@ -1863,7 +1819,7 @@ counter!: &counter-demo\n\
         parsed
             .syntax
             .expect("increment syntax")
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (increment): {e}"))?
@@ -1942,7 +1898,7 @@ concept!: &pong\n\
         parse(concepts)
             .syntax
             .expect("concepts syntax")
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
@@ -1961,7 +1917,7 @@ rule!:\n\
         let evaluated = parse(rule_doc)
             .syntax
             .expect("rule syntax")
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
@@ -2012,7 +1968,7 @@ rule!:\n\
             );
             let syntax = parsed.syntax.expect("syntax");
             syntax
-                .evaluate(&branch)
+                .evaluate(branch.transaction())
                 .perform(&operator)
                 .await
                 .map_err(|e| anyhow::anyhow!("evaluate ({label}): {e}"))?
@@ -2090,7 +2046,7 @@ rule!:\n\
         let branch = repo.branch("main").open().perform(&operator).await?;
 
         instance
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
@@ -2156,7 +2112,7 @@ rule!:\n\
 \x20     where: { this: ?this, tag: ?tag }\n";
         let syntax = parse(install).syntax.expect("install syntax");
         syntax
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
@@ -2175,7 +2131,7 @@ rule!:\n\
         );
         let instance = parsed.syntax.expect("instance syntax");
         instance
-            .evaluate(&branch)
+            .evaluate(branch.transaction())
             .perform(&operator)
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (instance): {e}"))?
