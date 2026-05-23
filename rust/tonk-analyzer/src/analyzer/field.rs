@@ -37,7 +37,7 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// field declared `as: unsigned-integer` needs schema-directed
 /// coercion. Pass `None` for slots with no declared type (`this`,
 /// claim attributes, formula operands).
-pub(crate) async fn field_value_to_term<R: Resolver>(
+pub(crate) async fn field_value_to_term<R: Resolver + ?Sized>(
     field_name: &str,
     value: &FieldValue,
     range: lsp_types::Range,

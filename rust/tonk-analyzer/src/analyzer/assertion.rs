@@ -48,7 +48,7 @@ pub(crate) struct AssertionPlan {
     pub transient: bool,
 }
 
-pub(crate) async fn build_assertion_application<R: Resolver>(
+pub(crate) async fn build_assertion_application<R: Resolver + ?Sized>(
     assertion: &SyntaxApplication,
     anchor: Option<&Anchor>,
     scope: &Scope<'_, R>,
@@ -346,7 +346,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
 /// The two are independent: every combination is meaningful
 /// (e.g. `person!: &alice\n  this: did:key:zX` → publish `id:alice`
 /// pointing at zX without producing a new entity).
-pub(crate) async fn derive_head_intent<R: Resolver>(
+pub(crate) async fn derive_head_intent<R: Resolver + ?Sized>(
     fields: &[Field],
     anchor: Option<&Anchor>,
     scope: &Scope<'_, R>,

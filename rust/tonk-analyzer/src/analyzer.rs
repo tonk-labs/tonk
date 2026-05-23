@@ -64,7 +64,7 @@ pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };
 pub use formula::{FormulaCompletion, formula_completions};
-pub use resolver::{EnvironmentResolver, NoopResolver, Resolver, SourceResolver};
+pub use resolver::{NoopResolver, Resolver};
 pub use scan::scan_variables;
 
 use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
@@ -120,7 +120,7 @@ impl Working {
 /// Analyze a parsed [`Syntax`] tree into the [`Analysis<Syntax>`][Tree]
 /// tree — each syntax node paired with its computed analysis.
 ///
-/// `R: Resolver + ConditionalSync` works on both native and
+/// `R: Resolver + ConditionalSync + ?Sized` works on both native and
 /// wasm: [`ConditionalSync`] expands to `Send + Sync` on native
 /// (so async-trait-generated futures stay `Send` for axum
 /// handlers) and to nothing on wasm (single-threaded runtime,
@@ -129,7 +129,7 @@ impl Working {
 /// The tree is the analyzer's product and the interface every
 /// consumer reads. [`analyze`] is the alias retained for the
 /// lifecycle naming.
-pub async fn analyze<R: Resolver + ConditionalSync>(
+pub async fn analyze<R: Resolver + ConditionalSync + ?Sized>(
     syntax: &Syntax,
     resolver: &R,
 ) -> Result<Tree<Syntax>, AnalyzeError> {
@@ -142,7 +142,7 @@ pub async fn analyze<R: Resolver + ConditionalSync>(
 /// The body reads as the spec's two sub-phases: [`resolve`] binds
 /// references and seeds the scope, then [`expand`] lowers the
 /// notation sugar and assembles the tree.
-pub async fn analyze_tree<R: Resolver + ConditionalSync>(
+pub async fn analyze_tree<R: Resolver + ConditionalSync + ?Sized>(
     syntax: &Syntax,
     resolver: &R,
 ) -> Result<Tree<Syntax>, AnalyzeError> {
@@ -186,7 +186,7 @@ struct Resolved {
 /// calls stay here, stashed in [`Resolved::declared`] for `expand`
 /// to emit. This is the one place resolve and expand genuinely
 /// interleave.
-async fn resolve<R: Resolver + ConditionalSync>(
+async fn resolve<R: Resolver + ConditionalSync + ?Sized>(
     syntax: &Syntax,
     scope: &Scope<'_, R>,
 ) -> Result<Resolved, AnalyzeError> {
@@ -355,7 +355,7 @@ async fn resolve<R: Resolver + ConditionalSync>(
 /// snapshot queries. Every lowering is terminal — it emits only
 /// resolved entities and substituted terms — so `expand`'s output
 /// never needs re-resolution.
-async fn expand<R: Resolver + ConditionalSync>(
+async fn expand<R: Resolver + ConditionalSync + ?Sized>(
     syntax: &Syntax,
     scope: &Scope<'_, R>,
     resolved: Resolved,

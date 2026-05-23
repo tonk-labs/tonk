@@ -175,7 +175,7 @@ pub(crate) struct ConceptBody {
     pub inline_attributes: Vec<AttributeBody>,
 }
 
-pub(crate) async fn parse_concept_body<R: Resolver>(
+pub(crate) async fn parse_concept_body<R: Resolver + ?Sized>(
     assertion: &SyntaxApplication,
     scope: &Scope<'_, R>,
 ) -> Result<ConceptBody, AnalyzeError> {
@@ -271,7 +271,7 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
     })
 }
 
-async fn resolve_concept_field<R: Resolver>(
+async fn resolve_concept_field<R: Resolver + ?Sized>(
     field_name: &str,
     value: &FieldValue,
     scope: &Scope<'_, R>,

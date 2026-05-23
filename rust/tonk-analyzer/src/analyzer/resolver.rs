@@ -1,25 +1,25 @@
-//! [`Resolver`] trait — branch-side name lookup. The analyzer
-//! calls this when it encounters a concept name in head position
-//! or a bare-symbol reference in field-value position.
+//! [`Resolver`] — branch-side name lookup vocabulary for the
+//! analyzer. The analyzer's `&str`-based world (head names, bare
+//! symbols) lives one layer above the typed-reference world the
+//! [`tonk_schema::resolution`] chain builders speak; `Resolver`
+//! adapts between them so analyzer call sites don't construct
+//! `ConceptReference` / `AttributeReference` inline.
 //!
-//! [`NoopResolver`] is provided for document-only analysis paths
-//! (no branch) and for unit tests. [`SourceResolver`] is the
-//! live-environment implementation: it wraps a
-//! [`tonk_schema::query_source::Source`] and a query environment and
-//! delegates every lookup to the [`tonk_schema::resolution`] surface.
+//! Every live implementation is the blanket impl over
+//! [`Environment`] below. The host (evaluator, language server)
+//! constructs an `Environment` once per request — via
+//! [`tonk_schema::resolution::source_env`] for live `(Source,
+//! QueryEnv)` pairs or by implementing `Environment` directly —
+//! and hands it to [`super::analyze`]. The blanket impl translates
+//! `&str` → typed reference and dispatches to the chain.
 //!
-//! The resolved values are [`ConceptDefinition`] and
-//! [`AttributeDefinition`] from [`tonk_schema::resolution`] — the
-//! single resolved-concept / resolved-attribute types in
-//! `tonk-schema`. `Resolver` is the analyzer's vocabulary: it
-//! keeps the analyzer agnostic of *where* names resolve from.
+//! [`NoopResolver`] is the document-only path: useful for tests
+//! and for analyzer surfaces where no branch is available.
 
 use async_trait::async_trait;
 use dialog_artifacts::Entity;
 use dialog_common::ConditionalSync;
 
-use tonk_schema::concept::{QueryEnv, lookup_named_entity};
-use tonk_schema::query_source::Source;
 use tonk_schema::resolution::{
     AttributeDefinition, AttributeReference, ConceptDefinition, ConceptReference, Environment,
     NamedReference, ResolveError,
@@ -29,8 +29,9 @@ use tonk_schema::resolution::{
 ///
 /// The analyzer calls this when it encounters a concept name in
 /// head position or a bare-symbol reference in field-value
-/// position. [`SourceResolver`] is the live implementation;
-/// [`NoopResolver`] is the document-only one.
+/// position. Anything that implements [`Environment`] auto-implements
+/// `Resolver` via the blanket impl below; [`NoopResolver`] is the
+/// document-only one.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Resolver {
@@ -62,111 +63,40 @@ pub trait Resolver {
     async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError>;
 }
 
-/// A [`Resolver`] backed by a live [`Source`] — a `&Branch` or a
-/// `&Transaction` overlay — and the query environment its
-/// operations take.
-///
-/// Every `resolve_*` method delegates to the [`tonk_schema::resolution`]
-/// surface (`ConceptReference::resolve(...).perform(env)`, etc.).
-/// This is the type the evaluator and the language server both
-/// hand to [`super::analyze`] when resolving against real data.
-pub struct SourceResolver<'a, Env> {
-    /// The source the lookups query against.
-    source: Source<'a>,
-    /// The query environment the resolution chain handles take.
-    env: &'a Env,
-}
-
-impl<'a, Env> SourceResolver<'a, Env> {
-    /// Build a resolver bound to `source` and `env`.
-    pub fn new(source: impl Into<Source<'a>>, env: &'a Env) -> Self {
-        Self {
-            source: source.into(),
-            env,
-        }
-    }
-}
-
+/// Blanket impl: every [`Environment`] is a [`Resolver`]. The
+/// analyzer's `&str` vocabulary maps to the typed `*Reference`
+/// shape the chain builders consume.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<Env: QueryEnv> Resolver for SourceResolver<'_, Env> {
+impl<E: Environment + ConditionalSync + ?Sized> Resolver for E {
     async fn resolve_concept(&self, name: &str) -> Result<Option<ConceptDefinition>, ResolveError> {
-        ConceptReference::from(NamedReference(name.to_owned()))
-            .resolve(self.source.clone())
-            .perform(self.env)
-            .await
+        Environment::resolve_concept(
+            self,
+            ConceptReference::from(NamedReference(name.to_owned())),
+        )
+        .await
     }
 
     async fn resolve_attribute(
         &self,
         name: &str,
     ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        AttributeReference::from(NamedReference(name.to_owned()))
-            .resolve(self.source.clone())
-            .perform(self.env)
-            .await
+        Environment::resolve_attribute(
+            self,
+            AttributeReference::from(NamedReference(name.to_owned())),
+        )
+        .await
     }
 
     async fn resolve_attribute_by_entity(
         &self,
         entity: &Entity,
     ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        AttributeReference::from(entity.clone())
-            .resolve(self.source.clone())
-            .perform(self.env)
-            .await
+        Environment::resolve_attribute(self, AttributeReference::from(entity.clone())).await
     }
 
     async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError> {
-        lookup_named_entity(name, self.source.clone(), self.env).await
-    }
-}
-
-/// A [`Resolver`] backed by an [`Environment`] — the seam the
-/// language server drives. An `Environment` exposes the same
-/// `resolve_*` / `list_*` surface but without the lifetime-bound
-/// `Source`; this adapter lets the analyzer run against any
-/// host-opened environment without naming the host's types.
-pub struct EnvironmentResolver<'a, E: ?Sized> {
-    environment: &'a E,
-}
-
-impl<'a, E: ?Sized> EnvironmentResolver<'a, E> {
-    /// Build a resolver delegating to `environment`.
-    pub fn new(environment: &'a E) -> Self {
-        Self { environment }
-    }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-impl<E: Environment + ConditionalSync + ?Sized> Resolver for EnvironmentResolver<'_, E> {
-    async fn resolve_concept(&self, name: &str) -> Result<Option<ConceptDefinition>, ResolveError> {
-        self.environment
-            .resolve_concept(ConceptReference::from(NamedReference(name.to_owned())))
-            .await
-    }
-
-    async fn resolve_attribute(
-        &self,
-        name: &str,
-    ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        self.environment
-            .resolve_attribute(AttributeReference::from(NamedReference(name.to_owned())))
-            .await
-    }
-
-    async fn resolve_attribute_by_entity(
-        &self,
-        entity: &Entity,
-    ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        self.environment
-            .resolve_attribute(AttributeReference::from(entity.clone()))
-            .await
-    }
-
-    async fn resolve_named_entity(&self, name: &str) -> Result<Option<Entity>, ResolveError> {
-        self.environment.resolve_named_entity(name).await
+        Environment::resolve_named_entity(self, name).await
     }
 }
 

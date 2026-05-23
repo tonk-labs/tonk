@@ -23,7 +23,7 @@ use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition, ResolveErr
 /// uncontended. Critical sections never cross an `.await` —
 /// `lookup_entity` and `resolve_*` drop their guards before
 /// recursing into the inner resolver.
-pub(crate) struct Scope<'a, R: Resolver> {
+pub(crate) struct Scope<'a, R: Resolver + ?Sized> {
     inner: &'a R,
     /// Anchor/variable → entity for non-meta head bindings
     /// (every head except `attribute!` / `concept!` whose
@@ -50,7 +50,7 @@ pub(crate) struct Scope<'a, R: Resolver> {
     pub(crate) in_doc_concepts_by_entity: Mutex<HashMap<String, ConceptDefinition>>,
 }
 
-impl<'a, R: Resolver> Scope<'a, R> {
+impl<'a, R: Resolver + ?Sized> Scope<'a, R> {
     pub(crate) fn new(inner: &'a R) -> Self {
         Self {
             inner,

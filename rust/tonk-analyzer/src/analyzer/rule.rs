@@ -76,7 +76,7 @@ fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
 /// Dispatch a `rule!:` claim to install or retract, depending on
 /// the body shape. The analyzer calls this once per `rule!:` claim
 /// it encounters.
-pub(crate) async fn lift_rule_claim<R: Resolver>(
+pub(crate) async fn lift_rule_claim<R: Resolver + ?Sized>(
     application: &SyntaxApplication,
     scope: &Scope<'_, R>,
     analysis: &Working,
@@ -141,7 +141,7 @@ fn parse_rule_retract_target(application: &SyntaxApplication) -> Result<Entity, 
 /// Validation that used to live in the parser (exactly one
 /// polarity, non-empty `when:`) lives here so each diagnostic
 /// can point at semantically meaningful ranges.
-pub(crate) async fn lift_rule<R: Resolver>(
+pub(crate) async fn lift_rule<R: Resolver + ?Sized>(
     application: &SyntaxApplication,
     scope: &Scope<'_, R>,
     analysis: &Working,
@@ -384,7 +384,7 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
 /// first — they're a fixed set that never lives on the branch, so
 /// the registry lookup is authoritative. Anything else resolves
 /// as a concept.
-async fn lift_premise<R: Resolver>(
+async fn lift_premise<R: Resolver + ?Sized>(
     premise: &NotationPremise,
     scope: &Scope<'_, R>,
     analysis: &Working,
@@ -504,7 +504,7 @@ async fn lift_premise<R: Resolver>(
 /// Optional (`#[output]`) operands the user omits are filled with
 /// a unique anonymous variable: the formula still computes the
 /// value, it just isn't joined anywhere.
-async fn lift_formula_premise<R: Resolver>(
+async fn lift_formula_premise<R: Resolver + ?Sized>(
     premise: &NotationPremise,
     formula: FormulaInfo,
     scope: &Scope<'_, R>,

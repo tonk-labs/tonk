@@ -15,7 +15,7 @@ use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::transact::{Application, DomainApplication, ThisIntent};
 
-pub(crate) async fn build_query_application<R: Resolver>(
+pub(crate) async fn build_query_application<R: Resolver + ?Sized>(
     query: &SyntaxApplication,
     scope: &Scope<'_, R>,
     analysis: &Working,

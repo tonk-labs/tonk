@@ -459,7 +459,7 @@ async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + 
     syntax: &tonk_notation::Syntax,
     environment: Option<&E>,
 ) -> Vec<lsp_types::Diagnostic> {
-    use tonk_analyzer::analyzer::{EnvironmentResolver, NoopResolver, analyze, scan_variables};
+    use tonk_analyzer::analyzer::{NoopResolver, analyze, scan_variables};
 
     let mut out: Vec<lsp_types::Diagnostic> = scan_variables(syntax)
         .into_iter()
@@ -471,7 +471,9 @@ async fn analyzer_diagnostics<E: Environment + dialog_common::ConditionalSync + 
     // dropped (the noop resolver false-positives every name).
     let live = environment.is_some();
     let result = match environment {
-        Some(env) => analyze(syntax, &EnvironmentResolver::new(env)).await,
+        // Environment auto-implements Resolver via the blanket impl
+        // in tonk_analyzer::analyzer::resolver.
+        Some(env) => analyze(syntax, env).await,
         None => analyze(syntax, &NoopResolver).await,
     };
 
