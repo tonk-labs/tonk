@@ -2055,6 +2055,120 @@ rule!:\n\
         Ok(())
     }
 
+    /// `rule!: this: <entity> ..: _` deletes an installed rule end
+    /// to end through the notation path: parse → analyze →
+    /// `Statement::RetractEffect` → evaluator resolves a `Rule`
+    /// retract handle off the branch → transaction.retract →
+    /// commit. After the commit the `dialog.effect/source` claim
+    /// at the named entity must be gone (proving #87's
+    /// stored-bytes dissociate) and the rule must stop firing.
+    #[dialog_common::test]
+    async fn it_retracts_an_installed_rule_via_notation() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit the concepts the rule references.
+        let concepts = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n";
+        parse(concepts)
+            .syntax
+            .expect("concepts syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
+
+        // Install at a chosen entity so the retract notation has a
+        // stable URI to name.
+        let chosen: Entity = "id:my-rule".parse()?;
+        let install_doc = "\
+rule!:\n\
+\x20 this: id:my-rule\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        parse(install_doc)
+            .syntax
+            .expect("install syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        // Sanity: the source claim is at the chosen entity.
+        let source_query = dialog_query::AttributeQuery::from(
+            Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+                .of(Term::<Entity>::from(chosen.clone()))
+                .is(Term::<String>::var("source")),
+        );
+        let pre: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(source_query.clone())
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(pre.len(), 1, "the rule should be installed pre-retract");
+
+        // Retract via the notation deletion form. `..: _` is the
+        // sentinel for "delete the named effect."
+        let retract_doc = "\
+rule!:\n\
+\x20 this: id:my-rule\n\
+\x20 ..: _\n";
+        parse(retract_doc)
+            .syntax
+            .expect("retract syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (retract): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (retract): {e}"))?;
+
+        // The source claim must be gone — the dissociate ran with
+        // the stored bytes, byte-for-byte. This is the assertion
+        // that originally failed under task #83 before #87 landed.
+        let post: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(source_query)
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            post.is_empty(),
+            "dialog.effect/source at {chosen} must be empty after retract, saw {post:?}"
+        );
+
+        Ok(())
+    }
+
     /// Repro mirroring the user's report: transient `person-entered`
     /// (two fields, one numeric), a durable `person` concept, a
     /// rule person <- person-entered, then a notation instance
