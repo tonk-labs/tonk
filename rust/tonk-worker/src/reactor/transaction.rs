@@ -16,7 +16,7 @@
 use dialog_artifacts::{Changes, Statement};
 use dialog_repository::Revision;
 use tonk_evaluator::effects::TransactionExt;
-use tonk_schema::mutation::{Mutation, PredicateApplication};
+use tonk_schema::claim::{Claim, PredicateApplication};
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, CommitProvider, LoadProvider, SelectProvider};
@@ -43,7 +43,7 @@ pub struct TransactionBuilder<'a> {
     /// Accumulated transient claims — facts asserted at the
     /// current timestep that must not survive into durable
     /// storage. Seeded by [`Self::apply`] for transient-typed
-    /// [`Mutation`]s; consumed by [`Commit::perform`] which
+    /// [`Claim`]s; consumed by [`Commit::perform`] which
     /// integrates them into the transaction overlay (so effects
     /// see them) then emits a matching retract before commit.
     pub transients: Changes,
@@ -75,16 +75,15 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Apply a typed [`Mutation`] from the wire format,
-    /// routing into the durable or transient bucket based on
-    /// the predicate's classification. Each application is
-    /// planned into raw EAV claims (same emitter the
-    /// asserted-notation planner uses) and added to the
-    /// appropriate batch.
-    pub fn apply(self, mutation: Mutation) -> Self {
-        match mutation {
-            Mutation::Assert(application) => self.apply_assert(application),
-            Mutation::Retract(application) => self.apply_retract(application),
+    /// Apply a typed [`Claim`] from the wire format, routing into
+    /// the durable or transient bucket based on the predicate's
+    /// classification. Each application is planned into raw EAV
+    /// facts (same emitter the asserted-notation planner uses) and
+    /// added to the appropriate batch.
+    pub fn apply(self, claim: Claim) -> Self {
+        match claim {
+            Claim::Assert(application) => self.apply_assert(application),
+            Claim::Retract(application) => self.apply_retract(application),
         }
     }
 

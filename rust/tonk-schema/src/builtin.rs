@@ -29,8 +29,8 @@ use crate::concept::concept_of_concept_descriptor;
 use crate::resolution::ConceptDefinition;
 use crate::rule_query::rule_of_rule_descriptor;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
+use tonk_core::claim::ConceptDescriptor;
 use tonk_core::meta::{AnonymousAttributeQuery, NameQuery};
-use tonk_core::mutation::ConceptDescriptor;
 
 /// Look up a built-in concept by head-name as a durability-tagged
 /// [`ConceptDefinition`]. Returns `None` for names that fall

@@ -1,6 +1,6 @@
-//! On-the-wire shape for `/transact` requests — typed mutations
-//! that carry concept-level transient/durable classification
-//! through to the reactor's transaction builder.
+//! On-the-wire shape for `/transact` requests — typed claims that
+//! carry concept-level transient/durable classification through to
+//! the reactor's transaction builder.
 //!
 //! See `plan/transact-endpoint.md` for the design. The short
 //! version: every assertion or retraction names a predicate
@@ -58,7 +58,7 @@ impl ConceptDescriptor {
     }
 }
 
-/// A predicate applied to parameter bindings — the mutation
+/// A predicate applied to parameter bindings — the claim
 /// counterpart of `tonk_schema::query::Query`. `parameters` mirrors
 /// the dialog-query [`Parameters`] shape (`terms` in
 /// [`dialog_query::ConceptQuery`]).
@@ -95,10 +95,12 @@ impl PredicateApplication {
     }
 }
 
-/// One assertion or retraction in a [`TransactRequest`].
+/// One assertion or retraction in a [`TransactRequest`] — the typed
+/// write-unit shared by the structured-transaction path and the
+/// notation path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", content = "application", rename_all = "lowercase")]
-pub enum Mutation {
+pub enum Claim {
     /// Assert the facts produced by this predicate application.
     Assert(PredicateApplication),
     /// Retract the facts produced by this predicate
@@ -106,7 +108,7 @@ pub enum Mutation {
     Retract(PredicateApplication),
 }
 
-impl Mutation {
+impl Claim {
     /// Borrow the inner [`PredicateApplication`], regardless of
     /// variant.
     pub fn application(&self) -> &PredicateApplication {
@@ -117,13 +119,13 @@ impl Mutation {
 }
 
 /// Body of a `POST /api/repository/{repo}/branch/{branch}/transact`
-/// (and profile counterpart) request — a list of
-/// [`Mutation`]s applied in order under one dialog commit.
+/// (and profile counterpart) request — a list of [`Claim`]s applied
+/// in order under one dialog commit.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TransactRequest {
-    /// In document order. Each mutation contributes claims to
-    /// the transaction; the reactor buckets transient
-    /// applications separately so they can be retracted before
-    /// the durable write.
-    pub mutations: Vec<Mutation>,
+    /// In document order. Each claim contributes facts to the
+    /// transaction; the reactor buckets transient applications
+    /// separately so they can be retracted before the durable
+    /// write.
+    pub claims: Vec<Claim>,
 }

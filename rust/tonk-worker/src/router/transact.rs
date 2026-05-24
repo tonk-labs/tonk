@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_evaluator::evaluate::CommitSummary;
-use tonk_schema::mutation::TransactRequest;
+use tonk_schema::claim::TransactRequest;
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -105,11 +105,11 @@ async fn transact_on_branch<'a>(
         .map_err(reactor_to_error)?;
 
     let revision_before = session.handle().revision();
-    let claim_count = request.mutations.len();
+    let claim_count = request.claims.len();
 
-    // No mutations: short-circuit to a no-op response so callers
+    // No claims: short-circuit to a no-op response so callers
     // can submit empty batches without paying for a commit.
-    if request.mutations.is_empty() {
+    if request.claims.is_empty() {
         return Ok(Json(TransactResponse {
             revision_before: revision_before.clone(),
             revision_after: revision_before,
@@ -118,8 +118,8 @@ async fn transact_on_branch<'a>(
     }
 
     let mut builder = tonk_branch.transaction();
-    for mutation in request.mutations {
-        builder = builder.apply(mutation);
+    for claim in request.claims {
+        builder = builder.apply(claim);
     }
     let revision_after = builder
         .commit()

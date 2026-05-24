@@ -39,9 +39,9 @@ pub mod prelude;
 pub mod domain;
 
 /// Re-export of the operation-type primitives from [`tonk_core`], so that
-/// existing `tonk_schema::{mutation, transact, conclusion, effect, meta}`
+/// existing `tonk_schema::{claim, transact, conclusion, effect, meta}`
 /// paths continue to resolve after the crate split.
-pub use tonk_core::{conclusion, effect, meta, mutation, transact};
+pub use tonk_core::{claim, conclusion, effect, meta, transact};
 
 pub mod concept;
 

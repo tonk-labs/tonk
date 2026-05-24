@@ -34,8 +34,8 @@ use crate::concept::{
     AttributeByEntity, Concept, ConceptLookupError, QueryEnv, TransientConcept, lookup_named_entity,
 };
 use crate::query_source::Source;
+use tonk_core::claim::ConceptDescriptor;
 use tonk_core::meta::Name;
-use tonk_core::mutation::ConceptDescriptor;
 
 pub use dialog_query::AttributeDescriptor;
 

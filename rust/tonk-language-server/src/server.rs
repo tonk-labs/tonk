@@ -20,10 +20,10 @@ use lsp_types::{
     request::{Completion, HoverRequest, Initialize, Request as LspRequestTrait},
 };
 use serde_json::Value;
+use tonk_schema::claim::ConceptDescriptor;
 use tonk_schema::concept::{
     AttributeDescriptor, ConceptDescriptor as DialogConceptDescriptor, Type,
 };
-use tonk_schema::mutation::ConceptDescriptor;
 use tonk_schema::resolution::{ConceptDefinition, ConceptReference, NamedReference};
 
 use crate::env::{EnvProvider, Opened};

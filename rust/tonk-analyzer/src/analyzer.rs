@@ -57,7 +57,7 @@ use crate::analysis::{
     Analysis as Tree, AssertionAnalysis, AssertionNode, DocumentAnalysis, ExpressionAnalysis,
     Predicate, QueryNode, QueryNodeAnalysis,
 };
-use tonk_core::mutation::ConceptDescriptor;
+use tonk_core::claim::ConceptDescriptor;
 
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
@@ -65,7 +65,7 @@ pub use error::{
 pub use formula::{FormulaCompletion, formula_completions};
 pub use scan::scan_variables;
 
-use tonk_core::mutation::ConceptDescriptor as DurableConceptDescriptor;
+use tonk_core::claim::ConceptDescriptor as DurableConceptDescriptor;
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
 use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
@@ -3480,7 +3480,7 @@ rule!:
     #[dialog_common::test]
     async fn it_tags_the_assertion_predicate_with_its_durability() {
         use crate::analysis::{ExpressionAnalysis, Predicate};
-        use tonk_core::mutation::ConceptDescriptor;
+        use tonk_core::claim::ConceptDescriptor;
 
         let syntax = must_parse(
             r#"

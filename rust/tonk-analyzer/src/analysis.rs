@@ -40,8 +40,8 @@ use dialog_artifacts::Entity;
 use tonk_notation::{Application as SyntaxApplication, Expression, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
+use tonk_core::claim::ConceptDescriptor;
 use tonk_core::effect::Effect;
-use tonk_core::mutation::ConceptDescriptor;
 use tonk_core::transact::{Application, Statement, ThisIntent};
 
 /// A syntax node type that carries a computed analysis payload.
