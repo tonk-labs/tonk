@@ -51,7 +51,7 @@ use std::collections::{HashMap, HashSet};
 use dialog_common::ConditionalSync;
 use tonk_notation::{Effectful, Expression, HeadName, Syntax};
 
-use tonk_core::transact::{Application, DomainApplication, Statement, ThisIntent};
+use tonk_schema::transact::{Application, DomainApplication, Statement, ThisIntent};
 
 use crate::analysis::{
     Analysis as Tree, AssertionAnalysis, AssertionNode, DocumentAnalysis, ExpressionAnalysis,
@@ -455,43 +455,64 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                     claim_labels.push(None);
                     is_declaration = true;
                 } else if is_rule_claim(a) {
-                    // `rule!:` claims lower to either a single
-                    // `Statement::InstallEffect` (install path —
-                    // lift the body into an `Effect`) or a single
-                    // `Statement::RetractEffect` (retract path —
-                    // `rule!: this: <entity> ..: _`). The
-                    // dispatcher in `rule::lift_rule_claim` picks
-                    // by inspecting the body for `..: _`.
-                    let action = rule::lift_rule_claim(a, scope, env, &working).await?;
+                    // `rule!:` claims lower to a single
+                    // `Statement::Assert(Application::Rule(..))` for
+                    // installs or `Statement::Retract(Application::Rule(..))`
+                    // for retracts. The dispatcher in
+                    // `rule::lift_rule_claim` picks by inspecting
+                    // the body for `..: _`; both paths produce a
+                    // `Rule` value (fresh on install, branch-resolved
+                    // on retract).
                     predicate = Predicate::Domain(a.predicate.source.clone());
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
-                    match action {
-                        rule::RuleAction::Install {
-                            effect,
+                    match rule::lift_rule_claim(a, scope, env, &working).await? {
+                        Some(rule::RuleAction::Install {
+                            rule,
                             this: install_at,
-                        } => {
+                        }) => {
                             // When the user pinned the install at a
                             // URI (`rule!: this: <entity>`), surface
                             // it on the application so the labelled
                             // entity flows through the analysis tree;
                             // otherwise the install lands at the
                             // effect's content-derived `this()`.
-                            this = match install_at.clone() {
+                            let intent = match install_at {
                                 Some(entity) => ThisIntent::Uri(entity),
                                 None => ThisIntent::Derived,
                             };
-                            let effect = *effect;
-                            claims.push(Statement::InstallEffect {
-                                effect: effect.clone(),
-                                this: install_at,
-                            });
+                            this = intent.clone();
+                            rule_effect = Some(rule.effect.clone());
+                            claims.push(Statement::Assert(Application::Rule {
+                                rule,
+                                this: intent,
+                            }));
                             claim_labels.push(None);
-                            rule_effect = Some(effect);
                         }
-                        rule::RuleAction::Retract(entity) => {
-                            this = ThisIntent::Uri(entity.clone());
-                            claims.push(Statement::RetractEffect(entity));
+                        Some(rule::RuleAction::Retract { rule, this: entity }) => {
+                            let intent = ThisIntent::Uri(entity);
+                            this = intent.clone();
+                            claims.push(Statement::Retract(Application::Rule {
+                                rule,
+                                this: intent,
+                            }));
                             claim_labels.push(None);
+                        }
+                        None => {
+                            // Retract of a rule that isn't installed:
+                            // silently no-op, matching the prior
+                            // RetractEffect behaviour. The notation
+                            // still parses and analyzes; the analyzer
+                            // just emits no claim.
+                            this = a
+                                .fields
+                                .iter()
+                                .find(|f| f.name == "this")
+                                .and_then(|f| match &f.value {
+                                    tonk_notation::FieldValue::Uri(s) => s.parse().ok(),
+                                    _ => None,
+                                })
+                                .map(ThisIntent::Uri)
+                                .unwrap_or(ThisIntent::Derived);
                         }
                     }
                     is_declaration = false;
@@ -647,6 +668,7 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
             })
         }
         Application::Domain { application, .. } => Predicate::Domain(application.domain.clone()),
+        Application::Rule { .. } => Predicate::Domain("rule".to_owned()),
     }
 }
 
@@ -688,12 +710,13 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
         if planned.declaration {
             continue;
         }
-        // `InstallEffect` statements carry no application — a
-        // rule installs an effect, it doesn't write a snapshotable
-        // entity — so they contribute no implicit query.
-        let Some(application) = planned.statement.application() else {
+        // Rules don't write a snapshotable entity — install /
+        // retract of `dialog.effect/*` claims contributes no
+        // implicit query.
+        let application = planned.statement.application();
+        if matches!(application, Application::Rule { .. }) {
             continue;
-        };
+        }
         // Two cases of "we know which entity to snapshot":
         //
         // 1. **Update existing thing** — `this:` is a constant
@@ -781,6 +804,12 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
                     name: None,
                 }
             }
+            // Rules were filtered out above; the rule-snapshot path
+            // is the read-side `rule:` query, not a per-write
+            // synthesised one.
+            Application::Rule { .. } => unreachable!(
+                "Application::Rule should have been filtered out by the matches! check"
+            ),
         };
         // Reuse the assertion's head name so the rendered
         // result block carries `person` (or whatever) instead
@@ -1031,11 +1060,10 @@ mod tests {
             .collect();
         let mut requires: HashSet<String> = HashSet::new();
         for statement in &statements {
-            if let Some(application) = statement.application() {
-                for name in application.bindings() {
-                    if !document.variables.contains_key(&name) {
-                        requires.insert(name);
-                    }
+            let application = statement.application();
+            for name in application.bindings() {
+                if !document.variables.contains_key(&name) {
+                    requires.insert(name);
                 }
             }
         }
@@ -1712,7 +1740,8 @@ xyz.tonk:
         let analysis = flat(analyze_empty(&syntax).await.unwrap());
         let q = analysis.query.as_ref().unwrap();
         assert_eq!(q.queries.len(), 1);
-        let tonk_core::transact::Application::Domain { application: d, .. } = &q.queries[0] else {
+        let tonk_schema::transact::Application::Domain { application: d, .. } = &q.queries[0]
+        else {
             panic!("expected Domain application");
         };
         assert_eq!(d.domain, "xyz.tonk");
@@ -3545,7 +3574,7 @@ pong!:
     /// after it — the evaluator depends on this ordering.
     #[dialog_common::test]
     async fn it_orders_statements_assertions_before_rule_effects() {
-        use tonk_core::transact::Statement;
+        use tonk_schema::transact::Statement;
 
         let syntax = must_parse(
             r#"
@@ -3571,23 +3600,22 @@ person!:
         let statements = tree.analysis.statements();
 
         // The rule is the first expression in source, but its
-        // InstallEffect must sort last.
+        // Rule install must sort last.
         assert!(
             !statements.is_empty(),
             "the document produced planned statements"
         );
         let last = statements.last().expect("at least one statement");
         assert!(
-            matches!(last.statement, Statement::InstallEffect { .. }),
-            "the rule!: InstallEffect sorts after every assertion statement, \
-             got {:?}",
+            matches!(last.statement, Statement::Assert(Application::Rule { .. })),
+            "the rule!: install sorts after every assertion statement, got {:?}",
             last.statement
         );
         assert!(
             statements[..statements.len() - 1]
                 .iter()
-                .all(|s| !matches!(s.statement, Statement::InstallEffect { .. })),
-            "only the trailing statement is an InstallEffect"
+                .all(|s| !matches!(s.statement, Statement::Assert(Application::Rule { .. }))),
+            "only the trailing statement is a rule install"
         );
     }
 

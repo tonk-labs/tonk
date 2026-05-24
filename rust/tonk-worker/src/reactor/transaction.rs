@@ -17,6 +17,7 @@ use dialog_artifacts::{Changes, Statement};
 use dialog_repository::Revision;
 use tonk_evaluator::effects::TransactionExt;
 use tonk_schema::claim::{Claim, PredicateApplication};
+use tonk_schema::transact::application_plan_from_predicate;
 
 use super::BranchReference;
 use super::env::{BranchOpenProvider, CommitProvider, LoadProvider, SelectProvider};
@@ -96,7 +97,7 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             &mut self.changes
         };
-        application.into_plan().assert(bucket);
+        application_plan_from_predicate(application).assert(bucket);
         self
     }
 
@@ -111,7 +112,7 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             &mut self.changes
         };
-        application.into_plan().retract(bucket);
+        application_plan_from_predicate(application).retract(bucket);
         self
     }
 

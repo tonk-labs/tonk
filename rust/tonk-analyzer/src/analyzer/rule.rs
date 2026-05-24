@@ -33,11 +33,14 @@ use crate::analyzer::Working;
 use dialog_artifacts::Entity;
 use tonk_core::effect::{Effect, EffectPolarity};
 use tonk_schema::concept::QueryEnv;
+use tonk_schema::rule::Rule;
 
-/// Outcome of inspecting a `rule!:` claim body — install (lift to
-/// an [`Effect`]) or retract (point at an existing rule entity).
+/// Outcome of inspecting a `rule!:` claim body — install (build a
+/// fresh [`Rule`]) or retract (resolve an existing rule from the
+/// branch). Both paths produce a [`Rule`] value the analyzer hands
+/// forward as `Application::Rule { rule, .. }`.
 ///
-/// The two shapes live in the same notation:
+/// The two notation shapes:
 ///
 /// - Install: `rule!: assert!: <head>, when: [...]` — body carries
 ///   polarity + premises, no `..: _`. A `this: <entity>` may
@@ -46,26 +49,21 @@ use tonk_schema::concept::QueryEnv;
 ///   the rule's entity in `this:` and `..: _` as the
 ///   retract-everything sentinel.
 pub(crate) enum RuleAction {
-    /// Install a new rule. The carried [`Effect`] is the lifted,
-    /// dialog-planner-validated rule. `this` carries a user-chosen
-    /// install-at entity when the body had `this: <entity>`;
-    /// otherwise the install lands at [`Effect::this`].
-    ///
-    /// `effect` is boxed because [`InductiveRule`] dominates the
-    /// variant's size; the unboxed shape would push `RuleAction`
-    /// far past `Retract(Entity)` and trip `clippy::large_enum_variant`.
-    /// The value is destructured immediately after construction, so
-    /// the heap hop is paid once per `rule!:` claim.
+    /// Install a new rule. `rule` carries the freshly-built
+    /// [`Rule`] with `Effect::source()` already captured; `this`
+    /// carries `Some(entity)` when the user pinned the install with
+    /// `this: <entity>`, `None` for the content-addressed default.
     Install {
-        /// The compiled rule body.
-        effect: Box<Effect>,
+        /// The freshly-built rule packaged for assert.
+        rule: Box<Rule>,
         /// Caller-supplied install-at entity from `this: <entity>`.
         this: Option<Entity>,
     },
-    /// Retract an installed rule. The carried entity URI names the
-    /// effect on the branch whose `dialog.effect/*` facts the
-    /// evaluator should dissociate.
-    Retract(Entity),
+    /// Retract an installed rule. `rule` carries the [`Rule`]
+    /// resolved off the branch with the stored `source` / `polarity`
+    /// bytes — handed to `Statement::Retract` so the dissociate
+    /// matches what was written byte-for-byte.
+    Retract { rule: Box<Rule>, this: Entity },
 }
 
 /// `true` when the claim body is the rule-retract shape
@@ -90,12 +88,19 @@ fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
 /// Dispatch a `rule!:` claim to install or retract, depending on
 /// the body shape. The analyzer calls this once per `rule!:` claim
 /// it encounters.
+///
+/// For install the body is lifted to a fresh [`Effect`] then
+/// packaged into a [`Rule`] via [`Rule::asserting`] /
+/// [`Rule::asserting_at`]. For retract the [`Rule`] is resolved off
+/// the branch via [`Rule::retracting`] so its carried `source` bytes
+/// match what was stored — feeds straight into `Statement::Retract`
+/// for a byte-exact dissociate.
 pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
     application: &SyntaxApplication,
     scope: &Scope<'_>,
     env: &Env,
     analysis: &Working,
-) -> Result<RuleAction, AnalyzeError> {
+) -> Result<Option<RuleAction>, AnalyzeError> {
     if is_rule_retract_body(application) {
         let entity = parse_rule_this_entity(application)?.ok_or_else(|| {
             AnalyzeError::at(
@@ -107,14 +112,41 @@ pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
                 application.range,
             )
         })?;
-        Ok(RuleAction::Retract(entity))
+        // Resolve the stored rule off the branch so the carried
+        // `source` bytes match what's installed. `None` means the
+        // entity holds no `dialog.effect/source` claim — the user
+        // is retracting a rule that isn't installed (or already
+        // retracted in this document); we propagate the absent
+        // signal upward so the analyzer can drop the claim silently.
+        let Some(rule) = Rule::retracting(entity.clone())
+            .resolve(scope.source(), env)
+            .await
+            .map_err(|e| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::RuleCompileFailed {
+                        reason: format!("rule retract resolve failed at {entity}: {e}"),
+                    },
+                    application.range,
+                )
+            })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(RuleAction::Retract {
+            rule: Box::new(rule),
+            this: entity,
+        }))
     } else {
         let this = parse_rule_this_entity(application)?;
         let effect = lift_rule(application, scope, env, analysis).await?;
-        Ok(RuleAction::Install {
-            effect: Box::new(effect),
+        let rule = match this.clone() {
+            Some(entity) => Rule::asserting_at(effect, entity),
+            None => Rule::asserting(effect),
+        };
+        Ok(Some(RuleAction::Install {
+            rule: Box::new(rule),
             this,
-        })
+        }))
     }
 }
 
@@ -818,11 +850,12 @@ mod tests {
     fn only_installed_effect(
         tree: &crate::analysis::Analysis<tonk_notation::Syntax>,
     ) -> tonk_core::effect::Effect {
+        use tonk_schema::transact::{Application, Statement};
         let statements = tree.analysis.statements();
         assert_eq!(statements.len(), 1);
         match &statements[0].statement {
-            tonk_core::transact::Statement::InstallEffect { effect, .. } => effect.clone(),
-            other => panic!("expected Statement::InstallEffect, got {other:?}"),
+            Statement::Assert(Application::Rule { rule, .. }) => rule.effect.clone(),
+            other => panic!("expected Statement::Assert(Application::Rule), got {other:?}"),
         }
     }
 
@@ -933,22 +966,25 @@ rule!:\n\
             .analyze(&syntax)
             .await
             .expect("analyze should succeed");
+        use tonk_schema::transact::{Application, Statement, ThisIntent};
         let statements = analysis.analysis.statements();
         assert_eq!(statements.len(), 1);
-        let tonk_core::transact::Statement::InstallEffect { this, .. } = &statements[0].statement
-        else {
-            panic!("expected InstallEffect, got {:?}", statements[0].statement);
+        let Statement::Assert(Application::Rule { this, .. }) = &statements[0].statement else {
+            panic!(
+                "expected Statement::Assert(Application::Rule), got {:?}",
+                statements[0].statement
+            );
         };
         assert!(
-            this.is_none(),
-            "no this: in body, install entity stays None"
+            matches!(this, ThisIntent::Derived),
+            "no this: in body, install entity is content-derived (Derived)"
         );
     }
 
     /// `rule!: this: <uri>, assert!: ..` pins the install at a
     /// caller-chosen entity. The lifted `RuleAction::Install` carries
-    /// `this: Some(<uri>)` and the analyzer pushes a
-    /// `Statement::InstallEffect` whose `this` field matches.
+    /// the chosen URI and the analyzer pushes a
+    /// `Statement::Assert(Application::Rule { this: Uri(<uri>), .. })`.
     #[dialog_common::test]
     async fn it_lifts_an_install_at_chosen_entity() {
         let fixture = new_fixture().await;
@@ -971,17 +1007,19 @@ rule!:\n\
             .analyze(&syntax)
             .await
             .expect("analyze should succeed");
+        use tonk_schema::transact::{Application, Statement, ThisIntent};
         let statements = analysis.analysis.statements();
         assert_eq!(statements.len(), 1);
-        let tonk_core::transact::Statement::InstallEffect { this, .. } = &statements[0].statement
-        else {
-            panic!("expected InstallEffect, got {:?}", statements[0].statement);
+        let Statement::Assert(Application::Rule { this, .. }) = &statements[0].statement else {
+            panic!(
+                "expected Statement::Assert(Application::Rule), got {:?}",
+                statements[0].statement
+            );
         };
         let chosen: Entity = "id:my-counter".parse().expect("id URI parses");
-        assert_eq!(
-            this.as_ref(),
-            Some(&chosen),
-            "install-at entity should carry the user's `this: id:my-counter`"
+        assert!(
+            matches!(this, ThisIntent::Uri(e) if e == &chosen),
+            "install-at entity should carry the user's `this: id:my-counter`, got {this:?}"
         );
     }
 

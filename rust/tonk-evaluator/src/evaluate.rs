@@ -69,10 +69,9 @@ use tonk_notation::Syntax;
 
 use tonk_analyzer::analysis::{Analysis, ExpressionAnalysis, SynthesizedQuery};
 use tonk_analyzer::analyzer;
-use tonk_core::transact::{Application, ApplicationPlan, Planner as _, Statement};
 use tonk_schema::concept::{QueryEnv, application_to_plan};
 use tonk_schema::query_source::Source;
-use tonk_schema::rule::Rule;
+use tonk_schema::transact::{Application, ApplicationPlan, Planner as _, Statement};
 
 // ---------------------------------------------------------------- //
 // Public response types                                            //
@@ -393,16 +392,26 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 .clone()
                                 .plan(&frame)
                                 .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
-                            claim_count += count_emitted_claims(&plan);
                             // A transient-concept assertion also
                             // seeds the transient bucket so the
                             // effects fixpoint fires on it and it's
                             // swept before the durable commit.
-                            if transient_entities.contains(&plan.statement.predicate.this()) {
-                                crate::effects::accumulate_head_facts(
-                                    &plan.statement,
-                                    &mut transients,
-                                );
+                            if let ApplicationPlan::Concept(concept_plan) = &plan {
+                                claim_count += count_emitted_claims(concept_plan);
+                                if transient_entities
+                                    .contains(&concept_plan.statement.predicate.this())
+                                {
+                                    crate::effects::accumulate_head_facts(
+                                        &concept_plan.statement,
+                                        &mut transients,
+                                    );
+                                }
+                            } else if let ApplicationPlan::Rule(rule) = &plan {
+                                // A rule install writes a constant
+                                // set of facts (marker + source +
+                                // conclusion + polarity + one `on:`
+                                // entry per body attribute).
+                                claim_count += 4 + rule.effect.on_entities().len();
                             }
                             txn = txn.assert(plan);
                         }
@@ -411,52 +420,24 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 .clone()
                                 .plan(&frame)
                                 .map_err(|e| EvaluateError::Plan(format!("plan failed: {e}")))?;
-                            let resolved = resolve_retraction_targets(plan, &txn, env).await?;
-                            claim_count += resolved.len();
-                            retract_claims.extend(resolved);
-                        }
-                        Statement::InstallEffect { effect, this } => {
-                            // A `rule!:` is a mutation: installing
-                            // it writes the `dialog.effect/*` facts
-                            // the reactor's induce loop reads. Each
-                            // effect emits a constant set of claims
-                            // (marker + source + conclusion +
-                            // polarity + one `on:` entry per
-                            // attribute the body reads) — bump the
-                            // count by 4 + premise-attribute count.
-                            claim_count += 4 + effect.on_entities().len();
-                            let rule = match this {
-                                Some(entity) => Rule::asserting_at(effect.clone(), entity.clone()),
-                                None => Rule::asserting(effect.clone()),
-                            };
-                            txn = txn.assert(rule);
-                        }
-                        Statement::RetractEffect(entity) => {
-                            // `rule!: this: <entity> ..: _` removes
-                            // an installed rule. The resolver reads
-                            // the stored `dialog.effect/source` and
-                            // `dialog.effect/polarity` claims off
-                            // the branch and bakes those exact
-                            // bytes into the dissociate, so the
-                            // retraction byte-matches what was
-                            // written. Silently no-op if no rule
-                            // lives at that entity (the user may
-                            // be cleaning up a doubly-retracted
-                            // entity in a single document).
-                            use tonk_schema::query_source::Source;
-                            let Some(rule) = Rule::retracting(entity.clone())
-                                .resolve(&Source::from(&txn), env)
-                                .await
-                                .map_err(|e| {
-                                    EvaluateError::Plan(format!(
-                                        "rule retract resolve failed at {entity}: {e}"
-                                    ))
-                                })?
-                            else {
-                                continue;
-                            };
-                            claim_count += 4 + rule.effect.on_entities().len();
-                            txn = txn.retract(rule);
+                            match plan {
+                                ApplicationPlan::Concept(concept_plan) => {
+                                    let resolved =
+                                        resolve_retraction_targets(concept_plan, &txn, env).await?;
+                                    claim_count += resolved.len();
+                                    retract_claims.extend(resolved);
+                                }
+                                ApplicationPlan::Rule(rule) => {
+                                    // The rule was already resolved
+                                    // off the branch in the analyzer
+                                    // (`Rule::retracting(entity).resolve(..)`),
+                                    // so its carried source bytes
+                                    // match the stored ones — the
+                                    // dissociate is byte-exact.
+                                    claim_count += 4 + rule.effect.on_entities().len();
+                                    txn = txn.retract(*rule);
+                                }
+                            }
                         }
                     }
                 }
@@ -699,7 +680,7 @@ impl dialog_artifacts::Statement for RawClaim {
     }
 }
 
-/// Resolve a retraction `ApplicationPlan` to concrete
+/// Resolve a concept-shaped retraction plan to concrete
 /// `(the, of, is)` triples by querying the branch.
 ///
 /// Walks the plan's predicate. For each field whose term is
@@ -709,8 +690,12 @@ impl dialog_artifacts::Statement for RawClaim {
 /// **not** retracted — they're treated as match anchors. Per
 /// `analysis-spec.md` example 5b: `name: "Alice"` anchors,
 /// `age: _` is the only field dissociated.
+///
+/// Rule retracts use a different path — the analyzer already
+/// resolves the byte-exact stored source via `Rule::retracting`,
+/// so this function only handles `ApplicationPlan::Concept`.
 async fn resolve_retraction_targets<Env: EvaluateEnv>(
-    plan: ApplicationPlan,
+    plan: tonk_schema::transact::ConceptPlan,
     txn: &Transaction<'_>,
     env: &Env,
 ) -> Result<Vec<RawClaim>, EvaluateError> {
@@ -766,11 +751,14 @@ async fn resolve_retraction_targets<Env: EvaluateEnv>(
     Ok(out)
 }
 
-/// Estimate how many EAVs an [`ApplicationPlan`] will emit on
+/// Estimate how many EAVs a concept-shaped plan will emit on
 /// commit — one per non-blank field. The dialog transaction API
 /// doesn't expose a count after the fact, so we tally
 /// per-statement here as the transaction is built.
-fn count_emitted_claims(plan: &ApplicationPlan) -> usize {
+///
+/// Rule installs / retracts have a different count (4 + body
+/// premises) computed separately in the call sites.
+fn count_emitted_claims(plan: &tonk_schema::transact::ConceptPlan) -> usize {
     let mut n = 0;
     for (field_name, _attr) in plan.statement.predicate.with().iter() {
         if field_name == "this" {
@@ -913,6 +901,16 @@ fn render_block(
     let descriptor = match application {
         Application::Concept { query: q, .. } => q.predicate.clone(),
         Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
+        Application::Rule { .. } => {
+            // Rules never appear as a query expression — they are
+            // write-only via Statement::Assert/Retract — so the
+            // renderer's per-expression block path doesn't reach
+            // here for rules.
+            return QueryMatchBlock {
+                label,
+                results: Vec::new(),
+            };
+        }
     };
 
     // Variable names this expression binds — used to dedupe rows.
@@ -920,6 +918,7 @@ fn render_block(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
+        Application::Rule { .. } => unreachable!("filtered above"),
     };
     for (_, term) in terms.iter() {
         if let Term::Variable {
@@ -960,6 +959,9 @@ fn render_one_result(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
+        Application::Rule { .. } => {
+            unreachable!("render_one_result is not called for Application::Rule")
+        }
     };
 
     let this = terms
@@ -1926,23 +1928,23 @@ rule!:\n\
             .await
             .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?;
 
-        // The lifted rule must lower to one statement — a
-        // `Statement::InstallEffect` — so the route's commit
-        // guard (`has_statements`) sees it.
+        // The lifted rule must lower to one statement — a rule
+        // install — so the route's commit guard (`has_statements`)
+        // sees it.
         let statements = evaluated.analysis.analysis.statements();
         assert_eq!(
             statements.len(),
             1,
             "rule-only document should carry one mutation statement"
         );
-        let Statement::InstallEffect { effect, .. } = &statements[0].statement else {
+        let Statement::Assert(Application::Rule { rule, .. }) = &statements[0].statement else {
             panic!(
-                "rule-only document should carry a Statement::InstallEffect, got {:?}",
+                "rule-only document should carry Statement::Assert(Application::Rule), got {:?}",
                 statements[0].statement
             );
         };
         assert_eq!(
-            effect.conclusion(),
+            rule.effect.conclusion(),
             one_text_field("io.gozala.pong", "tag").this(),
             "the installed effect's head concept should be pong"
         );

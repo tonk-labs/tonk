@@ -11,10 +11,8 @@
 //! before durable write). The reactor reads this classification
 //! to bucket transients without re-querying the schema.
 
-use dialog_query::{ConceptDescriptor as DialogConceptDescriptor, ConceptQuery, Parameters};
+use dialog_query::{ConceptDescriptor as DialogConceptDescriptor, Parameters};
 use serde::{Deserialize, Serialize};
-
-use crate::transact::ApplicationPlan;
 
 /// A concept predicate plus its durability classification.
 ///
@@ -76,22 +74,6 @@ impl PredicateApplication {
     /// `true` if the predicate names a transient concept.
     pub fn is_transient(&self) -> bool {
         self.predicate.is_transient()
-    }
-
-    /// Project into the [`ApplicationPlan`] the existing
-    /// [`crate::transact`] emitter consumes — same EAV-emission
-    /// machinery whether the claim ultimately lands in the
-    /// durable or transient bucket.
-    pub fn into_plan(self) -> ApplicationPlan {
-        ApplicationPlan {
-            statement: ConceptQuery {
-                terms: self.parameters,
-                predicate: match self.predicate {
-                    ConceptDescriptor::Durable(c) | ConceptDescriptor::Transient(c) => c,
-                },
-            },
-            name: None,
-        }
     }
 }
 

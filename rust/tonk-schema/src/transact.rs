@@ -5,17 +5,23 @@
 //! Quick orientation:
 //!
 //! - [`Application`] captures "predicate applied to terms," shared
-//!   between queries and mutations.
+//!   between queries and mutations. [`Application::Rule`] is the
+//!   rule-install / rule-retract counterpart: a rule is not a
+//!   generic concept (its storage shape is the `dialog.effect/*`
+//!   claims, not a per-attribute `dialog.concept.with/*` map), so
+//!   it gets its own variant.
 //! - [`Statement::Assert`] / [`Statement::Retract`] are the
-//!   mutation-side wrappers; [`Statement::InstallEffect`] installs
-//!   a `rule!:`-lifted effect.
+//!   write-direction wrappers. A rule install is
+//!   `Statement::Assert(Application::Rule(..))`; a rule retract is
+//!   `Statement::Retract(Application::Rule(..))`. There is no
+//!   dedicated install/retract variant — the direction lives on
+//!   the outer [`Statement`].
 //! - [`Planner::plan`] substitutes query-bound variables in
 //!   the parameters of an [`Application`] and produces an
 //!   [`ApplicationPlan`] ready for `tx.assert` / `tx.retract`.
-//!   The plan is the same shape regardless of which concept
-//!   it targets — built-in `attribute` / `concept` are bootstrapped
-//!   onto every branch at repo creation, so they resolve like
-//!   any other concept.
+//!   For [`Application::Rule`] there's nothing to substitute —
+//!   the rule already carries its resolved [`Effect`] and the
+//!   stored source bytes; the planner just hands it through.
 
 use std::collections::HashSet;
 
@@ -23,51 +29,48 @@ use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
-use crate::effect::Effect;
-use crate::meta::{Name, name};
+use crate::rule::Rule;
+use tonk_core::claim::{ConceptDescriptor, PredicateApplication};
+use tonk_core::meta::{Name, name};
 
-/// One lowered write — an assertion, a retraction of an
-/// [`Application`], or the install / retract of a rule.
+/// Project a wire-format [`PredicateApplication`] into the
+/// concept-shaped [`ApplicationPlan`] the dialog emitter consumes.
+/// Used by `/transact` to bridge the wire-side `Claim` batch into
+/// the same plan shape the notation path produces.
+pub fn application_plan_from_predicate(application: PredicateApplication) -> ApplicationPlan {
+    let PredicateApplication {
+        predicate,
+        parameters,
+    } = application;
+    let descriptor = match predicate {
+        ConceptDescriptor::Durable(c) | ConceptDescriptor::Transient(c) => c,
+    };
+    ApplicationPlan::Concept(ConceptPlan {
+        statement: ConceptQuery {
+            terms: parameters,
+            predicate: descriptor,
+        },
+        name: None,
+    })
+}
+
+/// One lowered write — an assertion or a retraction of an
+/// [`Application`]. A rule install is
+/// `Statement::Assert(Application::Rule(..))`; a rule retract is
+/// `Statement::Retract(Application::Rule(..))`.
 #[derive(Debug, Clone)]
 pub enum Statement {
     /// `head! …:` — write the facts.
     Assert(Application),
     /// `head! …: _` (or `field: _`) — dissociate matching facts.
     Retract(Application),
-    /// `rule!:` (install) — write a new inductive effect's
-    /// `dialog.effect/*` facts on the branch. The reactor's induce
-    /// loop reads them on every subsequent commit.
-    ///
-    /// `this` carries an explicit install-at entity when the user
-    /// wrote `rule!: this: <entity>, assert!: ..` — otherwise the
-    /// install lands at the content-derived [`Effect::this`]. The
-    /// override path lets callers name a stable rule entity they can
-    /// later retract by URI without recomputing the hash.
-    InstallEffect {
-        /// The lifted, dialog-planner-validated rule.
-        effect: Effect,
-        /// Caller-supplied install-at entity, when present. `None`
-        /// falls back to [`Effect::this`].
-        this: Option<Entity>,
-    },
-    /// `rule!: this: <effect entity> ..: _` (retract) — remove an
-    /// installed rule's `dialog.effect/*` facts. The executor
-    /// resolves the stored source string off the branch (via
-    /// `tonk_schema::rule::Rule::retracting`) so the dissociate
-    /// matches the bytes that were written, not whatever a fresh
-    /// `Effect::source()` would produce now.
-    RetractEffect(Entity),
 }
 
 impl Statement {
-    /// The wrapped [`Application`], if this statement carries one.
-    /// `InstallEffect` / `RetractEffect` have no application — they
-    /// operate on a rule's stored facts rather than applying a
-    /// predicate to terms.
-    pub fn application(&self) -> Option<&Application> {
+    /// The wrapped [`Application`], regardless of direction.
+    pub fn application(&self) -> &Application {
         match self {
-            Self::Assert(a) | Self::Retract(a) => Some(a),
-            Self::InstallEffect { .. } | Self::RetractEffect(_) => None,
+            Self::Assert(a) | Self::Retract(a) => a,
         }
     }
 }
@@ -110,40 +113,84 @@ pub enum Application {
         /// `&anchor` on the value side, if any.
         name: Option<String>,
     },
+    /// `rule!:` head — an installed or to-be-installed rule.
+    /// Distinct from `Concept` because a rule's storage shape is
+    /// the `dialog.effect/*` claim set, not a per-attribute
+    /// `dialog.concept.with/*` map.
+    ///
+    /// For an install, the carried [`Rule`] was built fresh from
+    /// the body lift; for a retract it was resolved off the branch
+    /// (so the carried `source` bytes match what was stored). The
+    /// outer [`Statement::Assert`] / [`Statement::Retract`] picks
+    /// the direction.
+    ///
+    /// `rule` is boxed because [`Rule`]'s embedded [`InductiveRule`]
+    /// would otherwise inflate every `Application` variant. The
+    /// boxed value is consumed once per claim, so the heap hop is
+    /// paid at most once per `rule!:`.
+    Rule {
+        /// The rule, packaged with its stored source bytes and
+        /// polarity so an `assert` / `retract` writes the exact
+        /// EAVs that were (or will be) stored.
+        rule: Box<Rule>,
+        /// Where the install / retract target entity came from.
+        /// `Derived` is the content-addressed install (default for
+        /// `rule!:` without `this:`); `Uri(entity)` is the
+        /// caller-pinned install/retract URI.
+        this: ThisIntent,
+    },
 }
 
 impl Application {
-    /// Parameters carried by this application — `Concept` reads
+    /// Parameters carried by this application. `Concept` reads
     /// from the inner [`ConceptQuery::terms`], `Domain` from
-    /// [`DomainApplication::parameters`].
+    /// [`DomainApplication::parameters`]. [`Application::Rule`]
+    /// has no parameters — a rule's payload is its body, not a
+    /// term map — so this returns an empty parameter set for it.
     pub fn parameters(&self) -> &Parameters {
         match self {
             Self::Concept { query, .. } => &query.terms,
             Self::Domain { application, .. } => &application.parameters,
+            Self::Rule { .. } => empty_parameters(),
         }
     }
 
     /// Where the entity in `terms["this"]` was selected from.
     pub fn this(&self) -> &ThisIntent {
         match self {
-            Self::Concept { this, .. } | Self::Domain { this, .. } => this,
+            Self::Concept { this, .. } | Self::Domain { this, .. } | Self::Rule { this, .. } => {
+                this
+            }
         }
     }
 
-    /// Name to publish (`&name`), if any.
+    /// Name to publish (`&name`), if any. Rules don't take an
+    /// `&anchor`, so always `None` for [`Application::Rule`].
     pub fn name(&self) -> Option<&str> {
         match self {
             Self::Concept { name, .. } | Self::Domain { name, .. } => name.as_deref(),
+            Self::Rule { .. } => None,
         }
     }
 
     /// Variable names appearing in `Term::Variable { name: Some(_) }`
-    /// slots of this application's parameters.
+    /// slots of this application's parameters. Empty for
+    /// [`Application::Rule`] (rules carry no terms).
     pub fn bindings(&self) -> HashSet<String> {
         let mut out = HashSet::new();
         collect_variable_names(self.parameters(), &mut out);
         out
     }
+}
+
+/// Shared singleton empty [`Parameters`] returned by
+/// [`Application::parameters`] for [`Application::Rule`]. A rule
+/// has no term map; we hand back a borrow into this rather than
+/// fabricating a new empty map per call.
+fn empty_parameters() -> &'static Parameters {
+    use std::sync::OnceLock;
+    static EMPTY: OnceLock<Parameters> = OnceLock::new();
+    EMPTY.get_or_init(Parameters::new)
 }
 
 /// How the entity in `terms["this"]` is selected. Mirrors the
@@ -254,31 +301,49 @@ impl Planner for Application {
     type Output = ApplicationPlan;
 
     fn plan(self, bindings: &Parameters) -> Result<ApplicationPlan, PlanError> {
-        let (query, name) = match self {
-            Self::Concept { query, name, .. } => (query, name),
+        match self {
+            Self::Concept { query, name, .. } => Ok(ApplicationPlan::Concept(ConceptPlan {
+                statement: substitute_concept_query(query, bindings)?,
+                name,
+            })),
             Self::Domain {
                 application, name, ..
-            } => (ConceptQuery::from(application), name),
-        };
-        Ok(ApplicationPlan {
-            statement: substitute_concept_query(query, bindings)?,
-            name,
-        })
+            } => Ok(ApplicationPlan::Concept(ConceptPlan {
+                statement: substitute_concept_query(ConceptQuery::from(application), bindings)?,
+                name,
+            })),
+            Self::Rule { rule, .. } => Ok(ApplicationPlan::Rule(rule)),
+        }
     }
 }
 
-/// Fully concrete, ready to commit. Wraps a [`ConceptQuery`]
-/// whose every `Term::Variable` has been substituted to
-/// `Term::Constant` against the planning bindings, plus the
-/// optional name to publish so the emitter knows whether to also
-/// emit the desugared `name!` assertion.
+/// Fully concrete, ready to commit. The lowered form of an
+/// [`Application`] after variable substitution.
+///
+/// [`ApplicationPlan::Concept`] carries a substituted
+/// [`ConceptQuery`] (the per-attribute storage shape used by every
+/// concept-like application — built-in `attribute`/`concept`,
+/// user-defined concepts, and synthesised domain predicates).
+/// [`ApplicationPlan::Rule`] carries the resolved [`Rule`] whose
+/// [`ArtifactsStatement`] impl emits the `dialog.effect/*` storage
+/// shape.
+pub enum ApplicationPlan {
+    /// Per-attribute concept storage (concept / domain / built-in).
+    Concept(ConceptPlan),
+    /// `dialog.effect/*` rule storage. Boxed because [`Rule`]'s
+    /// embedded [`InductiveRule`] would otherwise inflate every
+    /// concept-shaped plan to rule-storage size.
+    Rule(Box<Rule>),
+}
+
+/// Concept-side [`ApplicationPlan`] payload — a substituted
+/// [`ConceptQuery`] plus the optional `&anchor` name to publish.
 ///
 /// Asserting / retracting walks the predicate's `with` map and
-/// emits one EAV per non-blank field — exactly the same
-/// machinery whether the predicate is the built-in `attribute`
-/// schema, the built-in `concept` schema, or a user-defined
-/// concept.
-pub struct ApplicationPlan {
+/// emits one EAV per non-blank field — exactly the same machinery
+/// whether the predicate is the built-in `attribute` schema, the
+/// built-in `concept` schema, or a user-defined concept.
+pub struct ConceptPlan {
     /// The substituted query.
     pub statement: ConceptQuery,
     /// `&name` published by this expression, if any. Triggers
@@ -287,6 +352,21 @@ pub struct ApplicationPlan {
 }
 
 impl ArtifactsStatement for ApplicationPlan {
+    fn assert(self, update: &mut impl Update) {
+        match self {
+            Self::Concept(plan) => plan.assert(update),
+            Self::Rule(rule) => (*rule).assert(update),
+        }
+    }
+    fn retract(self, update: &mut impl Update) {
+        match self {
+            Self::Concept(plan) => plan.retract(update),
+            Self::Rule(rule) => (*rule).retract(update),
+        }
+    }
+}
+
+impl ArtifactsStatement for ConceptPlan {
     fn assert(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, true);
         emit_name_assertion(self.name.as_deref(), &self.statement.terms, update, true);
@@ -454,8 +534,8 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// Build an `ApplicationPlan` for a one-field concept whose
-    /// `this` is a constant entity. Used by the anchor-desugar
+    /// Build an `ApplicationPlan::Concept` for a one-field concept
+    /// whose `this` is a constant entity. Used by the anchor-desugar
     /// tests below.
     fn plan_with_anchor(anchor_name: &str, target: &str) -> ApplicationPlan {
         let descriptor: ConceptDescriptor = serde_json::from_str(
@@ -470,13 +550,13 @@ mod tests {
         let mut terms = Parameters::new();
         terms.insert("this".into(), Term::Constant(Value::Entity(target_entity)));
         terms.insert("name".into(), Term::Constant(Value::String("x".into())));
-        ApplicationPlan {
+        ApplicationPlan::Concept(ConceptPlan {
             statement: ConceptQuery {
                 terms,
                 predicate: descriptor,
             },
             name: Some(anchor_name.into()),
-        }
+        })
     }
 
     /// Asserting an anchored plan emits the desugared `name!`
@@ -564,13 +644,13 @@ mod tests {
         let mut terms = Parameters::new();
         terms.insert("this".into(), Term::Constant(Value::Entity(target)));
         terms.insert("name".into(), Term::Constant(Value::String("x".into())));
-        let plan = ApplicationPlan {
+        let plan = ApplicationPlan::Concept(ConceptPlan {
             statement: ConceptQuery {
                 terms,
                 predicate: descriptor,
             },
             name: None,
-        };
+        });
 
         let mut changes = Changes::new();
         plan.assert(&mut changes);

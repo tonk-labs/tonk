@@ -57,6 +57,13 @@ pub(crate) struct Scope<'a> {
 }
 
 impl<'a> Scope<'a> {
+    /// Borrow the resolution [`Source`] the scope was constructed
+    /// over — `rule!: ..: _` retracts need it to read the stored
+    /// `dialog.effect/source` bytes off the branch.
+    pub(crate) fn source(&self) -> &Source<'a> {
+        &self.source
+    }
+
     pub(crate) fn new(source: Source<'a>) -> Self {
         Self {
             source,

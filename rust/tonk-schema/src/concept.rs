@@ -876,19 +876,22 @@ pub enum QueryPlan {
     AnonymousRule(AnonymousRuleQuery),
 }
 
-/// Convert an [`Application`](tonk_core::transact::Application) into
+/// Convert an [`Application`](crate::transact::Application) into
 /// the [`QueryPlan`] it should be evaluated as.
 ///
 /// `Concept` carries a [`ConceptQuery`] directly; `Domain`
-/// synthesises one from its parameter map. This lowering is the
-/// read-side interpretation of an operation type — kept here,
-/// outside `transact.rs`, so the operation types stay
-/// dependency-free of query/resolution machinery.
-pub fn application_to_plan(application: tonk_core::transact::Application) -> QueryPlan {
-    use tonk_core::transact::Application;
+/// synthesises one from its parameter map. `Rule` has no read-side
+/// projection — rules are only mutated, never queried by predicate
+/// application — so this panics if a `Rule` application reaches it.
+pub fn application_to_plan(application: crate::transact::Application) -> QueryPlan {
+    use crate::transact::Application;
     match application {
         Application::Concept { query, .. } => QueryPlan::from(query),
         Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
+        Application::Rule { .. } => panic!(
+            "Application::Rule has no QueryPlan projection — \
+             rules are write-only via Statement::Assert/Retract"
+        ),
     }
 }
 

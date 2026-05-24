@@ -14,9 +14,9 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use tonk_core::transact::{Application, DomainApplication, ThisIntent};
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::prelude::EntityExt;
+use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:

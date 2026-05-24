@@ -6,7 +6,6 @@
 //! describe *what to do* to a repository and *what came of it*:
 //!
 //! - [`claim`] — the typed assert/retract write-unit over a concept.
-//! - [`transact`] — application plans and the statements they emit.
 //! - [`conclusion`] — the result shape produced by evaluating a concept.
 //! - [`effect`] — inductive-rule effects and their descriptors.
 //! - [`meta`] — names and attributes for facts on a repository's meta branch.
@@ -15,4 +14,3 @@ pub mod claim;
 pub mod conclusion;
 pub mod effect;
 pub mod meta;
-pub mod transact;

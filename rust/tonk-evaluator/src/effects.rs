@@ -578,7 +578,7 @@ pub fn accumulate_head_facts(concept_query: &ConceptQuery, sink: &mut Changes) {
 /// Walk a fully-bound [`ConceptQuery`] (the instantiated head
 /// of an assert-polarity rule) and emit one assertion per
 /// non-blank field. Mirrors the same emission logic the
-/// asserted-notation planner uses in `tonk_core::transact`, but
+/// asserted-notation planner uses in `tonk_schema::transact`, but
 /// writes directly into a dialog `Transaction` since the
 /// induce path doesn't go through `ApplicationPlan`.
 fn emit_head_facts_into(concept_query: ConceptQuery, changes: &mut Changes) {

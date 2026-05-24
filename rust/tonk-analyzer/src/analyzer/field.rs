@@ -12,8 +12,8 @@ use tonk_notation::{FieldValue, Scalar};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use tonk_core::transact::Application;
 use tonk_schema::concept::QueryEnv;
+use tonk_schema::transact::Application;
 
 /// Reserved body field names that don't correspond to schema
 /// fields: `this:` (entity selection), `..:` (rest-of-attributes

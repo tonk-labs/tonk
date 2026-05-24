@@ -12,9 +12,9 @@ use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
 use super::scope::Scope;
-use tonk_core::transact::{Application, ThisIntent};
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::resolution::AttributeDefinition;
+use tonk_schema::transact::{Application, ThisIntent};
 
 /// Cached output of building an `attribute!` or `concept!` head
 /// into its `Application`. Phase 1 builds these so the entity

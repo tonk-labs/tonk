@@ -38,10 +38,13 @@ pub mod prelude;
 
 pub mod domain;
 
-/// Re-export of the operation-type primitives from [`tonk_core`], so that
-/// existing `tonk_schema::{claim, transact, conclusion, effect, meta}`
-/// paths continue to resolve after the crate split.
-pub use tonk_core::{claim, conclusion, effect, meta, transact};
+/// Re-export of the wire-shape primitives from [`tonk_core`].
+pub use tonk_core::{claim, conclusion, effect, meta};
+
+/// Analyzer-IR types: `Application`, `Statement`, `Planner`, etc.
+/// These live here (not in `tonk-core`) because they reference
+/// schema-aware types like [`crate::rule::Rule`].
+pub mod transact;
 
 pub mod concept;
 
