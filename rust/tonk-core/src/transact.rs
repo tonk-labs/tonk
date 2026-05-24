@@ -37,7 +37,19 @@ pub enum Statement {
     /// `rule!:` (install) — write a new inductive effect's
     /// `dialog.effect/*` facts on the branch. The reactor's induce
     /// loop reads them on every subsequent commit.
-    InstallEffect(Effect),
+    ///
+    /// `this` carries an explicit install-at entity when the user
+    /// wrote `rule!: this: <entity>, assert!: ..` — otherwise the
+    /// install lands at the content-derived [`Effect::this`]. The
+    /// override path lets callers name a stable rule entity they can
+    /// later retract by URI without recomputing the hash.
+    InstallEffect {
+        /// The lifted, dialog-planner-validated rule.
+        effect: Effect,
+        /// Caller-supplied install-at entity, when present. `None`
+        /// falls back to [`Effect::this`].
+        this: Option<Entity>,
+    },
     /// `rule!: this: <effect entity> ..: _` (retract) — remove an
     /// installed rule's `dialog.effect/*` facts. The executor
     /// resolves the stored source string off the branch (via
@@ -55,7 +67,7 @@ impl Statement {
     pub fn application(&self) -> Option<&Application> {
         match self {
             Self::Assert(a) | Self::Retract(a) => Some(a),
-            Self::InstallEffect(_) | Self::RetractEffect(_) => None,
+            Self::InstallEffect { .. } | Self::RetractEffect(_) => None,
         }
     }
 }

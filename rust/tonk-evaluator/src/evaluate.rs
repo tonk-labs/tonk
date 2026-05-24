@@ -415,7 +415,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             claim_count += resolved.len();
                             retract_claims.extend(resolved);
                         }
-                        Statement::InstallEffect(effect) => {
+                        Statement::InstallEffect { effect, this } => {
                             // A `rule!:` is a mutation: installing
                             // it writes the `dialog.effect/*` facts
                             // the reactor's induce loop reads. Each
@@ -425,7 +425,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             // attribute the body reads) — bump the
                             // count by 4 + premise-attribute count.
                             claim_count += 4 + effect.on_entities().len();
-                            txn = txn.assert(Rule::asserting(effect.clone()));
+                            let rule = match this {
+                                Some(entity) => Rule::asserting_at(effect.clone(), entity.clone()),
+                                None => Rule::asserting(effect.clone()),
+                            };
+                            txn = txn.assert(rule);
                         }
                         Statement::RetractEffect(entity) => {
                             // `rule!: this: <entity> ..: _` removes
@@ -1931,7 +1935,7 @@ rule!:\n\
             1,
             "rule-only document should carry one mutation statement"
         );
-        let Statement::InstallEffect(effect) = &statements[0].statement else {
+        let Statement::InstallEffect { effect, .. } = &statements[0].statement else {
             panic!(
                 "rule-only document should carry a Statement::InstallEffect, got {:?}",
                 statements[0].statement
@@ -1941,6 +1945,111 @@ rule!:\n\
             effect.conclusion(),
             one_text_field("io.gozala.pong", "tag").this(),
             "the installed effect's head concept should be pong"
+        );
+
+        Ok(())
+    }
+
+    /// `rule!: this: <entity>, assert!: ..` installs the rule at the
+    /// user-chosen entity. The `dialog.effect/source` claim must land
+    /// at that entity, not at the content-derived `Effect::this`.
+    /// This is the install-at-named-entity path mirroring task #90's
+    /// retract-at-named-entity flow.
+    #[dialog_common::test]
+    async fn it_installs_a_rule_at_a_chosen_entity() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit the concepts the rule references.
+        let concepts = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n";
+        parse(concepts)
+            .syntax
+            .expect("concepts syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (concepts): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (concepts): {e}"))?;
+
+        // Install at a chosen, stable entity URI.
+        let chosen: Entity = "id:my-counter".parse()?;
+        let rule_doc = "\
+rule!:\n\
+\x20 this: id:my-counter\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        parse(rule_doc)
+            .syntax
+            .expect("rule syntax")
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (rule): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (rule): {e}"))?;
+
+        // The `dialog.effect/source` claim should hang off the
+        // chosen entity, not off the content-derived hash.
+        let at_chosen: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+                    .of(Term::<Entity>::from(chosen.clone()))
+                    .is(Term::<String>::var("source")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            at_chosen.len(),
+            1,
+            "dialog.effect/source must land at id:my-counter, saw {at_chosen:?}"
+        );
+
+        // And there's exactly one installed effect — no orphan at
+        // the content-derived entity.
+        let all_sources: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(the!("dialog.effect/source"))
+                    .of(Term::<Entity>::var("any"))
+                    .is(Term::<String>::var("source")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            all_sources.len(),
+            1,
+            "exactly one installed effect across the branch; saw {all_sources:?}"
+        );
+        assert_eq!(
+            all_sources[0].of, chosen,
+            "the single installed effect lives at the chosen entity"
         );
 
         Ok(())

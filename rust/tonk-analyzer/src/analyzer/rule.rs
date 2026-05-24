@@ -40,14 +40,28 @@ use tonk_schema::concept::QueryEnv;
 /// The two shapes live in the same notation:
 ///
 /// - Install: `rule!: assert!: <head>, when: [...]` — body carries
-///   polarity + premises, no `..: _`.
+///   polarity + premises, no `..: _`. A `this: <entity>` may
+///   additionally pin the install at a user-chosen entity.
 /// - Retract: `rule!: this: effect:<entity>, ..: _` — body carries
 ///   the rule's entity in `this:` and `..: _` as the
 ///   retract-everything sentinel.
 pub(crate) enum RuleAction {
     /// Install a new rule. The carried [`Effect`] is the lifted,
-    /// dialog-planner-validated rule.
-    Install(Effect),
+    /// dialog-planner-validated rule. `this` carries a user-chosen
+    /// install-at entity when the body had `this: <entity>`;
+    /// otherwise the install lands at [`Effect::this`].
+    ///
+    /// `effect` is boxed because [`InductiveRule`] dominates the
+    /// variant's size; the unboxed shape would push `RuleAction`
+    /// far past `Retract(Entity)` and trip `clippy::large_enum_variant`.
+    /// The value is destructured immediately after construction, so
+    /// the heap hop is paid once per `rule!:` claim.
+    Install {
+        /// The compiled rule body.
+        effect: Box<Effect>,
+        /// Caller-supplied install-at entity from `this: <entity>`.
+        this: Option<Entity>,
+    },
     /// Retract an installed rule. The carried entity URI names the
     /// effect on the branch whose `dialog.effect/*` facts the
     /// evaluator should dissociate.
@@ -83,23 +97,7 @@ pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
     analysis: &Working,
 ) -> Result<RuleAction, AnalyzeError> {
     if is_rule_retract_body(application) {
-        let entity = parse_rule_retract_target(application)?;
-        Ok(RuleAction::Retract(entity))
-    } else {
-        let effect = lift_rule(application, scope, env, analysis).await?;
-        Ok(RuleAction::Install(effect))
-    }
-}
-
-/// Read the `this:` field out of a rule-retract body as the effect
-/// entity URI. Rejects missing `this:` or non-URI `this:` values
-/// with a diagnostic.
-fn parse_rule_retract_target(application: &SyntaxApplication) -> Result<Entity, AnalyzeError> {
-    let this = application
-        .fields
-        .iter()
-        .find(|f| f.name == "this")
-        .ok_or_else(|| {
+        let entity = parse_rule_this_entity(application)?.ok_or_else(|| {
             AnalyzeError::at(
                 AnalyzeErrorKind::RuleCompileFailed {
                     reason: "rule retraction (`rule!: this: <entity> ..: _`) must name a `this:` \
@@ -109,6 +107,29 @@ fn parse_rule_retract_target(application: &SyntaxApplication) -> Result<Entity, 
                 application.range,
             )
         })?;
+        Ok(RuleAction::Retract(entity))
+    } else {
+        let this = parse_rule_this_entity(application)?;
+        let effect = lift_rule(application, scope, env, analysis).await?;
+        Ok(RuleAction::Install {
+            effect: Box::new(effect),
+            this,
+        })
+    }
+}
+
+/// Read an optional `this:` URI field out of a `rule!:` body.
+///
+/// Returns `Ok(None)` when no `this:` field is present. Returns
+/// `Ok(Some(entity))` when the field carries a parseable URI.
+/// Errors when the field is present but holds a non-URI value
+/// (variable, blank, literal, …) — `rule!:` is a "named install"
+/// or "named retract," not a templated one, so a `this: ?var` would
+/// be ambiguous about which entity to write at.
+fn parse_rule_this_entity(application: &SyntaxApplication) -> Result<Option<Entity>, AnalyzeError> {
+    let Some(this) = application.fields.iter().find(|f| f.name == "this") else {
+        return Ok(None);
+    };
     let uri = match &this.value {
         FieldValue::Uri(uri) => uri.clone(),
         _ => {
@@ -122,6 +143,7 @@ fn parse_rule_retract_target(application: &SyntaxApplication) -> Result<Entity, 
         }
     };
     uri.parse()
+        .map(Some)
         .map_err(|e: dialog_artifacts::DialogArtifactsError| {
             AnalyzeError::at(
                 AnalyzeErrorKind::InvalidSubjectUri {
@@ -725,7 +747,7 @@ mod tests {
         let statements = tree.analysis.statements();
         assert_eq!(statements.len(), 1);
         match &statements[0].statement {
-            tonk_core::transact::Statement::InstallEffect(effect) => effect.clone(),
+            tonk_core::transact::Statement::InstallEffect { effect, .. } => effect.clone(),
             other => panic!("expected Statement::InstallEffect, got {other:?}"),
         }
     }
@@ -810,6 +832,82 @@ rule!:\n\
         assert_eq!(
             only_installed_effect(&analysis).polarity(),
             EffectPolarity::Retract
+        );
+    }
+
+    /// `rule!:` with no `this:` lifts to an `Install` action whose
+    /// override entity is `None` — the install lands at the
+    /// content-derived `Effect::this`.
+    #[dialog_common::test]
+    async fn it_lifts_an_install_without_this_field() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
+
+        let doc = "\
+rule!:\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("analyze should succeed");
+        let statements = analysis.analysis.statements();
+        assert_eq!(statements.len(), 1);
+        let tonk_core::transact::Statement::InstallEffect { this, .. } = &statements[0].statement
+        else {
+            panic!("expected InstallEffect, got {:?}", statements[0].statement);
+        };
+        assert!(
+            this.is_none(),
+            "no this: in body, install entity stays None"
+        );
+    }
+
+    /// `rule!: this: <uri>, assert!: ..` pins the install at a
+    /// caller-chosen entity. The lifted `RuleAction::Install` carries
+    /// `this: Some(<uri>)` and the analyzer pushes a
+    /// `Statement::InstallEffect` whose `this` field matches.
+    #[dialog_common::test]
+    async fn it_lifts_an_install_at_chosen_entity() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
+
+        let doc = "\
+rule!:\n\
+\x20 this: id:my-counter\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("analyze should succeed");
+        let statements = analysis.analysis.statements();
+        assert_eq!(statements.len(), 1);
+        let tonk_core::transact::Statement::InstallEffect { this, .. } = &statements[0].statement
+        else {
+            panic!("expected InstallEffect, got {:?}", statements[0].statement);
+        };
+        let chosen: Entity = "id:my-counter".parse().expect("id URI parses");
+        assert_eq!(
+            this.as_ref(),
+            Some(&chosen),
+            "install-at entity should carry the user's `this: id:my-counter`"
         );
     }
 

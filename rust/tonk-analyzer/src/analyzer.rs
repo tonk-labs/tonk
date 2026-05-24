@@ -466,9 +466,25 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                     predicate = Predicate::Domain(a.predicate.source.clone());
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
                     match action {
-                        rule::RuleAction::Install(effect) => {
-                            this = ThisIntent::Derived;
-                            claims.push(Statement::InstallEffect(effect.clone()));
+                        rule::RuleAction::Install {
+                            effect,
+                            this: install_at,
+                        } => {
+                            // When the user pinned the install at a
+                            // URI (`rule!: this: <entity>`), surface
+                            // it on the application so the labelled
+                            // entity flows through the analysis tree;
+                            // otherwise the install lands at the
+                            // effect's content-derived `this()`.
+                            this = match install_at.clone() {
+                                Some(entity) => ThisIntent::Uri(entity),
+                                None => ThisIntent::Derived,
+                            };
+                            let effect = *effect;
+                            claims.push(Statement::InstallEffect {
+                                effect: effect.clone(),
+                                this: install_at,
+                            });
                             claim_labels.push(None);
                             rule_effect = Some(effect);
                         }
@@ -3535,7 +3551,7 @@ person!:
         );
         let last = statements.last().expect("at least one statement");
         assert!(
-            matches!(last.statement, Statement::InstallEffect(_)),
+            matches!(last.statement, Statement::InstallEffect { .. }),
             "the rule!: InstallEffect sorts after every assertion statement, \
              got {:?}",
             last.statement
@@ -3543,7 +3559,7 @@ person!:
         assert!(
             statements[..statements.len() - 1]
                 .iter()
-                .all(|s| !matches!(s.statement, Statement::InstallEffect(_))),
+                .all(|s| !matches!(s.statement, Statement::InstallEffect { .. })),
             "only the trailing statement is an InstallEffect"
         );
     }

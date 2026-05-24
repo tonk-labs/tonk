@@ -74,12 +74,21 @@ use crate::query_source::Source;
 /// string as a separate field rather than re-deriving it from the
 /// [`Effect`] inside the `Statement` impl.
 ///
-/// Construct via [`Rule::asserting`] for installs or
+/// Construct via [`Rule::asserting`] for content-addressed installs,
+/// [`Rule::asserting_at`] for installs at a caller-chosen entity, or
 /// [`Rule::retracting`] for deletions.
 #[derive(Debug, Clone)]
 pub struct Rule {
     /// The installed effect — head, body, polarity.
     pub effect: Effect,
+    /// The entity URI the `dialog.effect/*` claims are written
+    /// against. Defaults to [`Effect::this`] (content-derived) for
+    /// [`Rule::asserting`]; callers can override via
+    /// [`Rule::asserting_at`] to install at a stable, user-chosen
+    /// entity. On the retract path this is the entity whose stored
+    /// claims [`Retracting::resolve`] read, so the dissociate hits
+    /// the same EAVs that were written.
+    this: Entity,
     /// The exact source string carried on
     /// `dialog.effect/source`. Synthesised by
     /// [`Effect::source`](tonk_core::effect::Effect::source) on
@@ -93,7 +102,8 @@ pub struct Rule {
 }
 
 impl Rule {
-    /// Wrap a freshly-built [`Effect`] for an `assert` mutation.
+    /// Wrap a freshly-built [`Effect`] for an `assert` mutation
+    /// against the effect's content-derived entity ([`Effect::this`]).
     ///
     /// The carried `source` string is whatever the effect
     /// serialises to right now. That's exactly what
@@ -101,10 +111,21 @@ impl Rule {
     /// will write under the `dialog.effect/source` claim, so the
     /// pair is consistent by construction.
     pub fn asserting(effect: Effect) -> Self {
+        let this = effect.this();
+        Self::asserting_at(effect, this)
+    }
+
+    /// Wrap a freshly-built [`Effect`] for an `assert` mutation
+    /// against a caller-chosen entity. Lets the user install a rule
+    /// at a stable URI (`rule!: this: <entity>, ..`) instead of the
+    /// content-derived hash, so future retracts can name the entity
+    /// directly.
+    pub fn asserting_at(effect: Effect, entity: Entity) -> Self {
         let source = effect.source();
         let polarity = effect.polarity();
         Self {
             effect,
+            this: entity,
             source,
             polarity,
         }
@@ -120,15 +141,15 @@ impl Rule {
         Retracting { entity }
     }
 
-    /// The effect entity URI.
+    /// The entity URI the `dialog.effect/*` claims live under.
     pub fn this(&self) -> Entity {
-        self.effect.this()
+        self.this.clone()
     }
 }
 
 impl dialog_artifacts::Statement for Rule {
     fn assert(self, update: &mut impl dialog_artifacts::Update) {
-        let this = self.effect.this();
+        let this = self.this.clone();
         let description = self.effect.descriptor().description.clone();
         let conclusion = self.effect.conclusion();
         let attributes = self.effect.on_entities();
@@ -178,7 +199,7 @@ impl dialog_artifacts::Statement for Rule {
     }
 
     fn retract(self, update: &mut impl dialog_artifacts::Update) {
-        let this = self.effect.this();
+        let this = self.this.clone();
         let description = self.effect.descriptor().description.clone();
         let conclusion = self.effect.conclusion();
         let attributes = self.effect.on_entities();
@@ -294,6 +315,13 @@ impl Retracting {
 
         Ok(Some(Rule {
             effect,
+            // The stored claims live at `self.entity` regardless of
+            // what `effect.this()` would hash to from the rehydrated
+            // descriptor. Carry the resolved entity through so the
+            // dissociate targets the same EAVs that were written
+            // (including content-addressed installs where the two
+            // happen to coincide).
+            this: self.entity,
             source: source_string,
             polarity,
         }))
@@ -584,5 +612,95 @@ mod tests {
                 "missing dialog.effect/on claim for {attribute}"
             );
         }
+    }
+
+    /// `Rule::asserting_at` writes the storage-shape claims against
+    /// a caller-chosen entity — the marker, source, conclusion,
+    /// polarity, and `on` claims must all live at the override
+    /// entity rather than the effect's content-derived
+    /// [`Effect::this`]. Pins the rule-install-at-named-entity path.
+    #[dialog_common::test]
+    fn it_asserts_at_a_chosen_entity() {
+        use dialog_artifacts::{Changes, Instruction};
+
+        let inductive =
+            InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
+        let effect = Effect::asserting(inductive);
+        let derived = effect.this();
+        let chosen: Entity = "id:my-counter".parse().expect("id URI parses");
+        assert_ne!(
+            derived, chosen,
+            "test only makes sense when the override differs from the content hash"
+        );
+        let conclusion = effect.conclusion();
+        let on_set = effect.on_entities();
+
+        let mut changes = Changes::default();
+        ArtifactsStatement::assert(
+            Rule::asserting_at(effect.clone(), chosen.clone()),
+            &mut changes,
+        );
+
+        let asserted: Vec<_> = changes
+            .into_instructions()
+            .into_iter()
+            .filter_map(|inst| match inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => Some(a),
+                Instruction::Retract(_) => None,
+            })
+            .collect();
+
+        let marker = effect_marker_entity();
+        assert!(
+            asserted.iter().any(|c| {
+                c.the.to_string() == "dialog.meta/effect"
+                    && c.of == chosen
+                    && matches!(&c.is, Value::Entity(e) if *e == marker)
+            }),
+            "marker should hang off the chosen entity"
+        );
+        assert!(
+            asserted
+                .iter()
+                .any(|c| { c.the.to_string() == "dialog.effect/source" && c.of == chosen }),
+            "source claim should hang off the chosen entity"
+        );
+        assert!(
+            asserted.iter().any(|c| {
+                c.the.to_string() == "dialog.effect/conclusion"
+                    && c.of == chosen
+                    && matches!(&c.is, Value::Entity(e) if *e == conclusion)
+            }),
+            "conclusion claim should hang off the chosen entity"
+        );
+        assert!(
+            asserted.iter().any(|c| {
+                c.the.to_string() == "dialog.effect/polarity"
+                    && c.of == chosen
+                    && matches!(&c.is, Value::String(s) if s == "assert")
+            }),
+            "polarity claim should hang off the chosen entity"
+        );
+        for attribute in &on_set {
+            assert!(
+                asserted.iter().any(|c| {
+                    c.the.to_string() == "dialog.effect/on"
+                        && c.of == chosen
+                        && matches!(&c.is, Value::Entity(e) if *e == *attribute)
+                }),
+                "`on` claim for {attribute} should hang off the chosen entity"
+            );
+        }
+        // No claim lands at the content-derived entity.
+        assert!(
+            !asserted.iter().any(|c| c.of == derived),
+            "no claim should land at the content-derived entity when an override is set"
+        );
+        // The public accessor returns the override.
+        assert_eq!(
+            Rule::asserting_at(effect, chosen.clone()).this(),
+            chosen,
+            "Rule::this() reports the chosen entity"
+        );
     }
 }
