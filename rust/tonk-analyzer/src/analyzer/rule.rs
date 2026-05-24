@@ -207,6 +207,23 @@ pub(crate) async fn lift_rule<Env: QueryEnv>(
         dialog_premises.push(DialogPremise::Unless(Negation(proposition)));
     }
 
+    // ---- Reject trivially tautological assert rules ----
+    // A rule is trivially tautological when its `assert!:` head
+    // reads back what some positive `when:` premise already binds
+    // with the same variable in every slot. The rule produces no
+    // new information; the induce loop would spin against its
+    // own output. Retract-polarity rules that read the head
+    // concept are not tautological: they observe the fact and
+    // remove it (the mailbox-with-ack pattern).
+    if body.polarity == EffectPolarity::Assert
+        && let Some(reason) = trivially_tautological(&head_descriptor, &dialog_premises)
+    {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::RuleCompileFailed { reason },
+            application.range,
+        ));
+    }
+
     // ---- Compile through dialog's planner ----
     // Catches unbound-head-variable, no-unsatisfiable-premise,
     // and similar structural issues.
@@ -220,6 +237,63 @@ pub(crate) async fn lift_rule<Env: QueryEnv>(
     })?;
 
     Ok(Effect::new(inductive, body.polarity))
+}
+
+/// Return `Some(reason)` when the rule's head reads exactly back
+/// what some positive `when:` premise binds — the rule has no
+/// novel derivation. The check is intentionally narrow: it fires
+/// only when the head's concept matches the premise's concept and
+/// every head-side operand (every key in the head's `with:` map,
+/// plus `this`) is bound to a variable that the premise also
+/// binds under the same key with the same variable name.
+///
+/// Body premises that differ on the variable in any operand slot
+/// (e.g. head reads `?count` while premise binds `?prev`) escape
+/// this check — those rules legitimately derive new facts even if
+/// they happen to share a head concept with a premise.
+fn trivially_tautological(
+    head: &dialog_query::ConceptDescriptor,
+    premises: &[DialogPremise],
+) -> Option<String> {
+    use dialog_query::Term;
+    let head_entity = head.this();
+    for premise in premises {
+        let DialogPremise::Assert(Proposition::Concept(query)) = premise else {
+            continue;
+        };
+        if query.predicate.this() != head_entity {
+            continue;
+        }
+        // The head's "operand set" is `this` plus every key the
+        // head concept's `with:` map declares. For the rule to be
+        // tautological, the premise's terms must bind each of
+        // these to a variable with the same key name on both
+        // sides (i.e. `?this` reads as `?this` and writes as
+        // `?this`, not as a different variable).
+        let head_keys = std::iter::once("this".to_owned())
+            .chain(head.with().iter().map(|(name, _)| name.to_string()));
+        let mut all_match = true;
+        for key in head_keys {
+            let term = query.terms.get(&key);
+            let matches = matches!(
+                term,
+                Some(Term::Variable { name: Some(n), .. }) if n.as_str() == key.as_str()
+            );
+            if !matches {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            return Some(format!(
+                "rule is trivially tautological: the `assert!:` head reads back what the `when:` \
+                 premise `{}` already binds. Either drop the rule, or change one of the premise's \
+                 `where:` bindings so the head derives a different fact.",
+                head.this(),
+            ));
+        }
+    }
+    None
 }
 
 /// Extracted shape of a `rule!:` claim body. Built by walking the
@@ -993,6 +1067,73 @@ rule!:\n\
             ),
             "expected UnknownField(ping, wrong-field), got {err:?}"
         );
+    }
+
+    /// A `rule!:` whose body reads the head concept back with the
+    /// same variable in every slot is trivially tautological — it
+    /// would re-emit a fact the body just observed. Reject it at
+    /// compile time so the induce loop doesn't spin against its
+    /// own output.
+    #[dialog_common::test]
+    async fn it_rejects_trivially_tautological_rule() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        // Body's `where:` rebinds `this` and `tag` to variables
+        // with the same names the head's `assert!:` reads — the
+        // produced fact is identical to the read one.
+        let doc = "\
+rule!:\n\
+\x20 assert!: ping\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n";
+        let parsed = parse(doc);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
+        assert!(
+            matches!(
+                err.kind,
+                AnalyzeErrorKind::RuleCompileFailed { ref reason }
+                    if reason.contains("trivially tautological")
+            ),
+            "expected RuleCompileFailed(trivially tautological), got {err:?}"
+        );
+    }
+
+    /// A `rule!:` whose body reads the head concept but uses
+    /// *different* variables in some slot still derives novel
+    /// facts — don't reject it. The counter-increment shape
+    /// (head writes `?count`, body reads `?prev`) is the canonical
+    /// non-tautological case.
+    #[dialog_common::test]
+    async fn it_accepts_rule_with_distinct_variable_in_slot() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("counter", one_uint_field("io.gozala.counter", "count"))
+            .await;
+        fixture
+            .declare("increment", one_uint_field("io.gozala.increment", "by"))
+            .await;
+        // Head writes counter at `?count`; body reads counter at
+        // `?prev`. Different variable → not tautological.
+        let doc = "\
+rule!:\n\
+\x20 assert!: counter\n\
+\x20 when:\n\
+\x20   - assert: counter\n\
+\x20     where: { this: ?this, count: ?prev }\n\
+\x20   - assert: increment\n\
+\x20     where: { this: ?this, by: 1 }\n\
+\x20   - assert: math/sum\n\
+\x20     where: { of: ?prev, with: 1, is: ?count }\n";
+        let parsed = parse(doc);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        fixture
+            .analyze(&syntax)
+            .await
+            .expect("counter-increment shape is not tautological");
     }
 
     /// Build a `ConceptDescriptor` with one cardinality-one

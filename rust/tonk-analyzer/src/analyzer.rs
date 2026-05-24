@@ -1122,8 +1122,21 @@ mod tests {
         syntax: &Syntax,
         spec: &ConceptSpec,
     ) -> Result<Tree<Syntax>, AnalyzeError> {
+        analyze_with_concepts(syntax, std::slice::from_ref(spec)).await
+    }
+
+    /// Like [`analyze_with`] but registers a set of concepts —
+    /// useful for fixtures whose rule derives one concept from
+    /// another. The branch holds every spec before the analyzer
+    /// runs.
+    async fn analyze_with_concepts(
+        syntax: &Syntax,
+        specs: &[ConceptSpec],
+    ) -> Result<Tree<Syntax>, AnalyzeError> {
         let fixture = new_fixture().await;
-        fixture.concept_typed(spec.name, &spec.fields).await;
+        for spec in specs {
+            fixture.concept_typed(spec.name, &spec.fields).await;
+        }
         fixture.analyze(syntax).await
     }
 
@@ -3382,14 +3395,21 @@ person:
   this: ?p
   name: ?n
 rule!:
-  assert!: person
+  assert!: greeting
   when:
     - assert: person
-      where: { this: ?this, name: ?name }
+      where: { this: ?this, name: ?greeting }
 "#,
         );
-        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let tree = analyze_with(&syntax, &resolver).await.unwrap();
+        let tree = analyze_with_concepts(
+            &syntax,
+            &[
+                fixed_concept("person", &[("name", "io.gozala.person/name")]),
+                fixed_concept("greeting", &[("greeting", "io.gozala.greeting/greeting")]),
+            ],
+        )
+        .await
+        .unwrap();
 
         // The tree mirrors the document — one node per expression.
         assert_eq!(
@@ -3530,17 +3550,24 @@ pong!:
         let syntax = must_parse(
             r#"
 rule!:
-  assert!: person
+  assert!: greeting
   when:
     - assert: person
-      where: { this: ?this, name: ?name }
+      where: { this: ?this, name: ?greeting }
 person!:
   this: did:key:zStatementOrder
   name: "Alice"
 "#,
         );
-        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
-        let tree = analyze_with(&syntax, &resolver).await.unwrap();
+        let tree = analyze_with_concepts(
+            &syntax,
+            &[
+                fixed_concept("person", &[("name", "io.gozala.person/name")]),
+                fixed_concept("greeting", &[("greeting", "io.gozala.greeting/greeting")]),
+            ],
+        )
+        .await
+        .unwrap();
         let statements = tree.analysis.statements();
 
         // The rule is the first expression in source, but its
@@ -3611,12 +3638,16 @@ pong!:
     /// side.
     #[dialog_common::test]
     async fn it_reports_statement_and_query_presence() {
-        let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
+        let specs = [
+            fixed_concept("person", &[("name", "io.gozala.person/name")]),
+            fixed_concept("greeting", &[("greeting", "io.gozala.greeting/greeting")]),
+        ];
 
         // Query-only — no statements, has a query.
-        let query_only = analyze_with(&must_parse("person:\n  this: ?p\n  name: ?n\n"), &resolver)
-            .await
-            .unwrap();
+        let query_only =
+            analyze_with_concepts(&must_parse("person:\n  this: ?p\n  name: ?n\n"), &specs)
+                .await
+                .unwrap();
         assert!(
             !query_only.analysis.has_statements(),
             "a query-only document has no planned statements"
@@ -3628,12 +3659,12 @@ pong!:
 
         // Rule-only — has statements (the rule is a mutation),
         // no query.
-        let rule_only = analyze_with(
+        let rule_only = analyze_with_concepts(
             &must_parse(
-                "rule!:\n  assert!: person\n  when:\n    - assert: person\n      \
-                 where: { this: ?this, name: ?name }\n",
+                "rule!:\n  assert!: greeting\n  when:\n    - assert: person\n      \
+                 where: { this: ?this, name: ?greeting }\n",
             ),
-            &resolver,
+            &specs,
         )
         .await
         .unwrap();

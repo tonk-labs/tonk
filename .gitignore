@@ -60,3 +60,4 @@ references/
 tmp/**
 temp/**
 .plans/**
+.claude/scheduled_tasks.lock
