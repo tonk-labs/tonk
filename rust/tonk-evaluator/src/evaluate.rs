@@ -2285,6 +2285,104 @@ rule!:\n\
         Ok(())
     }
 
+    /// Same chain in a single commit: install the concepts + the
+    /// rule + assert a transient instance, all in one document. The
+    /// chain's induce pass (run inside `Evaluate::perform` since the
+    /// transaction-takes-induce refactor) fires the rule against
+    /// the just-applied transient and lands the durable head before
+    /// commit. The transient should not persist; the head should.
+    #[dialog_common::test]
+    async fn it_drives_fixpoint_from_one_document_with_rule_plus_transient() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // One document declares both concepts (ping transient, pong
+        // durable), installs the inductive rule, and asserts a ping
+        // instance. The whole thing should commit as a single
+        // observable step: pong lands, ping is gone.
+        let doc = "\
+concept!: &ping\n\
+\x20 transient:\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.ping/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+concept!: &pong\n\
+\x20 with:\n\
+\x20   tag:\n\
+\x20     the: io.gozala.pong/tag\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"tag\"\n\
+\n\
+rule!:\n\
+\x20 assert!: pong\n\
+\x20 when:\n\
+\x20   - assert: ping\n\
+\x20     where: { this: ?this, tag: ?tag }\n\
+\n\
+ping!:\n\
+\x20 this: did:key:zSingleCommitSubject\n\
+\x20 tag: \"hi\"\n";
+
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+
+        let subject: dialog_artifacts::Entity = "did:key:zSingleCommitSubject".parse()?;
+
+        let pong_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("io.gozala.pong/tag"))
+                    .of(Term::from(subject.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            pong_claims.len(),
+            1,
+            "rule should have produced a durable pong in the same commit; saw {pong_claims:?}"
+        );
+
+        let ping_claims: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("io.gozala.ping/tag"))
+                    .of(Term::from(subject))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            ping_claims.is_empty(),
+            "transient ping must not persist past the commit; saw {ping_claims:?}"
+        );
+
+        Ok(())
+    }
+
     /// `syntax.analyze(source).perform(env)` standalone — the
     /// first lifecycle entry point used on its own, with no
     /// `compile` or `evaluate` step. Installs a concept on the
