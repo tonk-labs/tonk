@@ -2614,7 +2614,7 @@ person:
 
         put_repo(&app, repo).await;
 
-        let body = "{\"mutations\":[]}";
+        let body = "{\"claims\":[]}";
         let response = app
             .oneshot(
                 Request::builder()
