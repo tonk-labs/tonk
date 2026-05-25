@@ -349,6 +349,11 @@ mod tests {
     use dialog_query::concept::query::ConceptQuery;
     use dialog_query::formula::Formula;
     use dialog_query::formula::math::Sum;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
     use dialog_query::parameters::Parameters;
     use dialog_query::premise::Premise as DialogPremise;
     use dialog_query::{Term, the};
@@ -447,7 +452,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn assert_and_retract_versions_have_distinct_entities() {
+    fn it_gives_assert_and_retract_versions_distinct_entities() {
         let rule = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
         let asserting = Effect::asserting(rule.clone());
         let retracting = Effect::retracting(rule);
@@ -457,7 +462,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn effect_entity_is_deterministic() {
+    fn it_derives_a_deterministic_effect_entity() {
         let rule_a = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
         let rule_b = InductiveRule::new(counter_head(), increment_body()).expect("rule compiles");
         let effect_a = Effect::asserting(rule_a);
