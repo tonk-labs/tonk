@@ -39,8 +39,10 @@ use dialog_query::{
     AttributeQuery, Cardinality, ConceptDescriptor, Output as _, Term, Type, attribute,
 };
 use serde_json::Value as Json;
+use tonk_evaluator::evaluate::{QueryMatchBlock, SyntaxEvaluateExt};
 use tonk_notation::parse;
-use tonk_schema::evaluate::{self, EvaluateResponse, QueryMatchBlock};
+
+use crate::output::EvaluateResponse;
 
 use crate::site::SlideSite;
 
@@ -293,7 +295,14 @@ concept:
 fn is_builtin_concept(name: &str) -> bool {
     matches!(
         name,
-        "attribute" | "concept" | "name" | "branch" | "replica" | "remote" | "tracking-branch"
+        "attribute"
+            | "concept"
+            | "name"
+            | "rule"
+            | "branch"
+            | "replica"
+            | "remote"
+            | "tracking-branch"
     )
 }
 
@@ -409,10 +418,21 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
                 .collect::<Vec<_>>()
         ));
     }
-    let outcome = evaluate::run(&syntax, &site.branch, &site.operator, true)
+    let revision = site.branch.revision();
+    let evaluated = syntax
+        .evaluate(site.branch.transaction())
+        .perform(&site.operator)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
-    Ok(outcome.response)
+    // schema-internal docs are pure-query; nothing is committed
+    // and the txn is dropped here. before == after.
+    Ok(EvaluateResponse {
+        revision_before: revision.clone(),
+        revision_after: revision,
+        matches_before: evaluated.matches.clone(),
+        matches_after: evaluated.matches,
+        commits: evaluated.commits,
+    })
 }
 
 /// Extract the matches block whose source-expression head label

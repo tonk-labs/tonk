@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::Serialize;
 use thiserror::Error;
-use tonk_schema::analyzer::AnalyzeError;
+use tonk_analyzer::analyzer::AnalyzeError;
 
 /// Errors that can occur in the Tonk worker.
 #[derive(Error, Debug)]

@@ -59,6 +59,7 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util"] }
+tonk-evaluator = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }

@@ -1,0 +1,41 @@
+[package]
+name = "tonk-evaluator"
+description = "Evaluation of analyzed Tonk notation documents against a repository"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[features]
+integration-tests = []
+web-integration-tests = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
+
+[dependencies]
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-query = { workspace = true }
+dialog-repository = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+tonk-analyzer = { workspace = true }
+tonk-core = { workspace = true }
+tonk-notation = { workspace = true }
+tonk-schema = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+dialog-common = { workspace = true, features = ["helpers"] }
+dialog-repository = { workspace = true, features = ["helpers"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }

@@ -88,9 +88,10 @@ pub enum DiagnosticSeverity {
 /// severity so the editor can color them differently.
 ///
 /// Distinct from [`AnalyzeError`] because diagnostics are
-/// *accumulated* into [`crate::transact::Analysis`] alongside a
-/// successful analysis, whereas [`AnalyzeError`] short-circuits
-/// the whole pass.
+/// *accumulated* into the analysis tree's
+/// [`DocumentAnalysis`][crate::analysis::DocumentAnalysis]
+/// alongside a successful analysis, whereas [`AnalyzeError`]
+/// short-circuits the whole pass.
 #[derive(Debug, Clone)]
 pub struct AnalyzeDiagnostic {
     /// What the diagnostic is about.
@@ -293,6 +294,35 @@ pub enum AnalyzeErrorKind {
         /// The field name the user wrote.
         field: String,
     },
+    /// A premise's `where:` names an operand the formula doesn't
+    /// have. Unlike concepts (whose schema lives on the branch),
+    /// formulas have a fixed operand set, so the analyzer can
+    /// list exactly what the formula accepts.
+    #[error(
+        "operand {operand:?} is not part of formula {formula:?} \
+         — valid operands: {valid}"
+    )]
+    UnknownFormulaOperand {
+        /// The formula whose operand schema we checked against.
+        formula: String,
+        /// The operand name the user wrote.
+        operand: String,
+        /// Comma-separated list of the formula's valid operands.
+        valid: String,
+    },
+    /// A formula premise omitted a required input operand. The
+    /// formula can't compute without it, so this is a hard error
+    /// rather than the auto-`?var` fill concept premises get.
+    #[error(
+        "formula {formula:?} is missing required operand {operand:?} \
+         — every input operand must be bound"
+    )]
+    MissingFormulaOperand {
+        /// The formula whose operand was missing.
+        formula: String,
+        /// The required operand name that wasn't bound.
+        operand: String,
+    },
     /// A bare-symbol reference in field-value position couldn't
     /// be resolved through the in-doc declarations or branch
     /// name table.
@@ -390,6 +420,15 @@ pub enum AnalyzeErrorKind {
         /// entity)" or "`?alice` is not bound by any query").
         selector_form: String,
     },
+    /// Dialog's [`InductiveRule::compile`](dialog_query::InductiveRule)
+    /// rejected the lifted rule — body planner failure, unbound
+    /// head variable, etc. The message preserves the dialog-level
+    /// detail so users see what's wrong.
+    #[error("rule compilation failed: {reason}")]
+    RuleCompileFailed {
+        /// Underlying message from dialog's compiler.
+        reason: String,
+    },
 }
 
 impl AnalyzeErrorKind {
@@ -408,6 +447,8 @@ impl AnalyzeErrorKind {
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
+            Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
+            Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",
             Self::UnknownBookmark { .. } => "E_UNKNOWN_BOOKMARK",
             Self::ClaimWithoutFields { .. } => "E_CLAIM_WITHOUT_FIELDS",
             Self::InvalidClaimAttribute { .. } => "E_INVALID_CLAIM_ATTRIBUTE",
@@ -415,6 +456,7 @@ impl AnalyzeErrorKind {
             Self::ResolverFailed { .. } => "E_RESOLVER_FAILED",
             Self::ProtectedUri { .. } => "E_PROTECTED_URI",
             Self::IncompleteAssertion { .. } => "E_INCOMPLETE_ASSERTION",
+            Self::RuleCompileFailed { .. } => "E_RULE_COMPILE_FAILED",
         }
     }
 }

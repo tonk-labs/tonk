@@ -9,7 +9,7 @@
 
 use lsp_types::{Position, Range};
 use tonk_notation::syntax::{
-    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Query, Syntax,
+    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Predicate, Syntax,
 };
 
 /// Editor decoration class names. The `class()` method returns
@@ -83,33 +83,46 @@ pub fn collect_marks(text: &str) -> Vec<Mark> {
 fn walk_syntax(syntax: &Syntax, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
     for expr in &syntax.expressions {
         match expr {
-            Expression::Query(q) => walk_query(q, text, line_starts, out),
-            Expression::Assertion(a) => walk_assertion(a, text, line_starts, out),
+            Expression::Query(q) => {
+                walk_application(q, /*effectful=*/ false, text, line_starts, out)
+            }
+            Expression::Claim(Effectful { anchor, inner }) => {
+                walk_application(inner, /*effectful=*/ true, text, line_starts, out);
+                if let Some(anchor) = anchor {
+                    mark_anchor(anchor, line_starts, out);
+                }
+            }
         }
     }
 }
 
-fn walk_query(q: &Query, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
-    mark_head(&q.head, text, line_starts, out);
-    for field in &q.fields {
+fn walk_application(
+    app: &Application,
+    effectful: bool,
+    text: &str,
+    line_starts: &[usize],
+    out: &mut Vec<Mark>,
+) {
+    if effectful {
+        mark_head(&app.predicate, text, line_starts, out);
+    } else {
+        // Queries get only the URI-entity mark, not the Effect mark.
+        if let HeadName::Uri(_) = app.predicate.name
+            && let Some((from, to)) = range_to_bytes(&app.predicate.range, line_starts)
+        {
+            out.push(Mark {
+                from,
+                to,
+                decoration: Decoration::Entity,
+            });
+        }
+    }
+    for field in &app.fields {
         walk_field(field, text, line_starts, out);
     }
 }
 
-fn walk_assertion(a: &Assertion, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
-    mark_head(&a.head, text, line_starts, out);
-    if let Some(anchor) = &a.anchor {
-        mark_anchor(anchor, line_starts, out);
-    }
-    for field in &a.fields {
-        walk_field(field, text, line_starts, out);
-    }
-}
-
-fn mark_head(head: &Head, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
-    if !head.effect {
-        return;
-    }
+fn mark_head(head: &Predicate, text: &str, line_starts: &[usize], out: &mut Vec<Mark>) {
     let Some((from, to)) = range_to_bytes(&head.range, line_starts) else {
         return;
     };
@@ -193,6 +206,17 @@ fn walk_value(
         FieldValue::Nested(fields) => {
             for field in fields {
                 walk_field(field, text, line_starts, out);
+            }
+        }
+        FieldValue::Premises(premises) => {
+            // A premise's `where:` bindings paint as ordinary
+            // field values; the `assert: <concept>` key paints as
+            // a key. The premise mapping's own range is its
+            // structure, no extra mark for the list itself.
+            for premise in premises {
+                for binding in &premise.bindings {
+                    walk_field(binding, text, line_starts, out);
+                }
             }
         }
         FieldValue::Literal(_) => {}

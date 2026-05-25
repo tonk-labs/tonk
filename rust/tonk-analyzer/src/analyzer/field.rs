@@ -6,13 +6,14 @@
 use std::collections::HashSet;
 
 use dialog_artifacts::{Entity, Value};
-use dialog_query::{Term, attribute::The as AttributeThe};
+use dialog_query::{Term, Type, attribute::The as AttributeThe};
 use tonk_notation::{FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use super::resolver::Resolver;
 use super::scope::Scope;
-use crate::transact::{Analysis, Application};
+use crate::analyzer::Working;
+use tonk_schema::concept::QueryEnv;
+use tonk_schema::transact::Application;
 
 /// Reserved body field names that don't correspond to schema
 /// fields: `this:` (entity selection), `..:` (rest-of-attributes
@@ -28,16 +29,26 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// otherwise stay as `Term::Variable` so planning can substitute
 /// them later; literals become `Term::Constant`; blanks become
 /// `Term::blank()`.
-pub(crate) async fn field_value_to_term<R: Resolver>(
+///
+/// `expected` carries the field's declared [`Type`] (from the
+/// concept's attribute descriptor) when known. It disambiguates
+/// integer literals: the notation parser always produces a signed
+/// `Scalar::Integer` for a non-negative literal like `1`, so a
+/// field declared `as: unsigned-integer` needs schema-directed
+/// coercion. Pass `None` for slots with no declared type (`this`,
+/// claim attributes, formula operands).
+pub(crate) async fn field_value_to_term<Env: QueryEnv>(
     field_name: &str,
     value: &FieldValue,
     range: lsp_types::Range,
-    scope: &Scope<'_, R>,
-    analysis: &Analysis,
+    scope: &Scope<'_>,
+    env: &Env,
+    analysis: &Working,
+    expected: Option<Type>,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match value {
         FieldValue::Literal(scalar) => {
-            Term::Constant(scalar_to_value(scalar).map_err(|e| e.with_range(range))?)
+            Term::Constant(scalar_to_value(scalar, expected).map_err(|e| e.with_range(range))?)
         }
         FieldValue::Variable(name) => {
             // If this variable was derived in Phase 1, substitute
@@ -59,25 +70,29 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
             //   3. Branch entity with `dialog.meta/name = name`.
             if let Some(entity) = scope.lookup_entity(name) {
                 Term::Constant(Value::Entity(entity))
-            } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::ResolverFailed {
-                        context: format!("symbol {name}"),
-                        reason: e.message,
-                    },
-                    range,
-                )
-            })? {
+            } else if let Some(resolved) =
+                scope.resolve_attribute(name, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.to_string(),
+                        },
+                        range,
+                    )
+                })?
+            {
                 Term::Constant(Value::Entity(resolved.entity))
-            } else if let Some(entity) = scope.resolve_named_entity(name).await.map_err(|e| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::ResolverFailed {
-                        context: format!("symbol {name}"),
-                        reason: e.message,
-                    },
-                    range,
-                )
-            })? {
+            } else if let Some(entity) =
+                scope.resolve_named_entity(name, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.to_string(),
+                        },
+                        range,
+                    )
+                })?
+            {
                 Term::Constant(Value::Entity(entity))
             } else {
                 return Err(AnalyzeError::at(
@@ -124,13 +139,46 @@ pub(crate) async fn field_value_to_term<R: Resolver>(
                 range,
             ));
         }
+        FieldValue::Premises(_) => {
+            // Premises only make sense as the value of `when:` /
+            // `unless:` inside a `rule!:` claim body — the rule
+            // lift consumes them there before this generic
+            // field-to-term path runs. Reaching this arm means
+            // the user put `when:` / `unless:` somewhere it does
+            // not belong.
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnsupportedFieldValue {
+                    field: field_name.into(),
+                    form: "premise list (only valid under `when:` / `unless:` inside a `rule!:` body)",
+                },
+                range,
+            ));
+        }
     })
 }
 
-pub(crate) fn scalar_to_value(scalar: &Scalar) -> Result<Value, AnalyzeError> {
+/// Translate a parsed [`Scalar`] into a [`Value`].
+///
+/// `expected` carries the field's declared [`Type`] when known.
+/// The notation parser always parses a non-negative integer
+/// literal as a signed `Scalar::Integer` (it falls back to
+/// unsigned only for values too large for `i128`). When the
+/// declared type is `Type::UnsignedInt` and the literal is
+/// non-negative, coerce to `Value::UnsignedInt`. Every other case
+/// keeps the parsed scalar's natural mapping: a negative
+/// `Integer` stays signed, an explicit `UnsignedInteger` stays
+/// unsigned, and a `None` or non-integer `expected` changes
+/// nothing.
+pub(crate) fn scalar_to_value(
+    scalar: &Scalar,
+    expected: Option<Type>,
+) -> Result<Value, AnalyzeError> {
     Ok(match scalar {
         Scalar::String(s) => Value::String(s.clone()),
         Scalar::Boolean(b) => Value::Boolean(*b),
+        Scalar::Integer(i) if *i >= 0 && expected == Some(Type::UnsignedInt) => {
+            Value::UnsignedInt(*i as u128)
+        }
         Scalar::Integer(i) => Value::SignedInt(*i),
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
@@ -181,7 +229,7 @@ pub(crate) fn validate_claim_attribute(
 
 pub(crate) fn collect_unbound_variables(
     application: &Application,
-    analysis: &Analysis,
+    analysis: &Working,
     out: &mut HashSet<String>,
 ) {
     for name in application.bindings() {

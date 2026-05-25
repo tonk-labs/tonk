@@ -7,13 +7,14 @@ use dialog_artifacts::{Entity, Value};
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, Parameters, Term, concept::query::ConceptQuery,
 };
-use tonk_notation::{Assertion, FieldValue, Scalar};
+use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
-use super::resolver::{ResolvedAttribute, Resolver};
 use super::scope::Scope;
-use crate::transact::{Application, ThisIntent};
+use tonk_schema::concept::QueryEnv;
+use tonk_schema::resolution::AttributeDefinition;
+use tonk_schema::transact::{Application, ThisIntent};
 
 /// Cached output of building an `attribute!` or `concept!` head
 /// into its `Application`. Phase 1 builds these so the entity
@@ -41,7 +42,9 @@ pub(crate) struct AttributeBody {
     pub entity: Entity,
 }
 
-pub(crate) fn parse_attribute_body(assertion: &Assertion) -> Result<AttributeBody, AnalyzeError> {
+pub(crate) fn parse_attribute_body(
+    assertion: &SyntaxApplication,
+) -> Result<AttributeBody, AnalyzeError> {
     parse_attribute_fields(&assertion.fields)
 }
 
@@ -158,6 +161,12 @@ pub(crate) fn parse_attribute_fields(
 pub(crate) struct ConceptBody {
     pub descriptor: ConceptDescriptor,
     pub entity: Entity,
+    /// `true` when the body carried the `transient:` tag (bare
+    /// key with no value, or the explicit `transient: true`).
+    /// Drives emission of the `dialog.concept/transient` marker
+    /// fact in [`concept_application`] so the reactor's effects
+    /// loop classifies this concept's facts as transient.
+    pub transient: bool,
     /// Attributes defined inline in the `with:` map (as opposed
     /// to referenced by name / URI). Each carries the descriptor
     /// needed to emit `dialog.attribute/{id,type,cardinality}`
@@ -166,12 +175,14 @@ pub(crate) struct ConceptBody {
     pub inline_attributes: Vec<AttributeBody>,
 }
 
-pub(crate) async fn parse_concept_body<R: Resolver>(
-    assertion: &Assertion,
-    scope: &Scope<'_, R>,
+pub(crate) async fn parse_concept_body<Env: QueryEnv>(
+    assertion: &SyntaxApplication,
+    scope: &Scope<'_>,
+    env: &Env,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
-    let mut with_fields: Vec<(String, ResolvedAttribute)> = Vec::new();
+    let mut transient: bool = false;
+    let mut with_fields: Vec<(String, AttributeDefinition)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
     for field in &assertion.fields {
         // `this:` and `..:` are reserved meta-keys handled by
@@ -183,6 +194,9 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
         match field.name.as_str() {
             "description" => {
                 description = Some(require_string_description(field)?);
+            }
+            "transient" => {
+                transient = parse_transient_tag(field)?;
             }
             "with" => {
                 let FieldValue::Nested(inner) = &field.value else {
@@ -203,14 +217,15 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
                         // for emission as a separate meta-head
                         // plan.
                         let plan = parse_attribute_fields(attr_fields)?;
-                        let resolved = ResolvedAttribute {
+                        let resolved = AttributeDefinition {
                             entity: plan.entity.clone(),
                             descriptor: plan.descriptor.clone(),
                         };
                         with_fields.push((sub.name.clone(), resolved));
                         inline_attributes.push(plan);
                     } else {
-                        let resolved = resolve_concept_field(&sub.name, &sub.value, scope).await?;
+                        let resolved =
+                            resolve_concept_field(&sub.name, &sub.value, scope, env).await?;
                         with_fields.push((sub.name.clone(), resolved));
                     }
                 }
@@ -253,22 +268,24 @@ pub(crate) async fn parse_concept_body<R: Resolver>(
     Ok(ConceptBody {
         descriptor,
         entity,
+        transient,
         inline_attributes,
     })
 }
 
-async fn resolve_concept_field<R: Resolver>(
+async fn resolve_concept_field<Env: QueryEnv>(
     field_name: &str,
     value: &FieldValue,
-    scope: &Scope<'_, R>,
-) -> Result<ResolvedAttribute, AnalyzeError> {
+    scope: &Scope<'_>,
+    env: &Env,
+) -> Result<AttributeDefinition, AnalyzeError> {
     match value {
         FieldValue::Variable(name) => scope
-            .resolve_attribute(name)
+            .resolve_attribute(name, env)
             .await
             .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("variable ?{name}"),
-                reason: e.message,
+                reason: e.to_string(),
             })?
             .ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
@@ -278,11 +295,11 @@ async fn resolve_concept_field<R: Resolver>(
                 .into()
             }),
         FieldValue::Symbol(name) => scope
-            .resolve_attribute(name)
+            .resolve_attribute(name, env)
             .await
             .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                 context: format!("symbol {name}"),
-                reason: e.message,
+                reason: e.to_string(),
             })?
             .ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
@@ -301,11 +318,11 @@ async fn resolve_concept_field<R: Resolver>(
                         }
                     })?;
             scope
-                .resolve_attribute_by_entity(&entity)
+                .resolve_attribute_by_entity(&entity, env)
                 .await
                 .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                     context: format!("attribute entity {uri}"),
-                    reason: e.message,
+                    reason: e.to_string(),
                 })?
                 .ok_or_else(|| {
                     AnalyzeErrorKind::UnknownBookmark {
@@ -390,6 +407,7 @@ pub(crate) fn concept_application(
     descriptor: &ConceptDescriptor,
     entity: &Entity,
     name: Option<String>,
+    transient: bool,
 ) -> Application {
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
@@ -417,6 +435,21 @@ pub(crate) fn concept_application(
         terms.insert(
             "description".into(),
             Term::Constant(Value::String(desc.to_owned())),
+        );
+    }
+    // `transient: true` adds a `(this, dialog.concept/transient,
+    // db:transient)` marker fact. The synthesized
+    // `concept_schema` includes a matching field; durable
+    // concepts skip the term so no claim is emitted (the
+    // emitter ignores fields whose term is absent).
+    if transient {
+        terms.insert(
+            "transient".into(),
+            Term::Constant(Value::Entity(
+                "db:transient"
+                    .parse()
+                    .expect("`db:transient` is a valid entity URI"),
+            )),
         );
     }
     Application::Concept {
@@ -488,6 +521,14 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
             "cardinality": "one",
         }),
     );
+    with.insert(
+        "transient".into(),
+        serde_json::json!({
+            "the": "dialog.concept/transient",
+            "as": "Entity",
+            "cardinality": "one",
+        }),
+    );
     serde_json::from_value(serde_json::json!({ "with": with }))
         .expect("concept schema is well-formed")
 }
@@ -541,7 +582,10 @@ fn stringify_simple_value(field: &tonk_notation::Field) -> Result<String, Analyz
         FieldValue::Literal(other) => scalar_to_string(other)?,
         FieldValue::Uri(s) => s.clone(),
         FieldValue::Symbol(s) => s.clone(),
-        FieldValue::Variable(_) | FieldValue::Blank | FieldValue::Nested(_) => {
+        FieldValue::Variable(_)
+        | FieldValue::Blank
+        | FieldValue::Nested(_)
+        | FieldValue::Premises(_) => {
             return Err(AnalyzeErrorKind::UnsupportedFieldValue {
                 field: field.name.clone(),
                 form: "non-literal (attribute definitions take literals)",
@@ -571,6 +615,36 @@ fn require_string_description(field: &tonk_notation::Field) -> Result<String, An
         .into()),
         _ => Err(AnalyzeErrorKind::InvalidAttributeBody {
             reason: "`description:` must be a string".into(),
+        }
+        .into()),
+    }
+}
+
+/// Interpret a `transient:` field on a `concept!:` body as a
+/// presence tag. The bare key (`transient:` with no value)
+/// parses as a YAML null and tags the concept as transient.
+/// `transient: true` is also accepted for the user who reaches
+/// for the explicit form. `transient: false` is rejected —
+/// omit the key for durable concepts (the default) so the
+/// surface stays uniform: presence means transient, absence
+/// means durable.
+fn parse_transient_tag(field: &tonk_notation::Field) -> Result<bool, AnalyzeError> {
+    match &field.value {
+        // `transient:` (no value) parses as Null. Treat the
+        // bare key as the tag.
+        FieldValue::Literal(Scalar::Null) => Ok(true),
+        FieldValue::Literal(Scalar::Boolean(true)) => Ok(true),
+        FieldValue::Literal(Scalar::Boolean(false)) => Err(AnalyzeErrorKind::InvalidConceptBody {
+            reason: "`transient: false` isn't meaningful — omit the `transient:` \
+                         field entirely to declare a durable concept (the default)"
+                .into(),
+        }
+        .into()),
+        _ => Err(AnalyzeErrorKind::InvalidConceptBody {
+            reason: "`transient:` is a tag — write `transient:` (bare key, no value) \
+                     to mark the concept transient, or omit the key for a durable \
+                     concept (the default)"
+                .into(),
         }
         .into()),
     }

@@ -26,6 +26,7 @@ use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Select};
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
 use dialog_effects::archive::{Get, Put};
+use dialog_effects::authority::Identify;
 use dialog_effects::memory::Resolve;
 use dialog_query::concept::descriptor::ConceptConclusion;
 use dialog_query::concept::query::ConceptQuery;
@@ -34,13 +35,15 @@ use dialog_query::{
     Application, Claim, EvaluationError, Match, Output as _, Parameters, Query, Selection, Term,
     the, try_stream,
 };
-use dialog_repository::{Branch, RemoteSite};
+use dialog_repository::RemoteSite;
 use thiserror::Error;
 
-pub use dialog_query::{AttributeDescriptor, ConceptDescriptor};
+pub use dialog_query::{AttributeDescriptor, ConceptDescriptor, Type};
 
 use crate::builtin::concept_registry;
-use crate::meta::AnonymousAttribute;
+use crate::query_source::Source;
+use crate::rule_query::{AnonymousRuleQuery, rule_of_rule_descriptor};
+use tonk_core::meta::AnonymousAttribute;
 
 /// Domain prefix for required-field claims.
 const WITH_DOMAIN: &str = "dialog.concept.with";
@@ -143,14 +146,15 @@ pub enum ConceptLookupError {
 }
 
 impl ConceptLookupError {
-    fn query(message: impl Into<String>) -> Self {
+    /// Wrap an underlying query failure as a [`ConceptLookupError`].
+    pub fn query(message: impl Into<String>) -> Self {
         Self::Query {
             message: message.into(),
         }
     }
 }
 
-/// Standard environment bound for any [`Branch::query`]
+/// Standard environment bound for any `Branch::query`
 /// invocation. Mirrors what dialog-repository's `SelectQuery`
 /// requires; surfacing it as a single trait alias keeps the
 /// builder signatures readable.
@@ -158,6 +162,7 @@ pub trait QueryEnv:
     Provider<Get>
     + Provider<Put>
     + Provider<Resolve>
+    + Provider<Identify>
     + Provider<Fork<RemoteSite, Get>>
     + Provider<Fork<RemoteSite, Resolve>>
     + ConditionalSync
@@ -169,6 +174,7 @@ impl<T> QueryEnv for T where
     T: Provider<Get>
         + Provider<Put>
         + Provider<Resolve>
+        + Provider<Identify>
         + Provider<Fork<RemoteSite, Get>>
         + Provider<Fork<RemoteSite, Resolve>>
         + ConditionalSync
@@ -212,13 +218,13 @@ impl ConceptByName {
     ///    field-list reconstruction.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Concept>, ConceptLookupError> {
-        let Some(target) = lookup_named_entity(&self.name, branch, env).await? else {
+        let Some(target) = lookup_named_entity(&self.name, source, env).await? else {
             return Ok(None);
         };
-        Concept::by_entity(target).resolve(branch, env).await
+        Concept::by_entity(target).resolve(source, env).await
     }
 }
 
@@ -233,15 +239,14 @@ impl ConceptByEntity {
     /// referenced [`AttributeDescriptor`].
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Concept>, ConceptLookupError> {
         // Pull every claim where `(*entity, the, value)` matches
         // — `the` is left as a variable so the engine returns the
         // full set; we filter to the `dialog.concept.with/*`
         // namespace in Rust.
-        let raw_claims: Vec<dialog_query::Claim> = branch
-            .query()
+        let raw_claims: Vec<dialog_query::Claim> = source
             .select(dialog_query::AttributeQuery::from(
                 Term::<dialog_query::attribute::The>::var("the")
                     .of(Term::from(self.entity.clone()))
@@ -262,7 +267,7 @@ impl ConceptByEntity {
                 continue;
             };
             let Some(facts) = AttributeByEntity::new(attribute_entity.clone())
-                .resolve(branch, env)
+                .resolve(source, env)
                 .await?
             else {
                 return Err(ConceptLookupError::MissingAttribute {
@@ -317,11 +322,10 @@ impl AttributeByEntity {
     /// and reconstruct the descriptor.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        let facts: Vec<AnonymousAttribute> = branch
-            .query()
+        let facts: Vec<AnonymousAttribute> = source
             .select(Query::<AnonymousAttribute> {
                 this: Term::from(self.entity.clone()),
                 id: Term::var("id"),
@@ -369,13 +373,13 @@ impl AttributeByName {
     /// reconstruction.
     pub async fn resolve<Env: QueryEnv>(
         self,
-        branch: &Branch,
+        source: &Source<'_>,
         env: &Env,
     ) -> Result<Option<Attribute>, ConceptLookupError> {
-        let Some(target) = lookup_named_entity(&self.name, branch, env).await? else {
+        let Some(target) = lookup_named_entity(&self.name, source, env).await? else {
             return Ok(None);
         };
-        AttributeByEntity::new(target).resolve(branch, env).await
+        AttributeByEntity::new(target).resolve(source, env).await
     }
 }
 
@@ -472,6 +476,128 @@ impl Statement for AnonymousConcept {
     }
 }
 
+/// Marker entity asserted as the value of
+/// `dialog.concept/transient` on every transient concept. Same
+/// role as [`concept_marker_entity`] for the
+/// `dialog.meta/concept` marker: gives queries a known triple
+/// to start from when looking for all transient concepts on a
+/// branch.
+fn transient_marker_entity() -> Entity {
+    "db:transient"
+        .parse()
+        .expect("`db:transient` is a valid entity URI")
+}
+
+/// A concept declared as **transient**: facts of this concept
+/// exist for the duration of one commit cycle and are stripped
+/// from the persistable delta before the branch state is
+/// written. The reactor's effect evaluator reads these facts
+/// during fixpoint and they're gone next round.
+///
+/// Mental model in Dedalus terms: transient concepts have no
+/// implicit persistence rule applied. Used to model abilities,
+/// commands, messages, and other event-shaped data.
+///
+/// Storage: emits everything [`AnonymousConcept`] emits
+/// (concept marker, attribute field claims, optional
+/// description), plus a `dialog.concept/transient: true` marker
+/// triple that the reactor reads at commit time to decide which
+/// facts to strip.
+#[derive(Debug, Clone)]
+pub struct TransientConcept {
+    /// `descriptor.this()` — same content-derived entity as
+    /// would be produced by an [`AnonymousConcept`] over the
+    /// same descriptor. Two concepts with identical attribute
+    /// shapes share an entity URI; the transient marker is what
+    /// distinguishes them at the storage layer.
+    pub this: Entity,
+    /// The full descriptor — same shape as a non-transient
+    /// concept.
+    pub descriptor: ConceptDescriptor,
+}
+
+impl TransientConcept {
+    /// Wrap a descriptor as a transient concept.
+    pub fn new(descriptor: ConceptDescriptor) -> Self {
+        Self {
+            this: descriptor.this(),
+            descriptor,
+        }
+    }
+}
+
+impl TransientConcept {
+    /// Look up whether a concept entity is marked transient on
+    /// a branch. Returns `true` iff
+    /// `(<entity>, dialog.concept/transient, db:transient)`
+    /// holds; `false` if the marker is absent.
+    pub fn is_transient(entity: Entity) -> IsTransient {
+        IsTransient { entity }
+    }
+}
+
+/// Builder for [`TransientConcept::is_transient`]. Resolves the
+/// `dialog.concept/transient` marker claim and answers a yes/no.
+pub struct IsTransient {
+    entity: Entity,
+}
+
+impl IsTransient {
+    /// Resolve against a branch.
+    pub async fn resolve<Env: QueryEnv>(
+        self,
+        source: &Source<'_>,
+        env: &Env,
+    ) -> Result<bool, ConceptLookupError> {
+        let marker: Entity = transient_marker_entity();
+        let claims: Vec<dialog_query::Claim> = source
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(meta_attr_typed(
+                    "dialog.concept",
+                    "transient",
+                ))
+                .of(Term::from(self.entity))
+                .is(Term::from(marker)),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                ConceptLookupError::query(format!("transient marker query failed: {e:?}"))
+            })?;
+        Ok(!claims.is_empty())
+    }
+}
+
+/// Same as [`meta_attr`] but returns the typed
+/// [`dialog_query::attribute::The`] form required by the query
+/// builder rather than the runtime [`ArtifactsAttribute`].
+fn meta_attr_typed(domain: &str, name: &str) -> dialog_query::attribute::The {
+    format!("{domain}/{name}")
+        .parse()
+        .expect("dialog meta-attribute names should always be valid")
+}
+
+impl Statement for TransientConcept {
+    fn assert(self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::associate);
+        update.associate_unique(
+            meta_attr("dialog.concept", "transient"),
+            self.this,
+            Value::Entity(transient_marker_entity()),
+        );
+    }
+
+    fn retract(self, update: &mut impl Update) {
+        emit_concept_facts(&self.this, &self.descriptor, update, Update::dissociate);
+        update.dissociate(
+            meta_attr("dialog.concept", "transient"),
+            self.this,
+            Value::Entity(transient_marker_entity()),
+        );
+    }
+}
+
 // `Predicate` + `Concept` so `AnonymousConcept` plugs into the
 // same query machinery as a `#[derive(Concept)]` type. The
 // `Application` is [`AnonymousConceptQuery`] — a custom query
@@ -549,6 +675,7 @@ impl Application for AnonymousConceptQuery {
                 let this_term = app.terms.get("this").cloned();
                 let name_term = app.terms.get("name").cloned();
                 let source_term = app.terms.get("source").cloned();
+                let transient_term = app.terms.get("transient").cloned();
 
                 // Resolve filters from constant terms or from
                 // upstream-bound variables.
@@ -579,9 +706,16 @@ impl Application for AnonymousConceptQuery {
                         m.bind(t, dialog_query::Value::String((*builtin_name).to_string()))?;
                     }
                     if let Some(ref t) = source_term {
-                        let json = serde_json::to_string(&resolved.descriptor)
+                        let json = serde_json::to_string(resolved.descriptor.concept())
                             .map_err(|e| EvaluationError::Store(e.to_string()))?;
                         m.bind(t, dialog_query::Value::String(json))?;
+                    }
+                    // Built-ins are always durable. Bind `false`
+                    // only when the caller asked for `transient`
+                    // (i.e. provided a variable term to project
+                    // into); a missing term means "don't project".
+                    if let Some(ref t) = transient_term {
+                        m.bind(t, dialog_query::Value::Boolean(false))?;
                     }
                     yield m;
                 }
@@ -598,6 +732,23 @@ impl Application for AnonymousConceptQuery {
                     .perform(env)
                     .try_vec()
                     .await?;
+
+                // Bulk-load the set of transient-marked entities
+                // once per evaluation pass so the per-row check is
+                // a HashSet lookup, not a fresh query. Only fetch
+                // when the caller actually asked for `transient`.
+                let transient_entities: HashSet<Entity> = if transient_term.is_some() {
+                    let transient_marker = transient_marker_entity();
+                    let transient_claims: Vec<Claim> = the!("dialog.concept/transient")
+                        .of(Term::<Entity>::var("__concept_query_transient_this"))
+                        .is(transient_marker)
+                        .perform(env)
+                        .try_vec()
+                        .await?;
+                    transient_claims.into_iter().map(|c| c.of).collect()
+                } else {
+                    HashSet::new()
+                };
 
                 for claim in claims {
                     let entity = claim.of.clone();
@@ -632,6 +783,10 @@ impl Application for AnonymousConceptQuery {
                         let json = serde_json::to_string(&descriptor)
                             .map_err(|e| EvaluationError::Store(e.to_string()))?;
                         m.bind(t, dialog_query::Value::String(json))?;
+                    }
+                    if let Some(ref t) = transient_term {
+                        let is_transient = transient_entities.contains(&entity);
+                        m.bind(t, dialog_query::Value::Boolean(is_transient))?;
                     }
                     yield m;
                 }
@@ -678,10 +833,11 @@ pub fn concept_of_concept_descriptor() -> &'static ConceptDescriptor {
         serde_json::from_value(serde_json::json!({
             "description": "Every concept asserted on a branch.",
             "with": {
-                "concept":     { "the": "dialog.meta/concept",     "as": "Entity", "cardinality": "one" },
-                "name":        { "the": "dialog.meta/name",        "as": "Text",   "cardinality": "one" },
-                "description": { "the": "dialog.meta/description", "as": "Text",   "cardinality": "one" },
-                "source":      { "the": "dialog.meta/source",      "as": "Text",   "cardinality": "one" }
+                "concept":     { "the": "dialog.meta/concept",     "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "dialog.meta/name",        "as": "Text",    "cardinality": "one" },
+                "description": { "the": "dialog.meta/description", "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "dialog.meta/source",      "as": "Text",    "cardinality": "one" },
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }))
         .expect("concept-of-concept descriptor is well-formed")
@@ -716,16 +872,48 @@ pub enum QueryPlan {
     Standard(ConceptQuery),
     /// Concept-of-concept enumeration via [`AnonymousConceptQuery`].
     AnonymousConcept(AnonymousConceptQuery),
+    /// Rule-of-rule enumeration via [`AnonymousRuleQuery`].
+    AnonymousRule(AnonymousRuleQuery),
+}
+
+/// Convert an [`Application`](crate::transact::Application) into
+/// the [`QueryPlan`] it should be evaluated as.
+///
+/// `Concept` carries a [`ConceptQuery`] directly; `Domain`
+/// synthesises one from its parameter map. `Rule` has no read-side
+/// projection — rules are only mutated, never queried by predicate
+/// application — so this panics if a `Rule` application reaches it.
+pub fn application_to_plan(application: crate::transact::Application) -> QueryPlan {
+    use crate::transact::Application;
+    match application {
+        Application::Concept { query, .. } => QueryPlan::from(query),
+        Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
+        Application::Rule { .. } => panic!(
+            "Application::Rule has no QueryPlan projection — \
+             rules are write-only via Statement::Assert/Retract"
+        ),
+    }
 }
 
 impl From<ConceptQuery> for QueryPlan {
     fn from(query: ConceptQuery) -> Self {
         if &query.predicate.this() == concept_of_concept_entity() {
             QueryPlan::AnonymousConcept(AnonymousConceptQuery::new(query.terms))
+        } else if &query.predicate.this() == rule_of_rule_entity() {
+            QueryPlan::AnonymousRule(AnonymousRuleQuery::new(query.terms))
         } else {
             QueryPlan::Standard(query)
         }
     }
+}
+
+/// Cached `this()` of [`rule_of_rule_descriptor`] — the dispatch
+/// sentinel for [`QueryPlan::from`] that routes a `rule:` head to
+/// [`AnonymousRuleQuery`]. Computing it once avoids re-hashing
+/// the descriptor on every query.
+fn rule_of_rule_entity() -> &'static Entity {
+    static ENTITY: std::sync::OnceLock<Entity> = std::sync::OnceLock::new();
+    ENTITY.get_or_init(|| rule_of_rule_descriptor().this())
 }
 
 impl Application for QueryPlan {
@@ -749,6 +937,12 @@ impl Application for QueryPlan {
                         yield each?;
                     }
                 }
+                QueryPlan::AnonymousRule(q) => {
+                    let stream = q.evaluate(selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
             }
         }
     }
@@ -757,6 +951,7 @@ impl Application for QueryPlan {
         match self {
             QueryPlan::Standard(q) => Application::realize(q, source),
             QueryPlan::AnonymousConcept(q) => Application::realize(q, source),
+            QueryPlan::AnonymousRule(q) => Application::realize(q, source),
         }
     }
 }
@@ -872,8 +1067,8 @@ async fn lookup_entity_name<'a, Env>(
 where
     Env: Provider<Select<'a>> + Provider<SelectRules> + ConditionalSync,
 {
-    use crate::meta::Name;
     use dialog_query::Output as _;
+    use tonk_core::meta::Name;
 
     let rows: Vec<Name> = Query::<Name> {
         this: Term::<Entity>::var("__concept_query_id"),
@@ -933,19 +1128,19 @@ fn name_from_id_uri(entity: &Entity) -> Option<String> {
 /// - The branch has no `dialog.meta/name` claim attached to
 ///   that entity (no name was ever published with this label,
 ///   or the prior publication was retracted).
-pub async fn lookup_named_entity<Env: QueryEnv>(
+pub async fn lookup_named_entity<'a, Env: QueryEnv>(
     name: &str,
-    branch: &Branch,
+    source: impl Into<Source<'a>>,
     env: &Env,
 ) -> Result<Option<Entity>, ConceptLookupError> {
-    use crate::meta::Name;
     use dialog_query::Output as _;
+    use tonk_core::meta::Name;
 
+    let source = source.into();
     let Ok(id_entity) = format!("id:{name}").parse::<Entity>() else {
         return Ok(None);
     };
-    let rows: Vec<Name> = branch
-        .query()
+    let rows: Vec<Name> = source
         .select(Query::<Name> {
             this: Term::from(id_entity),
             entity: Term::<Entity>::var("__concept_query_target"),
@@ -1101,6 +1296,60 @@ mod tests {
         concept.assert(&mut changes);
         // Marker + two with/* claims + one description claim = 4.
         assert!(!changes.is_empty());
+    }
+
+    /// `TransientConcept::assert` should write everything
+    /// `AnonymousConcept::assert` writes plus a
+    /// `(?this, dialog.concept/transient, db:transient)` marker
+    /// triple. The marker is what the reactor reads at commit
+    /// time to decide which facts to strip from the persistable
+    /// delta.
+    #[test]
+    fn transient_concept_writes_transient_marker() {
+        use dialog_artifacts::{Changes, Instruction};
+        let json = r#"{
+            "description": "An ephemeral command",
+            "with": {
+                "subject": { "the": "command/subject", "as": "Entity", "cardinality": "one" }
+            }
+        }"#;
+        let descriptor: ConceptDescriptor = serde_json::from_str(json).unwrap();
+        let concept = TransientConcept::new(descriptor);
+        let this = concept.this.clone();
+        let mut changes = Changes::new();
+        concept.assert(&mut changes);
+
+        let instructions = changes.into_instructions();
+        let marker_target = transient_marker_entity();
+        let transient_attr = meta_attr("dialog.concept", "transient");
+
+        assert!(
+            instructions.iter().any(|inst| match inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => {
+                    a.the == transient_attr
+                        && a.of == this
+                        && matches!(&a.is, Value::Entity(e) if *e == marker_target)
+                }
+                _ => false,
+            }),
+            "missing dialog.concept/transient marker"
+        );
+
+        // Also writes the normal concept-marker so concept-enumeration
+        // queries find this entity.
+        let concept_marker_attr = meta_attr("dialog.meta", "concept");
+        let concept_marker = concept_marker_entity();
+        assert!(
+            instructions.iter().any(|inst| match inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => {
+                    a.the == concept_marker_attr
+                        && a.of == this
+                        && matches!(&a.is, Value::Entity(e) if *e == concept_marker)
+                }
+                _ => false,
+            }),
+            "missing dialog.meta/concept marker"
+        );
     }
 
     /// Every concept assert must include the
@@ -1348,6 +1597,149 @@ mod tests {
         Ok(())
     }
 
+    /// Asserts a `TransientConcept` onto a branch, queries `concept:`
+    /// with a `transient` binding, and confirms the row carries
+    /// `Boolean(true)`. A second row over a durable concept on the
+    /// same branch must carry `Boolean(false)`.
+    #[dialog_common::test]
+    async fn it_returns_transient_marker_on_transient_concept_rows() -> anyhow::Result<()> {
+        use dialog_query::{Any, Output as _, Parameters, Term};
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Two concepts on the same branch: one transient, one
+        // durable, each backed by its attribute facts so the
+        // anonymous-concept-query can rehydrate both descriptors.
+        let transient_descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "subject": { "the": "xyz.tonk.ping/subject", "as": "Entity", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+        let durable_descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+
+        let (_, t_attr) = transient_descriptor
+            .with()
+            .iter()
+            .next()
+            .expect("one field");
+        let (_, d_attr) = durable_descriptor.with().iter().next().expect("one field");
+        let t_attr_entity: Entity = t_attr.to_uri().parse()?;
+        let d_attr_entity: Entity = d_attr.to_uri().parse()?;
+
+        let transient_concept = TransientConcept::new(transient_descriptor.clone());
+        let durable_concept = AnonymousConcept::new(durable_descriptor.clone());
+        let transient_entity = transient_concept.this.clone();
+        let durable_entity = durable_concept.this.clone();
+
+        branch
+            .transaction()
+            // Transient concept attribute facts.
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(t_attr_entity.clone())
+                    .is(format!("{}/{}", t_attr.domain(), t_attr.name())),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(t_attr_entity.clone())
+                    .is("Entity".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(t_attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(t_attr_entity)
+                    .is(String::new()),
+            )
+            // Durable concept attribute facts.
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(d_attr_entity.clone())
+                    .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(d_attr_entity.clone())
+                    .is("Text".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(d_attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(d_attr_entity)
+                    .is(String::new()),
+            )
+            .assert(transient_concept)
+            .assert(durable_concept)
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".to_string(), Term::<Any>::var("this"));
+        terms.insert("transient".to_string(), Term::<Any>::var("transient"));
+
+        let conclusions: Vec<ConceptConclusion> = branch
+            .query()
+            .select(AnonymousConceptQuery::new(terms))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        let transient_row = conclusions
+            .iter()
+            .find(|c| {
+                c.source()
+                    .lookup(&Term::<Any>::var("this"))
+                    .ok()
+                    .and_then(|v| Entity::try_from(v).ok())
+                    == Some(transient_entity.clone())
+            })
+            .expect("transient concept row present");
+        assert_eq!(
+            transient_row
+                .source()
+                .lookup(&Term::<Any>::var("transient"))?,
+            dialog_query::Value::Boolean(true),
+        );
+
+        let durable_row = conclusions
+            .iter()
+            .find(|c| {
+                c.source()
+                    .lookup(&Term::<Any>::var("this"))
+                    .ok()
+                    .and_then(|v| Entity::try_from(v).ok())
+                    == Some(durable_entity.clone())
+            })
+            .expect("durable concept row present");
+        assert_eq!(
+            durable_row
+                .source()
+                .lookup(&Term::<Any>::var("transient"))?,
+            dialog_query::Value::Boolean(false),
+        );
+
+        Ok(())
+    }
+
     /// `lookup_named_entity("alice")` reads the
     /// `(id:alice, dialog.name/referent, ?target)` claim
     /// and returns the target entity. Round-trip a hand-written
@@ -1370,7 +1762,7 @@ mod tests {
             .perform(&operator)
             .await?;
 
-        let resolved = lookup_named_entity("alice", &branch, &operator).await?;
+        let resolved = lookup_named_entity("alice", &Source::from(&branch), &operator).await?;
         assert_eq!(resolved, Some(target));
         Ok(())
     }
@@ -1386,7 +1778,7 @@ mod tests {
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        let resolved = lookup_named_entity("ghost", &branch, &operator).await?;
+        let resolved = lookup_named_entity("ghost", &Source::from(&branch), &operator).await?;
         assert!(resolved.is_none());
         Ok(())
     }
@@ -1572,9 +1964,9 @@ mod tests {
     /// direction, so v1 disappears.
     #[dialog_common::test]
     async fn it_resolves_only_latest_name_target_via_name_concept() -> anyhow::Result<()> {
-        use crate::meta::{Name, name};
         use dialog_query::Output as _;
         use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+        use tonk_core::meta::{Name, name};
 
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;

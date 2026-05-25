@@ -5,35 +5,37 @@
 
 use dialog_artifacts::Value;
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
-use tonk_notation::{Field, HeadName, Query};
+use tonk_notation::{Application as SyntaxApplication, Field, HeadName};
 
 use super::assertion::derive_head_intent;
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
-use super::resolver::Resolver;
 use super::scope::Scope;
-use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
+use crate::analyzer::Working;
+use tonk_schema::concept::QueryEnv;
+use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
-pub(crate) async fn build_query_application<R: Resolver>(
-    query: &Query,
-    scope: &Scope<'_, R>,
-    analysis: &Analysis,
+pub(crate) async fn build_query_application<Env: QueryEnv>(
+    query: &SyntaxApplication,
+    scope: &Scope<'_>,
+    env: &Env,
+    analysis: &Working,
 ) -> Result<Application, AnalyzeError> {
     // Queries can't carry an `&anchor` (parser rejects that), so
     // intent derivation only inspects `this:`. The returned name
     // is always `None` here.
-    let (this, _name) = derive_head_intent(&query.fields, None, scope).await?;
-    let head_range = query.head.range;
-    match &query.head.name {
+    let (this, _name) = derive_head_intent(&query.fields, None, scope, env).await?;
+    let head_range = query.predicate.range;
+    match &query.predicate.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
-                .resolve_concept(concept_name)
+                .resolve_concept(concept_name, env)
                 .await
                 .map_err(|e| {
                     AnalyzeError::at(
                         AnalyzeErrorKind::ResolverFailed {
                             context: format!("concept {concept_name:?}"),
-                            reason: e.message,
+                            reason: e.to_string(),
                         },
                         head_range,
                     )
@@ -46,9 +48,13 @@ pub(crate) async fn build_query_application<R: Resolver>(
                         head_range,
                     )
                 })?;
+            // Queries don't carry durability — unwrap the plain
+            // dialog descriptor from the durability-tagged
+            // [`ConceptDefinition`].
+            let descriptor = resolved.descriptor.concept().clone();
             let mut terms = Parameters::new();
             terms.insert("this".into(), this_term_for_query(&this));
-            for (field_name, _attr) in resolved.descriptor.with().iter() {
+            for (field_name, attr) in descriptor.with().iter() {
                 // Fields the user mentioned use whatever they
                 // wrote (literal, variable, blank, etc.). Fields
                 // they *omitted* default to a named variable so
@@ -62,7 +68,9 @@ pub(crate) async fn build_query_application<R: Resolver>(
                             &field.value,
                             field.value_range,
                             scope,
+                            env,
                             analysis,
+                            attr.content_type(),
                         )
                         .await?
                     }
@@ -78,12 +86,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
                 if is_meta_field(&field.name) {
                     continue;
                 }
-                if resolved
-                    .descriptor
-                    .with()
-                    .iter()
-                    .all(|(n, _)| n != field.name)
-                {
+                if descriptor.with().iter().all(|(n, _)| n != field.name) {
                     return Err(AnalyzeError::at(
                         AnalyzeErrorKind::UnknownField {
                             concept: concept_name.clone(),
@@ -96,7 +99,7 @@ pub(crate) async fn build_query_application<R: Resolver>(
             Ok(Application::Concept {
                 query: ConceptQuery {
                     terms,
-                    predicate: resolved.descriptor,
+                    predicate: descriptor,
                 },
                 this,
                 name: None,
@@ -129,7 +132,9 @@ pub(crate) async fn build_query_application<R: Resolver>(
                     &field.value,
                     field.value_range,
                     scope,
+                    env,
                     analysis,
+                    None,
                 )
                 .await?;
                 parameters.insert(field.name.clone(), term);

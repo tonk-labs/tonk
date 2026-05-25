@@ -35,7 +35,7 @@ pub use identify::IdentifyResponse;
 pub mod lsp;
 pub use lsp::LspHub;
 
-mod lsp_introspection;
+mod lsp_env;
 
 mod profile;
 pub use profile::ProfileInfo;
@@ -45,6 +45,9 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 
 mod query;
 pub use query::QueryPath;
+
+mod transact;
+pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
 pub mod bridge;
 pub use bridge::BridgeRegistry;
@@ -85,8 +88,7 @@ pub fn api_router_with_state(state: TonkState) -> (Router, AppState, Arc<LspHub>
 /// [`AppState`]. Useful in tests that need to keep an `Arc`
 /// handle to the state for poking the reactor directly.
 pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
-    let factory = lsp_introspection::ReactorIntrospectionFactory::new(state.clone());
-    let (lsp_routes, lsp_hub) = lsp::lsp_router_with_introspection(factory);
+    let (lsp_routes, lsp_hub) = lsp::lsp_router(state.clone());
     let router = Router::new()
         .route("/api", get(root))
         .route("/api/identify", get(identify::identify))
@@ -103,6 +105,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/profile/branch/{branch}/evaluate",
             post(evaluate::evaluate_profile),
+        )
+        .route(
+            "/api/profile/branch/{branch}/transact",
+            post(transact::transact_profile),
         )
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
@@ -152,6 +158,15 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
+        )
+        // Structured-mutation route — see `plan/transact-endpoint.md`.
+        // Bypasses tonk-notation: accepts a typed
+        // `TransactRequest` so per-mutation transient/durable
+        // classification flows straight to the reactor's
+        // transaction builder.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/transact",
+            post(transact::transact),
         )
         // Query route — accepts a serialized `ConceptQuery`,
         // returns conclusions. With `Accept: text/event-stream`
@@ -2586,5 +2601,67 @@ person:
             "blank `age: _` field must still surface the matched value; got {:?}",
             row.fields,
         );
+    }
+
+    /// An empty `TransactRequest` short-circuits without
+    /// committing. Revisions match, claim count is zero, status
+    /// is 200. Smoke test for route wiring and the no-op path.
+    #[dialog_common::test]
+    async fn it_transacts_empty_batch_as_noop() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-empty";
+
+        put_repo(&app, repo).await;
+
+        let body = "{\"claims\":[]}";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "expected 200 OK; got {status}: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+        let resp: super::TransactResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(resp.commits.claims, 0);
+        assert_eq!(resp.revision_before, resp.revision_after);
+    }
+
+    /// Malformed JSON body returns 400 with a router-level error.
+    #[dialog_common::test]
+    async fn it_returns_400_on_malformed_transact_body() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-transact-bad-body";
+
+        put_repo(&app, repo).await;
+
+        let body = "not json at all";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/transact", repo))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

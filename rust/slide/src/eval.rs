@@ -5,11 +5,11 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
+use tonk_evaluator::evaluate::{EvaluateError, SyntaxEvaluateExt};
 use tonk_notation::{Parsed, Syntax, parse};
-use tonk_schema::evaluate::{self, EvaluateError, EvaluateResponse};
 
 use crate::ExitCode;
-use crate::output::{self, Format};
+use crate::output::{self, EvaluateResponse, Format};
 use crate::site::SlideSite;
 
 /// Where the document text comes from. Picked by the CLI front
@@ -149,17 +149,64 @@ pub async fn run_against_site(
     let text = source.read().await?;
     let syntax = parse_or_diagnose(&label, &text)?;
 
-    let outcome = evaluate::run(&syntax, &site.branch, &site.operator, true)
+    let revision_before = site.branch.revision();
+    let evaluated = syntax
+        .evaluate(site.branch.transaction())
+        .perform(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
 
-    let stdout = output::render(&outcome.response, options.format, options.quiet)
+    // Compute the post-evaluation match view by re-running the
+    // analyzer's queries against the txn overlay. The overlay
+    // reflects every applied write plus the induce pass, so this
+    // is the same answer a post-commit branch query would give —
+    // computed *before* commit so we don't need the branch after
+    // the txn is consumed.
+    let matches_after = evaluated
+        .matches_after(&site.operator)
+        .await
+        .map_err(map_evaluate_error)?;
+
+    // Slide always commits when there are mutation statements
+    // (the CLI doesn't have a dry-run mode today). Pure-query
+    // docs short-circuit so we don't pay for a no-op commit.
+    let (response, committed) = if evaluated.analysis.analysis.has_statements() {
+        let revision_after = evaluated
+            .txn
+            .commit()
+            .perform(&site.operator)
+            .await
+            .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
+        (
+            EvaluateResponse {
+                revision_before,
+                revision_after: Some(revision_after),
+                matches_before: evaluated.matches,
+                matches_after,
+                commits: evaluated.commits,
+            },
+            true,
+        )
+    } else {
+        (
+            EvaluateResponse {
+                revision_before: revision_before.clone(),
+                revision_after: revision_before,
+                matches_before: evaluated.matches.clone(),
+                matches_after: evaluated.matches,
+                commits: evaluated.commits,
+            },
+            false,
+        )
+    };
+
+    let stdout = output::render(&response, options.format, options.quiet)
         .map_err(|e| EvalError::Io(format!("output rendering failed: {e}")))?;
 
     Ok(Outcome {
         stdout,
-        response: outcome.response,
-        committed: outcome.committed,
+        response,
+        committed,
     })
 }
 
@@ -205,6 +252,5 @@ fn map_evaluate_error(error: EvaluateError) -> EvalError {
         EvaluateError::Analyze(analyze_error) => EvalError::Analyze(analyze_error.to_string()),
         EvaluateError::Plan(message) => EvalError::Commit(format!("plan failed: {message}")),
         EvaluateError::Query(message) => EvalError::Commit(message),
-        EvaluateError::Commit(message) => EvalError::Commit(message),
     }
 }

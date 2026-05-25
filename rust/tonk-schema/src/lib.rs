@@ -38,23 +38,27 @@ pub mod prelude;
 
 pub mod domain;
 
-pub mod meta;
+/// Re-export of the wire-shape primitives from [`tonk_core`].
+pub use tonk_core::{claim, conclusion, effect, meta};
+
+/// Analyzer-IR types: `Application`, `Statement`, `Planner`, etc.
+/// These live here (not in `tonk-core`) because they reference
+/// schema-aware types like [`crate::rule::Rule`].
+pub mod transact;
 
 pub mod concept;
 
-pub mod rule;
+pub mod resolution;
 
-pub mod analyzer;
+pub mod rule_query;
+
+pub mod rule;
 
 pub mod builtin;
 
-pub mod transact;
-
-pub mod evaluate;
-
 pub mod query;
 
-pub mod conclusion;
+pub mod query_source;
 
 pub mod replica;
 pub use replica::*;

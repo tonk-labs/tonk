@@ -6,14 +6,17 @@ use std::collections::BTreeMap;
 
 use dialog_artifacts::{Entity, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
-use tonk_notation::{Anchor, Assertion, Field, FieldValue, HeadName, Scalar};
+use tonk_notation::{
+    Anchor, Application as SyntaxApplication, Field, FieldValue, HeadName, Scalar,
+};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
-use super::resolver::Resolver;
 use super::scope::Scope;
-use crate::prelude::EntityExt;
-use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
+use crate::analyzer::Working;
+use tonk_schema::concept::QueryEnv;
+use tonk_schema::prelude::EntityExt;
+use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:
@@ -36,20 +39,29 @@ use crate::transact::{Analysis, Application, DomainApplication, ThisIntent};
 pub(crate) struct AssertionPlan {
     pub assert: Option<Application>,
     pub retract: Option<Application>,
+    /// `true` when the head concept is marked transient. Phase 3
+    /// records the concept entity on `AssertionAnalysis::transient`
+    /// and tags `AssertionAnalysis::predicate` `Transient`, so the
+    /// evaluator routes the asserted claims into the
+    /// effects-fixpoint seed bucket. Always `false` for domain /
+    /// URI heads — those name no concept.
+    pub transient: bool,
 }
 
-pub(crate) async fn build_assertion_application<R: Resolver>(
-    assertion: &Assertion,
-    scope: &Scope<'_, R>,
-    analysis: &mut Analysis,
+pub(crate) async fn build_assertion_application<Env: QueryEnv>(
+    assertion: &SyntaxApplication,
+    anchor: Option<&Anchor>,
+    scope: &Scope<'_>,
+    env: &Env,
+    analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
-    let head_label = match &assertion.head.name {
+    let head_label = match &assertion.predicate.name {
         HeadName::Concept(name) => name.clone(),
         HeadName::Claim(domain) => domain.clone(),
         HeadName::Uri(uri) => uri.clone(),
     };
 
-    let head_range = assertion.head.range;
+    let head_range = assertion.predicate.range;
 
     if assertion.fields.is_empty() {
         return Err(AnalyzeError::at(
@@ -58,8 +70,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
         ));
     }
 
-    let (this, name) =
-        derive_head_intent(&assertion.fields, assertion.anchor.as_ref(), scope).await?;
+    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope, env).await?;
     if let ThisIntent::Uri(entity) = &this {
         let this_range = assertion
             .fields
@@ -69,11 +80,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             .unwrap_or(head_range);
         check_writable(entity, this_range)?;
     }
-    let name_range = assertion
-        .anchor
-        .as_ref()
-        .map(|a| a.range)
-        .unwrap_or(head_range);
+    let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
     let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis, name_range)?;
 
     // Detect the rest-marker `..: _` once. Per-field `_`
@@ -83,16 +90,16 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
         .iter()
         .any(|f| f.name == ".." && matches!(f.value, FieldValue::Blank));
 
-    match &assertion.head.name {
+    match &assertion.predicate.name {
         HeadName::Concept(concept_name) => {
             let resolved = scope
-                .resolve_concept(concept_name)
+                .resolve_concept(concept_name, env)
                 .await
                 .map_err(|e| {
                     AnalyzeError::at(
                         AnalyzeErrorKind::ResolverFailed {
                             context: format!("concept {concept_name:?}"),
-                            reason: e.message,
+                            reason: e.to_string(),
                         },
                         head_range,
                     )
@@ -105,6 +112,11 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                         head_range,
                     )
                 })?;
+            // `ConceptDefinition::descriptor` is durability-tagged;
+            // the assertion builder works with the plain dialog
+            // descriptor and the transient flag separately.
+            let transient = resolved.descriptor.is_transient();
+            let descriptor = resolved.descriptor.concept().clone();
 
             // Walk user-supplied fields, separating asserts from
             // retracts. `..: _` and per-field `_` blanks go
@@ -129,7 +141,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             if let Some(error) = check_complete_when_unbound(
                 concept_name,
                 &this,
-                &resolved.descriptor,
+                &descriptor,
                 &user_fields,
                 has_rest_retraction,
                 analysis,
@@ -145,7 +157,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             let mut any_assert = false;
             let mut any_retract = false;
 
-            for (field_name, _attr) in resolved.descriptor.with().iter() {
+            for (field_name, attr) in descriptor.with().iter() {
                 match user_fields.remove(field_name) {
                     Some((FieldValue::Blank, _)) => {
                         // Per-field retraction: planner walks the
@@ -159,9 +171,16 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     }
                     Some((value, value_range)) => {
                         // Explicit non-blank field — asserts.
-                        let term =
-                            field_value_to_term(field_name, value, value_range, scope, analysis)
-                                .await?;
+                        let term = field_value_to_term(
+                            field_name,
+                            value,
+                            value_range,
+                            scope,
+                            env,
+                            analysis,
+                            attr.content_type(),
+                        )
+                        .await?;
                         assert_terms.insert(field_name.into(), term);
                         any_assert = true;
                         // Retract side blanks this field — the
@@ -213,7 +232,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 Some(Application::Concept {
                     query: ConceptQuery {
                         terms: assert_terms,
-                        predicate: resolved.descriptor.clone(),
+                        predicate: descriptor.clone(),
                     },
                     this: this.clone(),
                     name: name.clone(),
@@ -227,12 +246,12 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                         terms: {
                             let mut t = Parameters::new();
                             t.insert("this".into(), this_term.clone());
-                            for (field_name, _) in resolved.descriptor.with().iter() {
+                            for (field_name, _) in descriptor.with().iter() {
                                 t.insert(field_name.into(), Term::<dialog_query::Any>::blank());
                             }
                             t
                         },
-                        predicate: resolved.descriptor.clone(),
+                        predicate: descriptor.clone(),
                     },
                     this: this.clone(),
                     name: name.clone(),
@@ -244,7 +263,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                 Some(Application::Concept {
                     query: ConceptQuery {
                         terms: retract_terms,
-                        predicate: resolved.descriptor,
+                        predicate: descriptor,
                     },
                     this,
                     name: None,
@@ -255,6 +274,7 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
             Ok(AssertionPlan {
                 assert: assert_app,
                 retract: retract_app,
+                transient,
             })
         }
         HeadName::Claim(domain) => {
@@ -275,7 +295,9 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     &field.value,
                     field.value_range,
                     scope,
+                    env,
                     analysis,
+                    None,
                 )
                 .await?;
                 parameters.insert(field.name.clone(), term);
@@ -290,6 +312,9 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
                     name,
                 }),
                 retract: None,
+                // Domain (`xyz.tonk …:`) heads name no concept,
+                // so there's no transient marker to consult.
+                transient: false,
             })
         }
         HeadName::Uri(uri) => Err(AnalyzeError::at(
@@ -324,10 +349,11 @@ pub(crate) async fn build_assertion_application<R: Resolver>(
 /// The two are independent: every combination is meaningful
 /// (e.g. `person!: &alice\n  this: did:key:zX` → publish `id:alice`
 /// pointing at zX without producing a new entity).
-pub(crate) async fn derive_head_intent<R: Resolver>(
+pub(crate) async fn derive_head_intent<Env: QueryEnv>(
     fields: &[Field],
     anchor: Option<&Anchor>,
-    scope: &Scope<'_, R>,
+    scope: &Scope<'_>,
+    env: &Env,
 ) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
     let name = anchor.map(|a| a.name.clone());
     let this = match fields.iter().find(|f| f.name == "this") {
@@ -355,22 +381,24 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                 // doc-local attributes, then branch lookup.
                 let entity = if let Some(entity) = scope.lookup_entity(name) {
                     entity
-                } else if let Some(resolved) = scope.resolve_attribute(name).await.map_err(|e| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::ResolverFailed {
-                            context: format!("symbol {name}"),
-                            reason: e.message,
-                        },
-                        field.value_range,
-                    )
-                })? {
-                    resolved.entity
-                } else if let Some(entity) =
-                    scope.resolve_named_entity(name).await.map_err(|e| {
+                } else if let Some(resolved) =
+                    scope.resolve_attribute(name, env).await.map_err(|e| {
                         AnalyzeError::at(
                             AnalyzeErrorKind::ResolverFailed {
                                 context: format!("symbol {name}"),
-                                reason: e.message,
+                                reason: e.to_string(),
+                            },
+                            field.value_range,
+                        )
+                    })?
+                {
+                    resolved.entity
+                } else if let Some(entity) =
+                    scope.resolve_named_entity(name, env).await.map_err(|e| {
+                        AnalyzeError::at(
+                            AnalyzeErrorKind::ResolverFailed {
+                                context: format!("symbol {name}"),
+                                reason: e.to_string(),
                             },
                             field.value_range,
                         )
@@ -388,7 +416,10 @@ pub(crate) async fn derive_head_intent<R: Resolver>(
                 };
                 ThisIntent::Uri(entity)
             }
-            FieldValue::Literal(_) | FieldValue::Blank | FieldValue::Nested(_) => {
+            FieldValue::Literal(_)
+            | FieldValue::Blank
+            | FieldValue::Nested(_)
+            | FieldValue::Premises(_) => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::UnsupportedFieldValue {
                         field: "this".into(),
@@ -430,7 +461,7 @@ fn this_term_for_assertion(
     this: &ThisIntent,
     name: &Option<String>,
     fields: &[Field],
-    analysis: &mut Analysis,
+    analysis: &mut Working,
     name_range: lsp_types::Range,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match this {
@@ -543,7 +574,7 @@ fn check_complete_when_unbound(
     descriptor: &dialog_query::ConceptDescriptor,
     user_fields: &BTreeMap<&str, (&FieldValue, lsp_types::Range)>,
     has_rest_retraction: bool,
-    analysis: &Analysis,
+    analysis: &Working,
     range: lsp_types::Range,
 ) -> Option<AnalyzeError> {
     // `..: _` is the user's explicit "I know what I'm doing
@@ -609,15 +640,11 @@ fn check_complete_when_unbound(
     ))
 }
 
-/// Does `analysis.query` bind `?name`? Used by
+/// Does some preceding query bind `?name`? Used by
 /// [`this_term_for_assertion`] to decide between minting a
 /// body-derived entity and leaving the variable for planning.
-fn query_binds(analysis: &Analysis, name: &str) -> bool {
-    analysis
-        .query
-        .as_ref()
-        .map(|q| q.bindings().contains(name))
-        .unwrap_or(false)
+fn query_binds(analysis: &Working, name: &str) -> bool {
+    analysis.query_bindings().contains(name)
 }
 
 /// Reject assertions targeting a system-reserved URI scheme.

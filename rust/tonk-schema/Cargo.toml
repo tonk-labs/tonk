@@ -28,6 +28,7 @@ dialog-effects = { workspace = true }
 dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-varsig = { workspace = true }
+futures-util = { workspace = true }
 lsp-types = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -35,7 +36,7 @@ serde_ipld_dagcbor = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
-tonk-introspect = { workspace = true }
+tonk-core = { workspace = true }
 tonk-notation = { workspace = true }
 
 [dev-dependencies]
@@ -44,5 +45,6 @@ dialog-common = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 lsp-types = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
+tonk-evaluator = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 wasm-bindgen-test = { workspace = true }

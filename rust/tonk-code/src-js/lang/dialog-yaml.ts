@@ -35,7 +35,17 @@
 //   retraction: `person!`, `xyz.tonk!`, `db:concept!`. The
 //   effect color paints both the name and the trailing `!` so
 //   the eye is drawn to the entire token that flips meaning
-//   from query to mutation.
+//   from query to mutation. A `rule!:` body nests two more
+//   effect heads (`assert!:` / `retract!:`) one indent deep —
+//   those are decorated the same way, so the rule's polarity
+//   line reads with the same weight as a top-level head.
+//
+// - **Rule keyword** — the structural keys of a `rule!:` body:
+//   `when:`, `unless:`, `description:`, and the `assert:` /
+//   `where:` keys of each premise. These aren't mutation heads
+//   (no `!`) and aren't name references — they're the rule's
+//   skeleton. A dedicated color sets them apart from ordinary
+//   YAML keys so the shape of a rule reads at a glance.
 //
 // Future iterations can layer additional decorations by walking
 // the syntax tree from `lang-yaml` (or, eventually, semantic
@@ -90,6 +100,13 @@ const nameMark = Decoration.mark({ class: "tonk-cm-name" });
  *  query to mutation, not just the trailing punctuation. */
 const effectMark = Decoration.mark({ class: "tonk-cm-effect" });
 
+/** Rule-keyword decoration — the structural keys of a `rule!:`
+ *  body (`when:`, `unless:`, `description:`) and of each premise
+ *  (`assert:`, `where:`). These are the rule's skeleton, not
+ *  mutation heads or name references; a dedicated color makes a
+ *  rule's shape legible at a glance. */
+const keywordMark = Decoration.mark({ class: "tonk-cm-keyword" });
+
 /** Match a `?` followed by one or more word characters. */
 const VARIABLE_NAMED = /\?\w+/g;
 
@@ -117,15 +134,36 @@ const ATTRIBUTE_URI =
   /(?<=^|[\s,[{:])([a-z][a-z0-9+-]*(?:\.[a-z0-9+-]+)+\/[a-z][a-z0-9+.-]*)/gm;
 
 /** Match the head of an assertion or retraction — name plus
- *  the trailing `!`, anchored at column 0 of a line. The head's
- *  name may contain dots (`xyz.tonk`), slashes (rare), and a
- *  colon for URI-form heads (`db:concept`, `did:key:zX`). The
- *  `!` is required: query heads aren't decorated.
+ *  the trailing `!`. The head's name may contain dots
+ *  (`xyz.tonk`), slashes (rare), and a colon for URI-form heads
+ *  (`db:concept`, `did:key:zX`). The `!` is required: query
+ *  heads aren't decorated.
+ *
+ *  Leading whitespace is allowed and not captured — a top-level
+ *  head sits at column 0, but a `rule!:` body nests `assert!:`
+ *  / `retract!:` one indent deep, and those are effect heads
+ *  too. The match must be the first non-whitespace token on its
+ *  line (a `name!` in value position is something else).
  *
  *  The capture is the *entire* head including the `!`, so the
  *  effect mark covers the whole token. The lookahead for `:`
  *  pins the match to a YAML key, not a value somewhere else. */
-const EFFECT_HEAD = /^([A-Za-z][A-Za-z0-9._/:-]*!)(?=:)/gm;
+const EFFECT_HEAD = /^[ \t]*([A-Za-z][A-Za-z0-9._/:-]*!)(?=:)/gmd;
+
+/** Match a `rule!:` body keyword as a YAML key — the first
+ *  non-whitespace token on its line, followed by `:`. The set
+ *  is closed: `when` / `unless` / `description` scaffold the
+ *  rule; `assert` / `where` scaffold a premise. (`assert!:` is
+ *  *not* in this set — the `!` makes it an effect head, caught
+ *  by `EFFECT_HEAD`.)
+ *
+ *  These keywords are also valid keys outside a rule (a concept
+ *  field could be named `description`), but in practice the
+ *  notation reserves them; decorating every occurrence keeps
+ *  the regex pass simple and is correct for any well-formed
+ *  document. The capture excludes the leading indentation so
+ *  only the keyword itself is colored. */
+const RULE_KEYWORD = /^[ \t]*(when|unless|description|assert|where)(?=:)/gmd;
 
 /** Match an `&<name>` anchor. Anchors appear on the value side
  *  of an assertion head (`head!: &alice`). We require the `&`
@@ -200,16 +238,37 @@ function buildDecorations(view: EditorView): DecorationSet {
       });
     }
 
-    // Effect heads — the full `name!` token at column 0 of a
-    // line. Use the capture's range so the trailing `:` (which
-    // the lookahead checks but doesn't include) stays
-    // untouched.
+    // Effect heads — the full `name!` token, first on its line
+    // (a top-level head, or an `assert!:` / `retract!:` nested
+    // in a `rule!:` body). Use the capture's range so neither
+    // the leading indentation nor the trailing `:` (checked by
+    // the lookahead, not included) is decorated.
     EFFECT_HEAD.lastIndex = 0;
     for (let m; (m = EFFECT_HEAD.exec(text)); ) {
+      const range = (
+        m as RegExpExecArray & { indices?: Array<[number, number]> }
+      ).indices?.[1];
+      if (!range) continue;
       hits.push({
-        from: from + m.index,
-        to: from + m.index + m[1].length,
+        from: from + range[0],
+        to: from + range[1],
         mark: effectMark,
+      });
+    }
+
+    // Rule-body keywords — `when:` / `unless:` / `description:`
+    // and the `assert:` / `where:` of a premise. Capture range
+    // excludes the leading indentation and the trailing `:`.
+    RULE_KEYWORD.lastIndex = 0;
+    for (let m; (m = RULE_KEYWORD.exec(text)); ) {
+      const range = (
+        m as RegExpExecArray & { indices?: Array<[number, number]> }
+      ).indices?.[1];
+      if (!range) continue;
+      hits.push({
+        from: from + range[0],
+        to: from + range[1],
+        mark: keywordMark,
       });
     }
 
@@ -300,6 +359,10 @@ const dialectTheme = EditorView.theme({
   ".tonk-cm-effect, .tonk-cm-effect *": {
     color: "var(--tonk-code-effect)",
     fontWeight: "bold",
+  },
+  ".tonk-cm-keyword, .tonk-cm-keyword *": {
+    color: "var(--tonk-code-keyword)",
+    fontWeight: "600",
   },
 });
 

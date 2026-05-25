@@ -9,9 +9,7 @@
 //! in a tokio host.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use async_trait::async_trait;
 use lsp_types::{
     CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
@@ -22,8 +20,13 @@ use lsp_types::{
     request::{Completion, HoverRequest, Initialize, Request as LspRequestTrait},
 };
 use serde_json::Value;
-use tonk_introspect::BranchIntrospection;
+use tonk_schema::claim::ConceptDescriptor;
+use tonk_schema::concept::{
+    AttributeDescriptor, ConceptDescriptor as DialogConceptDescriptor, Type,
+};
+use tonk_schema::resolution::{ConceptDefinition, ConceptReference, NamedReference};
 
+use crate::env::{EnvProvider, Opened};
 use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 
 /// Per-URI document state. Today only the latest text is
@@ -36,25 +39,6 @@ use crate::jsonrpc::{Incoming, OutboundNotification, Response, ResponseError};
 #[derive(Debug, Clone, Default)]
 struct Document {
     text: String,
-}
-
-/// Hook the host implements so the LSP can ask for a
-/// branch-bound [`BranchIntrospection`] keyed off a document
-/// URI. The factory is responsible for parsing the URI to
-/// recover whatever it needs (typically `(repo, branch)` from
-/// `tonk-buffer:///<repo>/<branch>/<cell>`) and acquiring the
-/// reactor handle. Returning `None` is fine — completion
-/// gracefully degrades to the document-local sources.
-///
-/// `?Send` because the wasm host runs single-threaded and the
-/// returned introspection often borrows a non-`Send` reactor
-/// session.
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-pub trait IntrospectionFactory: Send + Sync {
-    /// Build a branch-bound introspection for `uri`, or `None`
-    /// when the URI doesn't map to a branch this host knows.
-    async fn for_uri(&self, uri: &Uri) -> Option<Arc<dyn BranchIntrospection + Send + Sync>>;
 }
 
 /// LSP language server for `tonk-notation` documents.
@@ -80,27 +64,11 @@ pub struct Server {
     initialized: bool,
     /// Set after `shutdown`. Subsequent requests must error per spec.
     shutting_down: bool,
-    /// Factory the host plugs in to surface branch-published
-    /// concepts (and references) in completion. `None` ⇒
-    /// document-local sources only — tests and the standalone
-    /// CLI surface use that path.
-    introspection: Option<Arc<dyn IntrospectionFactory>>,
 }
 
 impl Server {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Variant of [`Server::new`] that takes a host-supplied
-    /// [`IntrospectionFactory`]. The completion handler uses it
-    /// to surface branch-published concepts alongside the
-    /// built-in registry.
-    pub fn with_introspection(factory: Arc<dyn IntrospectionFactory>) -> Self {
-        Self {
-            introspection: Some(factory),
-            ..Self::default()
-        }
     }
 
     /// Drain queued server-to-client notifications. The host calls
@@ -121,7 +89,12 @@ impl Server {
     /// Server-pushed notifications generated as a side effect (e.g.
     /// publishDiagnostics fired by `didChange`) are queued in the
     /// outbound buffer; the host pulls them with `take_outbound`.
-    pub async fn handle_message(&mut self, raw: &[u8]) -> Option<Vec<u8>> {
+    ///
+    /// `env` is the host's [`EnvProvider`], passed **per request**
+    /// — the language server resolves diagnostics, completion, and
+    /// hover against whatever live environment it opens. The
+    /// no-host case passes [`crate::NoEnv`].
+    pub async fn handle_message(&mut self, raw: &[u8], env: &impl EnvProvider) -> Option<Vec<u8>> {
         let parsed: Incoming = match serde_json::from_slice(raw) {
             Ok(p) => p,
             Err(err) => {
@@ -136,12 +109,13 @@ impl Server {
         match parsed {
             Incoming::Request(req) => {
                 let response = self
-                    .handle_request(req.id.clone(), &req.method, req.params)
+                    .handle_request(req.id.clone(), &req.method, req.params, env)
                     .await;
                 serde_json::to_vec(&response).ok()
             }
             Incoming::Notification(note) => {
-                self.handle_notification(&note.method, note.params).await;
+                self.handle_notification(&note.method, note.params, env)
+                    .await;
                 None
             }
             Incoming::Response { .. } => {
@@ -153,7 +127,13 @@ impl Server {
         }
     }
 
-    async fn handle_request(&mut self, id: Value, method: &str, params: Value) -> Response {
+    async fn handle_request(
+        &mut self,
+        id: Value,
+        method: &str,
+        params: Value,
+        env: &impl EnvProvider,
+    ) -> Response {
         if self.shutting_down && method != "exit" {
             return Response::error(id, ResponseError::internal("server is shutting down"));
         }
@@ -178,7 +158,7 @@ impl Server {
             },
             Completion::METHOD => match serde_json::from_value::<CompletionParams>(params) {
                 Ok(p) => {
-                    let items = self.complete(&p).await;
+                    let items = self.complete(&p, env).await;
                     let response = CompletionResponse::List(CompletionList {
                         is_incomplete: false,
                         items,
@@ -192,7 +172,7 @@ impl Server {
             },
             HoverRequest::METHOD => match serde_json::from_value::<HoverParams>(params) {
                 Ok(p) => {
-                    let hover = self.hover(&p).await;
+                    let hover = self.hover(&p, env).await;
                     let value = match hover {
                         Some(h) => serde_json::to_value(h),
                         None => Ok(Value::Null),
@@ -212,7 +192,7 @@ impl Server {
         }
     }
 
-    async fn handle_notification(&mut self, method: &str, params: Value) {
+    async fn handle_notification(&mut self, method: &str, params: Value, env: &impl EnvProvider) {
         match method {
             "initialized" => {
                 // No payload; `initialize` already flipped the flag.
@@ -229,7 +209,7 @@ impl Server {
                     let version = p.text_document.version;
                     self.documents
                         .insert(uri.clone(), Document { text: text.clone() });
-                    self.publish(uri, &text, Some(version)).await;
+                    self.publish(uri, &text, Some(version), env).await;
                 }
             }
             "textDocument/didChange" => {
@@ -250,7 +230,7 @@ impl Server {
                             text: last.text.clone(),
                         },
                     );
-                    self.publish(uri, &last.text, Some(version)).await;
+                    self.publish(uri, &last.text, Some(version), env).await;
                 }
             }
             "textDocument/didClose" => {
@@ -269,7 +249,11 @@ impl Server {
     /// is a hint, not the contract — what we return is decided
     /// by where the cursor actually sits in the parse tree.
     /// See `docs/auto-completion.md` for the full source taxonomy.
-    async fn complete(&self, params: &CompletionParams) -> Vec<CompletionItem> {
+    async fn complete(
+        &self,
+        params: &CompletionParams,
+        env: &impl EnvProvider,
+    ) -> Vec<CompletionItem> {
         let uri = &params.text_document_position.text_document.uri;
         let Some(doc) = self.documents.get(uri) else {
             return Vec::new();
@@ -280,17 +264,21 @@ impl Server {
             return Vec::new();
         };
 
-        // Resolve the host's introspection for this document
+        // Open the live `(source, env)` pair for this document
         // once. Built-in completion always works; branch-side
-        // sources only fire when the factory hands us an
-        // introspection.
-        let introspection = match &self.introspection {
-            Some(factory) => factory.for_uri(uri).await,
-            None => None,
-        };
+        // sources only fire when the host opens one.
+        let opened = open_for(uri, env).await;
 
         if is_head_position(&line_prefix) {
-            return head_completions(introspection.as_deref()).await;
+            return head_completions(opened.as_ref()).await;
+        }
+
+        // A premise's `assert:` value accepts a concept name or a
+        // built-in formula name — offer both.
+        if is_premise_assert_position(&line_prefix) {
+            let mut out = head_completions(opened.as_ref()).await;
+            out.extend(formula_completions_items());
+            return out;
         }
 
         if is_variable_position(&line_prefix) {
@@ -300,7 +288,7 @@ impl Server {
         if let Some(head) = enclosing_head(text, position)
             && is_body_position(&line_prefix)
         {
-            return field_completions(&head, introspection.as_deref()).await;
+            return field_completions(&head, opened.as_ref()).await;
         }
 
         Vec::new()
@@ -315,7 +303,7 @@ impl Server {
     ///   description, type, cardinality.
     /// - Anywhere else → `None` (the editor renders no
     ///   tooltip).
-    async fn hover(&self, params: &HoverParams) -> Option<Hover> {
+    async fn hover(&self, params: &HoverParams, env: &impl EnvProvider) -> Option<Hover> {
         let uri = &params.text_document_position_params.text_document.uri;
         let doc = self.documents.get(uri)?;
         let text = doc.text.as_str();
@@ -340,12 +328,9 @@ impl Server {
             },
         });
 
-        // Resolve introspection once; head + field hovers both
-        // need it to find branch-published concepts.
-        let introspection = match &self.introspection {
-            Some(factory) => factory.for_uri(uri).await,
-            None => None,
-        };
+        // Open the live `(source, env)` pair once; head + field
+        // hovers both need it to find branch-published concepts.
+        let opened = open_for(uri, env).await;
 
         // Decide head vs field by indent: any leading whitespace
         // means we're inside a body. Mirrors the completion
@@ -355,11 +340,11 @@ impl Server {
 
         if !inside_body {
             // Head position. The cursor sits on a concept name.
-            let descriptor = lookup_concept_descriptor(&name, introspection.as_deref()).await?;
+            let descriptor = lookup_concept_descriptor(&name, opened.as_ref()).await?;
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
-                    value: render_concept_hover(&name, &descriptor),
+                    value: render_concept_hover(&name, descriptor.concept()),
                 }),
                 range,
             });
@@ -368,8 +353,9 @@ impl Server {
         // Body position. Need the enclosing head's name to look
         // up the concept's field set.
         let head = enclosing_head(text, position)?;
-        let descriptor = lookup_concept_descriptor(&head, introspection.as_deref()).await?;
+        let descriptor = lookup_concept_descriptor(&head, opened.as_ref()).await?;
         let attr = descriptor
+            .concept()
             .with()
             .iter()
             .find(|(field, _)| *field == name.as_str())?
@@ -395,14 +381,20 @@ impl Server {
     ///    colon, etc.). The parser is permissive: it produces a
     ///    `Syntax` tree even when there are recoverable errors.
     /// 2. **Analyzer** — when the parser returns *no* diagnostics,
-    ///    we run `tonk_schema::analyzer::analyze` with a
-    ///    `NoopResolver` to catch structural errors the parser
-    ///    accepts (`AssertionWithoutFields`, `ClaimWithoutFields`,
-    ///    etc.). Errors that need the branch (`UnknownConcept`,
-    ///    `UnknownBookmark`, `ResolverFailed`) are filtered out —
-    ///    they need a real branch resolver and the worker's
-    ///    evaluate route is the source of truth for those.
-    async fn publish(&mut self, uri: Uri, text: &str, version: Option<i32>) {
+    ///    we run `tonk_analyzer::analyzer::analyze` against the live
+    ///    environment (when the host opens one) to catch structural
+    ///    errors the parser accepts (`AssertionWithoutFields`,
+    ///    `ClaimWithoutFields`, etc.) plus `UnknownConcept` for a
+    ///    name the environment does not define. Without an
+    ///    environment the analyzer runs document-only and
+    ///    branch-dependent errors are filtered out.
+    async fn publish(
+        &mut self,
+        uri: Uri,
+        text: &str,
+        version: Option<i32>,
+        env: &impl EnvProvider,
+    ) {
         let parsed = tonk_notation::parse(text);
         let mut diagnostics = parsed.diagnostics.clone();
         // Only run the analyzer when the parser is happy — its
@@ -411,7 +403,8 @@ impl Server {
             && let Some(syntax) = &parsed.syntax
             && !syntax.expressions.is_empty()
         {
-            diagnostics.extend(analyzer_diagnostics(syntax).await);
+            let opened = open_for(&uri, env).await;
+            diagnostics.extend(analyzer_diagnostics(syntax, opened.as_ref()).await);
         }
         // Clamp every range against the live text. The parser
         // already clamps its own emissions, but analyzer
@@ -444,53 +437,63 @@ impl Server {
     }
 }
 
-/// Run the analyzer and the structural variable-occurrence scan
-/// against the parsed syntax, then merge their findings into a
-/// single diagnostic list.
+/// Run analyzer diagnostics against the parsed syntax. Always
+/// emits the structural variable-occurrence scan
+/// (`scan_variables`); when the host opened an [`Opened`] for
+/// this document, additionally runs the full analyzer pass
+/// (`tonk_analyzer::analyze`) against its `(source, env)` pair
+/// to surface branch-dependent diagnostics (`UnknownConcept`,
+/// `UnknownBookmark`, `ResolverFailed`, `InvalidClaimAttribute`).
 ///
-/// Two passes:
-///
-/// 1. **Variable scan** — purely structural, no resolver work,
-///    runs unconditionally so warnings surface even when the
-///    main analyzer short-circuits.
-/// 2. **`tonk_schema::analyzer::analyze`** with `NoopResolver` —
-///    catches structural errors the parser accepts. Errors that
-///    fundamentally need the branch (`UnknownConcept`,
-///    `UnknownBookmark`, `ResolverFailed`,
-///    `InvalidClaimAttribute`) are filtered out — they trigger
-///    spuriously under the noop resolver and are the worker's
-///    responsibility once `evaluate` runs against a real branch.
-async fn analyzer_diagnostics(syntax: &tonk_notation::Syntax) -> Vec<lsp_types::Diagnostic> {
-    use tonk_schema::analyzer::{NoopResolver, analyze, scan_variables};
+/// Without an opened env the analyzer pass is skipped — there's
+/// no `Source` to resolve references against — and the
+/// `/evaluate` route remains the authoritative source for
+/// branch-dependent verdicts.
+async fn analyzer_diagnostics<O: Opened + ?Sized>(
+    syntax: &tonk_notation::Syntax,
+    opened: Option<&O>,
+) -> Vec<lsp_types::Diagnostic> {
+    use tonk_analyzer::analyzer::{analyze, scan_variables};
 
     let mut out: Vec<lsp_types::Diagnostic> = scan_variables(syntax)
         .into_iter()
         .map(|d| diagnostic_from_analyze_diagnostic(syntax, d))
         .collect();
 
-    let resolver = NoopResolver;
-    match analyze(syntax, &resolver).await {
-        Ok(analysis) => {
-            // The analyzer's own diagnostics duplicate the scan
-            // we already did above — `scan_variables` is also
-            // called inside `analyze`. Dedup by (code, range).
-            for diag in analysis.diagnostics {
-                let mapped = diagnostic_from_analyze_diagnostic(syntax, diag);
-                if !out
-                    .iter()
-                    .any(|existing| existing.code == mapped.code && existing.range == mapped.range)
-                {
-                    out.push(mapped);
-                }
-            }
-        }
-        Err(err) => {
-            if let Some(diag) = diagnostic_from_analyze_error(syntax, err) {
-                out.push(diag);
-            }
+    if let Some(opened) = opened {
+        // The analyzer surfaces errors as a single `AnalyzeError`
+        // — translate it into one LSP diagnostic pinned to its
+        // source range when present.
+        if let Err(err) = analyze(syntax, opened.source()).perform(opened.env()).await {
+            out.push(diagnostic_from_analyze_error(syntax, err));
         }
     }
     out
+}
+
+/// Translate an [`AnalyzeError`] into an LSP [`Diagnostic`].
+/// Errors are always [`DiagnosticSeverity::ERROR`] and carry the
+/// stable `E_…` code matching the analyzer's error kind.
+fn diagnostic_from_analyze_error(
+    syntax: &tonk_notation::Syntax,
+    error: tonk_analyzer::analyzer::AnalyzeError,
+) -> lsp_types::Diagnostic {
+    use lsp_types::{Diagnostic, DiagnosticSeverity as LspSeverity, NumberOrString};
+
+    let range = error.range.unwrap_or(syntax.range);
+    let code = error.code();
+    let message = error.to_string();
+    Diagnostic {
+        range,
+        severity: Some(LspSeverity::ERROR),
+        code: Some(NumberOrString::String(code.into())),
+        code_description: None,
+        source: Some("tonk-schema".into()),
+        message,
+        related_information: None,
+        tags: None,
+        data: None,
+    }
 }
 
 /// Translate an [`AnalyzeDiagnostic`] (warning/error severity)
@@ -498,10 +501,10 @@ async fn analyzer_diagnostics(syntax: &tonk_notation::Syntax) -> Vec<lsp_types::
 /// when the diagnostic carries no source span.
 fn diagnostic_from_analyze_diagnostic(
     syntax: &tonk_notation::Syntax,
-    diagnostic: tonk_schema::analyzer::AnalyzeDiagnostic,
+    diagnostic: tonk_analyzer::analyzer::AnalyzeDiagnostic,
 ) -> lsp_types::Diagnostic {
     use lsp_types::{Diagnostic, DiagnosticSeverity as LspSeverity, NumberOrString};
-    use tonk_schema::analyzer::DiagnosticSeverity;
+    use tonk_analyzer::analyzer::DiagnosticSeverity;
 
     let severity = match diagnostic.severity {
         DiagnosticSeverity::Warning => LspSeverity::WARNING,
@@ -521,48 +524,6 @@ fn diagnostic_from_analyze_diagnostic(
         tags: None,
         data: None,
     }
-}
-
-/// Translate a single [`AnalyzeError`] into an LSP [`Diagnostic`].
-/// Returns `None` for error categories that need a real branch
-/// to evaluate accurately (and would therefore false-positive
-/// against the LSP's `NoopResolver`).
-fn diagnostic_from_analyze_error(
-    syntax: &tonk_notation::Syntax,
-    err: tonk_schema::analyzer::AnalyzeError,
-) -> Option<lsp_types::Diagnostic> {
-    use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
-    use tonk_schema::analyzer::AnalyzeErrorKind;
-
-    // Skip kinds that depend on a real branch resolver — the
-    // worker is the source of truth for those.
-    if matches!(
-        err.kind,
-        AnalyzeErrorKind::UnknownConcept { .. }
-            | AnalyzeErrorKind::UnknownBookmark { .. }
-            | AnalyzeErrorKind::ResolverFailed { .. }
-            | AnalyzeErrorKind::InvalidClaimAttribute { .. }
-    ) {
-        return None;
-    }
-
-    let code = err.code();
-    let message = err.kind.to_string();
-    // Fall back to the document range when an error has no
-    // span. Better than dropping the diagnostic — the user
-    // still sees the message.
-    let range = err.range.unwrap_or(syntax.range);
-    Some(Diagnostic {
-        range,
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(NumberOrString::String(code.into())),
-        code_description: None,
-        source: Some("tonk-schema".into()),
-        message,
-        related_information: None,
-        tags: None,
-        data: None,
-    })
 }
 
 /// Clamp `range`'s endpoints so neither one points past the
@@ -653,6 +614,27 @@ fn is_body_position(line_prefix: &str) -> bool {
         return false;
     }
     true
+}
+
+/// True when the cursor sits in the value of a rule premise's
+/// `assert:` key — `  - assert: <cursor>` — where a concept name
+/// or a built-in formula name belongs.
+///
+/// Matches the premise list item shape: leading indent, an
+/// optional `-` sequence marker, the `assert` key, its `:`, and
+/// then the (possibly partial) value the user is typing. The
+/// formula names carry `/`, so the value charset is permissive —
+/// anything up to the first whitespace after the `:`.
+fn is_premise_assert_position(line_prefix: &str) -> bool {
+    let trimmed = line_prefix.trim_start();
+    // Drop a leading `-` sequence marker and the space after it.
+    let trimmed = trimmed.strip_prefix('-').map_or(trimmed, str::trim_start);
+    let Some(value) = trimmed.strip_prefix("assert:") else {
+        return false;
+    };
+    // The cursor is in the value only while no second `:` has
+    // been typed (which would mean we're past the value).
+    !value.contains(':')
 }
 
 /// True when the user has typed a `?` and the cursor is sitting
@@ -785,30 +767,17 @@ fn enclosing_head(text: &str, position: lsp_types::Position) -> Option<String> {
 
 /// Field names declared by the head's concept descriptor, plus
 /// the always-available `this:` meta-key. Looks up the concept
-/// in the built-in registry first; falls back to
-/// `introspection.lookup_concept(head)` so branch-published
-/// concepts contribute their fields too.
-async fn field_completions(
+/// in the built-in registry first; falls back to resolving
+/// against the live `(source, env)` so branch-published concepts
+/// contribute their fields too.
+async fn field_completions<O: Opened + ?Sized>(
     head: &str,
-    introspection: Option<&(dyn BranchIntrospection + Send + Sync)>,
+    opened: Option<&O>,
 ) -> Vec<CompletionItem> {
     use lsp_types::{CompletionItemKind, Documentation};
-    use tonk_schema::builtin::lookup_concept;
 
-    // Built-in registry first. When it misses, ask the host's
-    // introspection — that's where branch-published concepts
-    // resolve from.
-    let descriptor = match lookup_concept(head) {
-        Some(resolved) => resolved.descriptor,
-        None => {
-            let Some(intro) = introspection else {
-                return Vec::new();
-            };
-            match intro.lookup_concept(head).await {
-                Ok(Some(resolved)) => resolved.descriptor,
-                _ => return Vec::new(),
-            }
-        }
+    let Some(descriptor) = lookup_concept_descriptor(head, opened).await else {
+        return Vec::new();
     };
 
     let mut out: Vec<CompletionItem> = Vec::new();
@@ -822,7 +791,7 @@ async fn field_completions(
         insert_text: Some("this: ".to_owned()),
         ..CompletionItem::default()
     });
-    for (field, attr) in descriptor.with().iter() {
+    for (field, attr) in descriptor.concept().with().iter() {
         let description = attr.description();
         out.push(CompletionItem {
             label: field.to_owned(),
@@ -840,13 +809,10 @@ async fn field_completions(
 }
 
 /// Concept names available in head position — built-ins plus
-/// every branch-published concept the host's introspection
-/// surfaces. The branch source is folded in only when the
-/// host plugged in an [`IntrospectionFactory`]; tests and
-/// document-only runs stay on built-ins.
-async fn head_completions(
-    introspection: Option<&(dyn BranchIntrospection + Send + Sync)>,
-) -> Vec<CompletionItem> {
+/// every branch-published concept the live `(source, env)`
+/// holds. The branch source is folded in only when the host
+/// opened one; tests and document-only runs stay on built-ins.
+async fn head_completions<O: Opened + ?Sized>(opened: Option<&O>) -> Vec<CompletionItem> {
     use lsp_types::{CompletionItemKind, Documentation};
     use std::collections::HashSet;
     use tonk_schema::builtin::concept_registry;
@@ -854,13 +820,14 @@ async fn head_completions(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut out: Vec<CompletionItem> = Vec::new();
 
-    for (name, resolved) in concept_registry().iter() {
+    for (name, definition) in concept_registry().iter() {
         emitted.insert((*name).to_owned());
         out.push(CompletionItem {
             label: (*name).to_owned(),
             kind: Some(CompletionItemKind::CLASS),
-            documentation: resolved
+            documentation: definition
                 .descriptor
+                .concept()
                 .description()
                 .map(|d| Documentation::String(d.to_owned())),
             insert_text: Some((*name).to_owned()),
@@ -868,41 +835,79 @@ async fn head_completions(
         });
     }
 
-    if let Some(intro) = introspection {
-        // Branch concepts come back via `list_named_entities`
-        // joined with `list_concepts` — only published names
-        // make sense as head-position completions, since the
-        // user types the name, not the entity URI. Built-in
+    if let Some(opened) = opened {
+        // Branch concepts come back via `NamedReference::list`
+        // joined with `ConceptDefinition::list` — only published
+        // names make sense as head-position completions, since
+        // the user types the name, not the entity URI. Built-in
         // names take precedence on collision (matches the
         // analyzer's resolution order).
-        let names = intro.list_named_entities().await.unwrap_or_default();
-        let concepts = intro.list_concepts().await.unwrap_or_default();
+        let names = NamedReference::list(opened.source())
+            .perform(opened.env())
+            .await
+            .unwrap_or_default();
+        let concepts = ConceptDefinition::list(opened.source())
+            .perform(opened.env())
+            .await
+            .unwrap_or_default();
         let concept_entities: HashSet<_> = concepts.iter().map(|c| c.entity.to_string()).collect();
         for named in names {
-            if !concept_entities.contains(&named.entity.to_string()) {
+            // `Name` carries `this` (`id:<name>`) and `entity`
+            // (the referent). Only `id:`-shaped names are
+            // user-typeable in head position.
+            let Some(label) = named
+                .this
+                .to_string()
+                .strip_prefix("id:")
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            let target = &named.entity.0;
+            if !concept_entities.contains(&target.to_string()) {
                 continue;
             }
-            if !emitted.insert(named.name.clone()) {
+            if !emitted.insert(label.clone()) {
                 continue;
             }
             // The concept's own description (when set) makes
             // a better hover than the bare name alone.
             let description = concepts
                 .iter()
-                .find(|c| c.entity == named.entity)
-                .and_then(|c| c.descriptor.description())
+                .find(|c| &c.entity == target)
+                .and_then(|c| c.descriptor.concept().description())
                 .map(|d| Documentation::String(d.to_owned()));
             out.push(CompletionItem {
-                label: named.name.clone(),
+                label: label.clone(),
                 kind: Some(CompletionItemKind::CLASS),
                 documentation: description,
-                insert_text: Some(named.name),
+                insert_text: Some(label),
                 ..CompletionItem::default()
             });
         }
     }
 
     out
+}
+
+/// Built-in formula names as completion items for a premise's
+/// `assert:` value. Sourced from the analyzer's formula registry
+/// so the list never drifts from what the analyzer accepts.
+fn formula_completions_items() -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_analyzer::analyzer::formula_completions;
+
+    formula_completions()
+        .into_iter()
+        .map(|formula| CompletionItem {
+            label: formula.name.to_owned(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some(formula.detail.clone()),
+            documentation: Some(Documentation::String(formula.detail)),
+            insert_text: Some(formula.name.to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
 }
 
 /// Find the identifier surrounding `col` on a single line. Returns
@@ -940,21 +945,27 @@ fn identifier_at(line: &str, col: usize) -> Option<(usize, usize, String)> {
     Some((start, end, name))
 }
 
-/// Resolve a concept name to its descriptor — built-in registry
-/// first, then branch-published via introspection. Returns the
-/// descriptor (without the surrounding `ResolvedConcept` envelope)
-/// since hover only needs description and field set.
-async fn lookup_concept_descriptor(
+/// Resolve a concept name to its durability-tagged descriptor —
+/// built-in registry first, then the live `(source, env)` pair.
+/// Returns the descriptor (without the surrounding
+/// `ConceptDefinition` envelope) since hover and completion only
+/// need the field set.
+async fn lookup_concept_descriptor<O: Opened + ?Sized>(
     name: &str,
-    introspection: Option<&(dyn BranchIntrospection + Send + Sync)>,
-) -> Option<tonk_introspect::ConceptDescriptor> {
+    opened: Option<&O>,
+) -> Option<ConceptDescriptor> {
     use tonk_schema::builtin::lookup_concept;
-    if let Some(resolved) = lookup_concept(name) {
-        return Some(resolved.descriptor);
+    if let Some(definition) = lookup_concept(name) {
+        return Some(definition.descriptor);
     }
-    let intro = introspection?;
-    match intro.lookup_concept(name).await {
-        Ok(Some(resolved)) => Some(resolved.descriptor),
+    let opened = opened?;
+    let reference = ConceptReference::from(NamedReference(name.to_owned()));
+    match reference
+        .resolve(opened.source())
+        .perform(opened.env())
+        .await
+    {
+        Ok(Some(definition)) => Some(definition.descriptor),
         _ => None,
     }
 }
@@ -963,7 +974,7 @@ async fn lookup_concept_descriptor(
 /// the description (if any) and the field list. The field list is
 /// useful even when there's no description — it documents the
 /// shape the head accepts.
-fn render_concept_hover(name: &str, descriptor: &tonk_introspect::ConceptDescriptor) -> String {
+fn render_concept_hover(name: &str, descriptor: &DialogConceptDescriptor) -> String {
     let mut out = format!("**{name}** _(concept)_");
     if let Some(desc) = descriptor.description() {
         out.push_str("\n\n");
@@ -992,7 +1003,7 @@ fn render_concept_hover(name: &str, descriptor: &tonk_introspect::ConceptDescrip
 /// Render a Markdown hover body for a body-position field: the
 /// backing attribute's qualified name, type, cardinality, and
 /// description.
-fn render_field_hover(field: &str, attr: &tonk_introspect::AttributeDescriptor) -> String {
+fn render_field_hover(field: &str, attr: &AttributeDescriptor) -> String {
     let card = format!("{:?}", attr.cardinality()).to_lowercase();
     let ty = match attr.content_type() {
         Some(t) => format_type(&t),
@@ -1011,12 +1022,40 @@ fn render_field_hover(field: &str, attr: &tonk_introspect::AttributeDescriptor) 
     out
 }
 
-/// JSON-shaped rendering of a [`tonk_introspect::Type`]. The type
-/// enum has no `Display`; serializing through serde gives the same
-/// shape used in concept descriptors elsewhere, which is the form
-/// the user already sees in error messages.
-fn format_type(ty: &tonk_introspect::Type) -> String {
+/// JSON-shaped rendering of a [`Type`]. The type enum has no
+/// `Display`; serializing through serde gives the same shape used
+/// in concept descriptors elsewhere, which is the form the user
+/// already sees in error messages.
+fn format_type(ty: &Type) -> String {
     serde_json::to_string(ty).unwrap_or_else(|_| format!("{ty:?}"))
+}
+
+/// Open the host's live `(source, env)` pair for a document URI.
+///
+/// The URI is parsed to `(repo, branch)` and handed to the
+/// host's [`EnvProvider`]. Returns `None` when the URI doesn't
+/// name a branch the host knows — completion, hover, and
+/// diagnostics then degrade to the document-local sources.
+async fn open_for<P: EnvProvider>(uri: &Uri, env: &P) -> Option<P::Opened> {
+    let (repo, branch) = parse_repo_branch(uri)?;
+    env.open(&repo, &branch).await
+}
+
+/// Pull `(repo, branch)` out of a
+/// `tonk-buffer:///<repo>/<branch>/<cell-suffix>` URI — the shape
+/// the editor's `<tonk-code source>` sets. Returns `None` for any
+/// other shape, including profile buffers (which use `<profile>`
+/// as the repo segment).
+fn parse_repo_branch(uri: &Uri) -> Option<(String, String)> {
+    let rest = uri.as_str().strip_prefix("tonk-buffer:///")?;
+    // First segment is repo (or `<profile>`); second is branch.
+    let mut parts = rest.splitn(3, '/');
+    let repo = parts.next()?;
+    let branch = parts.next()?;
+    if repo.is_empty() || branch.is_empty() || repo == "<profile>" {
+        return None;
+    }
+    Some((repo.to_owned(), branch.to_owned()))
 }
 
 /// Capabilities advertised in the `initialize` response. Kept in one
@@ -1063,8 +1102,25 @@ fn server_capabilities() -> ServerCapabilities {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use async_trait::async_trait;
+    use dialog_repository::Branch;
+    use dialog_repository::helpers::{test_operator_with_profile, test_repo};
     use serde_json::json;
+    use tonk_schema::concept::QueryEnv;
+    use tonk_schema::query_source::Source;
+
+    use super::*;
+    use crate::env::NoEnv;
+
+    /// Refcounted handle to a value that may not be `Send + Sync`
+    /// on wasm. `Arc` everywhere except wasm32, where the test
+    /// operator's storage isn't `Sync` and the runtime is
+    /// single-threaded anyway.
+    #[cfg(not(target_arch = "wasm32"))]
+    type Rc<T> = std::sync::Arc<T>;
+    #[cfg(target_arch = "wasm32")]
+    type Rc<T> = std::rc::Rc<T>;
+
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
@@ -1073,9 +1129,82 @@ mod tests {
     async fn run(server: &mut Server, msg: &Value) -> Option<Value> {
         let bytes = serde_json::to_vec(msg).unwrap();
         server
-            .handle_message(&bytes)
+            .handle_message(&bytes, &NoEnv)
             .await
             .map(|reply| serde_json::from_slice(&reply).unwrap())
+    }
+
+    /// Run a message against the server with a live host env
+    /// backed by an empty test branch.
+    async fn run_with<P: EnvProvider>(server: &mut Server, msg: &Value, env: &P) -> Option<Value> {
+        let bytes = serde_json::to_vec(msg).unwrap();
+        server
+            .handle_message(&bytes, env)
+            .await
+            .map(|reply| serde_json::from_slice(&reply).unwrap())
+    }
+
+    /// A test [`EnvProvider`] backed by a real but empty test
+    /// branch — enough for the analyzer pass to surface
+    /// structural errors that don't depend on branch-published
+    /// content. Generic over the operator type so we don't have
+    /// to name `VolatileSpace` in scope.
+    struct TestEnv<Op> {
+        operator: Rc<Op>,
+        branch: Branch,
+    }
+
+    /// The [`Opened`] handed back per request — a cheap clone of
+    /// the underlying branch + a refcount of the operator.
+    struct TestOpened<Op> {
+        operator: Rc<Op>,
+        branch: Branch,
+    }
+
+    impl<Op> Opened for TestOpened<Op>
+    where
+        Op: QueryEnv,
+    {
+        type Env = Op;
+        fn source(&self) -> Source<'_> {
+            Source::from(&self.branch)
+        }
+        fn env(&self) -> &Self::Env {
+            &self.operator
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+    impl<Op> EnvProvider for TestEnv<Op>
+    where
+        Op: QueryEnv,
+    {
+        type Opened = TestOpened<Op>;
+        async fn open(&self, _repo: &str, _branch: &str) -> Option<Self::Opened> {
+            Some(TestOpened {
+                operator: self.operator.clone(),
+                branch: self.branch.clone(),
+            })
+        }
+    }
+
+    /// Build a `TestEnv` wrapping a fresh empty test branch.
+    /// `impl Trait` in the return type hides the operator's space
+    /// parameter.
+    async fn new_test_env() -> TestEnv<impl QueryEnv> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo
+            .branch("main")
+            .open()
+            .perform(&operator)
+            .await
+            .expect("test branch opens");
+        TestEnv {
+            operator: Rc::new(operator),
+            branch,
+        }
     }
 
     #[dialog_common::test]
@@ -1206,11 +1335,14 @@ mod tests {
 
     /// Analyzer-derived diagnostics carry a stable `code` and a
     /// source `range` so the editor can underline the offending
-    /// span and route quickfixes by code.
+    /// span and route quickfixes by code. Exercises the live
+    /// analyzer pass — the host opens an empty test branch, and
+    /// the structural error fires before any branch lookup.
     #[dialog_common::test]
     async fn it_publishes_diagnostic_with_code_and_range_from_analyzer() {
         let mut server = Server::new();
-        let _ = run(
+        let env = new_test_env().await;
+        let _ = run_with(
             &mut server,
             &json!({
                 "jsonrpc": "2.0",
@@ -1218,6 +1350,7 @@ mod tests {
                 "method": "initialize",
                 "params": { "capabilities": {} }
             }),
+            &env,
         )
         .await;
         // `person!:` (empty body) — analyzer rejects with
@@ -1227,14 +1360,14 @@ mod tests {
             "method": "textDocument/didOpen",
             "params": {
                 "textDocument": {
-                    "uri": "tonk-buffer:///test",
+                    "uri": "tonk-buffer:///repo/main/test",
                     "languageId": "carry-asserted",
                     "version": 1,
                     "text": "person!:\n"
                 }
             }
         });
-        run(&mut server, &note).await;
+        run_with(&mut server, &note, &env).await;
         let outbound = server.take_outbound();
         let diags = outbound[0].params["diagnostics"].as_array().unwrap();
         assert_eq!(diags.len(), 1, "expected one diagnostic, got {diags:?}");
@@ -1298,6 +1431,83 @@ mod tests {
             assert!(
                 labels.contains(&builtin),
                 "expected `{builtin}` in completion list, got {labels:?}",
+            );
+        }
+    }
+
+    /// `is_premise_assert_position` recognises the cursor sitting
+    /// in a premise's `assert:` value, whether or not a `-`
+    /// sequence marker precedes it, and rejects body / head /
+    /// past-the-value prefixes.
+    #[test]
+    fn it_detects_premise_assert_position() {
+        assert!(is_premise_assert_position("    - assert: "));
+        assert!(is_premise_assert_position("    - assert: math/"));
+        assert!(is_premise_assert_position("      assert: math/sum"));
+        // Not an assert value.
+        assert!(!is_premise_assert_position("  count: "));
+        assert!(!is_premise_assert_position("person"));
+        // Past the value — a second `:` means we've moved on.
+        assert!(!is_premise_assert_position("    - assert: ping\n  where:"));
+    }
+
+    /// In a premise's `assert:` value the completion list carries
+    /// the built-in formulas (`math/sum`, …) alongside concepts.
+    #[dialog_common::test]
+    async fn it_offers_formulas_in_premise_assert_position() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        let text = "rule!:\n  assert!: counter\n  when:\n    - assert: ";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test" },
+                "position": { "line": 3, "character": 14 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let labels: Vec<&str> = items
+            .iter()
+            .map(|i| i["label"].as_str().unwrap_or_default())
+            .collect();
+        for formula in [
+            "math/sum",
+            "math/difference",
+            "boolean/and",
+            "text/concatenate",
+        ] {
+            assert!(
+                labels.contains(&formula),
+                "expected `{formula}` in completion list, got {labels:?}",
             );
         }
     }

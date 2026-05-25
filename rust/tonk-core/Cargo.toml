@@ -1,0 +1,29 @@
+[package]
+name = "tonk-core"
+description = "Operation-type primitives — mutations, transactions, effects, and meta facts"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
+
+[dependencies]
+base58 = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-common = { workspace = true }
+dialog-query = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_ipld_dagcbor = { workspace = true }
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+serde_json = { workspace = true, features = ["preserve_order"] }
+wasm-bindgen-test = { workspace = true }

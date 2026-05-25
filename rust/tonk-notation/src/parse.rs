@@ -17,7 +17,8 @@ use saphyr::{MarkedYaml, Scalar as SaphyrScalar, ScanError, YamlData, YamlLoader
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle, Span, SpannedEventReceiver, StrInput};
 
 use crate::syntax::{
-    Anchor, Assertion, Expression, Field, FieldValue, Head, HeadName, Query, Scalar, Syntax,
+    Anchor, Application, Effectful, Expression, Field, FieldValue, HeadName, Predicate, Premise,
+    Scalar, Spanned, Syntax,
 };
 
 /// Outcome of a parse.
@@ -370,9 +371,22 @@ fn walk_expression(
     };
 
     let key_range = range_of(key);
-    let head = parse_head(key_text, key_range, out)?;
+    let (head, effect) = parse_head(key_text, key_range, out)?;
     let block_range = extend_range(key_range, range_of(value));
     let anchor = scan_anchor(source, key.span.end, value.span.start);
+    let rule_body = effect && is_rule_predicate(&head);
+
+    // `rule!:` claims forbid `&anchor`: the rule has no single
+    // subject entity to bind a name to (the rule's *effect entity*
+    // is content-derived from the body).
+    if rule_body && anchor.is_some() {
+        out.push(error(
+            block_range,
+            "`&anchor` is not valid on a `rule!:` claim. Anchors publish a \
+             single entity's name; rules have no single subject entity \
+             (the effect's identity is derived from its rule body).",
+        ));
+    }
 
     // Body: null/empty (no-fields query or assertion), or a
     // mapping of fields. A bare `_` body is rejected — entity
@@ -394,7 +408,7 @@ fn walk_expression(
         YamlData::Mapping(fields) => {
             let mut nodes = Vec::new();
             for (field_key, field_value) in fields {
-                if let Some(field) = walk_field(field_key, field_value, out) {
+                if let Some(field) = walk_field(field_key, field_value, rule_body, out) {
                     nodes.push(field);
                 }
             }
@@ -418,12 +432,16 @@ fn walk_expression(
         }
     };
 
-    if head.effect {
-        Some(Expression::Assertion(Assertion {
-            head,
+    let application = Application {
+        predicate: head,
+        fields: field_nodes,
+        range: block_range,
+    };
+
+    if effect {
+        Some(Expression::Claim(Effectful {
             anchor,
-            fields: field_nodes,
-            range: block_range,
+            inner: application,
         }))
     } else {
         if anchor.is_some() {
@@ -436,11 +454,165 @@ fn walk_expression(
                  no single target to point at.",
             ));
         }
-        Some(Expression::Query(Query {
-            head,
-            fields: field_nodes,
-            range: block_range,
-        }))
+        Some(Expression::Query(application))
+    }
+}
+
+/// `rule!:` claims have body fields whose values follow a richer
+/// shape than the generic field-map (`when:` / `unless:` take
+/// premise lists). [`walk_field`] dispatches on this when the
+/// containing claim is over the `rule` predicate.
+fn is_rule_predicate(head: &Predicate) -> bool {
+    matches!(&head.name, HeadName::Concept(name) if name == "rule")
+}
+
+// ---------------------------------------------------------------- //
+// Premise parsing — for `when:` / `unless:` values inside `rule!:`. //
+// ---------------------------------------------------------------- //
+//
+// A premise list sits inside a `rule!:` claim body as the value of
+// a `when:` or `unless:` field. The list shape is fixed:
+//
+
+// ```yaml
+// - assert: counter
+//   where: { this: ?c, count: ?n }
+// - assert: increment
+//   where: { subject: ?c }
+// ```
+//
+// Premises are typed in the syntax tree (a [`Premise`] is a concept
+// + bindings + range) rather than nested `Field`s so each premise's
+// span survives into analyzer diagnostics. The analyzer reads
+// [`FieldValue::Premises`] when projecting a `rule` claim into an
+// [`tonk_schema::rule::Rule`] mutation.
+
+/// Parse a `when:` or `unless:` value as a list of premises. Each
+/// list item must be a `{assert: <concept>, where: { … }}` mapping.
+fn parse_premise_list(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Vec<Premise> {
+    let YamlData::Sequence(items) = &value.data else {
+        out.push(error(
+            range_of(value),
+            "`when:` / `unless:` must be a list (`-` items) of premises.",
+        ));
+        return Vec::new();
+    };
+    let mut premises = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(premise) = parse_premise(item, out) {
+            premises.push(premise);
+        }
+    }
+    premises
+}
+
+/// Parse one premise: `{ assert: <concept>, where: { … } }`.
+fn parse_premise(item: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<Premise> {
+    let Some(pairs) = mapping_of(item) else {
+        out.push(error(
+            range_of(item),
+            "Premise must be a mapping with `assert:` and `where:` \
+             fields.",
+        ));
+        return None;
+    };
+
+    let mut concept: Option<Spanned<String>> = None;
+    let mut bindings: Vec<Field> = Vec::new();
+
+    for (k, v) in pairs {
+        let Some(key) = string_of(k) else {
+            out.push(error(
+                range_of(k),
+                "Premise key must be a string (`assert:` or `where:`).",
+            ));
+            continue;
+        };
+        let key_range = range_of(k);
+        match key {
+            "assert" => {
+                if concept.is_some() {
+                    out.push(error(
+                        key_range,
+                        "Premise already declared `assert:`. Each premise \
+                         names one concept.",
+                    ));
+                    continue;
+                }
+                let Some(name) = string_of(v).map(str::to_owned) else {
+                    out.push(error(
+                        range_of(v),
+                        "Premise `assert:` value must be a concept name.",
+                    ));
+                    continue;
+                };
+                concept = Some(Spanned::new(name, range_of(v)));
+            }
+            "where" => {
+                if !bindings.is_empty() {
+                    out.push(error(
+                        key_range,
+                        "Premise already declared `where:`. Combine \
+                         bindings into one mapping.",
+                    ));
+                    continue;
+                }
+                let Some(field_pairs) = mapping_of(v) else {
+                    out.push(error(
+                        range_of(v),
+                        "Premise `where:` must be a mapping of \
+                         `field: value`.",
+                    ));
+                    continue;
+                };
+                // `where:` bindings are plain Field values — no rule
+                // body recursion (no nested `when:`/`unless:` inside a
+                // premise body).
+                for (field_key, field_value) in field_pairs {
+                    if let Some(field) = walk_field(field_key, field_value, false, out) {
+                        bindings.push(field);
+                    }
+                }
+            }
+            other => {
+                out.push(error(
+                    key_range,
+                    format!(
+                        "Unknown premise key `{other}`. Valid keys: \
+                         `assert:`, `where:`."
+                    ),
+                ));
+            }
+        }
+    }
+
+    let concept = concept.or_else(|| {
+        out.push(error(
+            range_of(item),
+            "Premise must declare `assert: <concept-name>`.",
+        ));
+        None
+    })?;
+
+    Some(Premise {
+        concept,
+        bindings,
+        range: range_of(item),
+    })
+}
+
+/// Extract the mapping pairs from a [`MarkedYaml`], or `None`
+/// if it isn't a mapping. Returns the underlying
+/// `LinkedHashMap` (via the saphyr-exposed
+/// `AnnotatedMapping<'_, MarkedYaml<'_>>` alias) so callers can
+/// iterate `for (k, v) in pairs` — order matches source.
+fn mapping_of<'a, 'b>(
+    value: &'a MarkedYaml<'b>,
+) -> Option<&'a saphyr::AnnotatedMapping<'b, MarkedYaml<'b>>> {
+    if let YamlData::Mapping(pairs) = &value.data {
+        Some(pairs)
+    } else {
+        None
     }
 }
 
@@ -450,7 +622,15 @@ fn walk_expression(
 /// about *which* entity an expression operates on lives in the
 /// body via `this:` (or, for assertions, via a `&anchor` between
 /// the colon and the body).
-fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option<Head> {
+/// Parse the head text into a [`Predicate`] plus the trailing `!`
+/// marker. The caller decides what to do with the marker — wrapping
+/// the resulting [`Application`] in [`Effectful`] for claims, or
+/// rejecting unexpected `!`s for queries.
+fn parse_head(
+    text: &str,
+    key_range: Range,
+    out: &mut Vec<Diagnostic>,
+) -> Option<(Predicate, bool)> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         out.push(error(key_range, "Head must not be empty."));
@@ -486,12 +666,14 @@ fn parse_head(text: &str, key_range: Range, out: &mut Vec<Diagnostic>) -> Option
 
     let name = classify_head_name(name_str);
 
-    Some(Head {
-        name,
-        range: key_range,
-        source: name_str.to_owned(),
+    Some((
+        Predicate {
+            name,
+            range: key_range,
+            source: name_str.to_owned(),
+        },
         effect,
-    })
+    ))
 }
 
 /// Decide whether a head name is a concept, a claim domain, or a
@@ -573,9 +755,14 @@ fn byte_offset_to_position(source: &str, offset: usize) -> Position {
     }
 }
 
+/// Walk one body field. `rule_body` flags whether the surrounding
+/// claim is over the `rule` predicate, in which case `when:` and
+/// `unless:` field values are parsed as premise lists rather than
+/// rejected as generic sequences.
 fn walk_field(
     key: &MarkedYaml<'_>,
     value: &MarkedYaml<'_>,
+    rule_body: bool,
     out: &mut Vec<Diagnostic>,
 ) -> Option<Field> {
     let Some(name) = string_of(key) else {
@@ -583,7 +770,11 @@ fn walk_field(
         return None;
     };
     let value_range = range_of(value);
-    let field_value = walk_field_value(value, out)?;
+    let field_value = if rule_body && (name == "when" || name == "unless") {
+        Some(FieldValue::Premises(parse_premise_list(value, out)))
+    } else {
+        walk_field_value(value, rule_body, out)
+    }?;
     Some(Field {
         name: name.to_owned(),
         name_range: range_of(key),
@@ -592,7 +783,14 @@ fn walk_field(
     })
 }
 
-fn walk_field_value(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option<FieldValue> {
+/// Walk a field value. `rule_body` propagates so that nested
+/// `when:` / `unless:` inside a `rule!:` body (uncommon but
+/// possible if a user nests rule mappings) reaches premise parsing.
+fn walk_field_value(
+    value: &MarkedYaml<'_>,
+    rule_body: bool,
+    out: &mut Vec<Diagnostic>,
+) -> Option<FieldValue> {
     match &value.data {
         YamlData::Value(SaphyrScalar::String(s)) => {
             // Saphyr's `Value::String` covers both quoted strings
@@ -628,7 +826,7 @@ fn walk_field_value(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option
         YamlData::Mapping(map) => {
             let mut nested = Vec::new();
             for (k, v) in map {
-                if let Some(field) = walk_field(k, v, out) {
+                if let Some(field) = walk_field(k, v, rule_body, out) {
                     nested.push(field);
                 }
             }
@@ -642,7 +840,7 @@ fn walk_field_value(value: &MarkedYaml<'_>, out: &mut Vec<Diagnostic>) -> Option
             ));
             None
         }
-        YamlData::Tagged(_, inner) => walk_field_value(inner, out),
+        YamlData::Tagged(_, inner) => walk_field_value(inner, rule_body, out),
         YamlData::Alias(_) => {
             out.push(error(
                 range_of(value),
@@ -983,8 +1181,8 @@ mod tests {
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query, got {:?}", syntax.expressions[0]);
         };
-        assert!(matches!(&q.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(!q.head.effect);
+        assert!(matches!(&q.predicate.name, HeadName::Concept(n) if n == "person"));
+        // (no-effect implied by Expression::Query variant)
         assert!(q.fields.is_empty());
     }
 
@@ -1001,7 +1199,7 @@ person:
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.name, HeadName::Concept(n) if n == "person"));
+        assert!(matches!(&q.predicate.name, HeadName::Concept(n) if n == "person"));
         assert_eq!(q.fields.len(), 3);
         assert_eq!(q.fields[0].name, "this");
         assert!(matches!(&q.fields[0].value, FieldValue::Variable(v) if v == "alice"));
@@ -1024,7 +1222,7 @@ xyz.tonk:
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.name, HeadName::Claim(n) if n == "xyz.tonk"));
+        assert!(matches!(&q.predicate.name, HeadName::Claim(n) if n == "xyz.tonk"));
     }
 
     #[dialog_common::test]
@@ -1037,11 +1235,14 @@ db:concept!:
     foo: bar
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "db:concept"));
-        assert!(a.head.effect);
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "db:concept"));
     }
 
     #[dialog_common::test]
@@ -1053,12 +1254,11 @@ person!:
   address: "Portland, OR"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(a.head.effect);
-        assert!(a.anchor.is_none());
+        assert!(matches!(&a.predicate.name, HeadName::Concept(n) if n == "person"));
+        assert!(anchor.is_none());
     }
 
     #[dialog_common::test]
@@ -1070,10 +1270,10 @@ person!: &alice
   age: 28
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        let anchor = a.anchor.as_ref().expect("anchor present");
+        let anchor = anchor.as_ref().expect("anchor present");
         assert_eq!(anchor.name, "alice");
     }
 
@@ -1088,10 +1288,10 @@ attribute!: &person-name
   cardinality: one
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        assert_eq!(a.anchor.as_ref().unwrap().name, "person-name");
+        assert_eq!(anchor.as_ref().unwrap().name, "person-name");
     }
 
     #[dialog_common::test]
@@ -1129,7 +1329,11 @@ person!:
   age: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert_eq!(a.fields.len(), 2);
@@ -1149,7 +1353,11 @@ person!:
   ..: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let dotdot = a.fields.iter().find(|f| f.name == "..").unwrap();
@@ -1197,7 +1405,11 @@ concept!: &person
     age:  person-age
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let with_field = a.fields.iter().find(|f| f.name == "with").unwrap();
@@ -1234,8 +1446,8 @@ xyz.tonk:
         let Expression::Query(q2) = &syntax.expressions[1] else {
             panic!("expected Query 2");
         };
-        assert!(matches!(&q1.head.name, HeadName::Concept(n) if n == "person"));
-        assert!(matches!(&q2.head.name, HeadName::Claim(n) if n == "xyz.tonk"));
+        assert!(matches!(&q1.predicate.name, HeadName::Concept(n) if n == "person"));
+        assert!(matches!(&q2.predicate.name, HeadName::Claim(n) if n == "xyz.tonk"));
     }
 
     #[dialog_common::test]
@@ -1246,7 +1458,11 @@ person!:
   address: "Portland, OR"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1266,7 +1482,11 @@ concept!:
     name: person-name
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let FieldValue::Nested(inner) = &a.fields[0].value else {
@@ -1287,7 +1507,11 @@ name!:
   entity: did:key:zHjKf
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1307,7 +1531,11 @@ attribute!: &person-name
   description: "name"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let the = a.fields.iter().find(|f| f.name == "the").unwrap();
@@ -1431,7 +1659,11 @@ person!:
     entropy: "Maybe Not"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1452,10 +1684,14 @@ id:person!:
   description: "x"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "id:person"));
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "id:person"));
     }
 
     #[dialog_common::test]
@@ -1466,10 +1702,14 @@ did:key:zHjKf!:
   ..: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
-        assert!(matches!(&a.head.name, HeadName::Uri(u) if u == "did:key:zHjKf"));
+        assert!(matches!(&a.predicate.name, HeadName::Uri(u) if u == "did:key:zHjKf"));
     }
 
     #[dialog_common::test]
@@ -1481,7 +1721,11 @@ person!:
   age: 30
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1497,7 +1741,11 @@ name!:
   entity: did:key:zX
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1513,7 +1761,11 @@ person!:
   ..: _
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let this = a.fields.iter().find(|f| f.name == "this").unwrap();
@@ -1528,7 +1780,11 @@ thing!:
   weight: 1.5
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         match &a.fields[0].value {
@@ -1546,7 +1802,11 @@ thing!:
   no: false
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let yes = a.fields.iter().find(|f| f.name == "yes").unwrap();
@@ -1569,7 +1829,11 @@ thing!:
   nope: null
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         // Plain `null` in field-value position is a Null literal,
@@ -1590,7 +1854,11 @@ thing!:
   name: "alice"
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1607,7 +1875,11 @@ thing!:
   name: 'alice'
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1627,7 +1899,11 @@ thing!:
   ref: xyz.tonk.person
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1647,7 +1923,11 @@ thing!:
   greeting: hello world
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1667,7 +1947,11 @@ thing!:
   ref: name_alt
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1688,7 +1972,11 @@ thing!:
   single: 'person-name'
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let bare = a.fields.iter().find(|f| f.name == "bare").unwrap();
@@ -1720,7 +2008,11 @@ thing!:
   name: Alice
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1737,7 +2029,11 @@ thing!:
   ref: a-b1.c+d
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         assert!(matches!(
@@ -1753,11 +2049,11 @@ thing!:
         // `person!:` with no fields is syntactically valid (no-op
         // semantically; the analyzer may flag it).
         let syntax = parse_clean("person!:\n");
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
         assert!(a.fields.is_empty());
-        assert!(a.anchor.is_none());
+        assert!(anchor.is_none());
     }
 
     #[dialog_common::test]
@@ -1774,16 +2070,16 @@ person!:
         );
         assert_eq!(syntax.expressions.len(), 2);
         assert!(matches!(syntax.expressions[0], Expression::Query(_)));
-        assert!(matches!(syntax.expressions[1], Expression::Assertion(_)));
+        assert!(matches!(syntax.expressions[1], Expression::Claim(_)));
     }
 
     #[dialog_common::test]
     fn it_records_anchor_range_pointing_at_ampersand() {
         let syntax = parse_clean("person!: &alice\n  name: \"Alice\"\n");
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful { anchor, inner: _a }) = &syntax.expressions[0] else {
             panic!("expected Assertion");
         };
-        let anchor = a.anchor.as_ref().unwrap();
+        let anchor = anchor.as_ref().unwrap();
         // Anchor occupies the `&alice` token starting at column 9
         // (after `person!: `) on line 0.
         assert_eq!(anchor.range.start.line, 0);
@@ -1804,7 +2100,7 @@ xyz.tonk.person/name:
         let Expression::Query(q) = &syntax.expressions[0] else {
             panic!("expected Query");
         };
-        assert!(matches!(&q.head.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
+        assert!(matches!(&q.predicate.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
     }
 
     /// `|`-style block scalars are unambiguously string literals,
@@ -1824,7 +2120,11 @@ page!:
     </html>
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let content = a
@@ -1853,7 +2153,11 @@ page!:
   type: text/html
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let ty = a
@@ -1878,7 +2182,11 @@ attribute!:
   the: xyz.tonk.person/name
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let the = a
@@ -1904,7 +2212,11 @@ person!:
   scheme: db:concept
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         for name in ["this", "ref", "scheme"] {
@@ -1933,7 +2245,11 @@ page!:
     description
 "#,
         );
-        let Expression::Assertion(a) = &syntax.expressions[0] else {
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
             panic!("expected Assertion");
         };
         let desc = a
@@ -1964,6 +2280,142 @@ page!:
         assert!(
             range.end.line == 0,
             "diagnostic end must stay on the only line, got {range:?}",
+        );
+    }
+
+    // -------------------------------------------------------------
+    // Rule expressions
+    // -------------------------------------------------------------
+
+    /// `rule!:` parses as a [`Claim`] over the `rule` predicate with
+    /// its body fields preserved. The parser doesn't validate the
+    /// shape of those fields (one polarity, non-empty `when:`,
+    /// etc.) — that lives in the analyzer, where it can produce
+    /// diagnostics with semantic context.
+    #[dialog_common::test]
+    fn it_parses_rule_claim_as_concept_with_body_fields() {
+        let syntax =
+            parse_clean("rule!:\n  assert!: pong\n  when:\n    - assert: ping\n      where: {}\n");
+        assert_eq!(syntax.expressions.len(), 1);
+        let Expression::Claim(Effectful { anchor, inner: app }) = &syntax.expressions[0] else {
+            panic!("expected Claim, got {:?}", syntax.expressions[0]);
+        };
+        assert!(anchor.is_none());
+        assert!(
+            matches!(&app.predicate.name, HeadName::Concept(n) if n == "rule"),
+            "predicate should be the `rule` concept",
+        );
+
+        // assert!: field carries the head concept as a symbol/literal.
+        let polarity = app
+            .fields
+            .iter()
+            .find(|f| f.name == "assert!")
+            .expect("assert!: field present");
+        assert!(matches!(&polarity.value, FieldValue::Symbol(s) if s == "pong"));
+
+        // when: field is a premise list — typed, not a generic nested map.
+        let when = app
+            .fields
+            .iter()
+            .find(|f| f.name == "when")
+            .expect("when: field present");
+        let FieldValue::Premises(premises) = &when.value else {
+            panic!("when: should be FieldValue::Premises, got {:?}", when.value);
+        };
+        assert_eq!(premises.len(), 1);
+        assert_eq!(premises[0].concept.value, "ping");
+        assert!(premises[0].bindings.is_empty());
+    }
+
+    /// `retract!:` polarity field carries through the same way.
+    /// Premise bindings inside `where:` keep their typed value
+    /// shape (variables stay [`FieldValue::Variable`]).
+    #[dialog_common::test]
+    fn it_parses_retract_polarity_rule() {
+        let syntax = parse_clean(
+            "rule!:\n\
+             \x20 retract!: message\n\
+             \x20 when:\n\
+             \x20   - assert: ack\n\
+             \x20     where: { target: ?m }\n\
+             \x20   - assert: message\n\
+             \x20     where: { this: ?m, body: ?b }\n",
+        );
+        let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        let polarity = app.fields.iter().find(|f| f.name == "retract!").unwrap();
+        assert!(matches!(&polarity.value, FieldValue::Symbol(s) if s == "message"));
+        let FieldValue::Premises(premises) =
+            &app.fields.iter().find(|f| f.name == "when").unwrap().value
+        else {
+            panic!("when value must be Premises");
+        };
+        assert_eq!(premises.len(), 2);
+        assert_eq!(premises[0].concept.value, "ack");
+        assert_eq!(premises[1].bindings.len(), 2);
+    }
+
+    /// `unless:` parses to a premise list too, and `description:`
+    /// is a plain string-literal field.
+    #[dialog_common::test]
+    fn it_parses_unless_and_description() {
+        let syntax = parse_clean(
+            "rule!:\n\
+             \x20 description: \"increment counter on increment command\"\n\
+             \x20 assert!: counter\n\
+             \x20 when:\n\
+             \x20   - assert: counter\n\
+             \x20     where: { this: ?c, count: ?prev }\n\
+             \x20 unless:\n\
+             \x20   - assert: counter-paused\n\
+             \x20     where: { this: ?c }\n",
+        );
+        let Expression::Claim(Effectful { inner: app, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        let FieldValue::Premises(unless) = &app
+            .fields
+            .iter()
+            .find(|f| f.name == "unless")
+            .unwrap()
+            .value
+        else {
+            panic!("unless value must be Premises");
+        };
+        assert_eq!(unless.len(), 1);
+        assert_eq!(unless[0].concept.value, "counter-paused");
+        let desc = app.fields.iter().find(|f| f.name == "description").unwrap();
+        assert!(
+            matches!(&desc.value, FieldValue::Literal(Scalar::String(s)) if s.contains("increment counter")),
+            "description must be a string literal",
+        );
+    }
+
+    /// Anchors on `rule!:` heads are rejected — rules don't have a
+    /// single subject entity to name. (Validation that lives in the
+    /// parser because it's a syntactic restriction on the
+    /// head-grammar slot, not a semantic property of the rule body.)
+    #[dialog_common::test]
+    fn it_rejects_anchor_on_rule_head() {
+        let parsed = parse(
+            "rule!: &mine\n\
+             \x20 assert!: pong\n\
+             \x20 when:\n\
+             \x20   - assert: ping\n\
+             \x20     where: {}\n",
+        );
+        let messages: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("&anchor") && m.contains("`rule!:`")),
+            "expected diagnostic about anchor on rule, got {messages:?}",
         );
     }
 }

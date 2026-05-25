@@ -117,10 +117,11 @@ pub fn phase1_query(parsed: &ParsedSource) -> Query {
         "terms": terms,
         "predicate": {
             "with": {
-                "concept":     { "the": "dialog.meta/concept",     "as": "Entity", "cardinality": "one" },
-                "name":        { "the": "dialog.meta/name",        "as": "Text",   "cardinality": "one" },
-                "description": { "the": "dialog.meta/description", "as": "Text",   "cardinality": "one" },
-                "source":      { "the": "dialog.meta/source",      "as": "Text",   "cardinality": "one" }
+                "concept":     { "the": "dialog.meta/concept",     "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "dialog.meta/name",        "as": "Text",    "cardinality": "one" },
+                "description": { "the": "dialog.meta/description", "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "dialog.meta/source",      "as": "Text",    "cardinality": "one" },
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
             }
         }
     });
