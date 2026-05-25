@@ -482,19 +482,15 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                             };
                             this = intent.clone();
                             rule_effect = Some(rule.effect.clone());
-                            claims.push(Statement::Assert(Application::Rule {
-                                rule,
-                                this: intent,
-                            }));
+                            claims
+                                .push(Statement::Assert(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
                         }
                         Some(rule::RuleAction::Retract { rule, this: entity }) => {
                             let intent = ThisIntent::Uri(entity);
                             this = intent.clone();
-                            claims.push(Statement::Retract(Application::Rule {
-                                rule,
-                                this: intent,
-                            }));
+                            claims
+                                .push(Statement::Retract(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
                         }
                         None => {
