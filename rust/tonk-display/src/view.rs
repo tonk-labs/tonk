@@ -302,6 +302,53 @@ mod tests {
         assert_eq!(host.inner_html(), "");
     }
 
+    #[dialog_common::test]
+    fn it_rewrites_on_event_attributes_in_the_template() {
+        let host = mount("<article><button onclick=increment>+</button></article>");
+        call_draw(&host, &detail("did:key:zCounter", &[("count", "0")]));
+        let html = host.inner_html();
+        // The browser still has the literal `onclick=increment`
+        // attribute in the parsed-source DOM (HTML attribute parser
+        // accepts unquoted values up to the next whitespace), so it
+        // becomes `onclick="increment"`. Preprocess rewrites it
+        // before plan extraction and DOM mount, so the rendered
+        // markup carries `data-onclick`, not `onclick`.
+        assert!(
+            html.contains(r#"data-onclick="increment""#),
+            "expected data-onclick rewrite, got: {html}"
+        );
+        assert!(
+            !html.contains(r#"onclick="increment""#),
+            "raw onclick should be gone from rendered DOM: {html}"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_publishes_event_bindings_to_a_data_attribute_on_the_host() {
+        let host = mount(
+            "<article><button onclick=increment>+</button><button onkeydown=cancel>x</button></article>",
+        );
+        let raw = host
+            .get_attribute("data-event-bindings")
+            .expect("data-event-bindings present");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("data-event-bindings is JSON");
+        let events: Vec<String> = parsed["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        let concepts: Vec<String> = parsed["concepts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(events, vec!["click", "keydown"]);
+        assert_eq!(concepts, vec!["cancel", "increment"]);
+    }
+
     // --- Iteration / cardinality-many tests ----------------------------
 
     /// Like [`detail`], but lets callers mix scalar and array
