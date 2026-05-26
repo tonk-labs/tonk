@@ -524,4 +524,214 @@ mod tests {
         driver.quit().await?;
         Ok(())
     }
+
+    /// End-to-end exercise of `<tonk-display>`'s event-handling
+    /// pipeline. Bootstrap a counter concept + view + an increment
+    /// rule on the home repo via `/evaluate`, navigate to the
+    /// display route, click the rendered `+` button, and verify
+    /// the rendered count goes up. Repeat twice to catch any
+    /// listener-after-rerender regression.
+    ///
+    /// Covers the full chain inside the browser:
+    /// preprocess (`onclick=increment` → `data-onclick="increment"`),
+    /// per-event delegation listener install on the host, descriptor
+    /// resolve, event-path projection (`event.target.dataset.counter`),
+    /// transient assertion POST to `/transact`, worker fixpoint, and
+    /// re-rendered count.
+    #[dialog_common::test]
+    async fn it_drives_a_counter_via_event_handlers(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+        driver
+            .set_script_timeout(std::time::Duration::from_secs(30))
+            .await?;
+
+        // Wait for the home space to be ready before bootstrapping.
+        driver.query(By::Css(".space-banner-title")).first().await?;
+
+        // Bootstrap the schema + a seeded counter, all in one
+        // evaluate. The view's `display` template names `counter`
+        // as the data-counter source (so the click handler sees
+        // the rendered entity), uses `onclick=increment` to bind,
+        // and renders `{count}` so we can read the value back.
+        //
+        // `counter-name` is a bookmark we navigate to from the
+        // display route.
+        let setup = r#"
+attribute!: &view-name
+  description: "view name"
+  the:         xyz.tonk.view/name
+  as:          text
+  cardinality: one
+
+attribute!: &view-model
+  description: "view model"
+  the:         xyz.tonk.view/model
+  as:          entity
+  cardinality: one
+
+attribute!: &view-display
+  description: "view display template"
+  the:         xyz.tonk.view/display
+  as:          text
+  cardinality: one
+
+concept!: &view
+  description: "A rendered view of an entity"
+  with:
+    name:    view-name
+    model:   view-model
+    display: view-display
+
+concept!: &counter
+  with:
+    count:
+      the:         xyz.tonk.counter/count
+      as:          unsigned-integer
+      cardinality: one
+      description: "current count"
+
+concept!: &increment
+  transient:
+  with:
+    counter:
+      the:         dom.event.target.dataset/counter
+      as:          entity
+      cardinality: one
+      description: "the counter to bump"
+
+rule!:
+  assert!: counter
+  when:
+    - assert: increment
+      where: { counter: ?this }
+    - assert: counter
+      where: { this: ?this, count: ?m }
+    - assert: math/sum
+      where: { of: 1, with: ?m, is: ?count }
+
+view!: &counter-view
+  name:    "counter-view"
+  model:   counter
+  display: "<div><button onclick=increment data-counter={this}>+</button><span class=\"value\">{count}</span></div>"
+
+counter!: &my-counter
+  count: 0
+"#;
+        let setup_result = driver
+            .execute(
+                r#"
+                const body = arguments[0];
+                const response = await fetch('/api/repository/home/branch/main/evaluate', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/yaml' },
+                    body,
+                });
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error('setup evaluate failed: ' + response.status + ' ' + text);
+                }
+                return await response.json();
+                "#,
+                vec![serde_json::Value::String(setup.to_owned())],
+            )
+            .await?;
+        // The evaluate response carries a `commits.claims` count;
+        // a zero count would mean nothing actually wrote. We don't
+        // assert a specific number (it depends on attribute /
+        // concept structural facts) but it should be non-trivial.
+        let claims = setup_result
+            .json()
+            .pointer("/commits/claims")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert!(
+            claims > 5,
+            "expected the setup evaluate to write several claims, got {claims}: {:?}",
+            setup_result.json()
+        );
+
+        // Navigate to the display route for the named counter.
+        // `?view=counter-view&model=counter` are forwarded to
+        // <tonk-display> as attributes; the route resolves the
+        // bookmark `my-counter` to its entity URI via the
+        // built-in Name index.
+        driver
+            .goto(&format!(
+                "{}space/home/branch/main/display/my-counter?view=counter-view&model=counter",
+                env.tonk_web
+            ))
+            .await?;
+
+        // Poll the rendered `.value` span until it shows `0` —
+        // confirms the display mounted and the entity subscription
+        // landed a frame.
+        let initial = poll_text(&driver, ".value", "0", 10_000).await?;
+        assert_eq!(
+            initial, "0",
+            "expected the seeded count to render as 0, got {initial}"
+        );
+
+        // Click the `+` button. Read back the value once the
+        // worker's induce loop + subscription re-fire have updated
+        // the rendered span.
+        driver
+            .query(By::Css("button[data-onclick=\"increment\"]"))
+            .first()
+            .await?
+            .click()
+            .await?;
+        let after_first = poll_text(&driver, ".value", "1", 10_000).await?;
+        assert_eq!(
+            after_first, "1",
+            "expected count to increment to 1 after first click"
+        );
+
+        // Click again. A second click after the first proves the
+        // listener survived the incremental re-render driven by the
+        // entity subscription — the renderer patches `.value`'s
+        // text node, but the delegation listener lives on the
+        // host so the binding still routes.
+        driver
+            .query(By::Css("button[data-onclick=\"increment\"]"))
+            .first()
+            .await?
+            .click()
+            .await?;
+        let after_second = poll_text(&driver, ".value", "2", 10_000).await?;
+        assert_eq!(
+            after_second, "2",
+            "expected count to increment to 2 after second click"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// Poll a CSS selector's `.text()` until it equals
+    /// `expected`, or `deadline_ms` elapses. Returns whatever
+    /// the latest text was — `Ok(value)` on a successful match,
+    /// `Ok(latest)` on timeout (the caller asserts).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(not(feature = "integration-tests"), allow(dead_code))]
+    async fn poll_text(
+        driver: &WebDriver,
+        selector: &str,
+        expected: &str,
+        deadline_ms: u64,
+    ) -> Result<String> {
+        let start = std::time::Instant::now();
+        let mut latest = String::new();
+        while start.elapsed() < std::time::Duration::from_millis(deadline_ms) {
+            if let Ok(el) = driver.query(By::Css(selector)).first().await
+                && let Ok(text) = el.text().await
+            {
+                latest = text;
+                if latest == expected {
+                    return Ok(latest);
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Ok(latest)
+    }
 }
