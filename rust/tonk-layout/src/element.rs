@@ -2,7 +2,7 @@
 //!
 //! Opens three live SSE subscriptions (workspace by name, focus by
 //! workspace entity, tiles unfiltered) and folds them into a
-//! [`Layout`] snapshot. Listens for the six effect [`CustomEvent`]s
+//! [`Layout`] snapshot. Listens for the seven effect [`CustomEvent`]s
 //! bubbling up from its subtree and translates each into one atomic
 //! `/evaluate` POST. Dispatches outbound `tonk-layout:changed` /
 //! `tonk-layout:focus` / `tonk-layout:error` events.
