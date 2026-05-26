@@ -1,3 +1,7 @@
+// Consumed only by the wasm-gated `element` and this module's own
+// native tests; a native non-test lib build reaches none of it.
+#![allow(dead_code)]
+
 //! Universal workspace fold.
 //!
 //! [`Layout`] is "the latest workspace + focus + tiles frames folded

@@ -1,3 +1,7 @@
+// Consumed only by the wasm-gated `element` and this module's own
+// native tests; a native non-test lib build reaches none of it.
+#![allow(dead_code)]
+
 //! Notation-document builders for the six effects, plus the
 //! wasm-only `/evaluate` POST.
 //!

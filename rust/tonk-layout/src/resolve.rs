@@ -1,3 +1,7 @@
+// Consumed only by the wasm-gated `element` and this module's own
+// native tests; a native non-test lib build reaches none of it.
+#![allow(dead_code)]
+
 //! Wire-query builders for the three live subscriptions.
 //!
 //! - [`workspace_query`] — find the workspace whose `name` field
