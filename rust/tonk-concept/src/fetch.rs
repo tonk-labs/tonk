@@ -27,6 +27,57 @@ use web_sys::{
 
 use crate::error::{ErrorDetail, ErrorKind};
 
+/// POST `body` as a JSON `TransactRequest` to `url` and return the
+/// raw response text. Caller decides what to do with it — most
+/// consumers just want fire-and-forget; the response is currently
+/// a `TransactResponse` with revisions and a claim count.
+///
+/// The route handles its own commit and induce loop, so on success
+/// the asserted claims are durable on the branch (or, for transient
+/// concepts, swept). Errors come back as 4xx/5xx with a JSON body
+/// the caller can ignore for now — surfaced as
+/// [`ErrorKind::Network`] with the HTTP status.
+pub async fn transact_post(url: &str, body: &str) -> Result<String, ErrorDetail> {
+    let init = RequestInit::new();
+    init.set_method("POST");
+    let headers = Headers::new()
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    headers
+        .append("content-type", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
+    headers
+        .append("accept", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    init.set_headers(&headers);
+    init.set_body(&JsValue::from_str(body));
+
+    let request = Request::new_with_str_and_init(url, &init)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
+    let win = window_handle()?;
+    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+        .await
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
+    let resp: Response = resp_value
+        .dyn_into()
+        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let text = JsFuture::from(
+        resp.text()
+            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read body: {e:?}")))?;
+    let body_text = text
+        .as_string()
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
+    if !resp.ok() {
+        return Err(ErrorDetail::new(
+            ErrorKind::Network,
+            format!("transact HTTP {}: {body_text}", resp.status()),
+        ));
+    }
+    Ok(body_text)
+}
+
 /// POST `body` as JSON to `url`, parse the returned `Vec<Conclusion>`,
 /// and return the first row's `this` (concept entity URI) plus its
 /// `source` field (the descriptor JSON the next step needs).

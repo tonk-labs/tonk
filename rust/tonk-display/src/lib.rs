@@ -13,6 +13,7 @@
 
 #![warn(missing_docs)]
 
+pub mod events;
 pub mod resolve;
 
 // `notation_tokens` and `notation_format` are the tokenizer and
