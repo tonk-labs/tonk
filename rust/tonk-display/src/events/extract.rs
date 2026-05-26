@@ -151,9 +151,12 @@ fn read_path_and_coerce(event: &JsValue, path: &EventPath, as_type: &str) -> Opt
     coerce(&current, as_type)
 }
 
-/// JS value → JSON-term value per `as:` type. The accepted set
-/// mirrors dialog's `Type` enum surface; anything else falls
-/// through as `None` (skipping the field).
+/// JS value → JSON-term value per `as:` type. Covers every variant
+/// of dialog's `Value` enum (`Bytes`, `Entity`, `Boolean`, `String`,
+/// `UnsignedInt`, `SignedInt`, `Float`, `Record`, `Symbol`) so a
+/// concept attribute declared with any supported `as:` can be
+/// populated from a DOM event provided the JS path produces a
+/// shape that fits.
 fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
     match as_type {
         "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
@@ -170,7 +173,8 @@ fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
             }
         }
         "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
-        "UnsignedInt" | "SignedInt" | "Integer" | "integer" => {
+        "UnsignedInt" | "SignedInt" | "Integer" | "integer" | "unsigned-integer"
+        | "signed-integer" => {
             let n = value.as_f64()?;
             if n.is_finite() && n.fract() == 0.0 {
                 serde_json::Number::from_f64(n).map(Value::Number)
@@ -182,8 +186,54 @@ fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
             let n = value.as_f64()?;
             serde_json::Number::from_f64(n).map(Value::Number)
         }
+        // Bytes / Record both deserialize from JSON arrays of u8.
+        // Accept a JS `Uint8Array` or any array-like whose entries
+        // are numbers in 0..=255.
+        "Bytes" | "bytes" | "Record" | "record" => js_to_bytes_array(value),
+        // Symbol is dialog's `Attribute` value — domain/name. On the
+        // wire it deserializes as a JSON string, but server-side it
+        // collides with Entity (Entity::try_from runs first on string
+        // values). We emit the string verbatim and rely on the
+        // concept's `as:` field tagging the slot's intended type. If
+        // the consumer expects Symbol it has to use a non-URI form;
+        // otherwise the deserializer picks Entity. Documented as a
+        // gotcha rather than re-encoded here.
+        "Symbol" | "symbol" | "Attribute" | "attribute" => value.as_string().map(Value::String),
         _ => None,
     }
+}
+
+/// Convert a JS `Uint8Array` or array-of-numbers into a JSON array
+/// of unsigned bytes — the wire shape `dialog_artifacts::Value`
+/// deserializes as `Bytes` (or `Record`). Returns `None` if the
+/// shape doesn't match.
+fn js_to_bytes_array(value: &JsValue) -> Option<Value> {
+    use js_sys::{Array, Uint8Array};
+    // Prefer `Uint8Array` — it's the natural JS shape for byte data
+    // (e.g. `FileReader.result`, `crypto.getRandomValues`).
+    if let Some(buf) = value.dyn_ref::<Uint8Array>() {
+        let bytes = buf.to_vec();
+        let arr: Vec<Value> = bytes
+            .into_iter()
+            .map(|b| Value::Number(serde_json::Number::from(b)))
+            .collect();
+        return Some(Value::Array(arr));
+    }
+    // Fall back to a generic JS array; each entry must be a finite
+    // integer in 0..=255.
+    if let Some(arr) = value.dyn_ref::<Array>() {
+        let len = arr.length() as usize;
+        let mut out = Vec::with_capacity(len);
+        for i in 0..arr.length() {
+            let n = arr.get(i).as_f64()?;
+            if !n.is_finite() || n.fract() != 0.0 || !(0.0..=255.0).contains(&n) {
+                return None;
+            }
+            out.push(Value::Number(serde_json::Number::from(n as u8)));
+        }
+        return Some(Value::Array(out));
+    }
+    None
 }
 
 /// Apply a `dom.event.do` action to the event. Silently no-op when
@@ -224,7 +274,6 @@ mod tests {
     use super::*;
     use js_sys::Object;
     use wasm_bindgen::JsCast;
-    use wasm_bindgen_test::wasm_bindgen_test;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     use web_sys::{Event, EventInit};
 
@@ -279,7 +328,7 @@ mod tests {
         event
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_builds_a_transact_body_from_event_target_dataset() {
         let descriptor = r#"{
             "with": {
@@ -302,7 +351,7 @@ mod tests {
         assert_eq!(app["predicate"]["kind"], json!("transient"));
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_reads_top_level_event_fields() {
         let descriptor = r#"{
             "with": {
@@ -316,7 +365,7 @@ mod tests {
         assert_eq!(params["kind"], json!("click"));
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_omits_fields_whose_path_resolves_to_undefined() {
         let descriptor = r#"{
             "with": {
@@ -331,7 +380,7 @@ mod tests {
         assert!(params.get("this").is_some());
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_omits_non_dom_event_fields() {
         let descriptor = r#"{
             "with": {
@@ -345,7 +394,7 @@ mod tests {
         assert!(params.get("name").is_none());
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_rejects_entity_coercion_when_value_isnt_uri() {
         let descriptor = r#"{
             "with": {

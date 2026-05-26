@@ -117,7 +117,6 @@ fn strip_on_prefix(name: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     use web_sys::window;
 
@@ -164,7 +163,7 @@ mod tests {
         false
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_rewrites_onclick_to_data_onclick() {
         let fragment = fragment_from_html(r#"<button onclick="increment">+</button>"#);
         let bindings = preprocess(&fragment);
@@ -182,7 +181,7 @@ mod tests {
         assert!(bindings.concept_names.contains("increment"));
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_rewrites_arbitrary_event_types() {
         let fragment =
             fragment_from_html(r#"<form onsubmit="save"><input onkeydown="cancel"></form>"#);
@@ -197,7 +196,7 @@ mod tests {
         assert!(bindings.concept_names.contains("cancel"));
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_recurses_into_nested_elements() {
         let fragment =
             fragment_from_html(r#"<div><span><button onclick="increment">+</button></span></div>"#);
@@ -207,7 +206,7 @@ mod tests {
         assert!(bindings.event_types.contains("click"));
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_leaves_non_event_attributes_alone() {
         let fragment = fragment_from_html(
             r#"<button data-counter="abc" class="primary" onclick="increment">+</button>"#,
@@ -219,7 +218,7 @@ mod tests {
         assert!(html.contains(r#"data-onclick="increment""#));
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_collects_distinct_event_types_across_elements() {
         let fragment = fragment_from_html(
             r#"<div><button onclick="a">A</button><button onclick="b">B</button><input onkeydown="c"></div>"#,
@@ -235,7 +234,7 @@ mod tests {
         );
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_ignores_bare_on_attribute() {
         // `on` alone isn't an event binding — no event-type suffix.
         let fragment = fragment_from_html(r#"<button on="oops">+</button>"#);
@@ -245,7 +244,7 @@ mod tests {
         assert!(bindings.event_types.is_empty());
     }
 
-    #[wasm_bindgen_test]
+    #[dialog_common::test]
     fn it_ignores_attributes_with_non_alpha_after_on() {
         // `on-something="x"` shouldn't be treated as an event;
         // the suffix doesn't start with an alphabetic char.

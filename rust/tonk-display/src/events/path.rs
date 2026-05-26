@@ -150,14 +150,14 @@ mod tests {
         }
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_classifies_a_top_level_field_as_read() {
         assert_eq!(read_segments("dom.event/type"), vec!["type"]);
         assert_eq!(read_segments("dom.event/key"), vec!["key"]);
         assert_eq!(read_segments("dom.event/pressure"), vec!["pressure"]);
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_camel_cases_kebab_segments() {
         assert_eq!(read_segments("dom.event/shift-key"), vec!["shiftKey"]);
         assert_eq!(read_segments("dom.event/client-x"), vec!["clientX"]);
@@ -167,7 +167,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_traverses_nested_paths_via_dot_and_slash() {
         assert_eq!(
             read_segments("dom.event.target/value"),
@@ -183,7 +183,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_treats_dot_and_slash_uniformly_as_separators() {
         // Mixing dots and slashes in the path is allowed —
         // separator choice doesn't change the meaning.
@@ -197,7 +197,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_classifies_do_namespace_as_action() {
         assert_eq!(
             action_method("dom.event.do/prevent-default"),
@@ -213,13 +213,13 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_rejects_bare_dom_event_identifier_as_other() {
         // No suffix → no field → not a binding.
         assert!(matches!(classify("dom.event"), Classification::Other));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_rejects_empty_or_multi_segment_action_as_other() {
         assert!(matches!(classify("dom.event.do/"), Classification::Other));
         assert!(matches!(
@@ -232,7 +232,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_rejects_paths_with_empty_segments_as_other() {
         assert!(matches!(classify("dom.event/"), Classification::Other));
         assert!(matches!(
@@ -243,7 +243,7 @@ mod tests {
         assert!(matches!(classify("dom.event/foo."), Classification::Other));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_classifies_non_dom_event_identifiers_as_other() {
         assert!(matches!(
             classify("xyz.tonk.counter/count"),
@@ -261,7 +261,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_camel_cases_consecutive_dashes_idiomatically() {
         // Two dashes in a row is unusual but well-defined: the
         // first dash sets the upper-next flag; the second char
