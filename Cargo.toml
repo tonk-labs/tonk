@@ -10,6 +10,7 @@ members = [
     "rust/tonk-display",
     "rust/tonk-evaluator",
     "rust/tonk-invite",
+    "rust/tonk-layout",
     "rust/tonk-language-server",
     "rust/tonk-notation",
     "rust/slide",
@@ -37,6 +38,7 @@ tonk-display = { path = "./rust/tonk-display" }
 tonk-evaluator = { path = "./rust/tonk-evaluator" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
+tonk-layout = { path = "./rust/tonk-layout" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }

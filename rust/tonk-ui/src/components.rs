@@ -25,6 +25,9 @@ use concept::*;
 mod display;
 use display::*;
 
+mod layout;
+use layout::*;
+
 mod profile;
 use profile::*;
 

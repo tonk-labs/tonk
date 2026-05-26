@@ -4960,6 +4960,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-layout"
+version = "0.1.0"
+dependencies = [
+ "custom-elements",
+ "dialog-common",
+ "indexmap",
+ "js-sys",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tonk-concept",
+ "tonk-schema",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-notation"
 version = "0.1.0"
 dependencies = [
@@ -5051,6 +5069,7 @@ dependencies = [
  "tonk-concept",
  "tonk-display",
  "tonk-invite",
+ "tonk-layout",
  "tonk-notation",
  "tonk-sigil",
  "tonk-worker",

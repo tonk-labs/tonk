@@ -43,6 +43,7 @@ tonk-code = { workspace = true, features = ["web"] }
 tonk-concept = { workspace = true }
 tonk-display = { workspace = true }
 tonk-invite = { workspace = true }
+tonk-layout = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-sigil = { workspace = true, features = ["web"] }
 tonk-worker = { workspace = true }

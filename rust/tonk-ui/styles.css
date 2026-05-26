@@ -428,6 +428,150 @@ h6 {
     min-height: 0;
 }
 
+/* `<tonk-layout>` route view. We can't rely on the `wa-page` main
+   slot being flex-grown, so the inner slot pins an explicit
+   viewport-relative height that the rest of the chain can inherit
+   via `height: 100%`. Without an explicit (not min-height) parent
+   height, `height: 100%` on descendants resolves to `auto` and
+   the column ends up zero-tall. */
+.layout-view {
+    padding: 0;
+    gap: 0;
+}
+.layout-view-slot {
+    width: 100%;
+    height: 80vh;
+}
+tonk-layout {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+tonk-layout .niri-strip {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    height: 100%;
+    padding: var(--wa-space-s, 8px);
+    scroll-behavior: smooth;
+    /* No `gap` — the reconciler injects `.niri-resize` handles
+       between adjacent columns instead, so the gap is interactive.
+       Each handle is its own flex item with a fixed basis. */
+}
+tonk-layout .niri-resize {
+    /* Fixed-basis handle that doesn't grow with the strip; thin
+       enough to feel like a divider, wide enough to grab. */
+    flex: 0 0 8px;
+    cursor: ew-resize;
+    background: transparent;
+    transition: background 0.12s ease;
+    /* Disable touch's default pan-on-drag so a finger drag
+       resizes instead of scrolling the strip. */
+    touch-action: none;
+}
+tonk-layout .niri-resize:hover {
+    background: var(--wa-color-brand-fill-loud, #0070f3);
+    opacity: 0.4;
+}
+tonk-layout .niri-column {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: var(--wa-space-s, 8px);
+    /* Reconciler sets `flex: <width> 1 0` inline. The fallback
+       basis keeps an unstyled column visible while waiting. */
+    flex-basis: 320px;
+}
+tonk-layout .niri-tile {
+    overflow: hidden;
+    min-height: 0;
+    border: 1px solid var(--wa-color-border-normal, #d4d4d8);
+    border-radius: var(--wa-border-radius-s, 4px);
+    background: var(--wa-color-surface-default, #fff);
+}
+tonk-layout .niri-tile[data-focused] {
+    border-color: var(--wa-color-brand-fill-loud, #0070f3);
+    box-shadow: 0 0 0 1px var(--wa-color-brand-fill-loud, #0070f3);
+}
+tonk-layout .niri-tile-error {
+    padding: var(--wa-space-m, 12px);
+    color: var(--wa-color-danger-fill-loud, #b91c1c);
+    font-family: monospace;
+}
+
+/* Concept tile — the body is a `<tonk-concept>` that clones one
+   row per matched entity into `<ul class="niri-concept-list">`.
+   List scrolls inside the tile so the strip's geometry stays
+   intact regardless of how many entities exist. */
+tonk-layout .niri-concept-list {
+    list-style: none;
+    margin: 0;
+    padding: var(--wa-space-2xs, 6px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-3xs, 4px);
+    height: 100%;
+    overflow-y: auto;
+}
+tonk-layout .niri-concept-row {
+    display: flex;
+    flex-direction: column;
+    padding: var(--wa-space-2xs, 6px) var(--wa-space-s, 10px);
+    border-radius: var(--wa-border-radius-s, 4px);
+    cursor: pointer;
+}
+tonk-layout .niri-concept-row:hover {
+    background: var(--wa-color-neutral-fill-quiet, #f5f5f5);
+}
+tonk-layout .niri-concept-row-name {
+    font-weight: 500;
+}
+tonk-layout .niri-concept-row-name:empty {
+    display: none;
+}
+tonk-layout .niri-concept-row-id {
+    font-family: var(--wa-font-family-code, monospace);
+    font-size: 0.8em;
+    opacity: 0.6;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Open-tile dialog — picker rows in the Views / Concepts tabs.
+   `<tonk-concept>` clones one row per match into the .picker-list
+   container; each row is a button so it's keyboard-accessible and
+   gives a click target for the delegated handler. */
+tonk-layout .picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-3xs, 4px);
+    max-height: 360px;
+    overflow-y: auto;
+    padding-block: var(--wa-space-2xs, 6px);
+}
+tonk-layout .picker-row {
+    text-align: left;
+    padding: var(--wa-space-2xs, 6px) var(--wa-space-s, 10px);
+    border: 1px solid var(--wa-color-border-normal, #d4d4d8);
+    border-radius: var(--wa-border-radius-s, 4px);
+    background: transparent;
+    cursor: pointer;
+    font-family: var(--wa-font-family-code, monospace);
+    font-size: 0.9em;
+    color: inherit;
+}
+tonk-layout .picker-row:hover,
+tonk-layout .picker-row:focus-visible {
+    background: var(--wa-color-neutral-fill-quiet, #f5f5f5);
+    outline: none;
+}
+tonk-layout .picker-empty {
+    padding: var(--wa-space-m, 12px);
+    color: var(--wa-color-neutral-text-quiet, #71717a);
+    font-style: italic;
+}
+
 /* Concept view: same padding as `.space-view`. The
    `<tonk-concept>` element is `display: inline` by default, and
    its rendered `<table>` would otherwise overflow the main slot
