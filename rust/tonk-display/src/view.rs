@@ -73,6 +73,23 @@ impl CustomElement for TonkView {
         // someone fills children in and re-mounts.
         let renderer = snapshot_template(&host).ok().map(Renderer::from_snapshot);
 
+        // Surface the event-handler bindings the renderer
+        // discovered as JSON on a `data-event-bindings` attribute,
+        // so the owning `<tonk-display>` can read them without
+        // poking at the renderer through JS interop. Cheap stable
+        // contract: two-field JSON object with sorted distinct
+        // event types and concept names.
+        if let Some(renderer) = &renderer {
+            let bindings = renderer.event_bindings();
+            let json = serde_json::json!({
+                "events": bindings.event_types.iter().collect::<Vec<_>>(),
+                "concepts": bindings.concept_names.iter().collect::<Vec<_>>(),
+            });
+            if let Ok(serialized) = serde_json::to_string(&json) {
+                let _ = host.set_attribute("data-event-bindings", &serialized);
+            }
+        }
+
         let state = Rc::new(RefCell::new(Inner { renderer }));
         *self.inner.borrow_mut() = Some(state.clone());
 
@@ -283,6 +300,62 @@ mod tests {
         // Just checking that we don't panic and the host stays empty.
         call_draw(&host, &detail("did:key:zX", &[("name", "Alice")]));
         assert_eq!(host.inner_html(), "");
+    }
+
+    #[dialog_common::test]
+    fn it_rewrites_on_event_attributes_in_the_template() {
+        let host = mount("<article><button onclick=increment>+</button></article>");
+        call_draw(&host, &detail("did:key:zCounter", &[("count", "0")]));
+        // The browser still has the literal `onclick=increment`
+        // attribute in the parsed-source DOM (HTML attribute parser
+        // accepts unquoted values up to the next whitespace), so it
+        // becomes `onclick="increment"`. Preprocess rewrites it
+        // before plan extraction and DOM mount, so the rendered
+        // button carries `data-onclick`, not `onclick`. Query the
+        // button by attribute name rather than searching inner_html:
+        // a string contains-check would match `data-onclick` as a
+        // substring of `onclick` and silently invert the assertion.
+        let button = host
+            .query_selector("button")
+            .expect("query_selector")
+            .expect("button present after render");
+        assert_eq!(
+            button.get_attribute("data-onclick").as_deref(),
+            Some("increment"),
+            "expected data-onclick='increment' on the button; got attrs: {:?}",
+            button.outer_html(),
+        );
+        assert!(
+            !button.has_attribute("onclick"),
+            "raw onclick should be gone from rendered button; got: {}",
+            button.outer_html(),
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_publishes_event_bindings_to_a_data_attribute_on_the_host() {
+        let host = mount(
+            "<article><button onclick=increment>+</button><button onkeydown=cancel>x</button></article>",
+        );
+        let raw = host
+            .get_attribute("data-event-bindings")
+            .expect("data-event-bindings present");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&raw).expect("data-event-bindings is JSON");
+        let events: Vec<String> = parsed["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        let concepts: Vec<String> = parsed["concepts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(events, vec!["click", "keydown"]);
+        assert_eq!(concepts, vec!["cancel", "increment"]);
     }
 
     // --- Iteration / cardinality-many tests ----------------------------

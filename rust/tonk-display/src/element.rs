@@ -105,6 +105,19 @@ struct Inner {
     /// slide, kept so `mount_view_slide` can insert new view slides
     /// before it.
     notation_item: Option<Element>,
+    /// Event-handler delegation listeners installed on the host.
+    /// One [`Delegate`] per `<tonk-display>` instance; dropped on
+    /// disconnect or attribute change so listeners cycle with the
+    /// generation. `None` when no `on<event>` bindings appear in
+    /// the mounted templates.
+    delegate: Option<crate::events::delegate::Delegate>,
+    /// Bumps every time `schedule_delegate_refresh` runs. A scheduled
+    /// refresh captures the current value at start and bails before
+    /// writing if it has moved on. Without this guard a view-frame
+    /// swap that lands while a previous refresh is still resolving
+    /// concept descriptors would write a stale [`Delegate`] over the
+    /// newer one.
+    delegate_generation: u64,
 }
 
 impl Inner {
@@ -119,6 +132,8 @@ impl Inner {
             slides: BTreeMap::new(),
             notation_source: None,
             notation_item: None,
+            delegate: None,
+            delegate_generation: 0,
         }
     }
 
@@ -126,6 +141,9 @@ impl Inner {
         // Dropping the handles triggers the bridge unsubscribe call.
         self.view_abort.take();
         self.entity_abort.take();
+        // Drop the delegate — its impl removes listeners from the
+        // host on Drop.
+        self.delegate.take();
     }
 }
 
@@ -575,7 +593,175 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         update_notation(host, &s, c);
     }
 
+    // Drop the borrow before spawning the delegate refresh — its
+    // descriptor resolves are async and reacquire the state.
+    drop(s);
+    schedule_delegate_refresh(host, state);
+
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+}
+
+/// Walk the currently-mounted `<tonk-view>` slides, collect the
+/// distinct event types and concept names they reference via
+/// their `data-event-bindings` attribute, resolve each concept's
+/// descriptor via phase-1 lookup, and install a fresh
+/// [`Delegate`](crate::events::delegate::Delegate) on the host.
+///
+/// Scheduled (not awaited inline) so view-frame handling stays
+/// synchronous — the listener install lags one tick behind the
+/// slide mount, which is fine because there's no way to click a
+/// slide that hasn't reached the DOM yet anyway.
+fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
+    // Bump the per-refresh generation so any in-flight task started
+    // by a previous frame bails on its final write. Each new frame's
+    // task captures this value at start and re-checks before
+    // installing.
+    let delegate_generation = {
+        let mut s = state.borrow_mut();
+        s.delegate_generation = s.delegate_generation.wrapping_add(1);
+        s.delegate_generation
+    };
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        refresh_delegate(&host, &state, delegate_generation).await;
+    });
+}
+
+async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_generation: u64) {
+    use crate::events::delegate::Delegate;
+    use std::collections::{BTreeSet, HashMap};
+
+    // Snapshot the view elements + URL + space/branch so we don't
+    // hold the borrow across awaits.
+    let (view_els, transact_url) = {
+        let s = state.borrow();
+        if s.disposed || s.delegate_generation != delegate_generation {
+            return;
+        }
+        let view_els: Vec<Element> = s.slides.values().map(|sl| sl.view_el.clone()).collect();
+        let space = host.get_attribute("space");
+        let branch = host.get_attribute("branch");
+        let url = match (&space, &branch) {
+            (None, None) => "/transact".to_owned(),
+            _ => format!(
+                "/api/repository/{}/branch/{}/transact",
+                space.as_deref().unwrap_or("home"),
+                branch.as_deref().unwrap_or("main"),
+            ),
+        };
+        (view_els, url)
+    };
+
+    // Collect distinct event types and concept names across slides.
+    let mut event_types: BTreeSet<String> = BTreeSet::new();
+    let mut concept_names: BTreeSet<String> = BTreeSet::new();
+    for el in &view_els {
+        let Some(raw) = el.get_attribute("data-event-bindings") else {
+            continue;
+        };
+        let Ok(value): Result<serde_json::Value, _> = serde_json::from_str(&raw) else {
+            continue;
+        };
+        if let Some(arr) = value.get("events").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    event_types.insert(s.to_owned());
+                }
+            }
+        }
+        if let Some(arr) = value.get("concepts").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(s) = item.as_str() {
+                    concept_names.insert(s.to_owned());
+                }
+            }
+        }
+    }
+
+    if event_types.is_empty() || concept_names.is_empty() {
+        // No bindings — drop any existing delegate so detached
+        // listeners don't linger after a template-swap. Only do
+        // this if no newer refresh has been scheduled in the
+        // meantime; otherwise the newer one is responsible for the
+        // final state.
+        let mut s = state.borrow_mut();
+        if !s.disposed && s.delegate_generation == delegate_generation {
+            s.delegate = None;
+        }
+        return;
+    }
+
+    // Resolve each concept's descriptor via phase-1 lookup.
+    // Reuses the same `/query` URL the renderer already uses.
+    let space = host.get_attribute("space");
+    let branch = host.get_attribute("branch");
+    let query_url = match (&space, &branch) {
+        (None, None) => "/query".to_owned(),
+        _ => format!(
+            "/api/repository/{}/branch/{}/query",
+            space.as_deref().unwrap_or("home"),
+            branch.as_deref().unwrap_or("main"),
+        ),
+    };
+    let mut descriptors: HashMap<String, String> = HashMap::new();
+    for name in &concept_names {
+        // Bail mid-loop if a newer refresh has started — no point
+        // resolving descriptors for a snapshot we won't install.
+        {
+            let s = state.borrow();
+            if s.disposed || s.delegate_generation != delegate_generation {
+                return;
+            }
+        }
+        let parsed = parse_source(name);
+        let q = phase1_query(&parsed);
+        let resolved = if use_bridge() {
+            let body_val = match serde_json::to_value(&q) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            bridge_phase1_lookup(&body_val).await
+        } else {
+            let body_str = match serde_json::to_string(&q) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            tonk_concept::fetch::phase1_lookup(&query_url, &body_str).await
+        };
+        match resolved {
+            Ok((_entity, descriptor_json)) => {
+                descriptors.insert(name.clone(), descriptor_json);
+            }
+            Err(_) => {
+                // Concept didn't resolve — bindings referencing
+                // it will silently no-op on click. Continue with
+                // the rest so partial failures don't break the
+                // whole delegate.
+            }
+        }
+    }
+
+    // Build the delegate before acquiring the borrow so its
+    // `addEventListener` calls don't run inside the lock.
+    let delegate = Delegate::install(
+        host.clone(),
+        event_types.into_iter(),
+        descriptors,
+        transact_url,
+    );
+    // Re-check the per-refresh generation: if a newer refresh has
+    // started while we were resolving descriptors, drop our delegate
+    // rather than overwrite the newer one. `delegate`'s `Drop` impl
+    // removes the listeners we just attached, so the host doesn't
+    // accumulate stale listeners.
+    let mut s = state.borrow_mut();
+    if s.disposed || s.delegate_generation != delegate_generation {
+        drop(s);
+        drop(delegate);
+        return;
+    }
+    s.delegate = Some(delegate);
 }
 
 /// Apply an entity frame: empty → empty state + clear slides;
