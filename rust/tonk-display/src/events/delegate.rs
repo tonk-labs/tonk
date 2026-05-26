@@ -28,6 +28,10 @@ use web_sys::{Element, Event};
 
 use super::extract::build_transact_body;
 
+/// Per-listener pair: the event-type name and the JS-side closure
+/// whose lifetime owns its memory.
+type ListenerEntry = (String, Closure<dyn FnMut(Event)>);
+
 /// One installed delegation listener on the host, paired with the
 /// `Closure` that owns its JS-side memory.
 pub struct Delegate {
@@ -37,7 +41,7 @@ pub struct Delegate {
     /// One `(event_type, closure)` per registered event type.
     /// Dropped on `Delegate::drop`, which also calls
     /// `removeEventListener`.
-    listeners: Vec<(String, Closure<dyn FnMut(Event)>)>,
+    listeners: Vec<ListenerEntry>,
 }
 
 impl Delegate {
@@ -57,7 +61,7 @@ impl Delegate {
     ) -> Self {
         let descriptors = Rc::new(descriptors);
         let url = Rc::new(transact_url);
-        let mut listeners: Vec<(String, Closure<dyn FnMut(Event)>)> = Vec::new();
+        let mut listeners: Vec<ListenerEntry> = Vec::new();
 
         for event_type in event_types {
             let descriptors = Rc::clone(&descriptors);
@@ -66,10 +70,8 @@ impl Delegate {
             let closure = Closure::wrap(Box::new(move |event: Event| {
                 handle_event(&event, &attr_name, descriptors.as_ref(), url.as_ref());
             }) as Box<dyn FnMut(Event)>);
-            let _ = host.add_event_listener_with_callback(
-                &event_type,
-                closure.as_ref().unchecked_ref(),
-            );
+            let _ = host
+                .add_event_listener_with_callback(&event_type, closure.as_ref().unchecked_ref());
             listeners.push((event_type, closure));
         }
 
@@ -80,10 +82,9 @@ impl Delegate {
 impl Drop for Delegate {
     fn drop(&mut self) {
         for (event_type, closure) in self.listeners.drain(..) {
-            let _ = self.host.remove_event_listener_with_callback(
-                &event_type,
-                closure.as_ref().unchecked_ref(),
-            );
+            let _ = self
+                .host
+                .remove_event_listener_with_callback(&event_type, closure.as_ref().unchecked_ref());
             // `closure` is moved out and dropped here; the
             // JS-side wrapper releases its references.
         }

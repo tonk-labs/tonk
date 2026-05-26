@@ -156,9 +156,7 @@ fn read_path_and_coerce(event: &JsValue, path: &EventPath, as_type: &str) -> Opt
 /// through as `None` (skipping the field).
 fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
     match as_type {
-        "Text" | "String" | "text" | "string" => {
-            value.as_string().map(Value::String)
-        }
+        "Text" | "String" | "text" | "string" => value.as_string().map(Value::String),
         "Entity" | "entity" => {
             // Entities are URIs encoded as strings on the wire.
             let s = value.as_string()?;
@@ -171,9 +169,7 @@ fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
                 None
             }
         }
-        "Boolean" | "boolean" => {
-            value.as_bool().map(Value::Bool)
-        }
+        "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
         "UnsignedInt" | "SignedInt" | "Integer" | "integer" => {
             let n = value.as_f64()?;
             if n.is_finite() && n.fract() == 0.0 {
@@ -261,9 +257,19 @@ mod tests {
         let event_js: &JsValue = event.as_ref();
         let descriptor = Object::new();
         Reflect::set(&descriptor, &JsValue::from_str("value"), &target).unwrap();
-        Reflect::set(&descriptor, &JsValue::from_str("configurable"), &JsValue::TRUE).unwrap();
+        Reflect::set(
+            &descriptor,
+            &JsValue::from_str("configurable"),
+            &JsValue::TRUE,
+        )
+        .unwrap();
         Reflect::set(&descriptor, &JsValue::from_str("writable"), &JsValue::TRUE).unwrap();
-        Reflect::set(&descriptor, &JsValue::from_str("enumerable"), &JsValue::TRUE).unwrap();
+        Reflect::set(
+            &descriptor,
+            &JsValue::from_str("enumerable"),
+            &JsValue::TRUE,
+        )
+        .unwrap();
         let _ = Object::define_property(
             event_js.unchecked_ref::<Object>(),
             &JsValue::from_str("target"),
@@ -283,7 +289,10 @@ mod tests {
         let event = synthetic_event(&[("counter", "did:key:zCounter")]);
         let body = build_transact_body(descriptor, "increment", "did:key:zCounter", &event)
             .expect("build_transact_body");
-        let claims = body.get("claims").and_then(Value::as_array).expect("claims");
+        let claims = body
+            .get("claims")
+            .and_then(Value::as_array)
+            .expect("claims");
         assert_eq!(claims.len(), 1);
         let app = &claims[0]["application"];
         let parameters = &app["parameters"];

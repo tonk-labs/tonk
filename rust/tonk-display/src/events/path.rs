@@ -95,12 +95,12 @@ pub fn classify(identifier: &str) -> Classification {
 /// empty segment (consecutive separators, leading/trailing
 /// separator pair) makes the identifier invalid.
 fn parse_event_path(suffix: &str) -> Option<EventPath> {
-    let suffix = suffix.strip_prefix(|c| c == '.' || c == '/')?;
+    let suffix = suffix.strip_prefix(['.', '/'])?;
     if suffix.is_empty() {
         return None;
     }
     let mut segments = Vec::new();
-    for part in suffix.split(|c| c == '.' || c == '/') {
+    for part in suffix.split(['.', '/']) {
         if part.is_empty() {
             return None;
         }
@@ -199,8 +199,14 @@ mod tests {
 
     #[test]
     fn it_classifies_do_namespace_as_action() {
-        assert_eq!(action_method("dom.event.do/prevent-default"), "preventDefault");
-        assert_eq!(action_method("dom.event.do/stop-propagation"), "stopPropagation");
+        assert_eq!(
+            action_method("dom.event.do/prevent-default"),
+            "preventDefault"
+        );
+        assert_eq!(
+            action_method("dom.event.do/stop-propagation"),
+            "stopPropagation"
+        );
         assert_eq!(
             action_method("dom.event.do/stop-immediate-propagation"),
             "stopImmediatePropagation"
@@ -229,7 +235,10 @@ mod tests {
     #[test]
     fn it_rejects_paths_with_empty_segments_as_other() {
         assert!(matches!(classify("dom.event/"), Classification::Other));
-        assert!(matches!(classify("dom.event/foo//bar"), Classification::Other));
+        assert!(matches!(
+            classify("dom.event/foo//bar"),
+            Classification::Other
+        ));
         assert!(matches!(classify("dom.event/.foo"), Classification::Other));
         assert!(matches!(classify("dom.event/foo."), Classification::Other));
     }

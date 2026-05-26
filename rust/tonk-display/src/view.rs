@@ -73,6 +73,23 @@ impl CustomElement for TonkView {
         // someone fills children in and re-mounts.
         let renderer = snapshot_template(&host).ok().map(Renderer::from_snapshot);
 
+        // Surface the event-handler bindings the renderer
+        // discovered as JSON on a `data-event-bindings` attribute,
+        // so the owning `<tonk-display>` can read them without
+        // poking at the renderer through JS interop. Cheap stable
+        // contract: two-field JSON object with sorted distinct
+        // event types and concept names.
+        if let Some(renderer) = &renderer {
+            let bindings = renderer.event_bindings();
+            let json = serde_json::json!({
+                "events": bindings.event_types.iter().collect::<Vec<_>>(),
+                "concepts": bindings.concept_names.iter().collect::<Vec<_>>(),
+            });
+            if let Ok(serialized) = serde_json::to_string(&json) {
+                let _ = host.set_attribute("data-event-bindings", &serialized);
+            }
+        }
+
         let state = Rc::new(RefCell::new(Inner { renderer }));
         *self.inner.borrow_mut() = Some(state.clone());
 

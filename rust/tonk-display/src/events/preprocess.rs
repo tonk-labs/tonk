@@ -160,9 +160,8 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn it_rewrites_arbitrary_event_types() {
-        let fragment = fragment_from_html(
-            r#"<form onsubmit="save"><input onkeydown="cancel"></form>"#,
-        );
+        let fragment =
+            fragment_from_html(r#"<form onsubmit="save"><input onkeydown="cancel"></form>"#);
         let bindings = preprocess(&fragment);
         let html = outer_html(&fragment);
         assert!(html.contains(r#"data-onsubmit="save""#));
@@ -177,9 +176,8 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn it_recurses_into_nested_elements() {
-        let fragment = fragment_from_html(
-            r#"<div><span><button onclick="increment">+</button></span></div>"#,
-        );
+        let fragment =
+            fragment_from_html(r#"<div><span><button onclick="increment">+</button></span></div>"#);
         let bindings = preprocess(&fragment);
         let html = outer_html(&fragment);
         assert!(html.contains(r#"data-onclick="increment""#));

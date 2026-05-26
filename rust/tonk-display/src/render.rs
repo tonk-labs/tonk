@@ -35,6 +35,8 @@ use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, DocumentFragment, Element, Node, window};
 
+use crate::events::preprocess::{self, Bindings};
+
 /// Stateful renderer for one entity. Holds the template,
 /// extracted plan, and (after the first apply) the mounted-state
 /// tree mirroring the plan.
@@ -47,6 +49,11 @@ pub struct Renderer {
     template: DocumentFragment,
     /// Binding plan extracted from `template` at construction time.
     plan: BindingPlan,
+    /// Event-handler bindings discovered on the template by the
+    /// preprocess pass. Exposed via [`Renderer::event_bindings`]
+    /// so the host element can resolve concept descriptors and
+    /// install delegation listeners.
+    event_bindings: Bindings,
     /// The currently mounted state. `None` before the first apply;
     /// `Some` thereafter. Dropping it (e.g. when the element
     /// detaches) discards every cached value; the next apply will
@@ -118,13 +125,32 @@ impl Renderer {
     /// `connectedCallback`. `snapshot.container` becomes the
     /// renderer's append target.
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        // Preprocess on<event>=<concept> attributes into
+        // data-on<event>=<concept> before plan extraction. The
+        // rewrite is a pure DOM mutation on the template fragment;
+        // iteration rows clone the rewritten subtree so every row
+        // inherits the data-prefixed form. The plan extractor
+        // ignores attributes without `{field}` interpolation, so
+        // the rewritten data-on<event> attributes pass through
+        // untouched — exactly what the delegation listener needs.
+        let event_bindings = preprocess::preprocess(&snapshot.fragment);
         let plan = extract_plan(&snapshot.fragment);
         Self {
             host: snapshot.container,
             template: snapshot.fragment,
             plan,
+            event_bindings,
             mounted: None,
         }
+    }
+
+    /// Event-handler bindings discovered on the template — the
+    /// set of distinct event types and concept names referenced
+    /// by `on<event>=<concept>` attributes. The host element
+    /// uses these to resolve concept descriptors and install
+    /// delegation listeners.
+    pub fn event_bindings(&self) -> &Bindings {
+        &self.event_bindings
     }
 
     /// Apply an entity conclusion. First call mounts the template;
