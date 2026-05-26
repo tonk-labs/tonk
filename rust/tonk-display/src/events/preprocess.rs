@@ -141,18 +141,42 @@ mod tests {
         host.inner_html()
     }
 
+    /// Walk every element in `fragment` and report `true` if any
+    /// carries an attribute named `attr`. Used by the rewrite
+    /// tests to make a precise "attribute not present" assertion
+    /// — string-contains on serialised HTML would match
+    /// `data-onclick` as a substring of `onclick`, which is
+    /// exactly the wrong direction.
+    fn fragment_has_attribute(fragment: &DocumentFragment, attr: &str) -> bool {
+        let elements = fragment
+            .query_selector_all("*")
+            .expect("query_selector_all");
+        for i in 0..elements.length() {
+            let Some(node) = elements.item(i) else {
+                continue;
+            };
+            if let Some(el) = node.dyn_ref::<Element>()
+                && el.has_attribute(attr)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     #[wasm_bindgen_test]
     fn it_rewrites_onclick_to_data_onclick() {
         let fragment = fragment_from_html(r#"<button onclick="increment">+</button>"#);
         let bindings = preprocess(&fragment);
-        let html = outer_html(&fragment);
         assert!(
-            html.contains(r#"data-onclick="increment""#),
-            "rewritten markup should carry data-onclick; got {html}"
+            fragment_has_attribute(&fragment, "data-onclick"),
+            "rewritten markup should carry data-onclick; got {}",
+            outer_html(&fragment)
         );
         assert!(
-            !html.contains(r#"onclick="increment""#),
-            "raw onclick should be gone; got {html}"
+            !fragment_has_attribute(&fragment, "onclick"),
+            "raw onclick should be gone; got {}",
+            outer_html(&fragment)
         );
         assert!(bindings.event_types.contains("click"));
         assert!(bindings.concept_names.contains("increment"));
@@ -163,11 +187,10 @@ mod tests {
         let fragment =
             fragment_from_html(r#"<form onsubmit="save"><input onkeydown="cancel"></form>"#);
         let bindings = preprocess(&fragment);
-        let html = outer_html(&fragment);
-        assert!(html.contains(r#"data-onsubmit="save""#));
-        assert!(html.contains(r#"data-onkeydown="cancel""#));
-        assert!(!html.contains(r#"onsubmit="#));
-        assert!(!html.contains(r#"onkeydown="#));
+        assert!(fragment_has_attribute(&fragment, "data-onsubmit"));
+        assert!(fragment_has_attribute(&fragment, "data-onkeydown"));
+        assert!(!fragment_has_attribute(&fragment, "onsubmit"));
+        assert!(!fragment_has_attribute(&fragment, "onkeydown"));
         assert!(bindings.event_types.contains("submit"));
         assert!(bindings.event_types.contains("keydown"));
         assert!(bindings.concept_names.contains("save"));
