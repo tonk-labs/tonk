@@ -306,20 +306,29 @@ mod tests {
     fn it_rewrites_on_event_attributes_in_the_template() {
         let host = mount("<article><button onclick=increment>+</button></article>");
         call_draw(&host, &detail("did:key:zCounter", &[("count", "0")]));
-        let html = host.inner_html();
         // The browser still has the literal `onclick=increment`
         // attribute in the parsed-source DOM (HTML attribute parser
         // accepts unquoted values up to the next whitespace), so it
         // becomes `onclick="increment"`. Preprocess rewrites it
         // before plan extraction and DOM mount, so the rendered
-        // markup carries `data-onclick`, not `onclick`.
-        assert!(
-            html.contains(r#"data-onclick="increment""#),
-            "expected data-onclick rewrite, got: {html}"
+        // button carries `data-onclick`, not `onclick`. Query the
+        // button by attribute name rather than searching inner_html:
+        // a string contains-check would match `data-onclick` as a
+        // substring of `onclick` and silently invert the assertion.
+        let button = host
+            .query_selector("button")
+            .expect("query_selector")
+            .expect("button present after render");
+        assert_eq!(
+            button.get_attribute("data-onclick").as_deref(),
+            Some("increment"),
+            "expected data-onclick='increment' on the button; got attrs: {:?}",
+            button.outer_html(),
         );
         assert!(
-            !html.contains(r#"onclick="increment""#),
-            "raw onclick should be gone from rendered DOM: {html}"
+            !button.has_attribute("onclick"),
+            "raw onclick should be gone from rendered button; got: {}",
+            button.outer_html(),
         );
     }
 
