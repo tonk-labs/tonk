@@ -8,7 +8,7 @@
 //! The `set` / `set_error` DOM functions live behind a `wasm32`
 //! cfg gate further down.
 
-use tonk_concept::error::ErrorKind;
+use tonk_host::error::ErrorKind;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;

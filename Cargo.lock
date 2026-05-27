@@ -4846,21 +4846,19 @@ dependencies = [
 name = "tonk-concept"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "custom-elements",
  "dialog-common",
- "futures",
  "indexmap",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
  "tokio",
+ "tonk-host",
  "tonk-schema",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
- "wasm-streams",
  "web-sys",
 ]
 
@@ -4893,6 +4891,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tonk-concept",
+ "tonk-host",
  "tonk-notation",
  "tonk-schema",
  "wasm-bindgen",
@@ -4921,6 +4920,26 @@ dependencies = [
  "tonk-notation",
  "tonk-schema",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "tonk-host"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "custom-elements",
+ "dialog-common",
+ "futures",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tonk-schema",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "wasm-streams",
+ "web-sys",
 ]
 
 [[package]]
@@ -4970,6 +4989,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "tonk-concept",
+ "tonk-host",
  "tonk-schema",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5068,6 +5088,7 @@ dependencies = [
  "tonk-code",
  "tonk-concept",
  "tonk-display",
+ "tonk-host",
  "tonk-invite",
  "tonk-layout",
  "tonk-notation",

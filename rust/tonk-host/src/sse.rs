@@ -100,7 +100,7 @@ pub async fn open_sse(
         // on_frame / on_error must be FnMut for the SSE reader loop.
         let on_frame_cell = std::cell::RefCell::new(on_frame);
         let on_error_cell = std::cell::RefCell::new(on_error);
-        let ctrl = crate::fetch::open_sse(
+        let ctrl = crate::http::open_sse(
             url,
             &body_str,
             move |frame| (on_frame_cell.borrow())(frame),

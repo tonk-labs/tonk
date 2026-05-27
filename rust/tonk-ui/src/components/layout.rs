@@ -48,9 +48,10 @@ pub fn TonkLayoutView() -> impl IntoView {
             .filter(|s| !s.is_empty())
     });
 
-    // The slot + a single Effect: whenever any of the three signals
+    // The slot + a single Effect: whenever the workspace signal
     // changes, rebuild the `<tonk-layout>` host so it picks up the
-    // new attribute values. Same pattern as `TonkDisplayView`.
+    // new attribute value. Space and branch come from the
+    // surrounding routing elements; no attributes needed here.
     let mount: NodeRef<leptos::html::Div> = NodeRef::new();
     Effect::new(move |_| {
         let Some(slot) = mount.get() else {
@@ -61,12 +62,6 @@ pub fn TonkLayoutView() -> impl IntoView {
         let Ok(host) = document.create_element("tonk-layout") else {
             return;
         };
-        if let Some(s) = space_name.get() {
-            let _ = host.set_attribute("space", &s);
-        }
-        if let Some(b) = branch_name.get() {
-            let _ = host.set_attribute("branch", &b);
-        }
         if let Some(w) = workspace_name.get() {
             let _ = host.set_attribute("workspace", &w);
         }
@@ -80,7 +75,11 @@ pub fn TonkLayoutView() -> impl IntoView {
             </h1>
         </header>
         <main class="wa-stack space-view layout-view">
-            <div class="layout-view-slot" node_ref=mount></div>
+            <tonk-repository name=move || space_name.get().unwrap_or_default()>
+                <tonk-branch name=move || branch_name.get().unwrap_or_default()>
+                    <div class="layout-view-slot" node_ref=mount></div>
+                </tonk-branch>
+            </tonk-repository>
         </main>
     }
 }

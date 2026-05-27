@@ -225,9 +225,9 @@ fn render_concept_view(
     // not under Leptos's `attr:` namespace.
     let inner_html = build_template_html(&descriptor);
     let mount: NodeRef<leptos::html::Div> = NodeRef::new();
-    let space_for_effect = space.clone();
-    let branch_for_effect = branch.clone();
     let source_for_effect = source_attr.clone();
+    let space_for_wrappers = space.clone();
+    let branch_for_wrappers = branch.clone();
     Effect::new(move |_| {
         if let Some(slot) = mount.get() {
             // Replace the slot's contents with a fresh
@@ -240,8 +240,10 @@ fn render_concept_view(
                 Ok(el) => el,
                 Err(_) => return,
             };
-            let _ = host.set_attribute("space", &space_for_effect);
-            let _ = host.set_attribute("branch", &branch_for_effect);
+            // Space and branch come from the surrounding
+            // <tonk-repository> / <tonk-branch> ancestors via
+            // event-annotation; no attributes needed on the
+            // element itself.
             let _ = host.set_attribute("source", &source_for_effect);
             host.set_inner_html(&inner_html);
             let _ = slot.append_child(&host);
@@ -260,7 +262,11 @@ fn render_concept_view(
             </h1>
         </header>
         <main class="wa-stack concept-view">
-            <div class="concept-view-table" node_ref=mount></div>
+            <tonk-repository name=space_for_wrappers>
+                <tonk-branch name=branch_for_wrappers>
+                    <div class="concept-view-table" node_ref=mount></div>
+                </tonk-branch>
+            </tonk-repository>
         </main>
     }
 }

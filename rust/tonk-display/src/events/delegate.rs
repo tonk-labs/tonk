@@ -5,8 +5,10 @@
 //! `event.target` to the closest `[data-on<event>]`-bearing
 //! ancestor, looks up that attribute's value (the concept name),
 //! resolves the cached descriptor, builds a `TransactRequest`
-//! body via [`super::extract::build_transact_body`], and POSTs to
-//! `/api/repository/{repo}/branch/{branch}/transact`.
+//! body via [`super::extract::build_transact_body`], and
+//! dispatches a `tonk-claim` event on the host element. The host
+//! routes the claim to `/transact` against the ambient
+//! `(space, branch)` context.
 //!
 //! Listeners stay attached for the lifetime of the host element.
 //! When the host's children re-render incrementally (existing
@@ -20,7 +22,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tonk_concept::fetch::transact_post;
+use tonk_host::consumer as host_consumer;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
@@ -47,8 +49,9 @@ pub struct Delegate {
 impl Delegate {
     /// Install delegation listeners on `host` for every event
     /// type in `event_types`. `descriptors` maps a concept name to
-    /// its resolved descriptor JSON. `transact_url` is the
-    /// `/transact` endpoint to POST claims to.
+    /// its resolved descriptor JSON. Claims dispatch as `tonk-claim`
+    /// events on `host`; the `<tonk-host>` ancestor routes them to
+    /// `/transact` against the ambient `(space, branch)`.
     ///
     /// Returns a `Delegate` value whose `Drop` impl removes the
     /// listeners. Store it on the renderer's state so listeners
@@ -57,18 +60,16 @@ impl Delegate {
         host: Element,
         event_types: impl IntoIterator<Item = String>,
         descriptors: HashMap<String, String>,
-        transact_url: String,
     ) -> Self {
         let descriptors = Rc::new(descriptors);
-        let url = Rc::new(transact_url);
         let mut listeners: Vec<ListenerEntry> = Vec::new();
 
         for event_type in event_types {
             let descriptors = Rc::clone(&descriptors);
-            let url = Rc::clone(&url);
             let attr_name = format!("data-on{event_type}");
+            let host_for_handler = host.clone();
             let closure = Closure::wrap(Box::new(move |event: Event| {
-                handle_event(&event, &attr_name, descriptors.as_ref(), url.as_ref());
+                handle_event(&event, &attr_name, descriptors.as_ref(), &host_for_handler);
             }) as Box<dyn FnMut(Event)>);
             let _ = host
                 .add_event_listener_with_callback(&event_type, closure.as_ref().unchecked_ref());
@@ -101,7 +102,7 @@ fn handle_event(
     event: &Event,
     attr_name: &str,
     descriptors: &HashMap<String, String>,
-    transact_url: &str,
+    host: &Element,
 ) {
     let Some(target) = event.target() else {
         return;
@@ -133,17 +134,17 @@ fn handle_event(
             return;
         }
     };
-    let body_str = match serde_json::to_string(&body) {
-        Ok(s) => s,
+    let request_js = match serde_wasm_bindgen::to_value(&body) {
+        Ok(v) => v,
         Err(e) => {
             log_error(format!("event handler: serialize body: {e}"));
             return;
         }
     };
-    let url = transact_url.to_owned();
+    let host = host.clone();
     spawn_local(async move {
-        if let Err(e) = transact_post(&url, &body_str).await {
-            log_error(format!("event handler: transact_post: {}", e.message));
+        if let Err(e) = host_consumer::claim(&host, &request_js).await {
+            log_error(format!("event handler: tonk-claim: {}", e.message));
         }
     });
 }

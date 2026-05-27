@@ -136,10 +136,10 @@ pub fn TonkDisplayView() -> impl IntoView {
                     Ok(el) => el,
                     Err(_) => return,
                 };
-                let space = space_name.get().unwrap_or_default();
-                let branch = branch_name.get().unwrap_or_default();
-                let _ = host.set_attribute("space", &space);
-                let _ = host.set_attribute("branch", &branch);
+                // Space and branch come from the surrounding
+                // <tonk-repository> / <tonk-branch> ancestors via
+                // event-annotation; no attributes needed on the
+                // element itself.
                 let _ = host.set_attribute("entity", &uri);
                 if let Some(v) = view_name.get() {
                     let _ = host.set_attribute("view", &v);
@@ -182,7 +182,11 @@ pub fn TonkDisplayView() -> impl IntoView {
             }>
                 { move || resolved_entity.get().map(|result| result.map(|_| ())) }
                 <main class="wa-stack display-view">
-                    <div class="display-view-slot" node_ref=mount></div>
+                    <tonk-repository name=move || space_name.get().unwrap_or_default()>
+                        <tonk-branch name=move || branch_name.get().unwrap_or_default()>
+                            <div class="display-view-slot" node_ref=mount></div>
+                        </tonk-branch>
+                    </tonk-repository>
                 </main>
             </ErrorBoundary>
         </Suspense>

@@ -15,6 +15,7 @@ async fn main() {
     console_error_panic_hook::set_once();
 
     tonk_sigil::Sigil::install();
+    tonk_host::register();
     tonk_concept::register();
     tonk_display::register();
     tonk_layout::register();

@@ -28,9 +28,10 @@ use std::rc::Rc;
 
 use custom_elements::CustomElement;
 use js_sys::{Function, Reflect};
-use tonk_concept::error::{ErrorDetail, ErrorKind};
 use tonk_concept::resolve::{ParsedSource, parse_source, phase1_query};
-use tonk_concept::sse::{SubscriptionAbort, open_sse, use_bridge};
+use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
+use tonk_host::error::{ErrorDetail, ErrorKind};
+use tonk_host::install_depth_annotator;
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -79,12 +80,12 @@ struct Inner {
     /// detaches and re-attaches.
     generation: u64,
     /// Cancels the view (or views-for-model) subscription on
-    /// disconnect / attribute change. Dropping the handle cancels
-    /// the active transport (bridge or fetch).
-    view_abort: Option<SubscriptionAbort>,
+    /// disconnect / attribute change. Dropping the handle calls
+    /// the host's `cancel()` and dispatches `tonk-unsubscribe`.
+    view_sub: Option<HostSubscription>,
     /// Cancels the entity subscription on disconnect / attribute
     /// change.
-    entity_abort: Option<SubscriptionAbort>,
+    entity_sub: Option<HostSubscription>,
     /// Last entity conclusion seen; replayed when a fresh slide
     /// is mounted so it picks up the current data without waiting
     /// for the next entity frame.
@@ -118,6 +119,11 @@ struct Inner {
     /// concept descriptors would write a stale [`Delegate`] over the
     /// newer one.
     delegate_generation: u64,
+    /// Depth annotator installed at `connected_callback` — its
+    /// listeners increment `event.detail.depth` on every operation
+    /// event that bubbles up through this element. Dropped on
+    /// disconnect.
+    depth_annotator: Option<tonk_host::DepthAnnotator>,
 }
 
 impl Inner {
@@ -125,8 +131,8 @@ impl Inner {
         Self {
             disposed: false,
             generation: 0,
-            view_abort: None,
-            entity_abort: None,
+            view_sub: None,
+            entity_sub: None,
             last_conclusion: None,
             carousel: None,
             slides: BTreeMap::new(),
@@ -134,13 +140,15 @@ impl Inner {
             notation_item: None,
             delegate: None,
             delegate_generation: 0,
+            depth_annotator: None,
         }
     }
 
     fn abort_all(&mut self) {
-        // Dropping the handles triggers the bridge unsubscribe call.
-        self.view_abort.take();
-        self.entity_abort.take();
+        // Dropping the subscriptions cancels via the host and
+        // dispatches `tonk-unsubscribe`.
+        self.view_sub.take();
+        self.entity_sub.take();
         // Drop the delegate — its impl removes listeners from the
         // host on Drop.
         self.delegate.take();
@@ -159,7 +167,7 @@ impl CustomElement for TonkDisplay {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["entity", "model", "view", "space", "branch"]
+        &["entity", "model", "view"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -169,6 +177,13 @@ impl CustomElement for TonkDisplay {
         state::set(&host, State::Loading);
 
         let state = Rc::new(RefCell::new(Inner::new()));
+        // Install the depth annotator so any descendant consumer
+        // events bubbling through us are credited one level of
+        // nesting. The handle's `Drop` detaches the listeners.
+        state.borrow_mut().depth_annotator = Some(install_depth_annotator(&host));
+        // Install reset / update / error JS methods on the host
+        // so the tonk-host invokes them by name when frames arrive.
+        install_method_delegates(&host, &state);
         *self.inner.borrow_mut() = Some(state.clone());
         start_flows(&host, state);
     }
@@ -211,6 +226,130 @@ pub fn register() {
         return;
     }
     TonkDisplay::define("tonk-display");
+    install_method_shims();
+}
+
+/// Install the `reset` / `update` / `error` method shims on the
+/// `<tonk-display>` prototype. Each shim reads the per-instance
+/// `__tonkReset` / `__tonkUpdate` / `__tonkError` property
+/// (a Rust closure attached in `connected_callback`) and calls
+/// it with the payload and opts. Installing the shim on the
+/// prototype rather than on each instance keeps `this`-binding
+/// correct (a `wasm_bindgen::Closure` would have given us a
+/// plain function with no `this`).
+fn install_method_shims() {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get("tonk-display");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let update_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let error_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+}
+
+/// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
+/// / `__tonkError` on the element. The closures capture the
+/// element's `Inner` state and dispatch on `opts.tag` to the
+/// right handler.
+fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
+    use wasm_bindgen::closure::Closure;
+    let host_for_reset = host.clone();
+    let state_for_reset = state.clone();
+    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_reset(&host_for_reset, &state_for_reset, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
+    reset.forget();
+
+    let host_for_update = host.clone();
+    let state_for_update = state.clone();
+    let update: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_update(&host_for_update, &state_for_update, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkUpdate".into(), update.as_ref());
+    update.forget();
+
+    let host_for_error = host.clone();
+    let state_for_error = state.clone();
+    let error: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_error(&host_for_error, &state_for_error, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
+    error.forget();
+}
+
+/// `reset(conclusions, { tag })` — first / full-snapshot frame.
+/// V1 SW always emits `reset`; deltas (`update`) come later with
+/// DBSP integration.
+fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+    let tag = read_tag(&opts);
+    let conclusions: Vec<Conclusion> = match serde_wasm_bindgen::from_value(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            fail(
+                host,
+                state,
+                ErrorDetail::new(ErrorKind::Parse, format!("reset payload: {e}")),
+            );
+            return;
+        }
+    };
+    match tag.as_deref() {
+        Some("view") => handle_view_frame(host, state, conclusions),
+        Some("entity") => handle_entity_frame(host, state, conclusions),
+        _ => {
+            // Unknown tag — log and drop.
+        }
+    }
+}
+
+/// `update(delta, { tag })` — incremental change. V1 SW does not
+/// emit this; we'd treat it as `reset` on whatever the frame
+/// implies. For now log and drop.
+fn on_update(_host: &Element, _state: &Rc<RefCell<Inner>>, _payload: JsValue, _opts: JsValue) {
+    // V1 SW emits only `reset`. Once delta semantics arrive,
+    // this handler applies the delta to the slide state.
+}
+
+/// `error(detail, { tag })` — transport / parse error on a
+/// subscription. Surface as a host-level failure.
+fn on_error(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, _opts: JsValue) {
+    let message = Reflect::get(&payload, &"message".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_else(|| format!("{payload:?}"));
+    fail(host, state, ErrorDetail::new(ErrorKind::Network, message));
+}
+
+/// Read `opts.tag` as a string. Returns `None` if absent.
+fn read_tag(opts: &JsValue) -> Option<String> {
+    if !opts.is_object() {
+        return None;
+    }
+    Reflect::get(opts, &"tag".into())
+        .ok()
+        .and_then(|v| v.as_string())
 }
 
 fn already_registered() -> bool {
@@ -317,33 +456,16 @@ async fn run(
     // `view` is optional — its absence triggers carousel mode.
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
-    // Build the query URL from `space`/`branch` attributes (shell
-    // path). When neither is set a relative `/query` is used. In
-    // bridge mode this URL is passed along but is unused — the
-    // bridge routes every request through postMessage.
-    let space_attr = host.get_attribute("space");
-    let branch_attr = host.get_attribute("branch");
-    let url = match (&space_attr, &branch_attr) {
-        (None, None) => "/query".to_owned(),
-        _ => format!(
-            "/api/repository/{}/branch/{}/query",
-            space_attr.as_deref().unwrap_or("home"),
-            branch_attr.as_deref().unwrap_or("main"),
-        ),
-    };
-
-    // Resolve the model concept's entity + descriptor.
+    // Resolve the model concept's entity + descriptor via
+    // `tonk-query`. The host annotates space/branch from the
+    // nearest <tonk-repository>/<tonk-branch> ancestors and
+    // returns the parsed conclusions as a JS value.
     let parsed: ParsedSource = parse_source(&model);
     let phase1_q = phase1_query(&parsed);
-    let (model_entity, descriptor_json) = if use_bridge() {
-        let body_val = serde_json::to_value(&phase1_q)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-        bridge_phase1_lookup(&body_val).await?
-    } else {
-        let body_str = serde_json::to_string(&phase1_q)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-        tonk_concept::fetch::phase1_lookup(&url, &body_str).await?
-    };
+    let phase1_body = serde_wasm_bindgen::to_value(&phase1_q)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
+    let phase1_result = host_consumer::query(host, &phase1_body).await?;
+    let (model_entity, descriptor_json) = extract_phase1(&phase1_result)?;
     check_generation(&state, generation)?;
 
     // Build the view subscription query: pin-by-name in single
@@ -355,12 +477,12 @@ async fn run(
             ErrorDetail::new(ErrorKind::Descriptor, format!("views-for-model query: {e}"))
         })?,
     };
-    let view_body = serde_json::to_value(&view_q)
+    let view_body = serde_wasm_bindgen::to_value(&view_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body: {e}")))?;
 
     let entity_q = entity_query(&descriptor_json, &entity)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
-    let entity_body = serde_json::to_value(&entity_q)
+    let entity_body = serde_wasm_bindgen::to_value(&entity_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body: {e}")))?;
 
     // Always mount the `<wa-carousel>` so the slot geometry is
@@ -371,134 +493,52 @@ async fn run(
     let single_mode = view.is_some();
     ensure_carousel(host, &state, single_mode);
 
-    let view_abort =
-        open_view_stream(&url, &view_body, host.clone(), state.clone(), generation).await?;
-    // Check generation again — between opening view and entity
-    // streams, attribute_changed_callback may have fired and
-    // superseded us. If so, drop the view handle we just opened
-    // (its Drop impl cancels the transport), and bail.
+    // Open the two subscriptions via the host. Frames arrive
+    // through our `__tonkReset` delegate, which routes to
+    // `handle_view_frame` or `handle_entity_frame` by `opts.tag`.
+    let view_tag = JsValue::from_str("view");
+    let view_sub = host_consumer::subscribe(host, &view_body, Some(&view_tag))?;
     if check_generation(&state, generation).is_err() {
-        drop(view_abort);
         return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
     }
-    let entity_abort =
-        open_entity_stream(&url, &entity_body, host.clone(), state.clone(), generation).await?;
+    let entity_tag = JsValue::from_str("entity");
+    let entity_sub = host_consumer::subscribe(host, &entity_body, Some(&entity_tag))?;
 
     {
         let mut s = state.borrow_mut();
         // Final generation check — if a newer flow ran between
-        // opening entity_stream and storing the handles, drop them
-        // so we don't orphan them (the newer flow's handles are
-        // already stored).
+        // opening the two subscriptions, drop them so we don't
+        // orphan them (the newer flow's subscriptions are already
+        // stored).
         if s.generation != generation {
-            drop(view_abort);
-            drop(entity_abort);
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
-        s.view_abort = Some(view_abort);
-        s.entity_abort = Some(entity_abort);
+        s.view_sub = Some(view_sub);
+        s.entity_sub = Some(entity_sub);
     }
     dispatch_event(host, "tonk-display:connected", None);
     Ok(())
 }
 
-async fn open_view_stream(
-    url: &str,
-    body: &serde_json::Value,
-    host: Element,
-    state: Rc<RefCell<Inner>>,
-    generation: u64,
-) -> Result<SubscriptionAbort, ErrorDetail> {
-    let host_for_frame = host.clone();
-    let host_for_err = host.clone();
-    let state_for_err = state.clone();
-    let state_for_frame = state.clone();
-    open_sse(
-        url,
-        body,
-        move |frame: &str| {
-            // Discard frames from a superseded or disposed flow
-            // — a stale reader can have a queued chunk in flight
-            // when the element detaches or `attribute_changed_callback`
-            // aborts us. Without this guard the stale frame
-            // pushes a slide into a state whose host is no longer
-            // ours, yielding duplicated `<tonk-view>` children.
-            {
-                let s = state_for_frame.borrow();
-                if s.disposed || s.generation != generation {
-                    return;
-                }
-            }
-            let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
-                Ok(v) => v,
-                Err(e) => {
-                    fail(
-                        &host_for_frame,
-                        &state,
-                        ErrorDetail::new(ErrorKind::Parse, format!("view frame: {e}")),
-                    );
-                    return;
-                }
-            };
-            handle_view_frame(&host_for_frame, &state, conclusions);
-        },
-        move |err: ErrorDetail| {
-            let s = state_for_err.borrow();
-            if s.disposed || s.generation != generation {
-                return;
-            }
-            drop(s);
-            fail(&host_for_err, &state_for_err, err);
-        },
-    )
-    .await
-}
-
-async fn open_entity_stream(
-    url: &str,
-    body: &serde_json::Value,
-    host: Element,
-    state: Rc<RefCell<Inner>>,
-    generation: u64,
-) -> Result<SubscriptionAbort, ErrorDetail> {
-    let host_for_frame = host.clone();
-    let host_for_err = host.clone();
-    let state_for_err = state.clone();
-    let state_for_frame = state.clone();
-    open_sse(
-        url,
-        body,
-        move |frame: &str| {
-            // Same stale-frame guard as in `open_view_stream`.
-            {
-                let s = state_for_frame.borrow();
-                if s.disposed || s.generation != generation {
-                    return;
-                }
-            }
-            let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
-                Ok(v) => v,
-                Err(e) => {
-                    fail(
-                        &host_for_frame,
-                        &state,
-                        ErrorDetail::new(ErrorKind::Parse, format!("entity frame: {e}")),
-                    );
-                    return;
-                }
-            };
-            handle_entity_frame(&host_for_frame, &state, conclusions);
-        },
-        move |err: ErrorDetail| {
-            let s = state_for_err.borrow();
-            if s.disposed || s.generation != generation {
-                return;
-            }
-            drop(s);
-            fail(&host_for_err, &state_for_err, err);
-        },
-    )
-    .await
+/// Decode the host's phase-1 result (a `Vec<Conclusion>` as a JS
+/// value) into the `(entity, descriptor_json)` tuple the rest of
+/// the flow expects. Phase-1 returns 0 or 1 row.
+fn extract_phase1(value: &JsValue) -> Result<(String, String), ErrorDetail> {
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone())
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 result: {e}")))?;
+    let first = conclusions
+        .into_iter()
+        .next()
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
+    let source = first
+        .fields
+        .get("source")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `source` field")
+        })?;
+    Ok((first.this, source))
 }
 
 /// Diff the incoming view frame against currently mounted slides.
@@ -632,25 +672,16 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     use crate::events::delegate::Delegate;
     use std::collections::{BTreeSet, HashMap};
 
-    // Snapshot the view elements + URL + space/branch so we don't
-    // hold the borrow across awaits.
-    let (view_els, transact_url) = {
+    // Snapshot the view elements so we don't hold the borrow
+    // across awaits. The delegate's `claim` calls dispatch on the
+    // host element itself; the `<tonk-host>` ancestor handles
+    // `(space, branch)` annotation, so no URL plumbing here.
+    let view_els: Vec<Element> = {
         let s = state.borrow();
         if s.disposed || s.delegate_generation != delegate_generation {
             return;
         }
-        let view_els: Vec<Element> = s.slides.values().map(|sl| sl.view_el.clone()).collect();
-        let space = host.get_attribute("space");
-        let branch = host.get_attribute("branch");
-        let url = match (&space, &branch) {
-            (None, None) => "/transact".to_owned(),
-            _ => format!(
-                "/api/repository/{}/branch/{}/transact",
-                space.as_deref().unwrap_or("home"),
-                branch.as_deref().unwrap_or("main"),
-            ),
-        };
-        (view_els, url)
+        s.slides.values().map(|sl| sl.view_el.clone()).collect()
     };
 
     // Collect distinct event types and concept names across slides.
@@ -692,18 +723,8 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         return;
     }
 
-    // Resolve each concept's descriptor via phase-1 lookup.
-    // Reuses the same `/query` URL the renderer already uses.
-    let space = host.get_attribute("space");
-    let branch = host.get_attribute("branch");
-    let query_url = match (&space, &branch) {
-        (None, None) => "/query".to_owned(),
-        _ => format!(
-            "/api/repository/{}/branch/{}/query",
-            space.as_deref().unwrap_or("home"),
-            branch.as_deref().unwrap_or("main"),
-        ),
-    };
+    // Resolve each concept's descriptor via the host's
+    // `tonk-query` event. The host annotates space/branch.
     let mut descriptors: HashMap<String, String> = HashMap::new();
     for name in &concept_names {
         // Bail mid-loop if a newer refresh has started — no point
@@ -716,22 +737,15 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         }
         let parsed = parse_source(name);
         let q = phase1_query(&parsed);
-        let resolved = if use_bridge() {
-            let body_val = match serde_json::to_value(&q) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            bridge_phase1_lookup(&body_val).await
-        } else {
-            let body_str = match serde_json::to_string(&q) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            tonk_concept::fetch::phase1_lookup(&query_url, &body_str).await
+        let body_val = match serde_wasm_bindgen::to_value(&q) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
-        match resolved {
-            Ok((_entity, descriptor_json)) => {
-                descriptors.insert(name.clone(), descriptor_json);
+        match host_consumer::query(host, &body_val).await {
+            Ok(result) => {
+                if let Ok((_entity, descriptor_json)) = extract_phase1(&result) {
+                    descriptors.insert(name.clone(), descriptor_json);
+                }
             }
             Err(_) => {
                 // Concept didn't resolve — bindings referencing
@@ -744,12 +758,7 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 
     // Build the delegate before acquiring the borrow so its
     // `addEventListener` calls don't run inside the lock.
-    let delegate = Delegate::install(
-        host.clone(),
-        event_types.into_iter(),
-        descriptors,
-        transact_url,
-    );
+    let delegate = Delegate::install(host.clone(), event_types.into_iter(), descriptors);
     // Re-check the per-refresh generation: if a newer refresh has
     // started while we were resolving descriptors, drop our delegate
     // rather than overwrite the newer one. `delegate`'s `Drop` impl
@@ -919,38 +928,6 @@ fn call_render(el: &Element, detail: &JsValue) {
 /// `<tonk-view>` / `<tonk-inspector>` expect.
 fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
     serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
-}
-
-/// Bridge-side resolver — returns `(this, source)` from the first
-/// matching row. `this` is the concept entity URI; `source` is the
-/// raw descriptor JSON the worker put in the row's `source` field.
-async fn bridge_phase1_lookup(body: &serde_json::Value) -> Result<(String, String), ErrorDetail> {
-    let result = tonk_concept::bridge::query(body).await?;
-    let arr = result.as_array().ok_or_else(|| {
-        ErrorDetail::new(
-            ErrorKind::Descriptor,
-            "phase1: expected array of conclusions",
-        )
-    })?;
-    let first = arr
-        .first()
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
-    let this = first
-        .get("this")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `this` field")
-        })?;
-    let source = first
-        .get("fields")
-        .and_then(|f| f.get("source"))
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `source` field")
-        })?;
-    Ok((this, source))
 }
 
 fn dispatch_error(host: &Element, err: ErrorDetail) {

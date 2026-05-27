@@ -1,30 +1,32 @@
 //! `<tonk-concept>` custom-element implementation.
 //!
 //! Wires the static-side modules ([`crate::resolve`],
-//! [`crate::template`], [`crate::render`], [`crate::sse`]) into a
-//! lifecycle: snapshot the row template once, resolve `source`
-//! into a wire query, open a subscription, and diff each frame
-//! into the live DOM.
+//! [`crate::template`], [`crate::render`]) into a lifecycle:
+//! snapshot the row template once, resolve `source` into a wire
+//! query via a `tonk-query` event, open a subscription via a
+//! `tonk-subscribe` event, and diff each frame into the live DOM.
 //!
-//! Transport selection: if `globalThis.tonk` is defined (iframe
-//! context with bridge loaded), the bridge is used. Otherwise the
-//! legacy fetch/SSE path is used — in that case the `space` and
-//! `branch` HTML attributes are read to build an absolute
-//! `/api/repository/{space}/branch/{branch}/query` URL that the
-//! service worker serves directly to the shell.
+//! IO is owned by the nearest `<tonk-host>` ancestor. The element
+//! itself has no `space` / `branch` attributes — routing comes
+//! from `<tonk-repository>` / `<tonk-branch>` annotators that
+//! decorate the operation events on the way up.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use js_sys::{Function, Reflect};
+use tonk_host::DepthAnnotator;
+use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
+use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 use crate::error::{ErrorDetail, ErrorKind};
 use crate::render::Renderer;
 use crate::resolve::{ParsedSource, parse_source, phase1_query, phase2_query};
-use crate::sse::{SubscriptionAbort, open_sse, use_bridge};
 use crate::template::{BindingPlan, extract_plan, snapshot_template};
 
 /// Internal lifecycle state shared across async closures.
@@ -38,8 +40,11 @@ struct Inner {
     container: Option<Element>,
     /// Active diff renderer once the subscription has opened.
     renderer: Option<Renderer>,
-    /// Active subscription handle — dropping it cancels the stream.
-    abort: Option<SubscriptionAbort>,
+    /// Active subscription handle — dropping it cancels the
+    /// upstream via the host's registry.
+    subscription: Option<HostSubscription>,
+    /// Depth annotator listeners installed at connect.
+    depth_annotator: Option<DepthAnnotator>,
 }
 
 impl Inner {
@@ -49,7 +54,8 @@ impl Inner {
             template: None,
             container: None,
             renderer: None,
-            abort: None,
+            subscription: None,
+            depth_annotator: None,
         }
     }
 }
@@ -69,7 +75,7 @@ impl CustomElement for TonkConcept {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["source", "space", "branch"]
+        &["source"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -91,15 +97,25 @@ impl CustomElement for TonkConcept {
             s.plan = Some(plan);
             s.template = Some(snapshot.fragment);
             s.container = Some(snapshot.container);
+            s.depth_annotator = Some(tonk_host::install_depth_annotator(&host_element));
         }
+        install_method_delegates(&host_element, &state);
         *self.inner.borrow_mut() = Some(state.clone());
 
         start_subscription(&host_element, state);
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
         if let Some(state) = self.inner.borrow_mut().take() {
-            state.borrow_mut().abort.take();
+            // Drop the subscription (cancels upstream via host).
+            // Drop the depth annotator (detaches listeners).
+            state.borrow_mut().subscription.take();
+            state.borrow_mut().depth_annotator.take();
+            // Notify host explicitly so it drops the registry
+            // entry without waiting for `isConnected === false`
+            // detection.
+            let el: Element = this.clone().into();
+            host_consumer::dispatch_unsubscribe(&el);
         }
     }
 
@@ -116,7 +132,7 @@ impl CustomElement for TonkConcept {
         };
         {
             let mut s = state.borrow_mut();
-            s.abort.take();
+            s.subscription.take();
             if let Some(mut renderer) = s.renderer.take() {
                 renderer.clear();
             }
@@ -131,6 +147,7 @@ pub fn register() {
         return;
     }
     TonkConcept::define("tonk-concept");
+    install_method_shims();
 }
 
 fn already_registered() -> bool {
@@ -159,34 +176,15 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
     }
     let parsed: ParsedSource = parse_source(&source_attr);
 
-    // Either-or override: if the author sets `space` or `branch`,
-    // build an absolute `/api/repository/{space}/branch/{branch}/query`
-    // URL — the missing half defaults to `home`/`main`. With neither
-    // attribute set, a relative `/query` URL lets the service worker's
-    // guest-iframe rewrite resolve the request under whatever branch
-    // the iframe is actually rooted at.
-    let space_attr = host.get_attribute("space");
-    let branch_attr = host.get_attribute("branch");
-    let url = match (&space_attr, &branch_attr) {
-        (None, None) => "/query".to_owned(),
-        _ => format!(
-            "/api/repository/{}/branch/{}/query",
-            space_attr.as_deref().unwrap_or("home"),
-            branch_attr.as_deref().unwrap_or("main"),
-        ),
-    };
-
-    let phase1_body_query = phase1_query(&parsed);
-    let descriptor_json = if use_bridge() {
-        let body_val = serde_json::to_value(&phase1_body_query)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-        bridge_phase1_lookup(&body_val).await?
-    } else {
-        let body_str = serde_json::to_string(&phase1_body_query)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-        let (_this, source) = crate::fetch::phase1_lookup(&url, &body_str).await?;
-        source
-    };
+    // Phase-1 lookup via the host. Context (space, branch) is
+    // annotated on the way up by ancestors.
+    let phase1_q = phase1_query(&parsed);
+    let phase1_body = serde_wasm_bindgen::to_value(&phase1_q)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
+    let result = host_consumer::query(host, &phase1_body)
+        .await
+        .map_err(|e| ErrorDetail::new(map_kind(e.kind), e.message))?;
+    let descriptor_json = extract_descriptor(&result)?;
 
     let phase2 = phase2_query(&descriptor_json, &parsed.filters)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("phase2: {e}")))?;
@@ -209,75 +207,138 @@ async fn subscribe(host: &Element, state: Rc<RefCell<Inner>>) -> Result<(), Erro
         s.renderer = Some(Renderer::new(plan, template, container));
     }
 
-    let host_for_frame = host.clone();
-    let host_for_err = host.clone();
-    let state_for_frame = state.clone();
-    let state_for_err = state.clone();
-
-    let phase2_value = serde_json::to_value(&phase2)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase2 serialise: {e}")))?;
-
-    let handle = open_sse(
-        &url,
-        &phase2_value,
-        move |frame: &str| {
-            let conclusions: Vec<tonk_schema::conclusion::Conclusion> =
-                match serde_json::from_str(frame) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        dispatch_error(
-                            &host_for_frame,
-                            ErrorDetail::new(ErrorKind::Parse, format!("frame: {e}")),
-                        );
-                        return;
-                    }
-                };
-            if let Some(renderer) = state_for_frame.borrow_mut().renderer.as_mut() {
-                renderer.apply(&conclusions);
-            }
-            dispatch_event(
-                &host_for_frame,
-                "tonk-concept:result",
-                Some(serde_wasm_bindgen::to_value(&conclusions).unwrap_or(JsValue::NULL)),
-            );
-        },
-        move |err: ErrorDetail| {
-            dispatch_error(&host_for_err, err);
-            // Drop renderer on persistent stream error.
-            state_for_err.borrow_mut().renderer = None;
-        },
-    )
-    .await?;
-
-    state.borrow_mut().abort = Some(handle);
+    // Open the subscription via the host. Frames arrive through
+    // our `reset` method (single subscription — no tag needed).
+    let phase2_body = serde_wasm_bindgen::to_value(&phase2)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase2 body: {e}")))?;
+    let sub = host_consumer::subscribe(host, &phase2_body, None)
+        .map_err(|e| ErrorDetail::new(map_kind(e.kind), e.message))?;
+    state.borrow_mut().subscription = Some(sub);
     dispatch_event(host, "tonk-concept:connected", None);
     Ok(())
 }
 
-/// Bridge-side resolver — call `globalThis.tonk.query` and extract the
-/// `source` field from the first returned conclusion.
-async fn bridge_phase1_lookup(body: &serde_json::Value) -> Result<String, ErrorDetail> {
-    let result = crate::bridge::query(body).await?;
-    let arr = result.as_array().ok_or_else(|| {
-        ErrorDetail::new(
-            ErrorKind::Descriptor,
-            "phase1: expected array of conclusions",
-        )
-    })?;
-    let first = arr
-        .first()
+/// Decode the host's phase-1 result into the descriptor JSON
+/// from the first row's `source` field.
+fn extract_descriptor(value: &JsValue) -> Result<String, ErrorDetail> {
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone())
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 result: {e}")))?;
+    let first = conclusions
+        .into_iter()
+        .next()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
-    let source = first
-        .get("fields")
-        .and_then(|f| f.get("source"))
+    first
+        .fields
+        .get("source")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ErrorDetail::new(
-                ErrorKind::Descriptor,
-                "phase1 row missing `source` field — worker may not be on the AnonymousConceptQuery build",
-            )
-        })?;
-    Ok(source.to_owned())
+        .map(str::to_owned)
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `source` field"))
+}
+
+/// Map `tonk_host::error::ErrorKind` to our local
+/// `crate::error::ErrorKind`. The two enums are identical but
+/// distinct types (one was forked from the other when the
+/// transport modules moved up to `tonk-host`).
+fn map_kind(kind: tonk_host::error::ErrorKind) -> ErrorKind {
+    match kind {
+        tonk_host::error::ErrorKind::UnknownSource => ErrorKind::UnknownSource,
+        tonk_host::error::ErrorKind::Network => ErrorKind::Network,
+        tonk_host::error::ErrorKind::Parse => ErrorKind::Parse,
+        tonk_host::error::ErrorKind::Descriptor => ErrorKind::Descriptor,
+    }
+}
+
+/// Install the `reset` / `update` / `error` method shims on the
+/// `<tonk-concept>` prototype. Each shim reads the per-instance
+/// `__tonkReset` / `__tonkUpdate` / `__tonkError` property
+/// (a Rust closure attached in `connected_callback`) and calls
+/// it with the payload and opts.
+fn install_method_shims() {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get("tonk-concept");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let update_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let error_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+}
+
+/// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
+/// / `__tonkError` on the element. The closures capture the
+/// element's state.
+fn install_method_delegates(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let host_for_reset = host.clone();
+    let state_for_reset = state.clone();
+    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, _opts| {
+            on_reset(&host_for_reset, &state_for_reset, payload);
+        }));
+    let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
+    reset.forget();
+
+    let update: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |_payload, _opts| {
+            // V1 SW emits only `reset`. Once delta semantics
+            // arrive, apply the delta to the renderer.
+        }));
+    let _ = Reflect::set(host, &"__tonkUpdate".into(), update.as_ref());
+    update.forget();
+
+    let host_for_error = host.clone();
+    let error: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, _opts| {
+            let message = Reflect::get(&payload, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| format!("{payload:?}"));
+            dispatch_error(
+                &host_for_error,
+                ErrorDetail::new(ErrorKind::Network, message),
+            );
+        }));
+    let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
+    error.forget();
+}
+
+/// `reset(conclusions, opts)` — full snapshot frame. Drive the
+/// renderer's diff against its prior state.
+fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue) {
+    let conclusions: Vec<Conclusion> = match serde_wasm_bindgen::from_value(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            dispatch_error(
+                host,
+                ErrorDetail::new(ErrorKind::Parse, format!("frame: {e}")),
+            );
+            return;
+        }
+    };
+    if let Some(renderer) = state.borrow_mut().renderer.as_mut() {
+        renderer.apply(&conclusions);
+    }
+    dispatch_event(
+        host,
+        "tonk-concept:result",
+        Some(serde_wasm_bindgen::to_value(&conclusions).unwrap_or(JsValue::NULL)),
+    );
 }
 
 fn dispatch_error(host: &Element, err: ErrorDetail) {
