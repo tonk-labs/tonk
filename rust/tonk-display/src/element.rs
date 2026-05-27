@@ -800,8 +800,7 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
     if !s.slides.is_empty() || s.notation_source.is_some() {
         state::set(host, State::Ready);
     }
-    let event_detail = serde_wasm_bindgen::to_value(&conclusion).unwrap_or(JsValue::NULL);
-    dispatch_event(host, "tonk-display:result", Some(event_detail));
+    dispatch_event(host, "tonk-display:result", Some(event_detail(&conclusion)));
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -931,8 +930,18 @@ fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
 }
 
 fn dispatch_error(host: &Element, err: ErrorDetail) {
-    let detail = serde_wasm_bindgen::to_value(&err).unwrap_or(JsValue::NULL);
-    dispatch_event(host, "tonk-display:error", Some(detail));
+    dispatch_event(host, "tonk-display:error", Some(event_detail(&err)));
+}
+
+/// Serialize an event detail as a plain JS object (not a `Map`) so
+/// consumers can read fields via dot access (`event.detail.<field>`).
+/// `serde_wasm_bindgen::to_value` renders structs/maps as a JS `Map`,
+/// which makes `detail.<field>` come out `undefined`; the
+/// json-compatible serializer emits a plain object instead.
+fn event_detail<T: serde::Serialize>(value: &T) -> JsValue {
+    value
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .unwrap_or(JsValue::NULL)
 }
 
 fn dispatch_event(host: &Element, name: &str, detail: Option<JsValue>) {
@@ -946,4 +955,30 @@ fn dispatch_event(host: &Element, name: &str, detail: Option<JsValue>) {
         return;
     };
     let _ = host.dispatch_event(&event);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Outbound `tonk-display:result` / `:error` details must be plain
+    /// JS objects so consumers can read `event.detail.<field>`.
+    /// `serde_wasm_bindgen::to_value` renders them as a `Map`, where
+    /// `Reflect`/dot access reads `undefined`.
+    #[dialog_common::test]
+    fn it_serializes_event_detail_as_a_dot_accessible_object() {
+        #[derive(serde::Serialize)]
+        struct Probe {
+            label: String,
+        }
+        let detail = event_detail(&Probe {
+            label: "hi".to_owned(),
+        });
+        let field = Reflect::get(&detail, &JsValue::from_str("label")).expect("reflect get");
+        assert_eq!(field.as_string().as_deref(), Some("hi"));
+    }
 }
