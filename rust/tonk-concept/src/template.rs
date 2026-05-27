@@ -89,13 +89,35 @@ pub enum BindingKind {
         /// originally just `{name}`.
         segments: Vec<Segment>,
     },
-    /// Sets `attr_name` on the target element to the rendered
-    /// segment list.
+    /// Binds a value to the target element. The renderer dispatches
+    /// per value at apply time:
+    ///
+    /// * `force_attribute = true` (template author wrote
+    ///   `html:foo={x}`): always `setAttribute(name, rendered)`;
+    ///   booleans map to presence/absence.
+    /// * Single-field segment with a non-string JSON value
+    ///   (bool/number/array/object): set as a JS property via
+    ///   `Reflect.set` with a typed `JsValue`.
+    /// * Single-field segment with a string value, or multi-segment
+    ///   (literal text mixed with fields): check whether `name`
+    ///   exists on the element. If yes, assign as a property; if no,
+    ///   `setAttribute`.
+    ///
+    /// The variant is named `Attribute` for historical reasons; the
+    /// runtime semantics are property-or-attribute per the rules
+    /// above.
     Attribute {
-        /// Attribute name (e.g. `href`).
+        /// Binding name. With `force_attribute = false` this may be
+        /// applied as either an attribute or a property at render
+        /// time. With `force_attribute = true` the source `html:`
+        /// prefix has already been stripped.
         attr_name: String,
         /// Segment list to render per row.
         segments: Vec<Segment>,
+        /// `true` when the template author wrote `html:foo={x}` —
+        /// the renderer must use `setAttribute` regardless of value
+        /// type.
+        force_attribute: bool,
     },
 }
 
@@ -580,11 +602,30 @@ mod dom {
                 if !has_field(&segments) {
                     continue;
                 }
+                // `html:foo={x}` is the explicit "force attribute"
+                // escape hatch — reads as the HTML-attribute
+                // namespace. Strip the prefix so the renderer writes
+                // the real name; remember the intent. The prefixed
+                // attribute (left over from the parsed template) is
+                // removed from the fragment so cloned rows don't
+                // carry the literal `html:foo="{x}"` placeholder.
+                let (attr_name, force_attribute) = match name.strip_prefix("html:") {
+                    Some(stripped) => {
+                        if let Some(node) = navigate(fragment.unchecked_ref::<Node>(), &path)
+                            && let Some(el) = node.dyn_ref::<Element>()
+                        {
+                            let _ = el.remove_attribute(&name);
+                        }
+                        (stripped.to_string(), true)
+                    }
+                    None => (name, false),
+                };
                 bindings.push(Binding {
                     path: path.clone(),
                     kind: BindingKind::Attribute {
-                        attr_name: name,
+                        attr_name,
                         segments,
+                        force_attribute,
                     },
                 });
             }
@@ -679,12 +720,142 @@ mod dom {
             other => out.push_str(&other.to_string()),
         }
     }
+
+    /// Apply an attribute-form binding to the element identified by
+    /// `binding.path` under `scope_root`, dispatching between
+    /// property and attribute per the rules documented on
+    /// [`BindingKind::Attribute`].
+    ///
+    /// `rendered` is the already-stringified value (computed for
+    /// cache-equality checks by the caller); single-field bindings
+    /// also receive the underlying [`serde_json::Value`] so the
+    /// dispatcher can choose typed property assignment for
+    /// non-strings without re-parsing.
+    pub fn apply_attribute_binding(
+        scope_root: &Node,
+        binding: &Binding,
+        rendered: &str,
+        single_field_value: Option<&serde_json::Value>,
+    ) {
+        let BindingKind::Attribute {
+            attr_name,
+            force_attribute,
+            ..
+        } = &binding.kind
+        else {
+            return;
+        };
+        let Some(target) = navigate(scope_root, &binding.path) else {
+            return;
+        };
+        let Some(el) = target.dyn_ref::<Element>() else {
+            return;
+        };
+
+        if *force_attribute {
+            write_forced_attribute(el, attr_name, rendered, single_field_value);
+            return;
+        }
+
+        // Typed property path: a single `{field}` binding whose
+        // value is anything other than a JSON string assigns the
+        // typed value as a property via Reflect.set. Strings (and
+        // multi-segment bindings, which always stringify) fall
+        // through to the name-in-element dispatch below.
+        if let Some(value) = single_field_value
+            && !matches!(value, serde_json::Value::String(_))
+        {
+            let js_value = json_to_js_value(value);
+            let key = js_sys::JsString::from(attr_name.as_str()).into();
+            let _ = js_sys::Reflect::set(el.as_ref(), &key, &js_value);
+            return;
+        }
+
+        // String value (single-field) or multi-segment binding —
+        // the result is the rendered string. Use a property when
+        // the name exists on the element, otherwise setAttribute.
+        let key = js_sys::JsString::from(attr_name.as_str()).into();
+        let is_property = js_sys::Reflect::has(el.as_ref(), &key).unwrap_or(false);
+        if is_property {
+            let value: wasm_bindgen::JsValue = js_sys::JsString::from(rendered).into();
+            let _ = js_sys::Reflect::set(el.as_ref(), &key, &value);
+        } else {
+            let _ = el.set_attribute(attr_name, rendered);
+        }
+    }
+
+    /// Force-attribute path: `setAttribute` semantics, but with
+    /// HTML's bool-attribute convention when the underlying value
+    /// is a JSON bool — `true` adds the empty attribute, `false`
+    /// removes it.
+    fn write_forced_attribute(
+        el: &Element,
+        attr_name: &str,
+        rendered: &str,
+        single_field_value: Option<&serde_json::Value>,
+    ) {
+        if let Some(serde_json::Value::Bool(b)) = single_field_value {
+            if *b {
+                let _ = el.set_attribute(attr_name, "");
+            } else {
+                let _ = el.remove_attribute(attr_name);
+            }
+            return;
+        }
+        let _ = el.set_attribute(attr_name, rendered);
+    }
+
+    /// Convert a JSON value to a typed `JsValue` for property
+    /// assignment. Strings are handled by the caller (the property
+    /// path is only used for non-strings); arrays/objects pass
+    /// through serde-wasm-bindgen so they reach the DOM as real JS
+    /// arrays/objects rather than JSON-stringified blobs.
+    fn json_to_js_value(value: &serde_json::Value) -> wasm_bindgen::JsValue {
+        use wasm_bindgen::JsValue;
+        match value {
+            serde_json::Value::Bool(b) => JsValue::from_bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    JsValue::from_f64(f)
+                } else {
+                    JsValue::from_str(&n.to_string())
+                }
+            }
+            serde_json::Value::String(s) => JsValue::from_str(s),
+            serde_json::Value::Null => JsValue::NULL,
+            other => serde_wasm_bindgen::to_value(other).unwrap_or(JsValue::NULL),
+        }
+    }
+
+    /// Resolve a binding's single `{field}` reference to its
+    /// underlying JSON value. Returns `None` when the binding has
+    /// multiple segments or any literal text — in that case the
+    /// rendered string is the only well-defined value, and typed
+    /// dispatch isn't possible.
+    pub fn single_field_value<'a>(
+        binding: &Binding,
+        row_this: &'a str,
+        row_fields: &'a BTreeMap<String, serde_json::Value>,
+        shadow: &'a BTreeMap<String, serde_json::Value>,
+    ) -> Option<serde_json::Value> {
+        let segments = match &binding.kind {
+            BindingKind::Text { segments } => segments,
+            BindingKind::Attribute { segments, .. } => segments,
+        };
+        let [Segment::Field(name)] = segments.as_slice() else {
+            return None;
+        };
+        if name == "this" {
+            return Some(serde_json::Value::String(row_this.to_string()));
+        }
+        shadow.get(name).or_else(|| row_fields.get(name)).cloned()
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub use dom::{
-    Snapshot, extract_plan, navigate, render_segments, render_segments_with_shadow,
-    snapshot_template,
+    Snapshot, apply_attribute_binding, extract_plan, navigate, render_segments,
+    render_segments_with_shadow, single_field_value, snapshot_template,
 };
 
 #[cfg(test)]
@@ -781,6 +952,7 @@ mod tests {
             kind: BindingKind::Attribute {
                 attr_name: attr.into(),
                 segments: vec![Segment::Field(field.into())],
+                force_attribute: false,
             },
         }
     }

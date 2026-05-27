@@ -30,6 +30,7 @@ web-sys = { workspace = true, features = [
     "DocumentFragment",
     "Element",
     "HtmlElement",
+    "HtmlInputElement",
     "HtmlScriptElement",
     "HtmlTemplateElement",
     "NamedNodeMap",
