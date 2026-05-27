@@ -14,8 +14,8 @@
 //!   `<wa-carousel>` hosts one slide per view (each containing a
 //!   `<tonk-view>`) plus a final `<tonk-inspector>` slide. The view
 //!   subscription becomes a "views for model" query whose frames
-//!   carry every view row; we diff by name. Every entity frame
-//!   walks all slides and calls `.render(...)` on each.
+//!   carry every view row; we diff by view entity. Every entity
+//!   frame walks all slides and calls `.render(...)` on each.
 //!
 //! Subscriptions live in `<tonk-display>` only — slide elements
 //! never open their own. One model resolution + one views
@@ -39,12 +39,15 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
 
-use crate::resolve::{entity_query, looks_like_uri, view_query, views_for_model_query};
+use crate::resolve::{
+    entity_query, looks_like_uri, name_target_query, view_fields_query, views_for_model_query,
+};
 use crate::state::{self, State};
 
 /// One mounted slide in carousel mode (or the sole slide in
-/// single mode). Keyed by view name; `display` is the template
-/// HTML the slide's `<tonk-view>` was built with so we can detect
+/// single mode). Keyed by the `view` attribute (single mode) or the
+/// view entity URI (carousel mode); `display` is the template HTML
+/// the slide's `<tonk-view>` was built with so we can detect
 /// content changes and rebuild.
 struct Slide {
     /// The `display` HTML the slide's `<tonk-view>` was built
@@ -94,8 +97,8 @@ struct Inner {
     /// `<wa-carousel>` element when in carousel mode, `None` in
     /// single mode.
     carousel: Option<Element>,
-    /// Slides keyed by view name. In single mode there's exactly
-    /// one entry with whatever name the `view` attribute holds.
+    /// Slides keyed by the `view` attribute (single mode — exactly
+    /// one entry) or the view entity URI (carousel mode).
     slides: BTreeMap<String, Slide>,
     /// The trailing carousel slide's source `<script
     /// type="text/tonk-notation">` element. We update its
@@ -441,50 +444,81 @@ async fn run(
         ));
     }
 
-    // `model` is still required for v1 — without a concept
-    // descriptor we don't know which fields to project on the
-    // entity. A future fallback could query every claim on the
-    // entity directly; for now, require it.
-    let model = host
-        .get_attribute("model")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ErrorDetail::new(
-                ErrorKind::Descriptor,
-                "<tonk-display> requires `model` (fallback for missing model is deferred)",
-            )
-        })?;
-    // `view` is optional — its absence triggers carousel mode.
+    // `view` selects single-view mode (resolve a view by its anchor
+    // name) vs carousel mode (enumerate every view for a `model`).
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
-    // Resolve the model concept's entity + descriptor via
-    // `tonk-query`. The host annotates space/branch from the
-    // nearest <tonk-repository>/<tonk-branch> ancestors and
-    // returns the parsed conclusions as a JS value.
-    let parsed: ParsedSource = parse_source(&model);
-    let phase1_q = phase1_query(&parsed);
-    let phase1_body = serde_wasm_bindgen::to_value(&phase1_q)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("phase1 body: {e}")))?;
-    let phase1_result = host_consumer::query(host, &phase1_body).await?;
-    let (model_entity, descriptor_json) = extract_phase1(&phase1_result)?;
-    check_generation(&state, generation)?;
+    // Resolve the concept descriptor (to project the subject's
+    // fields) and the view subscription query. In single mode the
+    // view is found by its anchor name and declares its own `model`,
+    // so no `model` attribute is needed. In carousel mode there is no
+    // view to read a model from, so `model` is required.
+    let (descriptor_json, view_q) = match view.as_deref() {
+        Some(view_ref) => {
+            // 1. Resolve the view's name to the entity it points at.
+            //    Re-asserting the anchor re-points the name, so this
+            //    always lands on the latest view.
+            let name_uri = if view_ref.contains(':') {
+                view_ref.to_owned()
+            } else {
+                format!("id:{view_ref}")
+            };
+            let name_q = name_target_query(&name_uri)
+                .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("name query: {e}")))?;
+            let name_result = host_consumer::query(host, &to_body(&name_q)?).await?;
+            check_generation(&state, generation)?;
+            let view_entity = first_field(&name_result, "entity").ok_or_else(|| {
+                ErrorDetail::new(
+                    ErrorKind::UnknownSource,
+                    format!("no view named {name_uri}"),
+                )
+            })?;
 
-    // Build the view subscription query: pin-by-name in single
-    // mode, all-views-for-model in carousel mode.
-    let view_q = match view.as_deref() {
-        Some(name) => view_query(&model_entity, name)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("view query: {e}")))?,
-        None => views_for_model_query(&model_entity).map_err(|e| {
-            ErrorDetail::new(ErrorKind::Descriptor, format!("views-for-model query: {e}"))
-        })?,
+            // 2. Read the view's own `model` to project the subject.
+            let fields_q = view_fields_query(&view_entity).map_err(|e| {
+                ErrorDetail::new(ErrorKind::Descriptor, format!("view fields query: {e}"))
+            })?;
+            let fields_result = host_consumer::query(host, &to_body(&fields_q)?).await?;
+            check_generation(&state, generation)?;
+            let model_entity = first_field(&fields_result, "model").ok_or_else(|| {
+                ErrorDetail::new(
+                    ErrorKind::Descriptor,
+                    format!("view {view_entity} has no `model`"),
+                )
+            })?;
+
+            // 3. Resolve that model concept's descriptor.
+            let (_, descriptor_json) = resolve_model(host, &model_entity).await?;
+            check_generation(&state, generation)?;
+
+            // The view subscription is pinned to the resolved entity,
+            // so exactly one row flows back — no `(model, name)`
+            // duplicate ambiguity.
+            (descriptor_json, fields_q)
+        }
+        None => {
+            let model = host
+                .get_attribute("model")
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ErrorDetail::new(
+                        ErrorKind::Descriptor,
+                        "<tonk-display> requires `view` (a named view) or `model` (carousel mode)",
+                    )
+                })?;
+            let (model_entity, descriptor_json) = resolve_model(host, &model).await?;
+            check_generation(&state, generation)?;
+            let view_q = views_for_model_query(&model_entity).map_err(|e| {
+                ErrorDetail::new(ErrorKind::Descriptor, format!("views-for-model query: {e}"))
+            })?;
+            (descriptor_json, view_q)
+        }
     };
-    let view_body = serde_wasm_bindgen::to_value(&view_q)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("view body: {e}")))?;
+    let view_body = to_body(&view_q)?;
 
     let entity_q = entity_query(&descriptor_json, &entity)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
-    let entity_body = serde_wasm_bindgen::to_value(&entity_q)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("entity body: {e}")))?;
+    let entity_body = to_body(&entity_q)?;
 
     // Always mount the `<wa-carousel>` so the slot geometry is
     // identical regardless of mode. The only user-visible
@@ -548,33 +582,55 @@ fn ipld_str(value: Option<&Ipld>) -> Option<&str> {
     }
 }
 
+/// Serialize a wire query to the JS body the host bridge expects.
+fn to_body(query: &tonk_schema::query::Query) -> Result<JsValue, ErrorDetail> {
+    serde_wasm_bindgen::to_value(query)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("query body: {e}")))
+}
+
+/// Pull a string field off the first conclusion of a one-shot query
+/// result (a `Vec<Conclusion>` serialized as a JS value). `None` if
+/// the result is empty or the field is missing / non-string.
+fn first_field(value: &JsValue, field: &str) -> Option<String> {
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone()).ok()?;
+    let first = conclusions.into_iter().next()?;
+    ipld_str(first.fields.get(field)).map(str::to_owned)
+}
+
+/// Resolve a concept (bookmark name or entity URI) to its
+/// `(entity, descriptor_json)` via the Phase-1 concept-of-concepts
+/// query.
+async fn resolve_model(host: &Element, source: &str) -> Result<(String, String), ErrorDetail> {
+    let parsed: ParsedSource = parse_source(source);
+    let phase1_q = phase1_query(&parsed);
+    let result = host_consumer::query(host, &to_body(&phase1_q)?).await?;
+    extract_phase1(&result)
+}
+
 /// Diff the incoming view frame against currently mounted slides.
-/// Slides are keyed by view name; we add/remove/replace as needed,
-/// then push the cached entity conclusion into any fresh slide so
-/// it has data to render right away.
+/// Slides are keyed by the `view` attribute (single mode) or the
+/// view entity URI (carousel mode); we add/remove/replace as
+/// needed, then push the cached entity conclusion into any fresh
+/// slide so it has data to render right away.
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
 
-    // Extract (name, display) pairs from the incoming frame. When
-    // the `view` attribute is set, the subscription pinned `name`
-    // as a constant — so the server doesn't project it back. Fall
-    // back to the attribute value for that case. When `view` is
-    // absent, the views-for-model query left `name` as a variable
-    // and the server fills it.
+    // Key each slide by display target. Views no longer carry a
+    // `name` field: in single mode the subscription is pinned to one
+    // view entity, so the `view` attribute is the stable key; in
+    // carousel mode many views share a model, so key by the view
+    // entity URI (`this`).
     let view_attr = host.get_attribute("view").unwrap_or_default();
     let incoming: BTreeMap<String, String> = conclusions
         .into_iter()
         .filter_map(|c| {
             let display = ipld_str(c.fields.get("display")).map(str::to_owned)?;
-            let name = ipld_str(c.fields.get("name"))
-                .map(str::to_owned)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| view_attr.clone());
-            if name.is_empty() {
-                None
+            let key = if view_attr.is_empty() {
+                c.this.clone()
             } else {
-                Some((name, display))
-            }
+                view_attr.clone()
+            };
+            Some((key, display))
         })
         .collect();
 
