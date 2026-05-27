@@ -148,9 +148,12 @@ pub fn phase2_query(
         .unwrap_or_default();
     let mut terms: IndexMap<String, serde_json::Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "this" } }));
-    for field in with.keys() {
+    for (field, spec) in &with {
         let term = match filters.get(field) {
-            Some(v) => json!(v),
+            Some(raw) => {
+                let as_type = spec.get("as").and_then(|v| v.as_str());
+                coerce_filter_value(as_type, raw)
+            }
             None => json!({ "?": { "name": field } }),
         };
         terms.insert(field.clone(), term);
@@ -160,6 +163,27 @@ pub fn phase2_query(
         "predicate": predicate
     });
     serde_json::from_value(body)
+}
+
+/// Coerce a `?key=value` filter string to a JSON value matching the
+/// field's declared type (the descriptor's `as`), so the constant
+/// constraint compares against the stored value rather than a string.
+/// A value that doesn't parse for a numeric type falls back to a
+/// string — the constraint then simply fails to match instead of
+/// erroring.
+fn coerce_filter_value(as_type: Option<&str>, raw: &str) -> serde_json::Value {
+    match as_type {
+        Some("UnsignedInteger") => raw.parse::<u64>().map_or_else(|_| json!(raw), |n| json!(n)),
+        Some("SignedInteger") => raw.parse::<i64>().map_or_else(|_| json!(raw), |n| json!(n)),
+        Some("Float") => raw.parse::<f64>().map_or_else(|_| json!(raw), |n| json!(n)),
+        Some("Boolean") => match raw {
+            "true" => json!(true),
+            "false" => json!(false),
+            _ => json!(raw),
+        },
+        // Text, Entity, Symbol, Bytes, or unknown: keep as a string.
+        _ => json!(raw),
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +275,51 @@ mod tests {
         let term = q.terms.get("name").expect("name term");
         let value: serde_json::Value = serde_json::to_value(term).unwrap();
         assert_eq!(value, json!("Alice"));
+    }
+
+    fn filtered_term(as_type: &str, raw: &str) -> serde_json::Value {
+        let descriptor =
+            format!(r#"{{"with":{{"f":{{"the":"x/f","as":"{as_type}","cardinality":"one"}}}}}}"#);
+        let mut filters = BTreeMap::new();
+        filters.insert("f".to_string(), raw.to_string());
+        let q = phase2_query(&descriptor, &filters).unwrap();
+        let term = q.terms.get("f").expect("f term");
+        serde_json::to_value(term).unwrap()
+    }
+
+    // An integer-typed field filtered via `?f=5` must constrain on
+    // the number `5`, not the string `"5"` — otherwise it never
+    // matches the stored integer value.
+    #[test]
+    fn it_coerces_an_unsigned_integer_filter_to_a_number() {
+        assert_eq!(filtered_term("UnsignedInteger", "5"), json!(5));
+    }
+
+    #[test]
+    fn it_coerces_a_signed_integer_filter_to_a_number() {
+        assert_eq!(filtered_term("SignedInteger", "-5"), json!(-5));
+    }
+
+    #[test]
+    fn it_coerces_a_float_filter_to_a_number() {
+        assert_eq!(filtered_term("Float", "3.5"), json!(3.5));
+    }
+
+    #[test]
+    fn it_coerces_a_boolean_filter_to_a_bool() {
+        assert_eq!(filtered_term("Boolean", "true"), json!(true));
+    }
+
+    // Text/Entity/etc. stay strings, as before.
+    #[test]
+    fn it_keeps_a_text_filter_as_a_string() {
+        assert_eq!(filtered_term("Text", "5"), json!("5"));
+    }
+
+    // A non-numeric value for a numeric field falls back to a
+    // string rather than panicking; it simply won't match.
+    #[test]
+    fn it_falls_back_to_a_string_for_an_unparseable_numeric_filter() {
+        assert_eq!(filtered_term("UnsignedInteger", "lots"), json!("lots"));
     }
 }
