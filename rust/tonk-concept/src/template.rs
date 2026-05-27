@@ -402,7 +402,7 @@ mod dom {
 
     use indexmap::IndexMap;
     use ipld_core::ipld::Ipld;
-    use web_sys::{DocumentFragment, Element, HtmlTemplateElement, Node, NodeList, window};
+    use web_sys::{DocumentFragment, Element, HtmlTemplateElement, Node, window};
 
     use super::{Binding, BindingKind, BindingPlan, Segment, has_field, parse_segments};
     use crate::error::{ErrorDetail, ErrorKind};
@@ -483,11 +483,38 @@ mod dom {
         pub container: Element,
     }
 
-    /// Find a descendant `<template>` element. Returns the first
-    /// one in tree order.
+    /// Find the host's own row `<template>`: the first `<template>`
+    /// in tree order that is **not** inside a nested template-owning
+    /// component. A `<tonk-view>` display body embeds `<tonk-concept>`
+    /// shelves, each owning its own `<template>`; a plain
+    /// `query_selector_all("template")` would return the first
+    /// shelf's template and `snapshot_template` would then strip it,
+    /// breaking that shelf. The walk stops at component boundaries so
+    /// each element only ever claims a template it actually owns.
     fn find_template(host: &Element) -> Option<Element> {
-        let list: NodeList = host.query_selector_all("template").ok()?;
-        list.item(0).and_then(|n| n.dyn_into::<Element>().ok())
+        let mut child = host.first_element_child();
+        while let Some(el) = child {
+            if el.local_name() == "template" {
+                return Some(el);
+            }
+            if !is_template_owning_component(&el) {
+                if let Some(found) = find_template(&el) {
+                    return Some(found);
+                }
+            }
+            child = el.next_element_sibling();
+        }
+        None
+    }
+
+    /// Custom elements that snapshot their own `<template>` child in
+    /// their `connected_callback`. Their templates belong to them,
+    /// so an ancestor's template search must skip their subtrees.
+    fn is_template_owning_component(el: &Element) -> bool {
+        matches!(
+            el.local_name().as_str(),
+            "tonk-concept" | "tonk-display" | "tonk-view"
+        )
     }
 
     /// Walk a fragment, replace any text node containing
@@ -857,6 +884,46 @@ mod dom {
             return Some(Ipld::String(row_this.to_string()));
         }
         shadow.get(name).or_else(|| row_fields.get(name)).cloned()
+    }
+
+    #[cfg(test)]
+    mod find_template_tests {
+        use super::find_template;
+        #[cfg(target_arch = "wasm32")]
+        use wasm_bindgen_test::wasm_bindgen_test_configure;
+        use web_sys::{Element, window};
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_test_configure!(run_in_browser);
+
+        fn host_with(inner_html: &str) -> Element {
+            let document = window().expect("window").document().expect("document");
+            let host: Element = document.create_element("div").expect("create div");
+            host.set_inner_html(inner_html);
+            host
+        }
+
+        // A display view embeds `<tonk-concept>` shelves, each owning
+        // its own `<template>`. A host's template snapshot must not
+        // adopt a nested component's template as its own — doing so
+        // strips the first shelf of its row template.
+        #[dialog_common::test]
+        fn it_skips_a_template_nested_in_a_tonk_concept() {
+            let host = host_with(
+                "<tonk-concept source=\"book\"><ul><template><li>{title}</li></template></ul></tonk-concept>",
+            );
+            assert!(find_template(&host).is_none());
+        }
+
+        // Tree order would pick the nested concept's template first;
+        // the search must skip it and reach the host's own template.
+        #[dialog_common::test]
+        fn it_prefers_an_own_template_over_one_inside_a_nested_concept() {
+            let host = host_with(
+                "<tonk-concept source=\"book\"><template data-which=\"nested\"><li>{b}</li></template></tonk-concept><template data-which=\"own\"><p>{a}</p></template>",
+            );
+            let found = find_template(&host).expect("a usable own template");
+            assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
+        }
     }
 }
 
