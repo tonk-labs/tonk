@@ -127,7 +127,7 @@ fn handle_event(
     // transient assertions. Rules match on the asserted concept's
     // *fields*, not on `this`, so a fixed entity is fine — and
     // the assertion sweeps before the durable commit either way.
-    let body = match build_transact_body(descriptor_json, &concept, EVENT_ENTITY, event) {
+    let body = match build_transact_body(descriptor_json, &concept, EVENT_ENTITY, event, &bound) {
         Ok(b) => b,
         Err(e) => {
             log_error(format!("event handler: build body for {concept}: {e}"));

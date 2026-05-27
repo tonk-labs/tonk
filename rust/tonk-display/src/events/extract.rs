@@ -5,7 +5,10 @@
 //!
 //! - If the `the:` identifier sits under `dom.event` (read), follow
 //!   the parsed path through the event object and coerce the
-//!   resulting JS value into a dialog `Value` shape per `as:`.
+//!   resulting JS value into a dialog `Value` shape per `as:`. A
+//!   path that fails to resolve (undefined/null step, type mismatch)
+//!   aborts the whole transaction — a partial assertion is never
+//!   posted.
 //! - If the `the:` identifier sits under `dom.event.do` (action),
 //!   call the named method on the event. Action attributes
 //!   contribute no parameter to the assertion.
@@ -31,7 +34,7 @@ use js_sys::{Function, Reflect};
 use serde_json::{Value, json};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
-use web_sys::Event;
+use web_sys::{Element, Event};
 
 use super::path::{Classification, EventAction, EventPath, classify};
 
@@ -58,6 +61,7 @@ pub fn build_transact_body(
     concept_name_or_uri: &str,
     this: &str,
     event: &Event,
+    binding: &Element,
 ) -> Result<Value, ExtractError> {
     let descriptor: Value = serde_json::from_str(descriptor_json).map_err(ExtractError::Parse)?;
     let with = descriptor
@@ -72,6 +76,7 @@ pub fn build_transact_body(
     parameters.insert("this".to_owned(), json!(this));
 
     let event_js: &JsValue = event.as_ref();
+    let binding_js: &JsValue = binding.as_ref();
 
     for (field_name, attr_value) in with {
         // Skip an explicitly-declared `this` slot — we just set it.
@@ -88,9 +93,13 @@ pub fn build_transact_body(
                     .get("as")
                     .and_then(Value::as_str)
                     .unwrap_or("Text");
-                if let Some(value) = read_path_and_coerce(event_js, &path, as_type) {
-                    parameters.insert(field_name.clone(), value);
-                }
+                let value = read_path_and_coerce(event_js, binding_js, &path, as_type).ok_or_else(
+                    || ExtractError::UnresolvedField {
+                        field: field_name.clone(),
+                        identifier: identifier.to_owned(),
+                    },
+                )?;
+                parameters.insert(field_name.clone(), value);
             }
             Classification::Action(action) => {
                 apply_action(event_js, &action);
@@ -136,12 +145,34 @@ pub fn build_transact_body(
 /// Read a JS event's property path and turn the resulting JS value
 /// into a JSON term value matching the field's `as:` type.
 ///
+/// A leading `currentTarget` segment resolves to `binding` (the
+/// element the concept was authored on — the closest ancestor of
+/// `event.target` carrying the `data-on<event>` attribute), not to
+/// the real `event.currentTarget`. The real one points at the host
+/// where tonk-display installed its delegation listener, which is
+/// an implementation detail the template author shouldn't see.
+///
 /// Returns `None` when:
 /// - the path doesn't resolve (any step is `undefined`/`null`/missing);
 /// - the value can't be coerced to the requested `as:` type.
-fn read_path_and_coerce(event: &JsValue, path: &EventPath, as_type: &str) -> Option<Value> {
-    let mut current = event.clone();
-    for segment in &path.segments {
+fn read_path_and_coerce(
+    event: &JsValue,
+    binding: &JsValue,
+    path: &EventPath,
+    as_type: &str,
+) -> Option<Value> {
+    let mut segments = path.segments.iter();
+    let first = segments.next()?;
+    let mut current = if first == "currentTarget" {
+        binding.clone()
+    } else {
+        let next = Reflect::get(event, &JsValue::from_str(first)).ok()?;
+        if next.is_undefined() || next.is_null() {
+            return None;
+        }
+        next
+    };
+    for segment in segments {
         let next = Reflect::get(&current, &JsValue::from_str(segment)).ok()?;
         if next.is_undefined() || next.is_null() {
             return None;
@@ -256,6 +287,15 @@ pub enum ExtractError {
     /// Descriptor parsed but has no `with` field — not a concept
     /// descriptor.
     MissingWith,
+    /// A `dom.event*` field's path resolved to `undefined`/`null`
+    /// or didn't coerce to the declared `as:` type. We refuse to
+    /// post a partial transaction; the click is a no-op.
+    UnresolvedField {
+        /// Concept field name from the descriptor `with:` map.
+        field: String,
+        /// The `the:` identifier whose path failed.
+        identifier: String,
+    },
 }
 
 impl std::fmt::Display for ExtractError {
@@ -263,6 +303,10 @@ impl std::fmt::Display for ExtractError {
         match self {
             Self::Parse(e) => write!(f, "descriptor JSON parse: {e}"),
             Self::MissingWith => write!(f, "descriptor missing `with` field"),
+            Self::UnresolvedField { field, identifier } => write!(
+                f,
+                "field `{field}` ({identifier}) did not resolve against the event",
+            ),
         }
     }
 }
@@ -275,7 +319,7 @@ mod tests {
     use js_sys::Object;
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
-    use web_sys::{Event, EventInit};
+    use web_sys::{Event, EventInit, window};
 
     wasm_bindgen_test_configure!(run_in_browser);
 
@@ -328,16 +372,37 @@ mod tests {
         event
     }
 
+    /// Build a `<div>` with the given `data-*` attributes — the
+    /// "binding element," i.e. the closest ancestor of the click
+    /// target that carries the `data-on<event>` attribute the
+    /// renderer rewrote events to. `currentTarget` segments
+    /// resolve to this in the projection path resolver.
+    fn binding_element(data: &[(&str, &str)]) -> Element {
+        let document = window().expect("window").document().expect("document");
+        let el = document.create_element("div").expect("create div");
+        for (k, v) in data {
+            el.set_attribute(k, v).expect("set attribute");
+        }
+        el
+    }
+
     #[dialog_common::test]
-    fn it_builds_a_transact_body_from_event_target_dataset() {
+    fn it_builds_a_transact_body_from_current_target_dataset() {
         let descriptor = r#"{
             "with": {
-                "counter": { "the": "dom.event.target.dataset/counter", "as": "Entity", "cardinality": "one" }
+                "counter": { "the": "dom.event.current-target.dataset/counter", "as": "Entity", "cardinality": "one" }
             }
         }"#;
-        let event = synthetic_event(&[("counter", "did:key:zCounter")]);
-        let body = build_transact_body(descriptor, "increment", "did:key:zCounter", &event)
-            .expect("build_transact_body");
+        let event = synthetic_event(&[]);
+        let binding = binding_element(&[("data-counter", "did:key:zCounter")]);
+        let body = build_transact_body(
+            descriptor,
+            "increment",
+            "did:key:zCounter",
+            &event,
+            &binding,
+        )
+        .expect("build_transact_body");
         let claims = body
             .get("claims")
             .and_then(Value::as_array)
@@ -359,25 +424,31 @@ mod tests {
             }
         }"#;
         let event = synthetic_event(&[]);
-        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event)
+        let binding = binding_element(&[]);
+        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["kind"], json!("click"));
     }
 
     #[dialog_common::test]
-    fn it_omits_fields_whose_path_resolves_to_undefined() {
+    fn it_errors_when_a_required_field_does_not_resolve() {
         let descriptor = r#"{
             "with": {
                 "missing": { "the": "dom.event/pressure", "as": "Float", "cardinality": "one" }
             }
         }"#;
         let event = synthetic_event(&[]);
-        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event)
-            .expect("build_transact_body");
-        let params = &body["claims"][0]["application"]["parameters"];
-        assert!(params.get("missing").is_none());
-        assert!(params.get("this").is_some());
+        let binding = binding_element(&[]);
+        let err = build_transact_body(descriptor, "noop", "did:key:zSubject", &event, &binding)
+            .expect_err("expected UnresolvedField");
+        match err {
+            ExtractError::UnresolvedField { field, identifier } => {
+                assert_eq!(field, "missing");
+                assert_eq!(identifier, "dom.event/pressure");
+            }
+            other => panic!("expected UnresolvedField, got {other:?}"),
+        }
     }
 
     #[dialog_common::test]
@@ -388,26 +459,52 @@ mod tests {
             }
         }"#;
         let event = synthetic_event(&[]);
-        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event)
+        let binding = binding_element(&[]);
+        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert!(params.get("name").is_none());
     }
 
     #[dialog_common::test]
-    fn it_rejects_entity_coercion_when_value_isnt_uri() {
+    fn it_errors_when_entity_coercion_fails() {
         let descriptor = r#"{
             "with": {
-                "counter": { "the": "dom.event.target.dataset/counter", "as": "Entity", "cardinality": "one" }
+                "counter": { "the": "dom.event.current-target.dataset/counter", "as": "Entity", "cardinality": "one" }
             }
         }"#;
-        let event = synthetic_event(&[("counter", "not-a-uri")]);
-        let body = build_transact_body(descriptor, "increment", "did:key:zCounter", &event)
+        let event = synthetic_event(&[]);
+        let binding = binding_element(&[("data-counter", "not-a-uri")]);
+        let err = build_transact_body(
+            descriptor,
+            "increment",
+            "did:key:zCounter",
+            &event,
+            &binding,
+        )
+        .expect_err("expected UnresolvedField");
+        assert!(
+            matches!(err, ExtractError::UnresolvedField { ref field, .. } if field == "counter"),
+            "got {err:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_reads_binding_dataset_when_event_currenttarget_lacks_it() {
+        // Sanity check: the descriptor uses `current-target` but the
+        // real `event.currentTarget` (the host where delegation was
+        // installed) carries no data-* attrs — only the binding
+        // element does. The projector must read from `binding`.
+        let descriptor = r#"{
+            "with": {
+                "todo": { "the": "dom.event.current-target.dataset/todo", "as": "Entity", "cardinality": "one" }
+            }
+        }"#;
+        let event = synthetic_event(&[]); // no target.dataset.todo either
+        let binding = binding_element(&[("data-todo", "did:key:zTodo")]);
+        let body = build_transact_body(descriptor, "toggle", "did:key:zTodo", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
-        assert!(
-            params.get("counter").is_none(),
-            "non-URI entity value should be dropped, got {params:?}"
-        );
+        assert_eq!(params["todo"], json!("did:key:zTodo"));
     }
 }
