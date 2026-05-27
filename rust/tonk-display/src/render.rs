@@ -28,8 +28,8 @@
 use std::collections::BTreeMap;
 
 use tonk_concept::template::{
-    Binding, BindingKind, BindingPlan, PlanNode, Snapshot, extract_plan, navigate,
-    render_segments_with_shadow,
+    Binding, BindingKind, BindingPlan, PlanNode, Snapshot, apply_attribute_binding, extract_plan,
+    navigate, render_segments_with_shadow, single_field_value,
 };
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
@@ -295,7 +295,7 @@ fn build_mounted_node(
     match plan {
         PlanNode::Binding(b) => {
             let rendered = render_binding(b, conclusion, shadow);
-            write_binding(scope_root, b, &rendered);
+            write_binding(scope_root, b, &rendered, conclusion, shadow);
             MountedNode::Binding {
                 last_value: rendered,
             }
@@ -389,7 +389,7 @@ fn update_node(
         (PlanNode::Binding(b), MountedNode::Binding { last_value }) => {
             let rendered = render_binding(b, conclusion, shadow);
             if *last_value != rendered {
-                write_binding(scope_root, b, &rendered);
+                write_binding(scope_root, b, &rendered, conclusion, shadow);
                 *last_value = rendered;
             }
         }
@@ -596,17 +596,25 @@ fn render_binding(
 }
 
 /// Write a binding's rendered value to the target DOM node
-/// identified by its path within `scope_root`.
-fn write_binding(scope_root: &Node, binding: &Binding, rendered: &str) {
-    let Some(target) = navigate(scope_root, &binding.path) else {
-        return;
-    };
+/// identified by its path within `scope_root`. Attribute-form
+/// bindings flow through [`apply_attribute_binding`] which decides
+/// between property and attribute assignment per value type.
+fn write_binding(
+    scope_root: &Node,
+    binding: &Binding,
+    rendered: &str,
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
     match &binding.kind {
-        BindingKind::Text { .. } => target.set_text_content(Some(rendered)),
-        BindingKind::Attribute { attr_name, .. } => {
-            if let Some(el) = target.dyn_ref::<Element>() {
-                let _ = el.set_attribute(attr_name, rendered);
+        BindingKind::Text { .. } => {
+            if let Some(target) = navigate(scope_root, &binding.path) {
+                target.set_text_content(Some(rendered));
             }
+        }
+        BindingKind::Attribute { .. } => {
+            let value = single_field_value(binding, &conclusion.this, &conclusion.fields, shadow);
+            apply_attribute_binding(scope_root, binding, rendered, value.as_ref());
         }
     }
 }

@@ -18,7 +18,8 @@ use wasm_bindgen::JsCast;
 use web_sys::{Document, DocumentFragment, Element, Node, window};
 
 use crate::template::{
-    Binding, BindingKind, BindingPlan, PlanNode, navigate, render_segments_with_shadow,
+    Binding, BindingKind, BindingPlan, PlanNode, apply_attribute_binding, navigate,
+    render_segments_with_shadow, single_field_value,
 };
 
 /// One rendered row keyed by its `this` URI. Owns the live
@@ -241,7 +242,7 @@ fn build_mounted_node(
     match plan {
         PlanNode::Binding(b) => {
             let rendered = render_binding(b, conclusion, shadow);
-            write_binding(scope_root, b, &rendered);
+            write_binding(scope_root, b, &rendered, conclusion, shadow);
             MountedNode::Binding {
                 last_value: rendered,
             }
@@ -326,7 +327,7 @@ fn update_node(
         (PlanNode::Binding(b), MountedNode::Binding { last_value }) => {
             let rendered = render_binding(b, conclusion, shadow);
             if *last_value != rendered {
-                write_binding(scope_root, b, &rendered);
+                write_binding(scope_root, b, &rendered, conclusion, shadow);
                 *last_value = rendered;
             }
         }
@@ -500,16 +501,22 @@ fn render_binding(
     render_segments_with_shadow(segments, &conclusion.this, &conclusion.fields, shadow)
 }
 
-fn write_binding(scope_root: &Node, binding: &Binding, rendered: &str) {
-    let Some(target) = navigate(scope_root, &binding.path) else {
-        return;
-    };
+fn write_binding(
+    scope_root: &Node,
+    binding: &Binding,
+    rendered: &str,
+    conclusion: &Conclusion,
+    shadow: &BTreeMap<String, serde_json::Value>,
+) {
     match &binding.kind {
-        BindingKind::Text { .. } => target.set_text_content(Some(rendered)),
-        BindingKind::Attribute { attr_name, .. } => {
-            if let Some(el) = target.dyn_ref::<Element>() {
-                let _ = el.set_attribute(attr_name, rendered);
+        BindingKind::Text { .. } => {
+            if let Some(target) = navigate(scope_root, &binding.path) {
+                target.set_text_content(Some(rendered));
             }
+        }
+        BindingKind::Attribute { .. } => {
+            let value = single_field_value(binding, &conclusion.this, &conclusion.fields, shadow);
+            apply_attribute_binding(scope_root, binding, rendered, value.as_ref());
         }
     }
 }
@@ -729,6 +736,142 @@ mod tests {
         assert!(
             text_before.is_same_node(Some(text_after.unchecked_ref())),
             "unchanged binding should not rewrite the text node",
+        );
+    }
+
+    /// Like [`conclusion`] but accepts arbitrary JSON values so
+    /// tests can drive boolean / numeric properties.
+    fn conclusion_json(this: &str, fields: &[(&str, serde_json::Value)]) -> Conclusion {
+        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        for (k, v) in fields {
+            map.insert((*k).to_owned(), v.clone());
+        }
+        Conclusion {
+            this: this.to_owned(),
+            fields: map,
+        }
+    }
+
+    /// Look up the live `<input type=checkbox>` under `host` and
+    /// return its `.checked` property. Re-queries each call because
+    /// the iteration renderer may swap the input node on each apply.
+    fn checkbox_checked(host: &Element) -> bool {
+        let input: web_sys::HtmlInputElement = host
+            .query_selector(r#"input[type="checkbox"]"#)
+            .unwrap()
+            .expect("checkbox")
+            .dyn_into()
+            .expect("HtmlInputElement");
+        input.checked()
+    }
+
+    #[dialog_common::test]
+    fn it_sets_a_boolean_field_as_property_on_a_checkbox() {
+        // `checked` on <input> is a property name — bool value must
+        // flow to el.checked, not to a "true"/"false" attribute the
+        // browser would treat as always-checked.
+        let (host, mut renderer) =
+            mount(r#"<label><input type="checkbox" checked={done} /><span>{label}</span></label>"#);
+        renderer.apply(&[conclusion_json(
+            "did:key:zAlice",
+            &[
+                ("done", serde_json::Value::Bool(true)),
+                ("label", serde_json::Value::String("ship it".to_owned())),
+            ],
+        )]);
+        assert!(
+            checkbox_checked(&host),
+            "el.checked should be true for done=true",
+        );
+
+        renderer.apply(&[conclusion_json(
+            "did:key:zAlice",
+            &[
+                ("done", serde_json::Value::Bool(false)),
+                ("label", serde_json::Value::String("ship it".to_owned())),
+            ],
+        )]);
+        assert!(
+            !checkbox_checked(&host),
+            "el.checked should flip to false for done=false",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_sets_a_string_field_as_attribute_when_name_not_on_element() {
+        // aria-hidden is not a property name on a span (camelCase
+        // `ariaHidden` is, but the in-element check uses the literal
+        // attribute name). Should round-trip as an attribute.
+        let (host, mut renderer) = mount(r#"<span aria-hidden="{hidden}">x</span>"#);
+        renderer.apply(&[conclusion_json(
+            "did:key:zAlice",
+            &[("hidden", serde_json::Value::String("true".to_owned()))],
+        )]);
+        let span = host.query_selector("span").unwrap().expect("span");
+        assert_eq!(
+            span.get_attribute("aria-hidden").as_deref(),
+            Some("true"),
+            "aria-hidden should be set as an attribute",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_honours_html_prefix_as_force_attribute() {
+        // `html:class={cls}` is the escape hatch: even though
+        // `class` is a property name on every element, the prefix
+        // pins the write to setAttribute. Use a string value so the
+        // type-dispatch path doesn't already pick "attribute"; this
+        // exercises the prefix.
+        let (host, mut renderer) = mount(r#"<div html:id="{id}">x</div>"#);
+        renderer.apply(&[conclusion_json(
+            "did:key:zAlice",
+            &[("id", serde_json::Value::String("forced".to_owned()))],
+        )]);
+        let div = host.query_selector("div").unwrap().expect("div");
+        assert_eq!(
+            div.get_attribute("id").as_deref(),
+            Some("forced"),
+            "html: prefix should write a real attribute named `id`",
+        );
+        assert!(
+            div.get_attribute("html:id").is_none(),
+            "the html: prefix itself must not leak into the live attribute name",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_uses_html_prefix_with_boolean_for_presence_absence() {
+        // Force-attribute path with a bool value: presence/absence
+        // per HTML's bool-attribute convention. Wrap the div in a
+        // host element that survives iteration node swaps so we can
+        // re-query the (potentially fresh) inner div each apply.
+        let (host, mut renderer) = mount(r#"<section><div html:hidden="{flag}">x</div></section>"#);
+        renderer.apply(&[conclusion_json(
+            "did:key:zAlice",
+            &[("flag", serde_json::Value::Bool(true))],
+        )]);
+        assert_eq!(
+            host.query_selector("div")
+                .unwrap()
+                .expect("div")
+                .get_attribute("hidden")
+                .as_deref(),
+            Some(""),
+            "true should set an empty `hidden` attribute",
+        );
+
+        renderer.apply(&[conclusion_json(
+            "did:key:zAlice",
+            &[("flag", serde_json::Value::Bool(false))],
+        )]);
+        let div = host.query_selector("div").unwrap().expect("div");
+        assert!(
+            div.get_attribute("hidden").is_none(),
+            "false should remove the `hidden` attribute",
+        );
+        assert!(
+            div.get_attribute("html:hidden").is_none(),
+            "the html: prefix attribute must not survive on the cloned element",
         );
     }
 }
