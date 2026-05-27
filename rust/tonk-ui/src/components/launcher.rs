@@ -23,42 +23,44 @@ pub fn TonkLauncher() -> impl IntoView {
         use_context::<LastJoinOutcome>().expect("LastJoinOutcome provided by TonkShell");
 
     view! {
-        <Router>
-            <wa-page
-                navigation-placement="end"
-                attr:data-last-join-outcome=move || last_join_outcome.get()
-            >
-                <TonkToolbar />
-                <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
-                    // Order matters: the more specific viewer
-                    // route is listed before the catch-all
-                    // `space/:space?` so deep links like
-                    // `/space/foo/branch/main/view/bar` don't
-                    // get swallowed by the generic space route.
-                    <Route
-                        path=path!("space/:space/branch/:branch/view/:entity")
-                        view=TonkSpaceViewer
-                    />
-                    <Route
-                        path=path!("space/:space/branch/:branch/concept/:source")
-                        view=TonkConceptView
-                    />
-                    <Route
-                        path=path!("space/:space/branch/:branch/display/:subject")
-                        view=TonkDisplayView
-                    />
-                    <Route
-                        path=path!("space/:space/branch/:branch/layout/:workspace")
-                        view=TonkLayoutView
-                    />
-                    <Route path=path!("space/:space?") view=TonkSpace />
-                    <Route path=path!("profile") view=TonkProfile />
-                    <Route path=path!("join") view=TonkJoin />
-                </Routes>
-            </wa-page>
-            <TonkCreateSpace />
-            <TonkInviteDialog />
-        </Router>
+        <tonk-host>
+            <Router>
+                <wa-page
+                    navigation-placement="end"
+                    attr:data-last-join-outcome=move || last_join_outcome.get()
+                >
+                    <TonkToolbar />
+                    <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
+                        // Order matters: the more specific viewer
+                        // route is listed before the catch-all
+                        // `space/:space?` so deep links like
+                        // `/space/foo/branch/main/view/bar` don't
+                        // get swallowed by the generic space route.
+                        <Route
+                            path=path!("space/:space/branch/:branch/view/:entity")
+                            view=TonkSpaceViewer
+                        />
+                        <Route
+                            path=path!("space/:space/branch/:branch/concept/:source")
+                            view=TonkConceptView
+                        />
+                        <Route
+                            path=path!("space/:space/branch/:branch/display/:subject")
+                            view=TonkDisplayView
+                        />
+                        <Route
+                            path=path!("space/:space/branch/:branch/layout/:workspace")
+                            view=TonkLayoutView
+                        />
+                        <Route path=path!("space/:space?") view=TonkSpace />
+                        <Route path=path!("profile") view=TonkProfile />
+                        <Route path=path!("join") view=TonkJoin />
+                    </Routes>
+                </wa-page>
+                <TonkCreateSpace />
+                <TonkInviteDialog />
+            </Router>
+        </tonk-host>
     }
 }
 

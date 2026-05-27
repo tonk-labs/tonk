@@ -243,45 +243,6 @@ fn quoted(value: &str) -> String {
     format!("{value:?}")
 }
 
-/// POST a notation document to the `/evaluate` endpoint. Returns
-/// `Ok(())` on a 2xx response; surfaces network or HTTP errors as
-/// [`ErrorDetail`] so callers can route them through the same fail
-/// path subscriptions use.
-#[cfg(target_arch = "wasm32")]
-pub async fn post_evaluate(url: &str, doc: &str) -> Result<(), tonk_concept::error::ErrorDetail> {
-    use tonk_concept::error::{ErrorDetail, ErrorKind};
-    use wasm_bindgen::{JsCast, JsValue};
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{Headers, Request, RequestInit, Response, window};
-
-    let init = RequestInit::new();
-    init.set_method("POST");
-    let headers = Headers::new()
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
-    headers
-        .append("content-type", "application/yaml")
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
-    init.set_headers(&headers);
-    init.set_body(&JsValue::from_str(doc));
-
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
-    let win = window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no window"))?;
-    let resp_value = JsFuture::from(win.fetch_with_request(&request))
-        .await
-        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
-    let resp: Response = resp_value
-        .dyn_into()
-        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
-    if !resp.ok() {
-        return Err(ErrorDetail::new(
-            ErrorKind::Network,
-            format!("evaluate HTTP {}", resp.status()),
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,9 +15,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::Reflect;
-use tonk_concept::error::{ErrorDetail, ErrorKind};
-use tonk_concept::sse::{SubscriptionAbort, open_sse};
+use js_sys::{Function, Reflect};
+use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
+use tonk_host::error::{ErrorDetail, ErrorKind};
+use tonk_host::{DepthAnnotator, install_depth_annotator};
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -26,7 +27,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 
 use crate::model::{Layout, fold_universal};
-use crate::resolve::{evaluate_url, focus_query, query_url, tiles_query, workspace_query};
+use crate::resolve::{focus_query, tiles_query, workspace_query};
 use crate::ulid;
 use crate::writer::{self, Direction, WorkspaceTarget};
 
@@ -51,10 +52,11 @@ struct Inner {
     /// spawned async chain captures the value at spawn time and
     /// bails on any step that runs after the generation has moved.
     generation: u64,
-    /// Live subscriptions (cancelled on drop).
-    workspace_abort: Option<SubscriptionAbort>,
-    focus_abort: Option<SubscriptionAbort>,
-    tiles_abort: Option<SubscriptionAbort>,
+    /// Live subscriptions via the host. Dropping cancels via the
+    /// host's registry.
+    workspace_sub: Option<HostSubscription>,
+    focus_sub: Option<HostSubscription>,
+    tiles_sub: Option<HostSubscription>,
     /// True once children subscriptions have started for this
     /// generation. Prevents a burst of workspace frames from racing
     /// to spawn duplicate child opens.
@@ -72,6 +74,9 @@ struct Inner {
     /// Event listeners for the seven effect CustomEvents. Held so
     /// the Closures outlive their registration.
     effect_listeners: Vec<Closure<dyn FnMut(CustomEvent)>>,
+    /// Depth annotator installed at `connected_callback`; dropped
+    /// on disconnect to detach the listeners.
+    depth_annotator: Option<DepthAnnotator>,
 }
 
 impl Inner {
@@ -79,9 +84,9 @@ impl Inner {
         Self {
             disposed: false,
             generation: 0,
-            workspace_abort: None,
-            focus_abort: None,
-            tiles_abort: None,
+            workspace_sub: None,
+            focus_sub: None,
+            tiles_sub: None,
             children_pending: false,
             workspace_frame: Vec::new(),
             focus_frame: Vec::new(),
@@ -89,13 +94,14 @@ impl Inner {
             layout: None,
             last_focus: None,
             effect_listeners: Vec::new(),
+            depth_annotator: None,
         }
     }
 
     fn abort_all(&mut self) {
-        self.workspace_abort.take();
-        self.focus_abort.take();
-        self.tiles_abort.take();
+        self.workspace_sub.take();
+        self.focus_sub.take();
+        self.tiles_sub.take();
     }
 }
 
@@ -111,7 +117,7 @@ impl CustomElement for TonkLayout {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["workspace", "space", "branch"]
+        &["workspace"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -119,6 +125,8 @@ impl CustomElement for TonkLayout {
     fn connected_callback(&mut self, this: &HtmlElement) {
         let host: Element = this.clone().into();
         let inner = Rc::new(RefCell::new(Inner::new()));
+        inner.borrow_mut().depth_annotator = Some(install_depth_annotator(&host));
+        install_method_delegates(&host, &inner);
         *self.inner.borrow_mut() = Some(inner.clone());
         start(&host, inner);
     }
@@ -127,9 +135,13 @@ impl CustomElement for TonkLayout {
         if let Some(inner) = self.inner.borrow_mut().take() {
             let host: Element = this.clone().into();
             detach_effect_listeners(&host, &inner);
-            let mut i = inner.borrow_mut();
-            i.disposed = true;
-            i.abort_all();
+            {
+                let mut i = inner.borrow_mut();
+                i.disposed = true;
+                i.abort_all();
+                i.depth_annotator.take();
+            }
+            host_consumer::dispatch_unsubscribe(&host);
         }
     }
 
@@ -165,6 +177,117 @@ pub fn register() {
         return;
     }
     TonkLayout::define("tonk-layout");
+    install_method_shims();
+}
+
+/// Install the `reset` / `update` / `error` method shims on the
+/// `<tonk-layout>` prototype.
+fn install_method_shims() {
+    let Some(win) = window() else { return };
+    let constructor = win.custom_elements().get("tonk-layout");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let update_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let error_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+}
+
+/// Per-instance: write closures to `__tonkReset` / `__tonkUpdate`
+/// / `__tonkError` on the element so the prototype shims can
+/// invoke them.
+fn install_method_delegates(host: &Element, inner: &Rc<RefCell<Inner>>) {
+    let host_for_reset = host.clone();
+    let inner_for_reset = inner.clone();
+    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            on_reset(&host_for_reset, &inner_for_reset, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
+    reset.forget();
+
+    let update: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |_payload, _opts| {
+            // V1 SW emits only `reset`; delta semantics arrive
+            // with DBSP integration.
+        }));
+    let _ = Reflect::set(host, &"__tonkUpdate".into(), update.as_ref());
+    update.forget();
+
+    let host_for_error = host.clone();
+    let inner_for_error = inner.clone();
+    let error: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, _opts| {
+            let message = Reflect::get(&payload, &"message".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_else(|| format!("{payload:?}"));
+            fail(
+                &host_for_error,
+                &inner_for_error,
+                ErrorDetail::new(ErrorKind::Network, message),
+            );
+        }));
+    let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
+    error.forget();
+}
+
+/// `reset(conclusions, { tag })` — dispatch on tag to the
+/// per-stream handler. All three subscriptions deliver via this
+/// one entry point.
+fn on_reset(host: &Element, inner: &Rc<RefCell<Inner>>, payload: JsValue, opts: JsValue) {
+    let tag = Reflect::get(&opts, &"tag".into())
+        .ok()
+        .and_then(|v| v.as_string());
+    if !is_current_borrow(inner) {
+        return;
+    }
+    let conclusions: Vec<Conclusion> = match serde_wasm_bindgen::from_value(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            fail(
+                host,
+                inner,
+                ErrorDetail::new(ErrorKind::Parse, format!("reset payload: {e}")),
+            );
+            return;
+        }
+    };
+    let generation = inner.borrow().generation;
+    match tag.as_deref() {
+        Some("workspace") => {
+            handle_workspace_frame(host.clone(), inner.clone(), generation, conclusions)
+        }
+        Some("focus") => {
+            inner.borrow_mut().focus_frame = conclusions;
+            refold(host, inner);
+        }
+        Some("tiles") => {
+            inner.borrow_mut().tiles_frame = conclusions;
+            refold(host, inner);
+        }
+        _ => {}
+    }
+}
+
+fn is_current_borrow(inner: &Rc<RefCell<Inner>>) -> bool {
+    let i = inner.borrow();
+    !i.disposed
 }
 
 fn already_registered() -> bool {
@@ -175,125 +298,46 @@ fn already_registered() -> bool {
 }
 
 /// Bump generation, attach effect listeners, kick off the workspace
-/// subscription.
+/// subscription via the host.
 fn start(host: &Element, inner: Rc<RefCell<Inner>>) {
-    let generation = {
+    let _generation = {
         let mut i = inner.borrow_mut();
         i.generation = i.generation.wrapping_add(1);
         i.generation
     };
     attach_effect_listeners(host, &inner);
 
-    let host_for_run = host.clone();
-    let inner_for_run = inner.clone();
-    spawn_local(async move {
-        if let Err(err) =
-            run_workspace(host_for_run.clone(), inner_for_run.clone(), generation).await
-            && is_current(&inner_for_run, generation)
-        {
-            fail(&host_for_run, &inner_for_run, err);
-        }
-    });
+    if let Err(err) = open_workspace_subscription(host, &inner) {
+        fail(host, &inner, err);
+    }
 }
 
-/// Open the workspace SSE subscription. Each frame stashes itself,
-/// lazily opens focus + tiles subscriptions on the first non-empty
-/// workspace frame, and refolds.
-async fn run_workspace(
-    host: Element,
-    inner: Rc<RefCell<Inner>>,
-    generation: u64,
+/// Open the workspace subscription via the host. Frames arrive
+/// at `on_reset` with tag `"workspace"`, which routes them to
+/// `handle_workspace_frame` below. The host's annotators stamp
+/// `space` and `branch` from ancestors as the subscribe event
+/// bubbles up.
+fn open_workspace_subscription(
+    host: &Element,
+    inner: &Rc<RefCell<Inner>>,
 ) -> Result<(), ErrorDetail> {
-    let url = query_url(
-        host.get_attribute("space").as_deref(),
-        host.get_attribute("branch").as_deref(),
-    );
-    let q = workspace_query(&workspace_name(&host))
+    let q = workspace_query(&workspace_name(host))
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("workspace query: {e}")))?;
-    let body = serde_json::to_value(&q)
+    let body = serde_wasm_bindgen::to_value(&q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("workspace body: {e}")))?;
-
-    let url_for_children = url.clone();
-    let abort = open_frame_stream(
-        &url,
-        &body,
-        host.clone(),
-        inner.clone(),
-        generation,
-        "workspace",
-        move |host, inner, generation, frame| {
-            handle_workspace_frame(host, inner, generation, frame, url_for_children.clone());
-        },
-    )
-    .await?;
-
-    install_abort(&inner, generation, abort, |i, a| {
-        i.workspace_abort = Some(a)
-    })?;
+    let tag = JsValue::from_str("workspace");
+    let sub = host_consumer::subscribe(host, &body, Some(&tag))?;
+    inner.borrow_mut().workspace_sub = Some(sub);
     Ok(())
 }
 
-/// Common SSE-opening glue: parse each emitted frame into a
-/// `Vec<Conclusion>`, run the per-stream handler, route transport
-/// errors through `fail`.
-async fn open_frame_stream<H>(
-    url: &str,
-    body: &serde_json::Value,
-    host: Element,
-    inner: Rc<RefCell<Inner>>,
-    generation: u64,
-    label: &'static str,
-    handler: H,
-) -> Result<SubscriptionAbort, ErrorDetail>
-where
-    H: Fn(Element, Rc<RefCell<Inner>>, u64, Vec<Conclusion>) + 'static,
-{
-    let host_for_frame = host.clone();
-    let inner_for_frame = inner.clone();
-    let host_for_err = host.clone();
-    let inner_for_err = inner.clone();
-    open_sse(
-        url,
-        body,
-        move |frame: &str| {
-            if !is_current(&inner_for_frame, generation) {
-                return;
-            }
-            let conclusions: Vec<Conclusion> = match serde_json::from_str(frame) {
-                Ok(v) => v,
-                Err(e) => {
-                    fail(
-                        &host_for_frame,
-                        &inner_for_frame,
-                        ErrorDetail::new(ErrorKind::Parse, format!("{label} frame: {e}")),
-                    );
-                    return;
-                }
-            };
-            handler(
-                host_for_frame.clone(),
-                inner_for_frame.clone(),
-                generation,
-                conclusions,
-            );
-        },
-        move |err: ErrorDetail| {
-            if !is_current(&inner_for_err, generation) {
-                return;
-            }
-            fail(&host_for_err, &inner_for_err, err);
-        },
-    )
-    .await
-}
-
-/// Workspace frame handler: store, lazily open focus + tiles, refold.
+/// Workspace frame handler: store, lazily open focus + tiles
+/// subscriptions on the first non-empty workspace frame, refold.
 fn handle_workspace_frame(
     host: Element,
     inner: Rc<RefCell<Inner>>,
-    generation: u64,
+    _generation: u64,
     frame: Vec<Conclusion>,
-    url: String,
 ) {
     let workspace_entity = frame.first().map(|c| c.this.clone());
     let should_open_children = {
@@ -303,97 +347,35 @@ fn handle_workspace_frame(
     };
     if should_open_children && let Some(ws_entity) = workspace_entity {
         inner.borrow_mut().children_pending = true;
-        let host_for_open = host.clone();
-        let inner_for_open = inner.clone();
-        spawn_local(async move {
-            if let Err(err) = run_children(
-                host_for_open.clone(),
-                inner_for_open.clone(),
-                generation,
-                ws_entity,
-                url,
-            )
-            .await
-                && is_current(&inner_for_open, generation)
-            {
-                fail(&host_for_open, &inner_for_open, err);
-            }
-        });
+        if let Err(err) = open_children_subscriptions(&host, &inner, &ws_entity) {
+            fail(&host, &inner, err);
+        }
     }
     refold(&host, &inner);
 }
 
-/// Open focus + tiles subscriptions in parallel once the workspace
-/// URI is known.
-async fn run_children(
-    host: Element,
-    inner: Rc<RefCell<Inner>>,
-    generation: u64,
-    workspace_entity: String,
-    url: String,
+/// Open focus + tiles subscriptions once the workspace entity URI
+/// is known.
+fn open_children_subscriptions(
+    host: &Element,
+    inner: &Rc<RefCell<Inner>>,
+    workspace_entity: &str,
 ) -> Result<(), ErrorDetail> {
-    let focus_q = focus_query(&workspace_entity)
+    let focus_q = focus_query(workspace_entity)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("focus query: {e}")))?;
-    let focus_body = serde_json::to_value(&focus_q)
+    let focus_body = serde_wasm_bindgen::to_value(&focus_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("focus body: {e}")))?;
+    let focus_tag = JsValue::from_str("focus");
+    let focus_sub = host_consumer::subscribe(host, &focus_body, Some(&focus_tag))?;
+    inner.borrow_mut().focus_sub = Some(focus_sub);
+
     let tiles_q = tiles_query()
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("tiles query: {e}")))?;
-    let tiles_body = serde_json::to_value(&tiles_q)
+    let tiles_body = serde_wasm_bindgen::to_value(&tiles_q)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("tiles body: {e}")))?;
-
-    let focus_abort = open_frame_stream(
-        &url,
-        &focus_body,
-        host.clone(),
-        inner.clone(),
-        generation,
-        "focus",
-        |host, inner, _gen, frame| {
-            inner.borrow_mut().focus_frame = frame;
-            refold(&host, &inner);
-        },
-    )
-    .await?;
-    install_abort(&inner, generation, focus_abort, |i, a| {
-        i.focus_abort = Some(a)
-    })?;
-
-    let tiles_abort = open_frame_stream(
-        &url,
-        &tiles_body,
-        host.clone(),
-        inner.clone(),
-        generation,
-        "tiles",
-        |host, inner, _gen, frame| {
-            inner.borrow_mut().tiles_frame = frame;
-            refold(&host, &inner);
-        },
-    )
-    .await?;
-    install_abort(&inner, generation, tiles_abort, |i, a| {
-        i.tiles_abort = Some(a)
-    })?;
-    Ok(())
-}
-
-/// Stash an abort handle if the lifecycle hasn't moved on, dropping
-/// it otherwise (which cancels the just-opened transport).
-fn install_abort<F>(
-    inner: &Rc<RefCell<Inner>>,
-    generation: u64,
-    abort: SubscriptionAbort,
-    install: F,
-) -> Result<(), ErrorDetail>
-where
-    F: FnOnce(&mut Inner, SubscriptionAbort),
-{
-    let mut i = inner.borrow_mut();
-    if i.disposed || i.generation != generation {
-        drop(abort);
-        return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
-    }
-    install(&mut i, abort);
+    let tiles_tag = JsValue::from_str("tiles");
+    let tiles_sub = host_consumer::subscribe(host, &tiles_body, Some(&tiles_tag))?;
+    inner.borrow_mut().tiles_sub = Some(tiles_sub);
     Ok(())
 }
 
@@ -650,15 +632,12 @@ fn detail_string(detail: &JsValue, key: &str) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Spawn an async task that POSTs `doc` to `/evaluate`. On failure
-/// routes the error through [`fail`]. No-ops if the element's
-/// generation has moved on between spawn and post — keeps stale
-/// effects from leaking writes to a superseded workspace.
+/// Spawn an async task that POSTs `doc` to `/evaluate` via the
+/// host's `tonk-evaluate` event. On failure routes the error
+/// through [`fail`]. No-ops if the element's generation has
+/// moved on between spawn and post — keeps stale effects from
+/// leaking writes to a superseded workspace.
 fn spawn_evaluate_post(host: &Element, inner: &Rc<RefCell<Inner>>, doc: String) {
-    let url = evaluate_url(
-        host.get_attribute("space").as_deref(),
-        host.get_attribute("branch").as_deref(),
-    );
     let generation = inner.borrow().generation;
     let host_clone = host.clone();
     let inner_clone = inner.clone();
@@ -666,7 +645,7 @@ fn spawn_evaluate_post(host: &Element, inner: &Rc<RefCell<Inner>>, doc: String) 
         if !is_current(&inner_clone, generation) {
             return;
         }
-        if let Err(err) = writer::post_evaluate(&url, &doc).await
+        if let Err(err) = host_consumer::evaluate(&host_clone, &doc).await
             && is_current(&inner_clone, generation)
         {
             fail(&host_clone, &inner_clone, err);

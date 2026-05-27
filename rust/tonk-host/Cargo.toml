@@ -1,36 +1,42 @@
 [package]
-name = "tonk-layout"
+name = "tonk-host"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "<tonk-layout> custom element — headless workspace primitive holding universal state and command primitives for tile-based workspaces."
+description = "<tonk-host>, <tonk-repository>, <tonk-branch> — IO ownership and routing context for tonk custom elements."
 license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+bytes = { workspace = true }
 custom-elements = { workspace = true }
-indexmap = { workspace = true }
+futures = { workspace = true }
 js-sys = { workspace = true }
-serde_json = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
-tonk-concept = { workspace = true }
-tonk-host = { workspace = true }
+serde_json = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
-  "Crypto",
+  "AbortController",
+  "AbortSignal",
   "CustomElementRegistry",
   "CustomEvent",
   "CustomEventInit",
   "Document",
   "Element",
   "Event",
+  "EventInit",
   "EventTarget",
   "Headers",
   "HtmlElement",
+  "Node",
+  "ReadableStream",
+  "ReadableStreamDefaultReader",
   "Request",
   "RequestInit",
   "Response",
