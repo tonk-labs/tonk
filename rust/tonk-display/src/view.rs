@@ -76,17 +76,20 @@ impl CustomElement for TonkView {
         // Surface the event-handler bindings the renderer
         // discovered as JSON on a `data-event-bindings` attribute,
         // so the owning `<tonk-display>` can read them without
-        // poking at the renderer through JS interop. Cheap stable
-        // contract: two-field JSON object with sorted distinct
-        // event types and concept names.
+        // poking at the renderer through JS interop. Skip the
+        // attribute entirely when the template has no handlers —
+        // an empty `{events:[],concepts:[]}` is visual noise on
+        // structural views (layout containers, etc.).
         if let Some(renderer) = &renderer {
             let bindings = renderer.event_bindings();
-            let json = serde_json::json!({
-                "events": bindings.event_types.iter().collect::<Vec<_>>(),
-                "concepts": bindings.concept_names.iter().collect::<Vec<_>>(),
-            });
-            if let Ok(serialized) = serde_json::to_string(&json) {
-                let _ = host.set_attribute("data-event-bindings", &serialized);
+            if !bindings.event_types.is_empty() || !bindings.concept_names.is_empty() {
+                let json = serde_json::json!({
+                    "events": bindings.event_types.iter().collect::<Vec<_>>(),
+                    "concepts": bindings.concept_names.iter().collect::<Vec<_>>(),
+                });
+                if let Ok(serialized) = serde_json::to_string(&json) {
+                    let _ = host.set_attribute("data-event-bindings", &serialized);
+                }
             }
         }
 
@@ -358,6 +361,16 @@ mod tests {
         assert_eq!(concepts, vec!["cancel", "increment"]);
     }
 
+    #[dialog_common::test]
+    fn it_omits_the_event_bindings_attribute_when_the_template_has_no_handlers() {
+        let host = mount("<div><span>{label}</span></div>");
+        assert!(
+            !host.has_attribute("data-event-bindings"),
+            "structural templates should not write empty event-binding metadata; got: {}",
+            host.outer_html(),
+        );
+    }
+
     // --- Iteration / cardinality-many tests ----------------------------
 
     /// Like [`detail`], but lets callers mix scalar and array
@@ -489,6 +502,206 @@ mod tests {
                 .as_deref(),
             Some("Alice"),
         );
+    }
+
+    #[dialog_common::test]
+    fn it_preserves_existing_row_when_field_grows_from_scalar_to_array() {
+        // The fold step collapses a one-row frame to a scalar
+        // value (the JSON is `"col-a"`, not `["col-a"]`). A
+        // subsequent frame with two rows arrives as an array
+        // (`["col-a", "col-b"]`). The reconciler MUST keep the
+        // existing `col-a` row mounted — without that, adding a
+        // sibling column trashes the first column's sub-tree on
+        // every cardinality transition.
+        let host = mount("<ul><li subject={column}><leaf data-c={column} /></li></ul>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zBoard", &[("column", serde_json::json!("col-a"))]),
+        );
+        let first_li_before = host
+            .query_selector("li")
+            .unwrap()
+            .expect("li mounted for col-a");
+        let first_leaf_before = host
+            .query_selector("leaf")
+            .unwrap()
+            .expect("leaf mounted for col-a");
+        assert_eq!(
+            first_li_before.get_attribute("subject").as_deref(),
+            Some("col-a")
+        );
+
+        // Add col-b — `column` now arrives as an array.
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zBoard",
+                &[("column", serde_json::json!(["col-a", "col-b"]))],
+            ),
+        );
+
+        // Two <li>s expected, col-a first, col-b second.
+        let lis = host.query_selector_all("li").unwrap();
+        assert_eq!(
+            lis.length(),
+            2,
+            "expected two rows after growing scalar to array, got: {}",
+            host.inner_html(),
+        );
+        let subjects: Vec<String> = (0..lis.length())
+            .filter_map(|i| {
+                lis.item(i)
+                    .and_then(|n| n.dyn_into::<Element>().ok())
+                    .and_then(|el| el.get_attribute("subject"))
+            })
+            .collect();
+        assert_eq!(subjects, vec!["col-a".to_owned(), "col-b".to_owned()]);
+
+        // Crucially: the FIRST row's node identity (and its inner
+        // leaf) must be the same instance as before. Otherwise
+        // anything stateful inside (custom-element mounts,
+        // focus, live subscriptions) would have been torn down.
+        let first_li_after = lis
+            .item(0)
+            .and_then(|n| n.dyn_into::<Element>().ok())
+            .expect("first li present");
+        let first_leaf_after = first_li_after
+            .query_selector("leaf")
+            .unwrap()
+            .expect("leaf present in first li");
+        assert!(
+            first_li_before.is_same_node(Some(first_li_after.unchecked_ref())),
+            "first row node identity should survive the scalar→array transition",
+        );
+        assert!(
+            first_leaf_before.is_same_node(Some(first_leaf_after.unchecked_ref())),
+            "first row descendant node identity should survive the transition",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_updates_a_scalar_attr_placeholder_in_place_without_rebuilding() {
+        // A scalar field whose only placeholder lives on an
+        // iteration root must NOT key the iteration row on the
+        // value itself — otherwise changing the scalar (e.g.
+        // editing a column's width) destroys the row and rebuilds
+        // every descendant, which trashes inner state (focus,
+        // mounted custom elements, in-flight subscriptions).
+        //
+        // The expected reconciliation: the same wrapper node
+        // survives, its bound attribute is patched in place, and
+        // any nested child node identity is preserved across the
+        // update.
+        let host = mount("<wrapper data-w={width}><leaf data-marker=\"keep-me\" /></wrapper>");
+        call_draw(
+            &host,
+            &detail_json("did:key:zCol", &[("width", serde_json::json!("12"))]),
+        );
+        let wrapper_before = host
+            .query_selector("wrapper")
+            .unwrap()
+            .expect("wrapper mounted on first draw");
+        let leaf_before = host
+            .query_selector("leaf")
+            .unwrap()
+            .expect("leaf mounted on first draw");
+        assert_eq!(
+            wrapper_before.get_attribute("data-w").as_deref(),
+            Some("12")
+        );
+
+        call_draw(
+            &host,
+            &detail_json("did:key:zCol", &[("width", serde_json::json!("16"))]),
+        );
+        let wrapper_after = host
+            .query_selector("wrapper")
+            .unwrap()
+            .expect("wrapper still mounted after scalar update");
+        let leaf_after = host
+            .query_selector("leaf")
+            .unwrap()
+            .expect("leaf still mounted after scalar update");
+
+        assert_eq!(
+            wrapper_after.get_attribute("data-w").as_deref(),
+            Some("16"),
+            "wrapper attribute should reflect the new scalar value",
+        );
+        assert!(
+            wrapper_before.is_same_node(Some(wrapper_after.unchecked_ref())),
+            "wrapper node identity should survive a scalar update; got rebuild",
+        );
+        assert!(
+            leaf_before.is_same_node(Some(leaf_after.unchecked_ref())),
+            "descendant node identity should survive a scalar update; got rebuild",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_substitutes_scalar_attr_placeholder_and_iterates_a_nested_marker() {
+        // Mirrors the column-view template:
+        //   <wrapper attr={width}>            scalar field on wrapper
+        //     <div subject={tile}>             cardinality-many on child
+        //       <leaf data={tile} />
+        //     </div>
+        //   </wrapper>
+        //
+        // The attr placeholder is a scalar field — the wrapper
+        // should NOT iterate. The inner `subject={tile}` marker is
+        // the only iteration root. Expected after one draw:
+        //   - wrapper rendered once
+        //   - wrapper@attr substituted with the scalar value
+        //   - one inner row per tile value
+        let host = mount(
+            "<wrapper data-w={width}><div class=\"tile\" subject={tile}><leaf data-t={tile} /></div></wrapper>",
+        );
+        call_draw(
+            &host,
+            &detail_json(
+                "did:key:zCol",
+                &[
+                    ("width", serde_json::json!("12")),
+                    ("tile", serde_json::json!(["t-a", "t-b"])),
+                ],
+            ),
+        );
+
+        let wrappers = host.query_selector_all("wrapper").unwrap();
+        assert_eq!(
+            wrappers.length(),
+            1,
+            "wrapper should mount once for a scalar attr field, got: {}",
+            host.inner_html(),
+        );
+        let wrapper = wrappers
+            .item(0)
+            .and_then(|n| n.dyn_into::<Element>().ok())
+            .expect("wrapper element");
+        assert_eq!(
+            wrapper.get_attribute("data-w").as_deref(),
+            Some("12"),
+            "wrapper attr should interpolate scalar field, got: {}",
+            wrapper.outer_html(),
+        );
+
+        let tiles = host.query_selector_all(".tile").unwrap();
+        assert_eq!(
+            tiles.length(),
+            2,
+            "inner iteration should produce one .tile per tile value, got: {}",
+            host.inner_html(),
+        );
+        let leaves = host.query_selector_all("leaf").unwrap();
+        let leaf_attrs: Vec<String> = (0..leaves.length())
+            .filter_map(|i| {
+                leaves
+                    .item(i)
+                    .and_then(|n| n.dyn_into::<Element>().ok())
+                    .and_then(|el| el.get_attribute("data-t"))
+            })
+            .collect();
+        assert_eq!(leaf_attrs, vec!["t-a".to_owned(), "t-b".to_owned()]);
     }
 
     // --- Incremental update / DOM stability tests ---------------------
