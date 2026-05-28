@@ -1,57 +1,80 @@
+/* Self-hosted brutalist-theme fonts: Space Grotesk (body),
+   IBM Plex Sans Condensed (heading), Space Mono (code). Files
+   live under `/fonts/` (copied into the dist by Trunk's
+   `copy-dir` on `./assets/fonts`). Self-hosting means no
+   cross-origin font fetch and the files flow through the SW
+   cache automatically once the offline-support milestone lands.
+   `font-display: swap` keeps the page legible (fallback face)
+   if the .woff2 hasn't downloaded yet. */
 @font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-extralight.otf") format("opentype");
-    font-weight: 200;
+    font-family: "Space Grotesk";
     font-style: normal;
-}
-
-@font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-light.otf") format("opentype");
-    font-weight: 300;
-    font-style: normal;
-}
-
-@font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-regular.otf") format("opentype");
     font-weight: 400;
-    font-style: normal;
+    font-display: swap;
+    src: url("/fonts/space-grotesk-latin-400-normal.woff2") format("woff2");
 }
-
 @font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-book.otf") format("opentype");
-    font-weight: 450;
+    font-family: "Space Grotesk";
     font-style: normal;
-}
-
-@font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-medium.otf") format("opentype");
     font-weight: 500;
-    font-style: normal;
+    font-display: swap;
+    src: url("/fonts/space-grotesk-latin-500-normal.woff2") format("woff2");
 }
-
 @font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-bold.otf") format("opentype");
+    font-family: "Space Grotesk";
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url("/fonts/space-grotesk-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Space Grotesk";
+    font-style: normal;
     font-weight: 700;
-    font-style: normal;
+    font-display: swap;
+    src: url("/fonts/space-grotesk-latin-700-normal.woff2") format("woff2");
 }
-
 @font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-heavy.otf") format("opentype");
-    font-weight: 800;
+    font-family: "IBM Plex Sans Condensed";
     font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-sans-condensed-latin-400-normal.woff2") format("woff2");
 }
-
 @font-face {
-    font-family: "Gestalte";
-    src: url("/fonts/gestalte-black.otf") format("opentype");
-    font-weight: 900;
+    font-family: "IBM Plex Sans Condensed";
     font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-sans-condensed-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "IBM Plex Sans Condensed";
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "IBM Plex Sans Condensed";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("/fonts/ibm-plex-sans-condensed-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Space Mono";
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url("/fonts/space-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+    font-family: "Space Mono";
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url("/fonts/space-mono-latin-700-normal.woff2") format("woff2");
 }
 
 html,
@@ -352,6 +375,12 @@ tonk-notation .tonk-cm-variable {
     color: var(--wa-color-text-normal);
     display: flex;
     align-items: center;
+    /* Title left, share affordance right. When this banner is
+       slotted into wa-page's `main-header`, wa-page's part
+       styling already does this — but when the inspector is
+       mounted somewhere without that slot (e.g. inside a board
+       tile), the local rule keeps the layout consistent. */
+    justify-content: space-between;
     gap: var(--wa-space-m);
     height: 8rem;
     padding-inline: var(--wa-space-xl);
@@ -1478,4 +1507,157 @@ tonk-code:focus-within {
 .evaluate-revision {
     /* Sits above the match list as a one-line tag. */
     margin-block-end: var(--wa-space-2xs);
+}
+
+/* ── Board layout ─────────────────────────────────────────────
+ * Horizontal strip rendered by `<tonk-board>` and its view
+ * templates. See `plan/tonk-board.md`. Tiles fill the column
+ * by default; opening another tile splits the column or grows
+ * a new column in the strip.
+ */
+.board-view {
+    /* Fill the viewport; no padding so the strip's graph-paper
+       background reaches the edges. */
+    padding: 0;
+    margin: 0;
+    block-size: 100vh;
+    inline-size: 100%;
+}
+
+/* Every custom-element layer between <main.board-view> and the
+   leaf content defaults to `display: inline`. Force the whole
+   chain into the layout flow so block-size: 100% propagates from
+   the viewport down to the strip and columns. */
+.board-view tonk-repository,
+.board-view tonk-branch,
+.board-view tonk-board,
+.board-view > tonk-repository > tonk-branch > tonk-board > tonk-display,
+.board-view > tonk-repository > tonk-branch > tonk-board > tonk-display > tonk-view {
+    display: block;
+    block-size: 100%;
+    min-block-size: 0;
+}
+
+/* The intermediate <tonk-display>/<tonk-view> layers between the
+   strip and its columns are pure rendering wrappers, not layout
+   boxes. `display: contents` makes them transparent to the
+   strip's flex flow so each <tonk-column> becomes a direct flex
+   item (and its `flex: 0 0 calc(--col-w * --cell)` actually
+   sizes the column instead of the wrapping <tonk-display>). */
+tonk-strip > tonk-display,
+tonk-strip > tonk-display > tonk-view {
+    display: contents;
+}
+
+/* Two-layer engineering-graph-paper background, applied to
+   each tile (the surface the dark canvas occupies). The grid
+   travels with the tile content because the tile is the
+   visible canvas; the strip's lighter seam color shows through
+   every gap (between tiles AND between columns) for a single
+   coherent gutter colour throughout the board.
+
+   `background-attachment: local` ties the grid to the column's
+   scroll position so the dots travel with vertical scroll. */
+tonk-column > .tile {
+    --dot-gap: 16px;
+    --dot-size-dim: 0.5px;
+    --dot-size-bright: 0.5px;
+    --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
+    --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
+    background-image:
+        radial-gradient(
+            circle,
+            var(--dot-color-bright) var(--dot-size-bright),
+            transparent calc(var(--dot-size-bright) + 0.5px)
+        ),
+        radial-gradient(
+            circle,
+            var(--dot-color-dim) var(--dot-size-dim),
+            transparent calc(var(--dot-size-dim) + 0.5px)
+        );
+    background-size:
+        calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
+        var(--dot-gap) var(--dot-gap);
+    background-position:
+        calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
+        calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
+    background-attachment: local;
+}
+
+tonk-strip {
+    --pitch: 16px;
+    --cell: 64px;
+    /* Narrow gutter between columns — just enough that the
+       contrasting strip fill reads as a seam. */
+    --gap: 4px;
+
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: var(--gap);
+    padding: 0;
+    box-sizing: border-box;
+    block-size: 100%;
+    inline-size: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
+    /* The strip's fill is what shows through every seam —
+       between columns AND between tiles within a column (since
+       <tonk-column> is transparent). Uses the theme's
+       `neutral-fill-normal` token so the gutter contrast
+       adapts with dark / light mode. */
+    background-color: var(--wa-color-neutral-fill-normal);
+}
+
+tonk-column {
+    /* Width is driven by `--col-w` set on the element by the
+       column-view template (one --cell unit = 64px). Tiles
+       stack top-to-bottom inside; overflow is handled here at
+       the column level, so the column's dot-grid background
+       scrolls together with the tiles. */
+    flex: 0 0 calc(var(--col-w, 12) * var(--cell));
+    block-size: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    overflow-y: auto;
+    overflow-x: hidden;
+    scroll-snap-align: start;
+    min-block-size: 0;
+    /* Transparent so the strip's seam fill shows through the
+       column-to-column gaps AND the tile-to-tile gaps inside
+       each column. The column's grid layer still paints (it's a
+       `background-image`, not a fill) and reads against whatever
+       the strip provides underneath. */
+    background-color: transparent;
+}
+
+tonk-column::-webkit-scrollbar {
+    display: none;
+}
+
+/* Tiles size to their content along the column's main axis and
+   stack top-to-bottom. Overflow happens at the COLUMN level
+   (the column is the scroller) — never inside an individual
+   tile — so a tile renders all its content unclipped and the
+   user scrolls the whole column to reach what's below. Tiles
+   paint the dark canvas fill; the gaps between tiles (and the
+   gaps between columns) expose the strip's lighter seam fill
+   underneath, giving a single coherent gutter colour throughout
+   the board. */
+tonk-column > .tile {
+    flex: 0 0 auto;
+    inline-size: 100%;
+    box-sizing: border-box;
+    background-color: var(--wa-color-neutral-fill-quiet);
+}
+
+/* The inner <tonk-display> participates in the column's scroll —
+   it must NOT clip or scroll on its own. */
+tonk-column > .tile > tonk-display,
+tonk-column > .tile > tonk-display > tonk-view {
+    display: block;
+    inline-size: 100%;
+    overflow: visible;
 }
