@@ -4074,6 +4074,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ipld_dagjson"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb3dfb1d7b111db0edee8409c57a9b2b1eef47ebc0ec890cc980b0c3b027a8a9"
+dependencies = [
+ "ipld-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4821,6 +4832,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-board"
+version = "0.1.0"
+dependencies = [
+ "custom-elements",
+ "dialog-common",
+ "js-sys",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tonk-host",
+ "tonk-schema",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-code"
 version = "0.1.0"
 dependencies = [
@@ -4933,6 +4961,7 @@ dependencies = [
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
+ "serde_ipld_dagjson",
  "serde_json",
  "tonk-schema",
  "wasm-bindgen",
@@ -5061,6 +5090,7 @@ dependencies = [
  "async-trait",
  "bs58",
  "console_error_panic_hook",
+ "custom-elements",
  "dialog-common",
  "dialog-credentials",
  "dialog-remote-ucan-s3",
@@ -5085,6 +5115,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tonk-access-service",
+ "tonk-board",
  "tonk-code",
  "tonk-concept",
  "tonk-display",

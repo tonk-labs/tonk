@@ -16,6 +16,7 @@ futures = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
+serde_ipld_dagjson = { workspace = true }
 serde_json = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }

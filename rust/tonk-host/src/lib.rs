@@ -69,6 +69,19 @@ mod host;
 mod http;
 #[cfg(target_arch = "wasm32")]
 mod ops;
+// LRU for `tonk-query` responses. The production callers live in
+// `host.rs` / `ops.rs` (both wasm-only), but the unit tests run
+// natively via `dialog_common::test`, so the module is also
+// pulled in for `cfg(test)` builds.
+#[cfg(any(target_arch = "wasm32", test))]
+mod query_cache;
+// Service-worker readiness gate. The wasm implementation awaits
+// `globalThis.serviceWorkerActivates`; on native the module
+// exposes the same `wait()` symbol as an immediate no-op so
+// shared code paths (e.g. `api.rs` in the UI crate, which is
+// wasm-targeted in practice but pulled into native test builds
+// via Cargo's metadata graph) don't fail to resolve.
+pub mod ready;
 #[cfg(target_arch = "wasm32")]
 mod registry;
 #[cfg(target_arch = "wasm32")]
