@@ -23,7 +23,9 @@ use tokio::sync::Mutex;
 use tonk_common::log;
 use tower_service::Service;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::{JsFuture, future_to_promise};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::future_to_promise;
 use web_sys::{FetchEvent, Request, Response};
 
 // Global `self.fetch(...)` in the service-worker scope. Fetches
@@ -34,9 +36,6 @@ use web_sys::{FetchEvent, Request, Response};
 extern "C" {
     #[wasm_bindgen(js_name = fetch)]
     fn sw_fetch(request: &Request) -> Promise;
-
-    #[wasm_bindgen(js_name = fetch)]
-    fn sw_fetch_str(url: &str) -> Promise;
 }
 
 /// Extract the `resultingClientId` property from a `FetchEvent`.
@@ -252,24 +251,39 @@ fn reject_404() -> Result<JsValue, JsValue> {
     }
 }
 
-/// Pass the request through to the network by calling
-/// `self.fetch(request)` from inside the service worker. Such
-/// fetches bypass the SW's own `onfetch` handler (per spec), so
-/// this really does hit the network.
+/// Pass the request through to the network or the shell cache.
 ///
-/// For navigation requests that 404, retry against `/index.html`
-/// so the client-side SPA router can match unknown paths.
-async fn passthrough(request: Request, is_navigation: bool) -> Result<JsValue, JsValue> {
-    let response: Response = JsFuture::from(sw_fetch(&request)).await?.dyn_into()?;
+/// Cacheable GETs go through stale-while-revalidate against the
+/// shell cache — repeat loads serve from memory instead of
+/// re-downloading Webawesome's chunk graph, Trunk-hashed JS/Wasm,
+/// or the self-hosted font set.
+///
+/// Document navigations don't reach this function: the JS shim
+/// serves them directly from the SW cache so navigation TTFB
+/// doesn't wait on the Rust worker to initialize. This keeps
+/// the data plane (`/api/*`) on the Rust side without paying
+/// the worker boot cost for the HTML shell.
+///
+/// Non-cacheable requests (non-GETs, opaque/cross-origin) fall
+/// through to `self.fetch(request)` to hit the network directly.
+/// Such fetches bypass the SW's own `onfetch` handler per spec.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn passthrough(request: Request, _is_navigation: bool) -> Result<JsValue, JsValue> {
+    let path = url::Url::parse(&request.url())
+        .map(|u| u.path().to_string())
+        .unwrap_or_default();
 
-    if is_navigation && response.status() == 404 {
-        let fallback: Response = JsFuture::from(sw_fetch_str("/index.html"))
-            .await?
-            .dyn_into()?;
-        return Ok(JsValue::from(fallback));
+    if crate::cache::is_cacheable(&request, &path) {
+        return crate::cache::stale_while_revalidate(&request).await;
     }
 
+    let response: Response = JsFuture::from(sw_fetch(&request)).await?.dyn_into()?;
     Ok(JsValue::from(response))
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn passthrough(_request: Request, _is_navigation: bool) -> Result<JsValue, JsValue> {
+    unreachable!("passthrough is only callable in a WASM service-worker context")
 }
 
 /// Default storage type — IndexedDB on WASM, filesystem on native.
@@ -516,6 +530,23 @@ impl TonkServiceWorker {
         })
     }
 
+    /// Called from the JS shim's `self.onactivate` after
+    /// `clients.claim()` has resolved. Drops every shell cache
+    /// from older SW versions so the first fetch under the new
+    /// worker doesn't race against stale entries.
+    #[wasm_bindgen(js_name = "onactivate")]
+    pub fn on_activate(&self) -> Promise {
+        future_to_promise(async move {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                if let Err(err) = crate::cache::purge_old_caches().await {
+                    log!("purge_old_caches failed: {:?}", err);
+                }
+            }
+            Ok(JsValue::UNDEFINED)
+        })
+    }
+
     /// Handles incoming fetch events from the browser.
     ///
     /// Called from the JS shim's `self.onfetch` listener for *every*
@@ -563,13 +594,6 @@ impl TonkServiceWorker {
         let state = self.state.clone();
 
         future_to_promise(async move {
-            log!(
-                "onfetch path={} mode={:?} client={:?}",
-                path,
-                request.mode(),
-                effective_client_id,
-            );
-
             // Opportunistic cleanup of stale bridge sessions and view
             // bindings. Cheap enough to run on every fetch.
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

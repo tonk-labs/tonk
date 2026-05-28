@@ -69,6 +69,9 @@ pub use error::*;
 mod worker;
 pub use worker::*;
 
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod cache;
+
 mod r#async;
 pub use r#async::*;
 
