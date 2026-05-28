@@ -12,7 +12,7 @@ use wasm_bindgen::JsCast;
 
 use crate::{
     api,
-    components::{ActiveSubject, HostId, InviteSpace, Status},
+    components::{HostId, InviteSpace},
     did,
     error::TonkUiError,
 };
@@ -76,6 +76,11 @@ pub struct TonkSpaceParams {
 ///
 /// If the `:space` segment is missing, redirects to
 /// `/space/{DEFAULT_REPO}`.
+/// Route component for `/space/:space?`. Decodes the URL param,
+/// redirects empty paths to the default space, and delegates the
+/// actual UI to [`TonkInspector`]. Kept around as a thin shim so
+/// existing links / nav targets keep resolving; the body lives in
+/// `TonkInspector` so it can be embedded as a tile body as well.
 #[component]
 #[allow(clippy::unused_unit)]
 pub fn TonkSpace() -> impl IntoView {
@@ -89,39 +94,45 @@ pub fn TonkSpace() -> impl IntoView {
             .filter(|s| !s.is_empty())
     });
 
-    // Wait for the shell to finish init (service worker active
-    // AND default repository PUT completed) before firing any
-    // request. Reading the `Status` signal here makes the
-    // resource re-fire the moment init flips to `Ready`.
-    let status = use_context::<Signal<Status, LocalStorage>>();
-    let repository = LocalResource::new(move || {
-        let name = space_name.get();
-        let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(true);
-        async move {
-            if !ready {
-                return Ok(None);
-            }
-            match name {
-                None => {
-                    BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
-                    Ok(None)
-                }
-                Some(name) => api::repository(&name).await,
-            }
+    // Empty-path redirect: when the URL has no `:space` segment,
+    // bounce to the default repository. Lives here (not inside
+    // `TonkInspector`) so the inspector can be reused in non-route
+    // contexts (tiles, embeds) without firing a navigation.
+    Effect::new(move |_| {
+        if space_name.get().is_none() {
+            BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
         }
     });
 
-    // Publish the current space's subject DID so the sidebar
-    // toolbar can render a matching sigil.
-    let active_subject =
-        use_context::<ActiveSubject>().expect("ActiveSubject context provided by TonkShell");
-    Effect::new(move |_| {
-        let subject = repository
-            .get()
-            .and_then(|result| result.ok())
-            .flatten()
-            .map(|info| info.subject.to_string());
-        active_subject.set(subject);
+    view! {
+        <TonkInspector source=space_name />
+    }
+}
+
+/// Renders a single space (banner + branches + remotes). Takes
+/// the space name as a reactive prop so it can be driven from a
+/// URL param, a tile binding, or any other source.
+///
+/// Inbound API calls are SW-gated inside `tonk_host::ready::wait`,
+/// so this component fires its repository fetch eagerly without
+/// a separate readiness signal.
+#[component]
+#[allow(clippy::unused_unit)]
+pub fn TonkInspector(
+    /// Space name to inspect. `None` renders nothing — the
+    /// upstream is expected to surface its own "no space" state
+    /// (the route shim does this via redirect).
+    #[prop(into)]
+    source: Signal<Option<String>, LocalStorage>,
+) -> impl IntoView {
+    let repository = LocalResource::new(move || {
+        let name = source.get();
+        async move {
+            match name {
+                None => Ok(None),
+                Some(name) => api::repository(&name).await,
+            }
+        }
     });
 
     // Open the shared invite dialog when the user clicks the
@@ -129,7 +140,7 @@ pub fn TonkSpace() -> impl IntoView {
     // the URL.
     let invite_space = use_context::<InviteSpace>().expect("InviteSpace provided by TonkShell");
     let on_share = move |_| {
-        if let Some(name) = space_name.get() {
+        if let Some(name) = source.get() {
             invite_space.set(Some(name));
         }
     };
@@ -147,7 +158,7 @@ pub fn TonkSpace() -> impl IntoView {
                 { move || repository.get().map(|result| result.map(|repo| match repo {
                     Some(info) => Either::Left(render_space_view(
                         info,
-                        space_name,
+                        source,
                         repository,
                         on_share,
                     )),
@@ -156,7 +167,7 @@ pub fn TonkSpace() -> impl IntoView {
                             <wa-icon slot="icon" name="circle-info"></wa-icon>
                             { move || format!(
                                 "Repository '{}' not found",
-                                space_name.get().unwrap_or_default(),
+                                source.get().unwrap_or_default(),
                             ) }
                         </wa-callout>
                     }),
@@ -2221,32 +2232,16 @@ pub fn TonkSpaceViewer() -> impl IntoView {
             .filter(|s| !s.is_empty())
     });
 
-    let status = use_context::<Signal<Status, LocalStorage>>();
     let host_id = use_context::<Signal<Option<HostId>, LocalStorage>>();
 
     let repository = LocalResource::new(move || {
         let name = space_name.get();
-        let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(true);
         async move {
-            if !ready {
-                return Ok(None);
-            }
             match name {
                 None => Ok(None),
                 Some(name) => api::repository(&name).await,
             }
         }
-    });
-
-    let active_subject =
-        use_context::<ActiveSubject>().expect("ActiveSubject context provided by TonkShell");
-    Effect::new(move |_| {
-        let subject = repository
-            .get()
-            .and_then(|result| result.ok())
-            .flatten()
-            .map(|info| info.subject.to_string());
-        active_subject.set(subject);
     });
 
     let invite_space = use_context::<InviteSpace>().expect("InviteSpace provided by TonkShell");

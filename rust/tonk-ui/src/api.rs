@@ -58,6 +58,7 @@ pub fn origin() -> String {
 /// lets the UI use `ErrorBoundary` for genuine failures while
 /// rendering a "not found" view through the normal value path.
 pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Fetching repository '{}'...", name);
 
     let response = reqwest::Client::new()
@@ -90,6 +91,7 @@ pub async fn repository(name: &str) -> Result<Option<RepositoryInfo>, TonkUiErro
 /// named-repo namespace, so its `RepositoryInfo` has its own
 /// endpoint instead of `/api/repository/{name}`.
 pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Fetching profile repository...");
     let response = reqwest::Client::new()
         .get(format!("{}/api/profile/repository", origin()))
@@ -131,6 +133,7 @@ pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError>
 /// service (resolved against the current window origin) and sets
 /// the default branch to track `origin/{branch}`.
 pub async fn init() -> Result<String, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Ensuring repository '{}' exists...", DEFAULT_REPO);
 
     let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
@@ -204,6 +207,7 @@ impl From<TonkUiError> for CreateSpaceError {
 /// so anything subscribed to that channel (notably the shell's
 /// `ProfileResource`) can refresh.
 pub async fn create_space(name: &str) -> Result<RepositoryInfo, CreateSpaceError> {
+    tonk_host::ready::wait().await;
     log!("Creating space '{}'...", name);
 
     let configuration =
@@ -244,6 +248,7 @@ pub async fn create_space(name: &str) -> Result<RepositoryInfo, CreateSpaceError
 /// render a tile per space without fetching each repository
 /// individually.
 pub async fn profile() -> Result<ProfileInfo, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Fetching profile...");
 
     let response = reqwest::Client::new()
@@ -275,6 +280,7 @@ pub async fn select_claims(
     the: Option<&str>,
     of: Option<&str>,
 ) -> Result<QueryResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
     let base = format!(
         "{}/api/repository/{}/branch/{}/claim/select",
         origin(),
@@ -356,6 +362,7 @@ async fn evaluate_at(
     content_type: &str,
     transact: bool,
 ) -> Result<EvaluateResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
     // The worker's default is `transact=true`; only attach the
     // query string when we want to override.
     let url = if transact {
@@ -423,6 +430,7 @@ pub async fn create_invite(
     repo: &str,
     audience: Option<&str>,
 ) -> Result<CreateInviteResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Minting invite for '{}' (audience={:?})...", repo, audience);
 
     let base_url = url::Url::parse(&format!("{}/join", origin()))
@@ -478,6 +486,7 @@ pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError>
 }
 
 async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Sync ({}) repo='{}' branch='{}'", op, repo, branch);
     let response = reqwest::Client::new()
         .post(format!(
@@ -544,6 +553,7 @@ impl From<TonkUiError> for JoinError {
 ///
 /// [`ProfileResource`]: crate::components::ProfileResource
 pub async fn join(url: &str, name: &str) -> Result<JoinResponse, JoinError> {
+    tonk_host::ready::wait().await;
     log!("Joining invite as '{}'...", name);
 
     let body = JoinRequest {
@@ -578,6 +588,7 @@ pub async fn join(url: &str, name: &str) -> Result<JoinResponse, JoinError> {
 
 /// Fetches the current user's identity (DID) from the service worker.
 pub async fn identify() -> Result<IdentifyResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
     log!("Fetching identity...");
 
     let response = reqwest::Client::new()

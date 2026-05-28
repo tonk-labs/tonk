@@ -13,7 +13,7 @@ use wasm_bindgen::JsCast;
 
 use crate::{
     api::{self, JoinError},
-    components::{LastJoinOutcome, ProfileResource, Status},
+    components::{LastJoinOutcome, ProfileResource},
     did,
 };
 
@@ -143,11 +143,12 @@ fn did_sigil_value(did: &str) -> Option<String> {
 /// browsers do not transmit fragments with `fetch`, so the worker
 /// would otherwise never see the seed.
 ///
-/// All worker calls are gated on [`Status::Ready`] so deep-link
-/// loads don't race the service worker's startup.
+/// Worker calls are SW-gated inside `tonk_host::ready::wait`,
+/// so deep-link loads block automatically until the worker is
+/// up — no explicit readiness signal is threaded through the
+/// component tree.
 #[component]
 pub fn TonkJoin() -> impl IntoView {
-    let status = use_context::<Signal<Status, LocalStorage>>();
     let profile_resource =
         use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
     let last_join_outcome =
@@ -261,10 +262,6 @@ pub fn TonkJoin() -> impl IntoView {
             let JoinView::AlreadyMember { name, .. } = join_view.get() else {
                 return;
             };
-            let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(false);
-            if !ready {
-                return;
-            }
             auto_joined.set(true);
 
             let url = invite_url.clone();
@@ -332,10 +329,6 @@ pub fn TonkJoin() -> impl IntoView {
         move |event: SubmitEvent| {
             event.prevent_default();
 
-            let ready = status.map(|s| s.get() == Status::Ready).unwrap_or(false);
-            if !ready {
-                return;
-            }
             // Only valid in the `NewMember` branch — the form
             // doesn't render in any other state, but a stray
             // Enter on the input could still fire here.
@@ -388,8 +381,6 @@ pub fn TonkJoin() -> impl IntoView {
         }
     };
 
-    let ready_signal = move || status.map(|s| s.get() == Status::Ready).unwrap_or(false);
-
     view! {
         <main class="join-view">
             <wa-card class="join-card">
@@ -398,7 +389,6 @@ pub fn TonkJoin() -> impl IntoView {
                     name,
                     error,
                     submitting,
-                    ready_signal(),
                     on_input,
                     submit.clone(),
                     on_cancel.clone(),
@@ -419,7 +409,6 @@ fn render_body<I, S, C>(
     name: RwSignal<String>,
     error: RwSignal<Option<String>>,
     submitting: RwSignal<bool>,
-    ready: bool,
     on_input: I,
     submit: S,
     on_cancel: C,
@@ -536,7 +525,7 @@ where
                             type="submit"
                             variant="primary"
                             prop:loading=move || submitting.get()
-                            prop:disabled=move || submitting.get() || !ready
+                            prop:disabled=move || submitting.get()
                         >"Join"</wa-button>
                     </div>
                 </form>

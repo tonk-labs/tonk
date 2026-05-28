@@ -1,0 +1,46 @@
+//! Board layout custom elements.
+//!
+//! Three elements ship from this crate:
+//!
+//! - **`<tonk-board entity="…">`** — the outer wrapper. Takes a board
+//!   entity URI and mounts a `<tonk-display>` against it. Resolution
+//!   of `:board` name → entity URI happens at the route layer; this
+//!   element receives the already-resolved URI.
+//! - **`<tonk-strip>`** — horizontal scroll container; used inside
+//!   the board view template as the host for column children.
+//! - **`<tonk-column>`** — vertical scroll container with
+//!   pull-to-reveal gesture; used inside the column view template
+//!   as the host for tile children.
+//!
+//! All three are presentation containers. They do not subscribe to
+//! data themselves — view templates (rendered by `<tonk-display>`)
+//! supply children. Custom-element behavior is limited to layout
+//! and gestures; data flows through the host abstraction defined
+//! in `tonk-host`.
+//!
+//! See `plan/tonk-board.md` at the repository root for the design.
+
+#![warn(missing_docs)]
+
+/// Asserted-notation document that bootstraps the board concepts,
+/// view templates, and a `demo` board. The route component POSTs
+/// this to `/evaluate` on mount; re-runs are no-ops since the
+/// document asserts a fixed set of facts (idempotent under
+/// concept-claim semantics).
+pub const BOOTSTRAP: &str = include_str!("../bootstrap.yaml");
+
+#[cfg(target_arch = "wasm32")]
+mod board;
+#[cfg(target_arch = "wasm32")]
+mod column;
+#[cfg(target_arch = "wasm32")]
+mod strip;
+
+/// Register `<tonk-board>`, `<tonk-strip>`, `<tonk-column>` with
+/// the page. Idempotent — calling more than once is harmless.
+#[cfg(target_arch = "wasm32")]
+pub fn register() {
+    board::register();
+    strip::register();
+    column::register();
+}

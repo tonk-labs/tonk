@@ -1,0 +1,169 @@
+# Tonk board: concepts, views, and a demo board.
+#
+# Asserted-notation document for the `/evaluate` endpoint.
+# Posted automatically by `<tonk-board>`'s `connectedCallback`
+# via the `tonk-evaluate` event; idempotent on re-runs.
+# See `plan/tonk-board.md` for the design.
+#
+# v1 is the hierarchical shape: board owns columns; column owns
+# tiles. Future work projects this from a flat tile concept using
+# deductive rules; the view templates won't change when that
+# happens. See "Future flattening" in the plan.
+
+# --- concepts -----------------------------------------------
+
+concept!: &view
+  description: A view template (model, name, display) for rendering an entity
+  with:
+    name:
+      description: View name; distinguishes views over the same model
+      the: xyz.tonk.view/name
+      cardinality: one
+      as: text
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+concept!: &board-view
+  description: A named board (hierarchical v1, owns columns directly)
+  with:
+    name:
+      description: Display name
+      the: xyz.tonk.board/name
+      cardinality: one
+      as: text
+    column:
+      description: Columns in this board
+      the: xyz.tonk.board/column
+      cardinality: many
+      as: entity
+
+concept!: &column-view
+  description: A column on a board
+  with:
+    order:
+      description: LexoRank-style order key within the board
+      the: xyz.tonk.column/order
+      cardinality: one
+      as: text
+    width:
+      description: Column width in grid units (1 unit is 64px)
+      the: xyz.tonk.column/width
+      cardinality: one
+      as: unsigned-integer
+    tile:
+      description: Tiles in this column
+      the: xyz.tonk.column/tile
+      cardinality: many
+      as: entity
+
+concept!: &tile
+  description: One tile in a column
+  with:
+    order:
+      description: Order key within the column
+      the: xyz.tonk.tile/order
+      cardinality: one
+      as: text
+    view:
+      description: View name to render the tile body with
+      the: xyz.tonk.tile/view
+      cardinality: one
+      as: text
+    model:
+      description: Concept name the tile body renders
+      the: xyz.tonk.tile/model
+      cardinality: one
+      as: text
+    entity:
+      description: Entity the tile body renders
+      the: xyz.tonk.tile/entity
+      cardinality: one
+      as: entity
+
+concept!: &inspector-view
+  description: An inspector tile body — renders <tonk-inspector source="…">
+  with:
+    source:
+      description: Space name to inspect (passed through as the source attribute)
+      the: xyz.tonk.inspector/source
+      cardinality: one
+      as: text
+
+# --- views --------------------------------------------------
+#
+# Three nested templates. Each iterates one level of the hierarchy
+# via `subject={field}` on the row root. The chain bottoms out in
+# a `<tonk-display>` that mounts whatever view the tile's entity
+# has.
+
+view!:
+  this: id:tonk-board/view/board-view-basic
+  model: board-view
+  name: "basic"
+  display: |
+    <tonk-strip>
+      <tonk-display entity={column} model=column-view view=basic />
+    </tonk-strip>
+
+view!:
+  this: id:tonk-board/view/column-view-basic
+  model: column-view
+  name: "basic"
+  display: |
+    <tonk-column style="--col-w: {width};">
+      <div class="tile" subject={tile}>
+        <tonk-display entity={tile} model=tile view=basic />
+      </div>
+    </tonk-column>
+
+view!:
+  this: id:tonk-board/view/tile-basic
+  model: tile
+  name: "basic"
+  display: |
+    <tonk-display entity={entity} model={model} view={view} />
+
+view!:
+  this: id:tonk-board/view/inspector-view-basic
+  model: inspector-view
+  name: "basic"
+  display: |
+    <tonk-inspector source={source} />
+
+# --- demo data ----------------------------------------------
+#
+# A single-tile `demo` board: one column with one tile hosting
+# `<tonk-inspector source="home">`. All entities use stable
+# `id:tonk-board/...` URIs so re-evaluating the bootstrap is
+# idempotent — the engine deduplicates the same claims rather
+# than minting fresh duplicates.
+
+inspector-view!:
+  this: id:tonk-board/demo/home-inspector
+  source: "home"
+
+tile!:
+  this: id:tonk-board/demo/tile-1
+  order: "a"
+  view: "basic"
+  model: "inspector-view"
+  entity: id:tonk-board/demo/home-inspector
+
+column-view!:
+  this: id:tonk-board/demo/col-a
+  order: "a"
+  width: 12
+  tile: id:tonk-board/demo/tile-1
+
+board-view!:
+  this: id:tonk-board/demo
+  name: "demo"
+  column: id:tonk-board/demo/col-a

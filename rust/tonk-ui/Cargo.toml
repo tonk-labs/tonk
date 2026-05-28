@@ -22,6 +22,7 @@ web-integration-tests = ["helpers", "dialog-common/integration-tests"]
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 console_error_panic_hook = { workspace = true }
+custom-elements = { workspace = true }
 futures-util = { workspace = true }
 js-sys = { workspace = true }
 leptos = { workspace = true, features = ["csr"] }
@@ -39,6 +40,7 @@ wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 bs58 = { workspace = true }
+tonk-board = { workspace = true }
 tonk-code = { workspace = true, features = ["web"] }
 tonk-concept = { workspace = true }
 tonk-display = { workspace = true }
