@@ -161,6 +161,7 @@ fn handle_query(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     if !state.borrow().disposed
         && let Some(cached) = state.borrow_mut().query_cache.get(&cache_key)
     {
+        tonk_common::log!("query-cache HIT (resolved) key={}", cache_key.body);
         let promise = future_to_promise(async move { parse_json_response(&cached) });
         let _ = Reflect::set(&detail, &JsValue::from_str("result"), &promise);
         return;
@@ -173,9 +174,12 @@ fn handle_query(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     if !state.borrow().disposed
         && let Some(pending) = state.borrow().query_cache.get_pending(&cache_key)
     {
+        tonk_common::log!("query-cache HIT (pending) key={}", cache_key.body);
         let _ = Reflect::set(&detail, &JsValue::from_str("result"), &pending);
         return;
     }
+
+    tonk_common::log!("query-cache MISS key={}", cache_key.body);
 
     let state_for_cache = state.clone();
     let cache_key_for_async = cache_key.clone();
