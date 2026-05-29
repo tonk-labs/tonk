@@ -100,8 +100,9 @@ pub struct BranchConfiguration {
     /// (see `tonk_macros::claim!`). Applied in one commit through
     /// the same reactor path as `/transact`, so effects run and
     /// subscribers are notified. Ignored on PUTs to an existing
-    /// repository, and omitted from the GET/PUT response.
-    #[serde(default, skip_serializing)]
+    /// repository. Skipped on the wire when absent — the read-side
+    /// response never populates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<TransactRequest>,
 }
 

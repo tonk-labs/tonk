@@ -105,7 +105,6 @@ concept!: &inspector-view
 # has.
 
 view!:
-  this: id:tonk-board/view/board-view-basic
   model: board-view
   name: "basic"
   display: |
@@ -114,7 +113,6 @@ view!:
     </tonk-strip>
 
 view!:
-  this: id:tonk-board/view/column-view-basic
   model: column-view
   name: "basic"
   display: |
@@ -125,14 +123,12 @@ view!:
     </tonk-column>
 
 view!:
-  this: id:tonk-board/view/tile-basic
   model: tile
   name: "basic"
   display: |
     <tonk-display entity={entity} model={model} view={view} />
 
 view!:
-  this: id:tonk-board/view/inspector-view-basic
   model: inspector-view
   name: "basic"
   display: |
@@ -146,24 +142,20 @@ view!:
 # idempotent — the engine deduplicates the same claims rather
 # than minting fresh duplicates.
 
-inspector-view!:
-  this: id:tonk-board/demo/home-inspector
+inspector-view!: &home-inspector
   source: "home"
 
-tile!:
-  this: id:tonk-board/demo/tile-1
+tile!: &inspector-tile
   order: "a"
   view: "basic"
-  model: "inspector-view"
-  entity: id:tonk-board/demo/home-inspector
+  model: inspector-view
+  entity: home-inspector
 
-column-view!:
-  this: id:tonk-board/demo/col-a
+column-view!: &demo-column
   order: "a"
   width: 12
-  tile: id:tonk-board/demo/tile-1
+  tile: inspector-tile
 
-board-view!:
-  this: id:tonk-board/demo
+board-view!: &demo-board
   name: "demo"
-  column: id:tonk-board/demo/col-a
+  column: demo-column

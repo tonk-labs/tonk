@@ -560,6 +560,48 @@ mod tests {
         })
     }
 
+    /// A cardinality-one `unsigned-integer` field (the column
+    /// `width`) must reach the change set as its EAV. Pins the
+    /// emit path against the live-branch symptom where a seeded
+    /// `width: 12` never lands on the column entity.
+    #[dialog_common::test]
+    fn it_emits_an_unsigned_integer_field() {
+        let descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "width": { "the": "xyz.tonk.column/width", "as": "UnsignedInteger", "cardinality": "one" }
+                }
+            }"#,
+        )
+        .unwrap();
+        let target: Entity = "did:key:zCol".parse().unwrap();
+        let mut terms = Parameters::new();
+        terms.insert("this".into(), Term::Constant(Value::Entity(target.clone())));
+        terms.insert("width".into(), Term::Constant(Value::UnsignedInt(12)));
+        let plan = ApplicationPlan::Concept(ConceptPlan {
+            statement: ConceptQuery {
+                terms,
+                predicate: descriptor,
+            },
+            name: None,
+        });
+
+        let mut changes = Changes::new();
+        plan.assert(&mut changes);
+
+        let width_attr: dialog_artifacts::Attribute = "xyz.tonk.column/width".parse().unwrap();
+        let saw_width = changes.into_instructions().into_iter().any(|inst| {
+            let artifact = match &inst {
+                Instruction::Assert(a) | Instruction::Replace(a) => a,
+                Instruction::Retract(_) => return false,
+            };
+            artifact.the == width_attr
+                && artifact.of == target
+                && artifact.is == Value::UnsignedInt(12)
+        });
+        assert!(saw_width, "emit dropped the unsigned-integer width EAV");
+    }
+
     /// Asserting an anchored plan emits the desugared `name!`
     /// claim on `id:<name>` (not on the body-derived target).
     #[dialog_common::test]
