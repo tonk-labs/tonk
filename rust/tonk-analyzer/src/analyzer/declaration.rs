@@ -12,7 +12,6 @@ use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
 use super::scope::Scope;
-use tonk_schema::concept::QueryEnv;
 use tonk_schema::resolution::AttributeDefinition;
 use tonk_schema::transact::{Application, ThisIntent};
 
@@ -175,10 +174,9 @@ pub(crate) struct ConceptBody {
     pub inline_attributes: Vec<AttributeBody>,
 }
 
-pub(crate) async fn parse_concept_body<Env: QueryEnv>(
+pub(crate) fn parse_concept_body(
     assertion: &SyntaxApplication,
-    scope: &Scope<'_>,
-    env: &Env,
+    scope: &Scope,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
@@ -224,8 +222,7 @@ pub(crate) async fn parse_concept_body<Env: QueryEnv>(
                         with_fields.push((sub.name.clone(), resolved));
                         inline_attributes.push(plan);
                     } else {
-                        let resolved =
-                            resolve_concept_field(&sub.name, &sub.value, scope, env).await?;
+                        let resolved = resolve_concept_field(&sub.name, &sub.value, scope)?;
                         with_fields.push((sub.name.clone(), resolved));
                     }
                 }
@@ -273,41 +270,26 @@ pub(crate) async fn parse_concept_body<Env: QueryEnv>(
     })
 }
 
-async fn resolve_concept_field<Env: QueryEnv>(
+/// Resolve one `with:`-map field reference to its
+/// [`AttributeDefinition`] from the [`Scope`] tables. The resolve
+/// phase has already populated those tables (in-doc declarations
+/// plus any branch attributes the graph batched), so this is a
+/// synchronous table read — a miss is an unknown-bookmark error.
+fn resolve_concept_field(
     field_name: &str,
     value: &FieldValue,
-    scope: &Scope<'_>,
-    env: &Env,
+    scope: &Scope,
 ) -> Result<AttributeDefinition, AnalyzeError> {
     match value {
-        FieldValue::Variable(name) => scope
-            .resolve_attribute(name, env)
-            .await
-            .map_err(|e| AnalyzeErrorKind::ResolverFailed {
-                context: format!("variable ?{name}"),
-                reason: e.to_string(),
-            })?
-            .ok_or_else(|| {
+        FieldValue::Variable(name) | FieldValue::Symbol(name) => {
+            scope.attribute(name).ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
                     field: field_name.into(),
                     bookmark: name.clone(),
                 }
                 .into()
-            }),
-        FieldValue::Symbol(name) => scope
-            .resolve_attribute(name, env)
-            .await
-            .map_err(|e| AnalyzeErrorKind::ResolverFailed {
-                context: format!("symbol {name}"),
-                reason: e.to_string(),
-            })?
-            .ok_or_else(|| {
-                AnalyzeErrorKind::UnknownBookmark {
-                    field: field_name.into(),
-                    bookmark: name.clone(),
-                }
-                .into()
-            }),
+            })
+        }
         FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
@@ -317,20 +299,13 @@ async fn resolve_concept_field<Env: QueryEnv>(
                             reason: e.to_string(),
                         }
                     })?;
-            scope
-                .resolve_attribute_by_entity(&entity, env)
-                .await
-                .map_err(|e| AnalyzeErrorKind::ResolverFailed {
-                    context: format!("attribute entity {uri}"),
-                    reason: e.to_string(),
-                })?
-                .ok_or_else(|| {
-                    AnalyzeErrorKind::UnknownBookmark {
-                        field: field_name.into(),
-                        bookmark: uri.clone(),
-                    }
-                    .into()
-                })
+            scope.attribute_by_entity(&entity).ok_or_else(|| {
+                AnalyzeErrorKind::UnknownBookmark {
+                    field: field_name.into(),
+                    bookmark: uri.clone(),
+                }
+                .into()
+            })
         }
         _ => Err(AnalyzeErrorKind::UnsupportedFieldValue {
             field: field_name.into(),

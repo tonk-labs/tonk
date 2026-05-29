@@ -41,6 +41,7 @@ mod declaration;
 mod error;
 mod field;
 mod formula;
+mod graph;
 mod query;
 mod rule;
 mod scan;
@@ -65,21 +66,14 @@ pub use error::{
 pub use formula::{FormulaCompletion, formula_completions};
 pub use scan::scan_variables;
 
-use tonk_core::claim::ConceptDescriptor as DurableConceptDescriptor;
 use tonk_schema::concept::QueryEnv;
 use tonk_schema::query_source::Source;
-use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
 
-use assertion::{body_digest, build_assertion_application, derive_head_intent};
-use declaration::{
-    DeclaredApplication, attribute_application, concept_application, parse_attribute_body,
-    parse_concept_body,
-};
+use assertion::build_assertion_application;
 use dialog_artifacts::Entity;
 use field::collect_unbound_variables;
 use query::build_query_application;
 use scope::Scope;
-use tonk_schema::prelude::EntityExt;
 
 /// The analyzer's per-pass working state — the scratch `expand`
 /// reads and mutates as it walks the document.
@@ -128,6 +122,66 @@ pub fn analyze<'s, 'a>(syntax: &'s Syntax, source: Source<'a>) -> Analyze<'s, 'a
     Analyze { syntax, source }
 }
 
+/// Analyze a self-contained document with no running system —
+/// every reference must resolve against the document's own
+/// `concept!` / `attribute!` / `&anchor` definitions (plus
+/// builtins). A reference that would need a branch lookup surfaces
+/// as an unknown-concept / unknown-bookmark error rather than
+/// being resolved.
+///
+/// Synchronous: the resolution plumbing is run with no `env`, so
+/// it never awaits a branch query. Used by the compile-time
+/// `claim!` macro, which has no running system to resolve against.
+pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
+    if syntax.expressions.is_empty() {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::EmptyDocument,
+            syntax.range,
+        ));
+    }
+
+    // push → resolve(LocalOnly) → build. The graph's resolve phase
+    // is genuinely synchronous when the resolver does no IO:
+    // `LocalOnly` answers every external need with `None` without
+    // awaiting, so the future is `Ready` on first poll. Drive it
+    // with a no-op waker rather than pull in an executor — but
+    // unlike the old path this is a property of `LocalOnly`, not a
+    // fragile assumption about every prefetch short-circuiting.
+    let scope = Scope::new();
+    let graph = graph::push(syntax, &scope)?;
+    let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
+    expand(syntax, &scope, resolved)
+}
+
+/// Drive a future that performs no real IO to completion on the
+/// current thread. The only caller is [`analyze_local`] with a
+/// [`graph::LocalOnly`] resolver, whose every method returns
+/// immediately — so the future is `Ready` on first poll. Panics if
+/// it ever yields `Pending`, which would mean a resolver awaited IO
+/// it shouldn't have.
+fn poll_ready<F: std::future::Future<Output = Result<graph::Resolved, AnalyzeError>>>(
+    fut: F,
+) -> Result<graph::Resolved, AnalyzeError> {
+    use std::pin::pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    let mut fut = pin!(fut);
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(std::ptr::null(), &VTABLE),
+        |_| {},
+        |_| {},
+        |_| {},
+    );
+    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+    let mut cx = Context::from_waker(&waker);
+    match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => result,
+        Poll::Pending => {
+            unreachable!("local analysis must not await: LocalOnly resolver never hits the branch")
+        }
+    }
+}
+
 /// Chain handle returned by [`analyze`]. Holds the syntax and the
 /// source until [`perform`](Self::perform) consumes them with an
 /// `env`.
@@ -157,194 +211,12 @@ impl<'s, 'a> Analyze<'s, 'a> {
             ));
         }
 
-        let scope = Scope::new(source);
-        let resolved = resolve(syntax, &scope, env).await?;
-        expand(syntax, &scope, env, resolved).await
+        let scope = Scope::new();
+        let graph = graph::push(syntax, &scope)?;
+        let resolver = graph::BranchResolver::new(source, env);
+        let resolved = graph.resolve(syntax, &scope, &resolver).await?;
+        expand(syntax, &scope, resolved)
     }
-}
-
-/// The product of the **resolve** sub-phase — everything `expand`
-/// needs from the resolution walk, beyond the [`Scope`] that
-/// `resolve` mutated in place.
-struct Resolved {
-    /// For `attribute!` / `concept!` heads, the `Application`
-    /// already built from the parsed body, stashed by
-    /// source-expression index so `expand` just emits it.
-    declared: HashMap<usize, DeclaredApplication>,
-    /// Variable-scan diagnostics with source spans.
-    diagnostics: Vec<AnalyzeDiagnostic>,
-}
-
-/// **resolve** — walk the document, bind every concept /
-/// attribute reference through the [`Scope`]'s resolution chain
-/// (which calls into [`tonk_schema::resolution`] with `env`), and
-/// record the content-derived entities into the [`Scope`]
-/// (`declarations` for anchor-form heads, `variables` for
-/// variable-form heads).
-///
-/// For `attribute!` / `concept!` heads the body is parsed here:
-/// the descriptor's content-addressed entity has to be known
-/// before the head can be declared, and parsing the body is what
-/// computes it. Building the desugared `Application` for those
-/// heads is `expand`'s job, but it cannot be cleanly split from
-/// the parse — `parse_attribute_body` / `parse_concept_body`
-/// already produce the descriptor `expand` would build from — so
-/// the eager `attribute_application` / `concept_application`
-/// calls stay here, stashed in [`Resolved::declared`] for `expand`
-/// to emit. This is the one place resolve and expand genuinely
-/// interleave.
-async fn resolve<Env: QueryEnv + ConditionalSync>(
-    syntax: &Syntax,
-    scope: &Scope<'_>,
-    env: &Env,
-) -> Result<Resolved, AnalyzeError> {
-    let mut declared: HashMap<usize, DeclaredApplication> = HashMap::new();
-
-    for (index, expression) in syntax.expressions.iter().enumerate() {
-        let (head, has_effect) = match expression {
-            Expression::Query(q) => (&q.predicate, false),
-            Expression::Claim(c) => (&c.inner.predicate, true),
-        };
-
-        // Meta heads carry their entity in the descriptor, which
-        // requires parsing the body. Do it here so the entity
-        // can land in declarations/variables.
-        if has_effect && let HeadName::Concept(name) = &head.name {
-            match name.as_str() {
-                "attribute" => {
-                    let (assertion, anchor) = match expression {
-                        Expression::Claim(Effectful { anchor, inner: a }) => (a, anchor.as_ref()),
-                        _ => continue,
-                    };
-                    let plan = parse_attribute_body(assertion)?;
-                    let entity = plan.entity.clone();
-                    let attribute = AttributeDefinition {
-                        entity: entity.clone(),
-                        descriptor: plan.descriptor.clone(),
-                    };
-                    let (this, name) =
-                        derive_head_intent(&assertion.fields, anchor, scope, env).await?;
-                    let variable = match &this {
-                        ThisIntent::Variable(v) => Some(v.clone()),
-                        _ => None,
-                    };
-                    let anchor_range = anchor.map(|a| a.range).unwrap_or(assertion.predicate.range);
-                    let variable_range = assertion
-                        .fields
-                        .iter()
-                        .find(|f| f.name == "this")
-                        .map(|f| f.value_range)
-                        .unwrap_or(assertion.predicate.range);
-                    if let Some(name) = &name {
-                        scope.declare(name, entity.clone(), anchor_range)?;
-                    }
-                    if let Some(name) = &variable {
-                        scope.bind_variable(name, entity.clone(), variable_range)?;
-                    }
-                    scope.record_attribute(name.as_deref().or(variable.as_deref()), attribute);
-                    let application = attribute_application(&plan.descriptor, &entity, name);
-                    declared.insert(
-                        index,
-                        DeclaredApplication {
-                            application,
-                            inline_attributes: Vec::new(),
-                        },
-                    );
-                    continue;
-                }
-                "concept" => {
-                    // The body references attributes via
-                    // bare-symbol / URIs that may live in either
-                    // the in-doc map or the branch, so concept
-                    // body parsing goes through the resolver.
-                    let (assertion, anchor) = match expression {
-                        Expression::Claim(Effectful { anchor, inner: a }) => (a, anchor.as_ref()),
-                        _ => continue,
-                    };
-                    let plan = parse_concept_body(assertion, scope, env).await?;
-                    let entity = plan.entity.clone();
-                    let descriptor = if plan.transient {
-                        DurableConceptDescriptor::Transient(plan.descriptor.clone())
-                    } else {
-                        DurableConceptDescriptor::Durable(plan.descriptor.clone())
-                    };
-                    let concept = ConceptDefinition {
-                        entity: entity.clone(),
-                        descriptor,
-                    };
-                    let (this, name) =
-                        derive_head_intent(&assertion.fields, anchor, scope, env).await?;
-                    let variable = match &this {
-                        ThisIntent::Variable(v) => Some(v.clone()),
-                        _ => None,
-                    };
-                    let anchor_range = anchor.map(|a| a.range).unwrap_or(assertion.predicate.range);
-                    let variable_range = assertion
-                        .fields
-                        .iter()
-                        .find(|f| f.name == "this")
-                        .map(|f| f.value_range)
-                        .unwrap_or(assertion.predicate.range);
-                    if let Some(name) = &name {
-                        scope.declare(name, entity.clone(), anchor_range)?;
-                    }
-                    if let Some(name) = &variable {
-                        scope.bind_variable(name, entity.clone(), variable_range)?;
-                    }
-                    scope.record_concept(name.as_deref().or(variable.as_deref()), concept);
-                    // Inline attrs declared inside the concept's
-                    // `with:` map publish no name — the concept's
-                    // local field key is not a global label for
-                    // the attribute entity.
-                    let inline_attributes: Vec<Application> = plan
-                        .inline_attributes
-                        .into_iter()
-                        .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
-                        .collect();
-                    let application =
-                        concept_application(&plan.descriptor, &entity, name, plan.transient);
-                    declared.insert(
-                        index,
-                        DeclaredApplication {
-                            application,
-                            inline_attributes,
-                        },
-                    );
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // Non-meta heads with `&anchor`: register the
-        // declaration in `scope.declarations` so subsequent
-        // expressions in the same document can resolve
-        // `this: <anchor-name>` (or use the bare symbol in
-        // field position) to the body-derived entity.
-        //
-        // The same registration happens again in `expand`'s
-        // mutation pass via `this_term_for_assertion`'s
-        // `Derived + name` branch (it's the source of truth for
-        // `analysis.declarations`), but that pass runs after the
-        // query build, which is too late for in-doc symbol
-        // resolution. Pre-registering here keeps doc-order
-        // semantics consistent. The two computations agree on the
-        // entity because `body_digest` is a pure function of the
-        // field literals.
-        if let Expression::Claim(Effectful {
-            anchor: Some(anchor),
-            inner: a,
-        }) = expression
-        {
-            let entity = Entity::of(&body_digest(&a.fields));
-            scope.declare(&anchor.name, entity, anchor.range)?;
-        }
-    }
-
-    Ok(Resolved {
-        declared,
-        diagnostics: scan::scan_variables(syntax),
-    })
 }
 
 /// **expand** — lower the resolved document's notation sugar into
@@ -365,16 +237,13 @@ async fn resolve<Env: QueryEnv + ConditionalSync>(
 /// snapshot queries. Every lowering is terminal — it emits only
 /// resolved entities and substituted terms — so `expand`'s output
 /// never needs re-resolution.
-async fn expand<Env: QueryEnv + ConditionalSync>(
+fn expand(
     syntax: &Syntax,
-    scope: &Scope<'_>,
-    env: &Env,
-    resolved: Resolved,
+    scope: &Scope,
+    resolved: graph::Resolved,
 ) -> Result<Tree<Syntax>, AnalyzeError> {
-    let Resolved {
-        mut declared,
-        diagnostics,
-    } = resolved;
+    let graph::Resolved { mut declared } = resolved;
+    let diagnostics = scan::scan_variables(syntax);
 
     // The `Working` scratch carries the cross-pass accumulator
     // state: the query and mutation passes read it as they build
@@ -397,7 +266,7 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
     // ---- query pass: build query Applications ----
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
-            let application = build_query_application(q, scope, env, &working).await?;
+            let application = build_query_application(q, scope, &working)?;
             working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
                 source: QueryNode { source: q.clone() },
@@ -465,7 +334,7 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                     // on retract).
                     predicate = Predicate::Domain(a.predicate.source.clone());
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
-                    match rule::lift_rule_claim(a, scope, env, &working).await? {
+                    match rule::lift_rule_claim(a, scope, &working)? {
                         Some(rule::RuleAction::Install {
                             rule,
                             this: install_at,
@@ -530,14 +399,8 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                     // signature unchanged — the body still reads
                     // `assertion.fields` only, since the anchor
                     // affects naming downstream.
-                    let plan = build_assertion_application(
-                        a,
-                        anchor_node.as_ref(),
-                        scope,
-                        env,
-                        &mut working,
-                    )
-                    .await?;
+                    let plan =
+                        build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)?;
                     let probe = plan.assert.as_ref().or(plan.retract.as_ref());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
@@ -1111,6 +974,47 @@ mod tests {
     async fn analyze_empty(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
         let fixture = new_fixture().await;
         fixture.analyze(syntax).await
+    }
+
+    /// An instance head's `&anchor` must be resolvable by a later
+    /// field reference in the same document, under both the full
+    /// (branch-backed) pipeline and the env-free local path.
+    #[dialog_common::test]
+    fn it_resolves_an_instance_anchor_referenced_by_a_later_field() {
+        let syntax = must_parse(
+            "\
+concept!: &thing
+  description: \"a thing\"
+  with:
+    source:
+      description: \"src\"
+      the: x.y/source
+      cardinality: one
+      as: text
+
+thing!: &my-thing
+  source: \"home\"
+
+concept!: &holder
+  description: \"holds\"
+  with:
+    target:
+      description: \"e\"
+      the: x.y/target
+      cardinality: one
+      as: entity
+
+holder!: &my-holder
+  target: my-thing
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(
+            result.is_ok(),
+            "analyze_local should resolve the `my-thing` anchor referenced \
+             by the later `holder!` field: {:?}",
+            result.err(),
+        );
     }
 
     /// A small concept spec the tests pass into [`analyze_with`]:

@@ -25,6 +25,7 @@ use std::rc::Rc;
 
 use crate::error::{ErrorDetail, ErrorKind};
 use crate::sse::open_sse;
+use ipld_core::ipld::Ipld;
 use js_sys::{Function, Object, Promise, Reflect};
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
@@ -55,16 +56,16 @@ pub(crate) fn attach_all(
     let host: Element = this.clone().into();
     let mut listeners = Vec::new();
     listeners.push(install_listener(&host, events::QUERY, {
-        let _state = state.clone();
-        move |ev| handle_query(&ev)
+        let state = state.clone();
+        move |ev| handle_query(&ev, &state)
     }));
     listeners.push(install_listener(&host, events::CLAIM, {
-        let _state = state.clone();
-        move |ev| handle_claim(&ev)
+        let state = state.clone();
+        move |ev| handle_claim(&ev, &state)
     }));
     listeners.push(install_listener(&host, events::EVALUATE, {
-        let _state = state.clone();
-        move |ev| handle_evaluate(&ev)
+        let state = state.clone();
+        move |ev| handle_evaluate(&ev, &state)
     }));
     listeners.push(install_listener(&host, events::SUBSCRIBE, {
         let state = state.clone();
@@ -113,9 +114,10 @@ where
 /// `tonk-query` handler.
 ///
 /// Reads `detail.space`, `detail.branch`, `detail.query`. POSTs
-/// `detail.query` to the structured-query endpoint. Resolves the
-/// returned `Vec<Conclusion>` into `detail.result`.
-fn handle_query(ev: &CustomEvent) {
+/// `detail.query` to the structured-query endpoint, or returns a
+/// cached response from the host's query LRU. Resolves the
+/// `Vec<Conclusion>` into `detail.result`.
+fn handle_query(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     claim_event(ev);
     let detail = match ev.detail().dyn_into::<Object>() {
         Ok(o) => o,
@@ -136,7 +138,7 @@ fn handle_query(ev: &CustomEvent) {
             return;
         }
     };
-    let body_str = match js_to_json_string(&query_val) {
+    let body_str = match js_to_canonical_dag_json(&query_val) {
         Ok(s) => s,
         Err(e) => {
             install_rejected_promise(&detail, e);
@@ -144,12 +146,76 @@ fn handle_query(ev: &CustomEvent) {
         }
     };
 
+    // `body_str` is already canonical dag-json, so the same
+    // semantic query always produces the same cache key.
+    let cache_key = crate::query_cache::Key {
+        space: space.clone(),
+        branch: branch.clone(),
+        body: body_str.clone(),
+    };
+
+    // Cache hit (resolved response): resolve the promise
+    // synchronously with the previously-fetched body. We still
+    // go through `future_to_promise` so the consumer's `await`
+    // semantics are uniform.
+    if !state.borrow().disposed
+        && let Some(cached) = state.borrow_mut().query_cache.get(&cache_key)
+    {
+        tonk_common::log!("query-cache HIT (resolved) key={}", cache_key.body);
+        let promise = future_to_promise(async move { parse_json_response(&cached) });
+        let _ = Reflect::set(&detail, &JsValue::from_str("result"), &promise);
+        return;
+    }
+
+    // In-flight hit: a previous query with the same key is
+    // already on the wire. Reuse its Promise so multiple
+    // displays mounting in parallel share one HTTP round-trip
+    // instead of stampeding the worker.
+    if !state.borrow().disposed
+        && let Some(pending) = state.borrow().query_cache.get_pending(&cache_key)
+    {
+        tonk_common::log!("query-cache HIT (pending) key={}", cache_key.body);
+        let _ = Reflect::set(&detail, &JsValue::from_str("result"), &pending);
+        return;
+    }
+
+    tonk_common::log!("query-cache MISS key={}", cache_key.body);
+
+    let state_for_cache = state.clone();
+    let cache_key_for_async = cache_key.clone();
     let promise = future_to_promise(async move {
-        match http::post_json(&url, &body_str).await {
-            Ok(json_text) => parse_json_response(&json_text),
+        let result = http::post_json(&url, &body_str).await;
+        // Always clear the in-flight entry once the network
+        // settles — success populates the resolved cache below,
+        // failure leaves nothing behind so a retry can try
+        // again.
+        if !state_for_cache.borrow().disposed {
+            state_for_cache
+                .borrow_mut()
+                .query_cache
+                .clear_pending(&cache_key_for_async);
+        }
+        match result {
+            Ok(json_text) => {
+                if !state_for_cache.borrow().disposed {
+                    state_for_cache
+                        .borrow_mut()
+                        .query_cache
+                        .put(cache_key_for_async, json_text.clone());
+                }
+                parse_json_response(&json_text)
+            }
             Err(e) => Err(error_to_js(&e)),
         }
     });
+    // Stash the in-flight Promise so concurrent dispatches see
+    // it before the network settles.
+    if !state.borrow().disposed {
+        state
+            .borrow_mut()
+            .query_cache
+            .put_pending(cache_key, JsValue::from(promise.clone()));
+    }
     let _ = Reflect::set(&detail, &JsValue::from_str("result"), &promise);
 }
 
@@ -169,17 +235,23 @@ fn get_string(detail: &Object, key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Serialize a JS value to JSON text via `serde_json::Value` so
-/// the round-trip uses serde conventions (HashMap → plain object,
-/// not JS Map). `JSON.stringify` on a `serde_wasm_bindgen`-produced
-/// value loses entries for HashMap/BTreeMap fields because they
-/// serialize to JS `Map` objects, which `JSON.stringify` flattens
-/// to `{}`.
-fn js_to_json_string(v: &JsValue) -> Result<String, ErrorDetail> {
-    let value: serde_json::Value = serde_wasm_bindgen::from_value(v.clone())
+/// Serialize a JS value as canonical DAG-JSON text. Goes
+/// `JsValue → Ipld` via `serde-wasm-bindgen` (the only
+/// adapter that knows how to project JS `Map`s and typed
+/// arrays into the IPLD data model), then `Ipld → bytes`
+/// via `serde_ipld_dagjson`. DAG-JSON sorts map keys
+/// deterministically and has a stable number/string
+/// encoding, so two semantically equal queries always
+/// produce the same text — usable both as the HTTP body
+/// and as the cache key without a second canonicalisation
+/// pass.
+fn js_to_canonical_dag_json(v: &JsValue) -> Result<String, ErrorDetail> {
+    let value: Ipld = serde_wasm_bindgen::from_value(v.clone())
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("detail.query: {e}")))?;
-    serde_json::to_string(&value)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("stringify: {e}")))
+    let bytes = serde_ipld_dagjson::to_vec(&value)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("dag-json: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("dag-json utf8: {e}")))
 }
 
 /// Parse the worker's JSON response body into a `Vec<Conclusion>`
@@ -204,7 +276,10 @@ fn error_to_js(err: &ErrorDetail) -> JsValue {
 /// Reads `detail.space`, `detail.branch`, `detail.request`.
 /// POSTs the structured `TransactRequest` to the `/transact`
 /// endpoint. Resolves the parsed response into `detail.result`.
-fn handle_claim(ev: &CustomEvent) {
+/// Invalidates the query cache for the affected branch so a
+/// claim that changes concept descriptors doesn't leave stale
+/// phase-1 results in memory.
+fn handle_claim(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     claim_event(ev);
     let detail = match ev.detail().dyn_into::<Object>() {
         Ok(o) => o,
@@ -214,6 +289,13 @@ fn handle_claim(ev: &CustomEvent) {
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
     let url = transact_url(space.as_deref(), branch.as_deref());
+
+    if !state.borrow().disposed {
+        state
+            .borrow_mut()
+            .query_cache
+            .invalidate_branch(space.as_deref(), branch.as_deref());
+    }
 
     let request_val = match Reflect::get(&detail, &JsValue::from_str("request")) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
@@ -225,7 +307,7 @@ fn handle_claim(ev: &CustomEvent) {
             return;
         }
     };
-    let body_str = match js_to_json_string(&request_val) {
+    let body_str = match js_to_canonical_dag_json(&request_val) {
         Ok(s) => s,
         Err(e) => {
             install_rejected_promise(&detail, e);
@@ -269,7 +351,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
         _ => return,
     };
-    let query_json: serde_json::Value = match serde_wasm_bindgen::from_value(query_val.clone()) {
+    let query_ipld: Ipld = match serde_wasm_bindgen::from_value(query_val.clone()) {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -301,10 +383,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     let consumer_for_spawn = consumer.clone();
     let tag_for_spawn = tag_js.clone();
     spawn_local(async move {
-        let body = match serde_json::to_value(&query_json) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
+        let body = query_ipld;
         let consumer_frame = consumer_for_spawn.clone();
         let tag_frame = tag_for_spawn.clone();
         let consumer_err = consumer_for_spawn.clone();
@@ -496,7 +575,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
 
     // Re-open the SSE. Same shape as `handle_subscribe` but
     // against the new url, reusing the stored query + tag.
-    let body_json: serde_json::Value = match serde_wasm_bindgen::from_value(query.clone()) {
+    let body_ipld: Ipld = match serde_wasm_bindgen::from_value(query.clone()) {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -507,7 +586,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     let tag_err = tag.clone();
     let abort_result = open_sse(
         &url,
-        &body_json,
+        &body_ipld,
         move |frame: &str| {
             if !consumer_frame.is_connected() {
                 return;
@@ -621,7 +700,9 @@ fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Optio
 /// Reads `detail.space`, `detail.branch`, `detail.document`.
 /// POSTs the raw asserted-notation text to the `/evaluate`
 /// endpoint. Resolves the parsed response into `detail.result`.
-fn handle_evaluate(ev: &CustomEvent) {
+/// Invalidates the query cache for the affected branch since an
+/// evaluate document can introduce or mutate concepts.
+fn handle_evaluate(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     claim_event(ev);
     let detail = match ev.detail().dyn_into::<Object>() {
         Ok(o) => o,
@@ -631,6 +712,13 @@ fn handle_evaluate(ev: &CustomEvent) {
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
     let url = evaluate_url(space.as_deref(), branch.as_deref());
+
+    if !state.borrow().disposed {
+        state
+            .borrow_mut()
+            .query_cache
+            .invalidate_branch(space.as_deref(), branch.as_deref());
+    }
 
     let document = match Reflect::get(&detail, &JsValue::from_str("document"))
         .ok()

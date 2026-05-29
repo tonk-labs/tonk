@@ -4,7 +4,10 @@
 
 use std::collections::BTreeMap;
 
+use dialog_artifacts::Value;
 use dialog_query::{Any, ConceptConclusion, Parameters, Term};
+use ipld_core::ipld::Ipld;
+use ipld_core::serde::to_ipld;
 use serde::{Deserialize, Serialize};
 
 /// Serializable projection of a [`ConceptConclusion`] — the
@@ -15,10 +18,11 @@ pub struct Conclusion {
     /// Entity URI of the matched concept (`did:key:…` etc.).
     pub this: String,
     /// Field values keyed by term name from the query. Each value
-    /// is the raw `dialog_artifacts::Value` serialized via its
-    /// `serde::Serialize` impl (untagged enum — strings, numbers,
-    /// bools, entity URIs, byte buffers).
-    pub fields: BTreeMap<String, serde_json::Value>,
+    /// is the raw `dialog_artifacts::Value` serialized into the
+    /// IPLD data model — strings, integers, floats, bools, byte
+    /// buffers — so the wire encoding stays codec-agnostic
+    /// (dag-json on the browser hop, dag-cbor for storage).
+    pub fields: BTreeMap<String, Ipld>,
 }
 
 impl Conclusion {
@@ -37,12 +41,12 @@ impl Conclusion {
         let mut fields = BTreeMap::new();
         for (name, term) in terms.iter() {
             let value = match term {
-                Term::Constant(value) => serde_json::to_value(value).ok(),
+                Term::Constant(value) => value_to_ipld(value),
                 Term::Variable { .. } => conclusion
                     .source()
                     .lookup(&Term::<Any>::var(name.clone()))
                     .ok()
-                    .and_then(|v| serde_json::to_value(&v).ok()),
+                    .and_then(|v| value_to_ipld(&v)),
             };
             if let Some(value) = value {
                 fields.insert(name.clone(), value);
@@ -52,5 +56,57 @@ impl Conclusion {
             this: conclusion.entity().to_string(),
             fields,
         }
+    }
+}
+
+/// Convert a [`Value`] into [`Ipld`] for the wire projection.
+///
+/// `ipld_core`'s serde serializer rejects `u128` outright, so the
+/// derived [`Value`] serialization drops every
+/// [`Value::UnsignedInt`] field on the floor (it serializes as
+/// `serialize_u128`, which errors). Map unsigned integers that fit
+/// in `i128` to [`Ipld::Integer`] directly; values past `i128::MAX`
+/// fall back to a decimal string so they survive the hop rather
+/// than vanishing. Every other variant routes through the derived
+/// serialization, which handles them.
+fn value_to_ipld(value: &Value) -> Option<Ipld> {
+    match value {
+        Value::UnsignedInt(u) => Some(match i128::try_from(*u) {
+            Ok(i) => Ipld::Integer(i),
+            Err(_) => Ipld::String(u.to_string()),
+        }),
+        other => to_ipld(other).ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// An unsigned-integer field (the column `width`) must survive
+    /// projection. `ipld_core`'s serde path errors on `u128`, so
+    /// the derived `Value` serialization silently drops it — which
+    /// is why a seeded `width` never reached the board renderer.
+    #[dialog_common::test]
+    fn it_projects_an_unsigned_integer_value() {
+        assert_eq!(
+            value_to_ipld(&Value::UnsignedInt(40)),
+            Some(Ipld::Integer(40)),
+        );
+    }
+
+    /// A signed integer round-trips through the derived path
+    /// unchanged — the regression was unsigned-only.
+    #[dialog_common::test]
+    fn it_projects_a_signed_integer_value() {
+        assert_eq!(
+            value_to_ipld(&Value::SignedInt(-7)),
+            Some(Ipld::Integer(-7)),
+        );
     }
 }

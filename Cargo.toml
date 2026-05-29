@@ -3,6 +3,7 @@
 members = [
     "rust/tonk-access-service",
     "rust/tonk-analyzer",
+    "rust/tonk-board",
     "rust/tonk-code",
     "rust/tonk-common",
     "rust/tonk-concept",
@@ -13,6 +14,7 @@ members = [
     "rust/tonk-invite",
     "rust/tonk-layout",
     "rust/tonk-language-server",
+    "rust/tonk-macros",
     "rust/tonk-notation",
     "rust/slide",
     "rust/tonk-schema",
@@ -31,6 +33,7 @@ edition = "2024"
 [workspace.dependencies]
 tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
+tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-concept = { path = "./rust/tonk-concept" }
@@ -41,6 +44,7 @@ tonk-host = { path = "./rust/tonk-host" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-layout = { path = "./rust/tonk-layout" }
+tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
@@ -96,7 +100,11 @@ serde_bytes = "0.11"
 serde_json = "1"
 serde_yaml = "0.9"
 serde_ipld_dagcbor = "0.6"
+serde_ipld_dagjson = "0.2"
 sha2_0_10 = { package = "sha2", version = "0.10" }
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
 tempfile = "3"
 thirtyfour = "0.36"
 thiserror = "2"

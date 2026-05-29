@@ -12,42 +12,28 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use tonk_schema::concept::QueryEnv;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
-pub(crate) async fn build_query_application<Env: QueryEnv>(
+pub(crate) fn build_query_application(
     query: &SyntaxApplication,
-    scope: &Scope<'_>,
-    env: &Env,
+    scope: &Scope,
     analysis: &Working,
 ) -> Result<Application, AnalyzeError> {
     // Queries can't carry an `&anchor` (parser rejects that), so
     // intent derivation only inspects `this:`. The returned name
     // is always `None` here.
-    let (this, _name) = derive_head_intent(&query.fields, None, scope, env).await?;
+    let (this, _name) = derive_head_intent(&query.fields, None, scope)?;
     let head_range = query.predicate.range;
     match &query.predicate.name {
         HeadName::Concept(concept_name) => {
-            let resolved = scope
-                .resolve_concept(concept_name, env)
-                .await
-                .map_err(|e| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::ResolverFailed {
-                            context: format!("concept {concept_name:?}"),
-                            reason: e.to_string(),
-                        },
-                        head_range,
-                    )
-                })?
-                .ok_or_else(|| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::UnknownConcept {
-                            name: concept_name.clone(),
-                        },
-                        head_range,
-                    )
-                })?;
+            let resolved = scope.concept(concept_name).ok_or_else(|| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::UnknownConcept {
+                        name: concept_name.clone(),
+                    },
+                    head_range,
+                )
+            })?;
             // Queries don't carry durability — unwrap the plain
             // dialog descriptor from the durability-tagged
             // [`ConceptDefinition`].
@@ -62,18 +48,14 @@ pub(crate) async fn build_query_application<Env: QueryEnv>(
                 // `person:` reads the same as
                 // `person:\n  name: ?name\n  age: ?age`.
                 let term = match query.fields.iter().find(|f| f.name == *field_name) {
-                    Some(field) => {
-                        field_value_to_term(
-                            field_name,
-                            &field.value,
-                            field.value_range,
-                            scope,
-                            env,
-                            analysis,
-                            attr.content_type(),
-                        )
-                        .await?
-                    }
+                    Some(field) => field_value_to_term(
+                        field_name,
+                        &field.value,
+                        field.value_range,
+                        scope,
+                        analysis,
+                        attr.content_type(),
+                    )?,
                     None => Term::<dialog_query::Any>::var(field_name),
                 };
                 terms.insert(field_name.into(), term);
@@ -132,11 +114,9 @@ pub(crate) async fn build_query_application<Env: QueryEnv>(
                     &field.value,
                     field.value_range,
                     scope,
-                    env,
                     analysis,
                     None,
-                )
-                .await?;
+                )?;
                 parameters.insert(field.name.clone(), term);
             }
             Ok(Application::Domain {

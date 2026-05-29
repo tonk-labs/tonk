@@ -22,10 +22,12 @@ port = 8080
 watch = [
     "./",
     "../tonk-common",
+    "../tonk-core",
     "../tonk-worker",
     "../tonk-language-server",
     "../tonk-schema",
     "../tonk-notation",
+    "../tonk-board",
     "../tonk-concept",
     "../tonk-display",
     "../tonk-host",

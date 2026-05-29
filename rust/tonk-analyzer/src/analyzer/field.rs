@@ -12,7 +12,6 @@ use tonk_notation::{FieldValue, Scalar};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use tonk_schema::concept::QueryEnv;
 use tonk_schema::transact::Application;
 
 /// Reserved body field names that don't correspond to schema
@@ -37,12 +36,11 @@ pub(crate) fn is_meta_field(name: &str) -> bool {
 /// field declared `as: unsigned-integer` needs schema-directed
 /// coercion. Pass `None` for slots with no declared type (`this`,
 /// claim attributes, formula operands).
-pub(crate) async fn field_value_to_term<Env: QueryEnv>(
+pub(crate) fn field_value_to_term(
     field_name: &str,
     value: &FieldValue,
     range: lsp_types::Range,
-    scope: &Scope<'_>,
-    env: &Env,
+    scope: &Scope,
     analysis: &Working,
     expected: Option<Type>,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
@@ -61,38 +59,11 @@ pub(crate) async fn field_value_to_term<Env: QueryEnv>(
             }
         }
         FieldValue::Symbol(name) => {
-            // Bare lowercase symbol — name-table lookup. Same
-            // resolution order as the old `.bookmark` form:
-            //   1. Doc-local declarations (head anchor from the
-            //      same document — `concept!: &foo` or
-            //      `attribute!: &foo`).
-            //   2. Doc-local attribute by name.
-            //   3. Branch entity with `dialog.meta/name = name`.
-            if let Some(entity) = scope.lookup_entity(name) {
-                Term::Constant(Value::Entity(entity))
-            } else if let Some(resolved) =
-                scope.resolve_attribute(name, env).await.map_err(|e| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::ResolverFailed {
-                            context: format!("symbol {name}"),
-                            reason: e.to_string(),
-                        },
-                        range,
-                    )
-                })?
-            {
-                Term::Constant(Value::Entity(resolved.entity))
-            } else if let Some(entity) =
-                scope.resolve_named_entity(name, env).await.map_err(|e| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::ResolverFailed {
-                            context: format!("symbol {name}"),
-                            reason: e.to_string(),
-                        },
-                        range,
-                    )
-                })?
-            {
+            // Bare lowercase symbol — sync name-table lookup. The
+            // table was populated during the resolve pass (in-doc
+            // declarations, plus any branch entities prefetched up
+            // front), so resolution here never touches the branch.
+            if let Some(entity) = scope.symbol(name) {
                 Term::Constant(Value::Entity(entity))
             } else {
                 return Err(AnalyzeError::at(

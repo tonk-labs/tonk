@@ -401,6 +401,7 @@ mod dom {
     use std::collections::BTreeMap;
 
     use indexmap::IndexMap;
+    use ipld_core::ipld::Ipld;
     use web_sys::{DocumentFragment, Element, HtmlTemplateElement, Node, NodeList, window};
 
     use super::{Binding, BindingKind, BindingPlan, Segment, has_field, parse_segments};
@@ -677,7 +678,7 @@ mod dom {
     pub fn render_segments(
         segments: &[Segment],
         row_this: &str,
-        row_fields: &BTreeMap<String, serde_json::Value>,
+        row_fields: &BTreeMap<String, Ipld>,
     ) -> String {
         render_segments_with_shadow(segments, row_this, row_fields, &BTreeMap::new())
     }
@@ -690,8 +691,8 @@ mod dom {
     pub fn render_segments_with_shadow(
         segments: &[Segment],
         row_this: &str,
-        row_fields: &BTreeMap<String, serde_json::Value>,
-        shadow: &BTreeMap<String, serde_json::Value>,
+        row_fields: &BTreeMap<String, Ipld>,
+        shadow: &BTreeMap<String, Ipld>,
     ) -> String {
         let mut out = String::new();
         for seg in segments {
@@ -701,9 +702,9 @@ mod dom {
                     if name == "this" {
                         out.push_str(row_this);
                     } else if let Some(v) = shadow.get(name) {
-                        push_json_value(&mut out, v);
+                        push_ipld_value(&mut out, v);
                     } else if let Some(v) = row_fields.get(name) {
-                        push_json_value(&mut out, v);
+                        push_ipld_value(&mut out, v);
                     }
                 }
             }
@@ -711,14 +712,26 @@ mod dom {
         out
     }
 
-    fn push_json_value(out: &mut String, v: &serde_json::Value) {
+    fn push_ipld_value(out: &mut String, v: &Ipld) {
         match v {
-            serde_json::Value::String(s) => out.push_str(s),
-            serde_json::Value::Number(n) => out.push_str(&n.to_string()),
-            serde_json::Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-            serde_json::Value::Null => {}
-            other => out.push_str(&other.to_string()),
+            Ipld::String(s) => out.push_str(s),
+            Ipld::Integer(n) => out.push_str(&n.to_string()),
+            Ipld::Float(f) => out.push_str(&f.to_string()),
+            Ipld::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+            Ipld::Null => {}
+            other => out.push_str(&ipld_to_json_string(other)),
         }
+    }
+
+    /// Stringify an `Ipld` value as compact JSON. Used as a
+    /// best-effort fallback when a field's value lands in an
+    /// interpolated string position but isn't a scalar — the
+    /// template author at least sees the shape.
+    fn ipld_to_json_string(value: &Ipld) -> String {
+        serde_ipld_dagjson::to_vec(value)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default()
     }
 
     /// Apply an attribute-form binding to the element identified by
@@ -728,14 +741,14 @@ mod dom {
     ///
     /// `rendered` is the already-stringified value (computed for
     /// cache-equality checks by the caller); single-field bindings
-    /// also receive the underlying [`serde_json::Value`] so the
+    /// also receive the underlying [`Ipld`] value so the
     /// dispatcher can choose typed property assignment for
     /// non-strings without re-parsing.
     pub fn apply_attribute_binding(
         scope_root: &Node,
         binding: &Binding,
         rendered: &str,
-        single_field_value: Option<&serde_json::Value>,
+        single_field_value: Option<&Ipld>,
     ) {
         let BindingKind::Attribute {
             attr_name,
@@ -758,14 +771,14 @@ mod dom {
         }
 
         // Typed property path: a single `{field}` binding whose
-        // value is anything other than a JSON string assigns the
+        // value is anything other than an Ipld string assigns the
         // typed value as a property via Reflect.set. Strings (and
         // multi-segment bindings, which always stringify) fall
         // through to the name-in-element dispatch below.
         if let Some(value) = single_field_value
-            && !matches!(value, serde_json::Value::String(_))
+            && !matches!(value, Ipld::String(_))
         {
-            let js_value = json_to_js_value(value);
+            let js_value = ipld_to_js_value(value);
             let key = js_sys::JsString::from(attr_name.as_str()).into();
             let _ = js_sys::Reflect::set(el.as_ref(), &key, &js_value);
             return;
@@ -792,9 +805,9 @@ mod dom {
         el: &Element,
         attr_name: &str,
         rendered: &str,
-        single_field_value: Option<&serde_json::Value>,
+        single_field_value: Option<&Ipld>,
     ) {
-        if let Some(serde_json::Value::Bool(b)) = single_field_value {
+        if let Some(Ipld::Bool(b)) = single_field_value {
             if *b {
                 let _ = el.set_attribute(attr_name, "");
             } else {
@@ -805,39 +818,34 @@ mod dom {
         let _ = el.set_attribute(attr_name, rendered);
     }
 
-    /// Convert a JSON value to a typed `JsValue` for property
+    /// Convert an Ipld value to a typed `JsValue` for property
     /// assignment. Strings are handled by the caller (the property
-    /// path is only used for non-strings); arrays/objects pass
-    /// through serde-wasm-bindgen so they reach the DOM as real JS
+    /// path is only used for non-strings); lists/maps pass through
+    /// serde-wasm-bindgen so they reach the DOM as real JS
     /// arrays/objects rather than JSON-stringified blobs.
-    fn json_to_js_value(value: &serde_json::Value) -> wasm_bindgen::JsValue {
+    fn ipld_to_js_value(value: &Ipld) -> wasm_bindgen::JsValue {
         use wasm_bindgen::JsValue;
         match value {
-            serde_json::Value::Bool(b) => JsValue::from_bool(*b),
-            serde_json::Value::Number(n) => {
-                if let Some(f) = n.as_f64() {
-                    JsValue::from_f64(f)
-                } else {
-                    JsValue::from_str(&n.to_string())
-                }
-            }
-            serde_json::Value::String(s) => JsValue::from_str(s),
-            serde_json::Value::Null => JsValue::NULL,
+            Ipld::Bool(b) => JsValue::from_bool(*b),
+            Ipld::Integer(n) => JsValue::from_f64(*n as f64),
+            Ipld::Float(f) => JsValue::from_f64(*f),
+            Ipld::String(s) => JsValue::from_str(s),
+            Ipld::Null => JsValue::NULL,
             other => serde_wasm_bindgen::to_value(other).unwrap_or(JsValue::NULL),
         }
     }
 
     /// Resolve a binding's single `{field}` reference to its
-    /// underlying JSON value. Returns `None` when the binding has
+    /// underlying Ipld value. Returns `None` when the binding has
     /// multiple segments or any literal text — in that case the
     /// rendered string is the only well-defined value, and typed
     /// dispatch isn't possible.
     pub fn single_field_value<'a>(
         binding: &Binding,
         row_this: &'a str,
-        row_fields: &'a BTreeMap<String, serde_json::Value>,
-        shadow: &'a BTreeMap<String, serde_json::Value>,
-    ) -> Option<serde_json::Value> {
+        row_fields: &'a BTreeMap<String, Ipld>,
+        shadow: &'a BTreeMap<String, Ipld>,
+    ) -> Option<Ipld> {
         let segments = match &binding.kind {
             BindingKind::Text { segments } => segments,
             BindingKind::Attribute { segments, .. } => segments,
@@ -846,7 +854,7 @@ mod dom {
             return None;
         };
         if name == "this" {
-            return Some(serde_json::Value::String(row_this.to_string()));
+            return Some(Ipld::String(row_this.to_string()));
         }
         shadow.get(name).or_else(|| row_fields.get(name)).cloned()
     }

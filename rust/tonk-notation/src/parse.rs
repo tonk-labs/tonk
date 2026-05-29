@@ -708,9 +708,17 @@ fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<
     if end <= start || end > source.len() {
         return None;
     }
-    let slice = &source[start..end];
-    let amp_pos = slice.find('&')?;
-    let after_amp = &slice[amp_pos + 1..];
+    // Locate the `&` within the key→value gap. The gap is only used
+    // to *find* the anchor token; the name itself is scanned from
+    // the `&` forward through the full source, because saphyr's
+    // value marker can land a few bytes inside the anchor name for
+    // anchored block-mapping values (the value node "starts" partway
+    // through the `&name` token). Bounding the name by `end` there
+    // would truncate it; scanning the source to the first
+    // non-anchor char recovers the whole name.
+    let amp_pos = source[start..end].find('&')?;
+    let amp_abs = start + amp_pos;
+    let after_amp = &source[amp_abs + 1..];
     let name_len = after_amp
         .find(|c: char| !is_anchor_char(c))
         .unwrap_or(after_amp.len());
@@ -722,7 +730,6 @@ fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<
     // Translate byte offsets back to LSP positions. We start from
     // the `&`'s line/column on the source — counting newlines from
     // the source start to the absolute offset.
-    let amp_abs = start + amp_pos;
     let amp_pos_lsp = byte_offset_to_position(source, amp_abs);
     let end_pos_lsp = byte_offset_to_position(source, amp_abs + 1 + name_len);
     Some(Anchor {

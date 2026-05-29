@@ -1,0 +1,40 @@
+[package]
+name = "tonk-board"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "<tonk-board>, <tonk-strip>, <tonk-column> — board layout custom elements."
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+custom-elements = { workspace = true }
+js-sys = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+serde_json = { workspace = true }
+tonk-core = { workspace = true }
+tonk-host = { workspace = true }
+tonk-macros = { workspace = true }
+tonk-schema = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+  "CustomElementRegistry",
+  "Document",
+  "Element",
+  "HtmlElement",
+  "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(dialog_test_native_integration)",
+  "cfg(dialog_test_wasm_integration)",
+  'cfg(feature, values("web-integration-tests"))',
+] }

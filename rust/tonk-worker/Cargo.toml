@@ -62,6 +62,8 @@ wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }
 web-sys = { workspace = true, features = [
     "BroadcastChannel",
+    "Cache",
+    "CacheStorage",
     "Client",
     "Clients",
     "CryptoKey",
@@ -76,6 +78,7 @@ web-sys = { workspace = true, features = [
     "RequestMode",
     "Response",
     "ResponseInit",
+    "ResponseType",
     "ServiceWorkerGlobalScope",
     "WorkerGlobalScope",
     "WorkerLocation",

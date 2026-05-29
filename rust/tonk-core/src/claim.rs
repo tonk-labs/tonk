@@ -68,6 +68,13 @@ pub struct PredicateApplication {
     /// names the subject entity; other slots bind the
     /// predicate's attribute fields.
     pub parameters: Parameters,
+    /// Published name (`&anchor` in notation), if any. When
+    /// present, applying the claim also asserts the desugared
+    /// `dialog.name/referent` fact on `id:<name>` pointing at the
+    /// `this` entity — so the concept resolves by name. Mirrors
+    /// the `name` slot on `tonk_schema::transact::Application`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl PredicateApplication {
@@ -110,4 +117,17 @@ pub struct TransactRequest {
     /// separately so they can be retracted before the durable
     /// write.
     pub claims: Vec<Claim>,
+}
+
+impl TransactRequest {
+    /// Reconstruct a request from its canonical DAG-JSON encoding.
+    /// Used by the `claim!` macro, which serializes the lowered
+    /// request at compile time and embeds the bytes; the generated
+    /// code calls this at runtime. The bytes are always produced by
+    /// `serde_ipld_dagjson` from this same type, so a decode
+    /// failure is a build-time bug, not a user error.
+    pub fn from_dagjson_bytes(bytes: &[u8]) -> Self {
+        serde_ipld_dagjson::from_slice(bytes)
+            .expect("claim!: compiled bootstrap is not valid DAG-JSON")
+    }
 }

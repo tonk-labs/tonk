@@ -40,7 +40,7 @@ use dialog_artifacts::Entity;
 use tonk_notation::{Application as SyntaxApplication, Expression, Syntax};
 
 use crate::analyzer::AnalyzeDiagnostic;
-use tonk_core::claim::ConceptDescriptor;
+use tonk_core::claim::{Claim, ConceptDescriptor, PredicateApplication, TransactRequest};
 use tonk_core::effect::Effect;
 use tonk_schema::transact::{Application, Statement, ThisIntent};
 
@@ -212,6 +212,84 @@ impl DocumentAnalysis {
             }
         }
         out
+    }
+
+    /// Lower the analyzed document into a [`TransactRequest`] — the
+    /// typed wire shape the `/transact` route accepts and the
+    /// `claim!` macro emits. Every planned statement becomes a
+    /// [`Claim`], its predicate tagged durable or transient from
+    /// [`transient_entities`](Self::transient_entities).
+    ///
+    /// Only concept applications lower; a `Domain` or `Rule`
+    /// application has no [`TransactRequest`] representation yet, so
+    /// the document is rejected. (Bootstrap documents — the macro's
+    /// only input today — are concept claims throughout.)
+    pub fn lower_to_claims(&self) -> Result<TransactRequest, AnalyzeLowerError> {
+        let transient = self.transient_entities();
+        let mut claims = Vec::new();
+        for planned in self.statements() {
+            let claim = lower_statement(&planned.statement, &transient)?;
+            claims.push(claim);
+        }
+        Ok(TransactRequest { claims })
+    }
+}
+
+/// Error from [`DocumentAnalysis::lower_to_claims`] — an
+/// application shape with no `TransactRequest` representation.
+#[derive(Debug, thiserror::Error)]
+pub enum AnalyzeLowerError {
+    /// A `rule!:` install/retract — rules aren't representable as
+    /// `Claim`s on the structured transact wire (yet).
+    #[error("rule applications cannot be lowered to a transact claim")]
+    Rule,
+    /// A bare `xyz.tonk/...` domain claim — no concept descriptor
+    /// to carry on the predicate.
+    #[error("domain applications cannot be lowered to a transact claim")]
+    Domain,
+}
+
+/// Lower one [`Statement`] to a wire [`Claim`], tagging the
+/// predicate's durability from the transient-entity set.
+fn lower_statement(
+    statement: &Statement,
+    transient: &HashSet<Entity>,
+) -> Result<Claim, AnalyzeLowerError> {
+    let (application, is_assert) = match statement {
+        Statement::Assert(app) => (app, true),
+        Statement::Retract(app) => (app, false),
+    };
+    let (query, name) = match application {
+        Application::Concept { query, name, .. } => (query, name.clone()),
+        Application::Domain { .. } => return Err(AnalyzeLowerError::Domain),
+        Application::Rule { .. } => return Err(AnalyzeLowerError::Rule),
+    };
+    let this = query.terms.get("this").and_then(term_entity);
+    let descriptor = query.predicate.clone();
+    let predicate = if this.is_some_and(|e| transient.contains(&e)) {
+        ConceptDescriptor::Transient(descriptor)
+    } else {
+        ConceptDescriptor::Durable(descriptor)
+    };
+    let predicate_application = PredicateApplication {
+        predicate,
+        parameters: query.terms.clone(),
+        name,
+    };
+    Ok(if is_assert {
+        Claim::Assert(predicate_application)
+    } else {
+        Claim::Retract(predicate_application)
+    })
+}
+
+/// Extract a bound entity from a term, if it carries one.
+fn term_entity(term: &dialog_query::Term<dialog_query::Any>) -> Option<Entity> {
+    match term {
+        dialog_query::Term::Constant(dialog_artifacts::Value::Entity(entity)) => {
+            Some(entity.clone())
+        }
+        _ => None,
     }
 }
 

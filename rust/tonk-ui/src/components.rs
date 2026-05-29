@@ -28,6 +28,12 @@ use display::*;
 mod layout;
 use layout::*;
 
+mod board;
+use board::*;
+
+mod inspector;
+pub use inspector::register as register_inspector;
+
 mod profile;
 use profile::*;
 
@@ -42,22 +48,10 @@ use invite::*;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_namespace = window, js_name = serviceWorkerActivates)]
-    async fn service_worker_activates();
-
     /// Triggers a sync operation.
     /// Uses Background Sync API if available, otherwise falls back to /api/sync.
     #[wasm_bindgen(js_namespace = window, catch)]
     pub async fn sync() -> Result<(), JsValue>;
-}
-
-/// The current status of the application.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Status {
-    /// Service worker is still loading/activating, or setting up upstream.
-    Loading,
-    /// Service worker is ready and upstream remote is configured.
-    Ready,
 }
 
 /// The hosting document's service-worker Client ID, learned from
@@ -67,12 +61,6 @@ pub enum Status {
 /// bridge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostId(pub String);
-
-/// The subject DID of the currently viewed space. `None` when no
-/// space is loaded (or still loading). Updated by [`TonkSpace`]
-/// when its [`RepositoryInfo`] resolves; consumed by the sidebar
-/// toolbar to render a matching sigil.
-pub type ActiveSubject = RwSignal<Option<String>, LocalStorage>;
 
 /// Shared [`LocalResource`] holding the latest `GET /api/profile`
 /// response. Provided by [`TonkShell`] so every consumer (today:
@@ -116,17 +104,19 @@ pub type LastJoinOutcome = RwSignal<Option<&'static str>>;
 pub fn TonkShell() -> impl IntoView {
     log!("Tonk shell initializing...");
 
-    // Initialize the space: wait for SW, ensure the default repo
-    // exists, then (if the user landed on `/`) redirect into it.
-    // The worker no longer auto-creates anything at startup — we
-    // `PUT` here with `If-None-Match: *`, which covers both
-    // "didn't exist, created" (201) and "already existed" (412) as
-    // success. Redirect only fires when the current path is `/`
-    // so deep links like `/space/home/branch/main` are respected.
+    // Initialize the space: ensure the default repo exists, then
+    // (if the user landed on `/`) redirect into it. The worker
+    // doesn't auto-create anything at startup — we `PUT` here
+    // with `If-None-Match: *`, which covers both "didn't exist,
+    // created" (201) and "already existed" (412) as success.
+    // Redirect only fires when the current path is `/` so deep
+    // links like `/space/home/branch/main` are respected.
+    //
+    // SW readiness is gated inside the API layer
+    // (`tonk_host::ready::wait`) so this resource doesn't need
+    // its own `serviceWorkerActivates()` step.
     let init_resource = LocalResource::new(|| async {
-        log!("Waiting for SW to activate...");
-        service_worker_activates().await;
-        log!("SW is activated, ensuring default repository...");
+        log!("Ensuring default repository...");
 
         let host_id = api::init().await?;
 
@@ -142,47 +132,23 @@ pub fn TonkShell() -> impl IntoView {
         Ok::<_, crate::error::TonkUiError>(host_id)
     });
 
-    // Derive the application status from init resource
-    let status = Signal::derive_local(move || {
-        match init_resource.get() {
-            Some(Ok(_)) => Status::Ready,
-            Some(Err(e)) => {
-                log!("Initialization error: {:?}", e);
-                // Still show as loading on error - could add an Error state later
-                Status::Loading
-            }
-            None => Status::Loading,
-        }
-    });
-
     // Publish the host id as a reactive context so descendant
     // components can subscribe: `None` while init is in flight
     // or has errored, `Some(HostId)` once the PUT succeeds.
     let host_id =
         Signal::derive_local(move || init_resource.get().and_then(|r| r.ok()).map(HostId));
 
-    provide_context(status);
     provide_context(host_id);
 
-    let active_subject: ActiveSubject = RwSignal::new_local(None);
-    provide_context(active_subject);
-
-    // Fire the profile fetch as soon as the shell reports
-    // `Status::Ready`. Gating on `Ready` avoids the same
-    // deep-link / service-worker race that affects `TonkSpace`.
-    // Sharing the resource via context means a single fetch
-    // feeds the sidebar and the create-space flow — the latter
-    // calls `.refetch()` after a successful PUT so the sidebar
-    // picks up the new tile without us plumbing a second signal.
-    let profile_resource: ProfileResource = LocalResource::new(move || {
-        let ready = status.get() == Status::Ready;
-        async move {
-            if !ready {
-                return Ok(None);
-            }
-            api::profile().await.map(Some)
-        }
-    });
+    // Fire the profile fetch eagerly. The API layer's SW gate
+    // holds the request until the worker is up, so we don't
+    // need a separate ready signal at the shell level. Sharing
+    // the resource via context means a single fetch feeds the
+    // sidebar and the create-space flow — the latter calls
+    // `.refetch()` after a successful PUT so the sidebar picks
+    // up the new tile without us plumbing a second signal.
+    let profile_resource: ProfileResource =
+        LocalResource::new(|| async { api::profile().await.map(Some) });
     provide_context(profile_resource);
 
     // The worker posts on `/api/profile` whenever the profile

@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
+use ipld_core::ipld::Ipld;
 
 /// Render an entity as a notation document. `this` is the entity
 /// URI and `fields` its projected values — the two pieces a
@@ -32,7 +32,7 @@ use serde_json::Value;
 /// the head's `:`.
 pub fn format(
     this: &str,
-    fields: &BTreeMap<String, Value>,
+    fields: &BTreeMap<String, Ipld>,
     head: &str,
     bookmark: Option<&str>,
 ) -> String {
@@ -66,7 +66,7 @@ pub fn format(
 /// under the field.
 const FIELD_INDENT: usize = 2;
 
-fn write_field(out: &mut String, name: &str, value: &Value) {
+fn write_field(out: &mut String, name: &str, value: &Ipld) {
     for _ in 0..FIELD_INDENT {
         out.push(' ');
     }
@@ -80,18 +80,24 @@ fn write_field(out: &mut String, name: &str, value: &Value) {
 /// `indent` spaces. `indent` is only consulted for multi-line
 /// strings, which become YAML literal block scalars whose content
 /// lines align one level deeper.
-fn write_value(out: &mut String, value: &Value, indent: usize) {
+fn write_value(out: &mut String, value: &Ipld, indent: usize) {
     match value {
-        Value::Null => out.push('_'),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => write_string(out, s, indent),
-        Value::Array(items) => {
+        Ipld::Null => out.push('_'),
+        Ipld::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Ipld::Integer(n) => out.push_str(&n.to_string()),
+        Ipld::Float(f) => out.push_str(&f.to_string()),
+        Ipld::String(s) => write_string(out, s, indent),
+        Ipld::Bytes(_) | Ipld::Link(_) => {
+            // No notation surface for these — fall back to dag-json
+            // so the value is at least machine-decodable.
+            out.push_str(&dag_json_string(value));
+        }
+        Ipld::List(items) => {
             // Notation has no inline list syntax; fall back to a
-            // bracketed JSON-ish form so the value is at least
-            // legible. Real list rendering would use repeated
-            // `field:` lines (cardinality > 1), but cardinality
-            // information isn't on the Conclusion.
+            // bracketed form so the value is at least legible. Real
+            // list rendering would use repeated `field:` lines
+            // (cardinality > 1), but cardinality information isn't
+            // on the Conclusion.
             out.push('[');
             for (i, item) in items.iter().enumerate() {
                 if i > 0 {
@@ -101,12 +107,19 @@ fn write_value(out: &mut String, value: &Value, indent: usize) {
             }
             out.push(']');
         }
-        Value::Object(_) => {
+        Ipld::Map(_) => {
             // Same — no inline map syntax. Serialize as compact
-            // JSON so the user at least sees the shape.
-            out.push_str(&serde_json::to_string(value).unwrap_or_default());
+            // dag-json so the user at least sees the shape.
+            out.push_str(&dag_json_string(value));
         }
     }
+}
+
+fn dag_json_string(value: &Ipld) -> String {
+    serde_ipld_dagjson::to_vec(value)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default()
 }
 
 fn write_string(out: &mut String, s: &str, indent: usize) {
@@ -188,13 +201,42 @@ pub fn looks_like_uri(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
 
-    fn fields(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
+    /// Convert a `serde_json::Value` into the equivalent [`Ipld`]
+    /// for test setup. `to_ipld(&Value::Null)` errors with "Unit
+    /// is not supported", so we walk the shape ourselves to keep
+    /// the test cases free of that wart.
+    fn json_to_ipld(value: &Value) -> Ipld {
+        match value {
+            Value::Null => Ipld::Null,
+            Value::Bool(b) => Ipld::Bool(*b),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ipld::Integer(i as i128)
+                } else if let Some(u) = n.as_u64() {
+                    Ipld::Integer(u as i128)
+                } else if let Some(f) = n.as_f64() {
+                    Ipld::Float(f)
+                } else {
+                    Ipld::Null
+                }
+            }
+            Value::String(s) => Ipld::String(s.clone()),
+            Value::Array(items) => Ipld::List(items.iter().map(json_to_ipld).collect()),
+            Value::Object(map) => Ipld::Map(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), json_to_ipld(v)))
+                    .collect(),
+            ),
+        }
+    }
+
+    fn fields(pairs: &[(&str, Value)]) -> BTreeMap<String, Ipld> {
         let mut map = BTreeMap::new();
         for (k, v) in pairs {
-            map.insert((*k).to_owned(), v.clone());
+            map.insert((*k).to_owned(), json_to_ipld(v));
         }
         map
     }

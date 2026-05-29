@@ -3,7 +3,7 @@ use leptos::{either::Either, prelude::*};
 use crate::{
     api,
     components::{
-        ActiveSubject, ProfileResource,
+        ProfileResource,
         space::{BranchOwner, BranchRow, RemoteCard},
     },
 };
@@ -30,8 +30,6 @@ use crate::{
 pub fn TonkProfile() -> impl IntoView {
     let profile_resource =
         use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
-    let active_subject =
-        use_context::<ActiveSubject>().expect("ActiveSubject context provided by TonkShell");
 
     // Per-route resource so `BranchRow` can `.refetch()` the
     // profile's repository representation after a sync. Mirrors
@@ -39,18 +37,6 @@ pub fn TonkProfile() -> impl IntoView {
     // `/api/profile/repository` route — the profile lives
     // outside the named-repo namespace.
     let repository = LocalResource::new(move || async move { api::profile_repository().await });
-
-    // Surface the profile's subject DID through the same channel
-    // the space view uses, so the sidebar's profile tile renders
-    // a sigil that matches the banner.
-    Effect::new(move |_| {
-        let subject = profile_resource
-            .get()
-            .and_then(|result| result.ok())
-            .flatten()
-            .map(|info| info.profile.subject.to_string());
-        active_subject.set(subject);
-    });
 
     view! {
         <Suspense fallback=|| view! { <wa-spinner></wa-spinner> }>

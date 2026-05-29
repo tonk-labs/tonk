@@ -6,6 +6,8 @@
 use std::cell::Cell;
 
 use crate::error::{ErrorDetail, ErrorKind};
+use crate::ready;
+use ipld_core::ipld::Ipld;
 use js_sys::{Function, Promise, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -53,6 +55,7 @@ async fn await_promise(promise_value: JsValue, what: &str) -> Result<JsValue, Er
 /// Returns the result as a `serde_json::Value` (typically
 /// `Vec<Conclusion>`-shaped — caller deserialises).
 pub async fn query(body: &serde_json::Value) -> Result<serde_json::Value, ErrorDetail> {
+    ready::wait().await;
     let tonk = tonk_global()?;
     let method = tonk_method("query")?;
     let body_js = serde_wasm_bindgen::to_value(body)
@@ -71,7 +74,8 @@ pub async fn query(body: &serde_json::Value) -> Result<serde_json::Value, ErrorD
 /// The caller drives the subscription via [`Subscription::next`].
 /// Dropping the [`Subscription`] cancels the stream, which posts
 /// the corresponding `unsubscribe` envelope to the SW.
-pub async fn subscribe(body: &serde_json::Value) -> Result<Subscription, ErrorDetail> {
+pub async fn subscribe(body: &Ipld) -> Result<Subscription, ErrorDetail> {
+    ready::wait().await;
     let tonk = tonk_global()?;
     let method = tonk_method("subscribe")?;
     let body_js = serde_wasm_bindgen::to_value(body)

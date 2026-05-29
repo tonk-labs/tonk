@@ -27,6 +27,7 @@
 
 use std::collections::BTreeMap;
 
+use ipld_core::ipld::Ipld;
 use tonk_concept::template::{
     Binding, BindingKind, BindingPlan, PlanNode, Snapshot, apply_attribute_binding, extract_plan,
     navigate, render_segments_with_shadow, single_field_value,
@@ -185,6 +186,7 @@ impl Renderer {
             &self.plan.nodes,
             &root,
             &self.template,
+            &[],
             conclusion,
             &BTreeMap::new(),
         );
@@ -265,8 +267,9 @@ fn build_mounted_nodes(
     plan: &[PlanNode],
     scope_root: &Node,
     template: &DocumentFragment,
+    template_scope: &[usize],
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> Vec<MountedNode> {
     // Allocate the result vec; fill in reverse so iteration
     // nodes process their DOM mutations from rightmost to
@@ -274,7 +277,13 @@ fn build_mounted_nodes(
     let mut out: Vec<Option<MountedNode>> = (0..plan.len()).map(|_| None).collect();
     for (i, node) in plan.iter().enumerate().rev() {
         out[i] = Some(build_mounted_node(
-            document, node, scope_root, template, conclusion, shadow,
+            document,
+            node,
+            scope_root,
+            template,
+            template_scope,
+            conclusion,
+            shadow,
         ));
     }
     out.into_iter()
@@ -284,13 +293,20 @@ fn build_mounted_nodes(
 
 /// Build one mounted node — leaf or iteration — and perform its
 /// initial DOM writes / clones.
+///
+/// `template_scope` is the path inside `template` that corresponds
+/// to `scope_root` in the live DOM. Nested iterations use it to
+/// reconstruct the absolute template path of their iteration root
+/// (their `path` is relative to the *parent scope*, not the
+/// template fragment).
 fn build_mounted_node(
     document: &Document,
     plan: &PlanNode,
     scope_root: &Node,
     template: &DocumentFragment,
+    template_scope: &[usize],
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> MountedNode {
     match plan {
         PlanNode::Binding(b) => {
@@ -312,6 +328,20 @@ fn build_mounted_node(
 
             let mut rows: BTreeMap<String, MountedRow> = BTreeMap::new();
 
+            // Compose the absolute template path for cloning rows.
+            // `path` is relative to the parent scope; pre-pending
+            // `template_scope` (the parent's template-absolute
+            // path) gives us the location of the iteration root in
+            // the original fragment. Nested iterations rely on
+            // this — without composition, an inner iter at path
+            // `[0]` would re-clone the outer wrapper instead of
+            // the inner row template.
+            let template_iter_path: Vec<usize> = template_scope
+                .iter()
+                .copied()
+                .chain(path.iter().copied())
+                .collect();
+
             if let Some(iter_root) = navigate(scope_root, path)
                 && let Some(parent) = iter_root.parent_node()
             {
@@ -324,15 +354,21 @@ fn build_mounted_node(
                     .get(field)
                     .or_else(|| conclusion.fields.get(field))
                     .cloned();
-                let values = collect_values(raw_value);
+                let keyed = collect_keyed_values(raw_value, &conclusion.this);
 
-                for value in values {
-                    let key = key_for(&value);
+                for (key, value) in keyed {
                     if rows.contains_key(&key) {
                         continue; // dedupe
                     }
                     if let Some(row) = build_iteration_row(
-                        document, path, template, body, field, value, conclusion, shadow,
+                        document,
+                        &template_iter_path,
+                        template,
+                        body,
+                        field,
+                        value,
+                        conclusion,
+                        shadow,
                     ) {
                         // BTreeMap order ⇒ DOM order. Insert each
                         // row before the anchor so they land in
@@ -344,7 +380,7 @@ fn build_mounted_node(
             }
 
             MountedNode::Iteration {
-                template_path: path.clone(),
+                template_path: template_iter_path,
                 anchor,
                 rows,
             }
@@ -360,7 +396,7 @@ fn update_nodes(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     for (plan_node, mounted_node) in plan.iter().zip(mounted.iter_mut()) {
         update_node(
@@ -383,7 +419,7 @@ fn update_node(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     match (plan, mounted) {
         (PlanNode::Binding(b), MountedNode::Binding { last_value }) => {
@@ -438,18 +474,17 @@ fn update_iteration(
     rows: &mut BTreeMap<String, MountedRow>,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     let raw_value = shadow
         .get(field)
         .or_else(|| conclusion.fields.get(field))
         .cloned();
-    let values = collect_values(raw_value);
+    let keyed = collect_keyed_values(raw_value, &conclusion.this);
 
     // Index incoming values by key, deduping.
-    let mut incoming: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    for value in values {
-        let key = key_for(&value);
+    let mut incoming: BTreeMap<String, Ipld> = BTreeMap::new();
+    for (key, value) in keyed {
         incoming.entry(key).or_insert(value);
     }
 
@@ -458,6 +493,42 @@ fn update_iteration(
     let Some(parent) = anchor.parent_node() else {
         return;
     };
+
+    // Single-row rename fallback. When the existing set has
+    // exactly one row whose key vanished from `incoming`, and at
+    // least one of the incoming keys isn't currently present,
+    // reuse the old row under a new key instead of destroying it.
+    //
+    // This preserves DOM identity (and therefore inner custom-
+    // element state, focus, in-flight subscriptions) across the
+    // common cardinality transitions that fold_rows produces:
+    //
+    //   - scalar value edit: `width: 12` → `width: 16`. The same
+    //     row is reused, only its bound attribute is patched.
+    //   - scalar → array growth: `column: "a"` → `column: ["a","b"]`.
+    //     The folded representation flips from a string to an
+    //     array, but the row for "a" should survive — the new "b"
+    //     row is added alongside, the existing column is not
+    //     torn down.
+    //   - array → scalar shrink (cardinality 1 → 1 with a swap):
+    //     `column: ["a"]` → `column: "b"`. The single row is
+    //     reused under the new key.
+    //
+    // For "true" array reconciliation (multiple rows on both
+    // sides) the rename never fires — keys match exactly.
+    if rows.len() == 1 {
+        let old_key = rows.keys().next().cloned().expect("len == 1");
+        if !incoming.contains_key(&old_key)
+            && let Some((new_key, _)) = incoming
+                .iter()
+                .find(|(k, _)| !rows.contains_key(*k))
+                .map(|(k, v)| (k.clone(), v.clone()))
+        {
+            if let Some(row) = rows.remove(&old_key) {
+                rows.insert(new_key, row);
+            }
+        }
+    }
 
     // Remove vanished keys.
     let stale: Vec<String> = rows
@@ -545,9 +616,9 @@ fn build_iteration_row(
     template: &DocumentFragment,
     body_plan: &[PlanNode],
     field: &str,
-    value: serde_json::Value,
+    value: Ipld,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> Option<MountedRow> {
     let template_root: Node = template.clone().into();
     let template_iter_root = navigate(&template_root, template_path)?;
@@ -555,11 +626,16 @@ fn build_iteration_row(
 
     let mut nested_shadow = shadow.clone();
     nested_shadow.insert(field.to_owned(), value);
+    // The row's template scope is `template_path` — anything
+    // nested inside (e.g. a child iteration's `path`) is relative
+    // to it. Threading this lets nested iterations recover the
+    // absolute template path needed for cloning.
     let body = build_mounted_nodes(
         document,
         body_plan,
         &row_root,
         template,
+        template_path,
         conclusion,
         &nested_shadow,
     );
@@ -571,13 +647,16 @@ fn build_iteration_row(
 }
 
 /// Stable string key for an iteration value. Entity URIs (and
-/// any other JSON string) become themselves; non-strings get
-/// canonicalised via `serde_json::to_string` so two equal values
-/// produce equal keys.
-fn key_for(value: &serde_json::Value) -> String {
+/// any other Ipld string) become themselves; non-strings get
+/// canonicalised via dag-json so two equal values produce equal
+/// keys.
+fn key_for(value: &Ipld) -> String {
     match value {
-        serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_default(),
+        Ipld::String(s) => s.clone(),
+        other => serde_ipld_dagjson::to_vec(other)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default(),
     }
 }
 
@@ -586,7 +665,7 @@ fn key_for(value: &serde_json::Value) -> String {
 fn render_binding(
     binding: &Binding,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> String {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -604,7 +683,7 @@ fn write_binding(
     binding: &Binding,
     rendered: &str,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     match &binding.kind {
         BindingKind::Text { .. } => {
@@ -619,13 +698,27 @@ fn write_binding(
     }
 }
 
-/// Resolve a JSON value into the list of per-iteration values:
-/// `Array` flattens to its elements; `Null` / missing becomes
-/// empty; anything else is a single-element list.
-fn collect_values(value: Option<serde_json::Value>) -> Vec<serde_json::Value> {
+/// Resolve a JSON value into the list of (row-key, row-value)
+/// pairs the iteration renderer needs.
+///
+/// - `Null` / missing → no rows.
+/// - `Array` → one row per element, keyed by `key_for(value)`
+///   so cardinality-many reconciliation matches rows across
+///   applies by element identity.
+/// - Anything else (a scalar) → one row keyed by the enclosing
+///   conclusion's `this` (entity URI). This identifies the row
+///   by the *entity it describes*, not by the placeholder's
+///   current value, so editing a cardinality-one field (e.g. a
+///   column's width) reuses the same row and patches only the
+///   bound attribute. The `entity_key` is supplied by the
+///   caller because it carries the relevant scope's `this` —
+///   for nested iterations that may differ from the outer
+///   conclusion's `this` once `subject=` markers identify an
+///   inner entity.
+fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, Ipld)> {
     match value {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(items)) => items,
-        Some(v) => vec![v],
+        None | Some(Ipld::Null) => Vec::new(),
+        Some(Ipld::List(items)) => items.into_iter().map(|v| (key_for(&v), v)).collect(),
+        Some(v) => vec![(entity_key.to_owned(), v)],
     }
 }

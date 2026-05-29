@@ -1,0 +1,19 @@
+[package]
+name = "tonk-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Compile-time macros for tonk — `claim!` lowers a notation file into a typed TransactRequest."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }
+serde_ipld_dagjson = { workspace = true }
+tonk-analyzer = { workspace = true }
+tonk-core = { workspace = true }
+tonk-notation = { workspace = true }

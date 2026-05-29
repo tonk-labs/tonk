@@ -12,25 +12,20 @@ use dialog_artifacts::Entity;
 use parking_lot::Mutex;
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
-use tonk_schema::concept::{QueryEnv, lookup_named_entity};
-use tonk_schema::query_source::Source;
-use tonk_schema::resolution::{
-    AttributeDefinition, AttributeReference, ConceptDefinition, ConceptReference, NamedReference,
-    ResolveError,
-};
+use tonk_schema::resolution::{AttributeDefinition, ConceptDefinition};
+use tonk_schema::rule::Rule;
 
 /// Layered name index built during analysis.
 ///
 /// Each map is wrapped in a `parking_lot::Mutex` so the analyzer
 /// can mutate the scope from inside `&self` methods (the same
-/// scope is shared across the analyzer's three phases). The
-/// guards are `Send`, so axum handlers stay happy on native; on
-/// wasm the runtime is single-threaded and the lock is
-/// uncontended. Critical sections never cross an `.await`:
-/// `lookup_entity` and `resolve_*` drop their guards before
-/// recursing into the branch resolution chain.
-pub(crate) struct Scope<'a> {
-    source: Source<'a>,
+/// scope is shared across the analyzer's phases). The guards are
+/// `Send`, so axum handlers stay happy on native; on wasm the
+/// runtime is single-threaded and the lock is uncontended.
+/// Critical sections never cross an `.await`: `lookup_entity` and
+/// the prefetch helpers drop their guards before recursing into
+/// the branch resolution chain.
+pub(crate) struct Scope {
     /// Anchor/variable → entity for non-meta head bindings
     /// (every head except `attribute!` / `concept!` whose
     /// declarations live in the dedicated maps below). One map
@@ -54,25 +49,30 @@ pub(crate) struct Scope<'a> {
     pub(crate) in_doc_attributes_by_entity: Mutex<HashMap<String, AttributeDefinition>>,
     /// Reverse index: concept entity → resolved concept.
     pub(crate) in_doc_concepts_by_entity: Mutex<HashMap<String, ConceptDefinition>>,
+    /// Name → entity for symbols the graph resolved to a plain
+    /// named entity (not a concept or attribute). Populated by
+    /// [`record_named_entity`](Self::record_named_entity).
+    pub(crate) named_entities: Mutex<HashMap<String, Entity>>,
+    /// Entity → installed [`Rule`] read off the branch for a
+    /// `rule!: ..: _` retract. Populated by
+    /// [`record_resolved_rule`](Self::record_resolved_rule) during
+    /// the graph's resolve phase so the retract lowering reads it
+    /// synchronously. A key present with no entry means the entity
+    /// holds no installed rule (retracting something absent).
+    pub(crate) resolved_rules: Mutex<HashMap<String, Option<Rule>>>,
 }
 
-impl<'a> Scope<'a> {
-    /// Borrow the resolution [`Source`] the scope was constructed
-    /// over — `rule!: ..: _` retracts need it to read the stored
-    /// `dialog.effect/source` bytes off the branch.
-    pub(crate) fn source(&self) -> &Source<'a> {
-        &self.source
-    }
-
-    pub(crate) fn new(source: Source<'a>) -> Self {
+impl Scope {
+    pub(crate) fn new() -> Self {
         Self {
-            source,
             declarations: Mutex::new(HashMap::new()),
             variables: Mutex::new(HashMap::new()),
             in_doc_attributes: Mutex::new(HashMap::new()),
             in_doc_concepts: Mutex::new(HashMap::new()),
             in_doc_attributes_by_entity: Mutex::new(HashMap::new()),
             in_doc_concepts_by_entity: Mutex::new(HashMap::new()),
+            named_entities: Mutex::new(HashMap::new()),
+            resolved_rules: Mutex::new(HashMap::new()),
         }
     }
 
@@ -165,68 +165,69 @@ impl<'a> Scope<'a> {
         self.variables.lock().get(name).cloned()
     }
 
-    pub(crate) async fn resolve_concept<Env: QueryEnv>(
-        &self,
-        name: &str,
-        env: &Env,
-    ) -> Result<Option<ConceptDefinition>, ResolveError> {
-        // Drop the lock before awaiting the fallback resolver:
-        // holding a guard across an await could deadlock if the
-        // resolver came back to us.
+    /// Sync concept lookup against the populated table — in-doc
+    /// declarations and builtins only, no env fallback. Returns
+    /// `None` for names that would require a branch query;
+    /// [`prefetch_concept`](Self::prefetch_concept) is what pulls
+    /// those into the table ahead of time.
+    pub(crate) fn concept(&self, name: &str) -> Option<ConceptDefinition> {
         if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
-            return Ok(Some(found));
+            return Some(found);
         }
-        if let Some(found) = tonk_schema::builtin::lookup_concept(name) {
-            return Ok(Some(found));
-        }
-        ConceptReference::from(NamedReference(name.to_owned()))
-            .resolve(self.source.clone())
-            .perform(env)
-            .await
+        tonk_schema::builtin::lookup_concept(name)
     }
 
-    /// Resolve a bare symbol to *any* in-doc or branch entity
-    /// with that name. Used by [`super::field::field_value_to_term`]
-    /// when the symbol doesn't match an attribute (concepts and
-    /// previously-asserted instances also have `dialog.meta/name`
-    /// claims and should be reachable).
-    pub(crate) async fn resolve_named_entity<Env: QueryEnv>(
-        &self,
-        name: &str,
-        env: &Env,
-    ) -> Result<Option<Entity>, ResolveError> {
-        if let Some(found) = self.in_doc_concepts.lock().get(name).cloned() {
-            return Ok(Some(found.entity));
-        }
-        lookup_named_entity(name, self.source.clone(), env).await
+    /// Record a branch-resolved concept into the in-doc tables so
+    /// the sync [`concept`](Self::concept) accessor finds it. Called
+    /// by the graph's resolve phase for an external concept need.
+    pub(crate) fn record_named_entity(&self, name: &str, entity: Entity) {
+        self.named_entities.lock().insert(name.to_owned(), entity);
     }
 
-    pub(crate) async fn resolve_attribute<Env: QueryEnv>(
-        &self,
-        name: &str,
-        env: &Env,
-    ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        if let Some(found) = self.in_doc_attributes.lock().get(name).cloned() {
-            return Ok(Some(found));
-        }
-        AttributeReference::from(NamedReference(name.to_owned()))
-            .resolve(self.source.clone())
-            .perform(env)
-            .await
+    /// Sync attribute-by-name lookup — in-doc attributes only.
+    pub(crate) fn attribute(&self, name: &str) -> Option<AttributeDefinition> {
+        self.in_doc_attributes.lock().get(name).cloned()
     }
 
-    pub(crate) async fn resolve_attribute_by_entity<Env: QueryEnv>(
-        &self,
-        entity: &Entity,
-        env: &Env,
-    ) -> Result<Option<AttributeDefinition>, ResolveError> {
-        let key = entity.to_string();
-        if let Some(found) = self.in_doc_attributes_by_entity.lock().get(&key).cloned() {
-            return Ok(Some(found));
+    /// Sync attribute-by-entity lookup — in-doc table only.
+    pub(crate) fn attribute_by_entity(&self, entity: &Entity) -> Option<AttributeDefinition> {
+        self.in_doc_attributes_by_entity
+            .lock()
+            .get(&entity.to_string())
+            .cloned()
+    }
+
+    /// Look up a bare symbol to an entity using only the populated
+    /// table: in-doc declarations / variables (anchor heads), then
+    /// in-doc attributes, then concepts, then branch-resolved named
+    /// entities. This is the sync resolution order
+    /// [`super::field::field_value_to_term`] uses; the graph's
+    /// resolve phase fills the branch entries first.
+    pub(crate) fn symbol(&self, name: &str) -> Option<Entity> {
+        if let Some(entity) = self.lookup_entity(name) {
+            return Some(entity);
         }
-        AttributeReference::from(entity.clone())
-            .resolve(self.source.clone())
-            .perform(env)
-            .await
+        if let Some(attribute) = self.in_doc_attributes.lock().get(name) {
+            return Some(attribute.entity.clone());
+        }
+        if let Some(concept) = self.in_doc_concepts.lock().get(name) {
+            return Some(concept.entity.clone());
+        }
+        self.named_entities.lock().get(name).cloned()
+    }
+
+    /// Sync lookup of an installed rule resolved for a retract.
+    /// `Some(Some(rule))` is an installed rule; `Some(None)` is a
+    /// confirmed-absent entity (retract of something not
+    /// installed); `None` means the entity was never resolved.
+    pub(crate) fn resolved_rule(&self, entity: &Entity) -> Option<Option<Rule>> {
+        self.resolved_rules.lock().get(&entity.to_string()).cloned()
+    }
+
+    /// Record the rule resolved for a `rule!: ..: _` retract so the
+    /// retract lowering reads it synchronously. `None` means
+    /// nothing is installed at `entity`.
+    pub(crate) fn record_resolved_rule(&self, entity: &Entity, rule: Option<Rule>) {
+        self.resolved_rules.lock().insert(entity.to_string(), rule);
     }
 }

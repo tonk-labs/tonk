@@ -19,6 +19,8 @@ async fn main() {
     tonk_concept::register();
     tonk_display::register();
     tonk_layout::register();
+    tonk_board::register();
+    tonk_ui::components::register_inspector();
     // Inject the `<tonk-code>` element's JS bundle. The path
     // matches the `copy-dir` target in `index.html` — both must
     // change together if the deployment layout shifts.

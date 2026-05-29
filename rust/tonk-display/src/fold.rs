@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 
+use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 
 /// Fold a list of conclusions sharing the same `this` into one.
@@ -37,9 +38,9 @@ pub fn fold_rows(conclusions: Vec<Conclusion>) -> Option<Conclusion> {
     let first = iter.next()?;
 
     // For every field, accumulate distinct values in first-seen
-    // order. We only need to switch to an `Array` representation
+    // order. We only need to switch to a `List` representation
     // if more than one distinct value shows up.
-    let mut per_field: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    let mut per_field: BTreeMap<String, Vec<Ipld>> = BTreeMap::new();
     for (name, value) in &first.fields {
         per_field.insert(name.clone(), vec![value.clone()]);
     }
@@ -52,12 +53,12 @@ pub fn fold_rows(conclusions: Vec<Conclusion>) -> Option<Conclusion> {
         }
     }
 
-    let mut folded: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut folded: BTreeMap<String, Ipld> = BTreeMap::new();
     for (name, values) in per_field {
         let value = match values.len() {
-            0 => serde_json::Value::Null,
+            0 => Ipld::Null,
             1 => values.into_iter().next().expect("single value present"),
-            _ => serde_json::Value::Array(values),
+            _ => Ipld::List(values),
         };
         folded.insert(name, value);
     }
@@ -71,12 +72,17 @@ pub fn fold_rows(conclusions: Vec<Conclusion>) -> Option<Conclusion> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ipld_core::serde::to_ipld;
     use serde_json::{Value, json};
+
+    fn ipld(value: Value) -> Ipld {
+        to_ipld(&value).expect("json value converts to ipld")
+    }
 
     fn conclusion(this: &str, fields: &[(&str, Value)]) -> Conclusion {
         let mut map = BTreeMap::new();
         for (k, v) in fields {
-            map.insert((*k).to_owned(), v.clone());
+            map.insert((*k).to_owned(), ipld(v.clone()));
         }
         Conclusion {
             this: this.to_owned(),
@@ -94,7 +100,7 @@ mod tests {
         let c = conclusion("did:key:zX", &[("name", json!("Alice"))]);
         let folded = fold_rows(vec![c.clone()]).expect("single row folds");
         assert_eq!(folded.this, "did:key:zX");
-        assert_eq!(folded.fields.get("name"), Some(&json!("Alice")));
+        assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Alice"))));
     }
 
     #[test]
@@ -105,7 +111,7 @@ mod tests {
         ];
         let folded = fold_rows(rows).expect("rows fold");
         // Both agree on `name` — should not become an array.
-        assert_eq!(folded.fields.get("name"), Some(&json!("Alice")));
+        assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Alice"))));
     }
 
     #[test]
@@ -136,14 +142,14 @@ mod tests {
             ),
         ];
         let folded = fold_rows(rows).expect("rows fold");
-        assert_eq!(folded.fields.get("name"), Some(&json!("Groceries")));
+        assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Groceries"))));
         assert_eq!(
             folded.fields.get("item"),
-            Some(&json!([
+            Some(&ipld(json!([
                 "did:key:zTodo-1",
                 "did:key:zTodo-2",
                 "did:key:zTodo-3",
-            ])),
+            ]))),
         );
     }
 
@@ -157,7 +163,7 @@ mod tests {
         let folded = fold_rows(rows).expect("rows fold");
         assert_eq!(
             folded.fields.get("tag"),
-            Some(&json!(["zebra", "apple", "mango"])),
+            Some(&ipld(json!(["zebra", "apple", "mango"]))),
         );
     }
 
@@ -171,7 +177,10 @@ mod tests {
         let folded = fold_rows(rows).expect("rows fold");
         // `alpha` appears twice on the wire but is collapsed to
         // one entry in the folded array.
-        assert_eq!(folded.fields.get("tag"), Some(&json!(["alpha", "beta"])));
+        assert_eq!(
+            folded.fields.get("tag"),
+            Some(&ipld(json!(["alpha", "beta"])))
+        );
     }
 
     #[test]
@@ -187,7 +196,7 @@ mod tests {
         ];
         let folded = fold_rows(rows).expect("rows fold");
         // `item` saw one value, stays scalar.
-        assert_eq!(folded.fields.get("item"), Some(&json!("did:key:zA")));
-        assert_eq!(folded.fields.get("name"), Some(&json!("Bag")));
+        assert_eq!(folded.fields.get("item"), Some(&ipld(json!("did:key:zA"))));
+        assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Bag"))));
     }
 }

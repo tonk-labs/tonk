@@ -16,6 +16,7 @@ use custom_elements::CustomElement;
 use web_sys::{HtmlElement, window};
 
 use crate::ops::{self, InstalledListener};
+use crate::query_cache::QueryCache;
 use crate::registry::Registry;
 
 /// Internal state shared across listener closures.
@@ -26,6 +27,11 @@ pub(crate) struct HostState {
     /// Subscription registry. Owns abort handles; entries are
     /// keyed by consumer element identity.
     pub registry: Registry,
+    /// LRU for `tonk-query` responses. Repeats from any
+    /// consumer in the page reuse the cached body and skip the
+    /// HTTP round-trip. Invalidated per-branch on every claim
+    /// or evaluate.
+    pub query_cache: QueryCache,
 }
 
 impl HostState {
@@ -33,6 +39,7 @@ impl HostState {
         Self {
             disposed: false,
             registry: Registry::new(),
+            query_cache: QueryCache::new(),
         }
     }
 }

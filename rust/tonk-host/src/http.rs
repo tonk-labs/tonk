@@ -16,6 +16,7 @@ use wasm_streams::ReadableStream;
 use web_sys::{AbortController, Headers, Request, RequestInit, Response, Window, window};
 
 use crate::error::{ErrorDetail, ErrorKind};
+use crate::ready;
 
 fn window_handle() -> Result<Window, ErrorDetail> {
     window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no `window` available"))
@@ -25,6 +26,11 @@ fn window_handle() -> Result<Window, ErrorDetail> {
 /// return the response body text. Errors out on non-2xx with a
 /// `Network` kind error carrying the status code.
 pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDetail> {
+    // Gate every `/api/*` request on service-worker activation.
+    // Without this, an early call lands on the static-asset
+    // server and comes back as 405. Idempotent — after the first
+    // wait the gate is open for the page lifetime.
+    ready::wait().await;
     let init = RequestInit::new();
     init.set_method("POST");
     let headers = Headers::new()
@@ -78,6 +84,7 @@ pub(crate) async fn open_sse(
     on_frame: impl FnMut(&str) + 'static,
     on_error: impl FnMut(ErrorDetail) + 'static,
 ) -> Result<AbortController, ErrorDetail> {
+    ready::wait().await;
     let abort = AbortController::new()
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("AbortController: {e:?}")))?;
 
@@ -188,6 +195,7 @@ pub(crate) async fn post_text(
     body: &str,
     content_type: &str,
 ) -> Result<String, ErrorDetail> {
+    ready::wait().await;
     let init = RequestInit::new();
     init.set_method("POST");
     let headers = Headers::new()
