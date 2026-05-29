@@ -96,7 +96,7 @@ pub(crate) fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
 /// for a byte-exact dissociate.
 pub(crate) fn lift_rule_claim(
     application: &SyntaxApplication,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &Working,
 ) -> Result<Option<RuleAction>, AnalyzeError> {
     if is_rule_retract_body(application) {
@@ -148,55 +148,35 @@ pub(crate) fn lift_rule_claim(
     }
 }
 
-/// Prefetch every concept a `rule!:` install body references —
-/// the `assert!:` / `retract!:` head concept plus each `when:` /
-/// `unless:` premise concept — into the scope so [`lift_rule`]
-/// resolves them synchronously during expand. Premise concepts
-/// that name a built-in formula are skipped (they resolve through
-/// the formula table, not the branch). No-op for retract bodies,
-/// whose rule is prefetched separately via
-/// [`Scope::prefetch_rule`](super::scope::Scope::prefetch_rule).
-pub(crate) async fn prefetch_rule_concepts<Env: tonk_schema::concept::QueryEnv>(
+/// Collect every concept a `rule!:` install body references — the
+/// `assert!:` / `retract!:` head concept plus each `when:` /
+/// `unless:` premise concept — as `(name, range)` pairs for the
+/// graph's push phase to turn into concept [`Need`]s. Premise
+/// concepts naming a built-in formula are skipped (they resolve
+/// through the formula table, not the branch). Empty for retract
+/// bodies, whose installed rule is resolved as a rule need instead.
+///
+/// [`Need`]: super::graph
+pub(crate) fn collect_rule_concepts(
     application: &SyntaxApplication,
-    scope: &Scope<'_>,
-    env: Option<&Env>,
-) -> Result<(), AnalyzeError> {
+) -> Vec<(String, lsp_types::Range)> {
     if is_rule_retract_body(application) {
-        return Ok(());
+        return Vec::new();
     }
     let Ok(body) = parse_rule_body(application) else {
         // A malformed body surfaces its error later in `lift_rule`
-        // with full diagnostics; prefetch just skips it.
-        return Ok(());
+        // with full diagnostics; collection just skips it.
+        return Vec::new();
     };
-    scope
-        .prefetch_concept(&body.conclusion, env)
-        .await
-        .map_err(|e| {
-            AnalyzeError::at(
-                AnalyzeErrorKind::ResolverFailed {
-                    context: format!("rule head concept {:?}", body.conclusion),
-                    reason: e.to_string(),
-                },
-                body.conclusion_range,
-            )
-        })?;
+    let mut out = vec![(body.conclusion.clone(), body.conclusion_range)];
     for premise in body.when.iter().chain(body.unless.iter()) {
         let name = premise.concept.value.as_str();
         if lookup_formula(name).is_some() {
             continue;
         }
-        scope.prefetch_concept(name, env).await.map_err(|e| {
-            AnalyzeError::at(
-                AnalyzeErrorKind::ResolverFailed {
-                    context: format!("rule premise concept {name:?}"),
-                    reason: e.to_string(),
-                },
-                premise.concept.range,
-            )
-        })?;
+        out.push((name.to_owned(), premise.concept.range));
     }
-    Ok(())
+    out
 }
 
 /// Read an optional `this:` URI field out of a `rule!:` body.
@@ -249,7 +229,7 @@ pub(crate) fn parse_rule_this_entity(
 /// can point at semantically meaningful ranges.
 pub(crate) fn lift_rule(
     application: &SyntaxApplication,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &Working,
 ) -> Result<Effect, AnalyzeError> {
     let body = parse_rule_body(application)?;
@@ -554,7 +534,7 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
 /// as a concept.
 fn lift_premise(
     premise: &NotationPremise,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     let name = premise.concept.value.as_str();
@@ -659,7 +639,7 @@ fn lift_premise(
 fn lift_formula_premise(
     premise: &NotationPremise,
     formula: FormulaInfo,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     // Reject `where:` operands the formula doesn't declare. Done

@@ -50,7 +50,7 @@ pub(crate) struct AssertionPlan {
 pub(crate) fn build_assertion_application(
     assertion: &SyntaxApplication,
     anchor: Option<&Anchor>,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
     let head_label = match &assertion.predicate.name {
@@ -334,7 +334,7 @@ pub(crate) fn build_assertion_application(
 pub(crate) fn derive_head_intent(
     fields: &[Field],
     anchor: Option<&Anchor>,
-    scope: &Scope<'_>,
+    scope: &Scope,
 ) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
     let name = anchor.map(|a| a.name.clone());
     let this = match fields.iter().find(|f| f.name == "this") {

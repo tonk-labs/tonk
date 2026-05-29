@@ -40,7 +40,7 @@ pub(crate) fn field_value_to_term(
     field_name: &str,
     value: &FieldValue,
     range: lsp_types::Range,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &Working,
     expected: Option<Type>,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {

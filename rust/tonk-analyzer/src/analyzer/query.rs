@@ -16,7 +16,7 @@ use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
 pub(crate) fn build_query_application(
     query: &SyntaxApplication,
-    scope: &Scope<'_>,
+    scope: &Scope,
     analysis: &Working,
 ) -> Result<Application, AnalyzeError> {
     // Queries can't carry an `&anchor` (parser rejects that), so
