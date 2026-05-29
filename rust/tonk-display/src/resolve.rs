@@ -115,8 +115,12 @@ pub fn looks_like_uri(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
-    #[test]
+    #[dialog_common::test]
     fn it_resolves_a_view_name_to_its_target_entity() {
         // A view is published under an `id:` name; the lookup pins
         // `this` to that name URI and projects the `entity` it
@@ -143,7 +147,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_a_view_fields_query_pinned_to_the_view_entity() {
         let q = view_fields_query("did:key:zView").expect("view_fields_query");
         let this = q.terms.get("this").expect("this term");
@@ -158,7 +162,7 @@ mod tests {
         }
     }
 
-    #[test]
+    #[dialog_common::test]
     fn the_view_predicate_has_no_name_field() {
         let p = view_predicate();
         let with = p.get("with").and_then(|v| v.as_object()).expect("with");
@@ -170,7 +174,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_an_entity_query_pinning_this() {
         let descriptor = r#"{"with":{
             "message": { "the": "greeting/message", "as": "Text", "cardinality": "one" }
@@ -183,7 +187,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_projects_every_descriptor_field_in_the_entity_query() {
         let descriptor = r#"{"with":{
             "message":   { "the": "greeting/message",   "as": "Text", "cardinality": "one" },
@@ -194,14 +198,14 @@ mod tests {
         assert!(q.terms.contains("recipient"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_distinguishes_uri_from_bookmark() {
         assert!(looks_like_uri("did:key:zAlice"));
         assert!(looks_like_uri("concept:abc"));
         assert!(!looks_like_uri("greeting"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_views_for_model_pinning_model_only() {
         let q = views_for_model_query("concept:zGreeting").expect("views_for_model_query");
         let model = q.terms.get("model").expect("model term");
