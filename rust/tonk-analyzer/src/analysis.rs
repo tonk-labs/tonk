@@ -247,6 +247,15 @@ pub enum AnalyzeLowerError {
     /// to carry on the predicate.
     #[error("domain applications cannot be lowered to a transact claim")]
     Domain,
+    /// A parameter slot held a logic variable or blank rather than
+    /// a concrete value, so it can't be carried on the wire.
+    #[error("parameter {field:?} is not a concrete value (got {term:?})")]
+    NonConstantTerm {
+        /// Field whose binding wasn't a constant.
+        field: String,
+        /// Debug rendering of the offending term.
+        term: String,
+    },
 }
 
 /// Lower one [`Statement`] to a wire [`Claim`], tagging the
@@ -271,9 +280,22 @@ fn lower_statement(
     } else {
         ConceptDescriptor::Durable(descriptor)
     };
+    let mut parameters = tonk_core::claim::ValueMap::new();
+    for (key, term) in query.terms.iter() {
+        let value = match term {
+            dialog_query::Term::Constant(v) => v.clone(),
+            other => {
+                return Err(AnalyzeLowerError::NonConstantTerm {
+                    field: key.clone(),
+                    term: format!("{other:?}"),
+                });
+            }
+        };
+        parameters.insert(key.clone(), value);
+    }
     let predicate_application = PredicateApplication {
         predicate,
-        parameters: query.terms.clone(),
+        parameters,
         name,
     };
     Ok(if is_assert {

@@ -29,6 +29,7 @@ dialog-query = { workspace = true }
 dialog-repository = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
+indexmap = { workspace = true }
 lsp-types = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

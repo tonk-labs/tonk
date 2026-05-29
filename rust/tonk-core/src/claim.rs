@@ -11,8 +11,19 @@
 //! before durable write). The reactor reads this classification
 //! to bucket transients without re-querying the schema.
 
-use dialog_query::{ConceptDescriptor as DialogConceptDescriptor, Parameters};
+use dialog_artifacts::Value;
+use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
+
+/// Parameter bindings carried on the wire. Each entry is a
+/// concrete [`Value`] (entity URI, scalar, ref) — the wire format
+/// has no representation for logic variables or blanks. The
+/// dialog-query [`Term`](dialog_query::Term)-flavoured `Parameters`
+/// is used downstream after [`crate::claim`]-time lift; on the
+/// wire we keep the surface narrow so the worker never has to
+/// defend against terms that don't make sense for an assertion.
+pub type ValueMap = IndexMap<String, Value>;
 
 /// A concept predicate plus its durability classification.
 ///
@@ -57,21 +68,27 @@ impl ConceptDescriptor {
 }
 
 /// A predicate applied to parameter bindings — the claim
-/// counterpart of `tonk_schema::query::Query`. `parameters` mirrors
-/// the dialog-query [`Parameters`] shape (`terms` in
-/// [`dialog_query::ConceptQuery`]).
+/// counterpart of `tonk_schema::query::Query`.
+///
+/// Each entry in `parameters` is a concrete [`Value`]; the wire
+/// format intentionally does not support logic variables or
+/// blanks (a `/transact` caller is writing facts, not querying).
+/// The `"this"` slot, when present, names the subject entity;
+/// when absent, the worker derives it from `(predicate, parameters)`
+/// so callers never have to mint an arbitrary URI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredicateApplication {
     /// The predicate, with its durability classification.
     pub predicate: ConceptDescriptor,
-    /// Term bindings for this application. The `"this"` slot
-    /// names the subject entity; other slots bind the
-    /// predicate's attribute fields.
-    pub parameters: Parameters,
+    /// Value bindings for this application. Omitting `"this"`
+    /// asks the worker to derive the subject from the predicate
+    /// and the remaining payload.
+    #[serde(default)]
+    pub parameters: ValueMap,
     /// Published name (`&anchor` in notation), if any. When
     /// present, applying the claim also asserts the desugared
     /// `dialog.name/referent` fact on `id:<name>` pointing at the
-    /// `this` entity — so the concept resolves by name. Mirrors
+    /// `this` entity so the concept resolves by name. Mirrors
     /// the `name` slot on `tonk_schema::transact::Application`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

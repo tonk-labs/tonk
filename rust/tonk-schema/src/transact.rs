@@ -29,30 +29,76 @@ use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
+use crate::prelude::EntityExt;
 use crate::rule::Rule;
-use tonk_core::claim::{ConceptDescriptor, PredicateApplication};
+use indexmap::IndexMap;
+use serde::Serialize;
+use tonk_core::claim::{ConceptDescriptor, PredicateApplication, ValueMap};
 use tonk_core::meta::{Name, name};
 
 /// Project a wire-format [`PredicateApplication`] into the
 /// concept-shaped [`ApplicationPlan`] the dialog emitter consumes.
 /// Used by `/transact` to bridge the wire-side `Claim` batch into
 /// the same plan shape the notation path produces.
+///
+/// If the wire payload omits `"this"`, the subject entity is
+/// derived from the predicate and the remaining payload via
+/// [`derive_this`] — same hash recipe as the notation path's
+/// `Derived` lowering, so identity converges across paths.
 pub fn application_plan_from_predicate(application: PredicateApplication) -> ApplicationPlan {
     let PredicateApplication {
         predicate,
-        parameters,
+        mut parameters,
         name,
     } = application;
     let descriptor = match predicate {
         ConceptDescriptor::Durable(c) | ConceptDescriptor::Transient(c) => c,
     };
+    if !parameters.contains_key("this") {
+        let this = derive_this(&descriptor.this(), &parameters);
+        parameters.insert("this".into(), Value::Entity(this));
+    }
+    let mut terms = Parameters::new();
+    for (key, value) in parameters {
+        terms.insert(key, Term::Constant(value));
+    }
     ApplicationPlan::Concept(ConceptPlan {
         statement: ConceptQuery {
-            terms: parameters,
+            terms,
             predicate: descriptor,
         },
         name,
     })
+}
+
+/// Hash a `(predicate, payload)` pair to the entity URI that
+/// identifies the assertion's subject. Mirrors the shape the
+/// notation analyzer uses for `ThisIntent::Derived` so a `view!`
+/// assertion in YAML and a `new-view` command rule end up
+/// referring to the same entity when their payloads coincide.
+///
+/// The hash input is the `{assert: <predicate>, where: {…}}`
+/// shape dialog uses elsewhere for predicate application
+/// (e.g. constraint serialization), so the digest reads naturally
+/// as "the entity identified by this assertion."
+pub fn derive_this(predicate: &Entity, payload: &ValueMap) -> Entity {
+    Entity::of(&DigestInput {
+        assert: predicate,
+        payload,
+    })
+}
+
+/// Serialization shape fed to [`Entity::of`] for deriving the
+/// subject entity. `assert` carries the predicate's identity (a
+/// concept's `concept:<hash>` URI, or a claim domain string); the
+/// `where` map carries the resolved payload. dag-cbor canonicalizes
+/// map keys, so insertion order in `payload` does not affect the
+/// resulting entity.
+#[derive(Serialize)]
+struct DigestInput<'a, P: Serialize> {
+    assert: &'a P,
+    #[serde(rename = "where")]
+    payload: &'a IndexMap<String, Value>,
 }
 
 /// One lowered write — an assertion or a retraction of an
@@ -707,5 +753,95 @@ mod tests {
             !saw_meta_name,
             "anonymous bindings should not emit any dialog.meta/name claim"
         );
+    }
+
+    // -- wire-path entity derivation ------------------------------ //
+
+    fn descriptor_with_text_field(domain: &str, name: &str) -> ConceptDescriptor {
+        let json = format!(
+            r#"{{ "with": {{ "{name}": {{ "the": "{domain}/{name}", "as": "Text", "cardinality": "one" }} }} }}"#,
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    fn wire_application(
+        descriptor: ConceptDescriptor,
+        payload: &[(&str, Value)],
+    ) -> ApplicationPlan {
+        let mut parameters = ValueMap::new();
+        for (k, v) in payload {
+            parameters.insert((*k).into(), v.clone());
+        }
+        application_plan_from_predicate(PredicateApplication {
+            predicate: super::ConceptDescriptor::Durable(descriptor),
+            parameters,
+            name: None,
+        })
+    }
+
+    fn this_of(plan: &ApplicationPlan) -> Entity {
+        let ApplicationPlan::Concept(concept) = plan else {
+            panic!("expected concept plan");
+        };
+        match concept.statement.terms.get("this").expect("this present") {
+            Term::Constant(Value::Entity(e)) => e.clone(),
+            other => panic!("expected entity constant, got {other:?}"),
+        }
+    }
+
+    /// Same `(predicate, payload)` on the wire path produces the
+    /// same derived `this` — the property that lets two unrelated
+    /// callers converge on a shared subject without coordinating.
+    #[dialog_common::test]
+    fn it_derives_same_entity_for_same_predicate_and_payload() {
+        let d = descriptor_with_text_field("xyz.tonk.view", "name");
+        let plan_a = wire_application(d.clone(), &[("name", Value::String("Basic".into()))]);
+        let plan_b = wire_application(d, &[("name", Value::String("Basic".into()))]);
+        assert_eq!(this_of(&plan_a), this_of(&plan_b));
+    }
+
+    /// Same payload across two distinct predicates produces
+    /// *different* derived entities — the predicate identity is
+    /// part of the hash preimage, so `view{name:"Basic"}` and
+    /// `tile{name:"Basic"}` never collide on `this`.
+    #[dialog_common::test]
+    fn it_derives_different_entities_for_different_predicates() {
+        let view = descriptor_with_text_field("xyz.tonk.view", "name");
+        let tile = descriptor_with_text_field("xyz.tonk.tile", "name");
+        let plan_v = wire_application(view, &[("name", Value::String("Basic".into()))]);
+        let plan_t = wire_application(tile, &[("name", Value::String("Basic".into()))]);
+        assert_ne!(this_of(&plan_v), this_of(&plan_t));
+    }
+
+    /// Distinct payloads under the same predicate diverge — two
+    /// `new-view` commands with different `name` produce distinct
+    /// subjects so rules and downstream consumers can address each
+    /// independently.
+    #[dialog_common::test]
+    fn it_derives_different_entities_for_different_payloads() {
+        let d = descriptor_with_text_field("xyz.tonk.view", "name");
+        let plan_a = wire_application(d.clone(), &[("name", Value::String("Basic".into()))]);
+        let plan_b = wire_application(d, &[("name", Value::String("Other".into()))]);
+        assert_ne!(this_of(&plan_a), this_of(&plan_b));
+    }
+
+    /// A wire payload that supplies `this:` keeps that subject
+    /// verbatim — derivation only kicks in when the slot is
+    /// absent. This is the path the host uses when a descriptor
+    /// field projects an entity URI from the DOM (e.g. a
+    /// `data-counter` attribute).
+    #[dialog_common::test]
+    fn it_preserves_caller_supplied_this() {
+        let d = descriptor_with_text_field("xyz.tonk.view", "name");
+        let caller_this: Entity = "did:key:zCallerSupplied".parse().unwrap();
+        let mut parameters = ValueMap::new();
+        parameters.insert("this".into(), Value::Entity(caller_this.clone()));
+        parameters.insert("name".into(), Value::String("Basic".into()));
+        let plan = application_plan_from_predicate(PredicateApplication {
+            predicate: super::ConceptDescriptor::Durable(d),
+            parameters,
+            name: None,
+        });
+        assert_eq!(this_of(&plan), caller_this);
     }
 }

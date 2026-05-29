@@ -18,6 +18,7 @@ base58 = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-common = { workspace = true }
 dialog-query = { workspace = true }
+indexmap = { workspace = true }
 ipld-core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagcbor = { workspace = true }

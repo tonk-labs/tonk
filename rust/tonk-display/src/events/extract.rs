@@ -46,11 +46,12 @@ use super::path::{Classification, EventAction, EventPath, classify};
 /// `phase1_lookup`, pre-parsed once at delegate-install time. Its
 /// top-level `with` field is the attribute map.
 ///
-/// `this` is the entity URI the assertion's `this:` slot binds to.
-/// It does not need to be in the descriptor (every concept has an
-/// implicit `this`). For event-derived assertions it's the entity
-/// being acted on — typically the view's rendered entity, surfaced
-/// to the DOM via a `data-*` attribute the concept also reads.
+/// The `this:` slot is left out of the wire body unless the
+/// descriptor itself declares a `this` field that resolves from
+/// the event. The worker derives an absent `this:` from
+/// `(predicate, parameters)` so each event-derived assertion gets
+/// a distinct, content-addressed subject entity rather than
+/// colliding on a fixed sentinel.
 ///
 /// Returns `Err` when the descriptor has no `with` field or a
 /// `dom.event*` field's path didn't resolve. Action attributes
@@ -60,7 +61,6 @@ use super::path::{Classification, EventAction, EventPath, classify};
 pub fn build_transact_body(
     descriptor: &Value,
     concept_name_or_uri: &str,
-    this: &str,
     event: &Event,
     binding: &Element,
 ) -> Result<Value, ExtractError> {
@@ -69,11 +69,7 @@ pub fn build_transact_body(
         .and_then(Value::as_object)
         .ok_or(ExtractError::MissingWith)?;
 
-    // Parameters always include `this` so the assertion has a
-    // subject. The concept author shouldn't have to declare `this`
-    // in the `with:` map — it's implicit on every concept.
     let mut parameters = serde_json::Map::new();
-    parameters.insert("this".to_owned(), json!(this));
 
     let event_js: &JsValue = event.as_ref();
     let binding_js: &JsValue = binding.as_ref();
@@ -86,10 +82,6 @@ pub fn build_transact_body(
     let mut pending_actions: Vec<EventAction> = Vec::new();
 
     for (field_name, attr_value) in with {
-        // Skip an explicitly-declared `this` slot — we just set it.
-        if field_name == "this" {
-            continue;
-        }
         let Some(identifier) = attr_value.get("the").and_then(Value::as_str) else {
             // Malformed descriptor entry — skip the field.
             continue;
@@ -408,14 +400,8 @@ mod tests {
         );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[("data-counter", "did:key:zCounter")]);
-        let body = build_transact_body(
-            &descriptor,
-            "increment",
-            "did:key:zCounter",
-            &event,
-            &binding,
-        )
-        .expect("build_transact_body");
+        let body = build_transact_body(&descriptor, "increment", &event, &binding)
+            .expect("build_transact_body");
         let claims = body
             .get("claims")
             .and_then(Value::as_array)
@@ -423,7 +409,9 @@ mod tests {
         assert_eq!(claims.len(), 1);
         let app = &claims[0]["application"];
         let parameters = &app["parameters"];
-        assert_eq!(parameters["this"], json!("did:key:zCounter"));
+        // `this:` is intentionally omitted on the wire; the worker
+        // derives it from `(predicate, parameters)`.
+        assert!(parameters.get("this").is_none());
         assert_eq!(parameters["counter"], json!("did:key:zCounter"));
         assert_eq!(claims[0]["op"], json!("assert"));
         assert_eq!(app["predicate"]["kind"], json!("transient"));
@@ -440,7 +428,7 @@ mod tests {
         );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
-        let body = build_transact_body(&descriptor, "noop", "did:key:zSubject", &event, &binding)
+        let body = build_transact_body(&descriptor, "noop", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["kind"], json!("click"));
@@ -457,7 +445,7 @@ mod tests {
         );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
-        let err = build_transact_body(&descriptor, "noop", "did:key:zSubject", &event, &binding)
+        let err = build_transact_body(&descriptor, "noop", &event, &binding)
             .expect_err("expected UnresolvedField");
         match err {
             ExtractError::UnresolvedField { field, identifier } => {
@@ -479,7 +467,7 @@ mod tests {
         );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
-        let body = build_transact_body(&descriptor, "noop", "did:key:zSubject", &event, &binding)
+        let body = build_transact_body(&descriptor, "noop", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert!(params.get("name").is_none());
@@ -496,14 +484,8 @@ mod tests {
         );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[("data-counter", "not-a-uri")]);
-        let err = build_transact_body(
-            &descriptor,
-            "increment",
-            "did:key:zCounter",
-            &event,
-            &binding,
-        )
-        .expect_err("expected UnresolvedField");
+        let err = build_transact_body(&descriptor, "increment", &event, &binding)
+            .expect_err("expected UnresolvedField");
         assert!(
             matches!(err, ExtractError::UnresolvedField { ref field, .. } if field == "counter"),
             "got {err:?}",
@@ -525,7 +507,7 @@ mod tests {
         );
         let event = synthetic_event(&[]); // no target.dataset.todo either
         let binding = binding_element(&[("data-todo", "did:key:zTodo")]);
-        let body = build_transact_body(&descriptor, "toggle", "did:key:zTodo", &event, &binding)
+        let body = build_transact_body(&descriptor, "toggle", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["todo"], json!("did:key:zTodo"));
