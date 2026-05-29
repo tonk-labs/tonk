@@ -186,10 +186,40 @@ fn install_render_method() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ipld_core::ipld::Ipld;
     use std::collections::BTreeMap;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
 
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Convert a `serde_json::Value` into the equivalent [`Ipld`]
+    /// for test setup — `Conclusion::fields` holds `Ipld` since the
+    /// dag-json migration. `to_ipld(&Value::Null)` errors, so we
+    /// walk the shape ourselves.
+    fn json_to_ipld(value: &serde_json::Value) -> Ipld {
+        match value {
+            serde_json::Value::Null => Ipld::Null,
+            serde_json::Value::Bool(b) => Ipld::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ipld::Integer(i as i128)
+                } else if let Some(u) = n.as_u64() {
+                    Ipld::Integer(u as i128)
+                } else if let Some(f) = n.as_f64() {
+                    Ipld::Float(f)
+                } else {
+                    Ipld::Null
+                }
+            }
+            serde_json::Value::String(s) => Ipld::String(s.clone()),
+            serde_json::Value::Array(items) => Ipld::List(items.iter().map(json_to_ipld).collect()),
+            serde_json::Value::Object(map) => Ipld::Map(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), json_to_ipld(v)))
+                    .collect(),
+            ),
+        }
+    }
 
     /// Mount a `<tonk-view>` with the given template HTML as
     /// children and attach it to the body. `register()` runs at the
@@ -213,9 +243,9 @@ mod tests {
     /// Build a serialized `{ this, fields }` JsValue conclusion the
     /// way `<tonk-display>` would pass it into `el.render(detail)`.
     fn detail(this: &str, fields: &[(&str, &str)]) -> JsValue {
-        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
         for (k, v) in fields {
-            map.insert((*k).to_owned(), serde_json::Value::String((*v).to_owned()));
+            map.insert((*k).to_owned(), Ipld::String((*v).to_owned()));
         }
         let conclusion = Conclusion {
             this: this.to_owned(),
@@ -378,9 +408,9 @@ mod tests {
     /// with a folded conclusion (the shape `<tonk-display>::fold_rows`
     /// produces from a cardinality-many SSE frame).
     fn detail_json(this: &str, fields: &[(&str, serde_json::Value)]) -> JsValue {
-        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
         for (k, v) in fields {
-            map.insert((*k).to_owned(), v.clone());
+            map.insert((*k).to_owned(), json_to_ipld(v));
         }
         let conclusion = Conclusion {
             this: this.to_owned(),
