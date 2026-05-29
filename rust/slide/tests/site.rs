@@ -1208,7 +1208,10 @@ mod when_sharing_a_display {
         // URI subjects land in `then=` verbatim — no bookmark to
         // prefer over them.
         let expected = format!("branch/main/display/{entity}?view=basic&model=task");
-        assert_eq!(pairs.get("then").map(String::as_str), Some(expected.as_str()));
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some(expected.as_str())
+        );
         Ok(())
     }
 

@@ -623,14 +623,8 @@ async fn share_op(command: ShareCommand) -> ExitCode {
                 remote,
                 space_name,
             };
-            match share::share_display(
-                &site,
-                &subject,
-                view.as_deref(),
-                model.as_deref(),
-                options,
-            )
-            .await
+            match share::share_display(&site, &subject, view.as_deref(), model.as_deref(), options)
+                .await
             {
                 Ok(outcome) => {
                     print_share_display_outcome(&outcome);
