@@ -54,6 +54,15 @@ pub fn register() {
 mod tests {
     use super::BOOTSTRAP;
 
+    // Run wasm32 tests in the browser (ChromeDriver), matching the
+    // sibling tonk-* crates. Without this the default wasm-bindgen
+    // runner is Node.js, which the CI web test leg does not provide
+    // ("failed to find or execute Node.js").
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
     #[dialog_common::test]
     fn it_compiles_bootstrap_into_a_transact_request() {
         // `claim!` runs parse + local analysis + lowering at
