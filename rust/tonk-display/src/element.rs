@@ -669,8 +669,8 @@ fn schedule_delegate_refresh(host: &Element, state: &Rc<RefCell<Inner>>) {
 }
 
 async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_generation: u64) {
-    use crate::events::delegate::Delegate;
-    use std::collections::{BTreeSet, HashMap};
+    use crate::events::delegate::{Delegate, Descriptors};
+    use std::collections::BTreeSet;
 
     // Snapshot the view elements so we don't hold the borrow
     // across awaits. The delegate's `claim` calls dispatch on the
@@ -724,8 +724,10 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
     }
 
     // Resolve each concept's descriptor via the host's
-    // `tonk-query` event. The host annotates space/branch.
-    let mut descriptors: HashMap<String, String> = HashMap::new();
+    // `tonk-query` event. The host annotates space/branch. The
+    // descriptor JSON is parsed once here so click-time event
+    // handlers don't pay the parse cost.
+    let mut descriptors: Descriptors = Descriptors::new();
     for name in &concept_names {
         // Bail mid-loop if a newer refresh has started — no point
         // resolving descriptors for a snapshot we won't install.
@@ -744,7 +746,16 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         match host_consumer::query(host, &body_val).await {
             Ok(result) => {
                 if let Ok((_entity, descriptor_json)) = extract_phase1(&result) {
-                    descriptors.insert(name.clone(), descriptor_json);
+                    match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
+                        Ok(value) => {
+                            descriptors.insert(name.clone(), value);
+                        }
+                        Err(e) => {
+                            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                                "<tonk-display>: descriptor for `{name}` is not valid JSON: {e}",
+                            )));
+                        }
+                    }
                 }
             }
             Err(_) => {

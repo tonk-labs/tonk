@@ -40,11 +40,11 @@ use super::path::{Classification, EventAction, EventPath, classify};
 
 /// Build a `TransactRequest`-shaped JSON value for a single
 /// `assert` of `concept_name` populated from `event`, using the
-/// concept's `descriptor_json` schema.
+/// concept's `descriptor` schema.
 ///
-/// `descriptor_json` is the dialog descriptor as returned by
-/// `phase1_lookup` — its top-level `with` field is the attribute
-/// map.
+/// `descriptor` is the dialog descriptor as returned by
+/// `phase1_lookup`, pre-parsed once at delegate-install time. Its
+/// top-level `with` field is the attribute map.
 ///
 /// `this` is the entity URI the assertion's `this:` slot binds to.
 /// It does not need to be in the descriptor (every concept has an
@@ -52,18 +52,18 @@ use super::path::{Classification, EventAction, EventPath, classify};
 /// being acted on — typically the view's rendered entity, surfaced
 /// to the DOM via a `data-*` attribute the concept also reads.
 ///
-/// Returns `Err` if the descriptor JSON can't be parsed. Action
-/// attributes are applied to the event as a side effect during the
-/// walk; an action's failure (method not present on this event
-/// type) is silently ignored.
+/// Returns `Err` when the descriptor has no `with` field or a
+/// `dom.event*` field's path didn't resolve. Action attributes
+/// queue during the walk and only fire after every Read field has
+/// resolved — a `preventDefault` never lands for a binding that
+/// the caller is about to skip on fallthrough.
 pub fn build_transact_body(
-    descriptor_json: &str,
+    descriptor: &Value,
     concept_name_or_uri: &str,
     this: &str,
     event: &Event,
     binding: &Element,
 ) -> Result<Value, ExtractError> {
-    let descriptor: Value = serde_json::from_str(descriptor_json).map_err(ExtractError::Parse)?;
     let with = descriptor
         .get("with")
         .and_then(Value::as_object)
@@ -77,6 +77,13 @@ pub fn build_transact_body(
 
     let event_js: &JsValue = event.as_ref();
     let binding_js: &JsValue = binding.as_ref();
+
+    // Actions queue up during the descriptor walk and only fire
+    // after every Read field has resolved. If a field is unresolved
+    // we bail with `UnresolvedField` and the caller falls through
+    // to the next matching ancestor; we don't want preventDefault /
+    // stopPropagation to land for a binding we're about to skip.
+    let mut pending_actions: Vec<EventAction> = Vec::new();
 
     for (field_name, attr_value) in with {
         // Skip an explicitly-declared `this` slot — we just set it.
@@ -102,8 +109,7 @@ pub fn build_transact_body(
                 parameters.insert(field_name.clone(), value);
             }
             Classification::Action(action) => {
-                apply_action(event_js, &action);
-                // Actions contribute no parameter.
+                pending_actions.push(action);
             }
             Classification::Other => {
                 // The field's the: doesn't point into the event,
@@ -114,6 +120,11 @@ pub fn build_transact_body(
         }
     }
 
+    // Body is known-good; commit the side effects on the event.
+    for action in &pending_actions {
+        apply_action(event_js, action);
+    }
+
     // The wrapper around the dialog descriptor: tonk's
     // `ConceptDescriptor` enum, with `kind` + `concept`. We mark
     // event-derived assertions as transient (commands / intents,
@@ -121,7 +132,7 @@ pub fn build_transact_body(
     // descriptor JSON — exactly what phase1 returned.
     let predicate = json!({
         "kind": "transient",
-        "concept": descriptor,
+        "concept": descriptor.clone(),
     });
 
     let claim = json!({
@@ -282,10 +293,7 @@ fn apply_action(event: &JsValue, action: &EventAction) {
 /// Errors building a transact body.
 #[derive(Debug)]
 pub enum ExtractError {
-    /// Descriptor JSON didn't parse.
-    Parse(serde_json::Error),
-    /// Descriptor parsed but has no `with` field — not a concept
-    /// descriptor.
+    /// Descriptor has no `with` field — not a concept descriptor.
     MissingWith,
     /// A `dom.event*` field's path resolved to `undefined`/`null`
     /// or didn't coerce to the declared `as:` type. We refuse to
@@ -301,7 +309,6 @@ pub enum ExtractError {
 impl std::fmt::Display for ExtractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Parse(e) => write!(f, "descriptor JSON parse: {e}"),
             Self::MissingWith => write!(f, "descriptor missing `with` field"),
             Self::UnresolvedField { field, identifier } => write!(
                 f,
@@ -386,17 +393,23 @@ mod tests {
         el
     }
 
+    fn descriptor(json_text: &str) -> Value {
+        serde_json::from_str(json_text).expect("descriptor parses")
+    }
+
     #[dialog_common::test]
     fn it_builds_a_transact_body_from_current_target_dataset() {
-        let descriptor = r#"{
-            "with": {
-                "counter": { "the": "dom.event.current-target.dataset/counter", "as": "Entity", "cardinality": "one" }
-            }
-        }"#;
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "counter": { "the": "dom.event.current-target.dataset/counter", "as": "Entity", "cardinality": "one" }
+                }
+            }"#,
+        );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[("data-counter", "did:key:zCounter")]);
         let body = build_transact_body(
-            descriptor,
+            &descriptor,
             "increment",
             "did:key:zCounter",
             &event,
@@ -418,14 +431,16 @@ mod tests {
 
     #[dialog_common::test]
     fn it_reads_top_level_event_fields() {
-        let descriptor = r#"{
-            "with": {
-                "kind": { "the": "dom.event/type", "as": "Text", "cardinality": "one" }
-            }
-        }"#;
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "kind": { "the": "dom.event/type", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
-        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event, &binding)
+        let body = build_transact_body(&descriptor, "noop", "did:key:zSubject", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["kind"], json!("click"));
@@ -433,14 +448,16 @@ mod tests {
 
     #[dialog_common::test]
     fn it_errors_when_a_required_field_does_not_resolve() {
-        let descriptor = r#"{
-            "with": {
-                "missing": { "the": "dom.event/pressure", "as": "Float", "cardinality": "one" }
-            }
-        }"#;
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "missing": { "the": "dom.event/pressure", "as": "Float", "cardinality": "one" }
+                }
+            }"#,
+        );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
-        let err = build_transact_body(descriptor, "noop", "did:key:zSubject", &event, &binding)
+        let err = build_transact_body(&descriptor, "noop", "did:key:zSubject", &event, &binding)
             .expect_err("expected UnresolvedField");
         match err {
             ExtractError::UnresolvedField { field, identifier } => {
@@ -453,14 +470,16 @@ mod tests {
 
     #[dialog_common::test]
     fn it_omits_non_dom_event_fields() {
-        let descriptor = r#"{
-            "with": {
-                "name": { "the": "xyz.tonk.user/name", "as": "Text", "cardinality": "one" }
-            }
-        }"#;
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "name": { "the": "xyz.tonk.user/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[]);
-        let body = build_transact_body(descriptor, "noop", "did:key:zSubject", &event, &binding)
+        let body = build_transact_body(&descriptor, "noop", "did:key:zSubject", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert!(params.get("name").is_none());
@@ -468,15 +487,17 @@ mod tests {
 
     #[dialog_common::test]
     fn it_errors_when_entity_coercion_fails() {
-        let descriptor = r#"{
-            "with": {
-                "counter": { "the": "dom.event.current-target.dataset/counter", "as": "Entity", "cardinality": "one" }
-            }
-        }"#;
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "counter": { "the": "dom.event.current-target.dataset/counter", "as": "Entity", "cardinality": "one" }
+                }
+            }"#,
+        );
         let event = synthetic_event(&[]);
         let binding = binding_element(&[("data-counter", "not-a-uri")]);
         let err = build_transact_body(
-            descriptor,
+            &descriptor,
             "increment",
             "did:key:zCounter",
             &event,
@@ -495,14 +516,16 @@ mod tests {
         // real `event.currentTarget` (the host where delegation was
         // installed) carries no data-* attrs — only the binding
         // element does. The projector must read from `binding`.
-        let descriptor = r#"{
-            "with": {
-                "todo": { "the": "dom.event.current-target.dataset/todo", "as": "Entity", "cardinality": "one" }
-            }
-        }"#;
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "todo": { "the": "dom.event.current-target.dataset/todo", "as": "Entity", "cardinality": "one" }
+                }
+            }"#,
+        );
         let event = synthetic_event(&[]); // no target.dataset.todo either
         let binding = binding_element(&[("data-todo", "did:key:zTodo")]);
-        let body = build_transact_body(descriptor, "toggle", "did:key:zTodo", &event, &binding)
+        let body = build_transact_body(&descriptor, "toggle", "did:key:zTodo", &event, &binding)
             .expect("build_transact_body");
         let params = &body["claims"][0]["application"]["parameters"];
         assert_eq!(params["todo"], json!("did:key:zTodo"));

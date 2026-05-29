@@ -523,10 +523,9 @@ fn update_iteration(
                 .iter()
                 .find(|(k, _)| !rows.contains_key(*k))
                 .map(|(k, v)| (k.clone(), v.clone()))
+            && let Some(row) = rows.remove(&old_key)
         {
-            if let Some(row) = rows.remove(&old_key) {
-                rows.insert(new_key, row);
-            }
+            rows.insert(new_key, row);
         }
     }
 
