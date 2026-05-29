@@ -201,14 +201,15 @@ enum ShareCommand {
         /// forwarded as `?view=`. `<tonk-display>` resolves it to
         /// the view entity the name points at and reads that
         /// view's own `model`. Omit it for carousel mode (every
-        /// view published for `--model`).
-        #[arg(long, value_name = "NAME")]
+        /// view published for `--model`). Mutually exclusive with
+        /// `--model`: a named view declares its own model.
+        #[arg(long, value_name = "NAME", conflicts_with = "model")]
         view: Option<String>,
         /// Concept name (validated locally) or URI for carousel
         /// mode, forwarded as `?model=`. Not needed with `--view`
         /// (the view declares its own model); required when
         /// `--view` is omitted.
-        #[arg(long, value_name = "CONCEPT")]
+        #[arg(long, value_name = "CONCEPT", required_unless_present = "view")]
         model: Option<String>,
         /// Override the URL prefix the launcher is built against.
         #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]

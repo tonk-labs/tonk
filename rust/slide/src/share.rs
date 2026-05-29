@@ -141,7 +141,8 @@ pub struct ShareViewOutcome {
     pub space_name: String,
 }
 
-/// Failure modes for [`share_concept`] and [`share_view`].
+/// Failure modes for [`share_concept`], [`share_view`], and
+/// [`share_display`].
 #[derive(Debug, Error)]
 pub enum ShareError {
     /// `<name>` doesn't resolve to a concept on the local
@@ -374,9 +375,12 @@ pub async fn share_view(
 /// name or `did:key:…` URI). The model argument can be a concept
 /// name (validated against the local schema) or a URI (passed
 /// through verbatim). The view argument is forwarded without
-/// validation — `<tonk-display>` falls back to a generic
-/// per-field rendering when the named view doesn't resolve, so a
-/// typo surfaces in the UI rather than failing the share.
+/// validation: `<tonk-display>` resolves the name to a view
+/// entity at render time, and a name that doesn't resolve
+/// surfaces as an error in the UI (not a generic fallback) — so
+/// a typo isn't caught here, it fails on the recipient's screen.
+/// Omitting `--view` entirely is the only thing that selects
+/// carousel mode.
 ///
 /// Steps parallel [`share_view`]:
 ///
@@ -442,9 +446,12 @@ pub async fn share_display(
 
 /// Build the `then=` suffix for a display share: a path under the
 /// recipient's space root with optional `view` / `model` query
-/// parameters appended. Values are form-urlencoded so a stray `&`
-/// or `?` in a name doesn't corrupt the inner query when tonk-ui
-/// pastes it onto its space-root path.
+/// parameters appended. The `view`/`model` values are
+/// form-urlencoded so a stray `&` or `?` in a name doesn't corrupt
+/// the inner query when tonk-ui pastes it onto its space-root path.
+/// The `subject` is left verbatim as a path segment — `did:key:…`
+/// URIs need their `:` intact and bookmark names don't carry query
+/// delimiters.
 fn compose_display_then(subject: &str, view: Option<&str>, model: Option<&str>) -> String {
     let mut path = format!(
         "branch/{branch}/display/{subject}",

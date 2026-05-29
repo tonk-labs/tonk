@@ -1173,13 +1173,45 @@ mod when_sharing_a_display {
             .query_pairs()
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
-        // No trailing `?` when neither selector is present —
-        // tonk-ui's element fallbacks (carousel for missing view,
-        // all-attributes query for missing model) light up.
+        // No trailing `?` when neither selector is present. The
+        // library `share_display` stays permissive here (it only
+        // composes the URL); the CLI is where exactly-one-of is
+        // enforced, so a neither-selector launcher isn't reachable
+        // from `slide share display`.
         assert_eq!(
             pairs.get("then").map(String::as_str),
             Some("branch/main/display/buy-milk"),
         );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_form_encodes_query_delimiters_in_a_view_name() -> Result<()> {
+        // A view name carrying `&`/`?`/`=` must be form-encoded so it
+        // can't corrupt or inject into the inner query string. The
+        // round-trip through `Url::query_pairs` recovers the original.
+        let test = shareable_display_site().await?;
+        let outcome = share::share_display(
+            &test.site,
+            "buy-milk",
+            Some("a&b=c?d"),
+            None,
+            ShareOptions::default(),
+        )
+        .await?;
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let then = pairs.get("then").map(String::as_str).expect("then param");
+        // The view value survives intact after tonk-ui would re-parse
+        // the inner query, with no extra parameters leaking in.
+        let inner = then.split_once('?').expect("inner query").1;
+        let inner_pairs: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(inner.as_bytes()).into_owned().collect();
+        assert_eq!(inner_pairs.get("view").map(String::as_str), Some("a&b=c?d"));
+        assert!(!inner_pairs.contains_key("b"));
         Ok(())
     }
 
