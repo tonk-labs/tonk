@@ -1097,8 +1097,14 @@ mod tests {
         ];
         let keyed = slide_keys("", rows);
         assert_eq!(keyed.len(), 2);
-        assert_eq!(keyed.get("did:key:zViewA").map(String::as_str), Some("<p>A</p>"));
-        assert_eq!(keyed.get("did:key:zViewB").map(String::as_str), Some("<p>B</p>"));
+        assert_eq!(
+            keyed.get("did:key:zViewA").map(String::as_str),
+            Some("<p>A</p>")
+        );
+        assert_eq!(
+            keyed.get("did:key:zViewB").map(String::as_str),
+            Some("<p>B</p>")
+        );
     }
 
     // Single mode: the subscription is pinned to one view entity, so

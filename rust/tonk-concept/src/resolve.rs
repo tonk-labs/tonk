@@ -186,7 +186,11 @@ fn coerce_filter_value(
         Some("SignedInteger") => raw.parse::<i64>().ok().map(|n| json!(n)),
         // Reject non-finite floats too: `serde_json` can't represent
         // `inf`/`NaN` and would silently serialize them as `null`.
-        Some("Float") => raw.parse::<f64>().ok().filter(|n| n.is_finite()).map(|n| json!(n)),
+        Some("Float") => raw
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .map(|n| json!(n)),
         Some("Boolean") => match raw {
             "true" => Some(json!(true)),
             "false" => Some(json!(false)),
@@ -407,7 +411,10 @@ mod tests {
     fn it_rejects_a_non_finite_float_filter() {
         for raw in ["inf", "NaN", "-inf"] {
             let err = filtered_query("Float", raw).expect_err("should reject");
-            assert!(matches!(err, Phase2Error::Filter { .. }), "{raw}: got {err:?}");
+            assert!(
+                matches!(err, Phase2Error::Filter { .. }),
+                "{raw}: got {err:?}"
+            );
         }
     }
 
@@ -417,7 +424,10 @@ mod tests {
     fn it_rejects_a_non_boolean_value_for_a_boolean_filter() {
         for raw in ["True", "1", "yes"] {
             let err = filtered_query("Boolean", raw).expect_err("should reject");
-            assert!(matches!(err, Phase2Error::Filter { .. }), "{raw}: got {err:?}");
+            assert!(
+                matches!(err, Phase2Error::Filter { .. }),
+                "{raw}: got {err:?}"
+            );
         }
     }
 }

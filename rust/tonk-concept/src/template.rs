@@ -936,7 +936,9 @@ mod dom {
         // several non-component levels deep is still found.
         #[dialog_common::test]
         fn it_finds_an_own_template_nested_in_plain_wrappers() {
-            let host = host_with("<section><div><ul><template><li>{a}</li></template></ul></div></section>");
+            let host = host_with(
+                "<section><div><ul><template><li>{a}</li></template></ul></div></section>",
+            );
             assert!(find_template(&host).is_some());
         }
 
@@ -958,9 +960,7 @@ mod dom {
         #[dialog_common::test]
         fn it_skips_templates_nested_in_other_owning_components() {
             for tag in ["tonk-display", "tonk-view"] {
-                let host = host_with(&format!(
-                    "<{tag}><template><p>{{a}}</p></template></{tag}>"
-                ));
+                let host = host_with(&format!("<{tag}><template><p>{{a}}</p></template></{tag}>"));
                 assert!(
                     find_template(&host).is_none(),
                     "template nested in <{tag}> should be skipped",

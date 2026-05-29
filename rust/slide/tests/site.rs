@@ -1209,7 +1209,9 @@ mod when_sharing_a_display {
         // the inner query, with no extra parameters leaking in.
         let inner = then.split_once('?').expect("inner query").1;
         let inner_pairs: std::collections::HashMap<_, _> =
-            url::form_urlencoded::parse(inner.as_bytes()).into_owned().collect();
+            url::form_urlencoded::parse(inner.as_bytes())
+                .into_owned()
+                .collect();
         assert_eq!(inner_pairs.get("view").map(String::as_str), Some("a&b=c?d"));
         assert!(!inner_pairs.contains_key("b"));
         Ok(())
