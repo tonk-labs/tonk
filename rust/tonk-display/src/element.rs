@@ -467,7 +467,7 @@ async fn run(
                 .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("name query: {e}")))?;
             let name_result = host_consumer::query(host, &to_body(&name_q)?).await?;
             check_generation(&state, generation)?;
-            let view_entity = first_field(&name_result, "entity").ok_or_else(|| {
+            let view_entity = first_field(&name_result, "entity")?.ok_or_else(|| {
                 ErrorDetail::new(
                     ErrorKind::UnknownSource,
                     format!("no view named {name_uri}"),
@@ -480,12 +480,24 @@ async fn run(
             })?;
             let fields_result = host_consumer::query(host, &to_body(&fields_q)?).await?;
             check_generation(&state, generation)?;
-            let model_entity = first_field(&fields_result, "model").ok_or_else(|| {
+            let model_entity = first_field(&fields_result, "model")?.ok_or_else(|| {
                 ErrorDetail::new(
                     ErrorKind::Descriptor,
                     format!("view {view_entity} has no `model`"),
                 )
             })?;
+
+            // The same one-shot already carries `display`; if it's
+            // absent the subscription would deliver zero renderable
+            // rows and the host would sit blank with no callout. Catch
+            // it here so a view published without a template surfaces
+            // as a visible error instead.
+            if first_field(&fields_result, "display")?.is_none() {
+                return Err(ErrorDetail::new(
+                    ErrorKind::Descriptor,
+                    format!("view {view_entity} has no `display` template"),
+                ));
+            }
 
             // 3. Resolve that model concept's descriptor.
             let (_, descriptor_json) = resolve_model(host, &model_entity).await?;
@@ -589,12 +601,21 @@ fn to_body(query: &tonk_schema::query::Query) -> Result<JsValue, ErrorDetail> {
 }
 
 /// Pull a string field off the first conclusion of a one-shot query
-/// result (a `Vec<Conclusion>` serialized as a JS value). `None` if
-/// the result is empty or the field is missing / non-string.
-fn first_field(value: &JsValue, field: &str) -> Option<String> {
-    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone()).ok()?;
-    let first = conclusions.into_iter().next()?;
-    ipld_str(first.fields.get(field)).map(str::to_owned)
+/// result (a `Vec<Conclusion>` serialized as a JS value).
+///
+/// `Err` is a decode failure — the result wasn't the
+/// `Vec<Conclusion>` shape we expect (a wire/protocol mismatch),
+/// which is distinct from a genuinely empty or field-less result.
+/// `Ok(None)` means the result was empty or the field is absent /
+/// non-string. Keeping the two apart stops a decode bug from
+/// masquerading as a "not found" further up the chain.
+fn first_field(value: &JsValue, field: &str) -> Result<Option<String>, ErrorDetail> {
+    let conclusions: Vec<Conclusion> = serde_wasm_bindgen::from_value(value.clone())
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("query result: {e}")))?;
+    Ok(conclusions
+        .into_iter()
+        .next()
+        .and_then(|c| ipld_str(c.fields.get(field)).map(str::to_owned)))
 }
 
 /// Resolve a concept (bookmark name or entity URI) to its
@@ -607,6 +628,28 @@ async fn resolve_model(host: &Element, source: &str) -> Result<(String, String),
     extract_phase1(&result)
 }
 
+/// Key each incoming view-frame conclusion by its display target,
+/// paired with the `display` template. Views carry no `name`
+/// field: in single mode (`view_attr` non-empty) the subscription
+/// is pinned to one view entity, so the attribute is the stable
+/// key; in carousel mode (`view_attr` empty) many views share a
+/// model, so each keys by its own entity URI (`this`). A
+/// conclusion with no `display` string is dropped.
+fn slide_keys(view_attr: &str, conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
+    conclusions
+        .into_iter()
+        .filter_map(|c| {
+            let display = ipld_str(c.fields.get("display")).map(str::to_owned)?;
+            let key = if view_attr.is_empty() {
+                c.this
+            } else {
+                view_attr.to_owned()
+            };
+            Some((key, display))
+        })
+        .collect()
+}
+
 /// Diff the incoming view frame against currently mounted slides.
 /// Slides are keyed by the `view` attribute (single mode) or the
 /// view entity URI (carousel mode); we add/remove/replace as
@@ -615,24 +658,8 @@ async fn resolve_model(host: &Element, source: &str) -> Result<(String, String),
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
 
-    // Key each slide by display target. Views no longer carry a
-    // `name` field: in single mode the subscription is pinned to one
-    // view entity, so the `view` attribute is the stable key; in
-    // carousel mode many views share a model, so key by the view
-    // entity URI (`this`).
     let view_attr = host.get_attribute("view").unwrap_or_default();
-    let incoming: BTreeMap<String, String> = conclusions
-        .into_iter()
-        .filter_map(|c| {
-            let display = ipld_str(c.fields.get("display")).map(str::to_owned)?;
-            let key = if view_attr.is_empty() {
-                c.this.clone()
-            } else {
-                view_attr.clone()
-            };
-            Some((key, display))
-        })
-        .collect();
+    let incoming = slide_keys(&view_attr, conclusions);
 
     // Remove vanished slides.
     let stale: Vec<String> = s
@@ -1047,5 +1074,52 @@ mod tests {
         });
         let field = Reflect::get(&detail, &JsValue::from_str("label")).expect("reflect get");
         assert_eq!(field.as_string().as_deref(), Some("hi"));
+    }
+
+    fn view_row(this: &str, display: Option<&str>) -> Conclusion {
+        let mut fields = BTreeMap::new();
+        if let Some(d) = display {
+            fields.insert("display".to_owned(), Ipld::String(d.to_owned()));
+        }
+        Conclusion {
+            this: this.to_owned(),
+            fields,
+        }
+    }
+
+    // Carousel mode (empty `view` attribute): many views share a
+    // model, so each slide keys off its own view entity URI.
+    #[dialog_common::test]
+    fn it_keys_carousel_slides_by_view_entity() {
+        let rows = vec![
+            view_row("did:key:zViewA", Some("<p>A</p>")),
+            view_row("did:key:zViewB", Some("<p>B</p>")),
+        ];
+        let keyed = slide_keys("", rows);
+        assert_eq!(keyed.len(), 2);
+        assert_eq!(keyed.get("did:key:zViewA").map(String::as_str), Some("<p>A</p>"));
+        assert_eq!(keyed.get("did:key:zViewB").map(String::as_str), Some("<p>B</p>"));
+    }
+
+    // Single mode: the subscription is pinned to one view entity, so
+    // the slide keys off the `view` attribute, not the entity URI.
+    #[dialog_common::test]
+    fn it_keys_the_single_slide_by_the_view_attribute() {
+        let rows = vec![view_row("did:key:zView", Some("<p>only</p>"))];
+        let keyed = slide_keys("book-dashboard", rows);
+        assert_eq!(keyed.len(), 1);
+        assert_eq!(
+            keyed.get("book-dashboard").map(String::as_str),
+            Some("<p>only</p>"),
+        );
+        assert!(!keyed.contains_key("did:key:zView"));
+    }
+
+    // A frame row with no `display` field can't render; it's dropped
+    // rather than producing a blank slide.
+    #[dialog_common::test]
+    fn it_drops_a_frame_row_with_no_display_field() {
+        let rows = vec![view_row("did:key:zView", None)];
+        assert!(slide_keys("", rows).is_empty());
     }
 }
