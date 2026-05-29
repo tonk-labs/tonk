@@ -4813,6 +4813,7 @@ name = "tonk-analyzer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "dialog-artifacts",
  "dialog-capability",
  "dialog-common",
@@ -4840,7 +4841,9 @@ dependencies = [
  "js-sys",
  "serde-wasm-bindgen",
  "serde_json",
+ "tonk-core",
  "tonk-host",
+ "tonk-macros",
  "tonk-schema",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -4877,9 +4880,11 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "indexmap",
+ "ipld-core",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
+ "serde_ipld_dagjson",
  "serde_json",
  "tokio",
  "tonk-host",
@@ -4898,8 +4903,10 @@ dependencies = [
  "dialog-artifacts",
  "dialog-common",
  "dialog-query",
+ "ipld-core",
  "serde",
  "serde_ipld_dagcbor",
+ "serde_ipld_dagjson",
  "serde_json",
  "thiserror 2.0.18",
  "wasm-bindgen-test",
@@ -4912,10 +4919,12 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "indexmap",
+ "ipld-core",
  "js-sys",
  "lsp-types",
  "serde",
  "serde-wasm-bindgen",
+ "serde_ipld_dagjson",
  "serde_json",
  "tokio",
  "tonk-concept",
@@ -4958,6 +4967,7 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "futures",
+ "ipld-core",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
@@ -5014,6 +5024,7 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "indexmap",
+ "ipld-core",
  "js-sys",
  "serde-wasm-bindgen",
  "serde_json",
@@ -5024,6 +5035,19 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
+]
+
+[[package]]
+name = "tonk-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_ipld_dagjson",
+ "syn",
+ "tonk-analyzer",
+ "tonk-core",
+ "tonk-notation",
 ]
 
 [[package]]

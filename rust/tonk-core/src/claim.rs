@@ -111,3 +111,16 @@ pub struct TransactRequest {
     /// write.
     pub claims: Vec<Claim>,
 }
+
+impl TransactRequest {
+    /// Reconstruct a request from its canonical DAG-JSON encoding.
+    /// Used by the `claim!` macro, which serializes the lowered
+    /// request at compile time and embeds the bytes; the generated
+    /// code calls this at runtime. The bytes are always produced by
+    /// `serde_ipld_dagjson` from this same type, so a decode
+    /// failure is a build-time bug, not a user error.
+    pub fn from_dagjson_bytes(bytes: &[u8]) -> Self {
+        serde_ipld_dagjson::from_slice(bytes)
+            .expect("claim!: compiled bootstrap is not valid DAG-JSON")
+    }
+}

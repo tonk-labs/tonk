@@ -14,7 +14,6 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::scope::Scope;
 use crate::analyzer::Working;
-use tonk_schema::concept::QueryEnv;
 use tonk_schema::prelude::EntityExt;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
 
@@ -48,11 +47,10 @@ pub(crate) struct AssertionPlan {
     pub transient: bool,
 }
 
-pub(crate) async fn build_assertion_application<Env: QueryEnv>(
+pub(crate) fn build_assertion_application(
     assertion: &SyntaxApplication,
     anchor: Option<&Anchor>,
     scope: &Scope<'_>,
-    env: &Env,
     analysis: &mut Working,
 ) -> Result<AssertionPlan, AnalyzeError> {
     let head_label = match &assertion.predicate.name {
@@ -70,7 +68,7 @@ pub(crate) async fn build_assertion_application<Env: QueryEnv>(
         ));
     }
 
-    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope, env).await?;
+    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope)?;
     if let ThisIntent::Uri(entity) = &this {
         let this_range = assertion
             .fields
@@ -92,26 +90,14 @@ pub(crate) async fn build_assertion_application<Env: QueryEnv>(
 
     match &assertion.predicate.name {
         HeadName::Concept(concept_name) => {
-            let resolved = scope
-                .resolve_concept(concept_name, env)
-                .await
-                .map_err(|e| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::ResolverFailed {
-                            context: format!("concept {concept_name:?}"),
-                            reason: e.to_string(),
-                        },
-                        head_range,
-                    )
-                })?
-                .ok_or_else(|| {
-                    AnalyzeError::at(
-                        AnalyzeErrorKind::UnknownConcept {
-                            name: concept_name.clone(),
-                        },
-                        head_range,
-                    )
-                })?;
+            let resolved = scope.concept(concept_name).ok_or_else(|| {
+                AnalyzeError::at(
+                    AnalyzeErrorKind::UnknownConcept {
+                        name: concept_name.clone(),
+                    },
+                    head_range,
+                )
+            })?;
             // `ConceptDefinition::descriptor` is durability-tagged;
             // the assertion builder works with the plain dialog
             // descriptor and the transient flag separately.
@@ -176,11 +162,9 @@ pub(crate) async fn build_assertion_application<Env: QueryEnv>(
                             value,
                             value_range,
                             scope,
-                            env,
                             analysis,
                             attr.content_type(),
-                        )
-                        .await?;
+                        )?;
                         assert_terms.insert(field_name.into(), term);
                         any_assert = true;
                         // Retract side blanks this field — the
@@ -295,11 +279,9 @@ pub(crate) async fn build_assertion_application<Env: QueryEnv>(
                     &field.value,
                     field.value_range,
                     scope,
-                    env,
                     analysis,
                     None,
-                )
-                .await?;
+                )?;
                 parameters.insert(field.name.clone(), term);
             }
             Ok(AssertionPlan {
@@ -349,11 +331,10 @@ pub(crate) async fn build_assertion_application<Env: QueryEnv>(
 /// The two are independent: every combination is meaningful
 /// (e.g. `person!: &alice\n  this: did:key:zX` → publish `id:alice`
 /// pointing at zX without producing a new entity).
-pub(crate) async fn derive_head_intent<Env: QueryEnv>(
+pub(crate) fn derive_head_intent(
     fields: &[Field],
     anchor: Option<&Anchor>,
     scope: &Scope<'_>,
-    env: &Env,
 ) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
     let name = anchor.map(|a| a.name.clone());
     let this = match fields.iter().find(|f| f.name == "this") {
@@ -375,45 +356,18 @@ pub(crate) async fn derive_head_intent<Env: QueryEnv>(
                 ThisIntent::Uri(entity)
             }
             FieldValue::Symbol(name) => {
-                // Bare symbol in `this:` — resolve through the
-                // name table. Same order as field-value
-                // `Symbol`: doc-local declarations, then
-                // doc-local attributes, then branch lookup.
-                let entity = if let Some(entity) = scope.lookup_entity(name) {
-                    entity
-                } else if let Some(resolved) =
-                    scope.resolve_attribute(name, env).await.map_err(|e| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::ResolverFailed {
-                                context: format!("symbol {name}"),
-                                reason: e.to_string(),
-                            },
-                            field.value_range,
-                        )
-                    })?
-                {
-                    resolved.entity
-                } else if let Some(entity) =
-                    scope.resolve_named_entity(name, env).await.map_err(|e| {
-                        AnalyzeError::at(
-                            AnalyzeErrorKind::ResolverFailed {
-                                context: format!("symbol {name}"),
-                                reason: e.to_string(),
-                            },
-                            field.value_range,
-                        )
-                    })?
-                {
-                    entity
-                } else {
-                    return Err(AnalyzeError::at(
+                // Bare symbol in `this:` — sync name-table lookup.
+                // The table was populated during resolve (in-doc
+                // declarations + prefetched branch entities).
+                let entity = scope.symbol(name).ok_or_else(|| {
+                    AnalyzeError::at(
                         AnalyzeErrorKind::UnknownBookmark {
                             field: "this".into(),
                             bookmark: name.clone(),
                         },
                         field.value_range,
-                    ));
-                };
+                    )
+                })?;
                 ThisIntent::Uri(entity)
             }
             FieldValue::Literal(_)

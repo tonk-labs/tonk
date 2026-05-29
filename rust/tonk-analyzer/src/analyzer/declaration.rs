@@ -178,7 +178,7 @@ pub(crate) struct ConceptBody {
 pub(crate) async fn parse_concept_body<Env: QueryEnv>(
     assertion: &SyntaxApplication,
     scope: &Scope<'_>,
-    env: &Env,
+    env: Option<&Env>,
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
@@ -277,37 +277,39 @@ async fn resolve_concept_field<Env: QueryEnv>(
     field_name: &str,
     value: &FieldValue,
     scope: &Scope<'_>,
-    env: &Env,
+    env: Option<&Env>,
 ) -> Result<AttributeDefinition, AnalyzeError> {
     match value {
-        FieldValue::Variable(name) => scope
-            .resolve_attribute(name, env)
-            .await
-            .map_err(|e| AnalyzeErrorKind::ResolverFailed {
-                context: format!("variable ?{name}"),
-                reason: e.to_string(),
-            })?
-            .ok_or_else(|| {
+        FieldValue::Variable(name) => {
+            scope.prefetch_attribute(name, env).await.map_err(|e| {
+                AnalyzeErrorKind::ResolverFailed {
+                    context: format!("variable ?{name}"),
+                    reason: e.to_string(),
+                }
+            })?;
+            scope.attribute(name).ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
                     field: field_name.into(),
                     bookmark: name.clone(),
                 }
                 .into()
-            }),
-        FieldValue::Symbol(name) => scope
-            .resolve_attribute(name, env)
-            .await
-            .map_err(|e| AnalyzeErrorKind::ResolverFailed {
-                context: format!("symbol {name}"),
-                reason: e.to_string(),
-            })?
-            .ok_or_else(|| {
+            })
+        }
+        FieldValue::Symbol(name) => {
+            scope.prefetch_attribute(name, env).await.map_err(|e| {
+                AnalyzeErrorKind::ResolverFailed {
+                    context: format!("symbol {name}"),
+                    reason: e.to_string(),
+                }
+            })?;
+            scope.attribute(name).ok_or_else(|| {
                 AnalyzeErrorKind::UnknownBookmark {
                     field: field_name.into(),
                     bookmark: name.clone(),
                 }
                 .into()
-            }),
+            })
+        }
         FieldValue::Uri(uri) => {
             let entity: Entity =
                 uri.parse()
@@ -318,19 +320,19 @@ async fn resolve_concept_field<Env: QueryEnv>(
                         }
                     })?;
             scope
-                .resolve_attribute_by_entity(&entity, env)
+                .prefetch_attribute_by_entity(&entity, env)
                 .await
                 .map_err(|e| AnalyzeErrorKind::ResolverFailed {
                     context: format!("attribute entity {uri}"),
                     reason: e.to_string(),
-                })?
-                .ok_or_else(|| {
-                    AnalyzeErrorKind::UnknownBookmark {
-                        field: field_name.into(),
-                        bookmark: uri.clone(),
-                    }
-                    .into()
-                })
+                })?;
+            scope.attribute_by_entity(&entity).ok_or_else(|| {
+                AnalyzeErrorKind::UnknownBookmark {
+                    field: field_name.into(),
+                    bookmark: uri.clone(),
+                }
+                .into()
+            })
         }
         _ => Err(AnalyzeErrorKind::UnsupportedFieldValue {
             field: field_name.into(),

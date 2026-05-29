@@ -14,6 +14,7 @@ members = [
     "rust/tonk-invite",
     "rust/tonk-layout",
     "rust/tonk-language-server",
+    "rust/tonk-macros",
     "rust/tonk-notation",
     "rust/slide",
     "rust/tonk-schema",
@@ -43,6 +44,7 @@ tonk-host = { path = "./rust/tonk-host" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-layout = { path = "./rust/tonk-layout" }
+tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
@@ -100,6 +102,9 @@ serde_yaml = "0.9"
 serde_ipld_dagcbor = "0.6"
 serde_ipld_dagjson = "0.2"
 sha2_0_10 = { package = "sha2", version = "0.10" }
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
 tempfile = "3"
 thirtyfour = "0.36"
 thiserror = "2"

@@ -32,7 +32,6 @@ use super::scope::Scope;
 use crate::analyzer::Working;
 use dialog_artifacts::Entity;
 use tonk_core::effect::{Effect, EffectPolarity};
-use tonk_schema::concept::QueryEnv;
 use tonk_schema::rule::Rule;
 
 /// Outcome of inspecting a `rule!:` claim body — install (build a
@@ -73,7 +72,7 @@ pub(crate) enum RuleAction {
 /// attribute of this entity"; combined with `this:` it identifies a
 /// specific rule. Used by the analyzer to pick between
 /// [`RuleAction::Install`] and [`RuleAction::Retract`].
-fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
+pub(crate) fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
     let has_rest_retract = application
         .fields
         .iter()
@@ -95,10 +94,9 @@ fn is_rule_retract_body(application: &SyntaxApplication) -> bool {
 /// the branch via [`Rule::retracting`] so its carried `source` bytes
 /// match what was stored — feeds straight into `Statement::Retract`
 /// for a byte-exact dissociate.
-pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
+pub(crate) fn lift_rule_claim(
     application: &SyntaxApplication,
     scope: &Scope<'_>,
-    env: &Env,
     analysis: &Working,
 ) -> Result<Option<RuleAction>, AnalyzeError> {
     if is_rule_retract_body(application) {
@@ -112,24 +110,24 @@ pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
                 application.range,
             )
         })?;
-        // Resolve the stored rule off the branch so the carried
-        // `source` bytes match what's installed. `None` means the
-        // entity holds no `dialog.effect/source` claim — the user
-        // is retracting a rule that isn't installed (or already
-        // retracted in this document); we propagate the absent
-        // signal upward so the analyzer can drop the claim silently.
-        let Some(rule) = Rule::retracting(entity.clone())
-            .resolve(scope.source(), env)
-            .await
-            .map_err(|e| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::RuleCompileFailed {
-                        reason: format!("rule retract resolve failed at {entity}: {e}"),
-                    },
-                    application.range,
-                )
-            })?
-        else {
+        // The stored rule was read off the branch during resolve's
+        // prefetch pass (so the carried `source` bytes match
+        // what's installed) and cached on the scope. `Some(None)`
+        // means the entity holds no `dialog.effect/source` claim —
+        // the user is retracting a rule that isn't installed (or
+        // already retracted in this document); propagate the
+        // absent signal upward so the analyzer drops the claim
+        // silently. `None` means resolve never prefetched it,
+        // which is an analyzer bug.
+        let resolved = scope.resolved_rule(&entity).ok_or_else(|| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::RuleCompileFailed {
+                    reason: format!("rule retract at {entity} was not prefetched during resolve"),
+                },
+                application.range,
+            )
+        })?;
+        let Some(rule) = resolved else {
             return Ok(None);
         };
         Ok(Some(RuleAction::Retract {
@@ -138,7 +136,7 @@ pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
         }))
     } else {
         let this = parse_rule_this_entity(application)?;
-        let effect = lift_rule(application, scope, env, analysis).await?;
+        let effect = lift_rule(application, scope, analysis)?;
         let rule = match this.clone() {
             Some(entity) => Rule::asserting_at(effect, entity),
             None => Rule::asserting(effect),
@@ -150,6 +148,57 @@ pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
     }
 }
 
+/// Prefetch every concept a `rule!:` install body references —
+/// the `assert!:` / `retract!:` head concept plus each `when:` /
+/// `unless:` premise concept — into the scope so [`lift_rule`]
+/// resolves them synchronously during expand. Premise concepts
+/// that name a built-in formula are skipped (they resolve through
+/// the formula table, not the branch). No-op for retract bodies,
+/// whose rule is prefetched separately via
+/// [`Scope::prefetch_rule`](super::scope::Scope::prefetch_rule).
+pub(crate) async fn prefetch_rule_concepts<Env: tonk_schema::concept::QueryEnv>(
+    application: &SyntaxApplication,
+    scope: &Scope<'_>,
+    env: Option<&Env>,
+) -> Result<(), AnalyzeError> {
+    if is_rule_retract_body(application) {
+        return Ok(());
+    }
+    let Ok(body) = parse_rule_body(application) else {
+        // A malformed body surfaces its error later in `lift_rule`
+        // with full diagnostics; prefetch just skips it.
+        return Ok(());
+    };
+    scope
+        .prefetch_concept(&body.conclusion, env)
+        .await
+        .map_err(|e| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::ResolverFailed {
+                    context: format!("rule head concept {:?}", body.conclusion),
+                    reason: e.to_string(),
+                },
+                body.conclusion_range,
+            )
+        })?;
+    for premise in body.when.iter().chain(body.unless.iter()) {
+        let name = premise.concept.value.as_str();
+        if lookup_formula(name).is_some() {
+            continue;
+        }
+        scope.prefetch_concept(name, env).await.map_err(|e| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::ResolverFailed {
+                    context: format!("rule premise concept {name:?}"),
+                    reason: e.to_string(),
+                },
+                premise.concept.range,
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Read an optional `this:` URI field out of a `rule!:` body.
 ///
 /// Returns `Ok(None)` when no `this:` field is present. Returns
@@ -158,7 +207,9 @@ pub(crate) async fn lift_rule_claim<Env: QueryEnv>(
 /// (variable, blank, literal, …) — `rule!:` is a "named install"
 /// or "named retract," not a templated one, so a `this: ?var` would
 /// be ambiguous about which entity to write at.
-fn parse_rule_this_entity(application: &SyntaxApplication) -> Result<Option<Entity>, AnalyzeError> {
+pub(crate) fn parse_rule_this_entity(
+    application: &SyntaxApplication,
+) -> Result<Option<Entity>, AnalyzeError> {
     let Some(this) = application.fields.iter().find(|f| f.name == "this") else {
         return Ok(None);
     };
@@ -196,10 +247,9 @@ fn parse_rule_this_entity(application: &SyntaxApplication) -> Result<Option<Enti
 /// Validation that used to live in the parser (exactly one
 /// polarity, non-empty `when:`) lives here so each diagnostic
 /// can point at semantically meaningful ranges.
-pub(crate) async fn lift_rule<Env: QueryEnv>(
+pub(crate) fn lift_rule(
     application: &SyntaxApplication,
     scope: &Scope<'_>,
-    env: &Env,
     analysis: &Working,
 ) -> Result<Effect, AnalyzeError> {
     let body = parse_rule_body(application)?;
@@ -207,35 +257,23 @@ pub(crate) async fn lift_rule<Env: QueryEnv>(
     // ---- Head concept ----
     let head_descriptor = {
         let name = body.conclusion.as_str();
-        let resolved = scope
-            .resolve_concept(name, env)
-            .await
-            .map_err(|e| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::ResolverFailed {
-                        context: format!("rule head concept {name:?}"),
-                        reason: e.to_string(),
-                    },
-                    body.conclusion_range,
-                )
-            })?
-            .ok_or_else(|| {
-                AnalyzeError::at(
-                    AnalyzeErrorKind::UnknownConcept { name: name.into() },
-                    body.conclusion_range,
-                )
-            })?;
+        let resolved = scope.concept(name).ok_or_else(|| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::UnknownConcept { name: name.into() },
+                body.conclusion_range,
+            )
+        })?;
         resolved.descriptor.concept().clone()
     };
 
     // ---- Premises ----
     let mut dialog_premises: Vec<DialogPremise> = Vec::new();
     for premise in body.when {
-        let proposition = lift_premise(premise, scope, env, analysis).await?;
+        let proposition = lift_premise(premise, scope, analysis)?;
         dialog_premises.push(DialogPremise::Assert(proposition));
     }
     for premise in body.unless {
-        let proposition = lift_premise(premise, scope, env, analysis).await?;
+        let proposition = lift_premise(premise, scope, analysis)?;
         dialog_premises.push(DialogPremise::Unless(Negation(proposition)));
     }
 
@@ -514,36 +552,23 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
 /// first — they're a fixed set that never lives on the branch, so
 /// the registry lookup is authoritative. Anything else resolves
 /// as a concept.
-async fn lift_premise<Env: QueryEnv>(
+fn lift_premise(
     premise: &NotationPremise,
     scope: &Scope<'_>,
-    env: &Env,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     let name = premise.concept.value.as_str();
 
     if let Some(formula) = lookup_formula(name) {
-        return lift_formula_premise(premise, formula, scope, env, analysis).await;
+        return lift_formula_premise(premise, formula, scope, analysis);
     }
 
-    let resolved = scope
-        .resolve_concept(name, env)
-        .await
-        .map_err(|e| {
-            AnalyzeError::at(
-                AnalyzeErrorKind::ResolverFailed {
-                    context: format!("rule premise concept {name:?}"),
-                    reason: e.to_string(),
-                },
-                premise.concept.range,
-            )
-        })?
-        .ok_or_else(|| {
-            AnalyzeError::at(
-                AnalyzeErrorKind::UnknownConcept { name: name.into() },
-                premise.concept.range,
-            )
-        })?;
+    let resolved = scope.concept(name).ok_or_else(|| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::UnknownConcept { name: name.into() },
+            premise.concept.range,
+        )
+    })?;
     let descriptor = resolved.descriptor.concept().clone();
 
     // Build the term map for this premise's `where:` bindings.
@@ -561,11 +586,9 @@ async fn lift_premise<Env: QueryEnv>(
             &field.value,
             field.value_range,
             scope,
-            env,
             analysis,
             None,
-        )
-        .await?;
+        )?;
         terms.insert("this".into(), term);
     } else {
         terms.insert("this".into(), Term::<dialog_query::Any>::unique());
@@ -580,18 +603,14 @@ async fn lift_premise<Env: QueryEnv>(
         }
         let user_binding = premise.bindings.iter().find(|f| f.name == *field_name);
         let term = match user_binding {
-            Some(field) => {
-                field_value_to_term(
-                    field_name,
-                    &field.value,
-                    field.value_range,
-                    scope,
-                    env,
-                    analysis,
-                    attr.content_type(),
-                )
-                .await?
-            }
+            Some(field) => field_value_to_term(
+                field_name,
+                &field.value,
+                field.value_range,
+                scope,
+                analysis,
+                attr.content_type(),
+            )?,
             None => Term::<dialog_query::Any>::unique(),
         };
         terms.insert(field_name.to_string(), term);
@@ -637,11 +656,10 @@ async fn lift_premise<Env: QueryEnv>(
 /// Optional (`#[output]`) operands the user omits are filled with
 /// a unique anonymous variable: the formula still computes the
 /// value, it just isn't joined anywhere.
-async fn lift_formula_premise<Env: QueryEnv>(
+fn lift_formula_premise(
     premise: &NotationPremise,
     formula: FormulaInfo,
     scope: &Scope<'_>,
-    env: &Env,
     analysis: &Working,
 ) -> Result<Proposition, AnalyzeError> {
     // Reject `where:` operands the formula doesn't declare. Done
@@ -668,18 +686,14 @@ async fn lift_formula_premise<Env: QueryEnv>(
     let mut terms = Parameters::new();
     for (operand, cell) in formula.cells.iter() {
         let term = match premise.bindings.iter().find(|f| f.name == operand) {
-            Some(field) => {
-                field_value_to_term(
-                    operand,
-                    &field.value,
-                    field.value_range,
-                    scope,
-                    env,
-                    analysis,
-                    None,
-                )
-                .await?
-            }
+            Some(field) => field_value_to_term(
+                operand,
+                &field.value,
+                field.value_range,
+                scope,
+                analysis,
+                None,
+            )?,
             None if cell.requirement().is_required() => {
                 return Err(AnalyzeError::at(
                     AnalyzeErrorKind::MissingFormulaOperand {

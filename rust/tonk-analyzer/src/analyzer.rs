@@ -49,7 +49,7 @@ mod scope;
 use std::collections::{HashMap, HashSet};
 
 use dialog_common::ConditionalSync;
-use tonk_notation::{Effectful, Expression, HeadName, Syntax};
+use tonk_notation::{Effectful, Expression, FieldValue, HeadName, Syntax};
 
 use tonk_schema::transact::{Application, DomainApplication, Statement, ThisIntent};
 
@@ -128,6 +128,54 @@ pub fn analyze<'s, 'a>(syntax: &'s Syntax, source: Source<'a>) -> Analyze<'s, 'a
     Analyze { syntax, source }
 }
 
+/// Analyze a self-contained document with no running system —
+/// every reference must resolve against the document's own
+/// `concept!` / `attribute!` / `&anchor` definitions (plus
+/// builtins). A reference that would need a branch lookup surfaces
+/// as an unknown-concept / unknown-bookmark error rather than
+/// being resolved.
+///
+/// Synchronous: the resolution plumbing is run with no `env`, so
+/// it never awaits a branch query. Used by the compile-time
+/// `claim!` macro, which has no running system to resolve against.
+pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    if syntax.expressions.is_empty() {
+        return Err(AnalyzeError::at(
+            AnalyzeErrorKind::EmptyDocument,
+            syntax.range,
+        ));
+    }
+
+    // The local resolve path never awaits real IO (every prefetch
+    // short-circuits on `None` env before its `.await`), so the
+    // future is ready on first poll. Drive it with a no-op waker
+    // rather than pull in an executor dependency.
+    let scope = Scope::new(Source::Branch(dialog_repository::QueryLayer::new()));
+    let fut = resolve::<crate::never_env::NeverEnv>(syntax, &scope, None);
+    let mut fut = pin!(fut);
+
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(
+        |_| RawWaker::new(std::ptr::null(), &VTABLE),
+        |_| {},
+        |_| {},
+        |_| {},
+    );
+    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) };
+    let mut cx = Context::from_waker(&waker);
+
+    let resolved = match fut.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => result?,
+        Poll::Pending => unreachable!(
+            "local analysis must not await: resolution with no env never hits the branch"
+        ),
+    };
+    expand(syntax, &scope, resolved)
+}
+
 /// Chain handle returned by [`analyze`]. Holds the syntax and the
 /// source until [`perform`](Self::perform) consumes them with an
 /// `env`.
@@ -158,8 +206,8 @@ impl<'s, 'a> Analyze<'s, 'a> {
         }
 
         let scope = Scope::new(source);
-        let resolved = resolve(syntax, &scope, env).await?;
-        expand(syntax, &scope, env, resolved).await
+        let resolved = resolve(syntax, &scope, Some(env)).await?;
+        expand(syntax, &scope, resolved)
     }
 }
 
@@ -196,7 +244,7 @@ struct Resolved {
 async fn resolve<Env: QueryEnv + ConditionalSync>(
     syntax: &Syntax,
     scope: &Scope<'_>,
-    env: &Env,
+    env: Option<&Env>,
 ) -> Result<Resolved, AnalyzeError> {
     let mut declared: HashMap<usize, DeclaredApplication> = HashMap::new();
 
@@ -222,8 +270,7 @@ async fn resolve<Env: QueryEnv + ConditionalSync>(
                         entity: entity.clone(),
                         descriptor: plan.descriptor.clone(),
                     };
-                    let (this, name) =
-                        derive_head_intent(&assertion.fields, anchor, scope, env).await?;
+                    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope)?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
@@ -272,8 +319,7 @@ async fn resolve<Env: QueryEnv + ConditionalSync>(
                         entity: entity.clone(),
                         descriptor,
                     };
-                    let (this, name) =
-                        derive_head_intent(&assertion.fields, anchor, scope, env).await?;
+                    let (this, name) = derive_head_intent(&assertion.fields, anchor, scope)?;
                     let variable = match &this {
                         ThisIntent::Variable(v) => Some(v.clone()),
                         _ => None,
@@ -341,10 +387,88 @@ async fn resolve<Env: QueryEnv + ConditionalSync>(
         }
     }
 
+    // Prefetch pass: every name `expand` will resolve gets pulled
+    // into the scope's tables now, while `env` is still in hand.
+    // After this, `expand` reads the tables synchronously — in-doc
+    // declarations registered above plus any branch entities
+    // fetched here. A self-contained document (every reference
+    // declared in-doc) prefetches nothing and never touches `env`.
+    prefetch_references(syntax, scope, env).await?;
+
     Ok(Resolved {
         declared,
         diagnostics: scan::scan_variables(syntax),
     })
+}
+
+/// Walk the document and prefetch every external name reference
+/// `expand` will resolve: head concept names, field-value bare
+/// symbols, and `this:` symbols. Each prefetch is a no-op when the
+/// name already resolves locally, so a self-contained document
+/// touches the branch zero times.
+async fn prefetch_references<Env: QueryEnv + ConditionalSync>(
+    syntax: &Syntax,
+    scope: &Scope<'_>,
+    env: Option<&Env>,
+) -> Result<(), AnalyzeError> {
+    for expression in &syntax.expressions {
+        let head = match expression {
+            Expression::Query(q) => q,
+            Expression::Claim(c) => &c.inner,
+        };
+        if let HeadName::Concept(name) = &head.predicate.name {
+            // Meta heads (`attribute`, `concept`) resolve through
+            // builtins, not the branch; everything else may name a
+            // branch concept.
+            if !matches!(name.as_str(), "attribute" | "concept") {
+                scope.prefetch_concept(name, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("concept {name:?}"),
+                            reason: e.to_string(),
+                        },
+                        head.predicate.range,
+                    )
+                })?;
+            }
+        }
+        for field in &head.fields {
+            if let FieldValue::Symbol(name) = &field.value {
+                scope.prefetch_symbol(name, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::ResolverFailed {
+                            context: format!("symbol {name}"),
+                            reason: e.to_string(),
+                        },
+                        field.value_range,
+                    )
+                })?;
+            }
+        }
+
+        // `rule!:` bodies reference concepts (the `assert!:` /
+        // `retract!:` head and each premise) and, on the retract
+        // path, the installed rule itself. None of these live in
+        // the flat head/field walk above, so prefetch them here.
+        if let Expression::Claim(c) = expression
+            && matches!(&c.inner.predicate.name, HeadName::Concept(n) if n == "rule")
+        {
+            rule::prefetch_rule_concepts(&c.inner, scope, env).await?;
+            if rule::is_rule_retract_body(&c.inner)
+                && let Some(entity) = rule::parse_rule_this_entity(&c.inner)?
+            {
+                scope.prefetch_rule(&entity, env).await.map_err(|e| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::RuleCompileFailed {
+                            reason: format!("rule retract resolve failed at {entity}: {e}"),
+                        },
+                        c.inner.range,
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// **expand** — lower the resolved document's notation sugar into
@@ -365,10 +489,9 @@ async fn resolve<Env: QueryEnv + ConditionalSync>(
 /// snapshot queries. Every lowering is terminal — it emits only
 /// resolved entities and substituted terms — so `expand`'s output
 /// never needs re-resolution.
-async fn expand<Env: QueryEnv + ConditionalSync>(
+fn expand(
     syntax: &Syntax,
     scope: &Scope<'_>,
-    env: &Env,
     resolved: Resolved,
 ) -> Result<Tree<Syntax>, AnalyzeError> {
     let Resolved {
@@ -397,7 +520,7 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
     // ---- query pass: build query Applications ----
     for (index, expression) in syntax.expressions.iter().enumerate() {
         if let Expression::Query(q) = expression {
-            let application = build_query_application(q, scope, env, &working).await?;
+            let application = build_query_application(q, scope, &working)?;
             working.queries.push(application.clone());
             nodes[index] = Some(ExpressionAnalysis::Query(Box::new(Tree {
                 source: QueryNode { source: q.clone() },
@@ -465,7 +588,7 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                     // on retract).
                     predicate = Predicate::Domain(a.predicate.source.clone());
                     anchor = anchor_node.as_ref().map(|n| n.name.clone());
-                    match rule::lift_rule_claim(a, scope, env, &working).await? {
+                    match rule::lift_rule_claim(a, scope, &working)? {
                         Some(rule::RuleAction::Install {
                             rule,
                             this: install_at,
@@ -530,14 +653,8 @@ async fn expand<Env: QueryEnv + ConditionalSync>(
                     // signature unchanged — the body still reads
                     // `assertion.fields` only, since the anchor
                     // affects naming downstream.
-                    let plan = build_assertion_application(
-                        a,
-                        anchor_node.as_ref(),
-                        scope,
-                        env,
-                        &mut working,
-                    )
-                    .await?;
+                    let plan =
+                        build_assertion_application(a, anchor_node.as_ref(), scope, &mut working)?;
                     let probe = plan.assert.as_ref().or(plan.retract.as_ref());
                     predicate = probe
                         .map(|app| predicate_of(app, plan.transient))
