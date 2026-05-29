@@ -297,10 +297,7 @@ async fn load_with_status() -> Result<Vec<VaultEntry>, VaultRegistryError> {
 
 /// Yellow → green reconnect: re-prompt for permission, update the
 /// registry, hand the handle back to the worker on success.
-async fn reconnect_vault(
-    id: &str,
-    handle: &FileSystemDirectoryHandle,
-) -> Result<(), TonkUiError> {
+async fn reconnect_vault(id: &str, handle: &FileSystemDirectoryHandle) -> Result<(), TonkUiError> {
     let state = fs_access::request_readwrite_permission(handle).await?;
     let registry = VaultRegistry::open()
         .await

@@ -509,7 +509,16 @@ impl TonkServiceWorker {
     /// once the user has re-granted access via a gesture.
     #[wasm_bindgen(js_name = "registerFsHandle")]
     pub fn register_fs_handle(&self, id: &str, handle: FileSystemDirectoryHandle) {
+        // `dialog_remote_fs::registry::register_directory` takes a
+        // `FileSystemDirectoryHandle` only under `wasm32`; on native it
+        // wants a `PathBuf`, for which an FS-Access handle has no
+        // equivalent. This browser-only API surface is never invoked on
+        // native — the stub exists solely so `clippy --all` type-checks
+        // the crate on the host.
+        #[cfg(target_arch = "wasm32")]
         dialog_remote_fs::registry::register_directory(id, handle);
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = (id, handle);
     }
 
     /// Drop a previously-registered FS handle. Returns `true` if an

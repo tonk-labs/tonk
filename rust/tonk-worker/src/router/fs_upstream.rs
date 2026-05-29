@@ -87,7 +87,12 @@ pub async fn set_fs_upstream(
     // points at the same vault id. Replacing it with a different vault
     // would silently re-target a user's branch to unfamiliar data —
     // require an explicit reset (deferred to a future route).
-    let remote = match repo.remote(FS_REMOTE_NAME).load().perform(&tonk.operator).await {
+    let remote = match repo
+        .remote(FS_REMOTE_NAME)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
         Ok(existing) => {
             let existing_address = existing.address();
             let proposed_site = address.clone().into();
@@ -105,9 +110,7 @@ pub async fn set_fs_upstream(
             .await
             .map_err(|e| TonkWorkerError::Router(format!("create FS remote: {e}")))?,
         Err(e) => {
-            return Err(TonkWorkerError::Router(format!(
-                "load FS remote: {e}",
-            )));
+            return Err(TonkWorkerError::Router(format!("load FS remote: {e}",)));
         }
     };
 

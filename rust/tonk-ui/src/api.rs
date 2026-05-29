@@ -541,7 +541,10 @@ pub async fn set_fs_upstream(
             repo, branch, vault_id, status, text
         )));
     }
-    response.json::<FsUpstreamResponse>().await.map_err(into_api_error)
+    response
+        .json::<FsUpstreamResponse>()
+        .await
+        .map_err(into_api_error)
 }
 
 /// POST a sync route. `op` is `"pull"` / `"push"` for the
