@@ -1,0 +1,532 @@
+<!doctype html>
+<!--
+  Niri-style prototype of <tonk-layout>, to compare against the
+  masonry prototype (prototype.html).
+
+  The niri model:
+   - ONE horizontal strip. It scrolls sideways, with snap. The
+     page does not scroll vertically; the strip is the viewport
+     height.
+   - Columns sit left to right. Each column has a width preset
+     (XS-XL), capped so no column is ever wider than the viewport.
+   - A column is a vertical stack of content-height tiles. A tile
+     is NEVER a scroller — it is exactly as tall as its content.
+     When a column's tiles total taller than the strip, the
+     COLUMN scrolls.
+   - More columns than fit on screen is the normal case: you
+     scroll the strip horizontally to reach them.
+
+  Width presets: XS / S / M / L / XL, in base-column multiples.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tonk-layout prototype — niri style</title>
+    <style>
+      :root {
+        --surface: #1a1a1f;
+        --border: #33333b;
+        --text: #e8e8ea;
+        --quiet: #8a8a92;
+        --brand: #3b82f6;
+        --space-xs: 0.5rem;
+        --space-s: 0.75rem;
+        --space-m: 1rem;
+        --radius: 0.5rem;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0e0e12;
+        color: var(--text);
+        font-family: system-ui, sans-serif;
+        background-image: radial-gradient(
+          color-mix(in srgb, var(--text) 12%, transparent) 0.5px,
+          transparent 0.5px
+        );
+        background-size: 16px 16px;
+        /* the page itself never scrolls; the strip does */
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* ---- the strip: one horizontal scroller ------------------
+         Columns lay left to right; the strip scrolls sideways.
+         scroll-snap aligns a column edge when a flick settles. */
+      .strip {
+        /* one base column */
+        --base: 16rem;
+        --gap: var(--space-s);
+        /* how much of the next column peeks past the right edge
+           when a column is capped to the viewport — the "there is
+           more, swipe" cue (the bsky video's dimmed neighbor). */
+        --peek: 2.5rem;
+        /* the widest a column may render: the viewport minus the
+           strip padding on both sides and the peek sliver. A
+           preset wider than this is clamped to it, so on a phone
+           every column is about one screen wide and you swipe
+           between them instead of a column overflowing unusably. */
+        --cap: calc(100vw - var(--gap) * 2 - var(--peek));
+        flex: 1;
+        min-block-size: 0;
+        display: flex;
+        flex-direction: row;
+        gap: var(--gap);
+        padding: var(--gap);
+        box-sizing: border-box;
+        overflow-x: auto;
+        overflow-y: hidden;
+        /* Pure-CSS snap, no JavaScript. `proximity` (not
+           `mandatory`) settles a scroll to a snap point only when
+           it comes to rest near one — it never fights an
+           in-progress scroll, so it does not feel grabby. Each
+           column has one snap point, its left edge (see
+           `.column`), so a settled scroll always has some column
+           flush to the left. */
+        scroll-snap-type: x proximity;
+        scroll-padding-inline: var(--gap);
+        overscroll-behavior-x: contain;
+      }
+
+      /* ---- a column: fixed-width vertical stack ----------------
+         Width is the preset target (span x base) but `min()`-capped
+         at --cap, so a column is never wider than the viewport. On
+         a desktop the preset wins and columns differ in width; on a
+         phone every column clamps to ~one screen and you swipe
+         between them. flex: 0 0 — the column holds that width, the
+         strip overflows and scrolls.
+
+         The column is the viewport height (`block-size: 100%`) and
+         is the vertical scroller: when its content-height tiles
+         total taller than that, the COLUMN scrolls. Tiles never
+         scroll — see the `.tile` rule. */
+      .column {
+        flex: 0 0
+          min(calc(var(--span, 1) * var(--base)), var(--cap));
+        block-size: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: var(--gap);
+        overflow-y: auto;
+        /* `start` only — every column snaps its LEFT edge to the
+           strip start, and that is the single snap point it has.
+           `start end` was tried (a left AND a right snap point per
+           column) but with mixed column widths a narrow column's
+           left-snap gets out-competed by a wide neighbour's
+           right-snap, so the narrow column could never settle
+           flush-left. One snap point per column, always the left,
+           is reliable for every column. */
+        scroll-snap-align: start;
+      }
+      .column[data-width="XS"] {
+        --span: 1;
+      }
+      .column[data-width="S"] {
+        --span: 1.6;
+      }
+      .column[data-width="M"] {
+        --span: 2.2;
+      }
+      .column[data-width="L"] {
+        --span: 3;
+      }
+      /* XL is special: it fills the whole viewport width, not a
+         base-column multiple. The strip padding (start + end) is
+         the only thing subtracted, so an XL column is exactly one
+         screenful. This overrides the `flex` formula above. */
+      .column[data-width="XL"] {
+        flex: 0 0 calc(100vw - var(--gap) * 2);
+      }
+
+      /* A tile is ALWAYS exactly its content height — it is never
+         a scroller, never has an inner scrollbar. `flex: 0 0 auto`
+         keeps flex from stretching or shrinking it. When a
+         column's tiles total taller than the strip, the COLUMN
+         scrolls; the tile itself does not. */
+      .tile {
+        flex: 0 0 auto;
+        /* transparent — the tile is just a frame around its
+           content; the board background shows through. */
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--space-m);
+        box-sizing: border-box;
+      }
+      .tile[data-focused] {
+        border-color: var(--brand);
+        box-shadow: 0 0 0 2px var(--brand);
+      }
+
+      /* ---- ghost affordances ----------------------------------
+         A ghost tile sits at the bottom of every column: a dashed
+         "open a tile here" slot. A ghost column sits at the end of
+         the strip: it lets you always slide past the last real
+         column and open a new one. Both are dashed, quiet, and
+         grow a touch on hover. */
+      .tile.ghost,
+      .column.ghost {
+        border: 1px dashed var(--border);
+        background: transparent;
+        color: var(--quiet);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        user-select: none;
+      }
+      .tile.ghost {
+        /* a comfortable click target at a column's foot */
+        min-block-size: 4rem;
+      }
+      .column.ghost {
+        /* The trailing ghost column — full height, width set by
+           script so the last real column can snap to the left
+           edge with the ghost filling the leftover space. The JS
+           snap ignores the ghost: it is not a snap target. */
+        block-size: 100%;
+      }
+      .tile.ghost:hover,
+      .column.ghost:hover {
+        border-color: var(--brand);
+        color: var(--text);
+      }
+      /* the + glyph */
+      .ghost .plus {
+        font-size: 1.5rem;
+        line-height: 1;
+      }
+      .tile-title {
+        margin: 0 0 var(--space-xs);
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .tile-meta {
+        margin: 0 0 var(--space-s);
+        font-size: 0.8rem;
+        color: var(--quiet);
+      }
+      .tile-body {
+        margin: 0;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        color: var(--quiet);
+      }
+
+      .bar {
+        flex: 0 0 auto;
+        display: flex;
+        gap: var(--space-m);
+        align-items: center;
+        padding: var(--space-s) var(--space-m);
+        background: #0e0e12;
+        border-block-end: 1px solid var(--border);
+        font-size: 0.85rem;
+      }
+      .bar strong {
+        font-weight: 600;
+      }
+      .bar button {
+        font: inherit;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: var(--space-xs) var(--space-s);
+        cursor: pointer;
+      }
+      .bar span {
+        color: var(--quiet);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="bar">
+      <strong>tonk-layout prototype — niri</strong>
+      <span>horizontal strip of columns — scroll sideways; tiles
+        are content-height, columns scroll</span>
+    </div>
+
+    <!--
+      Columns left to right. Each carries data-width (XS-XL). A
+      column holds one or more content-height tiles. Enough columns
+      that the strip overflows the viewport and scrolls.
+    -->
+    <div class="strip" id="strip">
+      <div class="column" data-width="L">
+        <div class="tile" data-focused>
+          <p class="tile-title">Inbox</p>
+          <p class="tile-meta">L column · single tile</p>
+          <p class="tile-body">
+            A wide column with one tile. The tile fills the
+            column's full height. The column is exactly the strip
+            height; the strip is the viewport height. The page
+            never scrolls vertically.
+          </p>
+        </div>
+      </div>
+
+      <!-- A tile whose content is taller than the column. In
+           "divide" mode the tile gets an inner scrollbar; in
+           "content" mode the column scrolls. This is the
+           overflow case to feel out. -->
+      <div class="column" data-width="M">
+        <div class="tile">
+          <p class="tile-title">Long document</p>
+          <p class="tile-meta">M column · content overflows the column</p>
+          <p class="tile-body">
+            This tile holds more text than the column is tall. The
+            tile itself never scrolls — it is always exactly its
+            content height. Instead the COLUMN scrolls: scroll down
+            within this column to reach the rest.
+          </p>
+          <p class="tile-body">
+            Lorem ipsum dolor sit amet, consectetur adipiscing
+            elit, sed do eiusmod tempor incididunt ut labore et
+            dolore magna aliqua. Ut enim ad minim veniam, quis
+            nostrud exercitation ullamco laboris nisi ut aliquip
+            ex ea commodo consequat.
+          </p>
+          <p class="tile-body">
+            Duis aute irure dolor in reprehenderit in voluptate
+            velit esse cillum dolore eu fugiat nulla pariatur.
+            Excepteur sint occaecat cupidatat non proident, sunt
+            in culpa qui officia deserunt mollit anim id est
+            laborum.
+          </p>
+          <p class="tile-body">
+            Sed ut perspiciatis unde omnis iste natus error sit
+            voluptatem accusantium doloremque laudantium, totam
+            rem aperiam, eaque ipsa quae ab illo inventore
+            veritatis et quasi architecto beatae vitae dicta sunt
+            explicabo.
+          </p>
+          <p class="tile-body">
+            Nemo enim ipsam voluptatem quia voluptas sit aspernatur
+            aut odit aut fugit, sed quia consequuntur magni dolores
+            eos qui ratione voluptatem sequi nesciunt. Neque porro
+            quisquam est qui dolorem ipsum quia dolor sit amet.
+          </p>
+          <p class="tile-body">
+            At vero eos et accusamus et iusto odio dignissimos
+            ducimus qui blanditiis praesentium voluptatum deleniti
+            atque corrupti quos dolores et quas molestias
+            excepturi sint occaecati cupiditate non provident.
+          </p>
+          <p class="tile-body">
+            Consectetur adipiscing elit, sed do eiusmod tempor.
+            Ut enim ad minim veniam, quis nostrud exercitation
+            ullamco laboris. Duis aute irure dolor in
+            reprehenderit in voluptate velit esse cillum.
+          </p>
+          <p class="tile-body">
+            Quis autem vel eum iure reprehenderit qui in ea
+            voluptate velit esse quam nihil molestiae consequatur,
+            vel illum qui dolorem eum fugiat quo voluptas nulla
+            pariatur. Temporibus autem quibusdam et aut officiis.
+          </p>
+          <p class="tile-body">
+            Et harum quidem rerum facilis est et expedita
+            distinctio. Nam libero tempore, cum soluta nobis est
+            eligendi optio cumque nihil impedit quo minus id quod
+            maxime placeat facere possimus.
+          </p>
+          <p class="tile-body">
+            Omnis voluptas assumenda est, omnis dolor repellendus.
+            Temporibus autem quibusdam et aut officiis debitis aut
+            rerum necessitatibus saepe eveniet ut et voluptates
+            repudiandae sint et molestiae non recusandae.
+          </p>
+          <p class="tile-body">
+            Itaque earum rerum hic tenetur a sapiente delectus, ut
+            aut reiciendis voluptatibus maiores alias consequatur
+            aut perferendis doloribus asperiores repellat.
+          </p>
+          <p class="tile-body">
+            This last paragraph marks the end of the document, so
+            it is obvious whether you can scroll all the way down
+            to it and which scroller (tile or column) you used.
+          </p>
+        </div>
+      </div>
+
+      <div class="column" data-width="XS">
+        <div class="tile">
+          <p class="tile-title">Notifications</p>
+          <p class="tile-meta">XS column · tile 1 of 2</p>
+          <p class="tile-body">
+            Two tiles in this column. In "divide" mode they split
+            the column height evenly — true niri.
+          </p>
+        </div>
+        <div class="tile">
+          <p class="tile-title">Activity</p>
+          <p class="tile-meta">XS column · tile 2 of 2</p>
+          <p class="tile-body">
+            Each tile is its content height; the column scrolls
+            when the tiles total taller than the strip.
+          </p>
+        </div>
+      </div>
+
+      <div class="column" data-width="M">
+        <div class="tile">
+          <p class="tile-title">Project Alpha</p>
+          <p class="tile-meta">M column · tile 1 of 3</p>
+          <p class="tile-body">
+            Three content-height tiles stacked in this column.
+          </p>
+        </div>
+        <div class="tile">
+          <p class="tile-title">Project Beta</p>
+          <p class="tile-meta">M column · tile 2 of 3</p>
+          <p class="tile-body">A second tile.</p>
+        </div>
+        <div class="tile">
+          <p class="tile-title">Project Gamma</p>
+          <p class="tile-meta">M column · tile 3 of 3</p>
+          <p class="tile-body">
+            A third. Lots of text here so that this
+            tile is visibly taller than the others and the column
+            has to scroll to reach the bottom of it. Lorem ipsum
+            dolor sit amet, consectetur adipiscing elit, sed do
+            eiusmod tempor incididunt ut labore et dolore magna
+            aliqua. Ut enim ad minim veniam, quis nostrud.
+          </p>
+        </div>
+      </div>
+
+      <div class="column" data-width="S">
+        <div class="tile">
+          <p class="tile-title">Notes</p>
+          <p class="tile-meta">S column · single tile</p>
+          <p class="tile-body">
+            An S column. Narrower than M, wider than XS.
+          </p>
+        </div>
+      </div>
+
+      <div class="column" data-width="XL">
+        <div class="tile">
+          <p class="tile-title">Wide feature panel</p>
+          <p class="tile-meta">XL column · single tile</p>
+          <p class="tile-body">
+            The widest preset. This column alone is wider than many
+            phone viewports, so reaching it means scrolling the
+            strip.
+          </p>
+        </div>
+      </div>
+
+      <div class="column" data-width="M">
+        <div class="tile">
+          <p class="tile-title">Task: write spec</p>
+          <p class="tile-meta">M column · tile 1 of 2</p>
+          <p class="tile-body">A task tile.</p>
+        </div>
+        <div class="tile">
+          <p class="tile-title">Task: ship it</p>
+          <p class="tile-meta">M column · tile 2 of 2</p>
+          <p class="tile-body">Another.</p>
+        </div>
+      </div>
+
+      <div class="column" data-width="L">
+        <div class="tile">
+          <p class="tile-title">Calendar</p>
+          <p class="tile-meta">L column · single tile</p>
+          <p class="tile-body">
+            One more wide column so the strip clearly overflows and
+            you can feel the horizontal scroll.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Ghost affordances. In the real element the reconciler
+      // emits these; here a small script appends them so the
+      // markup above stays clean.
+      //
+      //  - a ghost TILE at the foot of every column: open a tile
+      //    below in that column.
+      //  - a ghost COLUMN at the end of the strip: always lets you
+      //    slide past the last column and open a new one.
+      const strip = document.getElementById("strip");
+
+      function ghost(kind) {
+        const el = document.createElement("div");
+        el.className = kind + " ghost";
+        el.innerHTML = '<span class="plus">+</span>';
+        el.title =
+          kind === "tile"
+            ? "open a tile in this column"
+            : "open a new column";
+        return el;
+      }
+
+      // foot-of-column ghost tiles
+      for (const column of strip.querySelectorAll(".column")) {
+        column.append(ghost("tile"));
+      }
+      // end-of-strip ghost column
+      strip.append(ghost("column"));
+
+      // Trailing room. The last *real* column must be able to snap
+      // to the strip's start, with the ghost column sitting beside
+      // it in the leftover viewport space and NOTHING further to
+      // scroll into. The ghost column IS that leftover space: its
+      // width is sized so that
+      //
+      //   lastRealColumn + gap + ghostColumn  ==  viewport
+      //
+      // so when the last real column is at the start, the ghost
+      // exactly fills the rest and the scroll has reached its end.
+      // A floor keeps the ghost a usable click target if the last
+      // real column is nearly the whole viewport. (CSS alone
+      // cannot do this since column widths vary; the real element
+      // computes the same value in its reconciler.)
+      const ghostColumn = strip.querySelector(".column.ghost");
+      function sizeGhostColumn() {
+        const cols = strip.querySelectorAll(".column:not(.ghost)");
+        const lastReal = cols[cols.length - 1];
+        if (!lastReal) return;
+        const styles = getComputedStyle(strip);
+        const gap = parseFloat(styles.columnGap) || 0;
+        const padStart = parseFloat(styles.paddingInlineStart) || 0;
+        const padEnd = parseFloat(styles.paddingInlineEnd) || 0;
+        const viewport = strip.clientWidth - padStart - padEnd;
+        const lastW = lastReal.getBoundingClientRect().width;
+        // one base column in px (--base is a rem value)
+        const remPx = parseFloat(
+          getComputedStyle(document.documentElement).fontSize,
+        );
+        const floor = Math.min(16 * remPx, viewport);
+        const want = Math.max(floor, viewport - lastW - gap);
+        ghostColumn.style.flex = "0 0 " + want + "px";
+      }
+
+      sizeGhostColumn();
+      window.addEventListener("resize", sizeGhostColumn);
+      window.addEventListener("load", sizeGhostColumn);
+
+      // Snap is pure CSS (scroll-snap-type / scroll-snap-align) —
+      // no JavaScript involved. The only script here sizes the
+      // trailing ghost column and appends the ghost affordances.
+
+      // Prototype stub: clicking a ghost just logs. The real
+      // element opens the tile/column and writes to the branch.
+      strip.addEventListener("click", (event) => {
+        const g = event.target.closest(".ghost");
+        if (g) console.log("open", g.classList.contains("tile") ? "tile" : "column");
+      });
+    </script>
+  </body>
+</html>

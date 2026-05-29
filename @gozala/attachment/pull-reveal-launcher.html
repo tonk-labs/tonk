@@ -1,0 +1,866 @@
+<!doctype html>
+<!--
+  prototype-pull.html — a feel prototype for OPENING a tile at the
+  foot of a niri column by PULLING, the way Twitter's
+  pull-to-refresh works, but at the BOTTOM of a column.
+
+  The layout is the settled niri model: a horizontal strip of
+  columns; each column is full viewport height and is the vertical
+  scroller; tiles are real app windows that fill their share of
+  the column, butted edge to edge, no floating cards.
+
+  The gesture: scroll a column to its bottom, then keep dragging
+  up (or wheel down). That overscroll past the end reveals a + slot
+  that grows with the pull, rubber-banded. On release:
+
+   - short of the threshold: the slot springs back, nothing added.
+   - past the threshold: it commits. The slot stays open and shows
+     an app SELECTOR right inside it — a search field and an app
+     list, no floating dropdown. Pick one and the slot becomes a
+     real app window; the column can be pulled again.
+
+  A feel prototype: no Rust, no persistence, fake app content.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>tonk-layout — pull-to-open prototype</title>
+    <style>
+      :root {
+        --pitch: 16px; /* graph-paper dot pitch */
+        --cell: 48px; /* snap unit = 3 dots */
+        --gap: var(--pitch); /* seam between tiles / columns */
+        --pad: var(--cell); /* strip padding */
+        --bg: #0e0e12;
+        --surface: #1a1a1f;
+        --border: #2a2a31;
+        --text: #e8e8ea;
+        --quiet: #8a8a92;
+        --brand: #3b82f6;
+        --green: #79d68b;
+        --yellow: #e7c66b;
+        --pink: #e58fb4;
+        /* the one grey wash, shared by the pull hint and the
+           placeholder so the gesture flows with no colour change */
+        --wash: color-mix(in srgb, var(--text) 6%, transparent);
+        --threshold: 120px;
+        /* the one tile height — a newly opened tile, the committed
+           launcher, and the inline selector all use it, so the
+           pull flows straight into the tile with no size jump. */
+        --tile-h: 300px;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+        overflow: hidden;
+      }
+      .bar {
+        display: flex;
+        gap: 1rem;
+        align-items: baseline;
+        padding: 0.45rem 0.8rem;
+        background: var(--bg);
+      }
+      .bar strong {
+        font-size: 0.85rem;
+      }
+      .bar span {
+        color: var(--quiet);
+        font-size: 0.75rem;
+      }
+
+      /* the strip — a horizontal row of columns, scrolls sideways.
+         Carries the graph-paper dot grid so it travels with the
+         content. Columns are separated by the --gap seam where the
+         board background (and its dots) shows through. */
+      .strip {
+        display: flex;
+        gap: var(--gap);
+        padding: var(--pad);
+        height: calc(100% - 2rem);
+        box-sizing: border-box;
+        overflow-x: auto;
+        overflow-y: hidden;
+        background-image: radial-gradient(
+          color-mix(in srgb, var(--text) 7%, transparent) 0.5px,
+          transparent 0.5px
+        );
+        background-size: var(--pitch) var(--pitch);
+        background-position:
+          calc(var(--pitch) / -2) calc(var(--pitch) / -2);
+      }
+
+      /* a column — niri style. Full height, the vertical scroller.
+         No background of its own; the board canvas shows through
+         the seams. */
+      .column {
+        flex: 0 0 var(--col-w, 380px);
+        height: 100%;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: var(--gap);
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-width: none;
+      }
+      .column::-webkit-scrollbar {
+        display: none;
+      }
+
+      /* a column divider — a thin hairline sitting in the seam
+         between two columns. Purely a visual separator: it marks
+         where one column ends and the next begins. */
+      .divider {
+        flex: 0 0 1px;
+        align-self: stretch;
+        background: var(--border);
+      }
+
+      /* a tile — a FLAT app panel, niri split-view style. No title
+         bar, no panel background, no window chrome: the app
+         content sits directly on the board canvas. The --gap seams
+         and the layout are the only thing separating one app from
+         the next. Every tile is exactly --tile-h tall and never
+         shrinks, so the launcher (also --tile-h) opens at the same
+         size with no jump. */
+      .tile {
+        flex: 0 0 auto;
+        height: var(--tile-h);
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      /* the drag handle — a ⠿ braille glyph in the tile corner. It
+         is also the focus indicator: no border on the focused
+         tile, instead its handle pulses white. Appears on hover
+         for any tile. */
+      .tile-handle {
+        position: absolute;
+        top: 6px;
+        right: 8px;
+        color: var(--quiet);
+        font-size: 1rem;
+        line-height: 1;
+        cursor: grab;
+        opacity: 0;
+        transition: opacity 0.12s ease;
+        user-select: none;
+        z-index: 6;
+      }
+      .tile:hover .tile-handle {
+        opacity: 1;
+      }
+      .tile[data-focused] .tile-handle {
+        opacity: 1;
+        color: var(--text);
+        animation: handle-pulse 1.3s ease-in-out infinite;
+      }
+      @keyframes handle-pulse {
+        0%,
+        100% {
+          opacity: 0.4;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      /* the app name — just bold text leading the content, not a
+         bar; no background, no separator. */
+      .app-name {
+        flex: 0 0 auto;
+        color: var(--text);
+        font-size: 1.02rem;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        padding: 0.85rem 0.95rem 0.4rem;
+      }
+      .app-body {
+        flex: 1 1 auto;
+        overflow: hidden;
+        padding: 0 0.95rem 0.85rem;
+        line-height: 1.5;
+        color: var(--quiet);
+      }
+
+      /* ---- editor app ---- */
+      .code {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 12px;
+        white-space: pre;
+      }
+      .code .k {
+        color: var(--pink);
+      }
+      .code .s {
+        color: var(--green);
+      }
+      .code .c {
+        color: var(--quiet);
+      }
+      .code .f {
+        color: var(--accent);
+      }
+      .code .n {
+        color: var(--yellow);
+      }
+
+      /* ---- chat app ---- */
+      .msg {
+        display: flex;
+        gap: 0.5rem;
+        margin: 0.55rem 0;
+      }
+      .msg .av {
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        flex: 0 0 auto;
+        background: linear-gradient(135deg, #3a3a48, #23232c);
+      }
+      .msg .who {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .msg .when {
+        color: var(--quiet);
+        font-size: 0.72rem;
+        margin-left: 0.3rem;
+      }
+      .msg .said {
+        color: #c8c8d0;
+      }
+
+      /* ---- calendar app ---- */
+      .evt {
+        display: flex;
+        gap: 0.6rem;
+        padding: 0.34rem 0;
+        border-left: 2px solid var(--accent);
+        padding-left: 0.55rem;
+        margin: 0.25rem 0;
+      }
+      .evt .t {
+        color: var(--quiet);
+        font-variant-numeric: tabular-nums;
+      }
+      .evt .what {
+        color: var(--text);
+      }
+
+      /* ---- files app ---- */
+      .file {
+        display: flex;
+        gap: 0.5rem;
+        padding: 0.22rem 0;
+        color: #c8c8d0;
+      }
+      .file.dir {
+        color: var(--text);
+        font-weight: 500;
+      }
+
+      /* ---- terminal app ---- flat, no inner box */
+      .term {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+      .term .p {
+        color: var(--green);
+      }
+      .term .o {
+        color: var(--quiet);
+      }
+
+      /* ---- metrics app ---- */
+      .chart {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        height: 70%;
+        margin-top: 0.5rem;
+      }
+      .chart i {
+        flex: 1;
+        background: linear-gradient(
+          180deg,
+          var(--accent),
+          #2f4f86
+        );
+        border-radius: 2px 2px 0 0;
+      }
+
+      /* ---- notes app ---- */
+      .note h4 {
+        margin: 0 0 0.4rem;
+        font-size: 0.85rem;
+      }
+      .note li {
+        margin: 0.2rem 0;
+        color: #c8c8d0;
+      }
+
+      /* ----------------------------------------------------------
+         THE FOOT — the empty space below the last tile, and the
+         ONE place a new tile is opened. flex:1 so it eats the
+         column's leftover height. ONE gesture, always the same
+         whether the column has slack or is full:
+          - hover the foot: a faint "pull up to open" hint shows.
+          - pull up: the launcher placeholder stretches in from
+            the column's bottom edge.
+          - cross the threshold: it commits into the launcher.
+         When the column has slack the pull just has room to grow;
+         when it is full the pull overscrolls. Same feel either
+         way. It resolves to one --tile-h launcher. */
+      .foot {
+        flex: 1 1 auto;
+        /* --pull is the grown launcher height while pulling; 0 at
+           rest. min-height lifts the foot's floor so the launcher
+           grows from the bottom edge up. */
+        min-height: var(--pull, 0px);
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+      }
+      .foot.settling {
+        transition: min-height 0.26s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      /* the hover hint — a faint "pull up to open" prompt shown
+         whenever the pointer is over the foot at rest. */
+      .foot-hint {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0.7rem;
+        text-align: center;
+        font-size: 0.74rem;
+        color: var(--quiet);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.14s ease;
+      }
+      .foot:hover .foot-hint {
+        opacity: 0.7;
+      }
+      .foot[data-pulling] .foot-hint {
+        opacity: 0;
+      }
+
+      /* the placeholder — a dashed launcher slot that stretches in
+         with the pull. It sits at the BOTTOM of the foot (where
+         the new tile lands) and is one --tile-h tall, capped to
+         the space the pull has opened. Shown while pulling. */
+      .foot-ph {
+        flex: 0 0 auto;
+        height: min(100%, var(--tile-h));
+        box-sizing: border-box;
+        background: var(--wash);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.4rem;
+        color: var(--quiet);
+        opacity: 0;
+        transition: opacity 0.12s ease;
+      }
+      .foot[data-pulling] .foot-ph {
+        opacity: 1;
+      }
+      .foot-ph .plus {
+        font-size: 1.6rem;
+        line-height: 1;
+        transition: transform 0.12s ease;
+      }
+      .foot[data-armed] .foot-ph .plus {
+        color: var(--text);
+        transform: scale(1.18);
+      }
+      .foot-ph .hint {
+        font-size: 0.72rem;
+        user-select: none;
+      }
+
+      /* the inline app SELECTOR, shown inside the foot once open.
+         It fills the launcher height at the foot's bottom. */
+      .selector {
+        flex: 0 0 auto;
+        height: var(--tile-h);
+        display: none;
+        flex-direction: column;
+        background: var(--wash);
+        overflow: hidden;
+      }
+      .foot[data-open] .selector {
+        display: flex;
+      }
+      .foot[data-open] .foot-ph {
+        display: none;
+      }
+      .selector input {
+        font: inherit;
+        color: var(--text);
+        background: transparent;
+        border: 0;
+        border-bottom: 1px solid var(--border);
+        padding: 0.7rem 0.95rem;
+        outline: none;
+      }
+      .selector input::placeholder {
+        color: var(--quiet);
+      }
+      .selector-list {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 0.25rem 0;
+      }
+      .selector-item {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.45rem 0.95rem;
+        cursor: pointer;
+      }
+      .selector-item:hover,
+      .selector-item[data-active] {
+        background: var(--wash);
+      }
+      .selector-item .ic {
+        width: 1.1rem;
+        text-align: center;
+      }
+      .selector-dismiss {
+        position: absolute;
+        top: 0.35rem;
+        right: 0.45rem;
+        color: var(--quiet);
+        background: transparent;
+        border: 0;
+        font-size: 0.95rem;
+        cursor: pointer;
+        z-index: 2;
+      }
+      .selector-dismiss:hover {
+        color: var(--text);
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="bar">
+      <strong>tonk-layout — pull-to-open</strong>
+      <span>scroll a column to its bottom, then keep dragging up</span>
+    </div>
+
+    <div class="strip" id="strip"></div>
+
+    <script>
+      // ---- the apps: real-looking window content --------------
+      const APPS = {
+        editor: {
+          label: "plan.md — editor",
+          icon: "📝",
+          body: () => `<div class="code"><span class="c"># tonk-layout</span>
+
+<span class="k">fn</span> <span class="f">resolve</span>(board: <span class="n">Board</span>) -&gt; <span class="n">Layout</span> {
+  <span class="k">let</span> mut cols = board.columns
+    .iter()
+    .map(<span class="f">Column::resolve</span>)
+    .collect::&lt;<span class="n">Vec</span>&gt;();
+
+  cols.<span class="f">sort_by</span>(|a, b|
+    a.order.<span class="f">total_cmp</span>(&amp;b.order));
+
+  <span class="n">Layout</span> { cols }
+}
+
+<span class="c">// tiles take content height,</span>
+<span class="c">// then can be resized.</span></div>`,
+        },
+        chat: {
+          label: "team — chat",
+          icon: "💬",
+          body: () => {
+            const m = [
+              ["Alice", "9:02", "pushed the layout fix to main"],
+              ["Bob", "9:04", "nice, pulling it now"],
+              ["Carol", "9:11", "the niri columns feel right"],
+              ["You", "9:12", "still tuning the pull gesture"],
+              ["Alice", "9:15", "ship it once that lands"],
+              ["Bob", "9:18", "lunch at 1?"],
+            ];
+            return m
+              .map(
+                ([w, t, s]) => `<div class="msg">
+              <div class="av"></div>
+              <div><span class="who">${w}</span>
+              <span class="when">${t}</span><br>
+              <span class="said">${s}</span></div></div>`,
+              )
+              .join("");
+          },
+        },
+        calendar: {
+          label: "today — calendar",
+          icon: "📅",
+          body: () => {
+            const e = [
+              ["09:00", "standup"],
+              ["10:30", "focus block"],
+              ["11:30", "design review"],
+              ["13:00", "lunch"],
+              ["14:00", "1:1 with Sam"],
+              ["15:30", "interview"],
+              ["16:30", "ship it"],
+            ];
+            return e
+              .map(
+                ([t, w]) => `<div class="evt">
+              <span class="t">${t}</span>
+              <span class="what">${w}</span></div>`,
+              )
+              .join("");
+          },
+        },
+        files: {
+          label: "project — files",
+          icon: "📁",
+          body: () => {
+            const f = [
+              ["dir", "📂", "rust"],
+              ["", "📄", "  Cargo.toml"],
+              ["", "📄", "  prototype-pull.html"],
+              ["dir", "📂", "src"],
+              ["", "📄", "  model.rs"],
+              ["", "📄", "  resolve.rs"],
+              ["", "📄", "  element.rs"],
+              ["dir", "📂", "docs"],
+              ["", "📄", "  README.md"],
+            ];
+            return f
+              .map(
+                ([c, ic, n]) =>
+                  `<div class="file ${c}"><span>${ic}</span>${n}</div>`,
+              )
+              .join("");
+          },
+        },
+        terminal: {
+          label: "zsh — terminal",
+          icon: "⌷",
+          body: () => `<div class="term"><span class="p">~/tonk $</span> cargo test
+<span class="o">   Compiling tonk-layout v0.1.0</span>
+<span class="o">    Finished test [unoptimized]</span>
+<span class="o">     Running 9 tests</span>
+<span class="o">test it_folds_layout ... ok</span>
+<span class="o">test it_sorts_columns ... ok</span>
+<span class="o">test result: ok. 9 passed</span>
+<span class="p">~/tonk $</span> █</div>`,
+        },
+        metrics: {
+          label: "metrics — dashboard",
+          icon: "📊",
+          body: () => {
+            let bars = "";
+            for (let i = 0; i < 14; i++)
+              bars += `<i style="height:${
+                25 + Math.round(Math.random() * 70)
+              }%"></i>`;
+            return `<div style="color:var(--quiet)">
+              Daily active users · last 14 days</div>
+              <div class="chart">${bars}</div>`;
+          },
+        },
+        notes: {
+          label: "ideas — notes",
+          icon: "🗒",
+          body: () => `<div class="note">
+            <h4>Layout ideas</h4>
+            <ul style="margin:0;padding-left:1.1rem">
+              <li>niri strip of columns</li>
+              <li>content-height tiles, then resize</li>
+              <li>XS..XL column widths</li>
+              <li>pull up at the foot to open</li>
+              <li>app picker inside the tile</li>
+            </ul></div>`,
+        },
+        browser: {
+          label: "tonk.dev — browser",
+          icon: "🌐",
+          body: () => `<div style="color:var(--quiet);
+            border:1px solid var(--border);border-radius:5px;
+            padding:0.3rem 0.5rem;margin-bottom:0.5rem">
+            🔒 tonk.dev/layout</div>
+            <div style="font-size:1.1rem;color:var(--text);
+            font-weight:600;margin-bottom:0.3rem">
+            Tiling, done right</div>
+            <div style="color:#c8c8d0">A workspace is a strip of
+            columns. Pull a column to add to it.</div>`,
+        },
+      };
+      const APP_KEYS = Object.keys(APPS);
+
+      // a starting board — niri-style: dense columns, some split.
+      const BOARD = [
+        ["editor"],
+        ["chat", "calendar"],
+        ["terminal"],
+        ["files", "notes"],
+        ["metrics"],
+      ];
+      const COL_W = {
+        // a touch of width variety, XS..L feel
+        0: 440,
+        1: 360,
+        2: 400,
+        3: 320,
+        4: 380,
+      };
+
+      const THRESHOLD = 120;
+      const MAX_PULL = 300;
+      const strip = document.getElementById("strip");
+      // the committed slot opens to exactly one tile height, read
+      // from --tile-h, so the slot and a real tile are the same
+      // size and the pull flows straight into the opened app.
+      const OPEN_HEIGHT = parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue(
+          "--tile-h",
+        ),
+      );
+      function buildTile(appKey, focused) {
+        const app = APPS[appKey];
+        const tile = document.createElement("div");
+        tile.className = "tile";
+        if (focused) tile.dataset.focused = "";
+        tile.innerHTML = `
+          <div class="tile-handle" title="drag to move">⠿</div>
+          <div class="app-name">${app.label}</div>
+          <div class="app-body">${app.body()}</div>`;
+        return tile;
+      }
+
+      // the foot — leftover space below the last tile, and the one
+      // place a tile is opened. Holds the placeholder and the
+      // inline selector. flex:1 so it is tall when the column has
+      // slack and ~0 when the column is full; the pull works the
+      // same either way.
+      function buildFoot() {
+        const foot = document.createElement("div");
+        foot.className = "foot";
+        foot.innerHTML = `
+          <div class="foot-hint">↑ pull up to open a tile</div>
+          <div class="foot-ph">
+            <div class="plus">+</div>
+            <div class="hint">keep pulling to open</div>
+          </div>
+          <div class="selector">
+            <button class="selector-dismiss" title="cancel">✕</button>
+            <input type="text" placeholder="search apps…" />
+            <div class="selector-list"></div>
+          </div>`;
+        return foot;
+      }
+
+      function buildColumn(appKeys, w, isFirst) {
+        const col = document.createElement("div");
+        col.className = "column";
+        col.style.setProperty("--col-w", w + "px");
+        appKeys.forEach((k, i) =>
+          col.append(buildTile(k, isFirst && i === 0)),
+        );
+        col.append(buildFoot());
+        wirePull(col);
+        return col;
+      }
+
+      // ---- the pull gesture -----------------------------------
+      // ONE gesture for every column, whether it has slack or is
+      // full. Hover the foot for the hint; pull up and the
+      // launcher placeholder stretches in from the column's
+      // bottom edge; cross OPEN_HEIGHT and it commits — opening
+      // mid-pull, no pull-release-wait. Release before that and
+      // it springs back. When the column has slack the pull just
+      // has room to grow; when it is full it overscrolls. Same
+      // feel either way.
+      function wirePull(col) {
+        const foot = col.querySelector(".foot");
+        let dragging = false,
+          pulling = false,
+          committed = false;
+        let lastY = 0,
+          pullPx = 0;
+
+        const atBottom = () =>
+          col.scrollTop + col.clientHeight >=
+          col.scrollHeight - 1;
+
+        // grow the foot by `delta` px (from its bottom edge up);
+        // commit the moment it reaches one full tile height.
+        function add(delta) {
+          if (committed) return;
+          pullPx = Math.max(0, pullPx + delta);
+          if (pullPx >= OPEN_HEIGHT) {
+            commit();
+            return;
+          }
+          foot.style.setProperty("--pull", pullPx + "px");
+          foot.toggleAttribute("data-pulling", pullPx > 0);
+          foot.toggleAttribute("data-armed", pullPx >= THRESHOLD);
+          col.scrollTop = col.scrollHeight; // keep foot in view
+        }
+
+        function springBack() {
+          foot.classList.add("settling");
+          pullPx = 0;
+          foot.style.setProperty("--pull", "0px");
+          foot.removeAttribute("data-pulling");
+          foot.removeAttribute("data-armed");
+        }
+
+        // --- pointer drag ---
+        col.addEventListener("pointerdown", (e) => {
+          if (committed) return;
+          dragging = true;
+          pulling = false;
+          lastY = e.clientY;
+        });
+        col.addEventListener("pointermove", (e) => {
+          if (!dragging || committed) return;
+          const up = lastY - e.clientY; // up is positive
+          lastY = e.clientY;
+          if (!pulling) {
+            // the pull begins once dragging up from the column's
+            // bottom — true both when the foot has slack (no
+            // scroll) and when the column is full (overscroll).
+            if (up > 0 && atBottom()) {
+              pulling = true;
+              foot.classList.remove("settling");
+              col.setPointerCapture(e.pointerId);
+              add(up);
+            }
+            return;
+          }
+          add(up);
+        });
+        function endDrag() {
+          if (!dragging) return;
+          dragging = false;
+          if (pulling && !committed) springBack();
+          pulling = false;
+        }
+        col.addEventListener("pointerup", endDrag);
+        col.addEventListener("pointercancel", endDrag);
+
+        // --- wheel (trackpad / mouse) ---
+        let wheelIdle = 0;
+        col.addEventListener(
+          "wheel",
+          (e) => {
+            if (committed) return;
+            const pullingNow =
+              (e.deltaY > 0 && atBottom()) || pullPx > 0;
+            if (!pullingNow) return;
+            e.preventDefault();
+            foot.classList.remove("settling");
+            add(e.deltaY);
+            clearTimeout(wheelIdle);
+            wheelIdle = setTimeout(() => {
+              if (!committed && pullPx > 0) springBack();
+            }, 140);
+          },
+          { passive: false },
+        );
+
+        function commit() {
+          committed = true;
+          foot.classList.add("settling");
+          // the foot holds one tile height of launcher; pin it so
+          // the selector has room.
+          foot.style.setProperty("--pull", OPEN_HEIGHT + "px");
+          foot.removeAttribute("data-pulling");
+          foot.removeAttribute("data-armed");
+          foot.setAttribute("data-open", "");
+          requestAnimationFrame(() => {
+            col.scrollTop = col.scrollHeight;
+          });
+          openSelector(
+            foot,
+            (appKey) => {
+              // the chosen app becomes a real tile ABOVE the foot;
+              // the foot resets to empty for the next open.
+              foot.before(buildTile(appKey));
+              resetFoot();
+              col.scrollTop = col.scrollHeight;
+            },
+            () => resetFoot(),
+          );
+        }
+
+        function resetFoot() {
+          foot.classList.add("settling");
+          foot.removeAttribute("data-open");
+          foot.style.setProperty("--pull", "0px");
+          pullPx = 0;
+          committed = false;
+          foot.querySelector(".selector-list").replaceChildren();
+        }
+      }
+
+      // ---- the inline app selector ----------------------------
+      function openSelector(slot, onChoose, onDismiss) {
+        const input = slot.querySelector("input");
+        const list = slot.querySelector(".selector-list");
+        const dismiss = slot.querySelector(".selector-dismiss");
+
+        function fill(q) {
+          list.replaceChildren();
+          APP_KEYS.filter((k) =>
+            APPS[k].label.toLowerCase().includes(q.toLowerCase()),
+          ).forEach((k, i) => {
+            const item = document.createElement("div");
+            item.className = "selector-item";
+            if (i === 0) item.setAttribute("data-active", "");
+            item.innerHTML =
+              `<span class="ic">${APPS[k].icon}</span>` +
+              `<span>${APPS[k].label}</span>`;
+            item.addEventListener("click", () => onChoose(k));
+            list.append(item);
+          });
+        }
+        fill("");
+        input.value = "";
+        input.oninput = () => fill(input.value);
+        input.onkeydown = (e) => {
+          if (e.key === "Enter")
+            list.querySelector("[data-active]")?.click();
+          if (e.key === "Escape") onDismiss();
+        };
+        dismiss.onclick = onDismiss;
+        requestAnimationFrame(() => input.focus());
+      }
+
+      // ---- render ---------------------------------------------
+      // columns, with a thin divider line in each seam between
+      // them.
+      BOARD.forEach((keys, i) => {
+        if (i > 0) {
+          const d = document.createElement("div");
+          d.className = "divider";
+          strip.append(d);
+        }
+        strip.append(buildColumn(keys, COL_W[i] || 380, i === 0));
+      });
+    </script>
+  </body>
+</html>
