@@ -83,18 +83,6 @@ impl CustomElement for TonkBoard {
     }
 }
 
-/// Dispatch `tonk-evaluate` with the bundled bootstrap document.
-/// Returns once the worker has committed (or rejected) the POST.
-/// The host's `<tonk-host>` ancestor routes against the branch
-/// using the routing-element annotations.
-async fn seed_bootstrap(host: &Element) {
-    if let Err(err) = host_consumer::evaluate(host, crate::BOOTSTRAP).await {
-        web_sys::console::warn_1(
-            &format!("tonk-board: bootstrap evaluate failed: {}", err.message).into(),
-        );
-    }
-}
-
 /// Kick off the name→entity resolve; on success rebuild the host
 /// with a fresh `<tonk-display>`. Memoizes the most-recent
 /// resolution so an attribute change that lands the same name
@@ -134,12 +122,10 @@ fn start_resolve(
         let uri = if looks_like_uri(&name_for_async) {
             name_for_async.clone()
         } else {
-            // Always seed the bundled bootstrap on mount: the
-            // schema, view templates, and demo data all use
-            // stable `id:tonk-board/...` URIs, so the engine
-            // deduplicates repeated claims. Once seeding settles,
-            // resolve the board name to its entity URI.
-            seed_bootstrap(&host_for_async).await;
+            // The board schema, view templates, and demo data are
+            // seeded once at repository creation (see the shell's
+            // `init`), so the board just resolves its name to an
+            // entity URI here.
             match resolve_name(&host_for_async, &name_for_async).await {
                 Ok(Some(u)) => u,
                 Ok(None) => {

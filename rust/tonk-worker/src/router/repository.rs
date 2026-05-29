@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::claim::TransactRequest;
 use tonk_schema::{Branch as MetaBranch, Remote, Replica, TrackingBranch};
 
 use super::AppState;
@@ -93,12 +94,32 @@ pub struct BranchConfiguration {
     /// commits. Server-populated; ignored on incoming PUT bodies.
     #[serde(default)]
     pub revision: Option<Revision>,
+    /// Claims to commit to this branch immediately after creation
+    /// — the branch's initial content. Typically schema concepts
+    /// and view templates that a UI element ships as its bootstrap
+    /// (see `tonk_macros::claim!`). Applied in one commit through
+    /// the same reactor path as `/transact`, so effects run and
+    /// subscribers are notified. Ignored on PUTs to an existing
+    /// repository, and omitted from the GET/PUT response.
+    #[serde(default, skip_serializing)]
+    pub bootstrap: Option<TransactRequest>,
 }
 
 impl BranchConfiguration {
     /// Attach an upstream pointing at `{remote}/{branch}`.
     pub fn upstream(mut self, remote: impl Into<String>, branch: impl Into<String>) -> Self {
         self.upstream = Some(UpstreamConfiguration::new(remote, branch));
+        self
+    }
+
+    /// Attach bootstrap claims to seed on this branch at creation.
+    /// Merges with any already set, so callers can fold in several
+    /// elements' bootstraps.
+    pub fn bootstrap(mut self, request: TransactRequest) -> Self {
+        match &mut self.bootstrap {
+            Some(existing) => existing.claims.extend(request.claims),
+            none => *none = Some(request),
+        }
         self
     }
 }
@@ -223,7 +244,40 @@ pub async fn put_repository(
     // to the right status via `RepositoryError::into`.
     let repository = create_repository(&tonk, &name, &configuration).await?;
 
-    // 3. Respond with the current state of the repository.
+    // 3. Seed each branch's bootstrap content. Runs through the
+    // reactor's transaction path (same as `/transact`) so effects
+    // evaluate and subscribers are notified. One-time, at creation:
+    // a UI element ships its schema + view templates as a
+    // `bootstrap` here instead of re-evaluating them on every
+    // mount.
+    for (branch_name, settings) in &configuration.branch {
+        let Some(bootstrap) = &settings.bootstrap else {
+            continue;
+        };
+        if bootstrap.claims.is_empty() {
+            continue;
+        }
+        let mut builder = tonk
+            .reactor
+            .repository(&name)
+            .branch(branch_name)
+            .transaction();
+        for claim in &bootstrap.claims {
+            builder = builder.apply(claim.clone());
+        }
+        builder
+            .commit()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| {
+                TonkWorkerError::Internal(format!(
+                    "failed to seed bootstrap on branch '{branch_name}': {e}"
+                ))
+            })?;
+        log!("Seeded bootstrap on '{}' branch '{}'", name, branch_name);
+    }
+
+    // 4. Respond with the current state of the repository.
     let info = build_repository_info(&tonk, &name, &repository).await;
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -846,7 +900,11 @@ where
 
         branches.insert(
             branch.name.0.clone(),
-            BranchConfiguration { upstream, revision },
+            BranchConfiguration {
+                upstream,
+                revision,
+                bootstrap: None,
+            },
         );
     }
 

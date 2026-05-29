@@ -227,6 +227,7 @@ pub async fn join(
                 BranchConfiguration {
                     upstream: Some(UpstreamConfiguration::new(DEFAULT_REMOTE, DEFAULT_BRANCH)),
                     revision: None,
+                    bootstrap: None,
                 },
             );
     } else {

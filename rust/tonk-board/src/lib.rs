@@ -22,12 +22,17 @@
 
 #![warn(missing_docs)]
 
-/// Asserted-notation document that bootstraps the board concepts,
-/// view templates, and a `demo` board. The route component POSTs
-/// this to `/evaluate` on mount; re-runs are no-ops since the
-/// document asserts a fixed set of facts (idempotent under
-/// concept-claim semantics).
-pub const BOOTSTRAP: &str = include_str!("../bootstrap.yaml");
+use std::sync::LazyLock;
+
+use tonk_core::claim::TransactRequest;
+
+/// The board concepts, view templates, and `demo` board as a typed
+/// transact request — lowered from `bootstrap.yaml` at compile time
+/// by `claim!`. The shell folds this into the default repository's
+/// `PUT` body so the schema seeds once at repo creation, rather
+/// than re-evaluating the document on every board mount.
+pub static BOOTSTRAP: LazyLock<TransactRequest> =
+    LazyLock::new(|| tonk_macros::claim!("bootstrap.yaml"));
 
 #[cfg(target_arch = "wasm32")]
 mod board;
@@ -43,4 +48,20 @@ pub fn register() {
     board::register();
     strip::register();
     column::register();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BOOTSTRAP;
+
+    #[dialog_common::test]
+    fn it_compiles_bootstrap_into_a_transact_request() {
+        // `claim!` runs parse + local analysis + lowering at
+        // compile time; the bundled bootstrap.yaml must produce a
+        // non-empty claim set with no running system.
+        assert!(
+            !BOOTSTRAP.claims.is_empty(),
+            "bootstrap.yaml should lower to at least one claim",
+        );
+    }
 }

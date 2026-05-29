@@ -145,7 +145,12 @@ pub async fn init() -> Result<String, TonkUiError> {
         .remote("origin", RemoteConfiguration::new(address))
         .branch(
             DEFAULT_BRANCH,
-            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
+            BranchConfiguration::default()
+                .upstream("origin", DEFAULT_BRANCH)
+                // Seed the board schema + demo data once, at repo
+                // creation, instead of re-evaluating it on every
+                // `<tonk-board>` mount.
+                .bootstrap(tonk_board::BOOTSTRAP.clone()),
         );
 
     let response = reqwest::Client::new()
