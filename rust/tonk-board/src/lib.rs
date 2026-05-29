@@ -64,4 +64,19 @@ mod tests {
             "bootstrap.yaml should lower to at least one claim",
         );
     }
+
+    #[dialog_common::test]
+    fn it_carries_the_demo_column_width() {
+        use tonk_core::claim::Claim;
+        // The demo `col-a` column authored `width: 12` (an
+        // unsigned-integer field). Lowering must carry it as a
+        // claim parameter; a dropped width breaks the board render.
+        let has_width = BOOTSTRAP.claims.iter().any(|claim| {
+            let app = match claim {
+                Claim::Assert(a) | Claim::Retract(a) => a,
+            };
+            app.parameters.keys().any(|k| k == "width")
+        });
+        assert!(has_width, "lowering dropped the column width term");
+    }
 }

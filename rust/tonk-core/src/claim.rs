@@ -68,6 +68,13 @@ pub struct PredicateApplication {
     /// names the subject entity; other slots bind the
     /// predicate's attribute fields.
     pub parameters: Parameters,
+    /// Published name (`&anchor` in notation), if any. When
+    /// present, applying the claim also asserts the desugared
+    /// `dialog.name/referent` fact on `id:<name>` pointing at the
+    /// `this` entity — so the concept resolves by name. Mirrors
+    /// the `name` slot on `tonk_schema::transact::Application`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl PredicateApplication {

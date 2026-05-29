@@ -259,8 +259,8 @@ fn lower_statement(
         Statement::Assert(app) => (app, true),
         Statement::Retract(app) => (app, false),
     };
-    let query = match application {
-        Application::Concept { query, .. } => query,
+    let (query, name) = match application {
+        Application::Concept { query, name, .. } => (query, name.clone()),
         Application::Domain { .. } => return Err(AnalyzeLowerError::Domain),
         Application::Rule { .. } => return Err(AnalyzeLowerError::Rule),
     };
@@ -274,6 +274,7 @@ fn lower_statement(
     let predicate_application = PredicateApplication {
         predicate,
         parameters: query.terms.clone(),
+        name,
     };
     Ok(if is_assert {
         Claim::Assert(predicate_application)

@@ -41,6 +41,7 @@ pub fn application_plan_from_predicate(application: PredicateApplication) -> App
     let PredicateApplication {
         predicate,
         parameters,
+        name,
     } = application;
     let descriptor = match predicate {
         ConceptDescriptor::Durable(c) | ConceptDescriptor::Transient(c) => c,
@@ -50,7 +51,7 @@ pub fn application_plan_from_predicate(application: PredicateApplication) -> App
             terms: parameters,
             predicate: descriptor,
         },
-        name: None,
+        name,
     })
 }
 
