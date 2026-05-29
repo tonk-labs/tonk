@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 
 use indexmap::IndexMap;
+use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, DocumentFragment, Element, Node, window};
@@ -218,7 +219,7 @@ fn build_mounted_nodes(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> Vec<MountedNode> {
     let mut out: Vec<Option<MountedNode>> = (0..plan.len()).map(|_| None).collect();
     for (i, node) in plan.iter().enumerate().rev() {
@@ -237,7 +238,7 @@ fn build_mounted_node(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> MountedNode {
     match plan {
         PlanNode::Binding(b) => {
@@ -299,7 +300,7 @@ fn update_nodes(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     for (plan_node, mounted_node) in plan.iter().zip(mounted.iter_mut()) {
         update_node(
@@ -321,7 +322,7 @@ fn update_node(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     match (plan, mounted) {
         (PlanNode::Binding(b), MountedNode::Binding { last_value }) => {
@@ -369,7 +370,7 @@ fn update_iteration(
     rows: &mut BTreeMap<String, IterationRow>,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     let raw_value = shadow
         .get(field)
@@ -377,7 +378,7 @@ fn update_iteration(
         .cloned();
     let values = collect_values(raw_value);
 
-    let mut incoming: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut incoming: BTreeMap<String, Ipld> = BTreeMap::new();
     for value in values {
         let key = key_for(&value);
         incoming.entry(key).or_insert(value);
@@ -457,9 +458,9 @@ fn build_iteration_row(
     template: &DocumentFragment,
     body_plan: &[PlanNode],
     field: &str,
-    value: serde_json::Value,
+    value: Ipld,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> Option<IterationRow> {
     let template_root: Node = template.clone().into();
     let template_iter_root = navigate(&template_root, template_path)?;
@@ -482,17 +483,20 @@ fn build_iteration_row(
     })
 }
 
-fn key_for(value: &serde_json::Value) -> String {
+fn key_for(value: &Ipld) -> String {
     match value {
-        serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_default(),
+        Ipld::String(s) => s.clone(),
+        other => serde_ipld_dagjson::to_vec(other)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default(),
     }
 }
 
 fn render_binding(
     binding: &Binding,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> String {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -506,7 +510,7 @@ fn write_binding(
     binding: &Binding,
     rendered: &str,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     match &binding.kind {
         BindingKind::Text { .. } => {
@@ -521,10 +525,10 @@ fn write_binding(
     }
 }
 
-fn collect_values(value: Option<serde_json::Value>) -> Vec<serde_json::Value> {
+fn collect_values(value: Option<Ipld>) -> Vec<Ipld> {
     match value {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(items)) => items,
+        None | Some(Ipld::Null) => Vec::new(),
+        Some(Ipld::List(items)) => items,
         Some(v) => vec![v],
     }
 }
@@ -565,9 +569,9 @@ mod tests {
     /// Build a [`Conclusion`] with the given `this` URI and
     /// string fields.
     fn conclusion(this: &str, fields: &[(&str, &str)]) -> Conclusion {
-        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+        let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
         for (k, v) in fields {
-            map.insert((*k).to_owned(), serde_json::Value::String((*v).to_owned()));
+            map.insert((*k).to_owned(), Ipld::String((*v).to_owned()));
         }
         Conclusion {
             this: this.to_owned(),
@@ -741,8 +745,8 @@ mod tests {
 
     /// Like [`conclusion`] but accepts arbitrary JSON values so
     /// tests can drive boolean / numeric properties.
-    fn conclusion_json(this: &str, fields: &[(&str, serde_json::Value)]) -> Conclusion {
-        let mut map: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    fn conclusion_json(this: &str, fields: &[(&str, Ipld)]) -> Conclusion {
+        let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
         for (k, v) in fields {
             map.insert((*k).to_owned(), v.clone());
         }
@@ -775,8 +779,8 @@ mod tests {
         renderer.apply(&[conclusion_json(
             "did:key:zAlice",
             &[
-                ("done", serde_json::Value::Bool(true)),
-                ("label", serde_json::Value::String("ship it".to_owned())),
+                ("done", Ipld::Bool(true)),
+                ("label", Ipld::String("ship it".to_owned())),
             ],
         )]);
         assert!(
@@ -787,8 +791,8 @@ mod tests {
         renderer.apply(&[conclusion_json(
             "did:key:zAlice",
             &[
-                ("done", serde_json::Value::Bool(false)),
-                ("label", serde_json::Value::String("ship it".to_owned())),
+                ("done", Ipld::Bool(false)),
+                ("label", Ipld::String("ship it".to_owned())),
             ],
         )]);
         assert!(
@@ -805,7 +809,7 @@ mod tests {
         let (host, mut renderer) = mount(r#"<span aria-hidden="{hidden}">x</span>"#);
         renderer.apply(&[conclusion_json(
             "did:key:zAlice",
-            &[("hidden", serde_json::Value::String("true".to_owned()))],
+            &[("hidden", Ipld::String("true".to_owned()))],
         )]);
         let span = host.query_selector("span").unwrap().expect("span");
         assert_eq!(
@@ -825,7 +829,7 @@ mod tests {
         let (host, mut renderer) = mount(r#"<div html:id="{id}">x</div>"#);
         renderer.apply(&[conclusion_json(
             "did:key:zAlice",
-            &[("id", serde_json::Value::String("forced".to_owned()))],
+            &[("id", Ipld::String("forced".to_owned()))],
         )]);
         let div = host.query_selector("div").unwrap().expect("div");
         assert_eq!(
@@ -848,7 +852,7 @@ mod tests {
         let (host, mut renderer) = mount(r#"<section><div html:hidden="{flag}">x</div></section>"#);
         renderer.apply(&[conclusion_json(
             "did:key:zAlice",
-            &[("flag", serde_json::Value::Bool(true))],
+            &[("flag", Ipld::Bool(true))],
         )]);
         assert_eq!(
             host.query_selector("div")
@@ -862,7 +866,7 @@ mod tests {
 
         renderer.apply(&[conclusion_json(
             "did:key:zAlice",
-            &[("flag", serde_json::Value::Bool(false))],
+            &[("flag", Ipld::Bool(false))],
         )]);
         let div = host.query_selector("div").unwrap().expect("div");
         assert!(

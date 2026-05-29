@@ -5,6 +5,8 @@
 use std::collections::BTreeMap;
 
 use dialog_query::{Any, ConceptConclusion, Parameters, Term};
+use ipld_core::ipld::Ipld;
+use ipld_core::serde::to_ipld;
 use serde::{Deserialize, Serialize};
 
 /// Serializable projection of a [`ConceptConclusion`] — the
@@ -15,10 +17,11 @@ pub struct Conclusion {
     /// Entity URI of the matched concept (`did:key:…` etc.).
     pub this: String,
     /// Field values keyed by term name from the query. Each value
-    /// is the raw `dialog_artifacts::Value` serialized via its
-    /// `serde::Serialize` impl (untagged enum — strings, numbers,
-    /// bools, entity URIs, byte buffers).
-    pub fields: BTreeMap<String, serde_json::Value>,
+    /// is the raw `dialog_artifacts::Value` serialized into the
+    /// IPLD data model — strings, integers, floats, bools, byte
+    /// buffers — so the wire encoding stays codec-agnostic
+    /// (dag-json on the browser hop, dag-cbor for storage).
+    pub fields: BTreeMap<String, Ipld>,
 }
 
 impl Conclusion {
@@ -37,12 +40,12 @@ impl Conclusion {
         let mut fields = BTreeMap::new();
         for (name, term) in terms.iter() {
             let value = match term {
-                Term::Constant(value) => serde_json::to_value(value).ok(),
+                Term::Constant(value) => to_ipld(value).ok(),
                 Term::Variable { .. } => conclusion
                     .source()
                     .lookup(&Term::<Any>::var(name.clone()))
                     .ok()
-                    .and_then(|v| serde_json::to_value(&v).ok()),
+                    .and_then(|v| to_ipld(&v).ok()),
             };
             if let Some(value) = value {
                 fields.insert(name.clone(), value);

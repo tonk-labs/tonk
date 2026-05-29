@@ -58,7 +58,7 @@ impl Drop for Subscription {
 
 /// Dispatch `tonk-query` on `consumer` with the given query body,
 /// then await `detail.result`. Returns the parsed JSON response
-/// as a `serde_json::Value`.
+/// as a `JsValue`.
 pub async fn query(consumer: &Element, query_body: &JsValue) -> Result<JsValue, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"query".into(), query_body).ok();

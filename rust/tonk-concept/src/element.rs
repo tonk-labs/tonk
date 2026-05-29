@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use ipld_core::ipld::Ipld;
 use js_sys::{Function, Reflect};
 use tonk_host::DepthAnnotator;
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
@@ -227,12 +228,13 @@ fn extract_descriptor(value: &JsValue) -> Result<String, ErrorDetail> {
         .into_iter()
         .next()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
-    first
-        .fields
-        .get("source")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `source` field"))
+    match first.fields.get("source") {
+        Some(Ipld::String(s)) => Ok(s.to_owned()),
+        _ => Err(ErrorDetail::new(
+            ErrorKind::Descriptor,
+            "phase1 row missing `source` field",
+        )),
+    }
 }
 
 /// Map `tonk_host::error::ErrorKind` to our local

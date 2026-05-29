@@ -16,6 +16,7 @@
 //! zero rows. The separate focus subscription pins `this =
 //! workspace_entity` and returns zero or one row.
 
+use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 
 /// The folded workspace.
@@ -97,12 +98,16 @@ fn build_tile(row: &Conclusion, workspace: &str) -> Option<Tile> {
 }
 
 fn read_str<'a>(c: &'a Conclusion, name: &str) -> Option<&'a str> {
-    c.fields.get(name).and_then(|v| v.as_str())
+    match c.fields.get(name)? {
+        Ipld::String(s) => Some(s.as_str()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ipld_core::serde::to_ipld;
     use serde_json::json;
     use std::collections::BTreeMap;
     #[cfg(target_arch = "wasm32")]
@@ -115,9 +120,13 @@ mod tests {
             .as_object()
             .expect("fields must be a JSON object")
             .clone();
+        let fields: BTreeMap<String, Ipld> = obj
+            .into_iter()
+            .map(|(k, v)| (k, to_ipld(&v).expect("json value converts to ipld")))
+            .collect();
         Conclusion {
             this: this.to_owned(),
-            fields: obj.into_iter().collect::<BTreeMap<_, _>>(),
+            fields,
         }
     }
 

@@ -25,6 +25,7 @@ use std::rc::Rc;
 
 use crate::error::{ErrorDetail, ErrorKind};
 use crate::sse::open_sse;
+use ipld_core::ipld::Ipld;
 use js_sys::{Function, Object, Promise, Reflect};
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
@@ -137,7 +138,7 @@ fn handle_query(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             return;
         }
     };
-    let body_str = match js_to_json_string(&query_val) {
+    let body_str = match js_to_canonical_dag_json(&query_val) {
         Ok(s) => s,
         Err(e) => {
             install_rejected_promise(&detail, e);
@@ -145,13 +146,12 @@ fn handle_query(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
         }
     };
 
-    // Canonicalize so `serde_wasm_bindgen` round-trip ordering
-    // variations don't poison the cache. Same semantic query,
-    // same key.
+    // `body_str` is already canonical dag-json, so the same
+    // semantic query always produces the same cache key.
     let cache_key = crate::query_cache::Key {
         space: space.clone(),
         branch: branch.clone(),
-        body: canonical_json_string(&body_str),
+        body: body_str.clone(),
     };
 
     // Cache hit (resolved response): resolve the promise
@@ -231,34 +231,23 @@ fn get_string(detail: &Object, key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// Serialize a JS value to JSON text via `serde_json::Value` so
-/// the round-trip uses serde conventions (HashMap → plain object,
-/// not JS Map). `JSON.stringify` on a `serde_wasm_bindgen`-produced
-/// value loses entries for HashMap/BTreeMap fields because they
-/// serialize to JS `Map` objects, which `JSON.stringify` flattens
-/// to `{}`.
-fn js_to_json_string(v: &JsValue) -> Result<String, ErrorDetail> {
-    let value: serde_json::Value = serde_wasm_bindgen::from_value(v.clone())
+/// Serialize a JS value as canonical DAG-JSON text. Goes
+/// `JsValue → Ipld` via `serde-wasm-bindgen` (the only
+/// adapter that knows how to project JS `Map`s and typed
+/// arrays into the IPLD data model), then `Ipld → bytes`
+/// via `serde_ipld_dagjson`. DAG-JSON sorts map keys
+/// deterministically and has a stable number/string
+/// encoding, so two semantically equal queries always
+/// produce the same text — usable both as the HTTP body
+/// and as the cache key without a second canonicalisation
+/// pass.
+fn js_to_canonical_dag_json(v: &JsValue) -> Result<String, ErrorDetail> {
+    let value: Ipld = serde_wasm_bindgen::from_value(v.clone())
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("detail.query: {e}")))?;
-    serde_json::to_string(&value)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("stringify: {e}")))
-}
-
-/// Encode a JSON-string body in canonical DAG-JSON so two
-/// semantically equal queries always produce the same cache
-/// key string. `serde_wasm_bindgen` round-trips can vary
-/// object-key order run-to-run, which without canonicalisation
-/// would cause identical queries to miss the cache. DAG-JSON
-/// (per the IPLD spec) sorts map keys deterministically and
-/// has a stable number/string encoding.
-fn canonical_json_string(input: &str) -> String {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
-        return input.to_owned();
-    };
-    serde_ipld_dagjson::to_vec(&value)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_else(|| input.to_owned())
+    let bytes = serde_ipld_dagjson::to_vec(&value)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("dag-json: {e}")))?;
+    String::from_utf8(bytes)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("dag-json utf8: {e}")))
 }
 
 /// Parse the worker's JSON response body into a `Vec<Conclusion>`
@@ -314,7 +303,7 @@ fn handle_claim(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
             return;
         }
     };
-    let body_str = match js_to_json_string(&request_val) {
+    let body_str = match js_to_canonical_dag_json(&request_val) {
         Ok(s) => s,
         Err(e) => {
             install_rejected_promise(&detail, e);
@@ -358,7 +347,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
         _ => return,
     };
-    let query_json: serde_json::Value = match serde_wasm_bindgen::from_value(query_val.clone()) {
+    let query_ipld: Ipld = match serde_wasm_bindgen::from_value(query_val.clone()) {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -390,10 +379,7 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     let consumer_for_spawn = consumer.clone();
     let tag_for_spawn = tag_js.clone();
     spawn_local(async move {
-        let body = match serde_json::to_value(&query_json) {
-            Ok(v) => v,
-            Err(_) => return,
-        };
+        let body = query_ipld;
         let consumer_frame = consumer_for_spawn.clone();
         let tag_frame = tag_for_spawn.clone();
         let consumer_err = consumer_for_spawn.clone();
@@ -585,7 +571,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
 
     // Re-open the SSE. Same shape as `handle_subscribe` but
     // against the new url, reusing the stored query + tag.
-    let body_json: serde_json::Value = match serde_wasm_bindgen::from_value(query.clone()) {
+    let body_ipld: Ipld = match serde_wasm_bindgen::from_value(query.clone()) {
         Ok(v) => v,
         Err(_) => return,
     };
@@ -596,7 +582,7 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     let tag_err = tag.clone();
     let abort_result = open_sse(
         &url,
-        &body_json,
+        &body_ipld,
         move |frame: &str| {
             if !consumer_frame.is_connected() {
                 return;

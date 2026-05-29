@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use ipld_core::ipld::Ipld;
 use js_sys::{Function, Reflect};
 use tonk_concept::resolve::{ParsedSource, parse_source, phase1_query};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
@@ -530,15 +531,21 @@ fn extract_phase1(value: &JsValue) -> Result<(String, String), ErrorDetail> {
         .into_iter()
         .next()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::UnknownSource, "no concept matched"))?;
-    let source = first
-        .fields
-        .get("source")
-        .and_then(|v| v.as_str())
+    let source = ipld_str(first.fields.get("source"))
         .map(str::to_owned)
         .ok_or_else(|| {
             ErrorDetail::new(ErrorKind::Descriptor, "phase1 row missing `source` field")
         })?;
     Ok((first.this, source))
+}
+
+/// Read an `Ipld::String` value as `&str` and return `None`
+/// for any other variant (or for `None`).
+fn ipld_str(value: Option<&Ipld>) -> Option<&str> {
+    match value? {
+        Ipld::String(s) => Some(s.as_str()),
+        _ => None,
+    }
 }
 
 /// Diff the incoming view frame against currently mounted slides.
@@ -558,15 +565,8 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     let incoming: BTreeMap<String, String> = conclusions
         .into_iter()
         .filter_map(|c| {
-            let display = c
-                .fields
-                .get("display")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned)?;
-            let name = c
-                .fields
-                .get("name")
-                .and_then(|v| v.as_str())
+            let display = ipld_str(c.fields.get("display")).map(str::to_owned)?;
+            let name = ipld_str(c.fields.get("name"))
                 .map(str::to_owned)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| view_attr.clone());

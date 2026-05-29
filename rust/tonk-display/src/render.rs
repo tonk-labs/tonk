@@ -27,6 +27,7 @@
 
 use std::collections::BTreeMap;
 
+use ipld_core::ipld::Ipld;
 use tonk_concept::template::{
     Binding, BindingKind, BindingPlan, PlanNode, Snapshot, apply_attribute_binding, extract_plan,
     navigate, render_segments_with_shadow, single_field_value,
@@ -268,7 +269,7 @@ fn build_mounted_nodes(
     template: &DocumentFragment,
     template_scope: &[usize],
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> Vec<MountedNode> {
     // Allocate the result vec; fill in reverse so iteration
     // nodes process their DOM mutations from rightmost to
@@ -305,7 +306,7 @@ fn build_mounted_node(
     template: &DocumentFragment,
     template_scope: &[usize],
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> MountedNode {
     match plan {
         PlanNode::Binding(b) => {
@@ -395,7 +396,7 @@ fn update_nodes(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     for (plan_node, mounted_node) in plan.iter().zip(mounted.iter_mut()) {
         update_node(
@@ -418,7 +419,7 @@ fn update_node(
     scope_root: &Node,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     match (plan, mounted) {
         (PlanNode::Binding(b), MountedNode::Binding { last_value }) => {
@@ -473,7 +474,7 @@ fn update_iteration(
     rows: &mut BTreeMap<String, MountedRow>,
     template: &DocumentFragment,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     let raw_value = shadow
         .get(field)
@@ -482,7 +483,7 @@ fn update_iteration(
     let keyed = collect_keyed_values(raw_value, &conclusion.this);
 
     // Index incoming values by key, deduping.
-    let mut incoming: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    let mut incoming: BTreeMap<String, Ipld> = BTreeMap::new();
     for (key, value) in keyed {
         incoming.entry(key).or_insert(value);
     }
@@ -615,9 +616,9 @@ fn build_iteration_row(
     template: &DocumentFragment,
     body_plan: &[PlanNode],
     field: &str,
-    value: serde_json::Value,
+    value: Ipld,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> Option<MountedRow> {
     let template_root: Node = template.clone().into();
     let template_iter_root = navigate(&template_root, template_path)?;
@@ -646,13 +647,16 @@ fn build_iteration_row(
 }
 
 /// Stable string key for an iteration value. Entity URIs (and
-/// any other JSON string) become themselves; non-strings get
-/// canonicalised via `serde_json::to_string` so two equal values
-/// produce equal keys.
-fn key_for(value: &serde_json::Value) -> String {
+/// any other Ipld string) become themselves; non-strings get
+/// canonicalised via dag-json so two equal values produce equal
+/// keys.
+fn key_for(value: &Ipld) -> String {
     match value {
-        serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string(other).unwrap_or_default(),
+        Ipld::String(s) => s.clone(),
+        other => serde_ipld_dagjson::to_vec(other)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default(),
     }
 }
 
@@ -661,7 +665,7 @@ fn key_for(value: &serde_json::Value) -> String {
 fn render_binding(
     binding: &Binding,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) -> String {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -679,7 +683,7 @@ fn write_binding(
     binding: &Binding,
     rendered: &str,
     conclusion: &Conclusion,
-    shadow: &BTreeMap<String, serde_json::Value>,
+    shadow: &BTreeMap<String, Ipld>,
 ) {
     match &binding.kind {
         BindingKind::Text { .. } => {
@@ -711,15 +715,10 @@ fn write_binding(
 ///   for nested iterations that may differ from the outer
 ///   conclusion's `this` once `subject=` markers identify an
 ///   inner entity.
-fn collect_keyed_values(
-    value: Option<serde_json::Value>,
-    entity_key: &str,
-) -> Vec<(String, serde_json::Value)> {
+fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, Ipld)> {
     match value {
-        None | Some(serde_json::Value::Null) => Vec::new(),
-        Some(serde_json::Value::Array(items)) => {
-            items.into_iter().map(|v| (key_for(&v), v)).collect()
-        }
+        None | Some(Ipld::Null) => Vec::new(),
+        Some(Ipld::List(items)) => items.into_iter().map(|v| (key_for(&v), v)).collect(),
         Some(v) => vec![(entity_key.to_owned(), v)],
     }
 }

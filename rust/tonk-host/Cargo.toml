@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 bytes = { workspace = true }
 custom-elements = { workspace = true }
 futures = { workspace = true }
+ipld-core = { workspace = true }
 js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }

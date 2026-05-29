@@ -15,6 +15,7 @@
 
 use std::rc::Rc;
 
+use ipld_core::ipld::Ipld;
 use web_sys::AbortController;
 
 use crate::bridge::{Subscription, subscribe};
@@ -63,8 +64,10 @@ pub fn use_bridge() -> bool {
 /// available.
 ///
 /// `url` is only used on the legacy fetch path. `body` is the
-/// query as a `serde_json::Value`; on the fetch path it is
-/// stringified once for the request body.
+/// query as an [`Ipld`] value; on the fetch path it is encoded
+/// once as DAG-JSON for the request body. The DAG-JSON encoding
+/// gives a canonical, codec-agnostic wire shape regardless of
+/// which transport runs underneath.
 ///
 /// `on_frame` is called for each emitted frame with the raw JSON
 /// string of a `Vec<Conclusion>`. `on_error` is called on transport
@@ -74,7 +77,7 @@ pub fn use_bridge() -> bool {
 /// dropping it cancels the subscription.
 pub async fn open_sse(
     url: &str,
-    body: &serde_json::Value,
+    body: &Ipld,
     on_frame: impl Fn(&str) + 'static,
     on_error: impl Fn(ErrorDetail) + 'static,
 ) -> Result<SubscriptionAbort, ErrorDetail> {
@@ -95,8 +98,10 @@ pub async fn open_sse(
         });
         Ok(SubscriptionAbort::Bridge(subscription))
     } else {
-        let body_str = serde_json::to_string(body)
-            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body stringify: {e}")))?;
+        let body_bytes = serde_ipld_dagjson::to_vec(body)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body dag-json: {e}")))?;
+        let body_str = String::from_utf8(body_bytes)
+            .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body utf8: {e}")))?;
         // on_frame / on_error must be FnMut for the SSE reader loop.
         let on_frame_cell = std::cell::RefCell::new(on_frame);
         let on_error_cell = std::cell::RefCell::new(on_error);
