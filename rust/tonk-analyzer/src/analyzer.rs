@@ -1230,6 +1230,47 @@ mod tests {
         fixture.analyze(syntax).await
     }
 
+    /// An instance head's `&anchor` must be resolvable by a later
+    /// field reference in the same document, under both the full
+    /// (branch-backed) pipeline and the env-free local path.
+    #[dialog_common::test]
+    fn it_resolves_an_instance_anchor_referenced_by_a_later_field() {
+        let syntax = must_parse(
+            "\
+concept!: &thing
+  description: \"a thing\"
+  with:
+    source:
+      description: \"src\"
+      the: x.y/source
+      cardinality: one
+      as: text
+
+thing!: &my-thing
+  source: \"home\"
+
+concept!: &holder
+  description: \"holds\"
+  with:
+    target:
+      description: \"e\"
+      the: x.y/target
+      cardinality: one
+      as: entity
+
+holder!: &my-holder
+  target: my-thing
+",
+        );
+        let result = super::analyze_local(&syntax);
+        assert!(
+            result.is_ok(),
+            "analyze_local should resolve the `my-thing` anchor referenced \
+             by the later `holder!` field: {:?}",
+            result.err(),
+        );
+    }
+
     /// A small concept spec the tests pass into [`analyze_with`]:
     /// the published name plus the field set as `(field, the, type)`
     /// triples. Replaces the old `FixedConcept` struct.
