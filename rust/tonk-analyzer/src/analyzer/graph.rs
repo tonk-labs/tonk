@@ -46,7 +46,7 @@ use super::scope::Scope;
 use tonk_core::claim::ConceptDescriptor as DurableConceptDescriptor;
 use tonk_schema::prelude::EntityExt;
 use tonk_schema::resolution::{AttributeDefinition as AttrDef, ConceptDefinition as ConceptDef};
-use tonk_schema::transact::ThisIntent;
+use tonk_schema::transact::{ThisIntent, derive_this};
 
 /// One external name the document references that may need a branch
 /// lookup. In-doc names never become `Need`s — `push` resolves
@@ -106,6 +106,12 @@ enum DeclarationKind {
 pub(crate) struct Graph {
     needs: Vec<Need>,
     declarations: Vec<PendingDeclaration>,
+    /// Non-meta `&anchor` heads to pre-register in [`Scope`] after
+    /// the head's concept resolves. Indexed back into
+    /// [`Syntax::expressions`]. Deferred from `push` because
+    /// `derive_this` needs the predicate's entity, which only the
+    /// resolver knows.
+    pending_anchors: Vec<usize>,
 }
 
 /// The product of [`Graph::resolve`] — the declaration
@@ -211,9 +217,10 @@ impl<Env: QueryEnv> Resolve for BranchResolver<'_, '_, Env> {
 /// [`Graph`]. Concept / attribute heads are recorded as pending so
 /// their bodies parse in `resolve` once their attribute
 /// dependencies are satisfied.
-pub(crate) fn push(syntax: &Syntax, scope: &Scope) -> Result<Graph, AnalyzeError> {
+pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
     let mut needs: Vec<Need> = Vec::new();
     let mut declarations: Vec<PendingDeclaration> = Vec::new();
+    let mut pending_anchors: Vec<usize> = Vec::new();
 
     for (index, expression) in syntax.expressions.iter().enumerate() {
         let (head, is_claim) = match expression {
@@ -247,16 +254,17 @@ pub(crate) fn push(syntax: &Syntax, scope: &Scope) -> Result<Graph, AnalyzeError
             }
         }
 
-        // Non-meta `&anchor` heads: register the body-derived
-        // entity now so later expressions in the same document
-        // resolve `this: <anchor>` / bare-symbol references to it.
+        // Non-meta `&anchor` heads: defer to `resolve` so the
+        // anchor is registered with the predicate-qualified
+        // `derive_this(predicate, body)` rather than a payload-only
+        // hash, keeping pre-registration in step with the mutation
+        // pass's `this_term_for_assertion`.
         if let Expression::Claim(Effectful {
-            anchor: Some(anchor),
-            inner: a,
+            anchor: Some(_),
+            inner: _,
         }) = expression
         {
-            let entity = Entity::of(&body_digest(&a.fields));
-            scope.declare(&anchor.name, entity, anchor.range)?;
+            pending_anchors.push(index);
         }
 
         // Head concept name (non-meta) — may be a branch concept.
@@ -305,6 +313,7 @@ pub(crate) fn push(syntax: &Syntax, scope: &Scope) -> Result<Graph, AnalyzeError
     Ok(Graph {
         needs,
         declarations,
+        pending_anchors,
     })
 }
 
@@ -567,6 +576,31 @@ impl Graph {
             }
         }
 
+        // Pass 4 — non-meta `&anchor` heads. With the head concept
+        // (or claim domain) in scope, derive the anchor's entity
+        // using the same `derive_this(predicate, body)` recipe the
+        // mutation pass and the wire path use, so all three
+        // converge on the same URI for the same `(predicate, body)`.
+        for index in &self.pending_anchors {
+            let Expression::Claim(Effectful {
+                anchor: Some(anchor),
+                inner: a,
+            }) = &syntax.expressions[*index]
+            else {
+                continue;
+            };
+            let predicate_entity = match &a.predicate.name {
+                HeadName::Concept(name) => match scope.concept(name) {
+                    Some(def) => def.descriptor.concept().this(),
+                    None => continue,
+                },
+                HeadName::Claim(domain) => Entity::of(domain),
+                HeadName::Uri(_) => continue,
+            };
+            let entity = derive_this(&predicate_entity, &body_digest(&a.fields));
+            scope.declare(&anchor.name, entity, anchor.range)?;
+        }
+
         Ok(Resolved { declared })
     }
 }
@@ -651,7 +685,7 @@ mod tests {
              cardinality: one\n      as: signed-integer\npoint!: &origin\n  x: 0\n",
         );
         let scope = Scope::new();
-        let graph = push(&syntax, &scope).expect("push");
+        let graph = push(&syntax).expect("push");
         let resolver = Counting::default();
         graph
             .resolve(&syntax, &scope, &resolver)
@@ -671,7 +705,7 @@ mod tests {
     async fn it_routes_an_external_concept_reference_to_the_resolver() {
         let syntax = must_parse("person:\n  name: ?n\n");
         let scope = Scope::new();
-        let graph = push(&syntax, &scope).expect("push");
+        let graph = push(&syntax).expect("push");
         let resolver = Counting::default();
         let _ = graph.resolve(&syntax, &scope, &resolver).await;
         assert!(

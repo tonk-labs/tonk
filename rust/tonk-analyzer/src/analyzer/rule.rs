@@ -1282,4 +1282,72 @@ rule!:\n\
             "expected MissingFormulaOperand(math/sum, with), got {err:?}"
         );
     }
+
+    // -- cross-path convergence ----------------------------------- //
+
+    /// The notation analyzer's `Derived` lowering and the wire-path
+    /// [`application_plan_from_predicate`] hash `(predicate, payload)`
+    /// the same way, so a `view!:` written in YAML and a `view`
+    /// command issued over `/transact` with matching attributes
+    /// converge on the same subject entity.
+    #[dialog_common::test]
+    async fn it_converges_notation_and_wire_path_entities() {
+        use dialog_artifacts::Value;
+        use tonk_core::claim::{
+            ConceptDescriptor as DurableConceptDescriptor, PredicateApplication, ValueMap,
+        };
+        use tonk_schema::transact::{
+            Application, ApplicationPlan, ConceptPlan, Statement, application_plan_from_predicate,
+        };
+
+        let fixture = new_fixture().await;
+        let descriptor = one_text_field("xyz.tonk.view", "name");
+        fixture.declare("view", descriptor.clone()).await;
+
+        // Notation path: a `view!:` with one literal field. No
+        // `this:` and no `&anchor`, so the lowering falls into
+        // `ThisIntent::Derived` and hashes `(predicate, body)`.
+        let doc = "\
+view!:\n\
+\x20 name: Basic\n";
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("notation document analyzes");
+        let notation_this = {
+            let stmts = analysis.analysis.statements();
+            assert_eq!(stmts.len(), 1, "expected one statement");
+            let Statement::Assert(Application::Concept { query, .. }) = &stmts[0].statement else {
+                panic!("expected concept assert, got {:?}", stmts[0].statement);
+            };
+            match query.terms.get("this").expect("this present") {
+                dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+                other => panic!("expected entity constant, got {other:?}"),
+            }
+        };
+
+        // Wire path: same descriptor, same payload, no `this:`.
+        let mut parameters = ValueMap::new();
+        parameters.insert("name".into(), Value::String("Basic".into()));
+        let wire_plan = application_plan_from_predicate(PredicateApplication {
+            predicate: DurableConceptDescriptor::Durable(descriptor),
+            parameters,
+            name: None,
+        });
+        let wire_this = {
+            let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &wire_plan else {
+                panic!("expected concept plan");
+            };
+            match statement.terms.get("this").expect("this present") {
+                dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+                other => panic!("expected entity constant, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            notation_this, wire_this,
+            "notation and wire paths must derive the same subject entity for the same (concept, payload)"
+        );
+    }
 }

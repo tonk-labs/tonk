@@ -177,11 +177,12 @@ fn try_binding(
 ) -> Option<serde_json::Value> {
     let concept = bound.get_attribute(attr_name)?;
     let descriptor = descriptors.get(&concept)?;
-    // `dom:event` is the conventional `this:` for event-derived
-    // transient assertions. Rules match on the asserted concept's
-    // *fields*, not on `this`, so a fixed entity is fine — and
-    // the assertion sweeps before the durable commit either way.
-    match build_transact_body(descriptor, &concept, EVENT_ENTITY, event, bound) {
+    // The wire body omits `this:` unless the descriptor itself
+    // populates the slot from an event field. The worker derives
+    // an absent `this:` from `(predicate, parameters)` so each
+    // event-derived assertion gets a distinct, content-addressed
+    // subject entity.
+    match build_transact_body(descriptor, &concept, event, bound) {
         Ok(body) => Some(body),
         Err(e) => {
             log_error(format!("event handler: build body for {concept}: {e}"));
@@ -195,12 +196,6 @@ fn try_binding(
 fn closest(start: &Element, selector: &str) -> Option<Element> {
     start.closest(selector).ok().flatten()
 }
-
-/// Conventional `this:` for event-derived transient assertions.
-/// Rules read these transients by their fields, not by `this`, so
-/// a fixed entity is fine — and the assertion sweeps before the
-/// durable commit either way.
-const EVENT_ENTITY: &str = "dom:event";
 
 fn log_error(message: String) {
     web_sys::console::warn_1(&wasm_bindgen::JsValue::from_str(&message));

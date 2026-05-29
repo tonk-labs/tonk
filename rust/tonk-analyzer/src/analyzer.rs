@@ -148,7 +148,7 @@ pub fn analyze_local(syntax: &Syntax) -> Result<Tree<Syntax>, AnalyzeError> {
     // unlike the old path this is a property of `LocalOnly`, not a
     // fragile assumption about every prefetch short-circuiting.
     let scope = Scope::new();
-    let graph = graph::push(syntax, &scope)?;
+    let graph = graph::push(syntax)?;
     let resolved = poll_ready(graph.resolve(syntax, &scope, &graph::LocalOnly))?;
     expand(syntax, &scope, resolved)
 }
@@ -212,7 +212,7 @@ impl<'s, 'a> Analyze<'s, 'a> {
         }
 
         let scope = Scope::new();
-        let graph = graph::push(syntax, &scope)?;
+        let graph = graph::push(syntax)?;
         let resolver = graph::BranchResolver::new(source, env);
         let resolved = graph.resolve(syntax, &scope, &resolver).await?;
         expand(syntax, &scope, resolved)

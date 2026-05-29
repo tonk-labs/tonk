@@ -14,8 +14,9 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute};
 use super::scope::Scope;
 use crate::analyzer::Working;
+use tonk_core::claim::ValueMap;
 use tonk_schema::prelude::EntityExt;
-use tonk_schema::transact::{Application, DomainApplication, ThisIntent};
+use tonk_schema::transact::{Application, DomainApplication, ThisIntent, derive_this};
 
 /// Output of analyzing a single `head!:` expression. An
 /// expression can produce up to two statements:
@@ -78,8 +79,6 @@ pub(crate) fn build_assertion_application(
             .unwrap_or(head_range);
         check_writable(entity, this_range)?;
     }
-    let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
-    let this_term = this_term_for_assertion(&this, &name, &assertion.fields, analysis, name_range)?;
 
     // Detect the rest-marker `..: _` once. Per-field `_`
     // blanks are handled in the per-field walk below.
@@ -103,6 +102,16 @@ pub(crate) fn build_assertion_application(
             // descriptor and the transient flag separately.
             let transient = resolved.descriptor.is_transient();
             let descriptor = resolved.descriptor.concept().clone();
+            let predicate_entity = descriptor.this();
+            let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
+            let this_term = this_term_for_assertion(
+                &this,
+                &name,
+                &assertion.fields,
+                &predicate_entity,
+                analysis,
+                name_range,
+            )?;
 
             // Walk user-supplied fields, separating asserts from
             // retracts. `..: _` and per-field `_` blanks go
@@ -267,6 +276,21 @@ pub(crate) fn build_assertion_application(
             // `..: _` doesn't have a closed set of attributes
             // to expand into. Field-level `_` is also not
             // wired here (Stage 2.7+ extension).
+            //
+            // Claim domains have no concept entity; the digest's
+            // predicate slot uses an entity derived from the
+            // domain string so two assertions in different
+            // domains never collide on `this`.
+            let predicate_entity = Entity::of(&domain);
+            let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
+            let this_term = this_term_for_assertion(
+                &this,
+                &name,
+                &assertion.fields,
+                &predicate_entity,
+                analysis,
+                name_range,
+            )?;
             let mut parameters = Parameters::new();
             parameters.insert("this".into(), this_term);
             for field in &assertion.fields {
@@ -415,12 +439,13 @@ fn this_term_for_assertion(
     this: &ThisIntent,
     name: &Option<String>,
     fields: &[Field],
+    predicate_entity: &Entity,
     analysis: &mut Working,
     name_range: lsp_types::Range,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match this {
         ThisIntent::Derived => {
-            let entity = Entity::of(&body_digest(fields));
+            let entity = derive_this(predicate_entity, &body_digest(fields));
             if let Some(name) = name {
                 if let Some(prior) = analysis.declarations.get(name)
                     && prior != &entity
@@ -444,7 +469,7 @@ fn this_term_for_assertion(
                 // First introduction — mint a body-derived
                 // entity and register it for later expressions
                 // that share `?name`.
-                let entity = Entity::of(&body_digest(fields));
+                let entity = derive_this(predicate_entity, &body_digest(fields));
                 analysis.variables.insert(var.clone(), entity.clone());
                 Term::Constant(Value::Entity(entity))
             }
@@ -453,60 +478,45 @@ fn this_term_for_assertion(
     })
 }
 
-/// Hash-stable summary of an assertion body — pairs of
-/// `(field_name, FieldDigest)` sorted by name. Used by
-/// `Entity::of` to derive a content-addressed entity for
-/// `Derived` and unbound `Variable` heads.
+/// Project an assertion body into the [`ValueMap`] shape fed to
+/// [`derive_this`] for entity derivation. Only literal scalars
+/// contribute; variables, references, blanks, and nested forms
+/// are skipped (they'd reference *other* entities, and including
+/// them would defeat the deterministic-rerun property).
 ///
-/// Only literal scalars contribute. Variables, references, and
-/// blanks are skipped — they're not part of the entity's
-/// identity (they'd reference *other* entities, and including
-/// them in the hash would defeat the deterministic-rerun
-/// property).
+/// The output is consumed by [`derive_this`] alongside the
+/// predicate's identity, so the resulting entity converges with
+/// the wire-path derivation in `application_plan_from_predicate`
+/// for matching `(predicate, payload)` pairs.
 ///
 /// Pure function of `fields` (no scope, no resolver), so it's
 /// safe to call from Phase 1 to pre-compute the entity for an
 /// anchor declaration.
-pub(super) fn body_digest(fields: &[Field]) -> Vec<(String, FieldDigest)> {
-    let mut out: Vec<(String, FieldDigest)> = Vec::new();
+pub(super) fn body_digest(fields: &[Field]) -> ValueMap {
+    let mut out = ValueMap::new();
     for field in fields {
-        let digest = match &field.value {
-            FieldValue::Literal(scalar) => FieldDigest::from_scalar(scalar),
+        let value = match &field.value {
+            FieldValue::Literal(scalar) => scalar_to_value(scalar),
             // Skip variables, references, blanks, nested.
             _ => continue,
         };
-        out.push((field.name.clone(), digest));
+        out.insert(field.name.clone(), value);
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
-/// Serializable shadow of [`Scalar`] used only by
-/// [`body_digest`]. Round-trips the scalar's primitive value so
-/// `Entity::of` can hash it deterministically. Distinct from
-/// `Scalar` because we want a stable serde representation
-/// independent of any future surface-syntax changes.
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-pub(super) enum FieldDigest {
-    String(String),
-    Integer(i128),
-    UnsignedInteger(u128),
-    Float(f64),
-    Boolean(bool),
-    Null,
-}
-
-impl FieldDigest {
-    fn from_scalar(scalar: &Scalar) -> Self {
-        match scalar {
-            Scalar::String(s) => Self::String(s.clone()),
-            Scalar::Integer(i) => Self::Integer(*i),
-            Scalar::UnsignedInteger(u) => Self::UnsignedInteger(*u),
-            Scalar::Float(f) => Self::Float(*f),
-            Scalar::Boolean(b) => Self::Boolean(*b),
-            Scalar::Null => Self::Null,
-        }
+fn scalar_to_value(scalar: &Scalar) -> Value {
+    match scalar {
+        Scalar::String(s) => Value::String(s.clone()),
+        Scalar::Integer(i) => Value::SignedInt(*i),
+        Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
+        Scalar::Float(f) => Value::Float(*f),
+        Scalar::Boolean(b) => Value::Boolean(*b),
+        // dialog's `Value` has no Null variant; encode an explicit
+        // absence as an empty string so the digest stays total.
+        // This only matters for `null` literals in `with:` slots,
+        // which the analyzer otherwise treats as a no-op.
+        Scalar::Null => Value::String(String::new()),
     }
 }
 
