@@ -60,9 +60,10 @@ The runtime that activates `<tonk-concept>` is provided by the host
 and ships with every served view. You don't import it, link to it,
 or include it — assume it's there.
 
-For interactive views (forms, buttons, custom write flows), drop
-into a `<script type="module">` and use `globalThis.tonk` directly.
-See the next section.
+For interactive views (forms, buttons, custom write flows), wire
+DOM events declaratively with `on<event>=<concept>` attributes and
+let a rule pick up the resulting transient assertion. See the next
+section.
 
 Git-tag semantics apply: re-asserting the same body is idempotent
 (same content → same content-derived entity), a different body

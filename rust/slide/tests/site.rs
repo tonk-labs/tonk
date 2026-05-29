@@ -1081,6 +1081,236 @@ mod when_sharing_a_concept {
     }
 }
 
+mod when_sharing_a_display {
+    use anyhow::Result;
+    use dialog_repository::Branch;
+    use slide::remote;
+    use slide::share::{self, ShareError, ShareOptions};
+    use slide::views;
+    use url::Url;
+
+    use crate::common::{self, ATTRIBUTE_DECL, CONCEPT_DECL};
+
+    const ENDPOINT: &str = "https://access.example.test/ucan/";
+
+    async fn wire_local_upstream(test: &common::TestSite) -> Result<Branch> {
+        let upstream = test
+            .site
+            .repository
+            .branch("upstream")
+            .open()
+            .perform(&test.site.operator)
+            .await?;
+        test.site
+            .branch
+            .set_upstream(&upstream)
+            .perform(&test.site.operator)
+            .await?;
+        Ok(upstream)
+    }
+
+    /// Site with a `task` concept, a bookmarked `task` instance,
+    /// one remote, and an in-process upstream — the shape
+    /// `share_display` expects.
+    async fn shareable_display_site() -> Result<common::TestSite> {
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline(
+            r#"task!: &buy-milk
+  title: "Buy milk"
+  done:  false
+"#,
+        )
+        .await?;
+        wire_local_upstream(&test).await?;
+        remote::add(&test.site, "origin", ENDPOINT, None).await?;
+        Ok(test)
+    }
+
+    #[dialog_common::test]
+    async fn it_produces_a_launcher_url_with_view_and_model_in_the_then_suffix() -> Result<()> {
+        let test = shareable_display_site().await?;
+        let outcome = share::share_display(
+            &test.site,
+            "buy-milk",
+            Some("basic"),
+            Some("task"),
+            ShareOptions {
+                ui_base: Some("https://ui.example.test/join".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(outcome.subject_name.as_deref(), Some("buy-milk"));
+        assert_eq!(outcome.view_name.as_deref(), Some("basic"));
+        assert_eq!(outcome.model.as_deref(), Some("task"));
+        assert_eq!(outcome.remote_name, "origin");
+
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        // `then=` carries the bookmark (not the resolved entity)
+        // so the URL survives entity-URI churn.
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some("branch/main/display/buy-milk?view=basic&model=task"),
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_omits_query_params_when_neither_view_nor_model_is_supplied() -> Result<()> {
+        let test = shareable_display_site().await?;
+        let outcome =
+            share::share_display(&test.site, "buy-milk", None, None, ShareOptions::default())
+                .await?;
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        // No trailing `?` when neither selector is present. The
+        // library `share_display` stays permissive here (it only
+        // composes the URL); the CLI is where exactly-one-of is
+        // enforced, so a neither-selector launcher isn't reachable
+        // from `slide share display`.
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some("branch/main/display/buy-milk"),
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_form_encodes_query_delimiters_in_a_view_name() -> Result<()> {
+        // A view name carrying `&`/`?`/`=` must be form-encoded so it
+        // can't corrupt or inject into the inner query string. The
+        // round-trip through `Url::query_pairs` recovers the original.
+        let test = shareable_display_site().await?;
+        let outcome = share::share_display(
+            &test.site,
+            "buy-milk",
+            Some("a&b=c?d"),
+            None,
+            ShareOptions::default(),
+        )
+        .await?;
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let then = pairs.get("then").map(String::as_str).expect("then param");
+        // The view value survives intact after tonk-ui would re-parse
+        // the inner query, with no extra parameters leaking in.
+        let inner = then.split_once('?').expect("inner query").1;
+        let inner_pairs: std::collections::HashMap<_, _> =
+            url::form_urlencoded::parse(inner.as_bytes())
+                .into_owned()
+                .collect();
+        assert_eq!(inner_pairs.get("view").map(String::as_str), Some("a&b=c?d"));
+        assert!(!inner_pairs.contains_key("b"));
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_raw_entity_uri_subject() -> Result<()> {
+        let test = shareable_display_site().await?;
+        let entity = views::entity_for_name(&test.site, "buy-milk")
+            .await?
+            .expect("buy-milk should resolve");
+        let outcome = share::share_display(
+            &test.site,
+            &entity.to_string(),
+            Some("basic"),
+            Some("task"),
+            ShareOptions::default(),
+        )
+        .await?;
+
+        assert!(outcome.subject_name.is_none());
+        assert_eq!(outcome.subject_entity, entity);
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        // URI subjects land in `then=` verbatim — no bookmark to
+        // prefer over them.
+        let expected = format!("branch/main/display/{entity}?view=basic&model=task");
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some(expected.as_str())
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_the_subject_bookmark_does_not_resolve() -> Result<()> {
+        let test = shareable_display_site().await?;
+        let result = share::share_display(
+            &test.site,
+            "ghost",
+            Some("basic"),
+            Some("task"),
+            ShareOptions::default(),
+        )
+        .await;
+        match result {
+            Err(ShareError::SubjectNotFound { target }) => assert_eq!(target, "ghost"),
+            other => panic!("expected SubjectNotFound, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_errors_when_the_model_concept_is_not_defined() -> Result<()> {
+        let test = shareable_display_site().await?;
+        let result = share::share_display(
+            &test.site,
+            "buy-milk",
+            Some("basic"),
+            Some("nope"),
+            ShareOptions::default(),
+        )
+        .await;
+        match result {
+            Err(ShareError::ConceptNotFound { name }) => assert_eq!(name, "nope"),
+            other => panic!("expected ConceptNotFound, got: {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_accepts_a_uri_shaped_model_without_validation() -> Result<()> {
+        // A `:`-bearing model passes through without a concept
+        // lookup. Mirrors the convention for `did:key:…` subjects.
+        let test = shareable_display_site().await?;
+        let outcome = share::share_display(
+            &test.site,
+            "buy-milk",
+            None,
+            Some("did:key:zPretendConcept"),
+            ShareOptions::default(),
+        )
+        .await?;
+        let url = Url::parse(&outcome.url)?;
+        let pairs: std::collections::HashMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert_eq!(
+            pairs.get("then").map(String::as_str),
+            Some("branch/main/display/buy-milk?model=did%3Akey%3AzPretendConcept"),
+        );
+        Ok(())
+    }
+}
+
 mod when_migrating_from_carry {
     use anyhow::Result;
     use slide::migrate::{self, Mode};

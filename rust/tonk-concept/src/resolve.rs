@@ -137,7 +137,7 @@ pub fn phase1_query(parsed: &ParsedSource) -> Query {
 pub fn phase2_query(
     descriptor_json: &str,
     filters: &BTreeMap<String, String>,
-) -> Result<Query, serde_json::Error> {
+) -> Result<Query, Phase2Error> {
     let predicate: serde_json::Value = serde_json::from_str(descriptor_json)?;
     // Discover the field names from the descriptor's `with` map
     // so we can put one term per field into the wire query.
@@ -148,9 +148,12 @@ pub fn phase2_query(
         .unwrap_or_default();
     let mut terms: IndexMap<String, serde_json::Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "this" } }));
-    for field in with.keys() {
+    for (field, spec) in &with {
         let term = match filters.get(field) {
-            Some(v) => json!(v),
+            Some(raw) => {
+                let as_type = spec.get("as").and_then(|v| v.as_str());
+                coerce_filter_value(field, as_type, raw)?
+            }
             None => json!({ "?": { "name": field } }),
         };
         terms.insert(field.clone(), term);
@@ -159,14 +162,98 @@ pub fn phase2_query(
         "terms": terms,
         "predicate": predicate
     });
-    serde_json::from_value(body)
+    Ok(serde_json::from_value(body)?)
+}
+
+/// Coerce a `?key=value` filter string to a JSON value matching the
+/// field's declared type (the descriptor's `as`), so the constant
+/// constraint compares against the stored value rather than a string.
+///
+/// A value that doesn't parse for a numeric or boolean type is an
+/// error, not a string fallback: a string constant on a numeric
+/// field can never match the stored value, so the query would
+/// return nothing and the user couldn't tell a typo'd filter from
+/// a genuinely empty result. Surfacing it lets the caller render a
+/// visible error instead. Text/Entity/Symbol/Bytes (and unknown
+/// types) are inherently string-shaped, so they pass through.
+fn coerce_filter_value(
+    field: &str,
+    as_type: Option<&str>,
+    raw: &str,
+) -> Result<serde_json::Value, Phase2Error> {
+    let coerced = match as_type {
+        Some("UnsignedInteger") => raw.parse::<u64>().ok().map(|n| json!(n)),
+        Some("SignedInteger") => raw.parse::<i64>().ok().map(|n| json!(n)),
+        // Reject non-finite floats too: `serde_json` can't represent
+        // `inf`/`NaN` and would silently serialize them as `null`.
+        Some("Float") => raw
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .map(|n| json!(n)),
+        Some("Boolean") => match raw {
+            "true" => Some(json!(true)),
+            "false" => Some(json!(false)),
+            _ => None,
+        },
+        // Text, Entity, Symbol, Bytes, or unknown: keep as a string.
+        _ => return Ok(json!(raw)),
+    };
+    coerced.ok_or_else(|| Phase2Error::Filter {
+        field: field.to_owned(),
+        as_type: as_type.unwrap_or("Text").to_owned(),
+        value: raw.to_owned(),
+    })
+}
+
+/// Why [`phase2_query`] couldn't build a subscription query.
+#[derive(Debug)]
+pub enum Phase2Error {
+    /// The descriptor JSON or the assembled query body didn't
+    /// deserialize into the wire `Query` shape.
+    Json(serde_json::Error),
+    /// A `?field=value` filter targets a numeric or boolean field
+    /// but the value doesn't parse as that type.
+    Filter {
+        /// The descriptor field the filter constrains.
+        field: String,
+        /// The field's declared `as:` type.
+        as_type: String,
+        /// The raw filter value that failed to parse.
+        value: String,
+    },
+}
+
+impl std::fmt::Display for Phase2Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(e) => write!(f, "{e}"),
+            Self::Filter {
+                field,
+                as_type,
+                value,
+            } => write!(f, "filter `{field}={value}` is not a valid {as_type}"),
+        }
+    }
+}
+
+impl std::error::Error for Phase2Error {}
+
+impl From<serde_json::Error> for Phase2Error {
+    fn from(e: serde_json::Error) -> Self {
+        Self::Json(e)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
-    #[test]
+    #[dialog_common::test]
     fn it_parses_a_bare_name() {
         let parsed = parse_source("person");
         assert_eq!(parsed.name_or_uri, "person");
@@ -174,21 +261,21 @@ mod tests {
         assert!(!parsed.is_uri());
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_parses_a_uri() {
         let parsed = parse_source("did:key:zPerson");
         assert_eq!(parsed.name_or_uri, "did:key:zPerson");
         assert!(parsed.is_uri());
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_parses_a_name_with_one_filter() {
         let parsed = parse_source("person?name=Alice");
         assert_eq!(parsed.name_or_uri, "person");
         assert_eq!(parsed.filters.get("name"), Some(&"Alice".to_string()));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_parses_a_filter_with_projection_marker() {
         // The bare `&age` is ignored — projection is implicit.
         let parsed = parse_source("person?name=Alice&age");
@@ -196,19 +283,19 @@ mod tests {
         assert_eq!(parsed.filters.get("name"), Some(&"Alice".to_string()));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_decodes_percent_encoded_filter_values() {
         let parsed = parse_source("person?name=Alice%20B");
         assert_eq!(parsed.filters.get("name"), Some(&"Alice B".to_string()));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_decodes_plus_as_space() {
         let parsed = parse_source("person?name=Alice+B");
         assert_eq!(parsed.filters.get("name"), Some(&"Alice B".to_string()));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_a_phase1_query_filtered_by_name() {
         let parsed = parse_source("person");
         let q = phase1_query(&parsed);
@@ -218,7 +305,7 @@ mod tests {
         assert_eq!(value, json!("person"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_a_phase1_query_filtered_by_uri() {
         let parsed = parse_source("did:key:zPerson");
         let q = phase1_query(&parsed);
@@ -227,7 +314,7 @@ mod tests {
         assert_eq!(value, json!("did:key:zPerson"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_a_phase2_query_projecting_every_field() {
         let descriptor = r#"{"with":{
             "name": { "the": "person/name", "as": "Text",   "cardinality": "one" },
@@ -240,7 +327,7 @@ mod tests {
         assert!(q.terms.contains("age"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_a_phase2_query_constraining_filtered_fields() {
         let descriptor = r#"{"with":{
             "name": { "the": "person/name", "as": "Text", "cardinality": "one" }
@@ -251,5 +338,96 @@ mod tests {
         let term = q.terms.get("name").expect("name term");
         let value: serde_json::Value = serde_json::to_value(term).unwrap();
         assert_eq!(value, json!("Alice"));
+    }
+
+    fn filtered_query(as_type: &str, raw: &str) -> Result<Query, Phase2Error> {
+        let descriptor =
+            format!(r#"{{"with":{{"f":{{"the":"x/f","as":"{as_type}","cardinality":"one"}}}}}}"#);
+        let mut filters = BTreeMap::new();
+        filters.insert("f".to_string(), raw.to_string());
+        phase2_query(&descriptor, &filters)
+    }
+
+    fn filtered_term(as_type: &str, raw: &str) -> serde_json::Value {
+        let q = filtered_query(as_type, raw).expect("query builds");
+        let term = q.terms.get("f").expect("f term");
+        serde_json::to_value(term).unwrap()
+    }
+
+    // An integer-typed field filtered via `?f=5` must constrain on
+    // the number `5`, not the string `"5"` — otherwise it never
+    // matches the stored integer value.
+    #[dialog_common::test]
+    fn it_coerces_an_unsigned_integer_filter_to_a_number() {
+        assert_eq!(filtered_term("UnsignedInteger", "5"), json!(5));
+    }
+
+    #[dialog_common::test]
+    fn it_coerces_a_signed_integer_filter_to_a_number() {
+        assert_eq!(filtered_term("SignedInteger", "-5"), json!(-5));
+    }
+
+    #[dialog_common::test]
+    fn it_coerces_a_float_filter_to_a_number() {
+        assert_eq!(filtered_term("Float", "3.5"), json!(3.5));
+    }
+
+    #[dialog_common::test]
+    fn it_coerces_a_boolean_filter_to_a_bool() {
+        assert_eq!(filtered_term("Boolean", "true"), json!(true));
+    }
+
+    // Text/Entity/etc. stay strings, as before.
+    #[dialog_common::test]
+    fn it_keeps_a_text_filter_as_a_string() {
+        assert_eq!(filtered_term("Text", "5"), json!("5"));
+    }
+
+    // A non-numeric value for a numeric field is rejected rather
+    // than coerced to a string constant that could never match the
+    // stored integer — that would render a blank result the user
+    // couldn't distinguish from a genuinely empty set.
+    #[dialog_common::test]
+    fn it_rejects_an_unparseable_unsigned_integer_filter() {
+        let err = filtered_query("UnsignedInteger", "lots").expect_err("should reject");
+        assert!(
+            matches!(&err, Phase2Error::Filter { field, as_type, value }
+                if field == "f" && as_type == "UnsignedInteger" && value == "lots"),
+            "got {err:?}",
+        );
+    }
+
+    // A negative value can't be an `UnsignedInteger`; it's rejected,
+    // not silently kept as a string.
+    #[dialog_common::test]
+    fn it_rejects_a_negative_value_for_an_unsigned_integer_filter() {
+        let err = filtered_query("UnsignedInteger", "-5").expect_err("should reject");
+        assert!(matches!(err, Phase2Error::Filter { .. }), "got {err:?}");
+    }
+
+    // `inf`/`NaN` parse as `f64` but `serde_json` can't represent
+    // them; rejecting avoids a silent `null` constant.
+    #[dialog_common::test]
+    fn it_rejects_a_non_finite_float_filter() {
+        for raw in ["inf", "NaN", "-inf"] {
+            let err = filtered_query("Float", raw).expect_err("should reject");
+            assert!(
+                matches!(err, Phase2Error::Filter { .. }),
+                "{raw}: got {err:?}"
+            );
+        }
+    }
+
+    // Boolean coercion is exact: only `true`/`false`. Anything else
+    // (`True`, `1`, `yes`) is rejected.
+    #[dialog_common::test]
+    fn it_rejects_a_non_boolean_value_for_a_boolean_filter() {
+        for raw in ["True", "1", "yes"] {
+            let err = filtered_query("Boolean", raw).expect_err("should reject");
+            assert!(
+                matches!(err, Phase2Error::Filter { .. }),
+                "{raw}: got {err:?}"
+            );
+        }
     }
 }

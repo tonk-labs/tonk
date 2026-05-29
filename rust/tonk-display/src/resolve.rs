@@ -2,8 +2,11 @@
 //!
 //! Three builders:
 //!
-//! - [`view_query`] — subscribe to the `view` row matching a given
-//!   `(model, name)` pair, projecting the `display` field.
+//! - [`name_target_query`] — resolve a view's `id:` name to the
+//!   entity it currently points at (so re-asserting the anchor
+//!   always resolves to the latest view).
+//! - [`view_fields_query`] — subscribe to that view entity,
+//!   projecting `model` and `display`.
 //! - [`entity_query`] — subscribe to a single entity by URI,
 //!   projecting every field in the model concept's descriptor.
 //! - [`view_predicate`] — the predicate JSON of the `view` concept
@@ -15,21 +18,35 @@ use indexmap::IndexMap;
 use serde_json::{Value, json};
 use tonk_schema::query::Query;
 
-/// Build the live `view` subscription query: find the `view` row
-/// whose `model` field equals `model_entity` and whose `name` field
-/// equals `view_name`, projecting `display` (and `this`) as
-/// variables.
-///
-/// The predicate is the built-in `view` concept descriptor —
-/// `view_predicate`. The terms map nails `model` + `name` to
-/// constants and leaves `display` and `this` as variables so they
-/// flow back in every frame.
-pub fn view_query(model_entity: &str, view_name: &str) -> Result<Query, serde_json::Error> {
+/// Resolve a view's `id:` name to the entity it currently points
+/// at. A view is published under an anchor name (`view!:
+/// &book-dashboard`); this pins `this` to that name URI and reads
+/// back the `dialog.name/referent` claim (cardinality one) that the
+/// `Name` concept stores its target in.
+/// Re-asserting the anchor re-points the name, so the resolved
+/// entity is always the latest — older view entities linger
+/// unreferenced, never resolved.
+pub fn name_target_query(name_uri: &str) -> Result<Query, serde_json::Error> {
+    let predicate = json!({
+        "with": {
+            "entity": { "the": "dialog.name/referent", "as": "Entity", "cardinality": "one" }
+        }
+    });
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!(name_uri));
+    terms.insert("entity".into(), json!({ "?": { "name": "entity" } }));
+    serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
+}
+
+/// Build the live `view` subscription pinned to a specific view
+/// entity (the target of [`name_target_query`]), projecting `model`
+/// and `display`. Exactly one row, so there is no `(model, name)`
+/// ambiguity — the view to render is the one its name points at.
+pub fn view_fields_query(view_entity: &str) -> Result<Query, serde_json::Error> {
     let predicate = view_predicate();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
-    terms.insert("this".into(), json!({ "?": { "name": "view" } }));
-    terms.insert("model".into(), json!(model_entity));
-    terms.insert("name".into(), json!(view_name));
+    terms.insert("this".into(), json!(view_entity));
+    terms.insert("model".into(), json!({ "?": { "name": "model" } }));
     terms.insert("display".into(), json!({ "?": { "name": "display" } }));
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
@@ -46,7 +63,6 @@ pub fn views_for_model_query(model_entity: &str) -> Result<Query, serde_json::Er
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "view" } }));
     terms.insert("model".into(), json!(model_entity));
-    terms.insert("name".into(), json!({ "?": { "name": "name" } }));
     terms.insert("display".into(), json!({ "?": { "name": "display" } }));
     serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
 }
@@ -76,14 +92,14 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
 
 /// The descriptor of the `view` concept itself.
 ///
-/// Three fields: `name` (text — distinguishes views over the same
-/// concept), `model` (entity — the concept being displayed), and
-/// `display` (text — the HTML template). Attribute URIs follow the
-/// `xyz.tonk.view/*` namespace the user's design pins.
+/// Two fields: `model` (entity — the concept being displayed) and
+/// `display` (text — the HTML template). A view is identified by
+/// its anchor name (`view!: &book-dashboard`), not by a `name`
+/// field, so re-asserting the anchor replaces it in place. Attribute
+/// URIs follow the `xyz.tonk.view/*` namespace.
 pub fn view_predicate() -> Value {
     json!({
         "with": {
-            "name":    { "the": "xyz.tonk.view/name",    "as": "Text",   "cardinality": "one" },
             "model":   { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
             "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
         }
@@ -99,29 +115,66 @@ pub fn looks_like_uri(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
-    #[test]
-    fn it_builds_a_view_query_pinning_model_and_name() {
-        let q = view_query("concept:zGreeting", "basic").expect("view_query");
-        let model = q.terms.get("model").expect("model term");
-        let name = q.terms.get("name").expect("name term");
+    #[dialog_common::test]
+    fn it_resolves_a_view_name_to_its_target_entity() {
+        // A view is published under an `id:` name; the lookup pins
+        // `this` to that name URI and projects the `entity` it
+        // currently points at, so re-asserting (which re-points the
+        // name) always resolves to the latest view entity.
+        let q = name_target_query("id:book-dashboard").expect("name_target_query");
+        let this = q.terms.get("this").expect("this term");
         assert_eq!(
-            serde_json::to_value(model).unwrap(),
-            json!("concept:zGreeting")
+            serde_json::to_value(this).unwrap(),
+            json!("id:book-dashboard")
         );
-        assert_eq!(serde_json::to_value(name).unwrap(), json!("basic"));
+        let entity = q.terms.get("entity").expect("entity term");
+        assert_eq!(
+            serde_json::to_value(entity).unwrap(),
+            json!({ "?": { "name": "entity" } })
+        );
+        // The target is carried by `dialog.name/referent` — the
+        // attribute `tonk_core::meta::Name` (and `lookup_named_entity`)
+        // store a name's current target in.
+        let predicate = serde_json::to_value(&q.predicate).unwrap();
+        assert_eq!(
+            predicate["with"]["entity"]["the"],
+            json!("dialog.name/referent")
+        );
     }
 
-    #[test]
-    fn it_projects_display_as_a_variable_in_the_view_query() {
-        let q = view_query("concept:zGreeting", "basic").expect("view_query");
-        let display = q.terms.get("display").expect("display term");
-        let v = serde_json::to_value(display).unwrap();
-        // Variable terms shape as `{ "?": { "name": "display" } }`.
-        assert_eq!(v, json!({ "?": { "name": "display" } }));
+    #[dialog_common::test]
+    fn it_builds_a_view_fields_query_pinned_to_the_view_entity() {
+        let q = view_fields_query("did:key:zView").expect("view_fields_query");
+        let this = q.terms.get("this").expect("this term");
+        assert_eq!(serde_json::to_value(this).unwrap(), json!("did:key:zView"));
+        // `model` and `display` flow back as variables.
+        for field in ["model", "display"] {
+            let term = q.terms.get(field).unwrap_or_else(|| panic!("{field} term"));
+            assert_eq!(
+                serde_json::to_value(term).unwrap(),
+                json!({ "?": { "name": field } })
+            );
+        }
     }
 
-    #[test]
+    #[dialog_common::test]
+    fn the_view_predicate_has_no_name_field() {
+        let p = view_predicate();
+        let with = p.get("with").and_then(|v| v.as_object()).expect("with");
+        assert!(with.contains_key("model"));
+        assert!(with.contains_key("display"));
+        assert!(
+            !with.contains_key("name"),
+            "view identity moved to the anchor name; the `name` field is gone"
+        );
+    }
+
+    #[dialog_common::test]
     fn it_builds_an_entity_query_pinning_this() {
         let descriptor = r#"{"with":{
             "message": { "the": "greeting/message", "as": "Text", "cardinality": "one" }
@@ -134,7 +187,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_projects_every_descriptor_field_in_the_entity_query() {
         let descriptor = r#"{"with":{
             "message":   { "the": "greeting/message",   "as": "Text", "cardinality": "one" },
@@ -145,14 +198,14 @@ mod tests {
         assert!(q.terms.contains("recipient"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_distinguishes_uri_from_bookmark() {
         assert!(looks_like_uri("did:key:zAlice"));
         assert!(looks_like_uri("concept:abc"));
         assert!(!looks_like_uri("greeting"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_builds_views_for_model_pinning_model_only() {
         let q = views_for_model_query("concept:zGreeting").expect("views_for_model_query");
         let model = q.terms.get("model").expect("model term");
@@ -160,17 +213,14 @@ mod tests {
             serde_json::to_value(model).unwrap(),
             json!("concept:zGreeting"),
         );
-        // `name` and `display` must remain variables so the frame
-        // delivers one row per available view.
-        let name = q.terms.get("name").expect("name term");
-        assert_eq!(
-            serde_json::to_value(name).unwrap(),
-            json!({ "?": { "name": "name" } }),
-        );
+        // `display` (and `this`) stay variables so the frame delivers
+        // one row per view of the model; slides key off the view
+        // entity since views no longer carry a `name` field.
         let display = q.terms.get("display").expect("display term");
         assert_eq!(
             serde_json::to_value(display).unwrap(),
             json!({ "?": { "name": "display" } }),
         );
+        assert!(!q.terms.contains("name"));
     }
 }

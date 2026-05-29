@@ -3,13 +3,17 @@
 //! upstream's URL, and return a launcher URL the human can paste
 //! into a browser.
 //!
-//! Two flavours, sharing a common skeleton:
+//! Three flavours, sharing a common skeleton:
 //!
 //! - [`share_concept`] points at tonk-ui's auto-rendered concept
 //!   route — `then=branch/main/concept/<name>`.
 //! - [`share_view`] points at the iframe viewer route — the
 //!   target resolves to an entity URI carrying a `text/html`
 //!   claim, and `then=branch/main/view/<entity>`.
+//! - [`share_display`] points at the `<tonk-display>` route —
+//!   `then=branch/main/display/<subject>?view=<view-name>`, the
+//!   declarative single-entity renderer. `<view-name>` is the
+//!   view's anchor name; the view carries its own `model`.
 //!
 //! The launcher URL extends the standard invite URL with two
 //! extra query parameters:
@@ -34,7 +38,7 @@
 
 use dialog_artifacts::Entity;
 use thiserror::Error;
-use url::Url;
+use url::{Url, form_urlencoded};
 
 use crate::ExitCode;
 use crate::invite::{self, InviteError};
@@ -88,6 +92,35 @@ pub struct ShareOutcome {
     pub space_name: String,
 }
 
+/// Outcome of [`share_display`].
+#[derive(Debug)]
+pub struct ShareDisplayOutcome {
+    /// The launcher URL — `then=` resolves to the
+    /// `<tonk-display>` route with `?view=…` (the view's anchor
+    /// name), and `?model=…` only in carousel mode.
+    pub url: String,
+    /// Local name of the remote whose endpoint got embedded.
+    pub remote_name: String,
+    /// Endpoint URL.
+    pub remote_endpoint: String,
+    /// Bookmark the subject was resolved through, when the caller
+    /// passed a name rather than a raw entity URI. `None` when
+    /// the caller passed `did:key:…` directly.
+    pub subject_name: Option<String>,
+    /// Entity URI the subject resolved to. Always populated, even
+    /// when the URL carries the bookmark name verbatim (tonk-ui
+    /// resolves the bookmark client-side).
+    pub subject_entity: Entity,
+    /// View anchor name forwarded as `?view=`, when supplied.
+    pub view_name: Option<String>,
+    /// Model (concept name or URI) forwarded as `?model=`, when
+    /// supplied — carousel mode only; with `--view` the view
+    /// declares its own model. Mirrors what the caller passed.
+    pub model: Option<String>,
+    /// `name=` value embedded into the URL.
+    pub space_name: String,
+}
+
 /// Outcome of [`share_view`].
 #[derive(Debug)]
 pub struct ShareViewOutcome {
@@ -108,7 +141,8 @@ pub struct ShareViewOutcome {
     pub space_name: String,
 }
 
-/// Failure modes for [`share_concept`] and [`share_view`].
+/// Failure modes for [`share_concept`], [`share_view`], and
+/// [`share_display`].
 #[derive(Debug, Error)]
 pub enum ShareError {
     /// `<name>` doesn't resolve to a concept on the local
@@ -129,6 +163,15 @@ pub enum ShareError {
          run `slide views` to see what's available"
     )]
     ViewNotFound {
+        /// The bookmark or entity URI that didn't resolve.
+        target: String,
+    },
+    /// A bookmark name passed to [`share_display`] didn't resolve
+    /// to any entity. Distinct from [`Self::ViewNotFound`] so the
+    /// error message doesn't misdirect the agent to `slide views`,
+    /// which only lists `text/html`-bearing entities.
+    #[error("subject '{target}' is not bookmarked on this branch")]
+    SubjectNotFound {
         /// The bookmark or entity URI that didn't resolve.
         target: String,
     },
@@ -291,7 +334,8 @@ pub async fn share_view(
     target: &str,
     options: ShareOptions,
 ) -> Result<ShareViewOutcome, ShareError> {
-    let (entity, view_name) = resolve_view_target(site, target).await?;
+    let (entity, view_name) =
+        resolve_bookmark_or_uri(site, target, |t| ShareError::ViewNotFound { target: t }).await?;
     if !views::entity_has_text_html(site, &entity)
         .await
         .map_err(|e| ShareError::Io(format!("text/html lookup failed: {e}")))?
@@ -323,12 +367,124 @@ pub async fn share_view(
     })
 }
 
+/// Push the local repo and mint a launcher URL that points at
+/// the `<tonk-display>` route with the supplied view and model
+/// selectors baked into the query string.
+///
+/// Subject resolution is identical to [`share_view`] (bookmark
+/// name or `did:key:…` URI). The model argument can be a concept
+/// name (validated against the local schema) or a URI (passed
+/// through verbatim). The view argument is forwarded without
+/// validation: `<tonk-display>` resolves the name to a view
+/// entity at render time, and a name that doesn't resolve
+/// surfaces as an error in the UI (not a generic fallback) — so
+/// a typo isn't caught here, it fails on the recipient's screen.
+/// Omitting `--view` entirely is the only thing that selects
+/// carousel mode.
+///
+/// Steps parallel [`share_view`]:
+///
+/// 1. Resolve the subject to an entity + optional bookmark.
+/// 2. Validate the model when it looks like a name.
+/// 3. Run the shared share prep.
+/// 4. Mint the invite.
+/// 5. Compose the launcher URL with the `?view=&model=` suffix.
+pub async fn share_display(
+    site: &SlideSite,
+    subject: &str,
+    view_name: Option<&str>,
+    model: Option<&str>,
+    options: ShareOptions,
+) -> Result<ShareDisplayOutcome, ShareError> {
+    let (entity, subject_name) =
+        resolve_bookmark_or_uri(site, subject, |t| ShareError::SubjectNotFound { target: t })
+            .await?;
+
+    // Validate the model when it's a bare identifier. URI-shaped
+    // models (anything containing `:`) pass through — same
+    // convention as `did:key:…` subjects.
+    if let Some(name) = model.filter(|m| !m.contains(':')) {
+        let concepts = schema::list_concepts(site)
+            .await
+            .map_err(|e| ShareError::Io(format!("failed to list concepts: {e}")))?;
+        if !concepts.iter().any(|c| c.name == name) {
+            return Err(ShareError::ConceptNotFound {
+                name: name.to_owned(),
+            });
+        }
+    }
+
+    let remote_record = prepare_share(site, options.remote.as_deref()).await?;
+    let space_name = effective_space_name(options.space_name.as_deref());
+
+    // Prefer the bookmark name in the URL when the caller passed
+    // one — tonk-ui resolves it back through the same Name index.
+    // Bookmarks survive entity-URI changes (re-asserting a view
+    // body produces a new entity); the name does not.
+    let subject_segment = subject_name.as_deref().unwrap_or(subject);
+    let then = compose_display_then(subject_segment, view_name, model);
+    let url = mint_and_compose(
+        site,
+        options.ui_base.as_deref(),
+        &remote_record,
+        &space_name,
+        &then,
+    )
+    .await?;
+
+    Ok(ShareDisplayOutcome {
+        url,
+        remote_name: remote_record.name,
+        remote_endpoint: remote_record.endpoint,
+        subject_name,
+        subject_entity: entity,
+        view_name: view_name.map(str::to_owned),
+        model: model.map(str::to_owned),
+        space_name,
+    })
+}
+
+/// Build the `then=` suffix for a display share: a path under the
+/// recipient's space root with optional `view` / `model` query
+/// parameters appended. The `view`/`model` values are
+/// form-urlencoded so a stray `&` or `?` in a name doesn't corrupt
+/// the inner query when tonk-ui pastes it onto its space-root path.
+/// The `subject` is left verbatim as a path segment — `did:key:…`
+/// URIs need their `:` intact and bookmark names don't carry query
+/// delimiters.
+fn compose_display_then(subject: &str, view: Option<&str>, model: Option<&str>) -> String {
+    let mut path = format!(
+        "branch/{branch}/display/{subject}",
+        branch = site::BRANCH_NAME,
+    );
+    let mut pairs = form_urlencoded::Serializer::new(String::new());
+    let mut has_any = false;
+    if let Some(view) = view {
+        pairs.append_pair("view", view);
+        has_any = true;
+    }
+    if let Some(model) = model {
+        pairs.append_pair("model", model);
+        has_any = true;
+    }
+    if has_any {
+        path.push('?');
+        path.push_str(&pairs.finish());
+    }
+    path
+}
+
 /// Map a `<target>` argument into an `(entity, optional_name)`
 /// pair. `did:key:…` strings are taken as URIs; everything else
-/// is looked up as a `dialog.meta/name` bookmark.
-async fn resolve_view_target(
+/// is looked up as a `dialog.meta/name` bookmark. `missing` is
+/// invoked when the bookmark doesn't resolve — callers choose
+/// between [`ShareError::ViewNotFound`] and
+/// [`ShareError::SubjectNotFound`] so the message matches the
+/// verb the user typed.
+async fn resolve_bookmark_or_uri(
     site: &SlideSite,
     target: &str,
+    missing: fn(String) -> ShareError,
 ) -> Result<(Entity, Option<String>), ShareError> {
     if target.is_empty() {
         return Err(ShareError::InvalidTarget {
@@ -350,9 +506,7 @@ async fn resolve_view_target(
     let entity = views::entity_for_name(site, target)
         .await
         .map_err(|e| ShareError::Io(format!("bookmark lookup failed: {e}")))?
-        .ok_or_else(|| ShareError::ViewNotFound {
-            target: target.to_owned(),
-        })?;
+        .ok_or_else(|| missing(target.to_owned()))?;
     Ok((entity, Some(target.to_owned())))
 }
 

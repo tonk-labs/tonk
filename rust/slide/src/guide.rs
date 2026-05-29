@@ -11,9 +11,10 @@
 //!    relies on. Kept out of the upstream notation guide so the
 //!    notation reference stays a clean syntax doc.
 //! 3. `slide/src/guide-views-dynamic.md` — companion to the views
-//!    addendum that documents the `globalThis.tonk` API agents
-//!    can call from `<script type="module">` inside a view body
-//!    when the declarative `<tonk-concept>` element doesn't fit.
+//!    addendum that documents the declarative reactivity surface:
+//!    `on<event>=<concept>` template attributes, the `dom.event`
+//!    namespace transient concepts read from, and `rule!:` heads
+//!    that turn those transients into downstream state.
 //! 4. `tonk-concept/SPEC.md` — the `<tonk-concept>` custom
 //!    element reference: source-attribute grammar, template
 //!    detection, `{field}` substitution. Relevant whenever an

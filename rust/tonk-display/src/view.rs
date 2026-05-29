@@ -265,6 +265,27 @@ mod tests {
         func.call1(&JsValue::NULL, detail).expect("call draw");
     }
 
+    // A display body that embeds `<tonk-concept>` shelves must not
+    // have its first shelf's `<template>` stolen by `<tonk-view>`'s
+    // own template snapshot. With the snapshot scoped to skip nested
+    // components, the view finds no template of its own, renders the
+    // subject once, and the shelf's `<template>` survives intact for
+    // the shelf to hydrate against.
+    #[dialog_common::test]
+    fn it_preserves_a_nested_tonk_concept_template() {
+        let host = mount(
+            "<div class=\"app\"><tonk-concept source=\"book\"><ul><template><li>{title}</li></template></ul></tonk-concept></div>",
+        );
+        call_draw(&host, &detail("did:key:zLibrary", &[]));
+        assert!(
+            host.query_selector("tonk-concept template")
+                .unwrap()
+                .is_some(),
+            "nested shelf template was stripped: {}",
+            host.inner_html(),
+        );
+    }
+
     #[dialog_common::test]
     fn it_installs_a_per_instance_draw_closure_on_connect() {
         let host = mount("<p>{name}</p>");

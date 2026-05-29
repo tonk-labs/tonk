@@ -526,12 +526,6 @@ mod tests {
         // `counter-name` is a bookmark we navigate to from the
         // display route.
         let setup = r#"
-attribute!: &view-name
-  description: "view name"
-  the:         xyz.tonk.view/name
-  as:          text
-  cardinality: one
-
 attribute!: &view-model
   description: "view model"
   the:         xyz.tonk.view/model
@@ -547,7 +541,6 @@ attribute!: &view-display
 concept!: &view
   description: "A rendered view of an entity"
   with:
-    name:    view-name
     model:   view-model
     display: view-display
 
@@ -579,7 +572,6 @@ rule!:
       where: { of: 1, with: ?m, is: ?count }
 
 view!: &counter-view
-  name:    "counter-view"
   model:   counter
   display: "<div><button onclick=increment data-counter={this}>+</button><span class=\"value\">{count}</span></div>"
 
