@@ -510,6 +510,13 @@ mod dom {
     /// Custom elements that snapshot their own `<template>` child in
     /// their `connected_callback`. Their templates belong to them,
     /// so an ancestor's template search must skip their subtrees.
+    ///
+    /// Keep this list in sync with the elements that actually
+    /// register a template-snapshotting custom element: `tonk-concept`
+    /// here and `tonk-display` / `tonk-view` in the `tonk-display`
+    /// crate. A template-owning element missing from this list would
+    /// have its template stolen by an ancestor — the exact bug this
+    /// guard prevents.
     fn is_template_owning_component(el: &Element) -> bool {
         matches!(
             el.local_name().as_str(),
@@ -923,6 +930,42 @@ mod dom {
             );
             let found = find_template(&host).expect("a usable own template");
             assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
+        }
+
+        // The walk recurses through plain wrappers, so an own template
+        // several non-component levels deep is still found.
+        #[dialog_common::test]
+        fn it_finds_an_own_template_nested_in_plain_wrappers() {
+            let host = host_with("<section><div><ul><template><li>{a}</li></template></ul></div></section>");
+            assert!(find_template(&host).is_some());
+        }
+
+        // The own template lives inside a plain wrapper that comes
+        // *before* a component sibling — recursion into the wrapper
+        // must win over (and precede) the skipped component subtree.
+        #[dialog_common::test]
+        fn it_finds_an_own_template_in_a_wrapper_preceding_a_component() {
+            let host = host_with(
+                "<div><template data-which=\"own\"><p>{a}</p></template></div><tonk-concept source=\"book\"><template data-which=\"nested\"><li>{b}</li></template></tonk-concept>",
+            );
+            let found = find_template(&host).expect("own template in the leading wrapper");
+            assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
+        }
+
+        // The boundary applies to every template-owning component, not
+        // just `tonk-concept`: a template inside a nested `tonk-display`
+        // or `tonk-view` belongs to that component and must be skipped.
+        #[dialog_common::test]
+        fn it_skips_templates_nested_in_other_owning_components() {
+            for tag in ["tonk-display", "tonk-view"] {
+                let host = host_with(&format!(
+                    "<{tag}><template><p>{{a}}</p></template></{tag}>"
+                ));
+                assert!(
+                    find_template(&host).is_none(),
+                    "template nested in <{tag}> should be skipped",
+                );
+            }
         }
     }
 }
