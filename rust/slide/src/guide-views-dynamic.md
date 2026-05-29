@@ -26,7 +26,7 @@ call.
 ```yaml
 attribute!: &count
   the: xyz.tonk.counter/count
-  as:  integer
+  as:  unsigned-integer
 
 concept!: &counter
   with:
@@ -38,7 +38,7 @@ concept!: &increment
   transient: true
   with:
     subject:
-      the: dom.event.target.dataset/subject
+      the: dom.event.current-target.dataset/subject
       as:  entity
 
 rule!:
@@ -68,7 +68,7 @@ replace in place, so there are never stale duplicates to pick
 between.
 
 A click on the button asserts an `increment` whose `subject`
-reads from `event.target.dataset.subject` (which the template
+reads from the bound button's `data-subject` (which the template
 populated from the row's `{this}`). The rule reads the
 `increment` together with the current `counter`, computes the
 new total, and asserts the updated `counter`. The subscription
@@ -81,10 +81,12 @@ behind the view sees the new count and patches the DOM. The
   that should produce two facts means two elements.
 - The right-hand side is a concept name (`increment`) or an
   entity URI (anything containing `:`, e.g.
-  `did:key:zHj…`). Names resolve through the branch's name
-  table; URIs skip the lookup.
-- A bare `onclick` with no concept is rejected — there's no
-  schema to walk and no obvious default.
+  `did:key:zHj…`). Both go through a phase-1 descriptor
+  lookup — a name resolves through the branch's name table, a
+  URI resolves directly by entity.
+- A bare `onclick` with no concept is ignored: it resolves to
+  no descriptor, so the click is a silent no-op rather than an
+  error.
 - Any DOM event name works: `onclick`, `onsubmit`,
   `onkeydown`, `onpointerdown`. The runtime registers a
   listener for the literal type.
@@ -94,15 +96,15 @@ behind the view sees the new count and patches the DOM. The
 A transient concept's attributes describe what to read out of
 the live JS event. The `the:` identifier names a path:
 
-| `the:` identifier                        | reads                              |
-|------------------------------------------|------------------------------------|
-| `dom.event/type`                         | `event.type`                       |
-| `dom.event/key`                          | `event.key`                        |
-| `dom.event/shift-key`                    | `event.shiftKey`                   |
-| `dom.event/client-x`                     | `event.clientX`                    |
-| `dom.event.target/value`                 | `event.target.value`               |
-| `dom.event.target.dataset/subject`       | `event.target.dataset.subject`     |
-| `dom.event.target.dataset/item-id`       | `event.target.dataset.itemId`      |
+| `the:` identifier                             | reads                                |
+|-----------------------------------------------|--------------------------------------|
+| `dom.event/type`                              | `event.type`                         |
+| `dom.event/key`                               | `event.key`                          |
+| `dom.event/shift-key`                         | `event.shiftKey`                     |
+| `dom.event/client-x`                          | `event.clientX`                      |
+| `dom.event.target/value`                      | `event.target.value`                 |
+| `dom.event.current-target.dataset/subject`    | the bound element's `data-subject`   |
+| `dom.event.current-target.dataset/item-id`    | the bound element's `data-item-id`   |
 
 Rules of the translation:
 
@@ -110,18 +112,30 @@ Rules of the translation:
   successive property step on the event object.
 - Within a segment, kebab-case becomes camelCase before lookup
   (`shift-key` → `shiftKey`, `item-id` → `itemId`).
+- A leading `target` segment is `event.target` — the *deepest*
+  node the event fired on. A leading `current-target` segment
+  is the **bound element**: the closest ancestor of
+  `event.target` that carries the `on<event>` you authored.
+  (This is not the literal `event.currentTarget`, which points
+  at the host where the delegated listener lives.) To read a
+  `data-*` you put on the element with the handler, always use
+  `current-target` — `target` may be a child you didn't author
+  (e.g. a `<span>` inside the button).
 - The path is evaluated live, at handler-fire time. A missing
   path (e.g. `event.pressure` on a `MouseEvent`) omits that
   field from the asserted fact.
 - The `as:` type drives coercion: `text` → string, `entity` →
-  parse as URI, `integer` / `float` → number, `boolean` →
-  truthy.
+  string parsed as a URI (rejected if it has no `:`),
+  `unsigned-integer` / `signed-integer` / `float` → number,
+  `boolean` → the JS value must already be a boolean (e.g.
+  `event.shiftKey`); a non-boolean fails to resolve rather than
+  being coerced.
 
 ### Passing view context via `data-*`
 
 A click handler doesn't implicitly know the row it was rendered
 for. Surface what you need on the element with `data-*` and
-read it back through `dom.event.target.dataset/<name>`:
+read it back through `dom.event.current-target.dataset/<name>`:
 
 ```yaml
 view!: &todo-row
@@ -136,14 +150,17 @@ concept!: &complete
   transient: true
   with:
     todo:
-      the: dom.event.target.dataset/todo
+      the: dom.event.current-target.dataset/todo
       as:  entity
 ```
 
-The chain `data-todo={this}` → `event.target.dataset.todo` →
-`?todo` is visible at every step. The template author decides
-what to surface; the concept author decides what to read; both
-sides have to agree on the `data-<name>`.
+The chain `data-todo={this}` → the bound button's
+`data-todo` → `?todo` is visible at every step. `current-target`
+(not `target`) reads the `data-*` off the element the handler
+was authored on, so a click that lands on a child node — say a
+`<span>` inside the button — still resolves. The template author
+decides what to surface; the concept author decides what to
+read; both sides have to agree on the `data-<name>`.
 
 ### Side effects: `preventDefault` and friends
 
@@ -169,7 +186,7 @@ concept!: &save
   transient: true
   with:
     body:
-      the: dom.event.target/value
+      the: dom.event.current-target.elements.body/value
       as:  text
     prevent-default:
       the: dom.event.do/prevent-default
@@ -185,9 +202,10 @@ view!: &save-form
     </form>
 ```
 
-The submit asserts `save` with the textarea value, and
-`preventDefault` fires synchronously so the page doesn't
-reload.
+The submit fires on the `<form>`, so `current-target` is the
+form and `elements.body` is the named `<textarea>` — its
+`value` becomes the `body` field. `preventDefault` fires
+synchronously so the page doesn't reload.
 
 ### `rule!:` — the reactive layer
 
