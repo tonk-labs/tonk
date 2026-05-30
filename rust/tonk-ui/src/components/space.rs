@@ -1434,10 +1434,13 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
             { blocks.into_iter().flat_map(|block| {
                 let label = block.label;
                 let is_concept = label == CONCEPT_LABEL;
+                let is_command = label == COMMAND_LABEL;
                 let is_rule = label == RULE_LABEL;
                 block.results.into_iter().map(move |result| {
                     if is_concept {
-                        render_concept_record(result).into_any()
+                        render_concept_record(result, CONCEPT_LABEL).into_any()
+                    } else if is_command {
+                        render_concept_record(result, COMMAND_LABEL).into_any()
                     } else if is_rule {
                         render_rule_record(result).into_any()
                     } else {
@@ -1454,6 +1457,13 @@ fn render_match_block_notation(blocks: Vec<tonk_worker::QueryMatchBlock>) -> imp
 /// assertions (the `source` descriptor expanded as notation)
 /// rather than the generic field-by-field record.
 const CONCEPT_LABEL: &str = "concept";
+
+/// Block label of a `command:` query. A command *is* a transient
+/// concept, so results render as `command!:` definitions — same
+/// descriptor expansion as a concept, but with the `command!:`
+/// head and without the redundant `transient:` row (the keyword
+/// already implies it).
+const COMMAND_LABEL: &str = "command";
 
 /// Block label of a `rule:` query. Results in a block with this
 /// label are inductive-rule definitions and render as `rule!:`
@@ -1528,6 +1538,7 @@ fn notation_normalize(value: &mut serde_json::Value) {
 /// parse as a JSON object.
 fn concept_descriptor(
     result: &tonk_worker::QueryResult,
+    show_transient: bool,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
     let value = result.fields.get("source")?.clone();
     let map = match value {
@@ -1546,10 +1557,14 @@ fn concept_descriptor(
         serde_json::Value::Object(map) => map,
         _ => unreachable!("value was constructed as an object"),
     };
-    if matches!(
-        result.fields.get("transient"),
-        Some(serde_json::Value::Bool(true))
-    ) {
+    // A `command!:` head already implies transience, so only the
+    // `concept!:` rendering surfaces the explicit `transient:` row.
+    if show_transient
+        && matches!(
+            result.fields.get("transient"),
+            Some(serde_json::Value::Bool(true))
+        )
+    {
         map.insert("transient".to_owned(), serde_json::Value::Bool(true));
     }
     Some(map)
@@ -1560,13 +1575,15 @@ fn concept_descriptor(
 /// descriptor's own keys (`description`, `with`, …) expanded as
 /// nested notation. The `name`/`concept` projection fields are
 /// vestigial here — the descriptor in `source` is the definition.
-fn render_concept_record(result: tonk_worker::QueryResult) -> impl IntoView {
-    let descriptor = concept_descriptor(&result);
+fn render_concept_record(result: tonk_worker::QueryResult, head: &'static str) -> impl IntoView {
+    // `command!:` implies transience; only `concept!:` shows the row.
+    let show_transient = head == CONCEPT_LABEL;
+    let descriptor = concept_descriptor(&result, show_transient);
     let entity = result.this;
     view! {
         <div class="notation-record">
             <div class="notation-row">
-                <span class="tonk-cm-effect">"concept!:"</span>
+                <span class="tonk-cm-effect">{ format!("{head}!:") }</span>
             </div>
             { render_notation_field_at(
                 1,
@@ -1891,13 +1908,16 @@ fn render_match_block_list(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl In
         <wa-tree class="query-tree">
             { blocks.into_iter().map(|block| {
                 let is_concept = block.label == CONCEPT_LABEL;
+                let is_command = block.label == COMMAND_LABEL;
                 let is_rule = block.label == RULE_LABEL;
                 view! {
                     <wa-tree-item expanded>
                         <span class="tonk-cm-effect">{ block.label }</span><span class="tonk-cm-plain">":"</span>
                         { block.results.into_iter().map(move |result| {
                             if is_concept {
-                                render_concept_tree_item(result).into_any()
+                                render_concept_tree_item(result, CONCEPT_LABEL).into_any()
+                            } else if is_command {
+                                render_concept_tree_item(result, COMMAND_LABEL).into_any()
                             } else if is_rule {
                                 render_rule_tree_item(result).into_any()
                             } else {
@@ -1933,12 +1953,13 @@ fn render_result_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
 /// One concept result as a `concept!:` tree item: a `this:` child
 /// for the entity, then the `source` descriptor's keys expanded as
 /// nested tree items so `with:` reads as a notation block.
-fn render_concept_tree_item(result: tonk_worker::QueryResult) -> impl IntoView {
-    let descriptor = concept_descriptor(&result);
+fn render_concept_tree_item(result: tonk_worker::QueryResult, head: &'static str) -> impl IntoView {
+    let show_transient = head == CONCEPT_LABEL;
+    let descriptor = concept_descriptor(&result, show_transient);
     let entity = result.this;
     view! {
         <wa-tree-item expanded>
-            <span class="tonk-cm-effect">"concept!"</span><span class="tonk-cm-plain">":"</span>
+            <span class="tonk-cm-effect">{ head }</span><span class="tonk-cm-plain">"!:"</span>
             { render_notation_tree_item(
                 "this".to_owned(),
                 serde_json::Value::String(entity),
@@ -2495,7 +2516,7 @@ mod tests {
     /// the rendered descriptor map.
     #[dialog_common::test]
     fn it_renders_transient_true_on_transient_concept_row() {
-        let map = concept_descriptor(&concept_row(Some(true))).expect("descriptor projects");
+        let map = concept_descriptor(&concept_row(Some(true)), true).expect("descriptor projects");
         assert_eq!(map.get("transient"), Some(&Value::Bool(true)));
     }
 
@@ -2504,7 +2525,7 @@ mod tests {
     /// durable; affirmative is the only marker).
     #[dialog_common::test]
     fn it_omits_transient_on_durable_concept_row() {
-        let map = concept_descriptor(&concept_row(Some(false))).expect("descriptor projects");
+        let map = concept_descriptor(&concept_row(Some(false)), true).expect("descriptor projects");
         assert!(
             !map.contains_key("transient"),
             "durable concepts must not surface a transient row",
@@ -2515,7 +2536,19 @@ mod tests {
     /// behaves the same as `Bool(false)`: no row.
     #[dialog_common::test]
     fn it_omits_transient_when_binding_absent() {
-        let map = concept_descriptor(&concept_row(None)).expect("descriptor projects");
+        let map = concept_descriptor(&concept_row(None), true).expect("descriptor projects");
         assert!(!map.contains_key("transient"));
+    }
+
+    /// A `command!:` rendering (`show_transient = false`) never
+    /// surfaces the `transient:` row — the keyword already implies
+    /// it — even when the row carries `Bool(true)`.
+    #[dialog_common::test]
+    fn it_omits_transient_row_on_command_render() {
+        let map = concept_descriptor(&concept_row(Some(true)), false).expect("descriptor projects");
+        assert!(
+            !map.contains_key("transient"),
+            "command rendering must not surface a redundant transient row",
+        );
     }
 }

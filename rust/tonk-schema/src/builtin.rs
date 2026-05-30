@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 use dialog_artifacts::Entity;
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 
-use crate::concept::concept_of_concept_descriptor;
+use crate::concept::{command_of_command_descriptor, concept_of_concept_descriptor};
 use crate::resolution::ConceptDefinition;
 use crate::rule_query::rule_of_rule_descriptor;
 use crate::{BranchQuery, RemoteQuery, ReplicaQuery, TrackingBranchQuery};
@@ -56,6 +56,7 @@ fn build_registry() -> Vec<(&'static str, ConceptDefinition)> {
     vec![
         ("attribute", builtin::<AnonymousAttributeQuery>("attribute")),
         ("concept", concept_descriptor()),
+        ("command", command_descriptor()),
         ("rule", rule_descriptor()),
         ("name", builtin::<NameQuery>("name")),
         ("branch", builtin::<BranchQuery>("branch")),
@@ -87,6 +88,27 @@ fn concept_descriptor() -> ConceptDefinition {
             .parse()
             .expect("`db:concept` is a valid entity URI"),
         descriptor: ConceptDescriptor::Durable(concept_of_concept_descriptor().clone()),
+    }
+}
+
+/// Built-in `command` view — the command-of-command descriptor.
+///
+/// Resolves to the sentinel descriptor whose `this()` triggers
+/// dispatch to [`crate::concept::AnonymousConceptQuery::commands`]
+/// in [`crate::concept::QueryPlan::from`], so a `command:` head at
+/// query time enumerates every *transient* concept (the commands)
+/// on the branch — the transient-only sibling of
+/// [`concept_descriptor`].
+///
+/// Kept as a hand-built descriptor for the same reason
+/// [`concept_descriptor`] is: its `with:` synthesises fields with
+/// no fixed-record Rust shape the derive can express.
+fn command_descriptor() -> ConceptDefinition {
+    ConceptDefinition {
+        entity: "db:command"
+            .parse()
+            .expect("`db:command` is a valid entity URI"),
+        descriptor: ConceptDescriptor::Durable(command_of_command_descriptor().clone()),
     }
 }
 

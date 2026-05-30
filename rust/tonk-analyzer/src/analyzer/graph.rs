@@ -95,9 +95,13 @@ struct PendingDeclaration {
     kind: DeclarationKind,
 }
 
+#[derive(Clone, Copy)]
 enum DeclarationKind {
     Attribute,
     Concept,
+    /// A `command!:` head — parsed exactly like `Concept` but
+    /// always transient (a command *is* a transient concept).
+    Command,
 }
 
 /// The dependency graph `push` builds: the external needs to
@@ -250,6 +254,16 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
                     });
                     continue;
                 }
+                "command" => {
+                    if let Expression::Claim(Effectful { inner: a, .. }) = expression {
+                        collect_concept_with_needs(a, &mut needs);
+                    }
+                    declarations.push(PendingDeclaration {
+                        index,
+                        kind: DeclarationKind::Command,
+                    });
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -269,7 +283,7 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
 
         // Head concept name (non-meta) — may be a branch concept.
         if let HeadName::Concept(name) = &head.name
-            && !matches!(name.as_str(), "attribute" | "concept")
+            && !matches!(name.as_str(), "attribute" | "concept" | "command")
         {
             needs.push(Need::Concept {
                 name: name.clone(),
@@ -456,10 +470,15 @@ impl Graph {
                         },
                     );
                 }
-                DeclarationKind::Concept => {
+                kind @ (DeclarationKind::Concept | DeclarationKind::Command) => {
                     let plan = parse_concept_body(a, scope)?;
                     let entity = plan.entity.clone();
-                    let descriptor = if plan.transient {
+                    // `command!:` is transient by definition; a
+                    // `concept!:` reads its `transient:` tag. An
+                    // explicit `transient:` inside a `command!:`
+                    // body is redundant and silently ignored.
+                    let transient = matches!(kind, DeclarationKind::Command) || plan.transient;
+                    let descriptor = if transient {
                         DurableConceptDescriptor::Transient(plan.descriptor.clone())
                     } else {
                         DurableConceptDescriptor::Durable(plan.descriptor.clone())
@@ -493,7 +512,7 @@ impl Graph {
                         .map(|attr| attribute_application(&attr.descriptor, &attr.entity, None))
                         .collect();
                     let application =
-                        concept_application(&plan.descriptor, &entity, name, plan.transient);
+                        concept_application(&plan.descriptor, &entity, name, transient);
                     declared.insert(
                         pending.index,
                         DeclaredApplication {
