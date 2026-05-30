@@ -3559,6 +3559,64 @@ pong!:
         );
     }
 
+    /// `command!:` is a transient concept: the same body written as
+    /// `command!:` and as `concept!:` + `transient:` must derive the
+    /// same concept entity and the same transient classification, so
+    /// the committed facts (and the wire shape) are identical.
+    #[dialog_common::test]
+    async fn it_defines_command_as_transient_concept() {
+        let command_doc = must_parse(
+            r#"
+command!: &ping
+  with:
+    tag:
+      description: "Tag"
+      the:         io.gozala.ping/tag
+      as:          Text
+      cardinality: one
+ping!:
+  this: did:key:zPingSubject
+  tag:  "hi"
+"#,
+        );
+        let concept_doc = must_parse(
+            r#"
+concept!: &ping
+  transient:
+  with:
+    tag:
+      description: "Tag"
+      the:         io.gozala.ping/tag
+      as:          Text
+      cardinality: one
+ping!:
+  this: did:key:zPingSubject
+  tag:  "hi"
+"#,
+        );
+
+        let command_transient = analyze_empty(&command_doc)
+            .await
+            .unwrap()
+            .analysis
+            .transient_entities();
+        let concept_transient = analyze_empty(&concept_doc)
+            .await
+            .unwrap()
+            .analysis
+            .transient_entities();
+
+        assert_eq!(
+            command_transient.len(),
+            1,
+            "the command's concept entity is transient; got {command_transient:?}"
+        );
+        assert_eq!(
+            command_transient, concept_transient,
+            "command!: and concept!: + transient: derive the same transient concept entity"
+        );
+    }
+
     /// `has_statements()` is the `/evaluate` route's commit
     /// signal. A query-only document reports `false`; a
     /// `rule!:`-only document reports `true` (a rule is a

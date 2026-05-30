@@ -598,6 +598,17 @@ impl Statement for TransientConcept {
     }
 }
 
+/// A **command** — the `command!:` notation's write-type.
+///
+/// A command *is* a transient concept: facts of this concept exist
+/// for one commit cycle and are swept before the branch state is
+/// written. The keyword is a clearer surface for the event-shaped
+/// data that stimulates system behavior, but the storage and wire
+/// representation are identical to [`TransientConcept`]. Aliasing
+/// rather than wrapping keeps it interchangeable with every
+/// existing `TransientConcept` call site.
+pub type Command = TransientConcept;
+
 // `Predicate` + `Concept` so `AnonymousConcept` plugs into the
 // same query machinery as a `#[derive(Concept)]` type. The
 // `Application` is [`AnonymousConceptQuery`] — a custom query
@@ -651,12 +662,31 @@ pub struct AnonymousConceptQuery {
     /// `this` (entity), `name` (bookmark name), `source`
     /// (descriptor as JSON string).
     pub terms: Parameters,
+    /// When `true`, restrict enumeration to transient (command)
+    /// concepts: skip the always-durable built-ins entirely and
+    /// drop any branch concept lacking the
+    /// `dialog.concept/transient` marker. This is what backs the
+    /// `command:` head — see [`AnonymousConceptQuery::commands`].
+    pub transient_only: bool,
 }
 
 impl AnonymousConceptQuery {
-    /// Construct a new query from a parameter map.
+    /// Construct a new query from a parameter map. Enumerates every
+    /// concept on the branch (built-in + durable + transient).
     pub fn new(terms: Parameters) -> Self {
-        Self { terms }
+        Self {
+            terms,
+            transient_only: false,
+        }
+    }
+
+    /// Construct a `command:`-flavoured query: same enumeration but
+    /// restricted to transient concepts only.
+    pub fn commands(terms: Parameters) -> Self {
+        Self {
+            terms,
+            transient_only: true,
+        }
     }
 }
 
@@ -685,7 +715,12 @@ impl Application for AnonymousConceptQuery {
                 let mut emitted_names: HashSet<String> = HashSet::new();
 
                 // ---- Built-in source ----
+                // Built-ins are always durable, so a `command:`
+                // query (transient-only) skips them entirely.
                 for (builtin_name, resolved) in concept_registry().iter() {
+                    if app.transient_only {
+                        break;
+                    }
                     if let Some(ref e) = this_filter
                         && e != &resolved.entity
                     {
@@ -735,9 +770,12 @@ impl Application for AnonymousConceptQuery {
 
                 // Bulk-load the set of transient-marked entities
                 // once per evaluation pass so the per-row check is
-                // a HashSet lookup, not a fresh query. Only fetch
-                // when the caller actually asked for `transient`.
-                let transient_entities: HashSet<Entity> = if transient_term.is_some() {
+                // a HashSet lookup, not a fresh query. Fetch when
+                // the caller asked for `transient` *or* when this is
+                // a command query (which filters on the set).
+                let transient_entities: HashSet<Entity> = if transient_term.is_some()
+                    || app.transient_only
+                {
                     let transient_marker = transient_marker_entity();
                     let transient_claims: Vec<Claim> = the!("dialog.concept/transient")
                         .of(Term::<Entity>::var("__concept_query_transient_this"))
@@ -752,6 +790,10 @@ impl Application for AnonymousConceptQuery {
 
                 for claim in claims {
                     let entity = claim.of.clone();
+                    // `command:` enumerates transient concepts only.
+                    if app.transient_only && !transient_entities.contains(&entity) {
+                        continue;
+                    }
                     let descriptor = match resolve_branch_descriptor(&entity, env).await? {
                         Some(d) => d,
                         None => continue,
@@ -852,6 +894,45 @@ fn concept_of_concept_entity() -> &'static Entity {
     ENTITY.get_or_init(|| concept_of_concept_descriptor().this())
 }
 
+/// The well-known descriptor for the "command of command" head —
+/// the `command:` query sentinel.
+///
+/// A command is a transient concept, so this enumerates the same
+/// rows as the concept-of-concept query but filtered to transient
+/// concepts only (see [`AnonymousConceptQuery::commands`]). Its
+/// `with` map mirrors [`concept_of_concept_descriptor`] *plus* a
+/// `command` marker field — the extra `dialog.meta/command`
+/// attribute URI is what makes this descriptor's content-derived
+/// `this()` distinct from the concept sentinel's. Without it the
+/// two would share an entity (identity is the attribute-URI set,
+/// not field names or description) and `command:` would mis-dispatch
+/// to the unfiltered concept enumeration.
+pub fn command_of_command_descriptor() -> &'static ConceptDescriptor {
+    static DESCRIPTOR: std::sync::OnceLock<ConceptDescriptor> = std::sync::OnceLock::new();
+    DESCRIPTOR.get_or_init(|| {
+        serde_json::from_value(serde_json::json!({
+            "description": "Every transient (command) concept asserted on a branch.",
+            "with": {
+                "command":     { "the": "dialog.meta/command",      "as": "Entity",  "cardinality": "one" },
+                "concept":     { "the": "dialog.meta/concept",      "as": "Entity",  "cardinality": "one" },
+                "name":        { "the": "dialog.meta/name",         "as": "Text",    "cardinality": "one" },
+                "description": { "the": "dialog.meta/description",   "as": "Text",    "cardinality": "one" },
+                "source":      { "the": "dialog.meta/source",       "as": "Text",    "cardinality": "one" },
+                "transient":   { "the": "dialog.concept/transient", "as": "Boolean", "cardinality": "one" }
+            }
+        }))
+        .expect("command-of-command descriptor is well-formed")
+    })
+}
+
+/// Cached `this()` of [`command_of_command_descriptor`] — the
+/// dispatch sentinel that routes a `command:` head to the
+/// transient-only [`AnonymousConceptQuery::commands`] enumeration.
+fn command_of_command_entity() -> &'static Entity {
+    static ENTITY: std::sync::OnceLock<Entity> = std::sync::OnceLock::new();
+    ENTITY.get_or_init(|| command_of_command_descriptor().this())
+}
+
 /// Resolved query — what actually runs against the engine after
 /// built-in dispatch.
 ///
@@ -872,6 +953,9 @@ pub enum QueryPlan {
     Standard(ConceptQuery),
     /// Concept-of-concept enumeration via [`AnonymousConceptQuery`].
     AnonymousConcept(AnonymousConceptQuery),
+    /// Command-of-command enumeration — transient concepts only,
+    /// via [`AnonymousConceptQuery::commands`].
+    AnonymousCommand(AnonymousConceptQuery),
     /// Rule-of-rule enumeration via [`AnonymousRuleQuery`].
     AnonymousRule(AnonymousRuleQuery),
 }
@@ -899,6 +983,8 @@ impl From<ConceptQuery> for QueryPlan {
     fn from(query: ConceptQuery) -> Self {
         if &query.predicate.this() == concept_of_concept_entity() {
             QueryPlan::AnonymousConcept(AnonymousConceptQuery::new(query.terms))
+        } else if &query.predicate.this() == command_of_command_entity() {
+            QueryPlan::AnonymousCommand(AnonymousConceptQuery::commands(query.terms))
         } else if &query.predicate.this() == rule_of_rule_entity() {
             QueryPlan::AnonymousRule(AnonymousRuleQuery::new(query.terms))
         } else {
@@ -937,6 +1023,12 @@ impl Application for QueryPlan {
                         yield each?;
                     }
                 }
+                QueryPlan::AnonymousCommand(q) => {
+                    let stream = q.evaluate(selection, env);
+                    for await each in stream {
+                        yield each?;
+                    }
+                }
                 QueryPlan::AnonymousRule(q) => {
                     let stream = q.evaluate(selection, env);
                     for await each in stream {
@@ -951,6 +1043,7 @@ impl Application for QueryPlan {
         match self {
             QueryPlan::Standard(q) => Application::realize(q, source),
             QueryPlan::AnonymousConcept(q) => Application::realize(q, source),
+            QueryPlan::AnonymousCommand(q) => Application::realize(q, source),
             QueryPlan::AnonymousRule(q) => Application::realize(q, source),
         }
     }
@@ -1225,44 +1318,49 @@ fn meta_attr(domain: &str, name: &str) -> ArtifactsAttribute {
 mod tests {
     use super::*;
 
-    #[test]
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
     fn with_constructs_namespaced_relation() {
         let the = with("title").unwrap();
         assert_eq!(String::from(&the), "dialog.concept.with/title");
     }
 
-    #[test]
+    #[dialog_common::test]
     fn maybe_constructs_namespaced_relation() {
         let the = maybe("subtitle").unwrap();
         assert_eq!(String::from(&the), "dialog.concept.maybe/subtitle");
     }
 
-    #[test]
+    #[dialog_common::test]
     fn parse_with_round_trips() {
         let the = with("ingredient-name").unwrap();
         assert_eq!(parse_with(&the).as_deref(), Some("ingredient-name"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn parse_maybe_round_trips() {
         let the = maybe("notes").unwrap();
         assert_eq!(parse_maybe(&the).as_deref(), Some("notes"));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn parse_with_rejects_other_domains() {
         let the: ArtifactsAttribute = "dialog.meta/name".parse().unwrap();
         assert_eq!(parse_with(&the), None);
         assert_eq!(parse_maybe(&the), None);
     }
 
-    #[test]
+    #[dialog_common::test]
     fn parse_with_rejects_maybe_domain() {
         let the = maybe("x").unwrap();
         assert_eq!(parse_with(&the), None);
     }
 
-    #[test]
+    #[dialog_common::test]
     fn descriptor_round_trips_through_json() {
         let json = r#"{
             "description": "A cooking recipe",
@@ -1280,7 +1378,7 @@ mod tests {
     /// `dialog.meta/description` when set, plus the marker
     /// claim `dialog.meta/concept = db:concept` that lets
     /// branch-wide concept enumeration find this entity.
-    #[test]
+    #[dialog_common::test]
     fn anonymous_concept_writes_with_claims_and_description() {
         use dialog_artifacts::Changes;
         let json = r#"{
@@ -1304,7 +1402,7 @@ mod tests {
     /// triple. The marker is what the reactor reads at commit
     /// time to decide which facts to strip from the persistable
     /// delta.
-    #[test]
+    #[dialog_common::test]
     fn transient_concept_writes_transient_marker() {
         use dialog_artifacts::{Changes, Instruction};
         let json = r#"{
@@ -1356,7 +1454,7 @@ mod tests {
     /// `(?this, dialog.meta/concept, db:concept)` marker so
     /// `concept:` queries with `?this` unbound can drive
     /// selection from a single bound triple.
-    #[test]
+    #[dialog_common::test]
     fn anonymous_concept_writes_marker_claim() {
         use dialog_artifacts::{Changes, Instruction};
         let json = r#"{
@@ -1386,7 +1484,7 @@ mod tests {
     /// Retract path mirrors assert: the marker dissociation must
     /// be emitted alongside the with-claim retractions so the
     /// branch ends up clean.
-    #[test]
+    #[dialog_common::test]
     fn anonymous_concept_retracts_marker_claim() {
         use dialog_artifacts::{Changes, Instruction};
         let json = r#"{
@@ -1417,7 +1515,7 @@ mod tests {
     /// dialog `Concept` trait (and its `Predicate` supertrait),
     /// so it slots into query and rule machinery the same way
     /// `#[derive(Concept)]` types do.
-    #[test]
+    #[dialog_common::test]
     fn concept_wrapper_satisfies_concept_trait() {
         fn requires_concept<C: dialog_query::Concept>(_: &C)
         where
@@ -1435,7 +1533,7 @@ mod tests {
     /// [`AnonymousConceptQuery`] branch when the wire query's
     /// predicate is the concept-of-concept descriptor; otherwise
     /// it stays a [`ConceptQuery`].
-    #[test]
+    #[dialog_common::test]
     fn it_dispatches_concept_of_concept_to_anonymous_query() {
         // Concept-of-concept predicate → AnonymousConcept variant.
         let plan = QueryPlan::from(ConceptQuery {
@@ -1461,9 +1559,40 @@ mod tests {
         );
     }
 
+    /// The command sentinel must not collide with the concept
+    /// sentinel — identity is the attribute-URI set, so the extra
+    /// `dialog.meta/command` marker attribute is load-bearing.
+    #[dialog_common::test]
+    fn it_distinguishes_command_sentinel_from_concept_sentinel() {
+        assert_ne!(
+            command_of_command_descriptor().this(),
+            concept_of_concept_descriptor().this(),
+            "command and concept sentinels must hash to distinct entities",
+        );
+    }
+
+    /// `QueryPlan::from(ConceptQuery)` dispatches to the
+    /// transient-only [`AnonymousConceptQuery`] (via the
+    /// `AnonymousCommand` variant) when the wire query's predicate
+    /// is the command-of-command descriptor.
+    #[dialog_common::test]
+    fn it_dispatches_command_of_command_to_anonymous_command_query() {
+        let plan = QueryPlan::from(ConceptQuery {
+            terms: dialog_query::Parameters::new(),
+            predicate: command_of_command_descriptor().clone(),
+        });
+        match plan {
+            QueryPlan::AnonymousCommand(q) => assert!(
+                q.transient_only,
+                "command dispatch must produce a transient-only query",
+            ),
+            _ => panic!("command-of-command predicate should dispatch to AnonymousCommand"),
+        }
+    }
+
     /// `assert` then `retract` should leave nothing — every
     /// claim that goes in comes back out.
-    #[test]
+    #[dialog_common::test]
     fn anonymous_concept_assert_then_retract_balances() {
         use dialog_artifacts::Changes;
         let json = r#"{
@@ -1735,6 +1864,124 @@ mod tests {
                 .source()
                 .lookup(&Term::<Any>::var("transient"))?,
             dialog_query::Value::Boolean(false),
+        );
+
+        Ok(())
+    }
+
+    /// A `command:` query (the transient-only enumeration) surfaces
+    /// only transient concepts: a transient concept appears, the
+    /// durable concept on the same branch does not.
+    #[dialog_common::test]
+    async fn it_queries_command_returns_only_transient_concepts() -> anyhow::Result<()> {
+        use dialog_query::{Any, Output as _, Parameters, Term};
+        use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let command_descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "subject": { "the": "xyz.tonk.ping/subject", "as": "Entity", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+        let durable_descriptor: ConceptDescriptor = serde_json::from_str(
+            r#"{
+                "with": {
+                    "name": { "the": "xyz.tonk.person/name", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        )?;
+
+        let (_, c_attr) = command_descriptor.with().iter().next().expect("one field");
+        let (_, d_attr) = durable_descriptor.with().iter().next().expect("one field");
+        let c_attr_entity: Entity = c_attr.to_uri().parse()?;
+        let d_attr_entity: Entity = d_attr.to_uri().parse()?;
+
+        // `Command` is the command write-type — a transient concept.
+        let command = Command::new(command_descriptor.clone());
+        let durable_concept = AnonymousConcept::new(durable_descriptor.clone());
+        let command_entity = command.this.clone();
+        let durable_entity = durable_concept.this.clone();
+
+        branch
+            .transaction()
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(c_attr_entity.clone())
+                    .is(format!("{}/{}", c_attr.domain(), c_attr.name())),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(c_attr_entity.clone())
+                    .is("Entity".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(c_attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(c_attr_entity)
+                    .is(String::new()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/id")
+                    .of(d_attr_entity.clone())
+                    .is(format!("{}/{}", d_attr.domain(), d_attr.name())),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/type")
+                    .of(d_attr_entity.clone())
+                    .is("Text".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.attribute/cardinality")
+                    .of(d_attr_entity.clone())
+                    .is("one".to_string()),
+            )
+            .assert(
+                dialog_query::the!("dialog.meta/description")
+                    .of(d_attr_entity)
+                    .is(String::new()),
+            )
+            .assert(command)
+            .assert(durable_concept)
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".to_string(), Term::<Any>::var("this"));
+
+        let conclusions: Vec<ConceptConclusion> = branch
+            .query()
+            .select(AnonymousConceptQuery::commands(terms))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        let entities: HashSet<Entity> = conclusions
+            .iter()
+            .filter_map(|c| {
+                c.source()
+                    .lookup(&Term::<Any>::var("this"))
+                    .ok()
+                    .and_then(|v| Entity::try_from(v).ok())
+            })
+            .collect();
+
+        assert!(
+            entities.contains(&command_entity),
+            "command query must surface the transient concept",
+        );
+        assert!(
+            !entities.contains(&durable_entity),
+            "command query must not surface the durable concept",
         );
 
         Ok(())
