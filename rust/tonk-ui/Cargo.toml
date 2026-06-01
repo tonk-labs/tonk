@@ -49,6 +49,7 @@ tonk-host = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-layout = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-portal = { workspace = true }
 tonk-sigil = { workspace = true, features = ["web"] }
 tonk-worker = { workspace = true }
 url = { workspace = true }

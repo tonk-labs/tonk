@@ -16,6 +16,7 @@ members = [
     "rust/tonk-language-server",
     "rust/tonk-macros",
     "rust/tonk-notation",
+    "rust/tonk-portal",
     "rust/slide",
     "rust/tonk-schema",
     "rust/tonk-sigil",
@@ -47,6 +48,7 @@ tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-layout = { path = "./rust/tonk-layout" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
+tonk-portal = { path = "./rust/tonk-portal" }
 tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }

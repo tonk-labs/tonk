@@ -1,0 +1,65 @@
+# tonk-portal: the `portal` concept and its canonical view.
+#
+# Asserted-notation document lowered by `claim!` at compile time
+# into `tonk_portal::BOOTSTRAP`; the shell folds it into the
+# default repository's branch bootstrap at creation, chained after
+# the board bootstrap. See `plan/tonk-portal.md` for the design.
+#
+# The `view` concept is redeclared here (identically to the board's
+# definition) so this document is self-contained: lowering a
+# `view!` assertion needs the `view` concept in scope, and `view`
+# is not a built-in. Identical attribute URIs make the concept
+# content-address to the same entity as the board's, so folding
+# both bootstraps into one branch deduplicates rather than
+# conflicts.
+
+# --- concepts -----------------------------------------------
+
+concept!: &view
+  description: A view template (model, name, display) for rendering an entity
+  with:
+    name:
+      description: View name; distinguishes views over the same model
+      the: xyz.tonk.view/name
+      cardinality: one
+      as: text
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+concept!: &portal
+  description: Imperative HTML rendered in an isolated iframe
+  with:
+    content:
+      description: HTML document written into the portal iframe
+      the: xyz.tonk.portal/content
+      cardinality: one
+      as: text
+    height:
+      description: Iframe height in pixels
+      the: xyz.tonk.portal/height
+      cardinality: one
+      as: unsigned-integer
+
+# --- view ---------------------------------------------------
+#
+# The canonical bridge from the `portal` concept to the
+# `<tonk-portal>` element. `html:` forces both bindings through
+# setAttribute so `attributeChangedCallback` fires — required for
+# `height`, an unsigned-integer the renderer would otherwise route
+# to a JS property. Users never write this; nesting a
+# `<tonk-display model=portal view=basic>` over a portal entity
+# renders it.
+
+view!:
+  model: portal
+  name: "basic"
+  display: |
+    <tonk-portal html:content={content} html:height={height} />
