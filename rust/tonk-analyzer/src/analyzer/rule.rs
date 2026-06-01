@@ -838,6 +838,21 @@ mod tests {
         )])
     }
 
+    /// Build a `ConceptDescriptor` with one cardinality-one
+    /// entity-reference field. Used to exercise digest behaviour
+    /// for fields whose value names *another* entity.
+    fn one_entity_field(domain: &str, name: &str) -> ConceptDescriptor {
+        ConceptDescriptor::from(vec![(
+            name,
+            AttributeDescriptor::new(
+                format!("{domain}/{name}").parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::Entity),
+            ),
+        )])
+    }
+
     /// Extract the lone `Statement::InstallEffect` from an
     /// analysis tree, panicking if the document does not lower to
     /// exactly one statement and it is not an effect install.
@@ -1348,6 +1363,136 @@ view!:\n\
         assert_eq!(
             notation_this, wire_this,
             "notation and wire paths must derive the same subject entity for the same (concept, payload)"
+        );
+    }
+
+    /// Entity derivation includes reference fields, not just
+    /// literals — so a concept identified by an entity *reference*
+    /// (e.g. a view's `model`) gets a distinct, correct entity.
+    ///
+    /// Regression guard for a `body_digest` defect: it used to
+    /// include only literal scalars and skip references, so two
+    /// assertions that differed *only* by a reference field hashed
+    /// to the **same** entity, and the notation path diverged from
+    /// the wire path (`application_plan_from_predicate`), which
+    /// always included the reference. Two facets are asserted:
+    ///   1. distinctness — different `model` ⇒ different entity;
+    ///   2. convergence  — notation and wire paths agree.
+    #[dialog_common::test]
+    async fn it_derives_distinct_entities_for_distinct_reference_fields() {
+        use dialog_artifacts::Value;
+        use tonk_core::claim::{
+            ConceptDescriptor as DurableConceptDescriptor, PredicateApplication, ValueMap,
+        };
+        use tonk_schema::transact::{
+            Application, ApplicationPlan, ConceptPlan, Statement, application_plan_from_predicate,
+        };
+
+        let fixture = new_fixture().await;
+
+        // A `view` concept whose sole field, `model`, is an entity
+        // reference, plus two distinct concepts it can point at.
+        let view = one_entity_field("xyz.tonk.view", "model");
+        fixture.declare("view", view.clone()).await;
+        fixture
+            .declare("counter", one_text_field("xyz.tonk.counter", "count"))
+            .await;
+        fixture
+            .declare("greeting", one_text_field("xyz.tonk.greeting", "message"))
+            .await;
+
+        // Helper: lower a `view!: { model: <name> }` document and
+        // pull the derived `this` entity out of the lone statement.
+        async fn notation_this_for(fixture: &Fixture<impl FixtureEnv>, model_name: &str) -> Entity {
+            let doc = format!("view!:\n  model: {model_name}\n");
+            let syntax = parse(&doc).syntax.expect("parsed syntax");
+            let analysis = fixture
+                .analyze(&syntax)
+                .await
+                .expect("notation document analyzes");
+            let stmts = analysis.analysis.statements();
+            assert_eq!(stmts.len(), 1, "expected one statement");
+            let Statement::Assert(Application::Concept { query, .. }) = &stmts[0].statement else {
+                panic!("expected concept assert, got {:?}", stmts[0].statement);
+            };
+            match query.terms.get("this").expect("this present") {
+                dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+                other => panic!("expected entity constant, got {other:?}"),
+            }
+        }
+
+        let view_of_counter = notation_this_for(&fixture, "counter").await;
+        let view_of_greeting = notation_this_for(&fixture, "greeting").await;
+
+        // Facet 1 — distinctness. Today both drop `model` from the
+        // digest and collide on `derive_this(view, {})`.
+        assert_ne!(
+            view_of_counter, view_of_greeting,
+            "views for different models must be different entities; \
+             body_digest dropping the `model` reference makes them collide"
+        );
+
+        // Facet 2 — convergence with the wire path for the counter
+        // view. The notation analyzer resolves the bare symbol
+        // `counter` to its concept entity via the published
+        // `id:counter` name, which `declare` set to the descriptor's
+        // own `this()`. The wire payload carries that same resolved
+        // entity, so both paths see identical `(predicate, payload)`.
+        let counter_concept = one_text_field("xyz.tonk.counter", "count").this();
+        let mut parameters = ValueMap::new();
+        parameters.insert("model".into(), Value::Entity(counter_concept));
+        let wire_plan = application_plan_from_predicate(PredicateApplication {
+            predicate: DurableConceptDescriptor::Durable(view),
+            parameters,
+            name: None,
+        });
+        let wire_this = {
+            let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &wire_plan else {
+                panic!("expected concept plan");
+            };
+            match statement.terms.get("this").expect("this present") {
+                dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+                other => panic!("expected entity constant, got {other:?}"),
+            }
+        };
+
+        assert_eq!(
+            view_of_counter, wire_this,
+            "notation and wire paths must derive the same entity when the body \
+             carries a `model` reference"
+        );
+    }
+
+    /// A reference field that doesn't resolve is an error, not a
+    /// silent skip. Dropping the unresolved `model` from the digest
+    /// would fold the view into the entity it would have had with
+    /// no model at all — deriving the wrong subject. The anchor
+    /// (`&broken`) routes derivation through `body_digest` in the
+    /// resolve pass, so this exercises that path specifically.
+    #[dialog_common::test]
+    async fn it_rejects_unresolved_reference_in_derived_entity() {
+        let fixture = new_fixture().await;
+        // Declare `view` (so the head concept resolves) but NOT the
+        // concept its `model` points at.
+        fixture
+            .declare("view", one_entity_field("xyz.tonk.view", "model"))
+            .await;
+
+        let doc = "\
+view!: &broken\n\
+\x20 model: nonexistent\n";
+        let syntax = parse(doc).syntax.expect("parsed syntax");
+        let err = fixture
+            .analyze(&syntax)
+            .await
+            .expect_err("unresolved reference in a derived entity must error");
+        assert!(
+            matches!(
+                err.kind,
+                AnalyzeErrorKind::UnknownNameReference { ref name, .. }
+                    if name == "nonexistent"
+            ),
+            "expected UnknownNameReference(nonexistent), got {err:?}"
         );
     }
 }

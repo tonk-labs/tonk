@@ -327,14 +327,14 @@ pub enum AnalyzeErrorKind {
     /// be resolved through the in-doc declarations or branch
     /// name table.
     #[error(
-        "field {field:?} references unknown name {bookmark:?} \
+        "field {field:?} references unknown name {name:?} \
          — define it earlier in the document or as an attribute on the branch"
     )]
-    UnknownBookmark {
+    UnknownNameReference {
         /// Field where the reference appeared.
         field: String,
         /// The unresolved name.
-        bookmark: String,
+        name: String,
     },
     /// Claim head with no body fields — claims have no schema to
     /// fall back on.
@@ -449,7 +449,7 @@ impl AnalyzeErrorKind {
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
             Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",
-            Self::UnknownBookmark { .. } => "E_UNKNOWN_BOOKMARK",
+            Self::UnknownNameReference { .. } => "E_UNKNOWN_NAME_REFERENCE",
             Self::ClaimWithoutFields { .. } => "E_CLAIM_WITHOUT_FIELDS",
             Self::InvalidClaimAttribute { .. } => "E_INVALID_CLAIM_ATTRIBUTE",
             Self::UnsupportedFieldValue { .. } => "E_UNSUPPORTED_FIELD_VALUE",
