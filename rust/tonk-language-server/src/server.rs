@@ -443,7 +443,7 @@ impl Server {
 /// this document, additionally runs the full analyzer pass
 /// (`tonk_analyzer::analyze`) against its `(source, env)` pair
 /// to surface branch-dependent diagnostics (`UnknownConcept`,
-/// `UnknownBookmark`, `ResolverFailed`, `InvalidClaimAttribute`).
+/// `UnknownNameReference`, `ResolverFailed`, `InvalidClaimAttribute`).
 ///
 /// Without an opened env the analyzer pass is skipped — there's
 /// no `Source` to resolve references against — and the

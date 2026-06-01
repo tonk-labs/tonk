@@ -1911,7 +1911,7 @@ attribute:
     /// `this: alice` (bare symbol) resolves through the name
     /// table — Stage 2.5. A bare symbol that doesn't match any
     /// in-doc declaration or branch name surfaces
-    /// `UnknownBookmark` with `field: "this"`.
+    /// `UnknownNameReference` with `field: "this"`.
     #[dialog_common::test]
     async fn it_rejects_unresolvable_bare_symbol_in_this() {
         let syntax = must_parse(
@@ -1924,8 +1924,8 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err.kind, AnalyzeErrorKind::UnknownBookmark { field, bookmark } if field == "this" && bookmark == "ghost"),
-            "expected UnknownBookmark on `this` with bookmark=\"ghost\", got {err:?}"
+            matches!(&err.kind, AnalyzeErrorKind::UnknownNameReference { field, name } if field == "this" && name == "ghost"),
+            "expected UnknownNameReference on `this` with name=\"ghost\", got {err:?}"
         );
     }
 
@@ -2292,7 +2292,7 @@ concept!:
     }
 
     /// A bare symbol that doesn't resolve anywhere surfaces
-    /// `UnknownBookmark` (with the symbol's name in `bookmark`).
+    /// `UnknownNameReference` (with the symbol's name in `name`).
     #[dialog_common::test]
     async fn it_rejects_unresolvable_bare_symbol() {
         let syntax = must_parse(
@@ -2304,8 +2304,8 @@ person!:
         let resolver = fixed_concept("person", &[("name", "io.gozala.person/name")]);
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
         assert!(
-            matches!(&err.kind, AnalyzeErrorKind::UnknownBookmark { bookmark, .. } if bookmark == "ghost"),
-            "expected UnknownBookmark{{bookmark:\"ghost\"}}, got {err:?}"
+            matches!(&err.kind, AnalyzeErrorKind::UnknownNameReference { name, .. } if name == "ghost"),
+            "expected UnknownNameReference{{name:\"ghost\"}}, got {err:?}"
         );
     }
 

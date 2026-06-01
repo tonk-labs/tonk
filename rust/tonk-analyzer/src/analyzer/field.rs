@@ -67,9 +67,9 @@ pub(crate) fn field_value_to_term(
                 Term::Constant(Value::Entity(entity))
             } else {
                 return Err(AnalyzeError::at(
-                    AnalyzeErrorKind::UnknownBookmark {
+                    AnalyzeErrorKind::UnknownNameReference {
                         field: field_name.into(),
-                        bookmark: name.clone(),
+                        name: name.clone(),
                     },
                     range,
                 ));

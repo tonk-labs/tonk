@@ -283,9 +283,9 @@ fn resolve_concept_field(
     match value {
         FieldValue::Variable(name) | FieldValue::Symbol(name) => {
             scope.attribute(name).ok_or_else(|| {
-                AnalyzeErrorKind::UnknownBookmark {
+                AnalyzeErrorKind::UnknownNameReference {
                     field: field_name.into(),
-                    bookmark: name.clone(),
+                    name: name.clone(),
                 }
                 .into()
             })
@@ -300,9 +300,9 @@ fn resolve_concept_field(
                         }
                     })?;
             scope.attribute_by_entity(&entity).ok_or_else(|| {
-                AnalyzeErrorKind::UnknownBookmark {
+                AnalyzeErrorKind::UnknownNameReference {
                     field: field_name.into(),
-                    bookmark: uri.clone(),
+                    name: uri.clone(),
                 }
                 .into()
             })

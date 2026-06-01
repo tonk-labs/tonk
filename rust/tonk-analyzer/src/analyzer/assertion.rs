@@ -109,6 +109,7 @@ pub(crate) fn build_assertion_application(
                 &name,
                 &assertion.fields,
                 &predicate_entity,
+                scope,
                 analysis,
                 name_range,
             )?;
@@ -288,6 +289,7 @@ pub(crate) fn build_assertion_application(
                 &name,
                 &assertion.fields,
                 &predicate_entity,
+                scope,
                 analysis,
                 name_range,
             )?;
@@ -347,7 +349,7 @@ pub(crate) fn build_assertion_application(
 ///     [`ThisIntent::Uri(entity)`]. Resolution order matches
 ///     [`super::field::field_value_to_term`]: doc-local
 ///     declarations first, then the branch's `dialog.meta/name`
-///     index. Unresolvable symbols surface as `UnknownBookmark`.
+///     index. Unresolvable symbols surface as `UnknownNameReference`.
 ///
 /// - **Naming** — the `&name` on the value side, captured by the
 ///   parser as `Anchor`. Returned as `Some(name)` when present.
@@ -385,9 +387,9 @@ pub(crate) fn derive_head_intent(
                 // declarations + prefetched branch entities).
                 let entity = scope.symbol(name).ok_or_else(|| {
                     AnalyzeError::at(
-                        AnalyzeErrorKind::UnknownBookmark {
+                        AnalyzeErrorKind::UnknownNameReference {
                             field: "this".into(),
-                            bookmark: name.clone(),
+                            name: name.clone(),
                         },
                         field.value_range,
                     )
@@ -440,12 +442,13 @@ fn this_term_for_assertion(
     name: &Option<String>,
     fields: &[Field],
     predicate_entity: &Entity,
+    scope: &Scope,
     analysis: &mut Working,
     name_range: lsp_types::Range,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match this {
         ThisIntent::Derived => {
-            let entity = derive_this(predicate_entity, &body_digest(fields));
+            let entity = derive_this(predicate_entity, &body_digest(fields, scope)?);
             if let Some(name) = name {
                 if let Some(prior) = analysis.declarations.get(name)
                     && prior != &entity
@@ -469,7 +472,7 @@ fn this_term_for_assertion(
                 // First introduction — mint a body-derived
                 // entity and register it for later expressions
                 // that share `?name`.
-                let entity = derive_this(predicate_entity, &body_digest(fields));
+                let entity = derive_this(predicate_entity, &body_digest(fields, scope)?);
                 analysis.variables.insert(var.clone(), entity.clone());
                 Term::Constant(Value::Entity(entity))
             }
@@ -479,30 +482,72 @@ fn this_term_for_assertion(
 }
 
 /// Project an assertion body into the [`ValueMap`] shape fed to
-/// [`derive_this`] for entity derivation. Only literal scalars
-/// contribute; variables, references, blanks, and nested forms
-/// are skipped (they'd reference *other* entities, and including
-/// them would defeat the deterministic-rerun property).
+/// [`derive_this`] for entity derivation. Every field contributes
+/// its *resolved* value, with references (bare symbols, URIs)
+/// resolved to the entity they name — so a view's `model: counter`
+/// identifies the view by the concept it points at, not merely by
+/// the fields that happen to be literals.
+///
+/// Resolution goes through `scope`, which the resolve pass has
+/// already populated (in-doc declarations + prefetched branch
+/// names), so this never touches the branch. A reference that does
+/// **not** resolve is an error, not a skip: dropping it would fold
+/// the assertion into the entity it *would* have had without that
+/// field, silently deriving the wrong subject. Forms that carry no
+/// content identity — unbound variables (`?var` means "join with a
+/// query," not "part of my content"), blanks, premises, nested
+/// maps — are skipped. Meta fields (`this:`, `..:`) never
+/// contribute.
 ///
 /// The output is consumed by [`derive_this`] alongside the
-/// predicate's identity, so the resulting entity converges with
-/// the wire-path derivation in `application_plan_from_predicate`
-/// for matching `(predicate, payload)` pairs.
-///
-/// Pure function of `fields` (no scope, no resolver), so it's
-/// safe to call from Phase 1 to pre-compute the entity for an
-/// anchor declaration.
-pub(super) fn body_digest(fields: &[Field]) -> ValueMap {
+/// predicate's identity, and mirrors the resolved payload the
+/// wire path (`application_plan_from_predicate`) hashes, so the
+/// notation and wire paths converge on the same entity for a
+/// matching `(predicate, payload)` pair — references included.
+pub(super) fn body_digest(fields: &[Field], scope: &Scope) -> Result<ValueMap, AnalyzeError> {
     let mut out = ValueMap::new();
     for field in fields {
+        if is_meta_field(&field.name) {
+            continue;
+        }
         let value = match &field.value {
             FieldValue::Literal(scalar) => scalar_to_value(scalar),
-            // Skip variables, references, blanks, nested.
-            _ => continue,
+            FieldValue::Symbol(name) => {
+                let entity = scope.symbol(name).ok_or_else(|| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::UnknownNameReference {
+                            field: field.name.clone(),
+                            name: name.clone(),
+                        },
+                        field.value_range,
+                    )
+                })?;
+                Value::Entity(entity)
+            }
+            FieldValue::Uri(uri) => {
+                let entity: Entity =
+                    uri.parse()
+                        .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                            AnalyzeError::at(
+                                AnalyzeErrorKind::InvalidSubjectUri {
+                                    subject: uri.clone(),
+                                    reason: e.to_string(),
+                                },
+                                field.value_range,
+                            )
+                        })?;
+                Value::Entity(entity)
+            }
+            // Unbound variables, blanks, premises and nested maps
+            // carry no content identity.
+            FieldValue::Variable(_)
+            | FieldValue::Blank
+            | FieldValue::Premises(_)
+            | FieldValue::Nested(_) => continue,
         };
         out.insert(field.name.clone(), value);
     }
-    out
+    Ok(out)
 }
 
 fn scalar_to_value(scalar: &Scalar) -> Value {

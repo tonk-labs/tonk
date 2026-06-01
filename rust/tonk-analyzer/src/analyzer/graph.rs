@@ -616,7 +616,7 @@ impl Graph {
                 HeadName::Claim(domain) => Entity::of(domain),
                 HeadName::Uri(_) => continue,
             };
-            let entity = derive_this(&predicate_entity, &body_digest(&a.fields));
+            let entity = derive_this(&predicate_entity, &body_digest(&a.fields, scope)?);
             scope.declare(&anchor.name, entity, anchor.range)?;
         }
 
