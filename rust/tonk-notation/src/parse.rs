@@ -710,18 +710,35 @@ fn parse_head(
 /// Decide whether a head name is a concept, a claim domain, or a
 /// URI.
 ///
-/// - `db:`, `id:`, `did:`, `xyz.tonk/foo` — anything containing `:`
-///   or `/` reads as a [`HeadName::Uri`].
-/// - Reverse-dotted (`xyz.tonk`, `io.gozala.person`) — claim domain.
-/// - Bare lowercase identifier — concept.
+/// - Contains `:` (`db:concept`, `id:foo`, `did:key:…`) — a URI.
+/// - An attribute identifier `<dotted-domain>/<attr>`
+///   (`xyz.tonk.person/name`) — read as a URI head (it names a
+///   specific attribute), since the part before the first `/` is a
+///   reverse-dotted domain.
+/// - Reverse-dotted with no `/` (`xyz.tonk`, `io.gozala.person`) —
+///   a claim domain.
+/// - Anything else, including a name with a `/` whose left side has
+///   no dots (`demo/stuff`) — a concept. A `/` alone does not make
+///   a name a URI; only a `:` (or a dotted domain before the `/`)
+///   does, so concept names may contain `/`.
 fn classify_head_name(name: &str) -> HeadName {
-    if name.contains(':') || name.contains('/') {
+    if name.contains(':') || is_attribute_identifier(name) {
         HeadName::Uri(name.to_owned())
     } else if name.contains('.') {
         HeadName::Claim(name.to_owned())
     } else {
         HeadName::Concept(name.to_owned())
     }
+}
+
+/// `true` when `name` is an attribute identifier of the form
+/// `<dotted-domain>/<attr>` — the segment before the first `/`
+/// contains a `.` (e.g. `xyz.tonk.person/name`). A `/` whose left
+/// side has no dots (`demo/stuff`) is a concept name, not an
+/// attribute identifier.
+fn is_attribute_identifier(name: &str) -> bool {
+    name.split_once('/')
+        .is_some_and(|(domain, _)| domain.contains('.'))
 }
 
 /// Recover a head's `&anchor` name by scanning the source gap
@@ -780,10 +797,15 @@ fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<
     })
 }
 
-/// YAML anchor character predicate — same set saphyr's
-/// `is_anchor_char` accepts: alphanumeric, `-`, `_`, `+`, `.`.
+/// YAML anchor character predicate. Per the YAML 1.2 spec an
+/// anchor name is `ns-char` minus the flow indicators (`,[]{}`),
+/// so `/` is allowed — saphyr's scanner accepts it, and our
+/// source-side name recovery must too (otherwise `&demo/stuff` is
+/// truncated to `demo`, dropping the rest of the name). We accept
+/// the practical subset used by concept names: alphanumerics and
+/// `-`, `_`, `+`, `.`, `/`.
 fn is_anchor_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.')
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.' | '/')
 }
 
 /// Convert a saphyr `Marker::index()` (a **char** count) into a
@@ -964,7 +986,7 @@ fn classify_plain_value(text: &str) -> FieldValue {
 ///    scheme so common values like `text/html` (no `:` at all)
 ///    or `12:34` (digit-leading) don't get hijacked.
 ///
-/// 2. `<reverse-dotted-domain>/<name>` — claim attribute URIs
+/// 2. `<reverse-dotted-domain>/<name>` — attribute identifiers
 ///    (`xyz.tonk/foo`, `io.gozala.person/name`). Requires at
 ///    least one `.` *before* the first `/` so MIME-type-shaped
 ///    values (`text/html`, `application/json`) classify as
@@ -1005,7 +1027,7 @@ fn is_uri_scheme(text: &str) -> bool {
 
 /// Reverse-dotted domain — at least two segments separated by
 /// `.`, each segment a bare lowercase identifier. Used to
-/// recognize claim-attribute URIs like `xyz.tonk` or
+/// recognize attribute-identifier domains like `xyz.tonk` or
 /// `io.gozala.person`.
 fn is_reverse_dotted_domain(text: &str) -> bool {
     let parts: Vec<&str> = text.split('.').collect();
@@ -1350,6 +1372,24 @@ attribute!: &person-name
             panic!("expected Assertion");
         };
         assert_eq!(anchor.as_ref().unwrap().name, "person-name");
+    }
+
+    #[dialog_common::test]
+    fn it_captures_anchor_with_slash() {
+        // The YAML spec allows `/` in anchor names (it's `ns-char`
+        // minus flow indicators). A concept named `demo/stuff` is
+        // anchored as `&demo/stuff`; the whole name must be
+        // recovered, not truncated at the `/`.
+        let syntax = parse_clean(
+            r#"
+demo/stuff!: &demo/stuff
+  stuff: 1
+"#,
+        );
+        let Expression::Claim(Effectful { anchor, inner: _ }) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert_eq!(anchor.as_ref().expect("anchor present").name, "demo/stuff");
     }
 
     #[dialog_common::test]
@@ -2179,9 +2219,10 @@ person!:
     }
 
     #[dialog_common::test]
-    fn it_classifies_xyz_attribute_uri_in_head_position() {
-        // `xyz.tonk.person/name` contains both `.` and `/` — it
-        // must classify as URI, not Claim or Concept.
+    fn it_classifies_attribute_identifier_in_head_position() {
+        // `xyz.tonk.person/name` is an attribute identifier
+        // (dotted domain + `/` + attr) — it reads as a URI head,
+        // not Claim or Concept.
         let syntax = parse_clean(
             r#"
 xyz.tonk.person/name:
@@ -2192,6 +2233,28 @@ xyz.tonk.person/name:
             panic!("expected Query");
         };
         assert!(matches!(&q.predicate.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_slash_name_without_dotted_domain_as_concept() {
+        // `demo/stuff` has a `/` but the part before it (`demo`) has
+        // no dots, so it is not an attribute identifier — it is a
+        // concept name that happens to contain `/`. Only a `:` (or a
+        // dotted domain before the `/`) makes a head a URI.
+        let syntax = parse_clean(
+            r#"
+demo/stuff!:
+  stuff: 1
+"#,
+        );
+        let Expression::Claim(Effectful { inner: a, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        assert!(
+            matches!(&a.predicate.name, HeadName::Concept(n) if n == "demo/stuff"),
+            "expected Concept(\"demo/stuff\"), got {:?}",
+            a.predicate.name,
+        );
     }
 
     /// `|`-style block scalars are unambiguously string literals,

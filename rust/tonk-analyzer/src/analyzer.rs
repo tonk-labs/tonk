@@ -1103,6 +1103,31 @@ attribute!: &person-name
         };
     }
 
+    /// A concept whose name contains a `/` (`demo/stuff`) is a
+    /// concept head, not a URI head: the `/` is part of the name and
+    /// the left side has no dotted domain. The assertion resolves
+    /// the concept and lowers like any other.
+    #[dialog_common::test]
+    async fn it_asserts_a_concept_whose_name_contains_a_slash() {
+        let syntax = must_parse(
+            r#"
+demo/stuff!:
+  stuff: 1
+"#,
+        );
+        let spec = fixed_concept("demo/stuff", &[("stuff", "xyz.tonk.demo/stuff")]);
+        let analysis = flat(analyze_with(&syntax, &spec).await.unwrap());
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept) for `demo/stuff!:`");
+        };
+        assert!(
+            query.terms.contains("stuff"),
+            "the `stuff` field should be carried on the assertion",
+        );
+    }
+
     /// Three-expression doc: two `attribute!` + one `concept!`
     /// referencing them via bare symbols. Concept body resolution
     /// must hit the in-doc index, not the (Noop) outer resolver.
