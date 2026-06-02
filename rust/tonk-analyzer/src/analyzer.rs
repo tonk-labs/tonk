@@ -2291,6 +2291,156 @@ concept!:
         }
     }
 
+    /// `this: <uri>` on a `concept!` pins the concept entity to that
+    /// URI instead of the content-derived hash, and the concept's
+    /// instances derive from the pinned entity — so a pinned concept
+    /// stays referenceable by a stable URI.
+    #[dialog_common::test]
+    async fn it_pins_concept_entity_via_this_uri() {
+        let syntax = must_parse(
+            r#"
+concept!: &view
+  this: tonk:view
+  description: "A view"
+  with:
+    model:
+      description: "Concept this view renders"
+      the:         xyz.tonk.view/model
+      as:          Entity
+      cardinality: one
+    display:
+      description: "HTML template"
+      the:         xyz.tonk.view/display
+      as:          Text
+      cardinality: one
+view!:
+  model: tonk:view
+  display: "x"
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+
+        // The declared concept entity is the pinned URI — the
+        // `&view` anchor publishes `view` -> `tonk:view`, not the
+        // descriptor hash.
+        let pinned: Entity = "tonk:view".parse().unwrap();
+        assert_eq!(
+            analysis.declarations.get("view"),
+            Some(&pinned),
+            "concept `view` should be pinned to `tonk:view`",
+        );
+
+        // The view instance derives its subject from the pinned
+        // predicate entity, so its `this` is `derive_this(tonk:view,
+        // {model, display})` — NOT derived from the descriptor hash.
+        let instance = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = instance else {
+            panic!("expected view instance assertion");
+        };
+        let derived_with_pin = {
+            use tonk_core::claim::ValueMap;
+            use tonk_schema::transact::derive_this;
+            let mut body = ValueMap::new();
+            body.insert("model".into(), Value::Entity(pinned.clone()));
+            body.insert("display".into(), Value::String("x".into()));
+            derive_this(&pinned, &body)
+        };
+        match query.terms.get("this") {
+            Some(Term::Constant(Value::Entity(e))) => {
+                assert_eq!(
+                    e, &derived_with_pin,
+                    "instance entity must derive from the pinned predicate entity"
+                );
+            }
+            other => panic!("instance `this` should be a derived entity, got {other:?}"),
+        }
+    }
+
+    /// Wire convergence for a PINNED concept. The notation path
+    /// derives a pinned concept's instance from the pinned entity.
+    /// The wire path (`application_plan_from_predicate`) carries no
+    /// pin — its `ConceptDescriptor` only knows `descriptor.this()`
+    /// (the content hash). The two still converge in practice
+    /// because every real wire producer (`lower_statement`) carries
+    /// `this` explicitly in the payload, which makes the wire path
+    /// SKIP derivation. This test pins that contract: with `this`
+    /// carried, wire == notation; with `this` omitted, the wire path
+    /// derives a DIFFERENT entity (the documented edge — a hand-
+    /// rolled caller that omits `this` for a pinned concept).
+    #[dialog_common::test]
+    async fn it_converges_wire_path_for_pinned_concept_when_this_is_carried() {
+        use dialog_query::AttributeDescriptor;
+        use dialog_query::artifact::Type;
+        use dialog_query::attribute::Cardinality as DialogCardinality;
+        use dialog_query::concept::descriptor::ConceptDescriptor as DialogConceptDescriptor;
+        use tonk_core::claim::{
+            ConceptDescriptor as WireDescriptor, PredicateApplication, ValueMap,
+        };
+        use tonk_schema::transact::{
+            ApplicationPlan, ConceptPlan, application_plan_from_predicate, derive_this,
+        };
+
+        let pinned: Entity = "tonk:view".parse().unwrap();
+        let mut body = ValueMap::new();
+        body.insert("display".into(), Value::String("x".into()));
+        let notation_this = derive_this(&pinned, &body);
+
+        // The wire descriptor for the `view` concept — `{display}`.
+        let descriptor = DialogConceptDescriptor::from(vec![(
+            "display",
+            AttributeDescriptor::new(
+                "xyz.tonk.view/display".parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::String),
+            ),
+        )]);
+
+        // Wire path WITH `this` carried (the real bootstrap shape):
+        // derivation is skipped, the carried entity is used verbatim.
+        let mut params_with_this = ValueMap::new();
+        params_with_this.insert("display".into(), Value::String("x".into()));
+        params_with_this.insert("this".into(), Value::Entity(notation_this.clone()));
+        let plan = application_plan_from_predicate(PredicateApplication {
+            predicate: WireDescriptor::Durable(descriptor.clone()),
+            parameters: params_with_this,
+            name: None,
+        });
+        let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &plan else {
+            panic!("expected concept plan");
+        };
+        let wire_this = match statement.terms.get("this").expect("this present") {
+            dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+            other => panic!("expected entity constant, got {other:?}"),
+        };
+        assert_eq!(
+            wire_this, notation_this,
+            "with `this` carried, the wire path must match the pinned notation entity",
+        );
+
+        // Wire path WITHOUT `this`: derives from the descriptor hash,
+        // which is NOT the pinned entity. This documents the edge.
+        let mut params_no_this = ValueMap::new();
+        params_no_this.insert("display".into(), Value::String("x".into()));
+        let plan = application_plan_from_predicate(PredicateApplication {
+            predicate: WireDescriptor::Durable(descriptor),
+            parameters: params_no_this,
+            name: None,
+        });
+        let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &plan else {
+            panic!("expected concept plan");
+        };
+        let wire_this_no_pin = match statement.terms.get("this").expect("this present") {
+            dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+            other => panic!("expected entity constant, got {other:?}"),
+        };
+        assert_ne!(
+            wire_this_no_pin, notation_this,
+            "without a carried `this`, the wire path cannot reproduce the pin \
+             (documents the hand-rolled-caller edge)",
+        );
+    }
+
     /// A bare symbol that doesn't resolve anywhere surfaces
     /// `UnknownNameReference` (with the symbol's name in `name`).
     #[dialog_common::test]

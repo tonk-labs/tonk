@@ -102,7 +102,12 @@ pub(crate) fn build_assertion_application(
             // descriptor and the transient flag separately.
             let transient = resolved.descriptor.is_transient();
             let descriptor = resolved.descriptor.concept().clone();
-            let predicate_entity = descriptor.this();
+            // Carry the concept's resolved entity rather than
+            // recomputing `descriptor.this()`: a pinned concept
+            // (`this: tonk:view`) lives at its pinned URI, so its
+            // instances must derive from that same entity for the
+            // notation and wire paths to converge.
+            let predicate_entity = resolved.entity.clone();
             let name_range = anchor.map(|a| a.range).unwrap_or(head_range);
             let this_term = this_term_for_assertion(
                 &this,
