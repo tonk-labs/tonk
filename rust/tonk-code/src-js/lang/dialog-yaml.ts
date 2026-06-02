@@ -170,8 +170,14 @@ const RULE_KEYWORD = /^[ \t]*(when|unless|description|assert|where)(?=:)/gmd;
  *  to follow `:` and whitespace so we don't accidentally catch
  *  a stray `&` elsewhere. The capture groups split the sigil
  *  and the name. The `d` flag exposes per-group ranges via
- *  `match.indices`. */
-const ANCHOR = /(?<=:\s+)(&)([a-z][a-z0-9+-]*)/gd;
+ *  `match.indices`.
+ *
+ *  The name charset mirrors the parser's `is_anchor_char`
+ *  (alphanumerics plus `-`, `_`, `+`, `.`, `/`): a concept named
+ *  `demo/stuff` is anchored `&demo/stuff`, so the `/` and the
+ *  rest of the name must be part of the match, not left to
+ *  highlight as something else. */
+const ANCHOR = /(?<=:\s+)(&)([a-z][a-z0-9+./_-]*)/gd;
 
 /** Match a bare-symbol name reference in field-value position.
  *  A symbol per the guide starts with `[a-z]` and continues
