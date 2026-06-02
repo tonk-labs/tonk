@@ -72,8 +72,18 @@ fn build(lit: &LitStr) -> Result<TokenStream, String> {
         .map_err(|e| format!("claim!: serialization failed: {e}"))?;
 
     let byte_literal = proc_macro2::Literal::byte_string(&bytes);
+    // Emit an `include_bytes!` of the source path so the COMPILER
+    // records it as a build dependency. A proc-macro reading a file
+    // with `std::fs` is invisible to cargo's dependency graph, so
+    // editing the notation document would NOT trigger a rebuild and
+    // the stale lowered bytes would keep being served. `include_bytes!`
+    // makes the build correctly re-run when the document changes.
+    let path_str = path.to_string_lossy();
     let expanded = quote! {
-        ::tonk_core::claim::TransactRequest::from_dagjson_bytes(#byte_literal)
+        {
+            const _: &[u8] = include_bytes!(#path_str);
+            ::tonk_core::claim::TransactRequest::from_dagjson_bytes(#byte_literal)
+        }
     };
     Ok(expanded.into())
 }
