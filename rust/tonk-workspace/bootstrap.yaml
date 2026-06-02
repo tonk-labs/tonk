@@ -143,6 +143,48 @@ view!:
   model: trip
   display: |
     <div class="sheet">
+      <style>
+        /* Theme-neutral: inherit the page's text color and use
+           translucent rules/secondary text so the sheet reads in
+           both the light and dark shells. No hardcoded palette. */
+        .sheet {
+          display: flex;
+          flex-direction: column;
+          max-width: 760px;
+          padding: 24px 28px;
+          color: inherit;
+          font-family: inherit;
+          font-size: 13.5px;
+          border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        }
+        .sheet__title { margin: 0 0 16px; font-size: 22px; font-weight: 600; }
+        .sheet__head,
+        .sheet__row {
+          display: grid;
+          grid-template-columns: 60px 1fr 90px 90px;
+          gap: 12px;
+          padding: 8px 0;
+          border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        }
+        .sheet__head {
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 11px;
+          text-transform: lowercase;
+          letter-spacing: 0.04em;
+          opacity: 0.55;
+          font-weight: 600;
+          border-bottom: 1.5px solid color-mix(in srgb, currentColor 55%, transparent);
+        }
+        /* Each stop is wrapped in its own <tonk-display>; collapse the
+           wrapper so the rows lay out as direct children of the sheet. */
+        .sheet > tonk-display { display: contents; }
+        .sheet__row span:nth-child(1) {
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          opacity: 0.55;
+        }
+        .sheet__head span:nth-child(4),
+        .sheet__row span:nth-child(4) { text-align: right; }
+      </style>
       <h2 class="sheet__title">{title}</h2>
       <div class="sheet__head">
         <span>day</span><span>item</span><span>time</span><span>cost</span>
