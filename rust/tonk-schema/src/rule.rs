@@ -151,7 +151,8 @@ impl Rule {
     /// this round-trips through
     /// [`Effect::from_source`](tonk_core::effect::Effect::from_source),
     /// so a rule can be embedded as `(source, polarity, this)` and
-    /// rebuilt at runtime — the carrier the `effects!` macro emits.
+    /// rebuilt at runtime — the carrier the `claim!` macro emits
+    /// alongside the document's concept claims.
     pub fn source(&self) -> &str {
         &self.source
     }

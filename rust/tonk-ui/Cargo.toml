@@ -41,7 +41,6 @@ wasm-streams = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time"] }
 bs58 = { workspace = true }
 tonk-board = { workspace = true }
-tonk-workspace = { workspace = true }
 tonk-code = { workspace = true, features = ["web"] }
 tonk-concept = { workspace = true }
 tonk-display = { workspace = true }

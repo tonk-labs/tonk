@@ -17,9 +17,7 @@ js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
-tonk-core = { workspace = true }
 tonk-host = { workspace = true }
-tonk-macros = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

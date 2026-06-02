@@ -74,6 +74,7 @@ web-sys = { workspace = true, features = [
     "MessageEvent",
     "MessagePort",
     "Request",
+    "RequestCache",
     "RequestInit",
     "RequestMode",
     "Response",

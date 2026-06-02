@@ -211,6 +211,17 @@
       data-target-path="__tonk"
     />
     <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+    <!-- The standard library (built-in concepts, views, commands,
+       rules + demo content). Served as a static asset so the service
+       worker can fetch and seed it at repository creation, instead of
+       embedding it at compile time. Editing core.yaml updates the
+       library without rebuilding the wasm. -->
+    <link
+      data-trunk
+      rel="copy-file"
+      href="../tonk-core/assets/library/core.yaml"
+      data-target-path="library"
+    />
     <link data-trunk rel="copy-dir" href="./assets/fonts" />
     <link data-trunk rel="copy-dir" href="./assets/images" />
     <link data-trunk rel="copy-dir" href="./assets/webawesome" />

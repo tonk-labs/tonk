@@ -1,23 +1,26 @@
-# Tonk workspace: artifact concept + demo content.
+# Tonk standard library.
 #
-# Asserted-notation document lowered by `claim!` at compile time
-# (see lib.rs) and folded into the default repository's PUT body so
-# it seeds once at repo creation.
+# The built-in concepts, views, commands, and rules the runtime
+# seeds into a repository at creation. Served as a static asset
+# (`/library/core.yaml`) and fetched + lowered by the service
+# worker in the repository-creation path, rather than embedded at
+# compile time. Editing this file changes the standard library
+# without rebuilding the wasm.
 #
-# `claim!` runs `analyze_local` (no running system), so every
+# Lowering runs `analyze_local` (no running system), so every
 # `&anchor` / bare-name reference must resolve within this file.
 #
-# See `plan/tonk-viewer.md` at the repository root for the design.
+# Two source sections, formerly `tonk-workspace/bootstrap.yaml` and
+# `tonk-board/bootstrap.yaml`. The `view` concept is shared between
+# them (pinned to `tonk:view`) and declared once here.
 
 # ============================================================
-# BUILT-IN SCHEMA - keep
+# VIEW
 # ============================================================
 
 # The `view` concept. Shape matches what `<tonk-display>` queries
 # (resolve.rs `view_predicate`): a `model` (the concept it renders)
-# and a `display` (the HTML template). Kept identical to the
-# declaration in `tonk-board/bootstrap.yaml` so both bootstraps
-# seed the same `view` concept entity. Pinned to the stable
+# and a `display` (the HTML template). Pinned to the stable
 # `tonk:view` URI so <tonk-display> can refer to the built-in view
 # concept directly, without a name-resolution round-trip.
 concept!: &view
@@ -34,6 +37,10 @@ concept!: &view
       the: xyz.tonk.view/display
       cardinality: one
       as: text
+
+# ============================================================
+# WORKSPACE
+# ============================================================
 
 # The `artifact` concept. Binds an entity to a model and a view,
 # plus the tab metadata (title, icon) the viewer shell shows. Its
@@ -200,8 +207,7 @@ concept!: &workspace/active-sheet
 # the command needs only the sheet - no workspace id plumbed through
 # the DOM. The command is transient (satisfies the install-time
 # trigger gate, swept after commit); only the `active` pointer
-# persists. Shipped via `tonk_macros::effects!` (rules have no
-# TransactRequest shape).
+# persists.
 rule!:
   assert!: workspace/active-sheet
   when:
@@ -346,6 +352,139 @@ workspace/tab!:
     </button>
 
 # ============================================================
+# BOARD
+# ============================================================
+#
+# v1 is the hierarchical shape: board owns columns; column owns
+# tiles. Future work projects this from a flat tile concept using
+# deductive rules; the view templates won't change when that
+# happens.
+
+concept!: &board-view
+  description: A named board (hierarchical v1, owns columns directly)
+  with:
+    name:
+      description: Display name
+      the: xyz.tonk.board/name
+      cardinality: one
+      as: text
+    column:
+      description: Columns in this board
+      the: xyz.tonk.board/column
+      cardinality: many
+      as: entity
+
+concept!: &column-view
+  description: A column on a board
+  with:
+    order:
+      description: LexoRank-style order key within the board
+      the: xyz.tonk.column/order
+      cardinality: one
+      as: text
+    width:
+      description: Column width in grid units (1 unit is 64px)
+      the: xyz.tonk.column/width
+      cardinality: one
+      as: unsigned-integer
+    tile:
+      description: Tiles in this column
+      the: xyz.tonk.column/tile
+      cardinality: many
+      as: entity
+
+concept!: &tile
+  description: One tile in a column
+  with:
+    order:
+      description: Order key within the column
+      the: xyz.tonk.tile/order
+      cardinality: one
+      as: text
+    model:
+      description: Concept the tile body renders
+      the: xyz.tonk.tile/model
+      cardinality: one
+      as: entity
+    entity:
+      description: Entity the tile body renders
+      the: xyz.tonk.tile/entity
+      cardinality: one
+      as: entity
+
+concept!: &inspector-view
+  description: An inspector tile body — renders <tonk-inspector source="…">
+  with:
+    source:
+      description: Space name to inspect (passed through as the source attribute)
+      the: xyz.tonk.inspector/source
+      cardinality: one
+      as: text
+
+# The imperative escape hatch: `<tonk-portal>` writes an
+# author-supplied HTML document into a sandboxed iframe, for work the
+# declarative template stack can't express (canvas, WebGL, widgets).
+# The `content` is first-class dialog data, fetched by a nested
+# `<tonk-display model=portal>` like any other concept.
+concept!: &portal
+  description: Imperative HTML rendered in an isolated iframe
+  with:
+    content:
+      description: HTML document written into the portal iframe
+      the: xyz.tonk.portal/content
+      cardinality: one
+      as: text
+    height:
+      description: Iframe height in pixels
+      the: xyz.tonk.portal/height
+      cardinality: one
+      as: unsigned-integer
+
+# One view per concept, keyed by `model`. Each nested
+# `<tonk-display>` passes only `model=…` (and `entity=…`); with no
+# `view` attribute it resolves the view whose `model` matches. The
+# chain iterates one level of the hierarchy per template via
+# `subject={field}` and bottoms out in the tile's content display.
+
+view!:
+  model: board-view
+  display: |
+    <tonk-strip>
+      <tonk-display entity={column} model=column-view />
+    </tonk-strip>
+
+view!:
+  model: column-view
+  display: |
+    <tonk-column style="--col-w: {width};">
+      <div class="tile" subject={tile}>
+        <tonk-display entity={tile} model=tile />
+      </div>
+    </tonk-column>
+
+view!:
+  model: tile
+  display: |
+    <tonk-display entity={entity} model={model} />
+
+view!:
+  model: inspector-view
+  display: |
+    <tonk-inspector source={source} />
+
+# The canonical bridge from the `portal` concept to the
+# `<tonk-portal>` element. `html:` forces both bindings through
+# setAttribute so `attributeChangedCallback` fires — required for
+# `height`, an unsigned-integer the renderer would otherwise route to a
+# JS property. Users never write this; nesting a
+# `<tonk-display model=portal>` over a portal entity resolves it by
+# model and renders it.
+view!:
+  model: portal
+  display: |
+    <tonk-portal html:content={content} html:height={height} />
+
+# ============================================================
 # DEMO CONTENT - DELETE before shipping
 # ============================================================
 # Sample data for developing the viewer, modelled on the "Trip to
@@ -358,7 +497,7 @@ workspace/tab!:
 # The trip entity carries its title (via `trip-title`) and its stops
 # (via `trip`), each asserted independently against the same entity:
 # the title once, then one `trip!` per stop. No field is ever
-# repeated. None of this is part of the workspace schema; remove the
+# repeated. None of this is part of the standard library; remove the
 # whole section once the viewer has real content.
 
 concept!: &trip-title
@@ -630,3 +769,32 @@ workspace!:
 workspace!:
   this: work:space
   sheet: id:tonk-workspace/sheet/lodging
+
+# A single-tile `demo` board: one column with one tile hosting
+# `<tonk-inspector source="home">`. All entities use stable
+# `id:tonk-board/...` URIs so re-evaluating the bootstrap is
+# idempotent — the engine deduplicates the same claims rather
+# than minting fresh duplicates.
+
+inspector-view!: &home-inspector
+  source: "home"
+
+tile!: &inspector-tile
+  order: "a"
+  model: inspector-view
+  entity: home-inspector
+
+column-view!: &demo-column
+  order: "a"
+  width: 12
+  tile: inspector-tile
+
+board-view!: &demo-board
+  name: "demo"
+  column: demo-column
+
+
+
+####
+
+# version 5
