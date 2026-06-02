@@ -17,8 +17,8 @@
 //! exactly as a board column fetches its tiles.
 //!
 //! This crate ships the element plus a [`BOOTSTRAP`] document seeding
-//! the `portal` concept and the canonical `basic` view that bridges it
-//! to the element.
+//! the `portal` concept and its canonical view (resolved by model)
+//! that bridges it to the element.
 //!
 //! [`portal` concept]: BOOTSTRAP
 
@@ -28,21 +28,25 @@ use std::sync::LazyLock;
 
 use tonk_core::claim::TransactRequest;
 
-/// The `portal` concept and its canonical `basic` view as a typed
-/// transact request — lowered from `bootstrap.yaml` at compile time by
+/// The `portal` concept and its canonical view as a typed transact
+/// request — lowered from `bootstrap.yaml` at compile time by
 /// `claim!`. The shell folds this into the default repository's `PUT`
 /// body (chained after `tonk_board::BOOTSTRAP`) so the schema seeds
 /// once at repo creation.
 ///
-/// The document redeclares the `view` concept identically to the
-/// board's; identical attribute URIs make it content-address to the
-/// same entity, so the merged bootstrap deduplicates rather than
-/// minting a conflicting concept.
+/// The document redeclares the `view` concept byte-identically to the
+/// board's — same `this: tonk:view` pin and attribute set — so the
+/// merged bootstrap seeds the one `tonk:view` entity and the claims
+/// dedupe rather than minting a conflicting second concept.
 pub static BOOTSTRAP: LazyLock<TransactRequest> =
     LazyLock::new(|| tonk_macros::claim!("bootstrap.yaml"));
 
 #[cfg(target_arch = "wasm32")]
+mod bridge;
+#[cfg(target_arch = "wasm32")]
 mod element;
+#[cfg(target_arch = "wasm32")]
+mod query;
 
 #[cfg(target_arch = "wasm32")]
 pub use element::register;

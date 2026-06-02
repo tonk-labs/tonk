@@ -131,6 +131,14 @@ struct Inner {
     /// event that bubbles up through this element. Dropped on
     /// disconnect.
     depth_annotator: Option<tonk_host::DepthAnnotator>,
+    /// The model concept's descriptor JSON, handed to a `<tonk-portal>`
+    /// so its no-argument `tonk.subscribe()` can build the scoped-entity
+    /// query. Set on every connect; only read when a view frame routes
+    /// to portal mode (its projected `type` is `text/html`).
+    portal_descriptor: Option<String>,
+    /// The resolved model entity, surfaced to the portal as its `model`
+    /// attribute (the bridge's `context.model`).
+    portal_model: Option<String>,
 }
 
 impl Inner {
@@ -148,6 +156,8 @@ impl Inner {
             delegate: None,
             delegate_generation: 0,
             depth_annotator: None,
+            portal_descriptor: None,
+            portal_model: None,
         }
     }
 
@@ -510,28 +520,36 @@ async fn run(
     // presentation. Mount in single mode.
     ensure_carousel(host, &state, true);
 
-    // Open the two subscriptions via the host. Frames arrive
-    // through our `__tonkReset` delegate, which routes to
-    // `handle_view_frame` or `handle_entity_frame` by `opts.tag`.
+    // Open the view subscription via the host. Frames arrive through
+    // our `__tonkReset` delegate, which routes to `handle_view_frame`
+    // (or `handle_entity_frame`) by `opts.tag`.
     let view_tag = JsValue::from_str("view");
     let view_sub = host_consumer::subscribe(host, &view_body, Some(&view_tag))?;
     if check_generation(&state, generation).is_err() {
         return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
     }
+
     let entity_tag = JsValue::from_str("entity");
     let entity_sub = host_consumer::subscribe(host, &entity_body, Some(&entity_tag))?;
 
     {
         let mut s = state.borrow_mut();
         // Final generation check — if a newer flow ran between
-        // opening the two subscriptions, drop them so we don't
-        // orphan them (the newer flow's subscriptions are already
-        // stored).
+        // opening the subscriptions, drop them so we don't orphan
+        // them (the newer flow's subscriptions are already stored).
         if s.generation != generation {
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
         s.view_sub = Some(view_sub);
         s.entity_sub = Some(entity_sub);
+        // Context handed to a `<tonk-portal>` if a view frame routes
+        // here in portal mode: the subject's model entity (the
+        // bridge's `context.model`) and its descriptor (so the bridge
+        // can build its own entity query). A text/html view's iframe
+        // fetches data itself, so the entity subscription above just
+        // no-ops against the portal (it has no `draw`).
+        s.portal_descriptor = Some(descriptor_json);
+        s.portal_model = Some(model_entity);
     }
     dispatch_event(host, "tonk-display:connected", None);
     Ok(())
@@ -620,6 +638,23 @@ fn slide_keys(conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
 
+    // A view whose projected `type` is `text/html` is a full HTML
+    // document mounted into a `<tonk-portal>` — whose bridge fetches
+    // the entity's own data through the live `tonk` object — rather
+    // than interpolated inline. `type` rides the view query only when
+    // the view concept declares it (see `view_by_model_query`), so an
+    // ordinary view never trips this; a `display` change just reloads
+    // the portal's `content` in place.
+    if conclusions
+        .iter()
+        .any(|c| ipld_str(c.fields.get("type")) == Some("text/html"))
+    {
+        handle_portal_view_frame(host, &mut s, conclusions);
+        drop(s);
+        dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+        return;
+    }
+
     let incoming = slide_keys(conclusions);
 
     // Remove vanished slides.
@@ -683,6 +718,81 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     schedule_delegate_refresh(host, state);
 
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+}
+
+/// Diff a portal-mode view frame. Single-mode only, so at most one
+/// slide keyed by the view entity URI. A new row mounts a
+/// `<tonk-portal>` scoped to the entity; a changed `display` updates
+/// the portal's `content` in place (it reloads itself); a vanished row
+/// removes the portal.
+fn handle_portal_view_frame(host: &Element, s: &mut Inner, conclusions: Vec<Conclusion>) {
+    let incoming = slide_keys(conclusions);
+
+    // Remove a vanished portal.
+    let stale: Vec<String> = s
+        .slides
+        .keys()
+        .filter(|k| !incoming.contains_key(*k))
+        .cloned()
+        .collect();
+    for name in stale {
+        if let Some(slide) = s.slides.remove(&name)
+            && let Some(parent) = slide.item.parent_node()
+        {
+            let _: Result<Node, _> = parent.remove_child(&slide.item);
+        }
+    }
+
+    for (name, display) in incoming {
+        match s.slides.get(&name) {
+            Some(slide) if slide.display == display => {}
+            // Content changed: patch the portal's `content` attribute;
+            // it reloads its iframe internally.
+            Some(slide) => {
+                let _ = slide.view_el.set_attribute("content", &display);
+                if let Some(slide) = s.slides.get_mut(&name) {
+                    slide.display = display;
+                }
+            }
+            None => {
+                if let Some(slide) = mount_portal_slide(host, s, &display) {
+                    s.slides.insert(name, slide);
+                }
+            }
+        }
+    }
+
+    if !s.slides.is_empty() {
+        state::set(host, State::Ready);
+    }
+}
+
+/// Mount a `<tonk-portal>` scoped to the displayed entity. Attributes
+/// and the descriptor property are set before append so the portal's
+/// `connected_callback` builds its bridge against the final context.
+fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Slide> {
+    let document = window()?.document()?;
+    let portal = document.create_element("tonk-portal").ok()?;
+    let _ = portal.set_attribute("content", display);
+    if let Some(entity) = host.get_attribute("entity") {
+        let _ = portal.set_attribute("entity", &entity);
+    }
+    if let Some(model) = inner.portal_model.as_ref() {
+        let _ = portal.set_attribute("model", model);
+    }
+    if let Some(descriptor) = inner.portal_descriptor.as_ref() {
+        let _ = Reflect::set(
+            portal.as_ref(),
+            &"descriptor".into(),
+            &JsValue::from_str(descriptor),
+        );
+    }
+    let _ = host.append_child(&portal);
+    Some(Slide {
+        display: display.to_owned(),
+        item: portal.clone(),
+        view_el: portal,
+    })
 }
 
 /// Walk the currently-mounted `<tonk-view>` slides, collect the
@@ -1076,5 +1186,299 @@ mod tests {
     fn it_drops_a_frame_row_with_no_display_field() {
         let rows = vec![view_row("did:key:zView", None)];
         assert!(slide_keys(rows).is_empty());
+    }
+
+    // --- Display hook: routing a `text/html` view to a portal ---
+    //
+    // Driven through the real `<tonk-display>` flow against a fake host
+    // that answers the resolve one-shots in order (model concept → view
+    // concept) and captures the subscriptions. Portal mode is decided
+    // per view frame: a row whose projected `type` is `text/html`
+    // mounts a `<tonk-portal>`; any other row renders inline through
+    // `<tonk-view>`. Both runs open the view and entity subscriptions —
+    // in portal mode the entity frames simply no-op against the iframe.
+    #[cfg(target_arch = "wasm32")]
+    mod hook {
+        use super::*;
+        use ipld_core::ipld::Ipld;
+        use js_sys::{Function, Object, Promise};
+        use std::cell::RefCell;
+        use std::collections::BTreeMap;
+        use std::rc::Rc;
+        use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen_futures::JsFuture;
+        use web_sys::CustomEvent;
+
+        fn document() -> web_sys::Document {
+            window().unwrap().document().unwrap()
+        }
+
+        async fn sleep(ms: i32) {
+            let promise = Promise::new(&mut |resolve, _reject| {
+                let _ = window()
+                    .unwrap()
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+            });
+            let _ = JsFuture::from(promise).await;
+        }
+
+        /// Poll until `parent` contains an element matching `selector`.
+        async fn await_selector(parent: &Element, selector: &str) -> Option<Element> {
+            for _ in 0..200 {
+                if let Ok(Some(el)) = parent.query_selector(selector) {
+                    return Some(el);
+                }
+                sleep(5).await;
+            }
+            None
+        }
+
+        /// A `Vec<Conclusion>` as a JS value, matching what the host
+        /// hands back (one-shot results and subscription frames both
+        /// decode through `serde_wasm_bindgen::from_value`).
+        fn rows(items: &[(&str, &[(&str, &str)])]) -> JsValue {
+            let conclusions: Vec<Conclusion> = items
+                .iter()
+                .map(|(this, fields)| Conclusion {
+                    this: (*this).to_owned(),
+                    fields: fields
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), Ipld::String(v.to_string())))
+                        .collect::<BTreeMap<_, _>>(),
+                })
+                .collect();
+            serde_wasm_bindgen::to_value(&conclusions).unwrap()
+        }
+
+        struct FakeHost {
+            container: Element,
+            state: Rc<RefCell<FakeState>>,
+            _listeners: Vec<Closure<dyn FnMut(CustomEvent)>>,
+        }
+
+        struct FakeState {
+            /// One-shot query responses, answered in dispatch order.
+            query_responses: Vec<JsValue>,
+            answered: usize,
+            /// Subscription consumer + tag, keyed by tag.
+            subs: BTreeMap<String, Element>,
+            /// Tags of every subscription opened.
+            subscribe_tags: Vec<String>,
+        }
+
+        impl FakeHost {
+            fn install(query_responses: Vec<JsValue>) -> FakeHost {
+                let container = document().create_element("div").unwrap();
+                document().body().unwrap().append_child(&container).unwrap();
+                let state = Rc::new(RefCell::new(FakeState {
+                    query_responses,
+                    answered: 0,
+                    subs: BTreeMap::new(),
+                    subscribe_tags: Vec::new(),
+                }));
+                let mut listeners = Vec::new();
+
+                {
+                    let state = state.clone();
+                    let cb: Closure<dyn FnMut(CustomEvent)> =
+                        Closure::wrap(Box::new(move |ev: CustomEvent| {
+                            ev.stop_propagation();
+                            ev.prevent_default();
+                            let detail: Object = ev.detail().dyn_into().unwrap();
+                            let mut s = state.borrow_mut();
+                            let i = s.answered;
+                            let result = s
+                                .query_responses
+                                .get(i)
+                                .cloned()
+                                .unwrap_or(JsValue::from(js_sys::Array::new()));
+                            s.answered += 1;
+                            let _ =
+                                Reflect::set(&detail, &"result".into(), &Promise::resolve(&result));
+                        }) as Box<dyn FnMut(CustomEvent)>);
+                    let _ = container.add_event_listener_with_callback(
+                        "tonk-query",
+                        cb.as_ref().unchecked_ref(),
+                    );
+                    listeners.push(cb);
+                }
+                {
+                    let state = state.clone();
+                    let cb: Closure<dyn FnMut(CustomEvent)> =
+                        Closure::wrap(Box::new(move |ev: CustomEvent| {
+                            ev.stop_propagation();
+                            ev.prevent_default();
+                            let detail: Object = ev.detail().dyn_into().unwrap();
+                            let tag = Reflect::get(&detail, &"tag".into())
+                                .ok()
+                                .and_then(|v| v.as_string())
+                                .unwrap_or_default();
+                            let consumer: Element = ev.target().unwrap().dyn_into().unwrap();
+                            {
+                                let mut s = state.borrow_mut();
+                                s.subscribe_tags.push(tag.clone());
+                                s.subs.insert(tag, consumer);
+                            }
+                            let sub = Object::new();
+                            let noop = Function::new_no_args("");
+                            let _ = Reflect::set(&sub, &"cancel".into(), &noop);
+                            let _ = Reflect::set(&detail, &"subscription".into(), &sub);
+                        }) as Box<dyn FnMut(CustomEvent)>);
+                    let _ = container.add_event_listener_with_callback(
+                        "tonk-subscribe",
+                        cb.as_ref().unchecked_ref(),
+                    );
+                    listeners.push(cb);
+                }
+
+                FakeHost {
+                    container,
+                    state,
+                    _listeners: listeners,
+                }
+            }
+
+            fn push_frame(&self, tag: &str, conclusions: &JsValue) {
+                let consumer = self.state.borrow().subs.get(tag).cloned();
+                let Some(consumer) = consumer else { return };
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &JsValue::from_str(tag));
+                let reset: Function = Reflect::get(&consumer, &"reset".into())
+                    .unwrap()
+                    .dyn_into()
+                    .unwrap();
+                let _ = reset.call2(&consumer, conclusions, &opts);
+            }
+
+            fn subscribe_tags(&self) -> Vec<String> {
+                self.state.borrow().subscribe_tags.clone()
+            }
+        }
+
+        fn mount_display(host: &FakeHost, view: &str, model: &str, entity: &str) -> Element {
+            register();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("view", view).unwrap();
+            display.set_attribute("model", model).unwrap();
+            display.set_attribute("entity", entity).unwrap();
+            host.container.append_child(&display).unwrap();
+            display
+        }
+
+        // The flow resolves two concepts in order: the subject `model`
+        // concept (projected for the entity query) then the `view`
+        // concept (the query predicate). The view concept declares a
+        // `type` attribute, so `view_by_model_query` projects `type` and
+        // each view frame carries the value that decides portal mode.
+        fn resolve_responses() -> Vec<JsValue> {
+            vec![
+                rows(&[(
+                    "did:key:zModel",
+                    &[(
+                        "source",
+                        r#"{"with":{"count":{"the":"counter/count","as":"UnsignedInteger","cardinality":"one"}}}"#,
+                    )],
+                )]),
+                rows(&[(
+                    "did:key:zViewConcept",
+                    &[(
+                        "source",
+                        r#"{"with":{"model":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
+                    )],
+                )]),
+            ]
+        }
+
+        #[dialog_common::test]
+        async fn it_mounts_a_portal_for_a_text_html_view_frame() {
+            let host = FakeHost::install(resolve_responses());
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+
+            // Wait for the flow to open its subscriptions.
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // The view frame carries the projected `type` and the HTML
+            // document, which routes the row to a portal.
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[
+                        ("display", "<h1>monolith</h1>"),
+                        ("type", "text/html"),
+                        ("model", "did:key:zModel"),
+                    ],
+                )]),
+            );
+
+            let portal = await_selector(&display, "tonk-portal")
+                .await
+                .expect("a text/html view should mount a <tonk-portal>");
+            assert_eq!(
+                portal.get_attribute("content").as_deref(),
+                Some("<h1>monolith</h1>"),
+                "the view's HTML document becomes the portal content",
+            );
+            assert_eq!(
+                portal.get_attribute("entity").as_deref(),
+                Some("id:demo-counter"),
+                "the portal is scoped to the displayed entity",
+            );
+            let descriptor = Reflect::get(portal.as_ref(), &"descriptor".into())
+                .ok()
+                .and_then(|v| v.as_string());
+            assert!(
+                descriptor.is_some_and(|d| d.contains("counter/count")),
+                "the model descriptor is handed to the portal",
+            );
+            assert!(
+                display.query_selector("tonk-view").unwrap().is_none(),
+                "a portal view renders no inline <tonk-view>",
+            );
+            // Both subscriptions open; the entity sub just no-ops against
+            // the portal (a `<tonk-portal>` exposes no `draw`).
+            assert_eq!(
+                host.subscribe_tags(),
+                vec!["view".to_owned(), "entity".to_owned()],
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_renders_inline_and_subscribes_to_the_entity_when_no_type() {
+            let host = FakeHost::install(resolve_responses());
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "view",
+                &rows(&[("did:key:zView", &[("display", "<p>{count}</p>")])]),
+            );
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "a view frame with no type renders inline through <tonk-view>",
+            );
+            assert!(
+                display.query_selector("tonk-portal").unwrap().is_none(),
+                "no portal is mounted for a non-portal view",
+            );
+            let mut tags = host.subscribe_tags();
+            tags.sort();
+            assert_eq!(
+                tags,
+                vec!["entity".to_owned(), "view".to_owned()],
+                "inline mode opens both the view and entity subscriptions",
+            );
+        }
     }
 }

@@ -11,10 +11,20 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 custom-elements = { workspace = true }
+indexmap = { workspace = true }
+ipld-core = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde-wasm-bindgen = { workspace = true }
+serde_json = { workspace = true }
 tonk-core = { workspace = true }
+tonk-host = { workspace = true }
 tonk-macros = { workspace = true }
+tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
+    "console",
     "CssStyleDeclaration",
     "CustomElementRegistry",
     "Document",
@@ -27,11 +37,7 @@ web-sys = { workspace = true, features = [
 
 [dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
-ipld-core = { workspace = true }
-js-sys = { workspace = true }
-serde-wasm-bindgen = { workspace = true }
 tonk-display = { workspace = true }
-tonk-schema = { workspace = true }
 wasm-bindgen-test = { workspace = true }
 
 [lints.rust]

@@ -3,26 +3,22 @@
 # Asserted-notation document lowered by `claim!` at compile time
 # into `tonk_portal::BOOTSTRAP`; the shell folds it into the
 # default repository's branch bootstrap at creation, chained after
-# the board bootstrap. See `plan/tonk-portal.md` for the design.
+# the board bootstrap.
 #
-# The `view` concept is redeclared here (identically to the board's
-# definition) so this document is self-contained: lowering a
-# `view!` assertion needs the `view` concept in scope, and `view`
-# is not a built-in. Identical attribute URIs make the concept
-# content-address to the same entity as the board's, so folding
-# both bootstraps into one branch deduplicates rather than
-# conflicts.
+# The `view` concept is redeclared here, byte-identical to the
+# board's definition (same `this: tonk:view` pin and attributes),
+# so this document is self-contained: lowering a `view!` assertion
+# needs the `view` concept in scope, and `view` is not a built-in.
+# Because the pin and the attribute set match, folding both
+# bootstraps into one branch seeds the same `tonk:view` entity — the
+# claims dedupe rather than minting a conflicting second concept.
 
 # --- concepts -----------------------------------------------
 
 concept!: &view
-  description: A view template (model, name, display) for rendering an entity
+  this: tonk:view
+  description: A display template (model, display) for rendering an entity
   with:
-    name:
-      description: View name; distinguishes views over the same model
-      the: xyz.tonk.view/name
-      cardinality: one
-      as: text
     model:
       description: Concept this view renders
       the: xyz.tonk.view/model
@@ -55,11 +51,10 @@ concept!: &portal
 # setAttribute so `attributeChangedCallback` fires — required for
 # `height`, an unsigned-integer the renderer would otherwise route
 # to a JS property. Users never write this; nesting a
-# `<tonk-display model=portal view=basic>` over a portal entity
-# renders it.
+# `<tonk-display model=portal>` over a portal entity resolves this
+# view by model and renders it.
 
 view!:
   model: portal
-  name: "basic"
   display: |
     <tonk-portal html:content={content} html:height={height} />

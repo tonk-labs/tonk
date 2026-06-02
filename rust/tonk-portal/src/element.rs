@@ -1,29 +1,40 @@
 //! The `<tonk-portal>` custom element.
 //!
-//! Attribute-driven and entirely synchronous — no host bridge, no
-//! subscription, no generation guard, because the element never
-//! fetches. It owns exactly one child `<iframe>` and mirrors two
-//! observed attributes onto it:
+//! A portal owns one child `<iframe>` and is two things at once:
 //!
-//! - `content` → `iframe.srcdoc` (reloads the iframe wholesale)
-//! - `height`  → `iframe.style.height` in pixels (patched in place)
+//! - a **painter** — it mirrors the `content` attribute into the
+//!   iframe's `srcdoc` and applies an optional pixel `height`; and
+//! - a **transport** — it injects a small `tonk` object into the
+//!   iframe (see [`crate::bridge`]) through which author code reads and
+//!   writes live data, relaying the iframe's calls onto the existing
+//!   `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events.
 //!
-//! The iframe is sandboxed `allow-scripts` with **no**
-//! `allow-same-origin`: author scripts run, but in an opaque origin
-//! that cannot touch the parent page, its session, or the worker.
-//! `portal/content` is dialog data any writer can assert, so granting
-//! it same-origin would be a credential-grade XSS path.
+//! The iframe is sandboxed `allow-scripts allow-same-origin`. The
+//! same-origin grant is what lets the bridge inject `tonk` by a direct
+//! `parent.__tonkConnect` call with no MessageChannel. Author code must
+//! reach data only through `tonk`, never through `parent.document`.
+//!
+//! State lives in [`crate::bridge::PortalState`] behind `Rc<RefCell<…>>`
+//! so the lifecycle callbacks, the prototype `reset` / `error` delegates,
+//! and the bridge closures all share it.
+
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use custom_elements::CustomElement;
+use js_sys::{Function, Reflect};
 use wasm_bindgen::JsCast;
+use wasm_bindgen::JsValue;
+use wasm_bindgen::closure::Closure;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
-/// The custom element. Holds its single child iframe so the attribute
-/// callbacks can patch it after the initial mount. Every lifecycle
-/// method takes `&mut self`, so no interior mutability is needed.
+use crate::bridge::{self, PortalState};
+
+/// The custom element. Holds the shared [`PortalState`]; `None` until
+/// `connected_callback` builds it.
 #[derive(Default)]
 pub struct TonkPortal {
-    iframe: Option<HtmlIFrameElement>,
+    inner: RefCell<Option<Rc<RefCell<PortalState>>>>,
 }
 
 impl CustomElement for TonkPortal {
@@ -32,7 +43,7 @@ impl CustomElement for TonkPortal {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["content", "height"]
+        &["content", "height", "entity", "model"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -40,11 +51,6 @@ impl CustomElement for TonkPortal {
     fn connected_callback(&mut self, this: &HtmlElement) {
         let host: Element = this.clone().into();
 
-        // Build the iframe from the attributes that are already on the
-        // host. The canonical view sets `content`/`height` before the
-        // element connects, and during upgrade `attribute_changed_callback`
-        // fires before this with no iframe yet (a no-op) — so reading the
-        // live attributes here is what actually applies the first values.
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };
@@ -55,62 +61,121 @@ impl CustomElement for TonkPortal {
             return;
         };
 
-        // Opaque-origin sandbox. Scripts run; same-origin is withheld.
-        let _ = iframe.set_attribute("sandbox", "allow-scripts");
+        // Same-origin sandbox: scripts run and `window.parent` is
+        // reachable, so the bridge can inject `tonk` synchronously.
+        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
 
-        // `content` is authoritative; absent ⇒ empty document (the
-        // reserved height keeps layout stable).
-        let content = host.get_attribute("content").unwrap_or_default();
-        let _ = iframe.set_attribute("srcdoc", &content);
-
+        // By default the iframe fills its container; `height` pins a
+        // fixed pixel height instead.
+        let style = iframe.style();
+        let _ = style.set_property("width", "100%");
+        let _ = style.set_property("height", "100%");
+        let _ = style.set_property("border", "0");
         if let Some(height) = host.get_attribute("height") {
             set_height(&iframe, &height);
         }
 
+        let state = Rc::new(RefCell::new(PortalState::new()));
+        let bridge = bridge::build_bridge(&host, &state);
+        bridge::register_portal(&iframe, &bridge);
+        install_method_delegates(&host, &state);
+
+        // Append before assigning `srcdoc` so `contentWindow` exists;
+        // `__tonkConnect` matches on the live `contentWindow`, so the
+        // bootstrap script resolves this portal's bridge when it runs.
+        let content = host.get_attribute("content").unwrap_or_default();
         let _ = host.append_child(&iframe);
-        self.iframe = Some(iframe);
+        let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
+
+        state.borrow_mut().iframe = Some(iframe);
+        *self.inner.borrow_mut() = Some(state);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        // Drop our reference and detach the iframe. The browser would
-        // collect it with the host anyway, but removing it explicitly
-        // keeps re-connects (view swaps) from leaving a stale frame.
-        if let Some(iframe) = self.iframe.take()
-            && let Some(parent) = iframe.parent_node()
-        {
-            let _ = parent.remove_child(&iframe);
+        if let Some(state) = self.inner.borrow_mut().take() {
+            let mut s = state.borrow_mut();
+            s.disposed = true;
+            s.clear_subs();
+            if let Some(iframe) = s.iframe.take() {
+                bridge::unregister_portal(&iframe);
+                if let Some(parent) = iframe.parent_node() {
+                    let _ = parent.remove_child(&iframe);
+                }
+            }
         }
     }
 
     fn attribute_changed_callback(
         &mut self,
-        _this: &HtmlElement,
+        this: &HtmlElement,
         name: String,
         _old: Option<String>,
         new: Option<String>,
     ) {
-        // Before `connected_callback` there is no iframe yet; the
-        // initial values are read from the live attributes on connect,
-        // so dropping pre-connect callbacks is correct.
-        let Some(iframe) = self.iframe.as_ref() else {
+        let host: Element = this.clone().into();
+        // Pre-connect callbacks (during upgrade) have no state yet; the
+        // initial values are read live in `connected_callback`.
+        let Some(state) = self.inner.borrow().clone() else {
             return;
         };
         match name.as_str() {
-            // Reassigning `srcdoc` reloads the iframe wholesale,
-            // discarding its DOM/JS state — the intended default.
-            "content" => {
-                let _ = iframe.set_attribute("srcdoc", &new.unwrap_or_default());
-            }
-            // Height patches in place; no reload.
-            "height" => match new {
-                Some(height) => set_height(iframe, &height),
-                None => {
-                    let _ = iframe.style().remove_property("height");
+            // Height patches in place; no reload, no subscription churn.
+            "height" => {
+                if let Some(iframe) = state.borrow().iframe.as_ref() {
+                    match new {
+                        Some(height) => set_height(iframe, &height),
+                        // Back to filling the container.
+                        None => {
+                            let _ = iframe.style().set_property("height", "100%");
+                        }
+                    }
                 }
-            },
+            }
+            // New content reloads the iframe wholesale.
+            "content" => reload(&host, &state),
+            // A re-scope updates the author-facing context, then reloads
+            // so the bootstrap re-runs author code against it.
+            "entity" | "model" => {
+                bridge::rescope(&host, &state);
+                reload(&host, &state);
+            }
             _ => {}
         }
     }
+}
+
+/// Cancel the portal's live subscriptions and reload the iframe from
+/// the current `content`. Reassigning `srcdoc` discards the old
+/// window — and with it any author `for await` loops — so we cancel
+/// the host subscriptions they fed first.
+fn reload(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    let mut s = state.borrow_mut();
+    s.clear_subs();
+    if let Some(iframe) = s.iframe.as_ref() {
+        let content = host.get_attribute("content").unwrap_or_default();
+        let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
+    }
+}
+
+/// Write the per-instance `__tonkReset` / `__tonkError` closures the
+/// prototype shims forward subscription frames to. Mirrors
+/// `<tonk-display>`'s method-delegate pattern.
+fn install_method_delegates(host: &Element, state: &Rc<RefCell<PortalState>>) {
+    let reset_state = state.clone();
+    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            bridge::route_reset(&reset_state, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
+    reset.forget();
+
+    let error_state = state.clone();
+    let error: Closure<dyn FnMut(JsValue, JsValue)> =
+        Closure::wrap(Box::new(move |payload, opts| {
+            bridge::route_error(&error_state, payload, opts);
+        }));
+    let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
+    error.forget();
 }
 
 /// Set the iframe's pixel height. The `height` attribute is an
@@ -122,14 +187,49 @@ fn set_height(iframe: &HtmlIFrameElement, height: &str) {
         .set_property("height", &format!("{height}px"));
 }
 
-/// Register `<tonk-portal>` with the page. Idempotent — calling more
-/// than once is harmless. Unlike `<tonk-view>` there is no prototype
-/// method to install: the element is entirely attribute-driven.
+/// Register `<tonk-portal>` with the page. Idempotent. Installs the
+/// page-level `__tonkConnect` function, defines the element, and
+/// installs the `reset` / `error` prototype shims that route
+/// subscription frames into the per-instance delegates.
 pub fn register() {
+    bridge::install_connect();
     if already_registered() {
         return;
     }
     TonkPortal::define("tonk-portal");
+    install_method_shims();
+}
+
+/// Install `reset` / `update` / `error` on the `<tonk-portal>`
+/// prototype, each forwarding to the per-instance `__tonk*` closure.
+/// On the prototype (not each instance) so `this`-binding is correct
+/// when the host invokes `consumer.reset(payload, opts)`.
+fn install_method_shims() {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get("tonk-portal");
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let update_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let error_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
 }
 
 fn already_registered() -> bool {
@@ -142,7 +242,6 @@ fn already_registered() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wasm_bindgen::JsValue;
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     use web_sys::Document;
 
@@ -185,7 +284,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_mounts_one_sandboxed_iframe_on_connect() {
+    fn it_mounts_one_same_origin_sandboxed_iframe_on_connect() {
         let host = mount(Some("<p>hi</p>"), None);
         assert_eq!(
             host.query_selector_all("iframe").unwrap().length(),
@@ -196,30 +295,24 @@ mod tests {
         let sandbox = iframe_of(&host)
             .get_attribute("sandbox")
             .expect("sandbox attribute present");
-        assert_eq!(sandbox, "allow-scripts");
-        assert!(
-            !sandbox.contains("allow-same-origin"),
-            "same-origin must never be granted by default; got: {sandbox}",
-        );
+        // The bridge slice runs same-origin to inject `tonk` cheaply;
+        // origin isolation returns with the postMessage transport.
+        assert_eq!(sandbox, "allow-scripts allow-same-origin");
     }
 
     #[dialog_common::test]
-    fn it_writes_content_into_the_iframe_srcdoc() {
+    fn it_prepends_the_bridge_bootstrap_and_keeps_the_content() {
         let host = mount(Some("<canvas id=\"c\"></canvas>"), None);
-        assert_eq!(
-            iframe_of(&host).get_attribute("srcdoc").as_deref(),
-            Some("<canvas id=\"c\"></canvas>"),
+        let srcdoc = iframe_of(&host)
+            .get_attribute("srcdoc")
+            .expect("srcdoc present");
+        assert!(
+            srcdoc.contains("__tonkConnect"),
+            "srcdoc should carry the bridge bootstrap; got: {srcdoc}",
         );
-    }
-
-    #[dialog_common::test]
-    fn it_renders_empty_srcdoc_when_content_is_absent() {
-        let host = mount(None, Some("400"));
-        // An iframe still mounts (the reserved height keeps layout
-        // stable); its document is just empty.
-        assert_eq!(
-            iframe_of(&host).get_attribute("srcdoc").as_deref(),
-            Some(""),
+        assert!(
+            srcdoc.contains("<canvas id=\"c\"></canvas>"),
+            "srcdoc should still carry the author content; got: {srcdoc}",
         );
     }
 
@@ -242,9 +335,11 @@ mod tests {
             .expect("update content");
 
         let iframe_after = iframe_of(&host);
-        assert_eq!(
-            iframe_after.get_attribute("srcdoc").as_deref(),
-            Some("<p>two</p>"),
+        let srcdoc = iframe_after.get_attribute("srcdoc").expect("srcdoc");
+        assert!(srcdoc.contains("<p>two</p>"), "new content; got: {srcdoc}");
+        assert!(
+            srcdoc.contains("__tonkConnect"),
+            "bootstrap survives reload"
         );
         // A content change reassigns srcdoc on the *same* iframe — the
         // element is not torn down and rebuilt.
@@ -287,123 +382,6 @@ mod tests {
             host.query_selector("iframe").unwrap().is_none(),
             "disconnect should detach the iframe; got: {}",
             host.inner_html(),
-        );
-    }
-
-    // --- Integration: driven by the canonical view through the
-    //     real `<tonk-view>` renderer, exactly as `<tonk-display>`
-    //     would in production. Pins "one iframe, both attributes
-    //     applied, patched in place across a content change".
-
-    /// Build the `{ this, fields }` conclusion JsValue the way
-    /// `<tonk-display>` passes it into a view's `render`, with a string
-    /// `content` and an integer `height` (the real concept types).
-    fn portal_conclusion(this: &str, content: &str, height: i128) -> JsValue {
-        use ipld_core::ipld::Ipld;
-        use std::collections::BTreeMap;
-        use tonk_schema::conclusion::Conclusion;
-
-        let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
-        fields.insert("content".to_owned(), Ipld::String(content.to_owned()));
-        fields.insert("height".to_owned(), Ipld::Integer(height));
-        let conclusion = Conclusion {
-            this: this.to_owned(),
-            fields,
-        };
-        serde_wasm_bindgen::to_value(&conclusion).expect("serialize conclusion")
-    }
-
-    /// Mount a `<tonk-view>` carrying the canonical portal template and
-    /// drive it with one conclusion. Returns the view host.
-    fn render_via_canonical_view(content: &str, height: i128) -> Element {
-        use js_sys::{Function, Reflect};
-
-        tonk_display::register();
-        register();
-        let document = document();
-        let view = document.create_element("tonk-view").expect("create view");
-        // Mirrors the `basic` portal view in bootstrap.yaml.
-        view.set_inner_html("<tonk-portal html:content={content} html:height={height} />");
-        document
-            .body()
-            .expect("body")
-            .append_child(&view)
-            .expect("attach view");
-
-        let detail = portal_conclusion("did:key:zPortal", content, height);
-        let render = Reflect::get(view.as_ref(), &"render".into()).expect("render method");
-        let render_fn: Function = render.dyn_into().expect("render is a function");
-        render_fn
-            .call1(view.as_ref(), &detail)
-            .expect("call render");
-        view
-    }
-
-    #[dialog_common::test]
-    fn it_drives_one_iframe_with_both_attributes_through_the_canonical_view() {
-        let view = render_via_canonical_view("<p>painted</p>", 400);
-
-        let iframes = view.query_selector_all("iframe").unwrap();
-        assert_eq!(
-            iframes.length(),
-            1,
-            "canonical view should yield exactly one iframe; got: {}",
-            view.inner_html(),
-        );
-        let iframe = view
-            .query_selector("iframe")
-            .unwrap()
-            .unwrap()
-            .dyn_into::<HtmlIFrameElement>()
-            .unwrap();
-        assert_eq!(
-            iframe.get_attribute("srcdoc").as_deref(),
-            Some("<p>painted</p>"),
-            "content should reach srcdoc through the html:-forced binding",
-        );
-        assert_eq!(
-            iframe.style().get_property_value("height").ok().as_deref(),
-            Some("400px"),
-            "integer height should reach the iframe as a pixel style, not a JS property",
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_patches_the_canonical_iframe_in_place_across_a_content_change() {
-        use js_sys::{Function, Reflect};
-
-        let view = render_via_canonical_view("<p>before</p>", 400);
-        let iframe_before = view
-            .query_selector("iframe")
-            .unwrap()
-            .unwrap()
-            .dyn_into::<HtmlIFrameElement>()
-            .unwrap();
-
-        // Re-render with new content; height unchanged.
-        let detail = portal_conclusion("did:key:zPortal", "<p>after</p>", 400);
-        let render = Reflect::get(view.as_ref(), &"render".into()).expect("render method");
-        let render_fn: Function = render.dyn_into().expect("render is a function");
-        render_fn.call1(view.as_ref(), &detail).expect("re-render");
-
-        assert_eq!(
-            view.query_selector_all("iframe").unwrap().length(),
-            1,
-            "still exactly one iframe after a content change",
-        );
-        let iframe_after = view
-            .query_selector("iframe")
-            .unwrap()
-            .unwrap()
-            .dyn_into::<HtmlIFrameElement>()
-            .unwrap();
-        assert_eq!(
-            iframe_after.get_attribute("srcdoc").as_deref(),
-            Some("<p>after</p>"),
-        );
-        assert!(
-            iframe_before.is_same_node(Some(iframe_after.unchecked_ref())),
-            "the renderer patches the portal's attributes in place; the iframe survives",
         );
     }
 }
