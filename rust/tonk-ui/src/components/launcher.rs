@@ -46,7 +46,11 @@ pub fn TonkLauncher() -> impl IntoView {
                             view=TonkConceptView
                         />
                         <Route
-                            path=path!("space/:space/branch/:branch/display/:subject")
+                            // Wildcard (`*subject`), not `:subject`, so
+                            // entity URIs containing `/` (e.g.
+                            // `id:tonk-workspace/itinerary`) are captured
+                            // whole rather than truncated at the slash.
+                            path=path!("space/:space/branch/:branch/display/*subject")
                             view=TonkDisplayView
                         />
                         <Route
