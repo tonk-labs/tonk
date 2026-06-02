@@ -12,14 +12,16 @@
 
 # --- concepts -----------------------------------------------
 
+# The built-in `view` concept. A view is keyed by its `model`: a
+# `<tonk-display>` with `model=X` and no `view` attribute resolves
+# the view whose `model` is X and renders its `display` template.
+# Pinned to `tonk:view` and kept identical to the declaration in
+# `tonk-workspace/bootstrap.yaml` so both bootstraps seed the same
+# concept entity.
 concept!: &view
-  description: A view template (model, name, display) for rendering an entity
+  this: tonk:view
+  description: A display template (model, display) for rendering an entity
   with:
-    name:
-      description: View name; distinguishes views over the same model
-      the: xyz.tonk.view/name
-      cardinality: one
-      as: text
     model:
       description: Concept this view renders
       the: xyz.tonk.view/model
@@ -72,16 +74,11 @@ concept!: &tile
       the: xyz.tonk.tile/order
       cardinality: one
       as: text
-    view:
-      description: View name to render the tile body with
-      the: xyz.tonk.tile/view
-      cardinality: one
-      as: text
     model:
-      description: Concept name the tile body renders
+      description: Concept the tile body renders
       the: xyz.tonk.tile/model
       cardinality: one
-      as: text
+      as: entity
     entity:
       description: Entity the tile body renders
       the: xyz.tonk.tile/entity
@@ -99,38 +96,35 @@ concept!: &inspector-view
 
 # --- views --------------------------------------------------
 #
-# Three nested templates. Each iterates one level of the hierarchy
-# via `subject={field}` on the row root. The chain bottoms out in
-# a `<tonk-display>` that mounts whatever view the tile's entity
-# has.
+# One view per concept, keyed by `model`. Each nested
+# `<tonk-display>` passes only `model=…` (and `entity=…`); with no
+# `view` attribute it resolves the view whose `model` matches. The
+# chain iterates one level of the hierarchy per template via
+# `subject={field}` and bottoms out in the tile's content display.
 
 view!:
   model: board-view
-  name: "basic"
   display: |
     <tonk-strip>
-      <tonk-display entity={column} model=column-view view=basic />
+      <tonk-display entity={column} model=column-view />
     </tonk-strip>
 
 view!:
   model: column-view
-  name: "basic"
   display: |
     <tonk-column style="--col-w: {width};">
       <div class="tile" subject={tile}>
-        <tonk-display entity={tile} model=tile view=basic />
+        <tonk-display entity={tile} model=tile />
       </div>
     </tonk-column>
 
 view!:
   model: tile
-  name: "basic"
   display: |
-    <tonk-display entity={entity} model={model} view={view} />
+    <tonk-display entity={entity} model={model} />
 
 view!:
   model: inspector-view
-  name: "basic"
   display: |
     <tonk-inspector source={source} />
 
@@ -147,7 +141,6 @@ inspector-view!: &home-inspector
 
 tile!: &inspector-tile
   order: "a"
-  view: "basic"
   model: inspector-view
   entity: home-inspector
 

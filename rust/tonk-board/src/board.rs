@@ -16,8 +16,9 @@
 //!    the lookup.
 //!
 //! 3. **Mount a `<tonk-display>`** against the resolved entity
-//!    with `model="board-view"` and `view="basic"`. The view
-//!    template chain drives strip / column / tile rendering.
+//!    with `model="board-view"` (no `view`, so the built-in view
+//!    for that model is used). The view template chain drives
+//!    strip / column / tile rendering.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -195,8 +196,9 @@ fn mount_display(host: &Element, entity: &str) {
         return;
     };
     let _ = display.set_attribute("entity", entity);
+    // No `view` attribute: with `model="board-view"` the display
+    // resolves the built-in view whose `model` is `board-view`.
     let _ = display.set_attribute("model", "board-view");
-    let _ = display.set_attribute("view", "basic");
     let _ = host.append_child(&display);
 }
 
