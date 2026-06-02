@@ -308,6 +308,19 @@ pub enum AnalyzeErrorKind {
         /// The field name the user wrote.
         field: String,
     },
+    /// A `concept!` declared the same field name more than once —
+    /// either twice in one block or in both `with:` and `maybe:`.
+    /// A field is required *or* optional, never both.
+    #[error(
+        "field {field:?} is declared more than once in concept {concept:?} \
+         (a field cannot be both required and optional)"
+    )]
+    DuplicateConceptField {
+        /// The concept being declared.
+        concept: String,
+        /// The duplicated field name.
+        field: String,
+    },
     /// A premise's `where:` names an operand the formula doesn't
     /// have. Unlike concepts (whose schema lives on the branch),
     /// formulas have a fixed operand set, so the analyzer can
@@ -462,6 +475,7 @@ impl AnalyzeErrorKind {
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
+            Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
             Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",
             Self::UnknownNameReference { .. } => "E_UNKNOWN_NAME_REFERENCE",

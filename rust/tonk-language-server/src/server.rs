@@ -365,7 +365,7 @@ impl Server {
         Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: render_field_hover(&name, attr),
+                value: render_field_hover(&name, attr.descriptor()),
             }),
             range,
         })
@@ -1012,7 +1012,15 @@ fn render_concept_hover(name: &str, descriptor: &DialogConceptDescriptor) -> Str
                 Some(t) => format!(" : {}", format_type(&t)),
                 None => String::new(),
             };
-            out.push_str(&format!("\n- `{field}`{ty} — {card}"));
+            // Optional fields render as `field?` with an `(optional)`
+            // tag, mirroring the `maybe:` block they were declared in.
+            let opt_mark = if attr.is_optional() { "?" } else { "" };
+            let opt_tag = if attr.is_optional() {
+                " _(optional)_"
+            } else {
+                ""
+            };
+            out.push_str(&format!("\n- `{field}{opt_mark}`{ty} — {card}{opt_tag}"));
             let d = attr.description();
             if !d.is_empty() {
                 out.push_str(" — ");

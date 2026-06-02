@@ -806,6 +806,27 @@ mod tests {
             self.assert_concept_named(name, &descriptor).await;
         }
 
+        /// Like [`concept_typed`] but each field carries an
+        /// `optional` flag, so the registered concept exercises the
+        /// optional-attribute paths (completeness, set-widening,
+        /// marker round-trip).
+        async fn concept_typed_optional(&self, name: &str, fields: &[(&str, &str, &str, bool)]) {
+            let mut with = serde_json::Map::new();
+            for (field, the, ty, optional) in fields {
+                let mut spec = serde_json::json!({ "the": the, "as": ty, "cardinality": "one" });
+                if *optional {
+                    spec.as_object_mut()
+                        .unwrap()
+                        .insert("optional".into(), serde_json::Value::Bool(true));
+                }
+                with.insert((*field).into(), spec);
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            self.assert_concept_named(name, &descriptor).await;
+        }
+
         /// Commit the attribute facts every field of `descriptor`
         /// references, the concept marker claim, and an
         /// `id:<name>` referent so name resolution finds the
@@ -1295,6 +1316,141 @@ concept!: &person
             panic!("expected Assert(Concept) for concept");
         };
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
+    }
+
+    /// A `maybe:` block declares optional fields. The descriptor
+    /// carries the optional flag on those fields and the required
+    /// flag on `with:` fields.
+    #[dialog_common::test]
+    async fn it_marks_maybe_block_fields_optional() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    nickname:
+      description: "Nickname"
+      the: xyz.tonk.person/nickname
+      as:  Text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let person = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = person else {
+            panic!("expected concept assertion");
+        };
+        // The emitted concept-schema records each field's attribute
+        // link under `with.<field>`, plus a boolean optional marker
+        // `optional.<field>` for `maybe:` fields only.
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(field_names.contains(&"with.name"));
+        assert!(field_names.contains(&"with.nickname"));
+        assert!(
+            field_names.contains(&"optional.nickname"),
+            "optional `maybe:` field must emit an optional marker"
+        );
+        assert!(
+            !field_names.contains(&"optional.name"),
+            "required `with:` field must not emit an optional marker"
+        );
+        // And the marker term is actually populated on the assertion.
+        assert!(
+            query.terms.get("optional.nickname").is_some(),
+            "expected optional.nickname term on the concept assertion"
+        );
+        assert!(query.terms.get("optional.name").is_none());
+    }
+
+    /// A concept with only `maybe:` fields (no required field) is
+    /// rejected — it would constrain nothing and match every entity.
+    #[dialog_common::test]
+    async fn it_rejects_concept_with_only_optional_fields() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  maybe:
+    nickname:
+      description: "Nickname"
+      the: xyz.tonk.person/nickname
+      as:  Text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for all-optional concept, got {err:?}"
+        );
+    }
+
+    /// A field declared in both `with:` and `maybe:` is a hard
+    /// error — a field is required or optional, never both.
+    #[dialog_common::test]
+    async fn it_rejects_field_in_both_with_and_maybe() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::DuplicateConceptField { field, .. } if field == "name"
+            ),
+            "expected DuplicateConceptField for `name`, got {err:?}"
+        );
+        assert_eq!(err.kind.code(), "E_DUPLICATE_CONCEPT_FIELD");
+    }
+
+    /// A `maybe:` field can be a bare reference to an attribute
+    /// declared earlier in the document (not just an inline
+    /// definition). The referenced field is still marked optional.
+    #[dialog_common::test]
+    async fn it_marks_maybe_bare_reference_optional() {
+        let syntax = must_parse(
+            r#"
+attribute!: &person-nick
+  the:         xyz.tonk.person/nickname
+  as:          Text
+  cardinality: one
+  description: "Nickname"
+concept!: &person
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    nickname: person-nick
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let person = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = person else {
+            panic!("expected concept assertion");
+        };
+        // The `maybe:` bare reference emits an optional marker.
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(
+            field_names.contains(&"optional.nickname"),
+            "bare-reference `maybe:` field must emit an optional marker; saw {field_names:?}"
+        );
+        assert!(query.terms.get("optional.nickname").is_some());
     }
 
     /// A bare symbol in field-value position resolves through the
@@ -3237,6 +3393,69 @@ person!:
                        && selector_form.contains("?alice")
             ),
             "expected IncompleteAssertion for `?alice` + age-only body, got {err:?}"
+        );
+    }
+
+    /// Omitting an *optional* field on a fresh entity is fine —
+    /// `IncompleteAssertion` only counts required fields. Here the
+    /// body sets the required `name` but omits the optional
+    /// `nickname`; the assertion must succeed.
+    #[dialog_common::test]
+    async fn it_allows_assertion_omitting_optional_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+"#,
+        );
+        let fixture = new_fixture().await;
+        fixture
+            .concept_typed_optional(
+                "person",
+                &[
+                    ("name", "io.gozala.person/name", "Text", false),
+                    ("nickname", "io.gozala.person/nickname", "Text", true),
+                ],
+            )
+            .await;
+        let analysis = fixture.analyze(&syntax).await;
+        assert!(
+            analysis.is_ok(),
+            "omitting an optional field must not raise IncompleteAssertion, got {:?}",
+            analysis.err()
+        );
+    }
+
+    /// The complement: with an optional field present in the
+    /// schema, omitting the *required* field on a fresh entity
+    /// still raises `IncompleteAssertion`, and the optional field
+    /// is not listed as missing.
+    #[dialog_common::test]
+    async fn it_still_requires_required_field_when_optional_present() {
+        let syntax = must_parse(
+            r#"
+person!:
+  nickname: "Al"
+"#,
+        );
+        let fixture = new_fixture().await;
+        fixture
+            .concept_typed_optional(
+                "person",
+                &[
+                    ("name", "io.gozala.person/name", "Text", false),
+                    ("nickname", "io.gozala.person/nickname", "Text", true),
+                ],
+            )
+            .await;
+        let err = fixture.analyze(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::IncompleteAssertion { missing, .. }
+                    if missing == &vec!["name".to_string()]
+            ),
+            "expected IncompleteAssertion listing only `name`, got {err:?}"
         );
     }
 

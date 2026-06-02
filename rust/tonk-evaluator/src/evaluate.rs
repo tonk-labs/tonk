@@ -809,8 +809,13 @@ async fn collect_matches<Env: EvaluateEnv>(
         let mut frame = Parameters::new();
         let source = conclusion.source();
         for name in &variable_names {
-            if let Ok(value) = source.lookup(&Term::<dialog_query::Any>::var(name)) {
-                frame.insert(name.clone(), Term::Constant(value));
+            // `lookup` yields a `Binding`; an optional field that
+            // the entity lacks resolves to `Absent` and is simply
+            // omitted from the frame.
+            if let Ok(binding) = source.lookup(&Term::<dialog_query::Any>::var(name))
+                && let Some(value) = binding.as_value()
+            {
+                frame.insert(name.clone(), Term::Constant(value.clone()));
             }
         }
         frames.push(frame);
@@ -1028,7 +1033,7 @@ mod tests {
     /// matches the helper in `effects.rs::tests`. Inlined to
     /// keep tests modules self-contained.
     fn one_text_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -1037,6 +1042,7 @@ mod tests {
                 Some(Type::String),
             ),
         )])
+        .unwrap()
     }
 
     /// Install the `dialog.attribute/*` and `dialog.meta/description`
@@ -3397,6 +3403,219 @@ workspace!:
         assert!(
             bindings.contains("alice"),
             "the ?alice variable should be bound by the query"
+        );
+        Ok(())
+    }
+
+    /// End-to-end: a `concept!` with a `maybe:` block lands the
+    /// optional marker (`dialog.concept.optional/{field}`) on the
+    /// branch for the optional field only — the required `with:`
+    /// field carries none. Proves the notation → analyzer →
+    /// storage round-trip for optionality.
+    #[dialog_common::test]
+    async fn it_persists_optional_marker_for_maybe_field() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let doc = "\
+concept!: &person\n\
+\x20 with:\n\
+\x20   name:\n\
+\x20     the: io.gozala.person/name\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"name\"\n\
+\x20 maybe:\n\
+\x20   nickname:\n\
+\x20     the: io.gozala.person/nickname\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"nickname\"\n";
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit: {e}"))?;
+
+        // The descriptor entity is content-derived; rebuild it the
+        // same way (required name + optional nickname) to find it.
+        let descriptor = ConceptDescriptor::try_from(vec![
+            (
+                "name".to_string(),
+                dialog_query::ConceptFieldDescriptor::required(AttributeDescriptor::new(
+                    the!("io.gozala.person/name"),
+                    "name",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+            (
+                "nickname".to_string(),
+                dialog_query::ConceptFieldDescriptor::optional(AttributeDescriptor::new(
+                    the!("io.gozala.person/nickname"),
+                    "nickname",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+        ])?;
+        let entity = descriptor.this();
+
+        let nickname_the: dialog_query::attribute::The =
+            "dialog.concept.optional/nickname".parse().unwrap();
+        let nickname_markers: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(nickname_the)
+                    .of(Term::from(entity.clone()))
+                    .is(Term::<bool>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            nickname_markers.len(),
+            1,
+            "expected an optional marker for `nickname`; saw {nickname_markers:?}"
+        );
+        assert_eq!(nickname_markers[0].is, Value::Boolean(true));
+
+        let name_the: dialog_query::attribute::The =
+            "dialog.concept.optional/name".parse().unwrap();
+        let name_markers: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(name_the)
+                    .of(Term::from(entity.clone()))
+                    .is(Term::<bool>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            name_markers.is_empty(),
+            "required field `name` must carry no optional marker; saw {name_markers:?}"
+        );
+        Ok(())
+    }
+
+    /// Headline behavior, end to end: a `concept:` query returns
+    /// entities that LACK an optional field (with the field omitted
+    /// from the result), alongside entities that HAVE it (field
+    /// present). Set-widening must not drop the field-less entity.
+    #[dialog_common::test]
+    async fn it_set_widens_optional_field_in_query() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Declare the concept and assert two people in one commit:
+        // alice has a nickname, bob does not.
+        let setup = "\
+concept!: &person\n\
+\x20 with:\n\
+\x20   name:\n\
+\x20     the: io.gozala.person/name\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"name\"\n\
+\x20 maybe:\n\
+\x20   nickname:\n\
+\x20     the: io.gozala.person/nickname\n\
+\x20     as: text\n\
+\x20     cardinality: one\n\
+\x20     description: \"nickname\"\n\
+\n\
+person!:\n\
+\x20 this: id:alice\n\
+\x20 name: \"Alice\"\n\
+\x20 nickname: \"Al\"\n\
+\n\
+person!:\n\
+\x20 this: id:bob\n\
+\x20 name: \"Bob\"\n";
+        let parsed = parse(setup);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "setup parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
+
+        // Query every person.
+        let query_doc = "\
+person:\n\
+\x20 this: ?p\n\
+\x20 name: ?name\n\
+\x20 nickname: ?nick\n";
+        let parsed = parse(query_doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "query parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let query_syntax = parsed.syntax.expect("query syntax");
+        let evaluated = query_syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query evaluate: {e}"))?;
+
+        let results: Vec<&QueryResult> = evaluated
+            .matches
+            .iter()
+            .flat_map(|b| b.results.iter())
+            .collect();
+
+        // Both people come back — the optional field must not filter
+        // bob out.
+        assert_eq!(
+            results.len(),
+            2,
+            "expected both people (set-widening must not drop the nickname-less one); saw {results:?}"
+        );
+
+        let alice = results
+            .iter()
+            .find(|r| r.fields.get("name") == Some(&serde_json::json!("Alice")))
+            .expect("alice row present");
+        let bob = results
+            .iter()
+            .find(|r| r.fields.get("name") == Some(&serde_json::json!("Bob")))
+            .expect("bob row present");
+
+        // Alice has the optional field; bob omits it entirely.
+        assert_eq!(
+            alice.fields.get("nickname"),
+            Some(&serde_json::json!("Al")),
+            "alice's nickname must be present"
+        );
+        assert!(
+            !bob.fields.contains_key("nickname"),
+            "bob lacks the optional field, so it must be omitted; saw {:?}",
+            bob.fields
         );
         Ok(())
     }

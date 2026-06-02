@@ -42,11 +42,15 @@ impl Conclusion {
         for (name, term) in terms.iter() {
             let value = match term {
                 Term::Constant(value) => value_to_ipld(value),
+                // `lookup` yields a `Binding`: a `Present` value, or
+                // `Absent` for an optional field this entity lacks.
+                // Absent fields are simply omitted from the wire
+                // projection.
                 Term::Variable { .. } => conclusion
                     .source()
                     .lookup(&Term::<Any>::var(name.clone()))
                     .ok()
-                    .and_then(|v| value_to_ipld(&v)),
+                    .and_then(|binding| binding.as_value().and_then(value_to_ipld)),
             };
             if let Some(value) = value {
                 fields.insert(name.clone(), value);

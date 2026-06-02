@@ -311,9 +311,23 @@ impl From<DomainApplication> for ConceptQuery {
                 AttributeDescriptor::new(the, "", DialogCardinality::default(), None),
             ));
         }
+        // A descriptor must have at least one required field. A
+        // domain application with only `this` would yield an empty
+        // set, so fall back to a single placeholder field — the
+        // predicate is unused for matching in that degenerate case.
+        if entries.is_empty() {
+            let the: The = format!("{}/_", d.domain)
+                .parse()
+                .expect("domain is a valid attribute prefix");
+            entries.push((
+                "_".to_string(),
+                AttributeDescriptor::new(the, "", DialogCardinality::default(), None),
+            ));
+        }
         ConceptQuery {
             terms: d.parameters,
-            predicate: ConceptDescriptor::from(entries),
+            predicate: ConceptDescriptor::try_from(entries)
+                .expect("non-empty entries yield a valid descriptor"),
         }
     }
 }

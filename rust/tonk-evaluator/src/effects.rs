@@ -485,8 +485,12 @@ async fn fire_effect<Env: InduceEnv>(
         // body.
         let mut parameters = Parameters::new();
         for operand in head.operands() {
-            if let Ok(value) = frame.lookup(&Term::<dialog_query::Any>::var(operand)) {
-                parameters.insert(operand.to_string(), Term::Constant(value));
+            // An optional operand the frame lacks resolves to
+            // `Absent`; omit it so no fact is emitted for it.
+            if let Ok(binding) = frame.lookup(&Term::<dialog_query::Any>::var(operand))
+                && let Some(value) = binding.as_value()
+            {
+                parameters.insert(operand.to_string(), Term::Constant(value.clone()));
             }
         }
 
@@ -727,7 +731,7 @@ mod tests {
     /// A 1-field concept descriptor with a configurable field
     /// type. Helper because tests below build several.
     fn one_field_concept(domain: &str, name: &str, ty: Type) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -736,6 +740,7 @@ mod tests {
                 Some(ty),
             ),
         )])
+        .unwrap()
     }
 
     /// Shorthand for the common String case used by the early
@@ -1470,7 +1475,7 @@ mod tests {
 
         // Both fields are cardinality-many. The bag head field
         // accumulates, so two firings should leave two claims.
-        let cmd = ConceptDescriptor::from(vec![(
+        let cmd = ConceptDescriptor::try_from(vec![(
             "tag",
             AttributeDescriptor::new(
                 "io.gozala.bag-cmd/tag".parse().unwrap(),
@@ -1478,8 +1483,9 @@ mod tests {
                 DialogCardinality::Many,
                 Some(Type::String),
             ),
-        )]);
-        let bag = ConceptDescriptor::from(vec![(
+        )])
+        .unwrap();
+        let bag = ConceptDescriptor::try_from(vec![(
             "tag",
             AttributeDescriptor::new(
                 "io.gozala.bag/tag".parse().unwrap(),
@@ -1487,7 +1493,8 @@ mod tests {
                 DialogCardinality::Many,
                 Some(Type::String),
             ),
-        )]);
+        )])
+        .unwrap();
 
         let mut body_terms = DialogParameters::new();
         body_terms.insert("this".to_string(), Term::var("this"));
