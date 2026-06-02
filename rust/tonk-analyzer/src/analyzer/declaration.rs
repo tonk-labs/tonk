@@ -12,6 +12,7 @@ use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
 use super::scope::Scope;
+use tonk_core::meta::AnchorName;
 use tonk_schema::resolution::AttributeDefinition;
 use tonk_schema::transact::{Application, ThisIntent};
 
@@ -371,7 +372,7 @@ fn resolve_concept_field(
 pub(crate) fn attribute_application(
     descriptor: &AttributeDescriptor,
     entity: &Entity,
-    name: Option<String>,
+    name: Option<AnchorName>,
 ) -> Application {
     let mut terms = Parameters::new();
     terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
@@ -421,7 +422,7 @@ pub(crate) fn attribute_application(
 pub(crate) fn concept_application(
     descriptor: &ConceptDescriptor,
     entity: &Entity,
-    name: Option<String>,
+    name: Option<AnchorName>,
     transient: bool,
 ) -> Application {
     let mut terms = Parameters::new();

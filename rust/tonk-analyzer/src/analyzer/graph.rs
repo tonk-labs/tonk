@@ -44,6 +44,7 @@ use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::rule::{collect_rule_concepts, is_rule_retract_body, parse_rule_this_entity};
 use super::scope::Scope;
 use tonk_core::claim::ConceptDescriptor as DurableConceptDescriptor;
+use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
 use tonk_schema::resolution::{AttributeDefinition as AttrDef, ConceptDefinition as ConceptDef};
 use tonk_schema::transact::{ThisIntent, derive_this};
@@ -455,12 +456,17 @@ impl Graph {
                         .map(|f| f.value_range)
                         .unwrap_or(a.predicate.range);
                     if let Some(name) = &name {
-                        scope.declare(name, entity.clone(), anchor_range)?;
+                        scope.declare(name.as_str(), entity.clone(), anchor_range)?;
                     }
                     if let Some(name) = &variable {
                         scope.bind_variable(name, entity.clone(), variable_range)?;
                     }
-                    scope.record_attribute(name.as_deref().or(variable.as_deref()), attribute);
+                    scope.record_attribute(
+                        name.as_ref()
+                            .map(AnchorName::as_str)
+                            .or(variable.as_deref()),
+                        attribute,
+                    );
                     let application = attribute_application(&plan.descriptor, &entity, name);
                     declared.insert(
                         pending.index,
@@ -500,12 +506,17 @@ impl Graph {
                         .map(|f| f.value_range)
                         .unwrap_or(a.predicate.range);
                     if let Some(name) = &name {
-                        scope.declare(name, entity.clone(), anchor_range)?;
+                        scope.declare(name.as_str(), entity.clone(), anchor_range)?;
                     }
                     if let Some(name) = &variable {
                         scope.bind_variable(name, entity.clone(), variable_range)?;
                     }
-                    scope.record_concept(name.as_deref().or(variable.as_deref()), concept);
+                    scope.record_concept(
+                        name.as_ref()
+                            .map(AnchorName::as_str)
+                            .or(variable.as_deref()),
+                        concept,
+                    );
                     let inline_attributes = plan
                         .inline_attributes
                         .into_iter()

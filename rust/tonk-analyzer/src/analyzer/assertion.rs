@@ -15,6 +15,7 @@ use super::field::{field_value_to_term, is_meta_field, validate_claim_attribute}
 use super::scope::Scope;
 use crate::analyzer::Working;
 use tonk_core::claim::ValueMap;
+use tonk_core::meta::AnchorName;
 use tonk_schema::prelude::EntityExt;
 use tonk_schema::transact::{Application, DomainApplication, ThisIntent, derive_this};
 
@@ -366,8 +367,25 @@ pub(crate) fn derive_head_intent(
     fields: &[Field],
     anchor: Option<&Anchor>,
     scope: &Scope,
-) -> Result<(ThisIntent, Option<String>), AnalyzeError> {
-    let name = anchor.map(|a| a.name.clone());
+) -> Result<(ThisIntent, Option<AnchorName>), AnalyzeError> {
+    // The anchor desugars to a `dialog.meta/name` claim on
+    // `id:<name>`. Validate it into an `AnchorName` here — the one
+    // place the name is parsed — so a name that can't be published
+    // surfaces as a clear error rather than being silently dropped at
+    // write time. Everything downstream converts to the entity
+    // infallibly.
+    let name = match anchor {
+        None => None,
+        Some(anchor) => Some(AnchorName::try_from(anchor.name.as_str()).map_err(|e| {
+            AnalyzeError::at(
+                AnalyzeErrorKind::InvalidAnchorName {
+                    name: e.name,
+                    reason: e.reason,
+                },
+                anchor.range,
+            )
+        })?),
+    };
     let this = match fields.iter().find(|f| f.name == "this") {
         None => ThisIntent::Derived,
         Some(field) => match &field.value {
@@ -444,7 +462,7 @@ pub(crate) fn derive_head_intent(
 ///   the "publish a name pointing at an existing entity" form.
 fn this_term_for_assertion(
     this: &ThisIntent,
-    name: &Option<String>,
+    name: &Option<AnchorName>,
     fields: &[Field],
     predicate_entity: &Entity,
     scope: &Scope,
@@ -455,15 +473,18 @@ fn this_term_for_assertion(
         ThisIntent::Derived => {
             let entity = derive_this(predicate_entity, &body_digest(fields, scope)?);
             if let Some(name) = name {
-                if let Some(prior) = analysis.declarations.get(name)
+                let key = name.as_str();
+                if let Some(prior) = analysis.declarations.get(key)
                     && prior != &entity
                 {
                     return Err(AnalyzeError::at(
-                        AnalyzeErrorKind::DuplicateName { name: name.clone() },
+                        AnalyzeErrorKind::DuplicateName {
+                            name: key.to_owned(),
+                        },
                         name_range,
                     ));
                 }
-                analysis.declarations.insert(name.clone(), entity.clone());
+                analysis.declarations.insert(key.to_owned(), entity.clone());
             }
             Term::Constant(Value::Entity(entity))
         }

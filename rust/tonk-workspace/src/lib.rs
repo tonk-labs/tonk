@@ -30,9 +30,17 @@ use tonk_core::claim::TransactRequest;
 pub static BOOTSTRAP: LazyLock<TransactRequest> =
     LazyLock::new(|| tonk_macros::claim!("bootstrap.yaml"));
 
+/// The `rule!:` installs from `bootstrap.yaml`, lifted at compile
+/// time by `effects!`. Rules have no [`TransactRequest`] shape (the
+/// `Claim` wire can't carry `dialog.effect/*` triples), so the shell
+/// asserts these alongside the [`BOOTSTRAP`] claims when seeding the
+/// repository — the seam that makes interactive tab selection live.
+pub static RULES: LazyLock<Vec<tonk_schema::rule::Rule>> =
+    LazyLock::new(|| tonk_macros::effects!("bootstrap.yaml"));
+
 #[cfg(test)]
 mod tests {
-    use super::BOOTSTRAP;
+    use super::{BOOTSTRAP, RULES};
 
     // Run wasm32 tests in the browser (ChromeDriver), matching the
     // sibling tonk-* crates. Without this the default wasm-bindgen
@@ -48,6 +56,19 @@ mod tests {
         assert!(
             !BOOTSTRAP.claims.is_empty(),
             "bootstrap should lower to at least one claim",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_lifts_the_activate_sheet_rule() {
+        // The `rule!:` install is lifted out-of-band by `effects!`
+        // (rules have no TransactRequest shape). Tab selection is
+        // inert without it, so the bootstrap must carry the rule.
+        assert_eq!(
+            RULES.len(),
+            1,
+            "expected the activate-sheet rule to lift, got {}",
+            RULES.len(),
         );
     }
 
@@ -81,12 +102,12 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_accumulates_every_stop_on_the_trip() {
+    fn it_accumulates_every_stop_on_the_itinerary() {
         use tonk_core::claim::Claim;
-        // The trip is asserted once per stop (a field value can't be
-        // a list in notation, and `stop` is cardinality-many). Each
-        // assertion adds one stop, so the bootstrap must carry a
-        // distinct `stop` value for all seven wireframe stops.
+        // The itinerary trip is asserted once per stop (a field value
+        // can't be a list, and `stop` is cardinality-many). Counting
+        // the `stop` values on the itinerary entity must total all
+        // seven wireframe stops.
         let mut stops: Vec<String> = BOOTSTRAP
             .claims
             .iter()
@@ -94,6 +115,10 @@ mod tests {
                 let Claim::Assert(app) = claim else {
                     return None;
                 };
+                let this = app.parameters.get("this").map(|v| format!("{v:?}"))?;
+                if !this.contains("tonk-workspace/itinerary") {
+                    return None;
+                }
                 app.parameters.get("stop").map(|v| format!("{v:?}"))
             })
             .collect();
@@ -102,7 +127,32 @@ mod tests {
         assert_eq!(
             stops.len(),
             7,
-            "expected seven distinct stops on the trip, got {stops:?}",
+            "expected seven distinct stops on the itinerary, got {stops:?}",
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_collects_the_workspace_sheets() {
+        use tonk_core::claim::Claim;
+        // The demo workspace is asserted once per sheet (cardinality
+        // -many `sheet`), so the bootstrap must carry both distinct
+        // sheet members for the tab strip to render.
+        let mut sheets: Vec<String> = BOOTSTRAP
+            .claims
+            .iter()
+            .filter_map(|claim| {
+                let Claim::Assert(app) = claim else {
+                    return None;
+                };
+                app.parameters.get("sheet").map(|v| format!("{v:?}"))
+            })
+            .collect();
+        sheets.sort();
+        sheets.dedup();
+        assert_eq!(
+            sheets.len(),
+            2,
+            "expected two workspace sheets, got {sheets:?}",
         );
     }
 }

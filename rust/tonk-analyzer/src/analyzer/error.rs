@@ -260,6 +260,20 @@ pub enum AnalyzeErrorKind {
         /// Underlying parse error.
         reason: String,
     },
+    /// An `&anchor` name doesn't form a valid `id:<name>` entity
+    /// URI. The anchor desugars to a `dialog.meta/name` claim on
+    /// `id:<name>`; if that URI can't be built the name could never
+    /// be published or resolved. Caught here so it's a clear error
+    /// rather than a silently-dropped name at write time.
+    #[error(
+        "anchor name {name:?} can't be published — `id:{name}` is not a valid entity URI: {reason}"
+    )]
+    InvalidAnchorName {
+        /// The anchor name written after `&`.
+        name: String,
+        /// Underlying `id:<name>` parse error.
+        reason: String,
+    },
     /// Assertion body had no fields — nothing to write.
     #[error("assertion `{head}!` has no fields — at least one is required")]
     AssertionWithoutFields {
@@ -442,6 +456,7 @@ impl AnalyzeErrorKind {
             Self::NameShadowing { .. } => "E_NAME_SHADOWING",
             Self::UnboundMutationVariable { .. } => "E_UNBOUND_MUTATION_VARIABLE",
             Self::InvalidSubjectUri { .. } => "E_INVALID_SUBJECT_URI",
+            Self::InvalidAnchorName { .. } => "E_INVALID_ANCHOR_NAME",
             Self::AssertionWithoutFields { .. } => "E_ASSERTION_WITHOUT_FIELDS",
             Self::InvalidAttributeBody { .. } => "E_INVALID_ATTRIBUTE_BODY",
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",

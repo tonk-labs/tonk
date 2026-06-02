@@ -145,6 +145,22 @@ impl Rule {
     pub fn this(&self) -> Entity {
         self.this.clone()
     }
+
+    /// The exact `dialog.effect/source` string (JSON-encoded
+    /// [`InductiveRuleDescriptor`]). Paired with [`Rule::polarity`]
+    /// this round-trips through
+    /// [`Effect::from_source`](tonk_core::effect::Effect::from_source),
+    /// so a rule can be embedded as `(source, polarity, this)` and
+    /// rebuilt at runtime — the carrier the `effects!` macro emits.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// The polarity tag (`assert` / `retract`) carried on
+    /// `dialog.effect/polarity`.
+    pub fn polarity(&self) -> EffectPolarity {
+        self.polarity
+    }
 }
 
 impl dialog_artifacts::Statement for Rule {

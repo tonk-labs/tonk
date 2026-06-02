@@ -3,7 +3,7 @@ use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker::{
-    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
+    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EffectSource, EvaluateResponse,
     IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
     RepositoryConfiguration, RepositoryInfo, SyncResponse,
 };
@@ -155,7 +155,15 @@ pub async fn init() -> Result<String, TonkUiError> {
                 // concepts (pinned to `tonk:view`/`tonk:artifact`)
                 // plus demo artifacts. `bootstrap` merges, so this
                 // folds in alongside the board schema.
-                .bootstrap(tonk_workspace::BOOTSTRAP.clone()),
+                .bootstrap(tonk_workspace::BOOTSTRAP.clone())
+                // The workspace's inductive rules (e.g. activate-sheet
+                // tab selection) ride as their (source, polarity)
+                // carriers — rules have no TransactRequest shape — and
+                // are rebuilt + asserted in the repository seed loop.
+                .rules(tonk_workspace::RULES.iter().map(|rule| EffectSource {
+                    source: rule.source().to_owned(),
+                    polarity: rule.polarity().as_str().to_owned(),
+                })),
         );
 
     let response = reqwest::Client::new()

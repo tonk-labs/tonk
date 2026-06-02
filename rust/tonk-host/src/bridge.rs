@@ -102,6 +102,40 @@ pub async fn subscribe(body: &Ipld) -> Result<Subscription, ErrorDetail> {
     })
 }
 
+/// Open a bridge subscription as a uniform **frame stream** plus a
+/// teardown closure for [`crate::sse::Subscription`].
+///
+/// Each `tonk.subscribe` value is a parsed conclusion batch; we
+/// re-stringify it so the frame shape matches the fetch path (raw
+/// JSON string). The teardown cancels the underlying
+/// `ReadableStream`, which posts the `unsubscribe` envelope to the
+/// SW. Cancelling resolves the reader's pending `read()` with
+/// `done = true`, so the stream ends without yielding an error.
+pub(crate) async fn frame_stream(
+    body: &Ipld,
+) -> Result<
+    (
+        futures::stream::LocalBoxStream<'static, Result<String, ErrorDetail>>,
+        impl FnOnce() + 'static,
+    ),
+    ErrorDetail,
+> {
+    use futures::StreamExt as _;
+
+    let subscription = std::rc::Rc::new(subscribe(body).await?);
+    let teardown_handle = subscription.clone();
+    let frames = futures::stream::unfold(subscription, |sub| async move {
+        match sub.next().await {
+            Ok(Some(frame)) => Some((Ok(frame), sub)),
+            Ok(None) => None,
+            Err(e) => Some((Err(e), sub)),
+        }
+    })
+    .boxed_local();
+    let teardown = move || teardown_handle.cancel();
+    Ok((frames, teardown))
+}
+
 /// A live subscription. `next` yields one frame as its raw JSON
 /// string; `Ok(None)` signals the stream closed normally. Dropping
 /// the value cancels the stream and posts an `unsubscribe` envelope.

@@ -1312,7 +1312,7 @@ rule!:\n\
             ConceptDescriptor as DurableConceptDescriptor, PredicateApplication, ValueMap,
         };
         use tonk_schema::transact::{
-            Application, ApplicationPlan, ConceptPlan, Statement, application_plan_from_predicate,
+            Application, ApplicationPlan, Statement, application_plan_from_predicate,
         };
 
         let fixture = new_fixture().await;
@@ -1351,10 +1351,10 @@ view!:\n\
             name: None,
         });
         let wire_this = {
-            let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &wire_plan else {
+            let ApplicationPlan::Concept(plan) = &wire_plan else {
                 panic!("expected concept plan");
             };
-            match statement.terms.get("this").expect("this present") {
+            match plan.statement.terms.get("this").expect("this present") {
                 dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
                 other => panic!("expected entity constant, got {other:?}"),
             }
@@ -1385,7 +1385,7 @@ view!:\n\
             ConceptDescriptor as DurableConceptDescriptor, PredicateApplication, ValueMap,
         };
         use tonk_schema::transact::{
-            Application, ApplicationPlan, ConceptPlan, Statement, application_plan_from_predicate,
+            Application, ApplicationPlan, Statement, application_plan_from_predicate,
         };
 
         let fixture = new_fixture().await;
@@ -1447,10 +1447,10 @@ view!:\n\
             name: None,
         });
         let wire_this = {
-            let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &wire_plan else {
+            let ApplicationPlan::Concept(plan) = &wire_plan else {
                 panic!("expected concept plan");
             };
-            match statement.terms.get("this").expect("this present") {
+            match plan.statement.terms.get("this").expect("this present") {
                 dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
                 other => panic!("expected entity constant, got {other:?}"),
             }

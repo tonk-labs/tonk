@@ -72,18 +72,28 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
 }
 
 /// Open an SSE subscription against `url`, sending `body` as the
-/// JSON request body. The future resolves once the initial fetch
-/// succeeds; subsequent frames flow through `on_frame`. Cancel by
-/// calling `.abort()` on the returned `AbortController`.
+/// JSON request body, and return it as a uniform **frame stream**
+/// plus a teardown closure for [`crate::sse::Subscription`].
 ///
-/// Errors during streaming are reported via `on_error`; the future
-/// returns `Err` only for the initial fetch failure.
-pub(crate) async fn open_sse(
+/// The future resolves once the initial fetch succeeds (so an
+/// initial failure is an `Err` here, not a stream item). Each stream
+/// item is one complete SSE frame's JSON payload, or a transport
+/// error. The teardown aborts the in-flight fetch; the
+/// [`crate::sse::Subscription`] reader stops on its drop signal
+/// before the resulting abort-rejected read is observed, and the
+/// `is_abort_error` filter below drops any abort rejection that still
+/// races through — so a deliberate teardown never yields an error
+/// item.
+pub(crate) async fn frame_stream(
     url: &str,
     body: &str,
-    on_frame: impl FnMut(&str) + 'static,
-    on_error: impl FnMut(ErrorDetail) + 'static,
-) -> Result<AbortController, ErrorDetail> {
+) -> Result<
+    (
+        futures::stream::LocalBoxStream<'static, Result<String, ErrorDetail>>,
+        impl FnOnce() + 'static,
+    ),
+    ErrorDetail,
+> {
     ready::wait().await;
     let abort = AbortController::new()
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("AbortController: {e:?}")))?;
@@ -123,52 +133,86 @@ pub(crate) async fn open_sse(
     let body_stream = resp
         .body()
         .ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "response has no body stream"))?;
-    let stream = ReadableStream::from_raw(body_stream).into_stream();
-    spawn_reader(stream, on_frame, on_error);
-    Ok(abort)
+    let byte_stream = ReadableStream::from_raw(body_stream).into_stream();
+    let frames = sse_frames(byte_stream).boxed_local();
+    let teardown = move || abort.abort();
+    Ok((frames, teardown))
 }
 
-fn spawn_reader(
-    mut stream: impl futures::Stream<Item = Result<JsValue, JsValue>> + Unpin + 'static,
-    mut on_frame: impl FnMut(&str) + 'static,
-    mut on_error: impl FnMut(ErrorDetail) + 'static,
-) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let mut buffer = BytesMut::new();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(value) => {
-                    let array: Uint8Array = match value.dyn_into() {
-                        Ok(a) => a,
-                        Err(_) => continue,
-                    };
-                    buffer.extend_from_slice(&array.to_vec());
-                    drain_frames(&mut buffer, &mut on_frame);
+/// Adapt a raw byte stream of SSE bytes into a stream of complete
+/// frame payloads. Buffers across chunks, splits on `\n\n`, strips
+/// the `data:` prefix. A read that fails because we aborted the
+/// fetch ourselves (`AbortError`) ends the stream silently; any
+/// other read failure is forwarded as a transport error.
+fn sse_frames(
+    byte_stream: impl futures::Stream<Item = Result<JsValue, JsValue>> + Unpin + 'static,
+) -> impl futures::Stream<Item = Result<String, ErrorDetail>> {
+    let state = (
+        byte_stream,
+        BytesMut::new(),
+        std::collections::VecDeque::new(),
+    );
+    futures::stream::unfold(
+        state,
+        |(mut byte_stream, mut buffer, mut ready)| async move {
+            loop {
+                // Drain any already-buffered complete frames first.
+                if let Some(frame) = ready.pop_front() {
+                    return Some((Ok(frame), (byte_stream, buffer, ready)));
                 }
-                Err(e) => {
-                    on_error(ErrorDetail::new(
-                        ErrorKind::Network,
-                        format!("stream read failed: {e:?}"),
-                    ));
-                    break;
+                match byte_stream.next().await {
+                    Some(Ok(value)) => {
+                        if let Ok(array) = value.dyn_into::<Uint8Array>() {
+                            buffer.extend_from_slice(&array.to_vec());
+                            collect_frames(&mut buffer, &mut ready);
+                        }
+                        // Loop to emit a newly-completed frame (or read more).
+                    }
+                    Some(Err(e)) => {
+                        if is_abort_error(&e) {
+                            // Deliberate teardown — end the stream cleanly.
+                            return None;
+                        }
+                        return Some((
+                            Err(ErrorDetail::new(
+                                ErrorKind::Network,
+                                format!("stream read failed: {e:?}"),
+                            )),
+                            (byte_stream, buffer, ready),
+                        ));
+                    }
+                    None => return None,
                 }
             }
-        }
-    });
+        },
+    )
+}
+
+/// True when a rejected stream read is the `AbortError` raised by
+/// our own `AbortController::abort()` (the subscription was torn
+/// down deliberately), rather than a real transport failure.
+///
+/// An aborted `fetch` body read rejects with a `DOMException` whose
+/// `name` is `"AbortError"`. We match on that name; anything else
+/// (or a non-exception value) is treated as a genuine error.
+fn is_abort_error(value: &JsValue) -> bool {
+    value
+        .dyn_ref::<web_sys::DomException>()
+        .is_some_and(|exception| exception.name() == "AbortError")
 }
 
 /// Pull every complete SSE event (terminated by `\n\n`) out of
 /// `buffer`, strip its `data: ` prefix, and invoke `on_frame` with
 /// the inner JSON. Whatever bytes are left after the last `\n\n`
 /// stay in the buffer for the next chunk.
-fn drain_frames(buffer: &mut BytesMut, on_frame: &mut impl FnMut(&str)) {
+fn collect_frames(buffer: &mut BytesMut, out: &mut std::collections::VecDeque<String>) {
     while let Some(idx) = find_double_newline(buffer) {
         let frame = buffer.split_to(idx);
         let _ = buffer.split_to(2); // discard "\n\n"
         if let Ok(text) = std::str::from_utf8(&frame)
             && let Some(payload) = strip_sse_data_prefix(text)
         {
-            on_frame(payload);
+            out.push_back(payload.to_owned());
         }
     }
 }

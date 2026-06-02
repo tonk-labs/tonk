@@ -228,6 +228,7 @@ pub async fn join(
                     upstream: Some(UpstreamConfiguration::new(DEFAULT_REMOTE, DEFAULT_BRANCH)),
                     revision: None,
                     bootstrap: None,
+                    rules: Vec::new(),
                 },
             );
     } else {
