@@ -1048,15 +1048,17 @@ mod tests {
         }
     }
 
-    // Carousel mode (empty `view` attribute): many views share a
-    // model, so each slide keys off its own view entity URI.
+    // Each slide keys off its own view entity URI (`this`), paired
+    // with the view's `display` template. The model-constrained
+    // query resolves to one row in the common case, but the keying
+    // is uniform regardless of how many rows arrive.
     #[dialog_common::test]
-    fn it_keys_carousel_slides_by_view_entity() {
+    fn it_keys_slides_by_view_entity() {
         let rows = vec![
             view_row("did:key:zViewA", Some("<p>A</p>")),
             view_row("did:key:zViewB", Some("<p>B</p>")),
         ];
-        let keyed = slide_keys("", rows);
+        let keyed = slide_keys(rows);
         assert_eq!(keyed.len(), 2);
         assert_eq!(
             keyed.get("did:key:zViewA").map(String::as_str),
@@ -1068,25 +1070,11 @@ mod tests {
         );
     }
 
-    // Single mode: the subscription is pinned to one view entity, so
-    // the slide keys off the `view` attribute, not the entity URI.
-    #[dialog_common::test]
-    fn it_keys_the_single_slide_by_the_view_attribute() {
-        let rows = vec![view_row("did:key:zView", Some("<p>only</p>"))];
-        let keyed = slide_keys("book-dashboard", rows);
-        assert_eq!(keyed.len(), 1);
-        assert_eq!(
-            keyed.get("book-dashboard").map(String::as_str),
-            Some("<p>only</p>"),
-        );
-        assert!(!keyed.contains_key("did:key:zView"));
-    }
-
     // A frame row with no `display` field can't render; it's dropped
     // rather than producing a blank slide.
     #[dialog_common::test]
     fn it_drops_a_frame_row_with_no_display_field() {
         let rows = vec![view_row("did:key:zView", None)];
-        assert!(slide_keys("", rows).is_empty());
+        assert!(slide_keys(rows).is_empty());
     }
 }
