@@ -189,15 +189,15 @@ pub(crate) fn build_assertion_application(
                         retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
                     }
                     None => {
-                        // Field not mentioned. Behavior depends
-                        // on the rest-marker:
-                        //   - With `..: _`: retract (alongside
-                        //     other unnamed fields)
-                        //   - Without: leave blank on assert
-                        //     side, blank on retract side
-                        let blank = Term::<dialog_query::Any>::blank();
-                        assert_terms.insert(field_name.into(), blank.clone());
-                        retract_terms.insert(field_name.into(), blank);
+                        // Field not mentioned. It is omitted from the
+                        // assert side entirely — a partial assertion to
+                        // an existing entity touches only the fields it
+                        // names, leaving the rest alone. (Carrying a
+                        // blank here would be rejected by the wire-claim
+                        // lowering, which only accepts concrete values.)
+                        // The retract side still blanks it so a `..: _`
+                        // rest-retraction can sweep it.
+                        retract_terms.insert(field_name.into(), Term::<dialog_query::Any>::blank());
                         if has_rest_retraction {
                             any_retract = true;
                         }

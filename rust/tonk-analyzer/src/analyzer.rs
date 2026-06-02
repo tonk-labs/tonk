@@ -1467,6 +1467,57 @@ person!:
         }
     }
 
+    /// A partial assertion to a concrete-URI entity sets only the
+    /// fields it names; unmentioned fields are omitted from the
+    /// assert (not carried as blanks), so the claim lowers cleanly
+    /// to the wire — a blank would be rejected by wire lowering.
+    /// This is what lets one entity accumulate a cardinality-many
+    /// field across several assertions without repeating its other
+    /// fields each time.
+    #[dialog_common::test]
+    async fn it_omits_unmentioned_fields_on_a_partial_assert() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let tree = analyze_with(&syntax, &resolver).await.unwrap();
+        let analysis = flat(tree.clone());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept) for the partial assertion");
+        };
+        // `this` and the named `name` are present; the unmentioned
+        // `age` is omitted entirely.
+        assert!(matches!(
+            q.terms.get("this"),
+            Some(Term::Constant(Value::Entity(_)))
+        ));
+        assert!(matches!(
+            q.terms.get("name"),
+            Some(Term::Constant(Value::String(_)))
+        ));
+        assert!(
+            q.terms.get("age").is_none(),
+            "unmentioned `age` should be omitted from the assert, got {:?}",
+            q.terms.get("age"),
+        );
+        // And it lowers to a wire claim without a NonConstantTerm error.
+        tree.analysis
+            .lower_to_claims()
+            .expect("partial assertion lowers to a wire claim");
+    }
+
     /// A bare integer literal written into an `unsigned-integer`
     /// field is schema-coerced to `Value::UnsignedInt`. The
     /// notation parser always parses `0` as a signed
