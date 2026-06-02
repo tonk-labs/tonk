@@ -711,6 +711,7 @@ mod tests {
     use dialog_query::{ConceptDescriptor, Term, the};
     use dialog_repository::Branch;
     use dialog_repository::helpers::{test_operator_with_profile, test_repo};
+    use tonk_core::meta::AnchorName;
     use tonk_notation::parse;
     use tonk_schema::concept::AnonymousConcept;
 
@@ -1203,7 +1204,7 @@ concept!: &person
         else {
             panic!("expected Assert(Concept) for concept");
         };
-        assert_eq!(name.as_deref(), Some("person"));
+        assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
     }
 
     /// A bare symbol in field-value position resolves through the
@@ -1329,7 +1330,7 @@ attribute!: &person-name
             panic!("expected Assert(Concept)");
         };
         assert!(query.terms.get("name").is_none());
-        assert_eq!(name.as_deref(), Some("person-name"));
+        assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person-name"));
     }
 
     /// Two meta heads of different kinds (`attribute!` and
@@ -1828,7 +1829,7 @@ person!: &alice
         else {
             panic!("expected Assert(Concept)");
         };
-        assert_eq!(name.as_deref(), Some("alice"));
+        assert_eq!(name.as_ref().map(AnchorName::as_str), Some("alice"));
         assert!(matches!(this, ThisIntent::Derived));
     }
 
@@ -1856,7 +1857,7 @@ person!: &alice
         else {
             panic!("expected Assert(Concept)");
         };
-        assert_eq!(name.as_deref(), Some("alice"));
+        assert_eq!(name.as_ref().map(AnchorName::as_str), Some("alice"));
         match this {
             ThisIntent::Uri(e) => assert!(e.to_string().starts_with("did:key:")),
             other => panic!("expected ThisIntent::Uri, got {other:?}"),
@@ -1895,7 +1896,7 @@ person!: &latest-alice
         else {
             panic!("expected Assert(Concept)");
         };
-        assert_eq!(name.as_deref(), Some("latest-alice"));
+        assert_eq!(name.as_ref().map(AnchorName::as_str), Some("latest-alice"));
         assert!(matches!(this, ThisIntent::Variable(s) if s == "alice"));
         assert!(analysis.mutate.requires.contains("alice"));
     }
@@ -2453,7 +2454,7 @@ view!:
             ConceptDescriptor as WireDescriptor, PredicateApplication, ValueMap,
         };
         use tonk_schema::transact::{
-            ApplicationPlan, ConceptPlan, application_plan_from_predicate, derive_this,
+            ApplicationPlan, application_plan_from_predicate, derive_this,
         };
 
         let pinned: Entity = "tonk:view".parse().unwrap();
@@ -2482,10 +2483,10 @@ view!:
             parameters: params_with_this,
             name: None,
         });
-        let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &plan else {
+        let ApplicationPlan::Concept(plan) = &plan else {
             panic!("expected concept plan");
         };
-        let wire_this = match statement.terms.get("this").expect("this present") {
+        let wire_this = match plan.statement.terms.get("this").expect("this present") {
             dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
             other => panic!("expected entity constant, got {other:?}"),
         };
@@ -2503,10 +2504,10 @@ view!:
             parameters: params_no_this,
             name: None,
         });
-        let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &plan else {
+        let ApplicationPlan::Concept(plan) = &plan else {
             panic!("expected concept plan");
         };
-        let wire_this_no_pin = match statement.terms.get("this").expect("this present") {
+        let wire_this_no_pin = match plan.statement.terms.get("this").expect("this present") {
             dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
             other => panic!("expected entity constant, got {other:?}"),
         };
@@ -2761,7 +2762,11 @@ concept!: &person
                     "statement {i} (inline attr) should publish no name"
                 );
             } else {
-                assert_eq!(name.as_deref(), Some("person"), "concept itself anchored");
+                assert_eq!(
+                    name.as_ref().map(AnchorName::as_str),
+                    Some("person"),
+                    "concept itself anchored"
+                );
             }
         }
     }

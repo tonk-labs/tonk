@@ -34,7 +34,7 @@ use crate::rule::Rule;
 use indexmap::IndexMap;
 use serde::Serialize;
 use tonk_core::claim::{ConceptDescriptor, PredicateApplication, ValueMap};
-use tonk_core::meta::{Name, name};
+use tonk_core::meta::{AnchorName, Name, name};
 
 /// Project a wire-format [`PredicateApplication`] into the
 /// concept-shaped [`ApplicationPlan`] the dialog emitter consumes.
@@ -62,13 +62,13 @@ pub fn application_plan_from_predicate(application: PredicateApplication) -> App
     for (key, value) in parameters {
         terms.insert(key, Term::Constant(value));
     }
-    ApplicationPlan::Concept(ConceptPlan {
+    ApplicationPlan::Concept(Box::new(ConceptPlan {
         statement: ConceptQuery {
             terms,
             predicate: descriptor,
         },
         name,
-    })
+    }))
 }
 
 /// Hash a `(predicate, payload)` pair to the entity URI that
@@ -147,7 +147,7 @@ pub enum Application {
         /// `&anchor` on the value side, if any. The planner
         /// emits a desugared `name!` assertion against `id:<n>`
         /// for each `Some(n)`.
-        name: Option<String>,
+        name: Option<AnchorName>,
     },
     /// `xyz.tonk …:` head — claim domain with applied terms;
     /// descriptor is synthesized at planning time from
@@ -158,7 +158,7 @@ pub enum Application {
         /// Where the entity in `parameters["this"]` comes from.
         this: ThisIntent,
         /// `&anchor` on the value side, if any.
-        name: Option<String>,
+        name: Option<AnchorName>,
     },
     /// `rule!:` head — an installed or to-be-installed rule.
     /// Distinct from `Concept` because a rule's storage shape is
@@ -215,7 +215,9 @@ impl Application {
     /// `&anchor`, so always `None` for [`Application::Rule`].
     pub fn name(&self) -> Option<&str> {
         match self {
-            Self::Concept { name, .. } | Self::Domain { name, .. } => name.as_deref(),
+            Self::Concept { name, .. } | Self::Domain { name, .. } => {
+                name.as_ref().map(AnchorName::as_str)
+            }
             Self::Rule { .. } => None,
         }
     }
@@ -349,16 +351,16 @@ impl Planner for Application {
 
     fn plan(self, bindings: &Parameters) -> Result<ApplicationPlan, PlanError> {
         match self {
-            Self::Concept { query, name, .. } => Ok(ApplicationPlan::Concept(ConceptPlan {
+            Self::Concept { query, name, .. } => Ok(ApplicationPlan::Concept(Box::new(ConceptPlan {
                 statement: substitute_concept_query(query, bindings)?,
                 name,
-            })),
+            }))),
             Self::Domain {
                 application, name, ..
-            } => Ok(ApplicationPlan::Concept(ConceptPlan {
+            } => Ok(ApplicationPlan::Concept(Box::new(ConceptPlan {
                 statement: substitute_concept_query(ConceptQuery::from(application), bindings)?,
                 name,
-            })),
+            }))),
             Self::Rule { rule, .. } => Ok(ApplicationPlan::Rule(rule)),
         }
     }
@@ -376,7 +378,11 @@ impl Planner for Application {
 /// shape.
 pub enum ApplicationPlan {
     /// Per-attribute concept storage (concept / domain / built-in).
-    Concept(ConceptPlan),
+    /// Boxed to keep the enum small: [`ConceptPlan`] now carries the
+    /// validated published-name [`Entity`], which (alongside the
+    /// `Rule` variant) would otherwise leave a large size gap between
+    /// variants.
+    Concept(Box<ConceptPlan>),
     /// `dialog.effect/*` rule storage. Boxed because [`Rule`]'s
     /// embedded [`InductiveRule`] would otherwise inflate every
     /// concept-shaped plan to rule-storage size.
@@ -395,7 +401,7 @@ pub struct ConceptPlan {
     pub statement: ConceptQuery,
     /// `&name` published by this expression, if any. Triggers
     /// the desugared `name!` assertion against `id:<name>`.
-    pub name: Option<String>,
+    pub name: Option<AnchorName>,
 }
 
 impl ArtifactsStatement for ApplicationPlan {
@@ -416,11 +422,11 @@ impl ArtifactsStatement for ApplicationPlan {
 impl ArtifactsStatement for ConceptPlan {
     fn assert(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, true);
-        emit_name_assertion(self.name.as_deref(), &self.statement.terms, update, true);
+        emit_name_assertion(self.name.as_ref(), &self.statement.terms, update, true);
     }
     fn retract(self, update: &mut impl Update) {
         emit_predicate_facts(&self.statement, update, false);
-        emit_name_assertion(self.name.as_deref(), &self.statement.terms, update, false);
+        emit_name_assertion(self.name.as_ref(), &self.statement.terms, update, false);
     }
 }
 
@@ -455,24 +461,23 @@ fn entity_of_this(terms: &Parameters) -> Option<Entity> {
 /// keeps a hypothetical bad case from poisoning the surrounding
 /// transaction.
 fn emit_name_assertion<U: Update>(
-    name: Option<&str>,
+    name: Option<&AnchorName>,
     terms: &Parameters,
     update: &mut U,
     assert: bool,
 ) {
     use dialog_artifacts::Statement as _;
 
-    let Some(name_str) = name else {
+    let Some(name) = name else {
         return;
     };
     let Some(target) = entity_of_this(terms) else {
         return;
     };
-    let Ok(id_entity) = format!("id:{name_str}").parse::<Entity>() else {
-        return;
-    };
+    // The `id:<name>` entity was validated when the `AnchorName` was
+    // built, so this conversion is infallible — no re-parse, no skip.
     let claim = Name {
-        this: id_entity,
+        this: name.into(),
         entity: name::Referent(target),
     };
     if assert {
@@ -597,13 +602,13 @@ mod tests {
         let mut terms = Parameters::new();
         terms.insert("this".into(), Term::Constant(Value::Entity(target_entity)));
         terms.insert("name".into(), Term::Constant(Value::String("x".into())));
-        ApplicationPlan::Concept(ConceptPlan {
+        ApplicationPlan::Concept(Box::new(ConceptPlan {
             statement: ConceptQuery {
                 terms,
                 predicate: descriptor,
             },
-            name: Some(anchor_name.into()),
-        })
+            name: Some(AnchorName::try_from(anchor_name).expect("valid anchor name in test")),
+        }))
     }
 
     /// A cardinality-one `unsigned-integer` field (the column
@@ -624,13 +629,13 @@ mod tests {
         let mut terms = Parameters::new();
         terms.insert("this".into(), Term::Constant(Value::Entity(target.clone())));
         terms.insert("width".into(), Term::Constant(Value::UnsignedInt(12)));
-        let plan = ApplicationPlan::Concept(ConceptPlan {
+        let plan = ApplicationPlan::Concept(Box::new(ConceptPlan {
             statement: ConceptQuery {
                 terms,
                 predicate: descriptor,
             },
             name: None,
-        });
+        }));
 
         let mut changes = Changes::new();
         plan.assert(&mut changes);
@@ -733,13 +738,13 @@ mod tests {
         let mut terms = Parameters::new();
         terms.insert("this".into(), Term::Constant(Value::Entity(target)));
         terms.insert("name".into(), Term::Constant(Value::String("x".into())));
-        let plan = ApplicationPlan::Concept(ConceptPlan {
+        let plan = ApplicationPlan::Concept(Box::new(ConceptPlan {
             statement: ConceptQuery {
                 terms,
                 predicate: descriptor,
             },
             name: None,
-        });
+        }));
 
         let mut changes = Changes::new();
         plan.assert(&mut changes);

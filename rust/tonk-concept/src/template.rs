@@ -276,9 +276,37 @@ pub fn build_plan_nodes(bindings: Vec<Binding>) -> Vec<PlanNode> {
     let mut iter_roots: Vec<(String, Vec<usize>)> = Vec::new();
     for (field, hosts) in field_hosts {
         let lca = longest_common_path_prefix(&hosts);
-        if !lca.is_empty() {
-            // Shared inner ancestor — single iteration root.
+        // A binding whose host *is* the LCA element (e.g. `for={f}`
+        // on the shared ancestor, or a `{f}` directly on it) pins the
+        // iteration to that one element — a single root carrying the
+        // whole subtree.
+        let bound_on_lca = hosts.contains(&lca);
+        if !lca.is_empty() && bound_on_lca {
+            // Shared inner ancestor that is itself a host — single
+            // iteration root rooted at the LCA.
             iter_roots.push((field, lca));
+        } else if !lca.is_empty() {
+            // Shared inner ancestor, but no binding sits on it: the
+            // occurrences live in disjoint subtrees below the LCA
+            // (e.g. the same field iterated in two sibling sections).
+            // Root each disjoint cluster separately so the LCA element
+            // is NOT cloned per item — otherwise the whole shared
+            // ancestor repeats once per value. Cluster by the first
+            // path segment past the LCA; the per-cluster root is the
+            // LCA of that cluster's hosts.
+            let mut clusters: std::collections::BTreeMap<usize, Vec<Vec<usize>>> =
+                std::collections::BTreeMap::new();
+            for host in &hosts {
+                let key = host[lca.len()];
+                clusters.entry(key).or_default().push(host.clone());
+            }
+            for (_, cluster_hosts) in clusters {
+                let root = longest_common_path_prefix(&cluster_hosts);
+                if root.is_empty() {
+                    continue;
+                }
+                iter_roots.push((field.clone(), root));
+            }
         } else {
             // No shared inner ancestor. Each distinct host path
             // becomes its own iteration root (a placeholder at
@@ -1229,6 +1257,40 @@ mod tests {
             }
             other => panic!("expected single Iteration, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn it_splits_same_field_across_disjoint_sibling_sections() {
+        // <div class=workspace>            path [0]
+        //   <div class=canvas>             path [0, 0]
+        //     <div subtree>{sheet}</div>   path [0, 0, 0, 0]
+        //   <div class=tabs>               path [0, 1]
+        //     <div subtree>{sheet}</div>   path [0, 1, 0, 0]
+        // Both occurrences reference `sheet` and their LCA is the
+        // outer `.workspace` ([0]) — but nothing is bound ON [0], so
+        // collapsing there would clone the whole workspace per sheet.
+        // Expect TWO roots, one per sibling section, NOT one at [0].
+        let nodes = build_plan_nodes(vec![
+            text_binding(&[0, 0, 0, 0], "sheet"),
+            text_binding(&[0, 1, 0, 0], "sheet"),
+        ]);
+
+        let roots: Vec<_> = nodes
+            .iter()
+            .filter_map(|n| match n {
+                PlanNode::Iteration { field, path, .. } => Some((field.clone(), path.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            roots,
+            vec![
+                ("sheet".to_owned(), vec![0, 0, 0]),
+                ("sheet".to_owned(), vec![0, 1, 0]),
+            ],
+            "two sibling sections iterating the same field must get \
+             separate roots, not one at the shared ancestor",
+        );
     }
 
     #[test]

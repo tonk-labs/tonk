@@ -228,10 +228,40 @@ impl DocumentAnalysis {
         let transient = self.transient_entities();
         let mut claims = Vec::new();
         for planned in self.statements() {
+            // Rule installs/retracts have no `Claim` representation;
+            // they are carried out-of-band by `lower_to_rules`. Skip
+            // them here so a bootstrap that mixes concept claims and
+            // `rule!:` blocks still lowers its claims cleanly.
+            if matches!(
+                &planned.statement,
+                Statement::Assert(Application::Rule { .. })
+                    | Statement::Retract(Application::Rule { .. })
+            ) {
+                continue;
+            }
             let claim = lower_statement(&planned.statement, &transient)?;
             claims.push(claim);
         }
         Ok(TransactRequest { claims })
+    }
+
+    /// Lift every `rule!:` install in the document into a
+    /// [`Rule`](tonk_schema::rule::Rule), in the same
+    /// document/eval order as [`statements`](Self::statements). These
+    /// have no [`TransactRequest`] representation (the `Claim` wire
+    /// can't carry `dialog.effect/*` triples), so they are returned
+    /// separately for a seed loop to `assert` directly.
+    ///
+    /// Only `assert` rule installs are returned; a rule retract has
+    /// no place in a fresh bootstrap.
+    pub fn rule_installs(&self) -> Vec<tonk_schema::rule::Rule> {
+        let mut rules = Vec::new();
+        for planned in self.statements() {
+            if let Statement::Assert(Application::Rule { rule, .. }) = &planned.statement {
+                rules.push((**rule).clone());
+            }
+        }
+        rules
     }
 }
 

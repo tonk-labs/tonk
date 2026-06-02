@@ -104,6 +104,29 @@ pub struct BranchConfiguration {
     /// response never populates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<TransactRequest>,
+    /// Inductive rules (`rule!:` installs) to seed on this branch at
+    /// creation, alongside [`bootstrap`](Self::bootstrap). Rules have
+    /// no [`TransactRequest`] representation — the `Claim` wire can't
+    /// carry the `dialog.effect/*` triples a rule writes — so they
+    /// ride as their `(source, polarity)` and are rebuilt + asserted
+    /// server-side in the seed loop. A UI element lifts these from its
+    /// bootstrap document via `tonk_macros::effects!`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<EffectSource>,
+}
+
+/// A seedable inductive rule, as the two strings that round-trip
+/// through [`Effect::from_source`](tonk_core::effect::Effect::from_source):
+/// the JSON-encoded rule descriptor and its polarity tag. The
+/// serializable carrier for a `rule!:` install across the repository
+/// PUT wire (a [`tonk_schema::rule::Rule`] itself is not
+/// `Serialize`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EffectSource {
+    /// The `dialog.effect/source` string (JSON `InductiveRuleDescriptor`).
+    pub source: String,
+    /// The polarity tag — `"assert"` or `"retract"`.
+    pub polarity: String,
 }
 
 impl BranchConfiguration {
@@ -121,6 +144,14 @@ impl BranchConfiguration {
             Some(existing) => existing.claims.extend(request.claims),
             none => *none = Some(request),
         }
+        self
+    }
+
+    /// Attach inductive rules to seed at creation, as their
+    /// `(source, polarity)` carriers. Appends, so several elements'
+    /// rules fold in alongside their bootstraps.
+    pub fn rules(mut self, rules: impl IntoIterator<Item = EffectSource>) -> Self {
+        self.rules.extend(rules);
         self
     }
 }
@@ -252,19 +283,47 @@ pub async fn put_repository(
     // `bootstrap` here instead of re-evaluating them on every
     // mount.
     for (branch_name, settings) in &configuration.branch {
-        let Some(bootstrap) = &settings.bootstrap else {
+        let claims = settings.bootstrap.as_ref().map(|b| &b.claims);
+        let has_claims = claims.is_some_and(|c| !c.is_empty());
+        let has_rules = !settings.rules.is_empty();
+        if !has_claims && !has_rules {
             continue;
-        };
-        if bootstrap.claims.is_empty() {
-            continue;
+        }
+        // Rebuild each rule from its embedded source/polarity. A bad
+        // carrier is a programming error in the shipping element, not
+        // a client fault, so surface it as an internal error.
+        let mut rules = Vec::with_capacity(settings.rules.len());
+        for effect_source in &settings.rules {
+            let polarity = tonk_schema::effect::EffectPolarity::parse(&effect_source.polarity)
+                .ok_or_else(|| {
+                    TonkWorkerError::Internal(format!(
+                        "invalid rule polarity '{}' on branch '{branch_name}'",
+                        effect_source.polarity
+                    ))
+                })?;
+            let effect = tonk_schema::effect::Effect::from_source(&effect_source.source, polarity)
+                .map_err(|e| {
+                    TonkWorkerError::Internal(format!(
+                        "invalid rule source on branch '{branch_name}': {e}"
+                    ))
+                })?;
+            rules.push(tonk_schema::rule::Rule::asserting(effect));
         }
         let mut builder = tonk
             .reactor
             .repository(&name)
             .branch(branch_name)
             .transaction();
-        for claim in &bootstrap.claims {
-            builder = builder.apply(claim.clone());
+        if let Some(claims) = claims {
+            for claim in claims {
+                builder = builder.apply(claim.clone());
+            }
+        }
+        // Rules install last so any concept facts their premises read
+        // are already on the branch (matches the analyzer's statement
+        // ordering).
+        for rule in rules {
+            builder = builder.assert(rule);
         }
         builder
             .commit()
@@ -905,6 +964,7 @@ where
                 upstream,
                 revision,
                 bootstrap: None,
+                rules: Vec::new(),
             },
         );
     }

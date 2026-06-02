@@ -31,6 +31,92 @@ pub mod name {
     pub struct Referent(pub Entity);
 }
 
+/// A validated published name (`&anchor` in notation, the `name`
+/// slot on a claim). Constructing one parses `id:<name>` into the
+/// [`Entity`] it desugars to, so the parse happens exactly once, at
+/// the boundary; everything downstream converts to the entity
+/// infallibly via [`AnchorName::entity`]. An invalid name is a hard
+/// error at construction (and at serde deserialization), never a
+/// silently-dropped publication later.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AnchorName {
+    name: String,
+    entity: Entity,
+}
+
+/// Why a string isn't a usable [`AnchorName`].
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "anchor name {name:?} can't be published — `id:{name}` is not a valid entity URI: {reason}"
+)]
+pub struct AnchorNameError {
+    /// The rejected name.
+    pub name: String,
+    /// The underlying `id:<name>` parse error.
+    pub reason: String,
+}
+
+impl AnchorName {
+    /// The published name string (no `id:` prefix), as written
+    /// after `&`.
+    pub fn as_str(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Validate a name by parsing `id:<name>` into its entity. The only
+/// fallible step in the name's lifetime.
+impl TryFrom<&str> for AnchorName {
+    type Error = AnchorNameError;
+
+    fn try_from(name: &str) -> Result<Self, Self::Error> {
+        let entity = format!("id:{name}")
+            .parse::<Entity>()
+            .map_err(|e| AnchorNameError {
+                name: name.to_owned(),
+                reason: e.to_string(),
+            })?;
+        Ok(Self {
+            name: name.to_owned(),
+            entity,
+        })
+    }
+}
+
+impl TryFrom<String> for AnchorName {
+    type Error = AnchorNameError;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        AnchorName::try_from(name.as_str())
+    }
+}
+
+/// The `id:<name>` entity this name publishes against. Infallible:
+/// the entity was parsed and stored when the [`AnchorName`] was
+/// validated into existence.
+impl From<AnchorName> for Entity {
+    fn from(anchor: AnchorName) -> Self {
+        anchor.entity
+    }
+}
+
+impl From<&AnchorName> for Entity {
+    fn from(anchor: &AnchorName) -> Self {
+        anchor.entity.clone()
+    }
+}
+
+/// Wire form is the bare name string (compatible with the prior
+/// `Option<String>` name slot); `#[serde(into = "String")]` uses
+/// this, and `#[serde(try_from = "String")]` validates on the way
+/// back in.
+impl From<AnchorName> for String {
+    fn from(anchor: AnchorName) -> Self {
+        anchor.name
+    }
+}
+
 /// A user-published name — an `id:<n>` entity carrying a
 /// single `entity` claim that points at the target the name
 /// currently identifies.

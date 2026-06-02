@@ -11,6 +11,7 @@
 //! before durable write). The reactor reads this classification
 //! to bucket transients without re-querying the schema.
 
+use crate::meta::AnchorName;
 use dialog_artifacts::Value;
 use dialog_query::ConceptDescriptor as DialogConceptDescriptor;
 use indexmap::IndexMap;
@@ -90,8 +91,12 @@ pub struct PredicateApplication {
     /// `dialog.name/referent` fact on `id:<name>` pointing at the
     /// `this` entity so the concept resolves by name. Mirrors
     /// the `name` slot on `tonk_schema::transact::Application`.
+    ///
+    /// An [`AnchorName`], so the `id:<name>` entity is validated when
+    /// the claim is built or deserialized — a malformed name fails at
+    /// that boundary rather than being silently dropped downstream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: Option<AnchorName>,
 }
 
 impl PredicateApplication {

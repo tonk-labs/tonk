@@ -5228,6 +5228,7 @@ dependencies = [
  "dialog-common",
  "tonk-core",
  "tonk-macros",
+ "tonk-schema",
  "wasm-bindgen-test",
 ]
 

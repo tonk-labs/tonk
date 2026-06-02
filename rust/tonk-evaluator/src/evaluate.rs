@@ -423,7 +423,7 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                             match plan {
                                 ApplicationPlan::Concept(concept_plan) => {
                                     let resolved =
-                                        resolve_retraction_targets(concept_plan, &txn, env).await?;
+                                        resolve_retraction_targets(*concept_plan, &txn, env).await?;
                                     claim_count += resolved.len();
                                     retract_claims.extend(resolved);
                                 }

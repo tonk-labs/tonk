@@ -598,6 +598,49 @@ mod tests {
     }
 
     #[dialog_common::test]
+    fn it_interpolates_slash_values_into_attributes() {
+        // Regression: `model={model} view={view}` where the field
+        // values contain slashes (namespaced concept names like
+        // `trip/stop`, `workspace/tab`) must land on the element
+        // as the exact, whole attribute value — not truncated at the
+        // slash, not corrupted with a trailing slash from an adjacent
+        // self-close. A self-closing `/>` is used deliberately to
+        // mirror the artifact view template.
+        let (host, mut renderer) =
+            mount("<tonk-display entity={entity} model={model} view={view} />");
+        renderer.apply(&[conclusion(
+            "id:demo/sheet",
+            &[
+                ("entity", "id:demo/itinerary"),
+                ("model", "trip/stop"),
+                ("view", "workspace/tab"),
+            ],
+        )]);
+        let el = host
+            .query_selector("tonk-display")
+            .unwrap()
+            .expect("tonk-display present");
+        assert_eq!(
+            el.get_attribute("model").as_deref(),
+            Some("trip/stop"),
+            "model attribute must keep its slash value, got {:?} (html: {})",
+            el.get_attribute("model"),
+            host.inner_html(),
+        );
+        assert_eq!(
+            el.get_attribute("view").as_deref(),
+            Some("workspace/tab"),
+            "view attribute must keep its slash value, got {:?}",
+            el.get_attribute("view"),
+        );
+        assert_eq!(
+            el.get_attribute("entity").as_deref(),
+            Some("id:demo/itinerary"),
+            "entity attribute must keep its slash value",
+        );
+    }
+
+    #[dialog_common::test]
     fn it_updates_a_row_in_place_on_subsequent_frame() {
         // With incremental updates, an existing row's article
         // node has its identity preserved across applies — only
