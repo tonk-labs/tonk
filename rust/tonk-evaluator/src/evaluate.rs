@@ -3516,6 +3516,14 @@ concept!: &person\n\
     /// entities that LACK an optional field (with the field omitted
     /// from the result), alongside entities that HAVE it (field
     /// present). Set-widening must not drop the field-less entity.
+    ///
+    /// NOTE: this passes only because the optional field (`nickname`)
+    /// sorts *after* the required field (`name`), so the required
+    /// field leads the scan. The mirror case where the optional
+    /// field sorts first is currently broken by a dialog-db planner
+    /// bug — see
+    /// [`dialog_repro_optional_field_sorted_first_drops_rows`] and
+    /// the ignored [`it_set_widens_body_derived_entities_with_bare_query`].
     #[dialog_common::test]
     async fn it_set_widens_optional_field_in_query() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
@@ -3616,6 +3624,199 @@ person:\n\
             !bob.fields.contains_key("nickname"),
             "bob lacks the optional field, so it must be omitted; saw {:?}",
             bob.fields
+        );
+        Ok(())
+    }
+
+    /// Reproduces the reported failure end-to-end through notation:
+    /// a concept with required `name` + optional `age`, two people
+    /// (one without `age`), queried with bare `person:`. The
+    /// `age`-less person must still appear.
+    ///
+    /// Currently fails because of the dialog-db planner bug captured
+    /// minimally in [`dialog_repro_optional_field_sorted_first_drops_rows`]:
+    /// `age` sorts before `name`, so the optional field leads the
+    /// unbound scan and the `age`-less person is dropped. Un-ignore
+    /// once dialog-db fixes lead-premise selection.
+    #[dialog_common::test]
+    #[ignore = "blocked on dialog-db planner bug — see \
+                dialog_repro_optional_field_sorted_first_drops_rows"]
+    async fn it_set_widens_body_derived_entities_with_bare_query() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let setup = "\
+concept!: &person\n\
+\x20 description: A person\n\
+\x20 with:\n\
+\x20   name:\n\
+\x20     description: Name of the person\n\
+\x20     the: xyz.tonk.person/name\n\
+\x20     as: text\n\
+\x20 maybe:\n\
+\x20   age:\n\
+\x20     description: Age of the person\n\
+\x20     the: xyz.tonk.person/age\n\
+\x20     as: unsigned-integer\n\
+\n\
+person!:\n\
+\x20 name: Alice\n\
+\n\
+person!:\n\
+\x20 name: Bob\n\
+\x20 age: 4\n";
+        let parsed = parse(setup);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "setup parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
+
+        let parsed = parse("person:\n");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "query parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let query_syntax = parsed.syntax.expect("query syntax");
+        let evaluated = query_syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("query evaluate: {e}"))?;
+
+        let results: Vec<&QueryResult> = evaluated
+            .matches
+            .iter()
+            .flat_map(|b| b.results.iter())
+            .collect();
+
+        let names: Vec<_> = results
+            .iter()
+            .filter_map(|r| r.fields.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert!(
+            names.contains(&"Alice"),
+            "Alice (no optional `age`) must appear; saw {results:?}"
+        );
+        assert!(names.contains(&"Bob"), "Bob must appear; saw {results:?}");
+        assert_eq!(results.len(), 2, "expected both people; saw {results:?}");
+        Ok(())
+    }
+
+    /// Minimal **dialog-level** reproduction for upstream (dialog-db)
+    /// triage. Uses only `dialog_query` + `dialog_repository` APIs —
+    /// no tonk notation, analyzer, or reconstruction.
+    ///
+    /// ## Bug
+    ///
+    /// A `this`-unbound concept query whose **alphabetically-first
+    /// field is optional** drops every entity that lacks that
+    /// optional field, instead of set-widening it to `Absent`.
+    ///
+    /// Here the concept has `bio` (optional) and `name` (required).
+    /// `bio` < `name`, so the planner picks `bio` as the lead
+    /// premise of the unbound scan. The lead optional scan only
+    /// yields entities that *have* a `bio` fact (its `Absent`
+    /// fallback is suppressed because `entity_known` is false while
+    /// `this` is still unbound — see `attribute/query/all.rs`). So
+    /// `alice`, who has no `bio`, never produces a row at all.
+    ///
+    /// Flip the trigger by renaming `bio` → `zbio` (sorts *after*
+    /// `name`): the required `name` leads, and both entities return.
+    /// Dialog's own unit test
+    /// `concept::query::tests::it_executes_concept_with_optional_field`
+    /// passes precisely because its optional field (`nickname`) sorts
+    /// after the required `name`.
+    ///
+    /// ## Expected vs actual
+    ///
+    /// Expected 2 conclusions (alice with `bio` Absent, bob with
+    /// `bio` Present); actual 1 (bob only). The fix belongs in
+    /// dialog's concept-query planner: the lead premise of an
+    /// unbound scan must be a *required* field, never an optional
+    /// one.
+    #[dialog_common::test]
+    #[ignore = "reproduces a dialog-db planner bug: an optional field that sorts \
+                alphabetically before every required field becomes the lead premise \
+                of a `this`-unbound scan and drops entities lacking it. Un-ignore \
+                once dialog-db fixes lead-premise selection."]
+    async fn dialog_repro_optional_field_sorted_first_drops_rows() -> anyhow::Result<()> {
+        use dialog_query::concept::descriptor::ConceptConclusion;
+        use dialog_query::concept::query::ConceptQuery;
+        use dialog_query::{Output as _, Parameters, Term};
+
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let alice: dialog_artifacts::Entity = "id:alice".parse()?;
+        let bob: dialog_artifacts::Entity = "id:bob".parse()?;
+
+        // alice has only name; bob has name + bio.
+        branch
+            .transaction()
+            .assert(the!("person/name").of(alice).is("Alice".to_string()))
+            .assert(the!("person/name").of(bob.clone()).is("Bob".to_string()))
+            .assert(the!("person/bio").of(bob).is("Hi".to_string()))
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // `bio` (optional) sorts before `name` (required).
+        let descriptor = ConceptDescriptor::try_from(vec![
+            (
+                "bio".to_string(),
+                dialog_query::ConceptFieldDescriptor::optional(AttributeDescriptor::new(
+                    the!("person/bio"),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+            (
+                "name".to_string(),
+                dialog_query::ConceptFieldDescriptor::required(AttributeDescriptor::new(
+                    the!("person/name"),
+                    "",
+                    DialogCardinality::One,
+                    Some(Type::String),
+                )),
+            ),
+        ])?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".to_string(), Term::var("person"));
+        terms.insert("name".to_string(), Term::var("name"));
+        terms.insert("bio".to_string(), Term::var("bio"));
+
+        let conclusions: Vec<ConceptConclusion> = branch
+            .query()
+            .select(ConceptQuery {
+                terms,
+                predicate: descriptor,
+            })
+            .perform(&operator)
+            .try_vec()
+            .await?;
+
+        assert_eq!(
+            conclusions.len(),
+            2,
+            "expected alice (bio Absent) + bob (bio Present); got {} — \
+             the optional lead premise dropped alice",
+            conclusions.len()
         );
         Ok(())
     }

@@ -255,8 +255,22 @@ impl ConceptByEntity {
             .await
             .map_err(|e| ConceptLookupError::query(format!("concept-with query failed: {e:?}")))?;
 
-        // First pass: which field names carry an optional marker.
-        let optional_fields: BTreeSet<String> = raw_claims
+        // The optional markers carry Boolean values, so a separate
+        // Boolean-typed query is needed — the Entity-typed `with`
+        // query above never returns them.
+        let optional_claims: Vec<dialog_query::Claim> = source
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::var("the")
+                    .of(Term::from(self.entity.clone()))
+                    .is(Term::<bool>::var("flag")),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                ConceptLookupError::query(format!("concept-optional query failed: {e:?}"))
+            })?;
+        let optional_fields: BTreeSet<String> = optional_claims
             .iter()
             .filter_map(|claim| {
                 let the: ArtifactsAttribute = claim.the.clone().into();
@@ -1122,8 +1136,18 @@ where
     .try_vec()
     .await?;
 
-    // First pass: which field names carry an optional marker.
-    let optional_fields: BTreeSet<String> = with_claims
+    // The optional markers carry Boolean values, so a separate
+    // Boolean-typed query is needed — the Entity-typed `with` query
+    // above never returns them.
+    let optional_claims: Vec<Claim> = dialog_query::AttributeQuery::from(
+        Term::<dialog_query::attribute::The>::var("the")
+            .of(Term::from(entity.clone()))
+            .is(Term::<bool>::var("flag")),
+    )
+    .perform(env)
+    .try_vec()
+    .await?;
+    let optional_fields: BTreeSet<String> = optional_claims
         .iter()
         .filter_map(|claim| {
             let the: ArtifactsAttribute = claim.the.clone().into();
