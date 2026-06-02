@@ -56,7 +56,7 @@ pub fn parse(text: &str) -> Parsed {
             None => doc_range,
             Some(existing) => extend_range(existing, doc_range),
         });
-        walk_document(doc, text, &mut expressions, &mut diagnostics);
+        walk_document(doc, &mut expressions, &mut diagnostics);
     }
 
     let range = overall_range
@@ -87,9 +87,14 @@ pub fn parse(text: &str) -> Parsed {
 // produce expressions, so the user can spread one query across
 // multiple blocks.
 
+/// A document-root entry: head key, body value, and the head's
+/// `&anchor` (recovered from the raw event spans in the loader,
+/// while they're still reliable).
+type RootPair<'input> = (MarkedYaml<'input>, MarkedYaml<'input>, Option<Anchor>);
+
 /// One parsed YAML document with its root pairs in source order.
 struct TopLevelDoc<'input> {
-    pairs: Option<Vec<(MarkedYaml<'input>, MarkedYaml<'input>)>>,
+    pairs: Option<Vec<RootPair<'input>>>,
     span: Span,
     /// Spans of any `Event::Alias` events seen in this document.
     /// Aliases are not supported in this notation — saphyr's loader
@@ -185,8 +190,20 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                 }
                 _ if pending_key.is_some() => {
                     let key = pending_key.take().unwrap();
+                    // Recover the head's `&anchor` here, while we
+                    // still hold the raw event spans. The value's
+                    // first event carries a non-zero anchor id iff the
+                    // head is anchored, and the `&name` token sits in
+                    // the source gap between the key's end and the
+                    // value's start. We must read it now: the spans on
+                    // the loaded `MarkedYaml` value node drift (saphyr
+                    // re-marks them, unreliably after block scalars),
+                    // so a later source scan keyed off those spans
+                    // silently mis-locates or drops the anchor.
+                    let anchor = anchor_id_of(&event)
+                        .and_then(|_| scan_anchor(text, key.span.end, span.start));
                     let value = load_subtree(&mut parser, event, span, &mut current_aliases)?;
-                    pairs.push((key, value));
+                    pairs.push((key, value, anchor));
                 }
                 Event::Scalar(_, _, _, _) => {
                     unreachable!("scalar handling covered by pending_key arms");
@@ -197,7 +214,7 @@ fn parse_documents(text: &str) -> Result<Vec<TopLevelDoc<'_>>, ScanError> {
                         data: YamlData::Value(SaphyrScalar::Null),
                     };
                     let value = load_subtree(&mut parser, event, span, &mut current_aliases)?;
-                    pairs.push((synthetic_key, value));
+                    pairs.push((synthetic_key, value, None));
                 }
             },
         }
@@ -212,9 +229,22 @@ enum LoaderState<'input> {
     },
     DocumentRoot {
         start: Marker,
-        pairs: Vec<(MarkedYaml<'input>, MarkedYaml<'input>)>,
+        pairs: Vec<RootPair<'input>>,
         pending_key: Option<MarkedYaml<'input>>,
     },
+}
+
+/// The anchor id carried by a node's first event, or `None` when
+/// the node is not anchored (id `0`). A non-zero id is the
+/// reliable signal that a `&anchor` token precedes this value in
+/// the source.
+fn anchor_id_of(event: &Event<'_>) -> Option<usize> {
+    let aid = match event {
+        Event::MappingStart(a, _) | Event::SequenceStart(a, _) => *a,
+        Event::Scalar(_, _, a, _) => *a,
+        _ => 0,
+    };
+    (aid != 0).then_some(aid)
 }
 
 fn scalar_to_marked_yaml<'input>(event: Event<'input>, span: Span) -> MarkedYaml<'input> {
@@ -323,7 +353,6 @@ fn expect_document_end<'input>(
 
 fn walk_document(
     doc: &TopLevelDoc<'_>,
-    source: &str,
     expressions: &mut Vec<Expression>,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -344,8 +373,8 @@ fn walk_document(
         ));
         return;
     };
-    for (head_key, body_value) in pairs {
-        if let Some(expression) = walk_expression(head_key, body_value, source, out) {
+    for (head_key, body_value, anchor) in pairs {
+        if let Some(expression) = walk_expression(head_key, body_value, anchor.clone(), out) {
             expressions.push(expression);
         }
     }
@@ -354,7 +383,7 @@ fn walk_document(
 fn walk_expression(
     key: &MarkedYaml<'_>,
     value: &MarkedYaml<'_>,
-    source: &str,
+    anchor: Option<Anchor>,
     out: &mut Vec<Diagnostic>,
 ) -> Option<Expression> {
     let key_text = match string_of(key) {
@@ -373,7 +402,9 @@ fn walk_expression(
     let key_range = range_of(key);
     let (head, effect) = parse_head(key_text, key_range, out)?;
     let block_range = extend_range(key_range, range_of(value));
-    let anchor = scan_anchor(source, key.span.end, value.span.start);
+    // `anchor` was recovered in the loader from the raw event spans
+    // (see `parse_documents`), not scanned here — the `MarkedYaml`
+    // value spans drift unreliably after block scalars.
     let rule_body = effect && is_rule_predicate(&head);
 
     // `rule!:` claims forbid `&anchor`: the rule has no single
@@ -679,12 +710,19 @@ fn parse_head(
 /// Decide whether a head name is a concept, a claim domain, or a
 /// URI.
 ///
-/// - `db:`, `id:`, `did:`, `xyz.tonk/foo` — anything containing `:`
-///   or `/` reads as a [`HeadName::Uri`].
-/// - Reverse-dotted (`xyz.tonk`, `io.gozala.person`) — claim domain.
-/// - Bare lowercase identifier — concept.
+/// - Contains `:` (`db:concept`, `id:foo`, `did:key:…`) — a URI.
+/// - An attribute identifier `<dotted-domain>/<attr>`
+///   (`xyz.tonk.person/name`) — read as a URI head (it names a
+///   specific attribute), since the part before the first `/` is a
+///   reverse-dotted domain.
+/// - Reverse-dotted with no `/` (`xyz.tonk`, `io.gozala.person`) —
+///   a claim domain.
+/// - Anything else, including a name with a `/` whose left side has
+///   no dots (`demo/stuff`) — a concept. A `/` alone does not make
+///   a name a URI; only a `:` (or a dotted domain before the `/`)
+///   does, so concept names may contain `/`.
 fn classify_head_name(name: &str) -> HeadName {
-    if name.contains(':') || name.contains('/') {
+    if name.contains(':') || is_attribute_identifier(name) {
         HeadName::Uri(name.to_owned())
     } else if name.contains('.') {
         HeadName::Claim(name.to_owned())
@@ -693,19 +731,37 @@ fn classify_head_name(name: &str) -> HeadName {
     }
 }
 
-/// Scan the source slice between a head's `:` (`key.span.end`) and
-/// the start of its value (`value.span.start`) for a YAML anchor
-/// (`&name`).
+/// `true` when `name` is an attribute identifier of the form
+/// `<dotted-domain>/<attr>` — the segment before the first `/`
+/// contains a `.` (e.g. `xyz.tonk.person/name`). A `/` whose left
+/// side has no dots (`demo/stuff`) is a concept name, not an
+/// attribute identifier.
+fn is_attribute_identifier(name: &str) -> bool {
+    name.split_once('/')
+        .is_some_and(|(domain, _)| domain.contains('.'))
+}
+
+/// Recover a head's `&anchor` name by scanning the source gap
+/// between the head key's end (`after_key`) and the value node's
+/// start (`before_value`).
 ///
 /// saphyr-parser registers anchors as numeric IDs and doesn't
-/// expose the literal name on events, so we recover the name by
-/// scanning the source slice ourselves. The slice contains
-/// whitespace, possibly a newline, and at most one `&anchor` token
-/// before the value's first character.
+/// expose the literal name on events, so we recover the name from
+/// the source ourselves. **Call this from the loader with the raw
+/// event spans**, never with the spans of a loaded `MarkedYaml`
+/// node: saphyr re-marks `MarkedYaml` spans unreliably.
+///
+/// `Marker::index()` is a **char** index, not a byte offset (the
+/// accessor's doc says "bytes" but the scanner increments it per
+/// char — see saphyr's `scanner.rs`). We slice `source` by bytes,
+/// so the markers must be converted first; skipping that made every
+/// offset after multi-byte content run short, mis-locating or
+/// dropping the anchor. (`anchor_id_of` is the reliable yes/no
+/// signal for whether an anchor is present at all.)
 fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<Anchor> {
-    let start = after_key.index();
-    let end = before_value.index();
-    if end <= start || end > source.len() {
+    let start = char_index_to_byte_offset(source, after_key.index());
+    let end = char_index_to_byte_offset(source, before_value.index());
+    if end <= start {
         return None;
     }
     // Locate the `&` within the key→value gap. The gap is only used
@@ -741,10 +797,27 @@ fn scan_anchor(source: &str, after_key: Marker, before_value: Marker) -> Option<
     })
 }
 
-/// YAML anchor character predicate — same set saphyr's
-/// `is_anchor_char` accepts: alphanumeric, `-`, `_`, `+`, `.`.
+/// YAML anchor character predicate. Per the YAML 1.2 spec an
+/// anchor name is `ns-char` minus the flow indicators (`,[]{}`),
+/// so `/` is allowed — saphyr's scanner accepts it, and our
+/// source-side name recovery must too (otherwise `&demo/stuff` is
+/// truncated to `demo`, dropping the rest of the name). We accept
+/// the practical subset used by concept names: alphanumerics and
+/// `-`, `_`, `+`, `.`, `/`.
 fn is_anchor_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.')
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.' | '/')
+}
+
+/// Convert a saphyr `Marker::index()` (a **char** count) into a
+/// byte offset into `source`, so it can be used to slice the
+/// (byte-indexed) source string. An index past the end clamps to
+/// `source.len()`.
+fn char_index_to_byte_offset(source: &str, char_index: usize) -> usize {
+    source
+        .char_indices()
+        .nth(char_index)
+        .map(|(byte, _)| byte)
+        .unwrap_or(source.len())
 }
 
 /// Convert an absolute byte offset into the source into an LSP
@@ -913,7 +986,7 @@ fn classify_plain_value(text: &str) -> FieldValue {
 ///    scheme so common values like `text/html` (no `:` at all)
 ///    or `12:34` (digit-leading) don't get hijacked.
 ///
-/// 2. `<reverse-dotted-domain>/<name>` — claim attribute URIs
+/// 2. `<reverse-dotted-domain>/<name>` — attribute identifiers
 ///    (`xyz.tonk/foo`, `io.gozala.person/name`). Requires at
 ///    least one `.` *before* the first `/` so MIME-type-shaped
 ///    values (`text/html`, `application/json`) classify as
@@ -954,7 +1027,7 @@ fn is_uri_scheme(text: &str) -> bool {
 
 /// Reverse-dotted domain — at least two segments separated by
 /// `.`, each segment a bare lowercase identifier. Used to
-/// recognize claim-attribute URIs like `xyz.tonk` or
+/// recognize attribute-identifier domains like `xyz.tonk` or
 /// `io.gozala.person`.
 fn is_reverse_dotted_domain(text: &str) -> bool {
     let parts: Vec<&str> = text.split('.').collect();
@@ -1299,6 +1372,57 @@ attribute!: &person-name
             panic!("expected Assertion");
         };
         assert_eq!(anchor.as_ref().unwrap().name, "person-name");
+    }
+
+    #[dialog_common::test]
+    fn it_captures_anchor_with_slash() {
+        // The YAML spec allows `/` in anchor names (it's `ns-char`
+        // minus flow indicators). A concept named `demo/stuff` is
+        // anchored as `&demo/stuff`; the whole name must be
+        // recovered, not truncated at the `/`.
+        let syntax = parse_clean(
+            r#"
+demo/stuff!: &demo/stuff
+  stuff: 1
+"#,
+        );
+        let Expression::Claim(Effectful { anchor, inner: _ }) = &syntax.expressions[0] else {
+            panic!("expected Assertion");
+        };
+        assert_eq!(anchor.as_ref().expect("anchor present").name, "demo/stuff");
+    }
+
+    #[dialog_common::test]
+    fn it_captures_anchor_after_multibyte_content() {
+        // saphyr's `Marker::index()` returns a *char* index despite
+        // its doc claiming bytes. A multi-byte char (here `é`) before
+        // a later anchored head makes the char index run behind the
+        // byte offset; slicing source by the raw index then mis-locates
+        // the `&` and silently drops the anchor. The anchor must still
+        // be recovered after multi-byte content earlier in the doc.
+        let syntax = parse_clean(
+            r#"
+first!: &one
+  label: "café"
+
+second!: &two
+  label: "plain"
+"#,
+        );
+        let Expression::Claim(Effectful { anchor, inner: _ }) = &syntax.expressions[0] else {
+            panic!("expected first assertion");
+        };
+        assert_eq!(anchor.as_ref().expect("first anchor").name, "one");
+        let Expression::Claim(Effectful { anchor, inner: _ }) = &syntax.expressions[1] else {
+            panic!("expected second assertion");
+        };
+        assert_eq!(
+            anchor
+                .as_ref()
+                .expect("second anchor present after multi-byte content")
+                .name,
+            "two",
+        );
     }
 
     #[dialog_common::test]
@@ -2095,9 +2219,10 @@ person!:
     }
 
     #[dialog_common::test]
-    fn it_classifies_xyz_attribute_uri_in_head_position() {
-        // `xyz.tonk.person/name` contains both `.` and `/` — it
-        // must classify as URI, not Claim or Concept.
+    fn it_classifies_attribute_identifier_in_head_position() {
+        // `xyz.tonk.person/name` is an attribute identifier
+        // (dotted domain + `/` + attr) — it reads as a URI head,
+        // not Claim or Concept.
         let syntax = parse_clean(
             r#"
 xyz.tonk.person/name:
@@ -2108,6 +2233,28 @@ xyz.tonk.person/name:
             panic!("expected Query");
         };
         assert!(matches!(&q.predicate.name, HeadName::Uri(u) if u == "xyz.tonk.person/name"));
+    }
+
+    #[dialog_common::test]
+    fn it_classifies_slash_name_without_dotted_domain_as_concept() {
+        // `demo/stuff` has a `/` but the part before it (`demo`) has
+        // no dots, so it is not an attribute identifier — it is a
+        // concept name that happens to contain `/`. Only a `:` (or a
+        // dotted domain before the `/`) makes a head a URI.
+        let syntax = parse_clean(
+            r#"
+demo/stuff!:
+  stuff: 1
+"#,
+        );
+        let Expression::Claim(Effectful { inner: a, .. }) = &syntax.expressions[0] else {
+            panic!("expected Claim");
+        };
+        assert!(
+            matches!(&a.predicate.name, HeadName::Concept(n) if n == "demo/stuff"),
+            "expected Concept(\"demo/stuff\"), got {:?}",
+            a.predicate.name,
+        );
     }
 
     /// `|`-style block scalars are unambiguously string literals,

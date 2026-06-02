@@ -21,6 +21,7 @@ members = [
     "rust/tonk-sigil",
     "rust/tonk-ui",
     "rust/tonk-worker",
+    "rust/tonk-workspace",
 ]
 resolver = "2"
 
@@ -50,6 +51,7 @@ tonk-schema = { path = "./rust/tonk-schema" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
+tonk-workspace = { path = "./rust/tonk-workspace" }
 
 anyhow = "1"
 async-trait = "0.1"

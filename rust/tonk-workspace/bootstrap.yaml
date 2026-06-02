@@ -1,0 +1,300 @@
+# Tonk workspace: artifact concept + demo content.
+#
+# Asserted-notation document lowered by `claim!` at compile time
+# (see lib.rs) and folded into the default repository's PUT body so
+# it seeds once at repo creation.
+#
+# `claim!` runs `analyze_local` (no running system), so every
+# `&anchor` / bare-name reference must resolve within this file.
+#
+# See `plan/tonk-viewer.md` at the repository root for the design.
+
+# ============================================================
+# BUILT-IN SCHEMA - keep
+# ============================================================
+
+# The `view` concept. Shape matches what `<tonk-display>` queries
+# (resolve.rs `view_predicate`): a `model` (the concept it renders)
+# and a `display` (the HTML template). Kept identical to the
+# declaration in `tonk-board/bootstrap.yaml` so both bootstraps
+# seed the same `view` concept entity. Pinned to the stable
+# `tonk:view` URI so <tonk-display> can refer to the built-in view
+# concept directly, without a name-resolution round-trip.
+concept!: &view
+  this: tonk:view
+  description: A display template (model, display) for rendering an entity
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+# The `artifact` concept. Binds an entity to a model and a view,
+# plus the tab metadata (title, icon) the viewer shell shows. Its
+# (entity, model, view) map one-to-one onto
+# `<tonk-display entity model view>`. Pinned to `tonk:artifact` so
+# the viewer can query artifacts by a stable concept entity.
+concept!: &artifact
+  this: tonk:artifact
+  description: An entity displayed as a sheet/tab in the viewer.
+  with:
+    title:
+      description: Title shown in the tab
+      the: xyz.tonk.artifact/title
+      cardinality: one
+      as: text
+    icon:
+      description: Icon shown in the tab
+      the: xyz.tonk.artifact/icon
+      cardinality: one
+      as: text
+    entity:
+      description: Entity displayed in the sheet
+      the: xyz.tonk.artifact/entity
+      cardinality: one
+      as: entity
+    model:
+      description: Model concept used to display the entity
+      the: xyz.tonk.artifact/model
+      cardinality: one
+      as: entity
+    view:
+      description: View concept used to display the entity
+      the: xyz.tonk.artifact/view
+      cardinality: one
+      as: entity
+
+# ============================================================
+# DEMO CONTENT - DELETE before shipping
+# ============================================================
+# Sample data for developing the viewer, modelled on the "Trip to
+# Pistoia" itinerary sheet in the wireframe. Three concepts:
+#
+#   - `trip-title` {title}     - a trip's title, on its own.
+#   - `stop`       {day,...}     - one sheet row.
+#   - `trip`       {title,stop} - the unified concept the view uses.
+#
+# The trip entity carries its title (via `trip-title`) and its stops
+# (via `trip`), each asserted independently against the same entity:
+# the title once, then one `trip!` per stop. No field is ever
+# repeated. None of this is part of the workspace schema; remove the
+# whole section once the viewer has real content.
+
+concept!: &trip-title
+  description: A trip's title, on its own.
+  with:
+    title:
+      description: Trip title, shown above the sheet
+      the: xyz.tonk.trip/title
+      cardinality: one
+      as: text
+
+concept!: &trip
+  description: A trip - a title and an ordered set of stops.
+  with:
+    title:
+      description: Trip title, shown above the sheet
+      the: xyz.tonk.trip/title
+      cardinality: one
+      as: text
+    stop:
+      description: The stops that make up this trip
+      the: xyz.tonk.trip/stop
+      cardinality: many
+      as: entity
+
+concept!: &stop
+  description: One row of a trip sheet - a day, an item, a time, a cost.
+  with:
+    day:
+      description: Day label (e.g. "mon")
+      the: xyz.tonk.stop/day
+      cardinality: one
+      as: text
+    item:
+      description: What happens at this stop
+      the: xyz.tonk.stop/item
+      cardinality: one
+      as: text
+    time:
+      description: Time of day (e.g. "10:00")
+      the: xyz.tonk.stop/time
+      cardinality: one
+      as: text
+    cost:
+      description: Cost label (e.g. "EUR 15")
+      the: xyz.tonk.stop/cost
+      cardinality: one
+      as: text
+
+# The trip view: a sheet with a header row, then one nested
+# `<tonk-display>` per stop. The nested display omits `view`, so it
+# resolves the built-in view for `model=stop` (the stop-row view
+# below). A cardinality-many `{stop}` binding repeats the element
+# per value.
+view!:
+  this: id:tonk-workspace/trip-view
+  model: trip
+  display: |
+    <div class="sheet">
+      <style>
+        /* Theme-neutral: inherit the page's text color and use
+           translucent rules/secondary text so the sheet reads in
+           both the light and dark shells. No hardcoded palette. */
+        .sheet {
+          display: flex;
+          flex-direction: column;
+          max-width: 760px;
+          padding: 24px 28px;
+          color: inherit;
+          font-family: inherit;
+          font-size: 13.5px;
+          border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+        }
+        .sheet__title { margin: 0 0 16px; font-size: 22px; font-weight: 600; }
+        .sheet__head,
+        .sheet__row {
+          display: grid;
+          grid-template-columns: 60px 1fr 90px 90px;
+          gap: 12px;
+          padding: 8px 0;
+          border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        }
+        .sheet__head {
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 11px;
+          text-transform: lowercase;
+          letter-spacing: 0.04em;
+          opacity: 0.55;
+          font-weight: 600;
+          border-bottom: 1.5px solid color-mix(in srgb, currentColor 55%, transparent);
+        }
+        /* Each stop is wrapped in its own <tonk-display>; collapse the
+           wrapper so the rows lay out as direct children of the sheet. */
+        .sheet > tonk-display { display: contents; }
+        .sheet__row span:nth-child(1) {
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          opacity: 0.55;
+        }
+        .sheet__head span:nth-child(4),
+        .sheet__row span:nth-child(4) { text-align: right; }
+      </style>
+      <h2 class="sheet__title">{title}</h2>
+      <div class="sheet__head">
+        <span>day</span><span>item</span><span>time</span><span>cost</span>
+      </div>
+      <tonk-display entity={stop} model=stop></tonk-display>
+    </div>
+
+# The stop-row view, published under the built-in `view` concept
+# (no `this:` pin needed) so the nested `<tonk-display model=stop>`
+# resolves it by model.
+view!:
+  model: stop
+  display: |
+    <div class="sheet__row">
+      <span>{day}</span><span>{item}</span><span>{time}</span><span>{cost}</span>
+    </div>
+
+# --- the itinerary (mirrors the wireframe's Trip to Pistoia) -----
+
+stop!:
+  this: id:tonk-workspace/stop/arrive
+  day: "mon"
+  item: "Pistoia arrive, drop bags"
+  time: "10:00"
+  cost: "-"
+
+stop!:
+  this: id:tonk-workspace/stop/lunch
+  day: "mon"
+  item: "Lunch, Trattoria dell'Abbondanza"
+  time: "13:00"
+  cost: "EUR 38"
+
+stop!:
+  this: id:tonk-workspace/stop/walk
+  day: "mon"
+  item: "Piazza del Duomo walk"
+  time: "15:30"
+  cost: "-"
+
+stop!:
+  this: id:tonk-workspace/stop/cathedral
+  day: "tue"
+  item: "Cathedral, interior tour"
+  time: "10:00"
+  cost: "EUR 15"
+
+stop!:
+  this: id:tonk-workspace/stop/chapel
+  day: "tue"
+  item: "Cappella del Tau"
+  time: "14:00"
+  cost: "EUR 8"
+
+stop!:
+  this: id:tonk-workspace/stop/collodi
+  day: "wed"
+  item: "Day trip, Collodi gardens"
+  time: "09:00"
+  cost: "EUR 42"
+
+stop!:
+  this: id:tonk-workspace/stop/zoo
+  day: "thu"
+  item: "Zoo of Pistoia, morning"
+  time: "10:30"
+  cost: "EUR 20"
+
+
+# The title is set once via `trip-title` against the itinerary
+# entity. Each stop is then added by its own `trip!` assertion
+# against the same entity - `stop` is cardinality-many and a field
+# value can't be a list, so the stops accumulate one assertion at a
+# time. No field is ever repeated.
+trip-title!:
+  this: id:tonk-workspace/itinerary
+  title: "Trip to Pistoia"
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/arrive
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/lunch
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/walk
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/cathedral
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/chapel
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/collodi
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/zoo
+
+
+artifact!:
+  title: "Itinerary"
+  icon: "sheet"
+  entity: id:tonk-workspace/itinerary
+  model: trip
+  view: id:tonk-workspace/trip-view

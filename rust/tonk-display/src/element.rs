@@ -1,26 +1,25 @@
 //! `<tonk-display>` custom-element implementation.
 //!
 //! Coordinates live data flows for a single rendered entity and
-//! mounts dumb-renderer children (`<tonk-view>`, `<tonk-inspector>`)
-//! as slides. Two modes:
+//! mounts a dumb-renderer `<tonk-view>` as a slide.
 //!
-//! - **Single mode** (when the `view` attribute is set): one
-//!   `<tonk-view>` is mounted with the resolved view's `display`
-//!   HTML as its children. Every entity frame calls `.render(conclusion)`
-//!   on it. View-text edits replace the `<tonk-view>` with a fresh
-//!   one carrying the new children.
+//! The `view` attribute names a view *concept* (named or URI); the
+//! `model` attribute names the subject's model concept. Resolution
+//! queries the view concept constrained to that model and reads the
+//! row's `display` field as the template — the view concept's
+//! descriptor maps the `display` field name to whatever attribute
+//! that view kind declares it under, so any conforming view kind
+//! works. When `view` is omitted, the built-in `view` concept's
+//! descriptor is used. Every entity frame calls `.render(conclusion)`
+//! on the mounted `<tonk-view>`; view-text edits replace it with a
+//! fresh one carrying the new children.
 //!
-//! - **Carousel mode** (when no `view` attribute is set): a
-//!   `<wa-carousel>` hosts one slide per view (each containing a
-//!   `<tonk-view>`) plus a final `<tonk-inspector>` slide. The view
-//!   subscription becomes a "views for model" query whose frames
-//!   carry every view row; we diff by view entity. Every entity
-//!   frame walks all slides and calls `.render(...)` on each.
+//! `view="about:blank"` is reserved for a future carousel mode
+//! (enumerate every view for the model); it currently errors.
 //!
 //! Subscriptions live in `<tonk-display>` only — slide elements
-//! never open their own. One model resolution + one views
-//! subscription + one entity subscription per attribute set,
-//! regardless of slide count.
+//! never open their own. One model resolution + one view
+//! subscription + one entity subscription per attribute set.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -39,16 +38,20 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
 
-use crate::resolve::{
-    entity_query, looks_like_uri, name_target_query, view_fields_query, views_for_model_query,
-};
+use crate::resolve::{entity_query, looks_like_uri, view_by_model_query, view_predicate};
 use crate::state::{self, State};
 
-/// One mounted slide in carousel mode (or the sole slide in
-/// single mode). Keyed by the `view` attribute (single mode) or the
-/// view entity URI (carousel mode); `display` is the template HTML
-/// the slide's `<tonk-view>` was built with so we can detect
-/// content changes and rebuild.
+/// Sentinel `view` value that selects carousel mode — enumerate
+/// every view defined for the model instead of rendering one. Uses
+/// `about:blank` to match the "blank view" convention (a new
+/// artifact's `view` is `about:blank` until a presentation is
+/// chosen).
+const CAROUSEL_VIEW: &str = "about:blank";
+
+/// One mounted slide. Keyed by the view entity URI (the `this` of
+/// the resolved view row); `display` is the template HTML the
+/// slide's `<tonk-view>` was built with so we can detect content
+/// changes and rebuild.
 struct Slide {
     /// The `display` HTML the slide's `<tonk-view>` was built
     /// with. Used to detect template-content changes so we rebuild
@@ -444,101 +447,68 @@ async fn run(
         ));
     }
 
-    // `view` selects single-view mode (resolve a view by its anchor
-    // name) vs carousel mode (enumerate every view for a `model`).
+    // The `view` attribute names a view *concept* (named or URI);
+    // when omitted, the built-in `view` concept (`tonk:view`) is
+    // used. The `model` attribute names the subject's model concept
+    // and constrains which view row to render.
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
-    // Resolve the concept descriptor (to project the subject's
-    // fields) and the view subscription query. In single mode the
-    // view is found by its anchor name and declares its own `model`,
-    // so no `model` attribute is needed. In carousel mode there is no
-    // view to read a model from, so `model` is required.
-    let (descriptor_json, view_q) = match view.as_deref() {
+    // `model` is required: it both projects the subject's fields and
+    // constrains the view query.
+    let model = host
+        .get_attribute("model")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ErrorDetail::new(
+                ErrorKind::Descriptor,
+                "<tonk-display> requires a `model` attribute",
+            )
+        })?;
+    let (model_entity, descriptor_json) = resolve_model(host, &model).await?;
+    check_generation(&state, generation)?;
+
+    // `view="about:blank"` is the carousel sentinel: enumerate every
+    // view defined for the model. This is the two-step flow from the
+    // design (step 1: query the `{model}` display contract for all
+    // conforming view kinds; step 2: resolve each kind's template).
+    // Step 2 is not built yet, so carousel surfaces a clear error
+    // rather than rendering a half-resolved frame.
+    if view.as_deref() == Some(CAROUSEL_VIEW) {
+        return Err(ErrorDetail::new(
+            ErrorKind::Descriptor,
+            "carousel view (view=\"about:blank\") is not implemented yet",
+        ));
+    }
+
+    // Resolve the view *concept*'s descriptor — the query predicate.
+    // When `view` is omitted, the built-in `view` concept's
+    // descriptor is known (`view_predicate`), so no resolve is
+    // needed; a named/URI view concept is resolved from the branch.
+    // The descriptor maps the `display` field name to whatever
+    // attribute that view kind declares it under, so `view_by_model`
+    // reads the right template regardless of the kind.
+    let view_descriptor: serde_json::Value = match view.as_deref() {
+        None => view_predicate(),
         Some(view_ref) => {
-            // 1. Resolve the view's name to the entity it points at.
-            //    Re-asserting the anchor re-points the name, so this
-            //    always lands on the latest view.
-            let name_uri = if view_ref.contains(':') {
-                view_ref.to_owned()
-            } else {
-                format!("id:{view_ref}")
-            };
-            let name_q = name_target_query(&name_uri)
-                .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("name query: {e}")))?;
-            let name_result = host_consumer::query(host, &to_body(&name_q)?).await?;
+            let (_, view_descriptor_json) = resolve_model(host, view_ref).await?;
             check_generation(&state, generation)?;
-            let view_entity = first_field(&name_result, "entity")?.ok_or_else(|| {
-                ErrorDetail::new(
-                    ErrorKind::UnknownSource,
-                    format!("no view named {name_uri}"),
-                )
-            })?;
-
-            // 2. Read the view's own `model` to project the subject.
-            let fields_q = view_fields_query(&view_entity).map_err(|e| {
-                ErrorDetail::new(ErrorKind::Descriptor, format!("view fields query: {e}"))
-            })?;
-            let fields_result = host_consumer::query(host, &to_body(&fields_q)?).await?;
-            check_generation(&state, generation)?;
-            let model_entity = first_field(&fields_result, "model")?.ok_or_else(|| {
-                ErrorDetail::new(
-                    ErrorKind::Descriptor,
-                    format!("view {view_entity} has no `model`"),
-                )
-            })?;
-
-            // The same one-shot already carries `display`; if it's
-            // absent the subscription would deliver zero renderable
-            // rows and the host would sit blank with no callout. Catch
-            // it here so a view published without a template surfaces
-            // as a visible error instead.
-            if first_field(&fields_result, "display")?.is_none() {
-                return Err(ErrorDetail::new(
-                    ErrorKind::Descriptor,
-                    format!("view {view_entity} has no `display` template"),
-                ));
-            }
-
-            // 3. Resolve that model concept's descriptor.
-            let (_, descriptor_json) = resolve_model(host, &model_entity).await?;
-            check_generation(&state, generation)?;
-
-            // The view subscription is pinned to the resolved entity,
-            // so exactly one row flows back — no `(model, name)`
-            // duplicate ambiguity.
-            (descriptor_json, fields_q)
-        }
-        None => {
-            let model = host
-                .get_attribute("model")
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    ErrorDetail::new(
-                        ErrorKind::Descriptor,
-                        "<tonk-display> requires `view` (a named view) or `model` (carousel mode)",
-                    )
-                })?;
-            let (model_entity, descriptor_json) = resolve_model(host, &model).await?;
-            check_generation(&state, generation)?;
-            let view_q = views_for_model_query(&model_entity).map_err(|e| {
-                ErrorDetail::new(ErrorKind::Descriptor, format!("views-for-model query: {e}"))
-            })?;
-            (descriptor_json, view_q)
+            serde_json::from_str(&view_descriptor_json).map_err(|e| {
+                ErrorDetail::new(ErrorKind::Descriptor, format!("view descriptor: {e}"))
+            })?
         }
     };
+    let view_q = view_by_model_query(&view_descriptor, &model_entity).map_err(|e| {
+        ErrorDetail::new(ErrorKind::Descriptor, format!("view-by-model query: {e}"))
+    })?;
     let view_body = to_body(&view_q)?;
 
     let entity_q = entity_query(&descriptor_json, &entity)
         .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = to_body(&entity_q)?;
 
-    // Always mount the `<wa-carousel>` so the slot geometry is
-    // identical regardless of mode. The only user-visible
-    // difference is whether navigation arrows show and whether
-    // the trailing inspector slide is present — both controlled
-    // by whether `view` is set.
-    let single_mode = view.is_some();
-    ensure_carousel(host, &state, single_mode);
+    // The view query is model-constrained, so it resolves to one
+    // presentation. Mount in single mode.
+    ensure_carousel(host, &state, true);
 
     // Open the two subscriptions via the host. Frames arrive
     // through our `__tonkReset` delegate, which routes to
@@ -628,38 +598,29 @@ async fn resolve_model(host: &Element, source: &str) -> Result<(String, String),
     extract_phase1(&result)
 }
 
-/// Key each incoming view-frame conclusion by its display target,
-/// paired with the `display` template. Views carry no `name`
-/// field: in single mode (`view_attr` non-empty) the subscription
-/// is pinned to one view entity, so the attribute is the stable
-/// key; in carousel mode (`view_attr` empty) many views share a
-/// model, so each keys by its own entity URI (`this`). A
-/// conclusion with no `display` string is dropped.
-fn slide_keys(view_attr: &str, conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
+/// Key each incoming view-frame conclusion by its view entity
+/// (`this`), paired with the `display` template. The view query is
+/// model-constrained, so each row is a distinct view instance keyed
+/// by its own entity URI. A conclusion with no `display` string is
+/// dropped.
+fn slide_keys(conclusions: Vec<Conclusion>) -> BTreeMap<String, String> {
     conclusions
         .into_iter()
         .filter_map(|c| {
             let display = ipld_str(c.fields.get("display")).map(str::to_owned)?;
-            let key = if view_attr.is_empty() {
-                c.this
-            } else {
-                view_attr.to_owned()
-            };
-            Some((key, display))
+            Some((c.this, display))
         })
         .collect()
 }
 
 /// Diff the incoming view frame against currently mounted slides.
-/// Slides are keyed by the `view` attribute (single mode) or the
-/// view entity URI (carousel mode); we add/remove/replace as
+/// Slides are keyed by the view entity URI; we add/remove/replace as
 /// needed, then push the cached entity conclusion into any fresh
 /// slide so it has data to render right away.
 fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let mut s = state.borrow_mut();
 
-    let view_attr = host.get_attribute("view").unwrap_or_default();
-    let incoming = slide_keys(&view_attr, conclusions);
+    let incoming = slide_keys(conclusions);
 
     // Remove vanished slides.
     let stale: Vec<String> = s
@@ -1087,15 +1048,17 @@ mod tests {
         }
     }
 
-    // Carousel mode (empty `view` attribute): many views share a
-    // model, so each slide keys off its own view entity URI.
+    // Each slide keys off its own view entity URI (`this`), paired
+    // with the view's `display` template. The model-constrained
+    // query resolves to one row in the common case, but the keying
+    // is uniform regardless of how many rows arrive.
     #[dialog_common::test]
-    fn it_keys_carousel_slides_by_view_entity() {
+    fn it_keys_slides_by_view_entity() {
         let rows = vec![
             view_row("did:key:zViewA", Some("<p>A</p>")),
             view_row("did:key:zViewB", Some("<p>B</p>")),
         ];
-        let keyed = slide_keys("", rows);
+        let keyed = slide_keys(rows);
         assert_eq!(keyed.len(), 2);
         assert_eq!(
             keyed.get("did:key:zViewA").map(String::as_str),
@@ -1107,25 +1070,11 @@ mod tests {
         );
     }
 
-    // Single mode: the subscription is pinned to one view entity, so
-    // the slide keys off the `view` attribute, not the entity URI.
-    #[dialog_common::test]
-    fn it_keys_the_single_slide_by_the_view_attribute() {
-        let rows = vec![view_row("did:key:zView", Some("<p>only</p>"))];
-        let keyed = slide_keys("book-dashboard", rows);
-        assert_eq!(keyed.len(), 1);
-        assert_eq!(
-            keyed.get("book-dashboard").map(String::as_str),
-            Some("<p>only</p>"),
-        );
-        assert!(!keyed.contains_key("did:key:zView"));
-    }
-
     // A frame row with no `display` field can't render; it's dropped
     // rather than producing a blank slide.
     #[dialog_common::test]
     fn it_drops_a_frame_row_with_no_display_field() {
         let rows = vec![view_row("did:key:zView", None)];
-        assert!(slide_keys("", rows).is_empty());
+        assert!(slide_keys(rows).is_empty());
     }
 }

@@ -1,6 +1,10 @@
-//! `/space/:space/branch/:branch/display/:subject` route.
+//! `/space/:space/branch/:branch/display/*subject` route.
 //!
-//! Mounts a `<tonk-display>` element after resolving `:subject` to
+//! `subject` is a wildcard (not a single `:segment`) so entity URIs
+//! containing `/` — e.g. `id:tonk-workspace/itinerary` — are
+//! captured whole instead of being truncated at the first slash.
+//!
+//! Mounts a `<tonk-display>` element after resolving `subject` to
 //! a concrete entity URI. The route accepts either form:
 //!
 //! - **Entity URI** — anything containing a `:` (e.g. a `did:key:…`

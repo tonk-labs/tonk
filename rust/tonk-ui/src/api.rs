@@ -150,7 +150,12 @@ pub async fn init() -> Result<String, TonkUiError> {
                 // Seed the board schema + demo data once, at repo
                 // creation, instead of re-evaluating it on every
                 // `<tonk-board>` mount.
-                .bootstrap(tonk_board::BOOTSTRAP.clone()),
+                .bootstrap(tonk_board::BOOTSTRAP.clone())
+                // Seed the viewer workspace: the `view`/`artifact`
+                // concepts (pinned to `tonk:view`/`tonk:artifact`)
+                // plus demo artifacts. `bootstrap` merges, so this
+                // folds in alongside the board schema.
+                .bootstrap(tonk_workspace::BOOTSTRAP.clone()),
         );
 
     let response = reqwest::Client::new()

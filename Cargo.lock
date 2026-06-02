@@ -5152,6 +5152,7 @@ dependencies = [
  "tonk-notation",
  "tonk-sigil",
  "tonk-worker",
+ "tonk-workspace",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5218,6 +5219,16 @@ dependencies = [
  "wasm-streams",
  "web-sys",
  "web-time",
+]
+
+[[package]]
+name = "tonk-workspace"
+version = "0.1.0"
+dependencies = [
+ "dialog-common",
+ "tonk-core",
+ "tonk-macros",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

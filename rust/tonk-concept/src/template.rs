@@ -689,10 +689,25 @@ mod dom {
             if let Some(child) = children.item(i) {
                 path.push(i as usize);
                 visit(path, &child);
-                walk(&child, path, visit);
+                // Don't descend into `<style>` / `<script>`: their
+                // text is CSS/JS, where `{ … }` are real braces, not
+                // template `{field}` placeholders. Walking in would
+                // mangle a stylesheet's rule blocks into bindings.
+                if !is_raw_text_element(&child) {
+                    walk(&child, path, visit);
+                }
                 path.pop();
             }
         }
+    }
+
+    /// `true` for elements whose content is verbatim (CSS/JS), not
+    /// template markup: `<style>` and `<script>`.
+    fn is_raw_text_element(node: &Node) -> bool {
+        node.dyn_ref::<Element>().is_some_and(|el| {
+            let tag = el.tag_name().to_ascii_lowercase();
+            tag == "style" || tag == "script"
+        })
     }
 
     /// Follow a child-index path from `root` and return the node
@@ -895,7 +910,7 @@ mod dom {
 
     #[cfg(test)]
     mod find_template_tests {
-        use super::find_template;
+        use super::{extract_plan, find_template, snapshot_template};
         #[cfg(target_arch = "wasm32")]
         use wasm_bindgen_test::wasm_bindgen_test_configure;
         use web_sys::{Element, window};
@@ -966,6 +981,41 @@ mod dom {
                     "template nested in <{tag}> should be skipped",
                 );
             }
+        }
+
+        // A `<style>` block's CSS uses `{ … }` for rule bodies, which
+        // must not be parsed as template `{field}` bindings. The
+        // extractor skips into `<style>`, so the stylesheet survives
+        // verbatim and contributes no bindings.
+        #[dialog_common::test]
+        fn it_does_not_treat_style_braces_as_bindings() {
+            let host = host_with(
+                "<div><style>.sheet { display: grid; color: #131313; }</style>\
+                 <span>{title}</span></div>",
+            );
+            let snapshot = snapshot_template(&host).expect("snapshot");
+            let plan = extract_plan(&snapshot.fragment);
+            // Only the `{title}` text binding — nothing from the CSS.
+            assert_eq!(
+                plan.nodes.len(),
+                1,
+                "expected one plan node (the span's title), got {:?}",
+                plan.nodes,
+            );
+            // The stylesheet text is untouched.
+            let style = snapshot
+                .fragment
+                .query_selector("style")
+                .ok()
+                .flatten()
+                .expect("style element preserved");
+            assert!(
+                style
+                    .text_content()
+                    .unwrap_or_default()
+                    .contains("display: grid"),
+                "stylesheet content should survive verbatim",
+            );
         }
     }
 }

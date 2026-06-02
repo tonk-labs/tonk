@@ -1,0 +1,25 @@
+[package]
+name = "tonk-workspace"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Artifact concept and viewer workspace bootstrap."
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tonk-core = { workspace = true }
+tonk-macros = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  "cfg(dialog_test_native_integration)",
+  "cfg(dialog_test_wasm_integration)",
+  'cfg(feature, values("web-integration-tests"))',
+] }

@@ -182,11 +182,21 @@ pub(crate) fn parse_concept_body(
     let mut transient: bool = false;
     let mut with_fields: Vec<(String, AttributeDefinition)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
+    // A concept's entity is content-derived from its descriptor by
+    // default, but a `this: <uri>` pins it to a stable, chosen
+    // entity (e.g. `tonk:view`) so the concept is referenceable by
+    // that URI even if its published name later moves. Mirrors how
+    // built-in concepts pin themselves to `db:<name>`.
+    let mut pinned_entity: Option<Entity> = None;
     for field in &assertion.fields {
-        // `this:` and `..:` are reserved meta-keys handled by
-        // the outer assertion-binding flow; they don't
-        // contribute to the concept descriptor.
-        if is_meta_field(&field.name) {
+        // `..:` is the rest-retraction marker and never contributes
+        // to a concept descriptor. `this:` is read below as the
+        // optional entity pin; it likewise doesn't become a field.
+        if field.name == ".." {
+            continue;
+        }
+        if field.name == "this" {
+            pinned_entity = parse_concept_this(field)?;
             continue;
         }
         match field.name.as_str() {
@@ -261,13 +271,43 @@ pub(crate) fn parse_concept_body(
         .map_err(|e| AnalyzeErrorKind::InvalidConceptBody {
             reason: e.to_string(),
         })?;
-    let entity = descriptor.this();
+    // `this:` pins the entity; otherwise derive it from the
+    // descriptor (content-addressed).
+    let entity = pinned_entity.unwrap_or_else(|| descriptor.this());
     Ok(ConceptBody {
         descriptor,
         entity,
         transient,
         inline_attributes,
     })
+}
+
+/// Read a `concept!`'s `this:` field as an optional entity pin.
+///
+/// A URI (`tonk:view`, `did:key:…`, `id:…`, `db:…`) pins the
+/// concept to that stable entity. Every other form — a `?var`
+/// binding, a bare symbol, omitted — yields `None`: the entity is
+/// content-derived from the descriptor and the `?var`/name intent
+/// is handled by the head-intent flow (`derive_head_intent`), not
+/// here.
+fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, AnalyzeError> {
+    match &field.value {
+        FieldValue::Uri(uri) => {
+            let entity = uri
+                .parse()
+                .map_err(|e: dialog_artifacts::DialogArtifactsError| {
+                    AnalyzeError::at(
+                        AnalyzeErrorKind::InvalidSubjectUri {
+                            subject: uri.clone(),
+                            reason: e.to_string(),
+                        },
+                        field.value_range,
+                    )
+                })?;
+            Ok(Some(entity))
+        }
+        _ => Ok(None),
+    }
 }
 
 /// Resolve one `with:`-map field reference to its

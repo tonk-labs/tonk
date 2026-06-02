@@ -1103,6 +1103,31 @@ attribute!: &person-name
         };
     }
 
+    /// A concept whose name contains a `/` (`demo/stuff`) is a
+    /// concept head, not a URI head: the `/` is part of the name and
+    /// the left side has no dotted domain. The assertion resolves
+    /// the concept and lowers like any other.
+    #[dialog_common::test]
+    async fn it_asserts_a_concept_whose_name_contains_a_slash() {
+        let syntax = must_parse(
+            r#"
+demo/stuff!:
+  stuff: 1
+"#,
+        );
+        let spec = fixed_concept("demo/stuff", &[("stuff", "xyz.tonk.demo/stuff")]);
+        let analysis = flat(analyze_with(&syntax, &spec).await.unwrap());
+        assert_eq!(analysis.mutate.statements.len(), 1);
+        let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept) for `demo/stuff!:`");
+        };
+        assert!(
+            query.terms.contains("stuff"),
+            "the `stuff` field should be carried on the assertion",
+        );
+    }
+
     /// Three-expression doc: two `attribute!` + one `concept!`
     /// referencing them via bare symbols. Concept body resolution
     /// must hit the in-doc index, not the (Noop) outer resolver.
@@ -1465,6 +1490,57 @@ person!:
                 "field {field:?} should be blank"
             );
         }
+    }
+
+    /// A partial assertion to a concrete-URI entity sets only the
+    /// fields it names; unmentioned fields are omitted from the
+    /// assert (not carried as blanks), so the claim lowers cleanly
+    /// to the wire — a blank would be rejected by wire lowering.
+    /// This is what lets one entity accumulate a cardinality-many
+    /// field across several assertions without repeating its other
+    /// fields each time.
+    #[dialog_common::test]
+    async fn it_omits_unmentioned_fields_on_a_partial_assert() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  name: "Alice"
+"#,
+        );
+        let resolver = fixed_concept(
+            "person",
+            &[
+                ("name", "io.gozala.person/name"),
+                ("age", "io.gozala.person/age"),
+            ],
+        );
+        let tree = analyze_with(&syntax, &resolver).await.unwrap();
+        let analysis = flat(tree.clone());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept) for the partial assertion");
+        };
+        // `this` and the named `name` are present; the unmentioned
+        // `age` is omitted entirely.
+        assert!(matches!(
+            q.terms.get("this"),
+            Some(Term::Constant(Value::Entity(_)))
+        ));
+        assert!(matches!(
+            q.terms.get("name"),
+            Some(Term::Constant(Value::String(_)))
+        ));
+        assert!(
+            q.terms.get("age").is_none(),
+            "unmentioned `age` should be omitted from the assert, got {:?}",
+            q.terms.get("age"),
+        );
+        // And it lowers to a wire claim without a NonConstantTerm error.
+        tree.analysis
+            .lower_to_claims()
+            .expect("partial assertion lowers to a wire claim");
     }
 
     /// A bare integer literal written into an `unsigned-integer`
@@ -2289,6 +2365,156 @@ concept!:
             Some(Term::Constant(Value::Entity(_))) => {}
             other => panic!("with.name should be Constant(Entity), got {other:?}"),
         }
+    }
+
+    /// `this: <uri>` on a `concept!` pins the concept entity to that
+    /// URI instead of the content-derived hash, and the concept's
+    /// instances derive from the pinned entity — so a pinned concept
+    /// stays referenceable by a stable URI.
+    #[dialog_common::test]
+    async fn it_pins_concept_entity_via_this_uri() {
+        let syntax = must_parse(
+            r#"
+concept!: &view
+  this: tonk:view
+  description: "A view"
+  with:
+    model:
+      description: "Concept this view renders"
+      the:         xyz.tonk.view/model
+      as:          Entity
+      cardinality: one
+    display:
+      description: "HTML template"
+      the:         xyz.tonk.view/display
+      as:          Text
+      cardinality: one
+view!:
+  model: tonk:view
+  display: "x"
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+
+        // The declared concept entity is the pinned URI — the
+        // `&view` anchor publishes `view` -> `tonk:view`, not the
+        // descriptor hash.
+        let pinned: Entity = "tonk:view".parse().unwrap();
+        assert_eq!(
+            analysis.declarations.get("view"),
+            Some(&pinned),
+            "concept `view` should be pinned to `tonk:view`",
+        );
+
+        // The view instance derives its subject from the pinned
+        // predicate entity, so its `this` is `derive_this(tonk:view,
+        // {model, display})` — NOT derived from the descriptor hash.
+        let instance = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = instance else {
+            panic!("expected view instance assertion");
+        };
+        let derived_with_pin = {
+            use tonk_core::claim::ValueMap;
+            use tonk_schema::transact::derive_this;
+            let mut body = ValueMap::new();
+            body.insert("model".into(), Value::Entity(pinned.clone()));
+            body.insert("display".into(), Value::String("x".into()));
+            derive_this(&pinned, &body)
+        };
+        match query.terms.get("this") {
+            Some(Term::Constant(Value::Entity(e))) => {
+                assert_eq!(
+                    e, &derived_with_pin,
+                    "instance entity must derive from the pinned predicate entity"
+                );
+            }
+            other => panic!("instance `this` should be a derived entity, got {other:?}"),
+        }
+    }
+
+    /// Wire convergence for a PINNED concept. The notation path
+    /// derives a pinned concept's instance from the pinned entity.
+    /// The wire path (`application_plan_from_predicate`) carries no
+    /// pin — its `ConceptDescriptor` only knows `descriptor.this()`
+    /// (the content hash). The two still converge in practice
+    /// because every real wire producer (`lower_statement`) carries
+    /// `this` explicitly in the payload, which makes the wire path
+    /// SKIP derivation. This test pins that contract: with `this`
+    /// carried, wire == notation; with `this` omitted, the wire path
+    /// derives a DIFFERENT entity (the documented edge — a hand-
+    /// rolled caller that omits `this` for a pinned concept).
+    #[dialog_common::test]
+    async fn it_converges_wire_path_for_pinned_concept_when_this_is_carried() {
+        use dialog_query::AttributeDescriptor;
+        use dialog_query::artifact::Type;
+        use dialog_query::attribute::Cardinality as DialogCardinality;
+        use dialog_query::concept::descriptor::ConceptDescriptor as DialogConceptDescriptor;
+        use tonk_core::claim::{
+            ConceptDescriptor as WireDescriptor, PredicateApplication, ValueMap,
+        };
+        use tonk_schema::transact::{
+            ApplicationPlan, ConceptPlan, application_plan_from_predicate, derive_this,
+        };
+
+        let pinned: Entity = "tonk:view".parse().unwrap();
+        let mut body = ValueMap::new();
+        body.insert("display".into(), Value::String("x".into()));
+        let notation_this = derive_this(&pinned, &body);
+
+        // The wire descriptor for the `view` concept — `{display}`.
+        let descriptor = DialogConceptDescriptor::from(vec![(
+            "display",
+            AttributeDescriptor::new(
+                "xyz.tonk.view/display".parse().unwrap(),
+                "",
+                DialogCardinality::One,
+                Some(Type::String),
+            ),
+        )]);
+
+        // Wire path WITH `this` carried (the real bootstrap shape):
+        // derivation is skipped, the carried entity is used verbatim.
+        let mut params_with_this = ValueMap::new();
+        params_with_this.insert("display".into(), Value::String("x".into()));
+        params_with_this.insert("this".into(), Value::Entity(notation_this.clone()));
+        let plan = application_plan_from_predicate(PredicateApplication {
+            predicate: WireDescriptor::Durable(descriptor.clone()),
+            parameters: params_with_this,
+            name: None,
+        });
+        let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &plan else {
+            panic!("expected concept plan");
+        };
+        let wire_this = match statement.terms.get("this").expect("this present") {
+            dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+            other => panic!("expected entity constant, got {other:?}"),
+        };
+        assert_eq!(
+            wire_this, notation_this,
+            "with `this` carried, the wire path must match the pinned notation entity",
+        );
+
+        // Wire path WITHOUT `this`: derives from the descriptor hash,
+        // which is NOT the pinned entity. This documents the edge.
+        let mut params_no_this = ValueMap::new();
+        params_no_this.insert("display".into(), Value::String("x".into()));
+        let plan = application_plan_from_predicate(PredicateApplication {
+            predicate: WireDescriptor::Durable(descriptor),
+            parameters: params_no_this,
+            name: None,
+        });
+        let ApplicationPlan::Concept(ConceptPlan { statement, .. }) = &plan else {
+            panic!("expected concept plan");
+        };
+        let wire_this_no_pin = match statement.terms.get("this").expect("this present") {
+            dialog_query::Term::Constant(Value::Entity(e)) => e.clone(),
+            other => panic!("expected entity constant, got {other:?}"),
+        };
+        assert_ne!(
+            wire_this_no_pin, notation_this,
+            "without a carried `this`, the wire path cannot reproduce the pin \
+             (documents the hand-rolled-caller edge)",
+        );
     }
 
     /// A bare symbol that doesn't resolve anywhere surfaces

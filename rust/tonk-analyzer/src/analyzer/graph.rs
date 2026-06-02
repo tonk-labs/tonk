@@ -610,7 +610,11 @@ impl Graph {
             };
             let predicate_entity = match &a.predicate.name {
                 HeadName::Concept(name) => match scope.concept(name) {
-                    Some(def) => def.descriptor.concept().this(),
+                    // Carry the concept's resolved entity (pinned or
+                    // derived), not a recomputed descriptor hash, so a
+                    // pinned concept's anchored instances derive from
+                    // its pinned URI.
+                    Some(def) => def.entity.clone(),
                     None => continue,
                 },
                 HeadName::Claim(domain) => Entity::of(domain),

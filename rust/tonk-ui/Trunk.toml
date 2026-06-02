@@ -28,6 +28,7 @@ watch = [
     "../tonk-schema",
     "../tonk-notation",
     "../tonk-board",
+    "../tonk-workspace",
     "../tonk-concept",
     "../tonk-display",
     "../tonk-host",
