@@ -351,10 +351,12 @@ impl Planner for Application {
 
     fn plan(self, bindings: &Parameters) -> Result<ApplicationPlan, PlanError> {
         match self {
-            Self::Concept { query, name, .. } => Ok(ApplicationPlan::Concept(Box::new(ConceptPlan {
-                statement: substitute_concept_query(query, bindings)?,
-                name,
-            }))),
+            Self::Concept { query, name, .. } => {
+                Ok(ApplicationPlan::Concept(Box::new(ConceptPlan {
+                    statement: substitute_concept_query(query, bindings)?,
+                    name,
+                })))
+            }
             Self::Domain {
                 application, name, ..
             } => Ok(ApplicationPlan::Concept(Box::new(ConceptPlan {

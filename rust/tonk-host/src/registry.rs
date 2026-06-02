@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::sse::SubscriptionAbort;
+use crate::sse::EventSource;
 use wasm_bindgen::JsValue;
 use web_sys::Element;
 
@@ -46,7 +46,7 @@ pub(crate) struct Entry {
     /// shallowest-first refresh ordering.
     pub depth: u32,
     /// Upstream transport handle. Dropping it cancels the SSE.
-    pub abort: Option<SubscriptionAbort>,
+    pub abort: Option<EventSource>,
 }
 
 /// The host's subscription table.
@@ -75,7 +75,7 @@ impl Registry {
     /// is gone (canceled during the await that produced the
     /// handle), the handle is dropped immediately, cancelling the
     /// upstream.
-    pub(crate) fn install_abort(&mut self, id: EntryId, abort: SubscriptionAbort) {
+    pub(crate) fn install_abort(&mut self, id: EntryId, abort: EventSource) {
         match self.entries.get_mut(&id) {
             Some(e) => e.abort = Some(abort),
             None => drop(abort),

@@ -1,44 +1,114 @@
-//! Subscription helper — selects bridge or fetch transport at
-//! runtime and exposes a uniform `SubscriptionAbort` handle.
+//! Transport-agnostic SSE subscription.
 //!
-//! When `globalThis.tonk` is present (the iframe shell has loaded
-//! `bridge.js`) the bridge path is used: `globalThis.tonk.subscribe`
-//! returns a `ReadableStream` whose chunks are routed to the
-//! caller's `on_frame` callback by a pump spawned in
-//! `wasm_bindgen_futures::spawn_local`.
+//! [`open_sse`] selects a transport at runtime — the iframe bridge
+//! (`globalThis.tonk`, via [`crate::bridge`]) or a direct `fetch()`
+//! SSE reader (via [`crate::http`]) — and drives it through one
+//! [`EventSource`] abstraction.
 //!
-//! When `globalThis.tonk` is absent (the shell mounts these elements
-//! directly in its own DOM, outside any iframe) the legacy
-//! `fetch()`-based SSE reader in [`crate::fetch`] is used instead.
-//! The caller is responsible for supplying a non-empty `url` in
-//! that case (built from the `space`/`branch` HTML attributes).
+//! Each transport exposes its output as a uniform **frame stream**
+//! (`Stream<Item = Result<String, ErrorDetail>>`, one already-framed
+//! JSON conclusion batch per item) plus a teardown action. The
+//! abstraction owns the single drop-safety invariant:
+//!
+//! > **Dropping a [`EventSource`] never invokes `on_error`.**
+//!
+//! Teardown (an unmount or a re-subscribe) is a graceful close, not a
+//! transport failure. The reader races the frame stream against a
+//! drop signal, so the moment the handle is dropped the reader stops
+//! on the drop branch — before any abort-rejected read can reach
+//! `on_error`. There is no per-transport error suppression: the rule
+//! lives here, once.
 
-use std::rc::Rc;
-
+use futures::StreamExt as _;
+use futures::future::{Either, select};
+use futures::stream::LocalBoxStream;
 use ipld_core::ipld::Ipld;
-use web_sys::AbortController;
 
-use crate::bridge::{Subscription, subscribe};
 use crate::error::{ErrorDetail, ErrorKind};
 
-/// Transport handle returned by [`open_sse`].
-///
-/// Dropping this value cancels the subscription regardless of which
-/// transport is active.
-pub enum SubscriptionAbort {
-    /// Bridge path — `Drop` cancels the underlying `ReadableStream`,
-    /// which posts an `unsubscribe` envelope to the SW. The pump
-    /// task's pending `read()` resolves with `done=true` and exits.
-    Bridge(Rc<Subscription>),
-    /// Fetch/SSE path — `Drop` calls `AbortController::abort()`.
-    Fetch(AbortController),
+/// A live subscription. The reader task runs until the frame stream
+/// ends, errors, or this handle is dropped. Dropping it stops the
+/// reader cleanly (no `on_error`) and runs the transport teardown.
+pub struct EventSource {
+    /// Held only for its `Drop`: dropping the sender resolves the
+    /// reader's drop-signal receiver, so the reader exits on the
+    /// drop branch instead of seeing the teardown as a read error.
+    _shutdown: futures::channel::oneshot::Sender<()>,
+    /// Transport-specific teardown (abort the fetch / cancel the
+    /// bridge reader), run on drop alongside the shutdown signal.
+    teardown: Option<Box<dyn FnOnce()>>,
 }
 
-impl Drop for SubscriptionAbort {
+impl EventSource {
+    /// Spawn a reader over `frames`, dispatching each `Ok` frame to
+    /// `on_frame` and each `Err` to `on_error`. `teardown` runs when
+    /// the returned handle is dropped.
+    ///
+    /// The reader races `frames.next()` against the drop signal, so a
+    /// dropped handle stops the reader on the drop branch — the
+    /// teardown-induced read rejection is never observed, hence never
+    /// reported. This is the one place the "drop ⇒ no error"
+    /// invariant is enforced.
+    fn spawn(
+        mut frames: LocalBoxStream<'static, Result<String, ErrorDetail>>,
+        on_frame: impl Fn(&str) + 'static,
+        on_error: impl Fn(ErrorDetail) + 'static,
+        teardown: impl FnOnce() + 'static,
+    ) -> Self {
+        let (shutdown_tx, shutdown_rx) = futures::channel::oneshot::channel::<()>();
+        wasm_bindgen_futures::spawn_local(async move {
+            // `select` isn't biased: when the handle is dropped and a
+            // teardown-induced error become ready in the same tick, it
+            // can pick the error arm. So when a stream item wins we
+            // re-check the shutdown receiver and let a fired shutdown
+            // override the item — a dropped handle never surfaces an
+            // error, which is exactly the spurious error this
+            // abstraction exists to prevent.
+            let mut shutdown = shutdown_rx;
+            loop {
+                let next = frames.next();
+                futures::pin_mut!(next);
+                match select(next, &mut shutdown).await {
+                    // Shutdown fired — the handle was dropped. Exit
+                    // cleanly without touching `on_error`.
+                    Either::Right(_) => break,
+                    // A stream item resolved first. But the drop and a
+                    // teardown-induced error can become ready in the
+                    // same tick and `select` isn't biased, so re-check
+                    // shutdown before reporting any error: a fired
+                    // shutdown always wins.
+                    Either::Left((item, shutdown_fut)) => {
+                        // Shutdown has fired if the sender was dropped
+                        // (`Err(Canceled)`) or signalled (`Ok(Some)`);
+                        // only `Ok(None)` means "still live". If it
+                        // fired, exit clean regardless of `item`.
+                        let shutdown_fired = !matches!(shutdown_fut.try_recv(), Ok(None));
+                        match item {
+                            _ if shutdown_fired => break,
+                            Some(Ok(frame)) => on_frame(&frame),
+                            Some(Err(e)) => {
+                                on_error(e);
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                }
+            }
+        });
+        EventSource {
+            _shutdown: shutdown_tx,
+            teardown: Some(Box::new(teardown)),
+        }
+    }
+}
+
+impl Drop for EventSource {
     fn drop(&mut self) {
-        match self {
-            SubscriptionAbort::Bridge(sub) => sub.cancel(),
-            SubscriptionAbort::Fetch(ctrl) => ctrl.abort(),
+        // Dropping `_shutdown` already signalled the reader to stop;
+        // now release the transport (abort fetch / cancel reader).
+        if let Some(teardown) = self.teardown.take() {
+            teardown();
         }
     }
 }
@@ -63,55 +133,102 @@ pub fn use_bridge() -> bool {
 /// Open a streaming subscription using whichever transport is
 /// available.
 ///
-/// `url` is only used on the legacy fetch path. `body` is the
-/// query as an [`Ipld`] value; on the fetch path it is encoded
-/// once as DAG-JSON for the request body. The DAG-JSON encoding
-/// gives a canonical, codec-agnostic wire shape regardless of
-/// which transport runs underneath.
+/// `url` is only used on the fetch path. `body` is the query as an
+/// [`Ipld`] value; on the fetch path it is encoded once as DAG-JSON
+/// for the request body.
 ///
-/// `on_frame` is called for each emitted frame with the raw JSON
-/// string of a `Vec<Conclusion>`. `on_error` is called on transport
-/// errors.
-///
-/// Returns a [`SubscriptionAbort`] that the caller must keep alive;
-/// dropping it cancels the subscription.
+/// `on_frame` is called for each emitted frame (the raw JSON string
+/// of a `Vec<Conclusion>`); `on_error` for genuine transport errors.
+/// Dropping the returned [`EventSource`] tears the stream down
+/// without reporting an error.
 pub async fn open_sse(
     url: &str,
     body: &Ipld,
     on_frame: impl Fn(&str) + 'static,
     on_error: impl Fn(ErrorDetail) + 'static,
-) -> Result<SubscriptionAbort, ErrorDetail> {
+) -> Result<EventSource, ErrorDetail> {
     if use_bridge() {
-        let subscription = Rc::new(subscribe(body).await?);
-        let pump_sub = subscription.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result: Result<(), ErrorDetail> = async {
-                while let Some(frame) = pump_sub.next().await? {
-                    on_frame(&frame);
-                }
-                Ok(())
-            }
-            .await;
-            if let Err(e) = result {
-                on_error(e);
-            }
-        });
-        Ok(SubscriptionAbort::Bridge(subscription))
+        let (frames, teardown) = crate::bridge::frame_stream(body).await?;
+        Ok(EventSource::spawn(frames, on_frame, on_error, teardown))
     } else {
         let body_bytes = serde_ipld_dagjson::to_vec(body)
             .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body dag-json: {e}")))?;
         let body_str = String::from_utf8(body_bytes)
             .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("body utf8: {e}")))?;
-        // on_frame / on_error must be FnMut for the SSE reader loop.
-        let on_frame_cell = std::cell::RefCell::new(on_frame);
-        let on_error_cell = std::cell::RefCell::new(on_error);
-        let ctrl = crate::http::open_sse(
-            url,
-            &body_str,
-            move |frame| (on_frame_cell.borrow())(frame),
-            move |err| (on_error_cell.borrow())(err),
-        )
-        .await?;
-        Ok(SubscriptionAbort::Fetch(ctrl))
+        let (frames, teardown) = crate::http::frame_stream(url, &body_str).await?;
+        Ok(EventSource::spawn(frames, on_frame, on_error, teardown))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Dropping an `EventSource` must never surface an error, even
+    /// when the underlying frame stream would error on the next read
+    /// (as an aborted `fetch` body read does). This is the
+    /// regression guard for the spurious "Connection failed /
+    /// AbortError" that a tab switch produced when tonk-host aborted
+    /// its own subscription.
+    #[dialog_common::test]
+    async fn it_reports_no_error_when_dropped() {
+        use futures::channel::mpsc;
+
+        // A frame stream the test controls. The reader is parked on
+        // `recv` (no frame yet) exactly like a live SSE awaiting the
+        // next event; then we drop the handle.
+        let (mut tx, rx) = mpsc::unbounded::<Result<String, ErrorDetail>>();
+        let frames = rx.boxed_local();
+
+        let errored = Rc::new(Cell::new(false));
+        let saw_error = errored.clone();
+        let torn_down = Rc::new(Cell::new(false));
+        let did_teardown = torn_down.clone();
+
+        let sub = EventSource::spawn(
+            frames,
+            |_frame| {},
+            move |_e| saw_error.set(true),
+            move || did_teardown.set(true),
+        );
+
+        // Let the reader park on the stream, then drop the handle —
+        // the teardown-equivalent close.
+        flush().await;
+        drop(sub);
+
+        // Simulate the transport erroring on the now-abandoned read,
+        // the way an aborted fetch rejects. The reader must already
+        // be gone via the drop signal, so this is never observed.
+        let _ = tx.unbounded_send(Err(ErrorDetail::new(
+            ErrorKind::Network,
+            "stream read failed: AbortError (simulated)",
+        )));
+        flush().await;
+
+        assert!(
+            !errored.get(),
+            "dropping an EventSource must not invoke on_error",
+        );
+        assert!(torn_down.get(), "drop must run the transport teardown");
+    }
+
+    /// Yield to the microtask queue so spawned reader tasks make
+    /// progress between steps.
+    async fn flush() {
+        for _ in 0..4 {
+            let (tx, rx) = futures::channel::oneshot::channel::<()>();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = tx.send(());
+            });
+            let _ = rx.await;
+        }
     }
 }
