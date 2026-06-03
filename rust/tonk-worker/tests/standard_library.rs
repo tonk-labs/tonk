@@ -8,25 +8,26 @@
 //! seed at runtime — a parse error, an unresolved `&anchor`, a bad
 //! concept declaration, a rule that won't lift — fails here instead.
 //!
-//! Native-only: it reads the document from disk (there is no
-//! filesystem on wasm) and needs no running system. The file is read
-//! with `std::fs` at runtime rather than `include_str!` on purpose —
-//! embedding it would make `core.yaml` a build input of this crate,
-//! and editing the library would then force a wasm rebuild, defeating
-//! the point of serving it as a static asset.
+//! Native-only (there is no filesystem on wasm, and it needs no
+//! running system). The document is embedded with `include_str!`
+//! rather than read with `std::fs` at runtime: CI runs the suite from
+//! a `cargo nextest archive`, which bundles the compiled test binaries
+//! but not arbitrary runtime data files, so a runtime read of a
+//! sibling crate's asset fails in the sandbox. Embedding makes the
+//! library a build input of this *native* test binary only (it travels
+//! inside the archive) — the `#[cfg(not(wasm32))]` gate keeps it out
+//! of the wasm bundle, so editing the library still never forces a
+//! wasm rebuild.
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::path::PathBuf;
+/// The served standard library, embedded at compile time. Path is
+/// relative to this source file.
+const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 
 #[test]
 fn it_lowers_the_standard_library() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tonk-core/assets/library/core.yaml");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-
-    let parsed = tonk_notation::parse(&text);
+    let parsed = tonk_notation::parse(STANDARD_LIBRARY);
     let syntax = parsed
         .syntax
         .expect("standard library must parse with no diagnostics");
