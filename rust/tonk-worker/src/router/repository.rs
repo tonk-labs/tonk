@@ -232,14 +232,21 @@ pub async fn put_repository(
     // notation means rules need no out-of-band carrier: they are
     // statements in the document. One-time, at creation, so the
     // library isn't re-evaluated on every mount.
-    let library = fetch_standard_library().await?;
-    for branch_name in configuration.branch.keys() {
-        seed_standard_library(&tonk, &name, branch_name, &library).await?;
-        log!(
-            "Seeded standard library on '{}' branch '{}'",
-            name,
-            branch_name
-        );
+    //
+    // Only fetch when there's a branch to seed: a config with no
+    // branches has nothing to seed, and the fetch would otherwise run
+    // unconditionally — failing in any scope without the served asset
+    // (e.g. the wasm router tests, which PUT a branchless `{}`).
+    if !configuration.branch.is_empty() {
+        let library = fetch_standard_library().await?;
+        for branch_name in configuration.branch.keys() {
+            seed_standard_library(&tonk, &name, branch_name, &library).await?;
+            log!(
+                "Seeded standard library on '{}' branch '{}'",
+                name,
+                branch_name
+            );
+        }
     }
 
     // 4. Respond with the current state of the repository.
