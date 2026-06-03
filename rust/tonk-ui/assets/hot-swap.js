@@ -1,0 +1,653 @@
+// Dev-only hot reload control.
+//
+// Trunk's autoreload (disabled via `no_autoreload` in Trunk.toml) is
+// replaced by this client so a change to a *served asset* — notably
+// the standard library `/library/core.yaml` — re-seeds the live
+// repository in place instead of reloading the whole page. A genuine
+// code change (the wasm hash moved) still reloads.
+//
+// It connects to trunk's own change channel (`.well-known/trunk/ws`),
+// which exists only under `trunk serve`. In a production build there
+// is no such socket, so this module connects, fails, and stays inert
+// — safe to ship unconditionally.
+//
+// The `<hot-swap>` element renders a small corner pill: click it to
+// toggle hot reload on/off (the checkbox is an invisible overlay over
+// the whole pill), the `version` label shows the live bootstrap hash after
+// a reseed, and the status dot spins while seeding. Visual style is
+// ported from the interactivate-dat live-reload pill.
+
+;(async () => {
+  const LIBRARY_URL = "/library/core.yaml"
+
+  // Pill label glyphs: a recycle mark for an in-place standard-library
+  // reseed (live update, no reload), an eject mark for a full page
+  // reload (the running code is replaced).
+  // Idle is blank — the plain handle circle is enough; a glyph only
+  // appears for an actual event.
+  const GLYPH_IDLE = ""
+  const GLYPH_LIBRARY = "♺"
+  const GLYPH_RELOAD = "⏏"
+  const GLYPH_ERROR = "⚠"
+
+  class HotSwap extends HTMLElement {
+    // Persists the auto-apply toggle across reloads.
+    static STORAGE_KEY = "tonk:hot-swap:enabled"
+    static insert(target) {
+      const doc = target.ownerDocument
+      const view = doc.createElement("hot-swap")
+      target.appendChild(view)
+      return view
+    }
+    constructor(...args) {
+      super(...args)
+      this.root = this.attachShadow({ mode: "open" })
+    }
+    connectedCallback() {
+      this.root.innerHTML = `
+      <style>
+      :host {
+        /* Use the app's Web Awesome design tokens so the pill matches
+           the active theme (including the brutalist palette overrides)
+           and follows light/dark automatically. WA custom properties
+           are defined on the document root and inherit through the
+           shadow boundary; the fallbacks keep the pill legible if WA
+           isn't loaded (e.g. a bare page). */
+        --hs-bg: var(--wa-color-surface-raised, #18181b);
+        --hs-fg: var(--wa-color-text-normal, #fafafa);
+        /* Monochrome: ON inverts to a solid LIGHT pill, OFF is the muted
+           dark pill — distinguished by inversion + opacity, no colour.
+           Red stays reserved for the error state. */
+        --hs-dot-idle: var(--wa-color-neutral-border-normal, rgba(160, 160, 160, 0.4));
+        --hs-danger: var(--wa-color-danger-fill-loud, #d92d20);
+        --hs-danger-fg: var(--wa-color-danger-on-loud, #ffffff);
+        --hs-radius: var(--wa-border-radius-pill, 3em);
+        --hs-font: var(--wa-font-family-body, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+        /* A soft glow shadow like the original pill — readable on any
+           background. WA's shadow tokens compose into this if present. */
+        --hs-shadow: var(--wa-shadow-l, 0 0 18px rgba(0, 0, 0, 0.45));
+      }
+
+      .notification {
+        line-height: 1.15;
+        -webkit-text-size-adjust: 100%;
+
+        pointer-events: none;
+        position: fixed;
+        display: inline-block;
+        z-index: 2147483647;
+        top: 0px;
+        right: 0px;
+        border: none;
+        margin: 10px;
+        padding: 0;
+
+        font-family: var(--hs-font);
+        max-width: 400px;
+      }
+
+      /* Hide the native checkbox; clicking the pill toggles it (the
+         pill is a <label>). */
+      .notification input[type=checkbox] {
+        position: absolute;
+        opacity: 0;
+        width: 0;
+        height: 0;
+        margin: 0;
+        pointer-events: none;
+      }
+
+      /* The pill — a DRAWER that opens leftward from the handle. The
+         handle (dot) is pinned at the right; the body grows to the left
+         (a width transition) to reveal the version, which then slides +
+         fades in from the left AFTER the width has opened. Modelled on
+         the new-notification drawer animation. The whole pill also
+         scales away to hide / scales back to conjure. */
+      .pill {
+        position: relative;
+        display: flex;
+        flex-direction: row;          /* version left, handle right */
+        align-items: center;
+        justify-content: flex-end;    /* keep handle pinned right as width grows */
+        box-sizing: border-box;
+        height: 1.9em;
+        width: 7em;                   /* unfolded by default; .folded shrinks it */
+        padding: 0 0.4em;
+        border-radius: var(--hs-radius);
+        /* Inverse fill (light pill, dark handle/text) so the page shows
+           through when translucent — a dark pill on the dark page hides
+           the opacity change. */
+        background: var(--hs-fg);
+        color: var(--hs-bg);
+        box-shadow: var(--hs-shadow);
+        font-size: 0.7rem;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        /* OFF: muted/translucent. ON (:checked) goes solid. The opacity
+           gap is the only on/off signal — same colour either way. */
+        opacity: 0.4;
+        cursor: pointer;
+        pointer-events: all;
+        transform: scale(1);
+        transform-origin: center;
+        transition: width 0.45s cubic-bezier(.86,0,.07,1),
+                    transform 0.3s cubic-bezier(.68,-0.55,.27,1.55),
+                    background-color 0.2s ease,
+                    opacity 0.2s ease;
+      }
+      /* Hover nudges OFF up a little for affordance, but stays below the
+         solid ON level so the states never look identical. */
+      .notification input:not(:checked) + .pill:hover { opacity: 0.7; }
+
+      /* Enabled (auto-apply on): the same pill, fully solid (opacity 1).
+         OFF is the muted version of the very same pill — opacity is the
+         only difference. */
+      .notification input:checked + .pill {
+        opacity: 1;
+      }
+
+      /* The version sits beside the handle, clear of it. Off (handle
+         right) → label shifted left; the margin flips with the toggle
+         so the handle never overlays the text. It reveals (fades +
+         slides in) only after the drawer has opened (transition-delay). */
+      .version {
+        font-variant-numeric: tabular-nums;
+        margin: 0 1.9em 0 0.6em;   /* handle right: room on the right */
+        opacity: 1;
+        transform: translateX(0);
+        transition: opacity 0.25s ease 0.25s,
+                    transform 0.3s ease 0.25s,
+                    margin 0.45s cubic-bezier(.68,-0.55,.27,1.55);
+      }
+
+      /* The handle — an absolutely-positioned circle that SLIDES across
+         the pill on toggle (wa-switch thumb), pinned to the right end
+         when off and the left end when on. The glyph sits inside it.
+         It's the click target and the status indicator (spins as a ring
+         while applying / on error). */
+      .dot {
+        position: absolute;
+        top: 50%;
+        right: 0.25em;
+        transform: translateY(-50%);
+        box-sizing: border-box;
+        width: 1.4em;
+        height: 1.4em;
+        border-radius: 50%;
+        /* Dark handle on the light pill (the inverse), so it stays
+           visible whether the pill is solid or translucent. */
+        background: var(--hs-bg);
+        color: var(--hs-fg);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: right 0.45s cubic-bezier(.68,-0.55,.27,1.55),
+                    background-color 0.2s ease;
+      }
+      .glyph { font-size: 0.7em; line-height: 1; }
+
+      /* Enabled: handle slides to the LEFT end (same colours); the
+         version margin flips so it sits to the handle's right. */
+      .notification input:checked + .pill .dot {
+        right: calc(100% - 1.4em - 0.25em);
+      }
+      .notification input:checked + .pill .version {
+        margin: 0 0.6em 0 1.9em;   /* handle left: room on the left */
+      }
+
+      /* Pulse while announcing / applying a change. */
+      .notification.update .pill { animation: upgrade 1.2s infinite ease-in-out; }
+      /* While applying (toggle on + pulsing), the handle spins as a ring.
+         The ON pill is light, so the ring is dark to read against it. */
+      .notification.update input:checked + .pill .dot {
+        background: transparent;
+        border: 2px solid transparent;
+        border-left-color: var(--hs-bg);
+        animation: spin 0.8s infinite linear;
+      }
+
+      /* Build error: danger fill, spinning ring handle, forced visible. */
+      .notification.error .pill { background: var(--hs-danger); color: var(--hs-danger-fg); opacity: 1; }
+      .notification.error .dot {
+        background: transparent;
+        border: 2px solid transparent;
+        border-left-color: var(--hs-danger-fg);
+        animation: spin 0.8s infinite linear;
+      }
+
+      /* FOLDED: retract the drawer — width shrinks back to the handle
+         circle and the version slides/fades back out to the left. */
+      .notification.folded .pill { width: 1.9em; }
+      .notification.folded .version {
+        opacity: 0;
+        transform: translateX(-0.6em);
+        /* No delay folding — the text leaves first, then the drawer
+           closes. */
+        transition: opacity 0.15s ease, transform 0.2s ease;
+      }
+
+      /* HIDDEN at rest: the whole pill scales to nothing (the conjure).
+         A hover-zone behind it (z-index 0) holds the hover in the corner
+         so the pill (z-index 1) scales back and stays clickable. */
+      .notification.hide .pill { transform: scale(0); position: relative; z-index: 1; }
+      .notification.hide::after {
+        content: "";
+        position: absolute;
+        top: 0; right: 0;
+        width: 8em; height: 3em;
+        pointer-events: all;
+        z-index: 0;
+      }
+      .notification.hide:hover .pill { transform: scale(1); }
+
+      @keyframes spin {
+        0% { transform: translateY(-50%) rotate(0deg); }
+        100% { transform: translateY(-50%) rotate(360deg); }
+      }
+      @keyframes upgrade {
+        0% { transform: scale(1); }
+        50% { transform: scale(1.05); }
+        100% { transform: scale(1); }
+      }
+      </style>
+      <aside class="notification hide">
+        <input id="hotswap" type="checkbox" checked />
+        <label class="pill" for="hotswap">
+          <span class="version"></span>
+          <span class="dot"><span class="glyph"></span></span>
+        </label>
+      </aside>`
+      this.toggle = this.root.querySelector("input")
+      // Restore the persisted preference so toggling off survives a
+      // reload (otherwise every refresh re-enables auto-apply). Stored
+      // value "0" means the user turned it off.
+      try {
+        this.toggle.checked = localStorage.getItem(HotSwap.STORAGE_KEY) !== "0"
+      } catch (_) {
+        // localStorage unavailable (private mode, etc.) — default on.
+      }
+      this.toggle.addEventListener("change", () => {
+        try {
+          localStorage.setItem(HotSwap.STORAGE_KEY, this.toggle.checked ? "1" : "0")
+        } catch (_) {
+          // Non-fatal: preference just won't persist this session.
+        }
+        // Re-enabling auto-apply while a change is pending applies it.
+        if (this.toggle.checked && this.onenable) this.onenable()
+      })
+    }
+    get enabled() {
+      return this.toggle?.checked ?? true
+    }
+    set visible(value) {
+      this.root.querySelector(".notification").classList.toggle("hide", !value)
+    }
+    // Folded = collapsed to a circle (icon only, no hash). Unfolded
+    // (default) shows the hash.
+    set folded(value) {
+      this.root.querySelector(".notification").classList.toggle("folded", value)
+    }
+    // Pulse = the pill pulses (announcing / applying a change).
+    set pulse(value) {
+      this.root.querySelector(".notification").classList.toggle("update", value)
+    }
+    // Error = a build failed. Forces the pill visible (even though it's
+    // hidden at rest), tints it danger, and keeps it pulsing until the
+    // next successful build clears it.
+    set error(value) {
+      const aside = this.root.querySelector(".notification")
+      aside.classList.toggle("error", value)
+      if (value) {
+        aside.classList.remove("hide")
+        aside.classList.add("update")
+      } else {
+        // Cleared by a good build: stop pulsing and settle back to
+        // hidden (the onChange that follows drives any further UI).
+        aside.classList.remove("update")
+        aside.classList.add("hide")
+      }
+    }
+    /// Set the handle glyph (lives inside the sliding circle) and the
+    /// hash/label text (centred, the handle slides over it).
+    setStatus(glyph, label) {
+      this.root.querySelector(".glyph").textContent = glyph
+      this.root.querySelector(".version").textContent = label
+    }
+  }
+  customElements.define("hot-swap", HotSwap)
+
+  // The wasm bundle hash trunk emits into the served index, used to
+  // detect a genuine code change. A different hash on a fresh change
+  // signal is a real rebuild (reload); an unchanged hash means only
+  // an asset moved (trunk fires a generic `reload` for any pipeline
+  // run, so we can't trust the signal alone).
+  const fetchLibrary = async () => {
+    const response = await fetch(LIBRARY_URL, { cache: "no-store" })
+    if (!response.ok) throw new Error(`GET ${LIBRARY_URL} -> ${response.status}`)
+    return await response.text()
+  }
+  // The previously-cached library — what was served (and applied) on
+  // the last load. `force-cache` returns the cached copy without
+  // revalidating; a miss falls through to network. Used on startup to
+  // tell whether the library changed since last load (cached vs
+  // fresh), so a reload picks up bootstrap edits made while away.
+  const cachedLibrary = async () => {
+    try {
+      const response = await fetch(LIBRARY_URL, { cache: "force-cache" })
+      if (!response.ok) return null
+      return await response.text()
+    } catch (_) {
+      return null
+    }
+  }
+  // Prime the HTTP cache with the current served library so the next
+  // load's `cachedLibrary()` reflects what we just applied (otherwise
+  // it would re-detect the same change and reseed every load).
+  const primeLibraryCache = async () => {
+    try {
+      await fetch(LIBRARY_URL, { cache: "reload" })
+    } catch (_) {
+      // Non-fatal: a failed prime just means an extra reseed next load.
+    }
+  }
+  const servedWasmHash = async () => {
+    const response = await fetch("/", { cache: "no-store" })
+    const html = await response.text()
+    const match = html.match(/ui-[a-f0-9]+_bg\.wasm/)
+    return match ? match[0] : null
+  }
+
+  // Re-seed by re-evaluating the library document through the page's
+  // own routing context, not a guessed repo/branch. Each mounted
+  // `<tonk-branch>` carries its resolved space/branch; dispatching the
+  // `tonk-evaluate` event on it bubbles to the `<tonk-host>` ancestor,
+  // which routes the document to exactly the branch that element's
+  // views read. Re-asserting is idempotent (stable entity URIs), so
+  // only the edits land.
+  //
+  // If several branches are mounted, every one is re-seeded — each is
+  // a distinct context a view might be rendering against.
+  const reseed = async (library) => {
+    const branches = [...document.querySelectorAll("tonk-branch")]
+    if (branches.length === 0) {
+      throw new Error("no <tonk-branch> in the page to evaluate against")
+    }
+
+    for (const branch of branches) {
+      const detail = { document: library }
+      const event = new CustomEvent("tonk-evaluate", {
+        detail,
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      })
+      branch.dispatchEvent(event)
+      // The host calls preventDefault() and writes detail.result (a
+      // promise) when it handles the event; an unprevented event means
+      // no <tonk-host> ancestor caught it.
+      if (!event.defaultPrevented || !detail.result) {
+        throw new Error("tonk-evaluate not handled (no <tonk-host> ancestor)")
+      }
+      const result = await detail.result
+      console.debug("[hot-swap] reseed", {
+        branch,
+        commits: result?.commits,
+      })
+    }
+  }
+
+  // A short content hash of the library text, shown in the pill as the
+  // live bootstrap "version" (there is no version system, so the
+  // content hash is the identity). SHA-256, first 6 hex chars.
+  const libraryHash = async (text) => {
+    try {
+      const bytes = new TextEncoder().encode(text)
+      const digest = await crypto.subtle.digest("SHA-256", bytes)
+      return [...new Uint8Array(digest)]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")
+        .slice(0, 6)
+    } catch (_) {
+      return ""
+    }
+  }
+
+  let lastLibrary = null
+  try {
+    lastLibrary = await fetchLibrary()
+  } catch (_) {
+    // No served library (e.g. not running the tonk shell) — stay inert.
+    return
+  }
+  const baselineWasm = await servedWasmHash().catch(() => null)
+
+  const view = HotSwap.insert(document.documentElement)
+
+  // Changes detected while hot reload is off, held until re-enabled.
+  // `pending` is a library text awaiting reseed; `pendingReload` marks
+  // a page change that needs a full reload.
+  let pending = null
+  let pendingReload = false
+
+  // How long the toggled-off announcement stays unfolded before it
+  // folds back into a pulsing circle.
+  const FOLD_DELAY = 45000
+  let foldTimer = null
+  const clearFoldTimer = () => {
+    if (foldTimer) { clearTimeout(foldTimer); foldTimer = null }
+  }
+
+  // Conjure as a folded circle, then unfold the drawer once the
+  // conjure (scale-in) has settled — so the pill pops in as a circle
+  // first and opens afterward, never appearing already-unfolded.
+  const conjure = (glyph, hash) =>
+    new Promise((resolve) => {
+      clearFoldTimer()
+      view.setStatus(glyph, hash)
+      view.folded = true    // start folded (a circle)
+      view.visible = true   // conjure: scale the circle in
+      // Let the conjure animation play, then open the drawer.
+      setTimeout(() => {
+        view.folded = false // unfold: drawer opens, version reveals
+        resolve()
+      }, 350)
+    })
+
+  // Toggled-ON flow: conjure (circle) → unfold showing the version,
+  // pulse while applying, then on completion fold back, clear the icon,
+  // and vanish.
+  const apply = async (library, glyph = GLYPH_LIBRARY) => {
+    const hash = await libraryHash(library)
+    await conjure(glyph, hash)
+    view.pulse = true     // pulsing = applying
+    try {
+      await reseed(library)
+      view.pulse = false
+      pending = null
+      await primeLibraryCache()
+      // Done: fold back, clear the icon to idle, then vanish.
+      view.folded = true
+      view.setStatus(GLYPH_IDLE, hash)
+      setTimeout(() => {
+        view.visible = false
+        view.folded = false
+      }, 600)
+    } catch (e) {
+      console.error("[hot-swap]", e)
+      view.pulse = false // stop pulsing but stay visible to signal trouble
+    }
+  }
+
+  // Toggled-OFF flow: conjure + unfold showing the version (no pulse),
+  // hold ~45s, then fold into a circle that pulses to keep announcing
+  // the pending change. Stays until the toggle is flipped on.
+  const announce = async (library, glyph = GLYPH_LIBRARY) => {
+    pending = library
+    await conjure(glyph, await libraryHash(library))
+    view.pulse = false    // no pulse while unfolded
+    foldTimer = setTimeout(() => {
+      view.folded = true  // fold into a circle...
+      view.pulse = true   // ...and pulse only while folded
+    }, FOLD_DELAY)
+  }
+  // Re-enabling hot reload applies whatever was held: a page reload
+  // takes precedence (the running code may be stale), otherwise the
+  // pending library reseed.
+  view.onenable = () => {
+    if (pendingReload) {
+      window.location.reload()
+    } else if (pending) {
+      apply(pending)
+    }
+  }
+
+  // Trunk fires `reload` as its pipeline runs, but the `copy-file`
+  // re-copy of `core.yaml` into dist can land a beat *after* the
+  // signal — so the first fetch right after a reload often still
+  // reads the previous content (the "one version behind" race). Poll
+  // (cache-sidestepped) until the served text actually differs from
+  // what we last applied, or give up after a short window (the change
+  // was elsewhere, e.g. a Rust file).
+  const awaitChangedLibrary = async () => {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      let library
+      try {
+        library = await fetchLibrary()
+      } catch (_) {
+        return null
+      }
+      if (library !== lastLibrary) return library
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    return null
+  }
+
+  // Reload now if hot reload is on, else announce the held reload via
+  // the off flow (unfold → hold → fold + pulse) until re-enabled.
+  const reloadOrHold = () => {
+    if (view.enabled) {
+      window.location.reload()
+    } else {
+      pendingReload = true
+      clearFoldTimer()
+      view.setStatus(GLYPH_RELOAD, "reload")
+      view.visible = true
+      view.folded = false
+      view.pulse = false
+      foldTimer = setTimeout(() => {
+        view.folded = true
+        view.pulse = true
+      }, FOLD_DELAY)
+    }
+  }
+
+  const onChange = async () => {
+    // Reload is the safe default: trunk rebuilt *something* and with
+    // its own autoreload disabled we own the decision. The ONE case we
+    // handle specially is a change confined to the standard library —
+    // applied in place without losing page state. Anything else (page
+    // wasm, the service-worker bundle, index.html, CSS, fonts, any
+    // asset we don't model) reloads, so a change is never dropped.
+
+    // Check the page wasm FIRST — it's a fast single fetch, and a code
+    // change must reload regardless of the library. This avoids the
+    // multi-second library poll on every Rust edit.
+    try {
+      const served = await servedWasmHash()
+      if (served && baselineWasm && served !== baselineWasm) {
+        reloadOrHold()
+        return
+      }
+    } catch (_) {
+      // Unknown wasm state — fall through; the library check or the
+      // reload fallback still covers the change.
+    }
+
+    // Wasm unchanged. Did the library change? (Polls briefly for the
+    // re-copied asset to settle.)
+    const library = await awaitChangedLibrary()
+    if (library !== null) {
+      // Library-only change. Toggled on → apply in place (the on
+      // flow); off → announce + hold (the off flow).
+      lastLibrary = library
+      if (view.enabled) {
+        apply(library)
+      } else {
+        announce(library)
+      }
+      return
+    }
+
+    // Neither wasm nor library changed that we can see — but trunk
+    // signalled *something* (index.html, CSS, an asset). Reload.
+    reloadOrHold()
+  }
+
+  // Wait for at least one routing context to mount, so a load-time
+  // reseed has a `<tonk-branch>` to dispatch on. Returns false if none
+  // appears within the window (e.g. a page with no tonk views).
+  const awaitBranch = async () => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (document.querySelector("tonk-branch")) return true
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    return false
+  }
+
+  // On load, reconcile the seeded library with the served one. The
+  // HTTP cache holds what was applied on the previous load; comparing
+  // it against the fresh copy tells us whether the library changed
+  // while the page was away (an SW reactivation / hard reload doesn't
+  // re-seed on its own). If it differs, apply it once the views are
+  // mounted. `lastLibrary` is the fresh copy fetched at startup.
+  const reconcileOnLoad = async () => {
+    // Seed the idle hash so a later hover/conjure shows the live
+    // version (the pill stays hidden until there's something to show).
+    view.setStatus(GLYPH_IDLE, await libraryHash(lastLibrary))
+    const cached = await cachedLibrary()
+    if (cached !== null && cached === lastLibrary) return
+    if (!(await awaitBranch())) return
+    // The library changed while away: toggled on → apply; off →
+    // announce + hold.
+    if (view.enabled) {
+      await apply(lastLibrary)
+    } else {
+      announce(lastLibrary)
+    }
+  }
+
+  const connect = () => {
+    const base = document.querySelector("base")?.getAttribute("href") || "/"
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws"
+    const url = `${scheme}://${window.location.host}${base}.well-known/trunk/ws`
+    const ws = new WebSocket(url)
+    ws.onmessage = (event) => {
+      let message
+      try {
+        message = JSON.parse(event.data)
+      } catch (_) {
+        return
+      }
+      if (message.type === "buildFailure") {
+        // Build broke: show the danger pill, keep it spinning, and
+        // surface the reason in the label until the next good build.
+        view.error = true
+        view.setStatus(GLYPH_ERROR, "build failed")
+        console.error("[hot-swap] build failed", message.data?.reason ?? "")
+        return
+      }
+      if (message.type === "reload") {
+        // A reload signal means the build recovered — clear any error.
+        view.error = false
+        onChange()
+      }
+    }
+    // Reconnect on drop (trunk restart, brief disconnects).
+    ws.onclose = () => setTimeout(connect, 1000)
+    ws.onerror = () => ws.close()
+  }
+
+  reconcileOnLoad()
+  connect()
+})()

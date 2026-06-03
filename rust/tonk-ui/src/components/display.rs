@@ -162,38 +162,28 @@ pub fn TonkDisplayView() -> impl IntoView {
                     let _ = slot.append_child(&section);
                 }
             }
-            Err(_) => {
-                // Resolution error — let the ErrorBoundary surface
-                // it. The Effect runs after resource resolution, so
-                // an error here is shown by re-reading the resource
-                // in the ErrorBoundary branch below.
+            Err(error) => {
+                // Resolution failed — surface it inline rather than
+                // swallowing it (the bare route has no ErrorBoundary).
+                if let Ok(section) = document.create_element("section") {
+                    let _ = section.set_attribute("class", "error");
+                    section.set_text_content(Some(&format!("{error}")));
+                    let _ = slot.append_child(&section);
+                }
             }
         }
     });
 
+    // Bare render: just the routing-context chain and the
+    // `<tonk-display>` mount, no shell chrome (no banner, no
+    // `<wa-page>`, no toolbar). The document's global stylesheet still
+    // loads, so the rendered view is styled; this route is the page.
     view! {
-        <header slot="main-header" class="space-banner">
-            <h1 class="space-banner-title" title=move || subject.get().unwrap_or_default()>
-                { move || subject.get().unwrap_or_default() }
-            </h1>
-        </header>
-        <Suspense fallback=|| view! { <wa-spinner></wa-spinner> }>
-            <ErrorBoundary fallback=|errors| view! {
-                <wa-callout variant="danger">
-                    <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
-                    { move || errors.get().into_iter().map(|(_, e)| format!("{e}")).collect::<Vec<_>>().join(", ") }
-                </wa-callout>
-            }>
-                { move || resolved_entity.get().map(|result| result.map(|_| ())) }
-                <main class="wa-stack display-view">
-                    <tonk-repository name=move || space_name.get().unwrap_or_default()>
-                        <tonk-branch name=move || branch_name.get().unwrap_or_default()>
-                            <div class="display-view-slot" node_ref=mount></div>
-                        </tonk-branch>
-                    </tonk-repository>
-                </main>
-            </ErrorBoundary>
-        </Suspense>
+        <tonk-repository class="display-route" name=move || space_name.get().unwrap_or_default()>
+            <tonk-branch name=move || branch_name.get().unwrap_or_default()>
+                <div class="display-view-slot" node_ref=mount></div>
+            </tonk-branch>
+        </tonk-repository>
     }
 }
 

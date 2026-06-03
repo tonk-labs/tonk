@@ -4837,17 +4837,13 @@ name = "tonk-board"
 version = "0.1.0"
 dependencies = [
  "custom-elements",
- "dialog-common",
  "js-sys",
  "serde-wasm-bindgen",
  "serde_json",
- "tonk-core",
  "tonk-host",
- "tonk-macros",
  "tonk-schema",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-bindgen-test",
  "web-sys",
 ]
 
@@ -5079,10 +5075,8 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
- "tonk-core",
  "tonk-display",
  "tonk-host",
- "tonk-macros",
  "tonk-schema",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5249,11 +5243,10 @@ dependencies = [
 name = "tonk-workspace"
 version = "0.1.0"
 dependencies = [
- "dialog-common",
- "tonk-core",
- "tonk-macros",
- "tonk-schema",
- "wasm-bindgen-test",
+ "custom-elements",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

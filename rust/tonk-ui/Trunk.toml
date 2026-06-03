@@ -4,6 +4,12 @@ offline = true
 
 [serve]
 port = 8080
+# Disable trunk's built-in reload-everything client. A change to a
+# served asset (notably `/library/core.yaml`) otherwise reloads the
+# whole page even when no code changed. The dev-only `hot-swap.js`
+# client connects to trunk's change channel instead and re-seeds the
+# standard library in place, reloading only on a genuine wasm change.
+no_autoreload = true
 
 [watch]
 # Watch every workspace crate that contributes to the

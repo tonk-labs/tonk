@@ -1,21 +1,16 @@
 //! `<tonk-board source="…">` — the board wrapper element.
 //!
-//! Three jobs on mount:
+//! Two jobs on mount:
 //!
-//! 1. **Seed the branch** with the board schema, view templates,
-//!    and a `demo` board by dispatching `tonk-evaluate` with the
-//!    bundled `crate::BOOTSTRAP` document. The `<tonk-host>`
-//!    ancestor handles routing context from the surrounding
-//!    `<tonk-repository>` / `<tonk-branch>` annotators. Idempotent
-//!    on re-runs.
-//!
-//! 2. **Resolve the board name** to an entity URI by dispatching
+//! 1. **Resolve the board name** to an entity URI by dispatching
 //!    `tonk-query` against the branch's `Name` index — same host
 //!    event the other consumer elements use. The route only knows
 //!    the board's bookmark name from the URL; the element does
-//!    the lookup.
+//!    the lookup. The board schema, view templates, and `demo`
+//!    board it resolves against are seeded into the branch from the
+//!    standard library at repository creation, not by this element.
 //!
-//! 3. **Mount a `<tonk-display>`** against the resolved entity
+//! 2. **Mount a `<tonk-display>`** against the resolved entity
 //!    with `model="board-view"` (no `view`, so the built-in view
 //!    for that model is used). The view template chain drives
 //!    strip / column / tile rendering.

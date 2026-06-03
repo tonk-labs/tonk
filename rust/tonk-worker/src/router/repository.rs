@@ -21,7 +21,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::claim::TransactRequest;
 use tonk_schema::{Branch as MetaBranch, Remote, Replica, TrackingBranch};
 
 use super::AppState;
@@ -94,64 +93,12 @@ pub struct BranchConfiguration {
     /// commits. Server-populated; ignored on incoming PUT bodies.
     #[serde(default)]
     pub revision: Option<Revision>,
-    /// Claims to commit to this branch immediately after creation
-    /// — the branch's initial content. Typically schema concepts
-    /// and view templates that a UI element ships as its bootstrap
-    /// (see `tonk_macros::claim!`). Applied in one commit through
-    /// the same reactor path as `/transact`, so effects run and
-    /// subscribers are notified. Ignored on PUTs to an existing
-    /// repository. Skipped on the wire when absent — the read-side
-    /// response never populates it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bootstrap: Option<TransactRequest>,
-    /// Inductive rules (`rule!:` installs) to seed on this branch at
-    /// creation, alongside [`bootstrap`](Self::bootstrap). Rules have
-    /// no [`TransactRequest`] representation — the `Claim` wire can't
-    /// carry the `dialog.effect/*` triples a rule writes — so they
-    /// ride as their `(source, polarity)` and are rebuilt + asserted
-    /// server-side in the seed loop. A UI element lifts these from its
-    /// bootstrap document via `tonk_macros::effects!`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rules: Vec<EffectSource>,
-}
-
-/// A seedable inductive rule, as the two strings that round-trip
-/// through [`Effect::from_source`](tonk_core::effect::Effect::from_source):
-/// the JSON-encoded rule descriptor and its polarity tag. The
-/// serializable carrier for a `rule!:` install across the repository
-/// PUT wire (a [`tonk_schema::rule::Rule`] itself is not
-/// `Serialize`).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EffectSource {
-    /// The `dialog.effect/source` string (JSON `InductiveRuleDescriptor`).
-    pub source: String,
-    /// The polarity tag — `"assert"` or `"retract"`.
-    pub polarity: String,
 }
 
 impl BranchConfiguration {
     /// Attach an upstream pointing at `{remote}/{branch}`.
     pub fn upstream(mut self, remote: impl Into<String>, branch: impl Into<String>) -> Self {
         self.upstream = Some(UpstreamConfiguration::new(remote, branch));
-        self
-    }
-
-    /// Attach bootstrap claims to seed on this branch at creation.
-    /// Merges with any already set, so callers can fold in several
-    /// elements' bootstraps.
-    pub fn bootstrap(mut self, request: TransactRequest) -> Self {
-        match &mut self.bootstrap {
-            Some(existing) => existing.claims.extend(request.claims),
-            none => *none = Some(request),
-        }
-        self
-    }
-
-    /// Attach inductive rules to seed at creation, as their
-    /// `(source, polarity)` carriers. Appends, so several elements'
-    /// rules fold in alongside their bootstraps.
-    pub fn rules(mut self, rules: impl IntoIterator<Item = EffectSource>) -> Self {
-        self.rules.extend(rules);
         self
     }
 }
@@ -276,70 +223,128 @@ pub async fn put_repository(
     // to the right status via `RepositoryError::into`.
     let repository = create_repository(&tonk, &name, &configuration).await?;
 
-    // 3. Seed each branch's bootstrap content. Runs through the
-    // reactor's transaction path (same as `/transact`) so effects
-    // evaluate and subscribers are notified. One-time, at creation:
-    // a UI element ships its schema + view templates as a
-    // `bootstrap` here instead of re-evaluating them on every
-    // mount.
-    for (branch_name, settings) in &configuration.branch {
-        let claims = settings.bootstrap.as_ref().map(|b| &b.claims);
-        let has_claims = claims.is_some_and(|c| !c.is_empty());
-        let has_rules = !settings.rules.is_empty();
-        if !has_claims && !has_rules {
-            continue;
+    // 3. Seed the standard library into each content branch. The
+    // built-in concepts, views, commands, and rules live in one
+    // served notation asset (`/library/core.yaml`); the worker
+    // fetches it and runs it through the evaluate pipeline — the
+    // same `parse → analyze → commit` path as `/evaluate`, which
+    // commits both claims and `rule!:` installs. Seeding through
+    // notation means rules need no out-of-band carrier: they are
+    // statements in the document. One-time, at creation, so the
+    // library isn't re-evaluated on every mount.
+    //
+    // Only fetch when there's a branch to seed: a config with no
+    // branches has nothing to seed, and the fetch would otherwise run
+    // unconditionally — failing in any scope without the served asset
+    // (e.g. the wasm router tests, which PUT a branchless `{}`).
+    if !configuration.branch.is_empty() {
+        let library = fetch_standard_library().await?;
+        for branch_name in configuration.branch.keys() {
+            seed_standard_library(&tonk, &name, branch_name, &library).await?;
+            log!(
+                "Seeded standard library on '{}' branch '{}'",
+                name,
+                branch_name
+            );
         }
-        // Rebuild each rule from its embedded source/polarity. A bad
-        // carrier is a programming error in the shipping element, not
-        // a client fault, so surface it as an internal error.
-        let mut rules = Vec::with_capacity(settings.rules.len());
-        for effect_source in &settings.rules {
-            let polarity = tonk_schema::effect::EffectPolarity::parse(&effect_source.polarity)
-                .ok_or_else(|| {
-                    TonkWorkerError::Internal(format!(
-                        "invalid rule polarity '{}' on branch '{branch_name}'",
-                        effect_source.polarity
-                    ))
-                })?;
-            let effect = tonk_schema::effect::Effect::from_source(&effect_source.source, polarity)
-                .map_err(|e| {
-                    TonkWorkerError::Internal(format!(
-                        "invalid rule source on branch '{branch_name}': {e}"
-                    ))
-                })?;
-            rules.push(tonk_schema::rule::Rule::asserting(effect));
-        }
-        let mut builder = tonk
-            .reactor
-            .repository(&name)
-            .branch(branch_name)
-            .transaction();
-        if let Some(claims) = claims {
-            for claim in claims {
-                builder = builder.apply(claim.clone());
-            }
-        }
-        // Rules install last so any concept facts their premises read
-        // are already on the branch (matches the analyzer's statement
-        // ordering).
-        for rule in rules {
-            builder = builder.assert(rule);
-        }
-        builder
-            .commit()
-            .perform(&tonk.operator)
-            .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!(
-                    "failed to seed bootstrap on branch '{branch_name}': {e}"
-                ))
-            })?;
-        log!("Seeded bootstrap on '{}' branch '{}'", name, branch_name);
     }
 
     // 4. Respond with the current state of the repository.
     let info = build_repository_info(&tonk, &name, &repository).await;
     Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// URL of the served standard-library notation asset, copied into
+/// the dist from `tonk-core/assets/library/core.yaml` by trunk.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
+
+/// Fetch the standard-library notation document from the served
+/// asset, sidestepping the HTTP cache so an edited library is seen
+/// the moment it's re-copied into the dist (rather than a stale
+/// cached copy). The fetch is issued from the service-worker scope,
+/// so it bypasses the SW's own `onfetch` handler per spec.
+///
+/// A missing or unreadable library is a deployment fault, not a
+/// client fault: surfaced as an internal error so repository
+/// creation fails loudly rather than seeding an empty repo.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_standard_library() -> Result<String, TonkWorkerError> {
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestCache, RequestInit, Response};
+
+    let init = RequestInit::new();
+    init.set_cache(RequestCache::NoStore);
+    let request = Request::new_with_str_and_init(STANDARD_LIBRARY_URL, &init)
+        .map_err(|e| TonkWorkerError::Internal(format!("standard library request: {e:?}")))?;
+
+    let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
+        .dyn_into()
+        .map_err(|_| TonkWorkerError::Internal("not in a service-worker scope".to_owned()))?;
+    let response: Response = JsFuture::from(global.fetch_with_request(&request))
+        .await
+        .and_then(|v| v.dyn_into())
+        .map_err(|e| TonkWorkerError::Internal(format!("fetch {STANDARD_LIBRARY_URL}: {e:?}")))?;
+    if !response.ok() {
+        return Err(TonkWorkerError::Internal(format!(
+            "fetch {STANDARD_LIBRARY_URL} returned HTTP {}",
+            response.status()
+        )));
+    }
+    let text = JsFuture::from(
+        response
+            .text()
+            .map_err(|e| TonkWorkerError::Internal(format!("library text(): {e:?}")))?,
+    )
+    .await
+    .map_err(|e| TonkWorkerError::Internal(format!("library body: {e:?}")))?;
+    text.as_string()
+        .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn fetch_standard_library() -> Result<String, TonkWorkerError> {
+    // Native builds have no service-worker scope to fetch the served
+    // asset from. Tests that need to seed the library read the source
+    // file directly and call `seed_standard_library`.
+    Err(TonkWorkerError::Internal(
+        "standard library fetch is only available in a service-worker scope".to_owned(),
+    ))
+}
+
+/// Seed a notation document into `branch` by running it through the
+/// evaluate pipeline — the same `parse → analyze → commit` path as
+/// the `/evaluate` route, which commits concept claims and `rule!:`
+/// installs alike. A bad library is a deployment fault, surfaced as
+/// an internal error.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn seed_standard_library(
+    tonk: &TonkState,
+    repo: &str,
+    branch: &str,
+    library: &str,
+) -> Result<(), TonkWorkerError> {
+    super::evaluate::evaluate_body(tonk, repo, branch, library.to_owned(), true)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "failed to seed standard library on branch '{branch}': {e}"
+            ))
+        })
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn seed_standard_library(
+    _tonk: &TonkState,
+    _repo: &str,
+    _branch: &str,
+    _library: &str,
+) -> Result<(), TonkWorkerError> {
+    Err(TonkWorkerError::Internal(
+        "standard library seeding is only available in a service-worker scope".to_owned(),
+    ))
 }
 
 /// Build out a repository from a [`RepositoryConfiguration`].
@@ -960,12 +965,7 @@ where
 
         branches.insert(
             branch.name.0.clone(),
-            BranchConfiguration {
-                upstream,
-                revision,
-                bootstrap: None,
-                rules: Vec::new(),
-            },
+            BranchConfiguration { upstream, revision },
         );
     }
 

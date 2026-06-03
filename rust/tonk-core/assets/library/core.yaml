@@ -1,0 +1,964 @@
+# Tonk standard library.
+#
+# The built-in concepts, views, commands, and rules the runtime
+# seeds into a repository at creation. Served as a static asset
+# (`/library/core.yaml`) and fetched + lowered by the service
+# worker in the repository-creation path, rather than embedded at
+# compile time. Editing this file changes the standard library
+# without rebuilding the wasm.
+#
+# Lowering runs `analyze_local` (no running system), so every
+# `&anchor` / bare-name reference must resolve within this file.
+#
+# Two source sections, formerly `tonk-workspace/bootstrap.yaml` and
+# `tonk-board/bootstrap.yaml`. The `view` concept is shared between
+# them (pinned to `tonk:view`) and declared once here.
+
+# ============================================================
+# VIEW
+# ============================================================
+
+# The `view` concept. Shape matches what `<tonk-display>` queries
+# (resolve.rs `view_predicate`): a `model` (the concept it renders)
+# and a `display` (the HTML template). Pinned to the stable
+# `tonk:view` URI so <tonk-display> can refer to the built-in view
+# concept directly, without a name-resolution round-trip.
+concept!: &view
+  this: tonk:view
+  description: A display template (model, display) for rendering an entity
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+# ============================================================
+# WORKSPACE
+# ============================================================
+
+# The `artifact` concept. Binds an entity to a model and a view,
+# plus the tab metadata (title, icon) the viewer shell shows. Its
+# (entity, model, view) map one-to-one onto
+# `<tonk-display entity model view>`. Pinned to `tonk:artifact` so
+# the viewer can query artifacts by a stable concept entity.
+concept!: &artifact
+  this: tonk:artifact
+  description: An entity displayed as a sheet/tab in the viewer.
+  with:
+    title:
+      description: Title shown in the tab
+      the: xyz.tonk.artifact/title
+      cardinality: one
+      as: text
+    subtitle:
+      description: Dimmed metadata line shown after the name in the card header
+      the: xyz.tonk.artifact/subtitle
+      cardinality: one
+      as: text
+    icon:
+      description: Icon shown in the tab
+      the: xyz.tonk.artifact/icon
+      cardinality: one
+      as: text
+    entity:
+      description: Entity displayed in the sheet
+      the: xyz.tonk.artifact/entity
+      cardinality: one
+      as: entity
+    model:
+      description: Model concept used to display the entity
+      the: xyz.tonk.artifact/model
+      cardinality: one
+      as: entity
+    view:
+      description: View concept used to display the entity
+      the: xyz.tonk.artifact/view
+      cardinality: one
+      as: entity
+
+# The `workspace` concept: the UI surface below the header. It owns
+# its sheets (cardinality-many). Pinned to `tonk:workspace` so the
+# shell can query a workspace by a stable concept entity.
+concept!: &workspace
+  this: tonk:workspace
+  description: A workspace surface - a named set of sheets shown as tabs.
+  with:
+    name:
+      description: Workspace name, shown in the header
+      the: xyz.tonk.workspace/name
+      cardinality: one
+      as: text
+    sheet:
+      description: The sheets (tabs) in this workspace
+      the: xyz.tonk.workspace/sheet
+      cardinality: many
+      as: entity
+    active:
+      description: |
+        The currently selected sheet, shown in the canvas. Cardinality
+        one, so re-asserting it replaces the previous selection - a
+        single moving pointer driven by the `activate-sheet` command.
+      the: xyz.tonk.workspace/active
+      cardinality: one
+      as: entity
+
+# The `sheet` concept: one tab in a workspace. A sheet is an
+# artifact (same title/icon/entity/model/view fields, same attribute
+# URIs) plus an `order` lexicographic key that positions the tab. So
+# every sheet is also a valid artifact; the extra `order` field is
+# what makes it a workspace member.
+concept!: &workspace/sheet
+  this: tonk:sheet
+  description: A workspace tab - an artifact plus a lexicographic order key.
+  with:
+    title:
+      description: Title shown in the tab
+      the: xyz.tonk.artifact/title
+      cardinality: one
+      as: text
+    subtitle:
+      description: Dimmed metadata line shown after the name in the card header
+      the: xyz.tonk.artifact/subtitle
+      cardinality: one
+      as: text
+    icon:
+      description: Icon shown in the tab
+      the: xyz.tonk.artifact/icon
+      cardinality: one
+      as: text
+    entity:
+      description: Entity displayed in the sheet
+      the: xyz.tonk.artifact/entity
+      cardinality: one
+      as: entity
+    model:
+      description: Model concept used to display the entity
+      the: xyz.tonk.artifact/model
+      cardinality: one
+      as: entity
+    view:
+      description: View concept used to display the entity
+      the: xyz.tonk.artifact/view
+      cardinality: one
+      as: entity
+    order:
+      description: Lexicographic order key positioning the tab
+      the: xyz.tonk.sheet/order
+      cardinality: one
+      as: text
+
+# Tab selection. Clicking a tab fires the transient `activate-sheet`
+# command, reading which sheet was clicked from the bound element's
+# `data-sheet`. The inductive rule below finds the workspace that owns
+# that sheet and points its cardinality-one `active` field at the
+# clicked sheet (replacing the prior selection). The command itself is
+# swept after the cycle - only the `active` pointer persists.
+command!: &workspace/activate-sheet
+  description: A request to make `sheet` the active sheet of its workspace.
+  with:
+    sheet:
+      description: The sheet to activate, from the binder's `activate` event detail
+      the: dom.event.detail/sheet
+      as: entity
+
+# A minimal projection of the workspace's `active` pointer: the
+# workspace entity (`this`) and its `active` sheet, on the same
+# `xyz.tonk.workspace/active` attribute the `workspace` concept reads.
+# The rule asserts THIS (binding only `this` + `active`), rather than
+# re-asserting the whole `workspace` concept (which would force
+# binding every field). Writing `active` here updates the same triple
+# the workspace view sees.
+concept!: &workspace/active-sheet
+  description: The active-sheet pointer of a workspace, as a standalone fact.
+  with:
+    active:
+      description: The selected sheet
+      the: xyz.tonk.workspace/active
+      cardinality: one
+      as: entity
+
+# The inductive rule: when an `activate-sheet` command fires, find the
+# workspace that owns the clicked sheet and point its `active` field at
+# that sheet. Binding `?this` through the `workspace` membership means
+# the command needs only the sheet - no workspace id plumbed through
+# the DOM. The command is transient (satisfies the install-time
+# trigger gate, swept after commit); only the `active` pointer
+# persists.
+rule!:
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/activate-sheet
+      where: { sheet: ?active }
+    - assert: workspace
+      where: { this: ?this, sheet: ?active }
+
+# The workspace view: a top bar over a `<tonk-sheet-binder>`, matching
+# the wireframe's Layout F. The binder takes the workspace's `{sheet}`
+# members (each mounted through its sheet-mount view as a
+# `<tonk-sheet>`), projects the bottom tab strip from them, and shows
+# the `active` sheet's panel. Clicking a tab fires `activate-sheet`,
+# which re-points `active`.
+view!: &workspace/view
+  this: id:tonk-workspace/workspace-view
+  model: workspace
+  display: |
+    <div class="workspace">
+      <style>
+        /* Styling uses the app's Web Awesome design tokens (--wa-*)
+           rather than hardcoded colours, so the viewer follows the
+           active theme and light/dark automatically. */
+        .workspace {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          font-family: var(--wa-font-family-body);
+          color: var(--wa-color-text-normal);
+          /* Transparent so the page's dot-grid paper shows through
+             (matching the wireframe). */
+          background: transparent;
+        }
+
+        /* Top bar: repo name + sync status on the left, icon slots on
+           the right. Placeholder chrome for now. */
+        .workspace__topbar {
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-m);
+          flex: none;
+          height: 52px;
+          padding: 0 var(--wa-space-l);
+          /* A surface fill so the bar reads as chrome over the
+             transparent dot-grid canvas. */
+          background: var(--wa-color-surface-raised);
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          font-size: var(--wa-font-size-m);
+        }
+        .workspace__brand { font-weight: var(--wa-font-weight-bold); }
+        .workspace__crumb {
+          color: var(--wa-color-text-quiet);
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-s);
+        }
+        .workspace__title { font-weight: var(--wa-font-weight-semibold); }
+        .workspace__sync {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-xs);
+          padding: var(--wa-space-3xs) var(--wa-space-s);
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-success-on-quiet);
+          background: var(--wa-color-success-fill-quiet);
+          border-radius: var(--wa-border-radius-s);
+        }
+        .workspace__sync::before {
+          content: "";
+          width: 7px; height: 7px; border-radius: 50%;
+          background: var(--wa-color-success-fill-loud); flex: none;
+        }
+        .workspace__spacer { flex: 1; }
+        .workspace__actions {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-m);
+          color: var(--wa-color-text-quiet);
+        }
+        .workspace__icon {
+          width: 20px; height: 20px;
+          border-radius: var(--wa-border-radius-s);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          flex: none;
+        }
+
+        /* The binder fills the space below the top bar: the active sheet
+           panel fills the rest, the projected tab strip pins to the
+           bottom. */
+        .workspace__binder {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          min-height: 0;
+        }
+
+        /* The view mounts each sheet through a `<tonk-display>` wrapper;
+           those wrappers are the binder's flex children (the panels).
+           The active panel FILLS the available height; the rest
+           collapse (their inner <tonk-sheet> is `hidden`). Scrolling
+           happens inside the sheet's card. */
+        .workspace__binder > tonk-display {
+          flex: 1;
+          min-height: 0;
+          padding: var(--wa-space-l);
+          box-sizing: border-box;
+          order: 1;
+        }
+        .workspace__binder > tonk-display:not(:has(tonk-sheet:not([hidden]))) {
+          display: none;
+        }
+        .workspace__binder > tonk-display > tonk-view {
+          display: block;
+          height: 100%;
+          min-height: 0;
+        }
+
+        /* The sheet card: a header strip the sheet projects from its
+           attributes, over the sheet's content. Transparent body so the
+           page's dot-grid shows through; bordered frame. */
+        .workspace__binder tonk-sheet {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          min-height: 0;
+          color: inherit;
+          font-family: inherit;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          background: transparent;
+          overflow: hidden;
+        }
+        /* The card body: everything after the projected header. The
+           sheet's content <tonk-display> is the last child; it scrolls. */
+        .workspace__binder tonk-sheet > tonk-display {
+          flex: 1;
+          min-height: 0;
+          overflow: auto;
+        }
+        .workspace__binder tonk-sheet > tonk-display > tonk-view {
+          display: block;
+          min-height: 100%;
+        }
+
+        /* The card header the sheet projects (status dot + name +
+           subtitle). A surface fill so it reads as chrome over the
+           transparent body. */
+        .tonk-sheet__head {
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          flex: none;
+          padding: var(--wa-space-s) var(--wa-space-m);
+          background: var(--wa-color-surface-raised);
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        .tonk-sheet__dot {
+          width: 7px; height: 7px; border-radius: 50%;
+          background: currentColor; flex: none;
+        }
+        .tonk-sheet__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold); }
+        .tonk-sheet__meta { font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
+
+        /* The bottom tab strip the binder projects. Equal-width bullet
+           segments separated by rules; the active tab gets a brand
+           accent top bar. The binder sets the CSS `order` per tab. */
+        .tonk-sheet-binder__tabs {
+          display: flex;
+          align-items: stretch;
+          flex: none;
+          height: 48px;
+          order: 2;
+          /* Left inset so the first tab aligns with the sheet card's
+             left edge (the panel padding above). */
+          padding-left: var(--wa-space-l);
+          /* A surface fill matching the top bar (not the darker lowered
+             surface). */
+          background: var(--wa-color-surface-raised);
+          border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        /* Tabs are content-width (short), left-aligned, separated by
+           rules — not stretched to fill the strip (the wireframe). */
+        .tonk-sheet-binder__tab {
+          flex: none;
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          padding: 0 var(--wa-space-l);
+          font: inherit;
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-quiet);
+          background: transparent;
+          border: none;
+          border-right: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          border-top: 2px solid transparent;
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        /* The leading status bullet (hollow when inactive). */
+        .tonk-sheet-binder__tab::before {
+          content: "";
+          width: 7px; height: 7px;
+          border-radius: 50%;
+          border: var(--wa-border-width-s) solid currentColor;
+          background: transparent;
+          flex: none;
+        }
+        .tonk-sheet-binder__tab:hover {
+          color: var(--wa-color-text-normal);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+
+        /* Active tab: brand-accent top bar, raised surface, filled
+           bullet, normal-weight bright text — the selected sheet. */
+        .tonk-sheet-binder__tab.is-active {
+          color: var(--wa-color-text-normal);
+          font-weight: var(--wa-font-weight-semibold);
+          background: var(--wa-color-surface-default);
+          border-top-color: var(--wa-color-brand-fill-loud);
+        }
+        .tonk-sheet-binder__tab.is-active::before {
+          background: var(--wa-color-brand-fill-loud);
+          border-color: var(--wa-color-brand-fill-loud);
+        }
+      </style>
+
+      <div class="workspace__topbar">
+        <span class="workspace__brand">tonk</span>
+        <span class="workspace__crumb">&lsaquo; all repos</span>
+        <span class="workspace__title">{name}</span>
+        <span class="workspace__sync">synced</span>
+        <span class="workspace__spacer"></span>
+        <span class="workspace__actions">
+          <span class="workspace__icon"></span>
+          <span class="workspace__icon"></span>
+          <span class="workspace__icon"></span>
+        </span>
+      </div>
+
+      <tonk-sheet-binder class="workspace__binder" active={active} onactivate=workspace/activate-sheet>
+        <tonk-display entity={sheet} model=tonk:sheet />
+      </tonk-sheet-binder>
+    </div>
+
+# The sheet-mount view (default view for `workspace/sheet`): wraps the
+# sheet's content in a `<tonk-sheet>` carrying its metadata as
+# attributes. `<tonk-sheet>` projects the card header from
+# `title`/`subtitle`/`icon` and `<tonk-sheet-binder>` projects the tab
+# strip from the same attributes; the view supplies only the
+# attributes and the content. The sheet's content renders directly
+# from the sheet's own `entity`/`model`/`view` fields - a sheet is
+# self-describing, so no intermediate concept is needed.
+view!:
+  this: id:tonk-workspace/sheet-mount
+  model: tonk:sheet
+  display: |
+    <tonk-sheet sheet={this} order={order} title={title} subtitle={subtitle} icon={icon}>
+      <tonk-display entity={entity} model={model} view={view} />
+    </tonk-sheet>
+
+# ============================================================
+# BOARD
+# ============================================================
+#
+# v1 is the hierarchical shape: board owns columns; column owns
+# tiles. Future work projects this from a flat tile concept using
+# deductive rules; the view templates won't change when that
+# happens.
+
+concept!: &board-view
+  description: A named board (hierarchical v1, owns columns directly)
+  with:
+    name:
+      description: Display name
+      the: xyz.tonk.board/name
+      cardinality: one
+      as: text
+    column:
+      description: Columns in this board
+      the: xyz.tonk.board/column
+      cardinality: many
+      as: entity
+
+concept!: &column-view
+  description: A column on a board
+  with:
+    order:
+      description: LexoRank-style order key within the board
+      the: xyz.tonk.column/order
+      cardinality: one
+      as: text
+    width:
+      description: Column width in grid units (1 unit is 64px)
+      the: xyz.tonk.column/width
+      cardinality: one
+      as: unsigned-integer
+    tile:
+      description: Tiles in this column
+      the: xyz.tonk.column/tile
+      cardinality: many
+      as: entity
+
+concept!: &tile
+  description: One tile in a column
+  with:
+    order:
+      description: Order key within the column
+      the: xyz.tonk.tile/order
+      cardinality: one
+      as: text
+    model:
+      description: Concept the tile body renders
+      the: xyz.tonk.tile/model
+      cardinality: one
+      as: entity
+    entity:
+      description: Entity the tile body renders
+      the: xyz.tonk.tile/entity
+      cardinality: one
+      as: entity
+
+concept!: &inspector-view
+  description: An inspector tile body — renders <tonk-inspector source="…">
+  with:
+    source:
+      description: Space name to inspect (passed through as the source attribute)
+      the: xyz.tonk.inspector/source
+      cardinality: one
+      as: text
+
+# The imperative escape hatch: `<tonk-portal>` writes an
+# author-supplied HTML document into a sandboxed iframe, for work the
+# declarative template stack can't express (canvas, WebGL, widgets).
+# The `content` is first-class dialog data, fetched by a nested
+# `<tonk-display model=portal>` like any other concept.
+concept!: &portal
+  description: Imperative HTML rendered in an isolated iframe
+  with:
+    content:
+      description: HTML document written into the portal iframe
+      the: xyz.tonk.portal/content
+      cardinality: one
+      as: text
+    height:
+      description: Iframe height in pixels
+      the: xyz.tonk.portal/height
+      cardinality: one
+      as: unsigned-integer
+
+# One view per concept, keyed by `model`. Each nested
+# `<tonk-display>` passes only `model=…` (and `entity=…`); with no
+# `view` attribute it resolves the view whose `model` matches. The
+# chain iterates one level of the hierarchy per template via
+# `subject={field}` and bottoms out in the tile's content display.
+
+view!:
+  model: board-view
+  display: |
+    <tonk-strip>
+      <tonk-display entity={column} model=column-view />
+    </tonk-strip>
+
+view!:
+  model: column-view
+  display: |
+    <tonk-column style="--col-w: {width};">
+      <div class="tile" subject={tile}>
+        <tonk-display entity={tile} model=tile />
+      </div>
+    </tonk-column>
+
+view!:
+  model: tile
+  display: |
+    <tonk-display entity={entity} model={model} />
+
+view!:
+  model: inspector-view
+  display: |
+    <tonk-inspector source={source} />
+
+# The canonical bridge from the `portal` concept to the
+# `<tonk-portal>` element. `html:` forces both bindings through
+# setAttribute so `attributeChangedCallback` fires — required for
+# `height`, an unsigned-integer the renderer would otherwise route to a
+# JS property. Users never write this; nesting a
+# `<tonk-display model=portal>` over a portal entity resolves it by
+# model and renders it.
+view!:
+  model: portal
+  display: |
+    <tonk-portal html:content={content} html:height={height} />
+
+# ============================================================
+# DEMO CONTENT - DELETE before shipping
+# ============================================================
+# Sample data for developing the viewer, modelled on the "Trip to
+# Pistoia" itinerary sheet in the wireframe. Three concepts:
+#
+#   - `trip-title` {title}     - a trip's title, on its own.
+#   - `stop`       {day,...}     - one sheet row.
+#   - `trip`       {title,stop} - the unified concept the view uses.
+#
+# The trip entity carries its title (via `trip-title`) and its stops
+# (via `trip`), each asserted independently against the same entity:
+# the title once, then one `trip!` per stop. No field is ever
+# repeated. None of this is part of the standard library; remove the
+# whole section once the viewer has real content.
+
+concept!: &trip-title
+  description: A trip's title, on its own.
+  with:
+    title:
+      description: Trip title, shown above the sheet
+      the: xyz.tonk.trip/title
+      cardinality: one
+      as: text
+
+concept!: &trip
+  description: A trip - a title and an ordered set of stops.
+  with:
+    title:
+      description: Trip title, shown above the sheet
+      the: xyz.tonk.trip/title
+      cardinality: one
+      as: text
+    stop:
+      description: The stops that make up this trip
+      the: xyz.tonk.trip/stop
+      cardinality: many
+      as: entity
+
+concept!: &stop
+  description: One row of a trip sheet - a day, an item, a time, a cost.
+  with:
+    day:
+      description: Day label (e.g. "mon")
+      the: xyz.tonk.stop/day
+      cardinality: one
+      as: text
+    item:
+      description: What happens at this stop
+      the: xyz.tonk.stop/item
+      cardinality: one
+      as: text
+    time:
+      description: Time of day (e.g. "10:00")
+      the: xyz.tonk.stop/time
+      cardinality: one
+      as: text
+    cost:
+      description: Cost label (e.g. "EUR 15")
+      the: xyz.tonk.stop/cost
+      cardinality: one
+      as: text
+
+# The trip view: a sheet with a header row, then one nested
+# `<tonk-display>` per stop. The nested display omits `view`, so it
+# resolves the built-in view for `model=stop` (the stop-row view
+# below). A cardinality-many `{stop}` binding repeats the element
+# per value.
+view!:
+  this: id:tonk-workspace/trip-view
+  model: trip
+  display: |
+    <div class="sheet">
+      <style>
+        /* Theme-neutral: inherit the page's text color and use
+           translucent rules/secondary text so the sheet reads in
+           both the light and dark shells. No hardcoded palette. */
+        .sheet {
+          display: flex;
+          flex-direction: column;
+          padding: 16px 20px;
+          color: inherit;
+          font-family: inherit;
+          font-size: 13.5px;
+        }
+        .sheet__head,
+        .sheet__row {
+          display: grid;
+          grid-template-columns: 60px 1fr 90px 90px;
+          gap: 12px;
+          padding: 8px 0;
+          border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+        }
+        .sheet__head {
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          font-size: 11px;
+          text-transform: lowercase;
+          letter-spacing: 0.04em;
+          opacity: 0.55;
+          font-weight: 600;
+          border-bottom: 1.5px solid color-mix(in srgb, currentColor 55%, transparent);
+        }
+        /* Each stop is wrapped in its own <tonk-display>; collapse the
+           wrapper so the rows lay out as direct children of the sheet. */
+        .sheet > tonk-display { display: contents; }
+        .sheet__row span:nth-child(1) {
+          font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+          opacity: 0.55;
+        }
+        .sheet__head span:nth-child(4),
+        .sheet__row span:nth-child(4),
+        .sheet__total span:last-child { text-align: right; }
+        /* A summary footer row, matching the wireframe's "total" line. */
+        .sheet__total {
+          display: grid;
+          grid-template-columns: 60px 1fr 90px 90px;
+          gap: 12px;
+          padding: 10px 0 0;
+          font-weight: 600;
+        }
+        .sheet__total span:first-child {
+          grid-column: 1 / 3;
+          opacity: 0.55;
+        }
+      </style>
+      <div class="sheet__head">
+        <span>day</span><span>item</span><span>time</span><span>cost</span>
+      </div>
+      <tonk-display entity={stop} model=stop></tonk-display>
+      <div class="sheet__total">
+        <span>total</span><span></span><span>-</span>
+      </div>
+    </div>
+
+# The stop-row view, published under the built-in `view` concept
+# (no `this:` pin needed) so the nested `<tonk-display model=stop>`
+# resolves it by model.
+view!:
+  model: stop
+  display: |
+    <div class="sheet__row">
+      <span>{day}</span><span>{item}</span><span>{time}</span><span>{cost}</span>
+    </div>
+
+# --- the itinerary (mirrors the wireframe's Trip to Pistoia) -----
+
+stop!:
+  this: id:tonk-workspace/stop/arrive
+  day: "mon"
+  item: "Pistoia arrive, drop bags"
+  time: "10:00"
+  cost: "-"
+
+stop!:
+  this: id:tonk-workspace/stop/lunch
+  day: "mon"
+  item: "Lunch, Trattoria dell'Abbondanza"
+  time: "13:00"
+  cost: "EUR 38"
+
+stop!:
+  this: id:tonk-workspace/stop/walk
+  day: "mon"
+  item: "Piazza del Duomo walk"
+  time: "15:30"
+  cost: "-"
+
+stop!:
+  this: id:tonk-workspace/stop/cathedral
+  day: "tue"
+  item: Cathedral, interior tour
+  time: "10:00"
+  cost: "EUR 15"
+
+stop!:
+  this: id:tonk-workspace/stop/chapel
+  day: "tue"
+  item: Cappella del Tau
+  time: "14:00"
+  cost: "EUR 8"
+
+stop!:
+  this: id:tonk-workspace/stop/collodi
+  day: "wed"
+  item: "Day trip, Collodi gardens"
+  time: "09:00"
+  cost: "EUR 42"
+
+stop!:
+  this: id:tonk-workspace/stop/zoo
+  day: "thu"
+  item: "Zoo of Pistoia, morning"
+  time: "10:30"
+  cost: "EUR 20"
+
+
+# The title is set once via `trip-title` against the itinerary
+# entity. Each stop is then added by its own `trip!` assertion
+# against the same entity - `stop` is cardinality-many and a field
+# value can't be a list, so the stops accumulate one assertion at a
+# time. No field is ever repeated.
+trip-title!:
+  this: id:tonk-workspace/itinerary
+  title: "Trip to Pistoia"
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/arrive
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/lunch
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/walk
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/cathedral
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/chapel
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/collodi
+
+trip!:
+  this: id:tonk-workspace/itinerary
+  stop: id:tonk-workspace/stop/zoo
+
+
+# A second demo trip entity so there's more than one tab. A bare
+# trip with a title and one stop.
+trip-title!:
+  this: id:tonk-workspace/lodging
+  title: "Lodging"
+
+trip!:
+  this: id:tonk-workspace/lodging
+  stop: id:tonk-workspace/stop/casa
+
+stop!:
+  this: id:tonk-workspace/stop/casa
+  day: "all"
+  item: "Casa Calugi, 5 nights"
+  time: "-"
+  cost: "EUR 820"
+
+# Two sheets (= artifacts + order). Each sheet's `entity`/`model`/
+# `view` point at the trip it displays; `order` positions the tab.
+workspace/sheet!:
+  this: id:tonk-workspace/sheet/itinerary
+  title: "Itinerary"
+  subtitle: "day-by-day plan - 5 days - 7 stops"
+  icon: "table-list"
+  entity: id:tonk-workspace/itinerary
+  model: trip
+  view: tonk:view
+  order: "a"
+
+workspace/sheet!:
+  this: id:tonk-workspace/sheet/lodging
+  title: "Lodging"
+  subtitle: "where we sleep - 1 booking"
+  icon: "table-list"
+  entity: id:tonk-workspace/lodging
+  model: trip
+  view: tonk:view
+  order: "b"
+
+# A portal entity: a self-contained HTML document (with its own
+# script + canvas) rendered into a sandboxed iframe. This is the
+# imperative escape hatch - the kind of drawing the declarative
+# template stack cannot express. `model: portal` on the sheet below
+# resolves the portal view, which mounts `<tonk-portal>` over it.
+portal!:
+  this: id:tonk-workspace/sketch
+  height: 520
+  content: |
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          html, body { margin: 0; height: 100%; }
+          body {
+            display: grid;
+            place-items: center;
+            font-family: system-ui, sans-serif;
+            background: #1b1130;
+            color: #efe7ff;
+          }
+          canvas { display: block; }
+        </style>
+      </head>
+      <body>
+        <canvas id="c" width="600" height="480"></canvas>
+        <script>
+          const canvas = document.getElementById("c");
+          const ctx = canvas.getContext("2d");
+          const { width: w, height: h } = canvas;
+          let t = 0;
+          function frame() {
+            t += 0.02;
+            ctx.fillStyle = "#1b1130";
+            ctx.fillRect(0, 0, w, h);
+            for (let i = 0; i < 64; i++) {
+              const a = (i / 64) * Math.PI * 2 + t;
+              const r = 150 + 60 * Math.sin(t * 1.5 + i * 0.3);
+              const x = w / 2 + r * Math.cos(a);
+              const y = h / 2 + r * Math.sin(a);
+              ctx.beginPath();
+              ctx.arc(x, y, 6, 0, Math.PI * 2);
+              ctx.fillStyle = `hsl(${(i * 6 + t * 60) % 360} 80% 65%)`;
+              ctx.fill();
+            }
+            requestAnimationFrame(frame);
+          }
+          frame();
+        </script>
+      </body>
+    </html>
+
+# The portal sheet. `model: portal` (not `trip`) routes the sheet
+# content through the portal view to `<tonk-portal>`. No `view:`
+# override - the default model-resolved view is the portal bridge.
+workspace/sheet!:
+  this: id:tonk-workspace/sheet/sketch
+  title: "Sketch"
+  subtitle: "an imperative canvas in a sandboxed iframe"
+  icon: "palette"
+  entity: id:tonk-workspace/sketch
+  model: portal
+  view: tonk:view
+  order: "c"
+
+# The demo workspace owns the three sheets, with the itinerary
+# selected as the initial active sheet (a click on a tab re-points
+# `active` via the activate-sheet command + rule).
+workspace!:
+  this: work:space
+  name: "Trip planning"
+  active: id:tonk-workspace/sheet/itinerary
+  sheet: id:tonk-workspace/sheet/itinerary
+
+workspace!:
+  this: work:space
+  sheet: id:tonk-workspace/sheet/lodging
+
+workspace!:
+  this: work:space
+  sheet: id:tonk-workspace/sheet/sketch
+
+# A single-tile `demo` board: one column with one tile hosting
+# `<tonk-inspector source="home">`. All entities use stable
+# `id:tonk-board/...` URIs so re-evaluating the bootstrap is
+# idempotent — the engine deduplicates the same claims rather
+# than minting fresh duplicates.
+
+inspector-view!: &home-inspector
+  source: "home"
+
+tile!: &inspector-tile
+  order: "a"
+  model: inspector-view
+  entity: home-inspector
+
+column-view!: &demo-column
+  order: "a"
+  width: 12
+  tile: inspector-tile
+
+board-view!: &demo-board
+  name: "demo"
+  column: demo-column
+
+
+# test

@@ -3,7 +3,7 @@ use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker::{
-    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EffectSource, EvaluateResponse,
+    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
     IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
     RepositoryConfiguration, RepositoryInfo, SyncResponse,
 };
@@ -143,34 +143,15 @@ pub async fn init() -> Result<String, TonkUiError> {
 
     let configuration = RepositoryConfiguration::default()
         .remote("origin", RemoteConfiguration::new(address))
+        // The branch's standard library (the built-in concepts,
+        // views, commands, rules + demo content) is seeded by the
+        // service worker at repository creation: it fetches the
+        // served `/library/core.yaml` asset and runs it through the
+        // evaluate pipeline. The shell no longer ships it in the PUT
+        // body, so the library updates without rebuilding the wasm.
         .branch(
             DEFAULT_BRANCH,
-            BranchConfiguration::default()
-                .upstream("origin", DEFAULT_BRANCH)
-                // Seed the board schema + demo data once, at repo
-                // creation, instead of re-evaluating it on every
-                // `<tonk-board>` mount.
-                .bootstrap(tonk_board::BOOTSTRAP.clone())
-                // Seed the viewer workspace: the `view`/`artifact`
-                // concepts (pinned to `tonk:view`/`tonk:artifact`)
-                // plus demo artifacts. `bootstrap` merges, so this
-                // folds in alongside the board schema.
-                .bootstrap(tonk_workspace::BOOTSTRAP.clone())
-                // The workspace's inductive rules (e.g. activate-sheet
-                // tab selection) ride as their (source, polarity)
-                // carriers — rules have no TransactRequest shape — and
-                // are rebuilt + asserted in the repository seed loop.
-                .rules(tonk_workspace::RULES.iter().map(|rule| EffectSource {
-                    source: rule.source().to_owned(),
-                    polarity: rule.polarity().as_str().to_owned(),
-                }))
-                // Chain the portal schema (the `portal` concept + its
-                // canonical view). `bootstrap()` extends the claim
-                // list rather than replacing it, and the redeclared
-                // `view` concept is byte-identical to the board's
-                // (same `tonk:view` pin and attributes), so the two
-                // seed one entity and merge cleanly.
-                .bootstrap(tonk_portal::BOOTSTRAP.clone()),
+            BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
         );
 
     let response = reqwest::Client::new()

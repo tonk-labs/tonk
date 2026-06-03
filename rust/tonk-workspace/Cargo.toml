@@ -3,20 +3,35 @@ name = "tonk-workspace"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-description = "Artifact concept and viewer workspace bootstrap."
+description = "Viewer workspace custom elements."
 license.workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tonk-core = { workspace = true }
-tonk-macros = { workspace = true }
-tonk-schema = { workspace = true }
 
-[dev-dependencies]
-dialog-common = { workspace = true, features = ["helpers"] }
-wasm-bindgen-test = { workspace = true }
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+custom-elements = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+  "CssStyleDeclaration",
+  "CustomElementRegistry",
+  "CustomEvent",
+  "CustomEventInit",
+  "Document",
+  "DomTokenList",
+  "Element",
+  "Event",
+  "HtmlElement",
+  "MutationObserver",
+  "MutationObserverInit",
+  "MutationRecord",
+  "Node",
+  "NodeList",
+  "Window",
+] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
