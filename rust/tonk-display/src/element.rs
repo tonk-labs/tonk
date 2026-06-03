@@ -694,9 +694,11 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
         if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
             // Push the cached entity conclusion if we have one,
             // so the new slide renders immediately rather than
-            // waiting for the next entity frame.
+            // waiting for the next entity frame. Augment with the
+            // host's `dom.host/*` attributes, matching the live path.
             if let Some(c) = cached.as_ref() {
-                call_render(&new_slide.view_el, &serialize_conclusion(c));
+                let detail = serialize_conclusion(&with_host_attributes(host, c));
+                call_render(&new_slide.view_el, &detail);
             }
             s.slides.insert(name, new_slide);
         }
@@ -957,7 +959,10 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
 
     let mut s = state.borrow_mut();
     s.last_conclusion = Some(conclusion.clone());
-    let detail = serialize_conclusion(&conclusion);
+    // The slide sees the conclusion plus the host's own attributes
+    // under `dom.host/*` (for `{dom.host/model}` etc.); notation,
+    // caching, and the result event keep the unaugmented conclusion.
+    let detail = serialize_conclusion(&with_host_attributes(host, &conclusion));
     for slide in s.slides.values() {
         call_render(&slide.view_el, &detail);
     }
@@ -1092,6 +1097,32 @@ fn call_render(el: &Element, detail: &JsValue) {
 /// `<tonk-view>` / `<tonk-inspector>` expect.
 fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
     serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
+}
+
+/// Return a copy of `conclusion` with the host `<tonk-display>`'s own
+/// attributes added to its fields under `dom.host/<attr>` keys, so a
+/// template can reference them with `{dom.host/model}` etc. — the
+/// render-time counterpart of the `dom.event/*` namespace (see
+/// `events::path`). Scalars, constant across the render: a directory
+/// template threads the outer model into each nested
+/// `<tonk-display entity={this} model={dom.host/model}>` this way,
+/// since an instance carries no pointer to its own model.
+///
+/// The augmentation is render-only — the cached/notation/event
+/// conclusion stays unaugmented. The substituter resolves
+/// `{dom.host/X}` by an ordinary field lookup, so no parser or
+/// substituter change is needed, only that these entries are present.
+fn with_host_attributes(host: &Element, conclusion: &Conclusion) -> Conclusion {
+    let mut augmented = conclusion.clone();
+    let attrs = host.attributes();
+    for i in 0..attrs.length() {
+        let Some(attr) = attrs.item(i) else { continue };
+        augmented.fields.insert(
+            format!("dom.host/{}", attr.name()),
+            Ipld::String(attr.value()),
+        );
+    }
+    augmented
 }
 
 fn dispatch_error(host: &Element, err: ErrorDetail) {
