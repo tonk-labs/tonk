@@ -130,6 +130,14 @@ pub struct BindingPlan {
     /// (introduced for cardinality-many fields) contain nested
     /// bindings whose paths are relative to the root.
     pub nodes: Vec<PlanNode>,
+    /// The per-conclusion **repeat root**: the template path of the
+    /// outermost element that binds `{this}` (e.g.
+    /// `<tr data-subject={this}>`). The renderer clones *this element*
+    /// once per matched conclusion and renders everything outside it
+    /// once as chrome. `None` (no element binds `{this}`) means the
+    /// whole fragment is the repeat root — the entire template clones
+    /// per conclusion. See `tonk-core/docs/templates.md`.
+    pub repeat_root: Option<Vec<usize>>,
 }
 
 /// One node in the binding tree. Plain `Binding` nodes are
@@ -194,12 +202,14 @@ pub fn longest_common_path_prefix(paths: &[Vec<usize>]) -> Vec<usize> {
 /// ensures one field per text node); an attribute binding can
 /// mix multiple `{X}` placeholders, all collected here.
 ///
-/// `{this}` is **not** a real field — it's a reserved placeholder
-/// for the entity URI, always scalar, always single. Exclude it
-/// from iteration-root discovery so a template like
-/// `<a href="/entity/{this}">` doesn't get treated as a
-/// cardinality-many iteration target. The substituter still
-/// resolves `{this}` directly off the conclusion.
+/// `{this}` is **not** a field-iteration target — it's the root
+/// scope (one instance per matched conclusion), handled by the
+/// renderer's per-conclusion loop rather than `PlanNode::Iteration`.
+/// Excluding it here keeps a template like `<a href="/x/{this}">`
+/// from being treated as a cardinality-many field. The element that
+/// binds `{this}` becomes the per-conclusion *repeat root* (so
+/// surrounding chrome renders once); that is discovered separately.
+/// See `tonk-core/docs/templates.md`.
 pub fn binding_fields(binding: &Binding) -> Vec<String> {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -215,6 +225,43 @@ pub fn binding_fields(binding: &Binding) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether a binding is an attribute whose value is *exactly*
+/// `{this}` — the marker that makes its element a repeat root.
+///
+/// The attribute *name* is irrelevant (`subject={this}`,
+/// `data-with={this}`, `for={this}` are all equivalent); only the
+/// `{this}` reference matters. It must be an attribute (text nodes
+/// are value output, not iteration markers) AND a bare single
+/// `{this}` segment: a mixed value like `href="/entity/{this}"` is a
+/// URL substitution in a *detail* template, not a directory repeat
+/// boundary, so it must not count.
+fn is_this_repeat_marker(binding: &Binding) -> bool {
+    let BindingKind::Attribute { segments, .. } = &binding.kind else {
+        return false;
+    };
+    matches!(segments.as_slice(), [Segment::Field(name)] if name == "this")
+}
+
+/// Locate the per-conclusion **repeat root**: the element with an
+/// attribute whose value is exactly `{this}` (the attribute name is
+/// arbitrary, e.g. `<tr subject={this}>` or `<li for={this}>`). The
+/// renderer clones that element per matched conclusion; everything
+/// outside it is render-once chrome.
+///
+/// The **outermost** `{this}` marker sets the repeat boundary. When
+/// `{this}` is bound at several nesting levels, the shallowest element
+/// is the repeat root and any inner markers fall inside its per-row
+/// clone — the repeat point is the outer one, not the deepest. The
+/// shallowest (then earliest) path wins. `None` ⇒ nothing marks a
+/// repeat root ⇒ the whole fragment repeats per conclusion.
+pub fn this_repeat_root(bindings: &[Binding]) -> Option<Vec<usize>> {
+    bindings
+        .iter()
+        .filter(|b| is_this_repeat_marker(b))
+        .map(host_element_path)
+        .min_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
 }
 
 /// The path of the smallest enclosing element containing a
@@ -703,8 +750,10 @@ mod dom {
         // pure (operates on the collected `bindings` vec), which
         // is why the helper lives outside the wasm-only `dom`
         // module and gets unit-tested natively.
+        let repeat_root = super::this_repeat_root(&bindings);
         BindingPlan {
             nodes: super::build_plan_nodes(bindings),
+            repeat_root,
         }
     }
 
@@ -1342,5 +1391,76 @@ mod tests {
             }
             other => panic!("expected outer list iteration, got {other:?}"),
         }
+    }
+
+    // --- repeat-root ({this}) discovery ----------------------------------
+
+    #[dialog_common::test]
+    fn it_has_no_repeat_root_when_this_is_unbound() {
+        // A detail template that never binds {this}: the whole
+        // fragment is the repeat root (None ⇒ clone-whole-fragment).
+        let root = this_repeat_root(&[
+            text_binding(&[0, 0], "title"),
+            text_binding(&[1, 0], "summary"),
+        ]);
+        assert_eq!(root, None);
+    }
+
+    #[dialog_common::test]
+    fn it_finds_the_element_that_binds_this_in_an_attribute() {
+        // <table>                     [0]
+        //   <tbody>                   [0, 0]
+        //     <tr data-subject={this}>  [0, 0, 0]  attr
+        //       <td>{title}</td>      [0, 0, 0, 0, 0] text
+        // The <tr> at [0, 0, 0] is the repeat root.
+        let root = this_repeat_root(&[
+            attr_binding(&[0, 0, 0], "data-subject", "this"),
+            text_binding(&[0, 0, 0, 0, 0], "title"),
+        ]);
+        assert_eq!(root, Some(vec![0, 0, 0]));
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_this_in_text_for_repeat_root() {
+        // `{this}` in a bare text node is value output, not an
+        // iteration marker.
+        let text_this = Binding {
+            path: vec![0, 0],
+            kind: BindingKind::Text {
+                segments: vec![Segment::Field("this".into())],
+            },
+        };
+        assert_eq!(this_repeat_root(&[text_this]), None);
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_this_in_a_mixed_attribute_value() {
+        // <a href="/entity/{this}"> — a URL substitution in a detail
+        // template, NOT a directory repeat boundary. The value mixes
+        // literal text with {this}, so it must not mark a repeat root.
+        let href = Binding {
+            path: vec![0],
+            kind: BindingKind::Attribute {
+                attr_name: "href".into(),
+                segments: vec![
+                    Segment::Text("/entity/".into()),
+                    Segment::Field("this".into()),
+                ],
+                force_attribute: false,
+            },
+        };
+        assert_eq!(this_repeat_root(&[href]), None);
+    }
+
+    #[dialog_common::test]
+    fn it_picks_the_outermost_this_marker_as_the_repeat_root() {
+        // `{this}` bound at two nesting levels: the OUTERMOST
+        // (shallowest) element is the repeat boundary; the inner
+        // marker falls inside its per-row clone.
+        let root = this_repeat_root(&[
+            attr_binding(&[0, 1, 0], "data-subject", "this"),
+            attr_binding(&[0, 0], "data-subject", "this"),
+        ]);
+        assert_eq!(root, Some(vec![0, 0]));
     }
 }
