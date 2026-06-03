@@ -9,10 +9,9 @@
 //!   writes live data, relaying the iframe's calls onto the existing
 //!   `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events.
 //!
-//! The iframe is sandboxed `allow-scripts allow-same-origin`. The
-//! same-origin grant is what lets the bridge inject `tonk` by a direct
-//! `parent.__tonkConnect` call with no MessageChannel. Author code must
-//! reach data only through `tonk`, never through `parent.document`.
+//! The iframe is sandboxed `allow-scripts` — an opaque origin. It
+//! cannot reach `parent.document`; it talks to the parent only over a
+//! `MessagePort` opened by the bridge bootstrap (see [`crate::bridge`]).
 //!
 //! State lives in [`crate::bridge::PortalState`] behind `Rc<RefCell<…>>`
 //! so the lifecycle callbacks, the prototype `reset` / `error` delegates,
@@ -61,9 +60,10 @@ impl CustomElement for TonkPortal {
             return;
         };
 
-        // Same-origin sandbox: scripts run and `window.parent` is
-        // reachable, so the bridge can inject `tonk` synchronously.
-        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
+        // Opaque-origin sandbox: scripts run but `parent.document` is
+        // unreachable. The bridge bootstrap reaches the parent only over
+        // a `MessagePort` it opens and transfers in its `hello`.
+        let _ = iframe.set_attribute("sandbox", "allow-scripts");
 
         // The iframe always fills its container.
         let style = iframe.style();
@@ -72,13 +72,12 @@ impl CustomElement for TonkPortal {
         let _ = style.set_property("border", "0");
 
         let state = Rc::new(RefCell::new(PortalState::new()));
-        let bridge = bridge::build_bridge(&host, &state);
-        bridge::register_portal(&iframe, &bridge);
+        bridge::register_portal(&iframe, &host, &state);
         install_method_delegates(&host, &state);
 
         // Append before assigning `srcdoc` so `contentWindow` exists;
-        // `__tonkConnect` matches on the live `contentWindow`, so the
-        // bootstrap script resolves this portal's bridge when it runs.
+        // the `hello` listener matches the live `contentWindow`, so the
+        // bootstrap script resolves this portal when it posts `hello`.
         let content = host.get_attribute("content").unwrap_or_default();
         let _ = host.append_child(&iframe);
         let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
@@ -117,12 +116,9 @@ impl CustomElement for TonkPortal {
         match name.as_str() {
             // New content reloads the iframe wholesale.
             "content" => reload(&host, &state),
-            // A re-scope updates the author-facing context, then reloads
-            // so the bootstrap re-runs author code against it.
-            "entity" | "model" => {
-                bridge::rescope(&host, &state);
-                reload(&host, &state);
-            }
+            // A re-scope reloads the iframe so the bootstrap re-runs
+            // author code; the fresh `context` rides the new handshake.
+            "entity" | "model" => reload(&host, &state),
             _ => {}
         }
     }
@@ -163,11 +159,11 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<PortalState>>) {
 }
 
 /// Register `<tonk-portal>` with the page. Idempotent. Installs the
-/// page-level `__tonkConnect` function, defines the element, and
+/// page-level `hello` message listener, defines the element, and
 /// installs the `reset` / `error` prototype shims that route
 /// subscription frames into the per-instance delegates.
 pub fn register() {
-    bridge::install_connect();
+    bridge::install_message_listener();
     if already_registered() {
         return;
     }
@@ -256,7 +252,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_mounts_one_same_origin_sandboxed_iframe_on_connect() {
+    fn it_mounts_one_opaque_origin_sandboxed_iframe_on_connect() {
         let host = mount(Some("<p>hi</p>"));
         assert_eq!(
             host.query_selector_all("iframe").unwrap().length(),
@@ -267,9 +263,9 @@ mod tests {
         let sandbox = iframe_of(&host)
             .get_attribute("sandbox")
             .expect("sandbox attribute present");
-        // The bridge slice runs same-origin to inject `tonk` cheaply;
-        // origin isolation returns with the postMessage transport.
-        assert_eq!(sandbox, "allow-scripts allow-same-origin");
+        // No `allow-same-origin`: the iframe is an opaque origin and
+        // reaches the parent only over the bridge's `MessagePort`.
+        assert_eq!(sandbox, "allow-scripts");
     }
 
     #[dialog_common::test]
@@ -279,7 +275,7 @@ mod tests {
             .get_attribute("srcdoc")
             .expect("srcdoc present");
         assert!(
-            srcdoc.contains("__tonkConnect"),
+            srcdoc.contains("MessageChannel") && srcdoc.contains("window.tonk"),
             "srcdoc should carry the bridge bootstrap; got: {srcdoc}",
         );
         assert!(
@@ -310,7 +306,7 @@ mod tests {
         let srcdoc = iframe_after.get_attribute("srcdoc").expect("srcdoc");
         assert!(srcdoc.contains("<p>two</p>"), "new content; got: {srcdoc}");
         assert!(
-            srcdoc.contains("__tonkConnect"),
+            srcdoc.contains("MessageChannel"),
             "bootstrap survives reload"
         );
         // A content change reassigns srcdoc on the *same* iframe — the
