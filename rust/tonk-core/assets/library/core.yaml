@@ -223,6 +223,7 @@ rule!:
 # view. Tab selection isn't wired yet (a future interactive pass),
 # so all canvases stack.
 view!: &workspace/view
+  this: id:tonk-workspace/workspace-view
   model: workspace
   display: |
     <div class="workspace">
@@ -235,6 +236,45 @@ view!: &workspace/view
           font-family: inherit;
           background: color-mix(in srgb, currentColor 4%, transparent);
         }
+
+        /* Top bar: repo name + sync status on the left, icon slots on
+           the right. Placeholder chrome for now. */
+        .workspace__topbar {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          flex: none;
+          height: 48px;
+          padding: 0 18px;
+          border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+          font-size: 14px;
+        }
+        .workspace__brand { font-weight: 600; opacity: 0.85; }
+        .workspace__crumb { opacity: 0.5; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+        .workspace__title { font-weight: 600; }
+        .workspace__sync {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 2px 9px;
+          font-size: 12px;
+          border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+          border-radius: 4px;
+          opacity: 0.8;
+        }
+        .workspace__sync::before {
+          content: "";
+          width: 7px; height: 7px; border-radius: 50%;
+          background: #3fbf6b; flex: none;
+        }
+        .workspace__spacer { flex: 1; }
+        .workspace__actions { display: inline-flex; align-items: center; gap: 12px; opacity: 0.6; }
+        .workspace__icon {
+          width: 18px; height: 18px; border-radius: 4px;
+          border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+          flex: none;
+        }
+
         .workspace__canvas {
           flex: 1;
           min-height: 0;
@@ -244,41 +284,49 @@ view!: &workspace/view
         /* The canvas shows the single active sheet (the workspace's
            command-driven `active` pointer). */
         .workspace__canvas > tonk-display { display: contents; }
-        /* Flat bottom strip of bullet-prefixed tabs, matching the
-           wireframe's Layout F (no browser-tab chrome). */
+
+        /* Bottom tab strip: equal-width bullet segments separated by
+           rules, an add button and an artifact count at the end —
+           matching the wireframe's Layout F. */
         .workspace__tabs {
           display: flex;
           align-items: stretch;
-          gap: 4px;
-          padding: 7px 14px;
-          border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+          flex: none;
+          height: 46px;
+          border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
           background: color-mix(in srgb, currentColor 3%, transparent);
         }
-        /* Each tab is wrapped in a .workspace__tab iteration item.
-           Flatten the inner display wrappers so the buttons sit
-           directly in the flex strip. The wrapper stays a click
-           target carrying the workspace + sheet ids. */
+        /* The iteration wrapper for each sheet's tab. It stays a click
+           target carrying the sheet id; flatten the inner display
+           wrappers so the button fills the segment. */
+        .workspace__tab {
+          flex: 1 1 0;
+          min-width: 0;
+          display: flex;
+          border-right: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+        }
         .workspace__tabs tonk-display,
         .workspace__tabs tonk-view { display: contents; }
-        .workspace__tab { display: contents; }
         .tab {
+          flex: 1;
           display: inline-flex;
           align-items: center;
-          gap: 7px;
-          padding: 5px 12px;
+          gap: 8px;
+          padding: 0 16px;
           font-size: 13px;
           color: inherit;
           background: transparent;
           border: none;
           cursor: pointer;
-          opacity: 0.6;
+          opacity: 0.55;
           white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         /* The leading status bullet (hollow when inactive). */
         .tab::before {
           content: "";
-          width: 6px;
-          height: 6px;
+          width: 7px; height: 7px;
           border-radius: 50%;
           border: 1px solid currentColor;
           background: transparent;
@@ -286,14 +334,54 @@ view!: &workspace/view
         }
         .tab:hover { opacity: 1; background: color-mix(in srgb, currentColor 7%, transparent); }
         .tab__icon { opacity: 0.7; }
+
+        .workspace__add {
+          flex: none;
+          width: 52px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 18px;
+          opacity: 0.45;
+          border-right: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+          cursor: pointer;
+        }
+        .workspace__add:hover { opacity: 1; background: color-mix(in srgb, currentColor 7%, transparent); }
+        .workspace__count {
+          flex: none;
+          display: inline-flex;
+          align-items: center;
+          padding: 0 18px;
+          font-size: 12px;
+          opacity: 0.4;
+          font-family: ui-monospace, "SF Mono", Menlo, monospace;
+          margin-left: auto;
+        }
       </style>
+
+      <div class="workspace__topbar">
+        <span class="workspace__brand">tonk</span>
+        <span class="workspace__crumb">&lsaquo; all repos</span>
+        <span class="workspace__title">{name}</span>
+        <span class="workspace__sync">synced</span>
+        <span class="workspace__spacer"></span>
+        <span class="workspace__actions">
+          <span class="workspace__icon"></span>
+          <span class="workspace__icon"></span>
+          <span class="workspace__icon"></span>
+        </span>
+      </div>
+
       <div class="workspace__canvas">
         <tonk-display entity={active} model=artifact />
       </div>
+
       <div class="workspace__tabs">
         <div class="workspace__tab" onclick=workspace/activate-sheet data-sheet={sheet}>
           <tonk-display entity={sheet} model=artifact view=workspace/tab />
         </div>
+        <div class="workspace__add">+</div>
+        <div class="workspace__count">artifacts</div>
       </div>
     </div>
 
@@ -341,13 +429,13 @@ view!:
       </div>
     </div>
 
-# The artifact's `tab` view: one bottom-strip tab.
+# The artifact's `tab` view: one bottom-strip tab — a status bullet
+# (the `.tab::before`) plus the title, left-aligned in its segment.
 workspace/tab!:
   this: id:tonk-workspace/artifact-tab
   model: artifact
   display: |
     <button class="tab" title={title}>
-      <wa-icon class="tab__icon" name={icon}></wa-icon>
       <span class="tab__name">{title}</span>
     </button>
 

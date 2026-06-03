@@ -179,7 +179,7 @@ pub fn TonkDisplayView() -> impl IntoView {
     // `<wa-page>`, no toolbar). The document's global stylesheet still
     // loads, so the rendered view is styled; this route is the page.
     view! {
-        <tonk-repository name=move || space_name.get().unwrap_or_default()>
+        <tonk-repository class="display-route" name=move || space_name.get().unwrap_or_default()>
             <tonk-branch name=move || branch_name.get().unwrap_or_default()>
                 <div class="display-view-slot" node_ref=mount></div>
             </tonk-branch>

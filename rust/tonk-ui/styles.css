@@ -199,6 +199,33 @@ tonk-notation {
     width: 100%;
 }
 
+/* Bare display route: the view fills the viewport, and scrolling is
+   contained inside the sheet (the view's own scroll regions), not the
+   outer document. The route renders
+   `tonk-host > tonk-repository.display-route > tonk-branch >
+   .display-view-slot > tonk-display > tonk-view > .workspace`, all of
+   which default to inline/auto height and would collapse the view to
+   its content size — so establish a 100dvh height chain down to the
+   view. `:has()` lets the host opt in only when it wraps this route. */
+html:has(.display-route),
+body:has(.display-route) {
+    height: 100%;
+    overflow: hidden;
+}
+tonk-host:has(.display-route) {
+    display: block;
+    height: 100dvh;
+}
+.display-route,
+.display-route > tonk-branch,
+.display-route > tonk-branch > .display-view-slot,
+.display-route tonk-display,
+.display-route tonk-view {
+    display: block;
+    height: 100%;
+    min-height: 0;
+}
+
 /* When a view or notation slide lives inside the carousel
    fallback (no explicit `view` attribute on `<tonk-display>`),
    it has to fill the carousel-item's slot for the carousel's
