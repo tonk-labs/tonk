@@ -1,0 +1,60 @@
+# tonk-portal: the `portal` concept and its canonical view.
+#
+# Asserted-notation document lowered by `claim!` at compile time
+# into `tonk_portal::BOOTSTRAP`; the shell folds it into the
+# default repository's branch bootstrap at creation, chained after
+# the board bootstrap.
+#
+# The `view` concept is redeclared here, byte-identical to the
+# board's definition (same `this: tonk:view` pin and attributes),
+# so this document is self-contained: lowering a `view!` assertion
+# needs the `view` concept in scope, and `view` is not a built-in.
+# Because the pin and the attribute set match, folding both
+# bootstraps into one branch seeds the same `tonk:view` entity — the
+# claims dedupe rather than minting a conflicting second concept.
+
+# --- concepts -----------------------------------------------
+
+concept!: &view
+  this: tonk:view
+  description: A display template (model, display) for rendering an entity
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+concept!: &portal
+  description: Imperative HTML rendered in an isolated iframe
+  with:
+    content:
+      description: HTML document written into the portal iframe
+      the: xyz.tonk.portal/content
+      cardinality: one
+      as: text
+    height:
+      description: Iframe height in pixels
+      the: xyz.tonk.portal/height
+      cardinality: one
+      as: unsigned-integer
+
+# --- view ---------------------------------------------------
+#
+# The canonical bridge from the `portal` concept to the
+# `<tonk-portal>` element. `html:` forces both bindings through
+# setAttribute so `attributeChangedCallback` fires — required for
+# `height`, an unsigned-integer the renderer would otherwise route
+# to a JS property. Users never write this; nesting a
+# `<tonk-display model=portal>` over a portal entity resolves this
+# view by model and renders it.
+
+view!:
+  model: portal
+  display: |
+    <tonk-portal html:content={content} html:height={height} />

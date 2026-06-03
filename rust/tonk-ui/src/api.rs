@@ -163,7 +163,14 @@ pub async fn init() -> Result<String, TonkUiError> {
                 .rules(tonk_workspace::RULES.iter().map(|rule| EffectSource {
                     source: rule.source().to_owned(),
                     polarity: rule.polarity().as_str().to_owned(),
-                })),
+                }))
+                // Chain the portal schema (the `portal` concept + its
+                // canonical view). `bootstrap()` extends the claim
+                // list rather than replacing it, and the redeclared
+                // `view` concept is byte-identical to the board's
+                // (same `tonk:view` pin and attributes), so the two
+                // seed one entity and merge cleanly.
+                .bootstrap(tonk_portal::BOOTSTRAP.clone()),
         );
 
     let response = reqwest::Client::new()

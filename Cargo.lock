@@ -5068,6 +5068,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-portal"
+version = "0.1.0"
+dependencies = [
+ "custom-elements",
+ "dialog-common",
+ "indexmap",
+ "ipld-core",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "serde_json",
+ "tonk-core",
+ "tonk-display",
+ "tonk-host",
+ "tonk-macros",
+ "tonk-schema",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
@@ -5150,6 +5173,7 @@ dependencies = [
  "tonk-invite",
  "tonk-layout",
  "tonk-notation",
+ "tonk-portal",
  "tonk-sigil",
  "tonk-worker",
  "tonk-workspace",
