@@ -1,46 +1,47 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <!-- Tell the browser to render native chrome (scrollbars, form
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <!-- Tell the browser to render native chrome (scrollbars, form
        controls, etc.) in either mode — the actual mode is selected
        reactively by the script below based on the OS preference. -->
-    <meta name="color-scheme" content="light dark" />
-    <meta name="title" content="Tonk" />
-    <meta
-      name="description"
-      content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
-    />
-    <meta name="robots" content="index, follow" />
+        <meta name="color-scheme" content="light dark" />
+        <meta name="title" content="Tonk" />
+        <meta
+            name="description"
+            content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
+        />
+        <meta name="robots" content="index, follow" />
 
-    <title>Tonk</title>
+        <title>Tonk</title>
 
-    <meta property="og:title" content="Tonk is impossible software" />
-    <meta
-      property="og:description"
-      content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
-    />
-    <meta property="og:url" content="https://tonk.xyz" />
-    <meta property="og:site_name" content="Tonk" />
-    <meta property="og:locale" content="en_US" />
-    <meta property="og:image" content="https://tonk.xyz/preview.png" />
-    <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Tonk is impossible software" />
-    <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Tonk is impossible software" />
-    <meta
-      name="twitter:description"
-      content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
-    />
-    <meta name="twitter:image" content="https://tonk.xyz/preview.png" />
+        <meta property="og:title" content="Tonk is impossible software" />
+        <meta
+            property="og:description"
+            content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
+        />
+        <meta property="og:url" content="https://tonk.xyz" />
+        <meta property="og:site_name" content="Tonk" />
+        <meta property="og:locale" content="en_US" />
+        <meta property="og:image" content="https://tonk.xyz/preview.png" />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+        <meta property="og:image:alt" content="Tonk is impossible software" />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Tonk is impossible software" />
+        <meta
+            name="twitter:description"
+            content="Locally multiplayer. Shared without servers. Free without ads. Impossible, until now."
+        />
+        <meta name="twitter:image" content="https://tonk.xyz/preview.png" />
 
-    <link rel="shortcut icon" href="/images/mark-white.svg" />
-    <link rel="apple-touch-icon" href="/images/mark-white.svg" />
+        <link rel="shortcut icon" href="/images/mark-white.svg" />
+        <link rel="apple-touch-icon" href="/images/mark-white.svg" />
 
-    <!-- Web Awesome: custom-element UI library (see .claude/skills/webawesome). The loader
+        <!-- V9  -->
+        <!-- Web Awesome: custom-element UI library (see .claude/skills/webawesome). The loader
        auto-registers any <wa-*> elements used in the DOM; `data-webawesome` tells it
        where its bundled assets (icons, etc.) live.
 
@@ -48,141 +49,144 @@
        local overrides layer on top (see styles.css): brutalist's
        fonts (Space Grotesk / IBM Plex Sans Condensed / Space Mono)
        and a zero border radius so nothing is rounded. -->
-    <link rel="stylesheet" href="/webawesome/styles/webawesome.css" />
-    <link rel="stylesheet" href="/webawesome/styles/themes/default.css" />
-    <link
-      rel="stylesheet"
-      href="/webawesome/styles/color/palettes/shoelace.css"
-    />
-    <!-- Brutalist-theme fonts (Space Grotesk / IBM Plex Sans
+        <link rel="stylesheet" href="/webawesome/styles/webawesome.css" />
+        <link rel="stylesheet" href="/webawesome/styles/themes/default.css" />
+        <link
+            rel="stylesheet"
+            href="/webawesome/styles/color/palettes/shoelace.css"
+        />
+        <!-- Brutalist-theme fonts (Space Grotesk / IBM Plex Sans
        Condensed / Space Mono) are self-hosted: see styles.css
        for the `@font-face` declarations. Files live in
        `assets/fonts/` and are copied into the dist by the
        Trunk `copy-dir` rule below. No external font CDN. -->
-    <!-- Preload the loader so it starts compiling alongside the
+        <!-- Preload the loader so it starts compiling alongside the
        Wasm bundle instead of after the HTML has finished parsing.
        The loader itself dynamically imports per-component chunks
        on demand, so preloading the loader is the highest-leverage
        step we can take without enumerating every chunk. -->
-    <link rel="modulepreload" href="/webawesome/webawesome.loader.js" />
-    <script
-      type="module"
-      src="/webawesome/webawesome.loader.js"
-      data-webawesome="/webawesome"
-    ></script>
+        <link rel="modulepreload" href="/webawesome/webawesome.loader.js" />
+        <script
+            type="module"
+            src="/webawesome/webawesome.loader.js"
+            data-webawesome="/webawesome"
+        ></script>
 
-    <!-- Inherit the OS light/dark preference. Web Awesome picks up its
+        <!-- Inherit the OS light/dark preference. Web Awesome picks up its
        theme from `.wa-light` / `.wa-dark` on the root element; toggle
        the class immediately (before paint) and keep it in sync with
        `prefers-color-scheme` changes. -->
-    <script>
-      (() => {
-        // Activate the default theme with the shoelace palette. Light/dark
-        // is toggled reactively on `prefers-color-scheme` changes.
-        document.documentElement.classList.add(
-          "wa-theme-default",
-          "wa-palette-shoelace",
-        );
+        <script>
+            (() => {
+                // Activate the default theme with the shoelace palette. Light/dark
+                // is toggled reactively on `prefers-color-scheme` changes.
+                document.documentElement.classList.add(
+                    "wa-theme-default",
+                    "wa-palette-shoelace",
+                );
 
-        const mq = window.matchMedia("(prefers-color-scheme: dark)");
-        const apply = (isDark) => {
-          const cls = document.documentElement.classList;
-          cls.toggle("wa-dark", isDark);
-          cls.toggle("wa-light", !isDark);
-        };
-        apply(mq.matches);
-        mq.addEventListener("change", (e) => apply(e.matches));
-      })();
-    </script>
+                const mq = window.matchMedia("(prefers-color-scheme: dark)");
+                const apply = (isDark) => {
+                    const cls = document.documentElement.classList;
+                    cls.toggle("wa-dark", isDark);
+                    cls.toggle("wa-light", !isDark);
+                };
+                apply(mq.matches);
+                mq.addEventListener("change", (e) => apply(e.matches));
+            })();
+        </script>
 
-    <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
+        <!-- Must define `serviceWorkerActivates` before the Wasm blob loads:
          the shell awaits it before issuing any /api/* fetch. -->
-    <script type="module">
-      // Resolve when the service worker is *controlling* this page.
-      //
-      // `controller` being non-null is the precise moment when
-      // `/api/*` fetches start routing through the worker. Three
-      // paths reach that state:
-      //
-      //   1. Already controlled (warm load) — return immediately.
-      //   2. Registration is in-flight — `controllerchange` fires
-      //      when the new SW claims this page during its install /
-      //      activate cycle.
-      //   3. SW activated in a previous session but this newly-
-      //      loaded document isn't being controlled — the SW's
-      //      `onactivate` doesn't refire, so without a nudge it
-      //      never calls `clients.claim()` for this client. We
-      //      send a `{type:"claim"}` message to the active worker
-      //      asking it to claim; the SW responds with
-      //      `self.clients.claim()`, which raises
-      //      `controllerchange` on this page.
-      //
-      // No reloads, no timeouts: the claim path is deterministic
-      // once the SW has a `message` handler that honors `claim`.
-      self.serviceWorkerActivates = async () => {
-        if (!("serviceWorker" in navigator)) {
-          throw new Error("Service workers not supported; Tonk will not work!");
-        }
-        if (navigator.serviceWorker.controller) return;
+        <script type="module">
+            // Resolve when the service worker is *controlling* this page.
+            //
+            // `controller` being non-null is the precise moment when
+            // `/api/*` fetches start routing through the worker. Three
+            // paths reach that state:
+            //
+            //   1. Already controlled (warm load) — return immediately.
+            //   2. Registration is in-flight — `controllerchange` fires
+            //      when the new SW claims this page during its install /
+            //      activate cycle.
+            //   3. SW activated in a previous session but this newly-
+            //      loaded document isn't being controlled — the SW's
+            //      `onactivate` doesn't refire, so without a nudge it
+            //      never calls `clients.claim()` for this client. We
+            //      send a `{type:"claim"}` message to the active worker
+            //      asking it to claim; the SW responds with
+            //      `self.clients.claim()`, which raises
+            //      `controllerchange` on this page.
+            //
+            // No reloads, no timeouts: the claim path is deterministic
+            // once the SW has a `message` handler that honors `claim`.
+            self.serviceWorkerActivates = async () => {
+                if (!("serviceWorker" in navigator)) {
+                    throw new Error(
+                        "Service workers not supported; Tonk will not work!",
+                    );
+                }
+                if (navigator.serviceWorker.controller) return;
 
-        const controlled = new Promise((resolve) => {
-          navigator.serviceWorker.addEventListener(
-            "controllerchange",
-            resolve,
-            { once: true },
-          );
-        });
+                const controlled = new Promise((resolve) => {
+                    navigator.serviceWorker.addEventListener(
+                        "controllerchange",
+                        resolve,
+                        { once: true },
+                    );
+                });
 
-        // Nudge the active worker to claim this client.
-        navigator.serviceWorker.ready.then((reg) => {
-          reg.active?.postMessage({ type: "claim" });
-        });
+                // Nudge the active worker to claim this client.
+                navigator.serviceWorker.ready.then((reg) => {
+                    reg.active?.postMessage({ type: "claim" });
+                });
 
-        await controlled;
-      };
+                await controlled;
+            };
 
-      // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
-      self.sync = async () => {
-        if ("serviceWorker" in navigator && "SyncManager" in window) {
-          try {
-            const registration = await navigator.serviceWorker.ready;
-            await registration.sync.register("tonk-sync");
-            console.log("[Tonk] Background sync registered");
-            return;
-          } catch (e) {
-            console.warn(
-              "[Tonk] Background sync registration failed, falling back:",
-              e,
-            );
-          }
-        }
-        // Fallback to direct sync call
-        const response = await fetch("/api/sync", { method: "POST" });
-        if (!response.ok) {
-          throw new Error(`Sync failed: ${response.status}`);
-        }
-        console.log("[Tonk] Direct sync completed");
-      };
-    </script>
-    <!-- The following are load-bearing configuration for the Trunk build tool
+            // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
+            self.sync = async () => {
+                if ("serviceWorker" in navigator && "SyncManager" in window) {
+                    try {
+                        const registration =
+                            await navigator.serviceWorker.ready;
+                        await registration.sync.register("tonk-sync");
+                        console.log("[Tonk] Background sync registered");
+                        return;
+                    } catch (e) {
+                        console.warn(
+                            "[Tonk] Background sync registration failed, falling back:",
+                            e,
+                        );
+                    }
+                }
+                // Fallback to direct sync call
+                const response = await fetch("/api/sync", { method: "POST" });
+                if (!response.ok) {
+                    throw new Error(`Sync failed: ${response.status}`);
+                }
+                console.log("[Tonk] Direct sync completed");
+            };
+        </script>
+        <!-- The following are load-bearing configuration for the Trunk build tool
          (https://trunkrs.dev/assets/); if you need to add build steps or copy
          static assets, you will want to modify this condiguration here. -->
-    <link
-      data-trunk
-      rel="rust"
-      data-bin="ui"
-      data-type="main"
-      data-wasm-opt="z"
-    />
-    <link
-      data-trunk
-      rel="rust"
-      data-bin="worker"
-      data-type="worker"
-      data-bindgen-target="web"
-      data-wasm-opt="z"
-    />
-    <!-- Standalone `<tonk-concept>` element module. The parent shell
+        <link
+            data-trunk
+            rel="rust"
+            data-bin="ui"
+            data-type="main"
+            data-wasm-opt="z"
+        />
+        <link
+            data-trunk
+            rel="rust"
+            data-bin="worker"
+            data-type="worker"
+            data-bindgen-target="web"
+            data-wasm-opt="z"
+        />
+        <!-- Standalone `<tonk-concept>` element module. The parent shell
        registers the element directly from its own bundle; this
        artefact exists so the tonk-worker HTML wrapper can also
        register it inside the iframe's separate `customElements`
@@ -191,69 +195,82 @@
        Trunk's `worker` type drops the file at a stable unhashed
        URL (`/tonk-concept.js`) without auto-injecting any script
        into this page. -->
-    <link
-      data-trunk
-      rel="rust"
-      data-bin="tonk-concept"
-      data-type="worker"
-      data-bindgen-target="web"
-      data-wasm-opt="z"
-    />
+        <link
+            data-trunk
+            rel="rust"
+            data-bin="tonk-concept"
+            data-type="worker"
+            data-bindgen-target="web"
+            data-wasm-opt="z"
+        />
 
-    <!-- Bridge module injected by host::wrap_html_body into iframe srcdoc.
+        <!-- Bridge module injected by host::wrap_html_body into iframe srcdoc.
        Served at `/__tonk/bridge.js` by the dev server / CDN so the
        service-worker passthrough route can reach it without the SW
        needing to bundle and serve it internally. -->
-    <link
-      data-trunk
-      rel="copy-file"
-      href="../tonk-worker/assets/bridge.js"
-      data-target-path="__tonk"
-    />
-    <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
-    <!-- The standard library (built-in concepts, views, commands,
+        <link
+            data-trunk
+            rel="copy-file"
+            href="../tonk-worker/assets/bridge.js"
+            data-target-path="__tonk"
+        />
+        <link data-trunk rel="copy-file" href="./assets/service_worker.js" />
+        <!-- Dev-only hot reload control. Copied to dist so it's
+       available under `trunk serve`, but the loading `<script>` is
+       injected only in debug builds by the UI shell (see ui.rs,
+       `cfg(debug_assertions)`), so a production `trunk build
+       --release` never loads it. It re-seeds the standard library in
+       place on a `core.yaml` edit and reloads on a real code change;
+       paired with `no_autoreload = true` in Trunk.toml. -->
+        <link data-trunk rel="copy-file" href="./assets/hot-swap.js" />
+        <!-- The standard library (built-in concepts, views, commands,
        rules + demo content). Served as a static asset so the service
        worker can fetch and seed it at repository creation, instead of
        embedding it at compile time. Editing core.yaml updates the
        library without rebuilding the wasm. -->
-    <link
-      data-trunk
-      rel="copy-file"
-      href="../tonk-core/assets/library/core.yaml"
-      data-target-path="library"
-    />
-    <link data-trunk rel="copy-dir" href="./assets/fonts" />
-    <link data-trunk rel="copy-dir" href="./assets/images" />
-    <link data-trunk rel="copy-dir" href="./assets/webawesome" />
-    <link data-trunk rel="copy-file" href="../tonk-sigil/assets/sigils.svg" />
-    <!-- `<tonk-code>` web component bundle. The crate's `install()`
+        <link
+            data-trunk
+            rel="copy-file"
+            href="../tonk-core/assets/library/core.yaml"
+            data-target-path="library"
+        />
+        <link data-trunk rel="copy-dir" href="./assets/fonts" />
+        <link data-trunk rel="copy-dir" href="./assets/images" />
+        <link data-trunk rel="copy-dir" href="./assets/webawesome" />
+        <link
+            data-trunk
+            rel="copy-file"
+            href="../tonk-sigil/assets/sigils.svg"
+        />
+        <!-- `<tonk-code>` web component bundle. The crate's `install()`
        injects `<script type="module" src="/tonk-code/tonk-code.js">`
        at startup; chunked language packs (e.g.
        `tonk-code-lang-yaml.js`) are loaded on demand by the element
        via relative imports, so all chunks must sit next to the
        main bundle in the same directory. The trunk copy below
        preserves that layout. -->
-    <link
-      data-trunk
-      rel="copy-dir"
-      href="../tonk-code/assets"
-      data-target-path="tonk-code"
-    />
+        <link
+            data-trunk
+            rel="copy-dir"
+            href="../tonk-code/assets"
+            data-target-path="tonk-code"
+        />
 
-    <link data-trunk rel="css" href="./styles.css" />
-  </head>
+        <link data-trunk rel="css" href="./styles.css" />
+    </head>
 
-  <body>
-    <script type="module">
-      if ("serviceWorker" in navigator) {
-        await navigator.serviceWorker.register("/service_worker.js", {
-          type: "module",
-          updateViaCache: "none",
-        });
-      } else {
-        console.error("Service workers not supported; Tonk will not work!");
-      }
-    </script>
-  </body>
+    <body>
+        <script type="module">
+            if ("serviceWorker" in navigator) {
+                await navigator.serviceWorker.register("/service_worker.js", {
+                    type: "module",
+                    updateViaCache: "none",
+                });
+            } else {
+                console.error(
+                    "Service workers not supported; Tonk will not work!",
+                );
+            }
+        </script>
+    </body>
 </html>
-

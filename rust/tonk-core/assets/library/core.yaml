@@ -100,7 +100,7 @@ concept!: &workspace
       cardinality: many
       as: entity
     active:
-      description: >
+      description: |
         The currently selected sheet, shown in the canvas. Cardinality
         one, so re-asserting it replaces the previous selection - a
         single moving pointer driven by the `activate-sheet` command.
@@ -654,14 +654,14 @@ stop!:
 stop!:
   this: id:tonk-workspace/stop/cathedral
   day: "tue"
-  item: "Cathedral, interior tour"
+  item: Cathedral, interior tour
   time: "10:00"
   cost: "EUR 15"
 
 stop!:
   this: id:tonk-workspace/stop/chapel
   day: "tue"
-  item: "Cappella del Tau"
+  item: Cappella del Tau
   time: "14:00"
   cost: "EUR 8"
 
@@ -797,4 +797,4 @@ board-view!: &demo-board
 
 ####
 
-# version 5
+# version 13

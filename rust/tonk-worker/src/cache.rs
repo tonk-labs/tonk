@@ -40,6 +40,18 @@ pub fn is_cacheable(request: &Request, path: &str) -> bool {
     if path.starts_with("/api/") {
         return false;
     }
+    // Honor a caller's explicit cache-bypass. A `fetch(url, { cache:
+    // "no-store" })` (or `"reload"` / `"no-cache"`) signals the caller
+    // needs fresh content, so don't serve stale-while-revalidate. The
+    // dev hot-reload client uses this to read the just-edited standard
+    // library rather than the previous cached copy (the "one version
+    // behind" reseed).
+    match request.cache() {
+        web_sys::RequestCache::NoStore
+        | web_sys::RequestCache::Reload
+        | web_sys::RequestCache::NoCache => return false,
+        _ => {}
+    }
     true
 }
 

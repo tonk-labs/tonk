@@ -5,7 +5,7 @@ use crate::components::{
 };
 use leptos::prelude::*;
 use leptos_router::{
-    components::{Route, Router, Routes},
+    components::{Outlet, ParentRoute, Route, Router, Routes},
     path,
 };
 
@@ -20,23 +20,33 @@ use leptos_router::{
 /// [`CreateSpaceOpen`]: super::CreateSpaceOpen
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
-    let last_join_outcome =
-        use_context::<LastJoinOutcome>().expect("LastJoinOutcome provided by TonkShell");
-
     view! {
         <tonk-host>
             <Router>
-                <wa-page
-                    navigation-placement="end"
-                    attr:data-last-join-outcome=move || last_join_outcome.get()
-                >
-                    <TonkToolbar />
-                    <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
-                        // Order matters: the more specific viewer
-                        // route is listed before the catch-all
-                        // `space/:space?` so deep links like
-                        // `/space/foo/branch/main/view/bar` don't
-                        // get swallowed by the generic space route.
+                <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
+                    // The display route renders bare — just the
+                    // `<tonk-display>` and its routing context, no shell
+                    // chrome. It sits OUTSIDE the chromed parent route so
+                    // no `<wa-page>` / toolbar wraps it. Wildcard
+                    // (`*subject`), not `:subject`, so entity URIs
+                    // containing `/` (e.g. `id:tonk-workspace/itinerary`)
+                    // are captured whole rather than truncated.
+                    <Route
+                        path=path!("space/:space/branch/:branch/display/*subject")
+                        view=TonkDisplayView
+                    />
+
+                    // Every other route renders inside the adaptive
+                    // `<wa-page>` shell (navigation column on desktop,
+                    // drawer on mobile) plus the toolbar. The parent
+                    // route provides that chrome once and slots the
+                    // matched child through `<Outlet/>`.
+                    <ParentRoute path=path!("") view=ChromeShell>
+                        // Order matters: the more specific viewer route
+                        // is listed before the catch-all `space/:space?`
+                        // so deep links like
+                        // `/space/foo/branch/main/view/bar` don't get
+                        // swallowed by the generic space route.
                         <Route
                             path=path!("space/:space/branch/:branch/view/:entity")
                             view=TonkSpaceViewer
@@ -44,14 +54,6 @@ pub fn TonkLauncher() -> impl IntoView {
                         <Route
                             path=path!("space/:space/branch/:branch/concept/:source")
                             view=TonkConceptView
-                        />
-                        <Route
-                            // Wildcard (`*subject`), not `:subject`, so
-                            // entity URIs containing `/` (e.g.
-                            // `id:tonk-workspace/itinerary`) are captured
-                            // whole rather than truncated at the slash.
-                            path=path!("space/:space/branch/:branch/display/*subject")
-                            view=TonkDisplayView
                         />
                         <Route
                             path=path!("space/:space/branch/:branch/layout/:workspace")
@@ -64,12 +66,30 @@ pub fn TonkLauncher() -> impl IntoView {
                         <Route path=path!("space/:space?") view=TonkSpace />
                         <Route path=path!("profile") view=TonkProfile />
                         <Route path=path!("join") view=TonkJoin />
-                    </Routes>
-                </wa-page>
+                    </ParentRoute>
+                </Routes>
                 <TonkCreateSpace />
                 <TonkInviteDialog />
             </Router>
         </tonk-host>
+    }
+}
+
+/// The chromed shell: the adaptive `<wa-page>` layout plus the
+/// toolbar, with the matched child route rendered through
+/// `<Outlet/>`. Wraps every route except the bare display route.
+#[component]
+fn ChromeShell() -> impl IntoView {
+    let last_join_outcome =
+        use_context::<LastJoinOutcome>().expect("LastJoinOutcome provided by TonkShell");
+    view! {
+        <wa-page
+            navigation-placement="end"
+            attr:data-last-join-outcome=move || last_join_outcome.get()
+        >
+            <TonkToolbar />
+            <Outlet />
+        </wa-page>
     }
 }
 
