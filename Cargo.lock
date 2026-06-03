@@ -5170,6 +5170,7 @@ dependencies = [
  "tonk-portal",
  "tonk-sigil",
  "tonk-worker",
+ "tonk-workspace",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5241,6 +5242,12 @@ dependencies = [
 [[package]]
 name = "tonk-workspace"
 version = "0.1.0"
+dependencies = [
+ "custom-elements",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
+]
 
 [[package]]
 name = "tower"

@@ -77,6 +77,30 @@
     src: url("/fonts/space-mono-latin-700-normal.woff2") format("woff2");
 }
 
+/* Brand accent → purple, matching the viewer wireframes (the
+   shoelace palette ships a blue brand). Remap the brand semantic
+   tokens used across the app (fills, borders, on-colors) to a violet
+   scale so accents read purple in both light and dark. */
+:root,
+.wa-light,
+.wa-dark {
+    --wa-color-brand-fill-quiet: #f3ebfb;
+    --wa-color-brand-fill-normal: #d9bff2;
+    --wa-color-brand-fill-loud: #9c5bd8;
+    --wa-color-brand-border-quiet: #d9bff2;
+    --wa-color-brand-border-normal: #b483e3;
+    --wa-color-brand-border-loud: #9c5bd8;
+    --wa-color-brand-on-quiet: #6b29a8;
+    --wa-color-brand-on-normal: #4a1d73;
+    --wa-color-brand-on-loud: #ffffff;
+}
+.wa-dark {
+    --wa-color-brand-fill-quiet: #2a1840;
+    --wa-color-brand-fill-normal: #4a2d6e;
+    --wa-color-brand-fill-loud: #9c5bd8;
+    --wa-color-brand-on-quiet: #d9bff2;
+}
+
 html,
 body {
     padding: 0;

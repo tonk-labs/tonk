@@ -21,6 +21,7 @@ async fn main() {
     tonk_layout::register();
     tonk_board::register();
     tonk_portal::register();
+    tonk_workspace::register();
     tonk_ui::components::register_inspector();
     // Inject the `<tonk-code>` element's JS bundle. The path
     // matches the `copy-dir` target in `index.html` — both must

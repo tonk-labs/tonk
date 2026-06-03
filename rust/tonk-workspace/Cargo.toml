@@ -11,6 +11,28 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+custom-elements = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+  "CssStyleDeclaration",
+  "CustomElementRegistry",
+  "CustomEvent",
+  "CustomEventInit",
+  "Document",
+  "DomTokenList",
+  "Element",
+  "Event",
+  "HtmlElement",
+  "MutationObserver",
+  "MutationObserverInit",
+  "MutationRecord",
+  "Node",
+  "NodeList",
+  "Window",
+] }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
   "cfg(dialog_test_native_integration)",

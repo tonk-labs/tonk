@@ -178,11 +178,11 @@ concept!: &workspace/tab
 # clicked sheet (replacing the prior selection). The command itself is
 # swept after the cycle - only the `active` pointer persists.
 command!: &workspace/activate-sheet
-  description: A click asking to make `sheet` the active sheet of its workspace.
+  description: A request to make `sheet` the active sheet of its workspace.
   with:
     sheet:
-      description: The sheet to activate
-      the: dom.event.current-target.dataset/sheet
+      description: The sheet to activate, from the binder's `activate` event detail
+      the: dom.event.detail/sheet
       as: entity
 
 # A minimal projection of the workspace's `active` pointer: the
@@ -228,13 +228,18 @@ view!: &workspace/view
   display: |
     <div class="workspace">
       <style>
+        /* Styling uses the app's Web Awesome design tokens (--wa-*)
+           rather than hardcoded colours, so the viewer follows the
+           active theme and light/dark automatically. */
         .workspace {
           display: flex;
           flex-direction: column;
           height: 100%;
-          color: inherit;
-          font-family: inherit;
-          background: color-mix(in srgb, currentColor 4%, transparent);
+          font-family: var(--wa-font-family-body);
+          color: var(--wa-color-text-normal);
+          /* Transparent so the page's dot-grid paper shows through
+             (matching the wireframe). */
+          background: transparent;
         }
 
         /* Top bar: repo name + sync status on the left, icon slots on
@@ -242,120 +247,146 @@ view!: &workspace/view
         .workspace__topbar {
           display: flex;
           align-items: center;
-          gap: 14px;
+          gap: var(--wa-space-m);
           flex: none;
-          height: 48px;
-          padding: 0 18px;
-          border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-          font-size: 14px;
+          height: 52px;
+          padding: 0 var(--wa-space-l);
+          /* A surface fill so the bar reads as chrome over the
+             transparent dot-grid canvas. */
+          background: var(--wa-color-surface-raised);
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          font-size: var(--wa-font-size-m);
         }
-        .workspace__brand { font-weight: 600; opacity: 0.85; }
-        .workspace__crumb { opacity: 0.5; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
-        .workspace__title { font-weight: 600; }
+        .workspace__brand { font-weight: var(--wa-font-weight-bold); }
+        .workspace__crumb {
+          color: var(--wa-color-text-quiet);
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-s);
+        }
+        .workspace__title { font-weight: var(--wa-font-weight-semibold); }
         .workspace__sync {
           display: inline-flex;
           align-items: center;
-          gap: 6px;
-          padding: 2px 9px;
-          font-size: 12px;
-          border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-          border-radius: 4px;
-          opacity: 0.8;
+          gap: var(--wa-space-xs);
+          padding: var(--wa-space-3xs) var(--wa-space-s);
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-success-on-quiet);
+          background: var(--wa-color-success-fill-quiet);
+          border-radius: var(--wa-border-radius-s);
         }
         .workspace__sync::before {
           content: "";
           width: 7px; height: 7px; border-radius: 50%;
-          background: #3fbf6b; flex: none;
+          background: var(--wa-color-success-fill-loud); flex: none;
         }
         .workspace__spacer { flex: 1; }
-        .workspace__actions { display: inline-flex; align-items: center; gap: 12px; opacity: 0.6; }
+        .workspace__actions {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-m);
+          color: var(--wa-color-text-quiet);
+        }
         .workspace__icon {
-          width: 18px; height: 18px; border-radius: 4px;
-          border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+          width: 20px; height: 20px;
+          border-radius: var(--wa-border-radius-s);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
           flex: none;
         }
 
-        .workspace__canvas {
+        /* The binder fills the space below the top bar: the active sheet
+           panel fills the rest, the projected tab strip pins to the
+           bottom. */
+        .workspace__binder {
+          display: flex;
+          flex-direction: column;
           flex: 1;
           min-height: 0;
-          overflow: auto;
-          padding: 20px;
         }
-        /* The canvas shows the single active sheet (the workspace's
-           command-driven `active` pointer). */
-        .workspace__canvas > tonk-display { display: contents; }
 
-        /* Bottom tab strip: equal-width bullet segments separated by
-           rules, an add button and an artifact count at the end —
-           matching the wireframe's Layout F. */
-        .workspace__tabs {
+        /* The view mounts each sheet through a `<tonk-display>` wrapper;
+           those wrappers are the binder's flex children (the panels).
+           The active panel FILLS the available height; the rest
+           collapse (their inner <tonk-sheet> is `hidden`). Scrolling
+           happens inside the sheet's card. */
+        .workspace__binder > tonk-display {
+          flex: 1;
+          min-height: 0;
+          padding: var(--wa-space-l);
+          box-sizing: border-box;
+          order: 1;
+        }
+        .workspace__binder > tonk-display:not(:has(tonk-sheet:not([hidden]))) {
+          display: none;
+        }
+        .workspace__binder > tonk-display > tonk-view,
+        .workspace__binder tonk-sheet,
+        .workspace__binder tonk-sheet > tonk-display,
+        .workspace__binder tonk-sheet > tonk-view {
+          display: block;
+          height: 100%;
+          min-height: 0;
+        }
+
+        /* The bottom tab strip the binder projects. Equal-width bullet
+           segments separated by rules; the active tab gets a brand
+           accent top bar. The binder sets the CSS `order` per tab. */
+        .tonk-sheet-binder__tabs {
           display: flex;
           align-items: stretch;
           flex: none;
-          height: 46px;
-          border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent);
-          background: color-mix(in srgb, currentColor 3%, transparent);
+          height: 48px;
+          order: 2;
+          /* Left inset so the first tab aligns with the sheet card's
+             left edge (the panel padding above). */
+          padding-left: var(--wa-space-l);
+          /* A surface fill matching the top bar (not the darker lowered
+             surface). */
+          background: var(--wa-color-surface-raised);
+          border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
         }
-        /* The iteration wrapper for each sheet's tab. It stays a click
-           target carrying the sheet id; flatten the inner display
-           wrappers so the button fills the segment. */
-        .workspace__tab {
-          flex: 1 1 0;
-          min-width: 0;
-          display: flex;
-          border-right: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-        }
-        .workspace__tabs tonk-display,
-        .workspace__tabs tonk-view { display: contents; }
-        .tab {
-          flex: 1;
+        /* Tabs are content-width (short), left-aligned, separated by
+           rules — not stretched to fill the strip (the wireframe). */
+        .tonk-sheet-binder__tab {
+          flex: none;
           display: inline-flex;
           align-items: center;
-          gap: 8px;
-          padding: 0 16px;
-          font-size: 13px;
-          color: inherit;
+          gap: var(--wa-space-s);
+          padding: 0 var(--wa-space-l);
+          font: inherit;
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-quiet);
           background: transparent;
           border: none;
+          border-right: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          border-top: 2px solid transparent;
           cursor: pointer;
-          opacity: 0.55;
           white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
         }
         /* The leading status bullet (hollow when inactive). */
-        .tab::before {
+        .tonk-sheet-binder__tab::before {
           content: "";
           width: 7px; height: 7px;
           border-radius: 50%;
-          border: 1px solid currentColor;
+          border: var(--wa-border-width-s) solid currentColor;
           background: transparent;
           flex: none;
         }
-        .tab:hover { opacity: 1; background: color-mix(in srgb, currentColor 7%, transparent); }
-        .tab__icon { opacity: 0.7; }
-
-        .workspace__add {
-          flex: none;
-          width: 52px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 18px;
-          opacity: 0.45;
-          border-right: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-          cursor: pointer;
+        .tonk-sheet-binder__tab:hover {
+          color: var(--wa-color-text-normal);
+          background: var(--wa-color-neutral-fill-quiet);
         }
-        .workspace__add:hover { opacity: 1; background: color-mix(in srgb, currentColor 7%, transparent); }
-        .workspace__count {
-          flex: none;
-          display: inline-flex;
-          align-items: center;
-          padding: 0 18px;
-          font-size: 12px;
-          opacity: 0.4;
-          font-family: ui-monospace, "SF Mono", Menlo, monospace;
-          margin-left: auto;
+
+        /* Active tab: brand-accent top bar, raised surface, filled
+           bullet, normal-weight bright text — the selected sheet. */
+        .tonk-sheet-binder__tab.is-active {
+          color: var(--wa-color-text-normal);
+          font-weight: var(--wa-font-weight-semibold);
+          background: var(--wa-color-surface-default);
+          border-top-color: var(--wa-color-brand-fill-loud);
+        }
+        .tonk-sheet-binder__tab.is-active::before {
+          background: var(--wa-color-brand-fill-loud);
+          border-color: var(--wa-color-brand-fill-loud);
         }
       </style>
 
@@ -372,18 +403,23 @@ view!: &workspace/view
         </span>
       </div>
 
-      <div class="workspace__canvas">
-        <tonk-display entity={active} model=artifact />
-      </div>
-
-      <div class="workspace__tabs">
-        <div class="workspace__tab" onclick=workspace/activate-sheet data-sheet={sheet}>
-          <tonk-display entity={sheet} model=artifact view=workspace/tab />
-        </div>
-        <div class="workspace__add">+</div>
-        <div class="workspace__count">artifacts</div>
-      </div>
+      <tonk-sheet-binder class="workspace__binder" active={active} onactivate=workspace/activate-sheet>
+        <tonk-display entity={sheet} model=tonk:sheet />
+      </tonk-sheet-binder>
     </div>
+
+# The sheet-mount view (default view for `workspace/sheet`): wraps the
+# sheet in a `<tonk-sheet>` carrying its metadata as attributes (the
+# `<tonk-sheet-binder>` reads these to project the tab strip) and its
+# rendered content as the panel. The binder shows the active sheet's
+# panel and builds a tab from each sheet's title/order.
+view!:
+  this: id:tonk-workspace/sheet-mount
+  model: tonk:sheet
+  display: |
+    <tonk-sheet sheet={this} order={order} title={title} icon={icon}>
+      <tonk-display entity={this} model=artifact />
+    </tonk-sheet>
 
 # The artifact's default (canvas) view: a status-strip header (the
 # sheet's name + a status dot, matching the wireframe's card header)
@@ -400,22 +436,27 @@ view!:
           height: 100%;
           color: inherit;
           font-family: inherit;
-          border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          /* Transparent so the page's dot-grid shows through the card. */
+          background: transparent;
           overflow: hidden;
         }
         .artifact__head {
           display: flex;
           align-items: center;
-          gap: 9px;
-          padding: 11px 16px;
-          border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+          gap: var(--wa-space-s);
+          padding: var(--wa-space-s) var(--wa-space-m);
+          /* A surface fill so the header reads as chrome over the
+             transparent (dot-grid) card body. */
+          background: var(--wa-color-surface-raised);
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
         }
         .artifact__dot {
           width: 7px; height: 7px; border-radius: 50%;
-          background: currentColor; flex: none; opacity: 0.85;
+          background: currentColor; flex: none;
         }
-        .artifact__name { font-size: 13px; font-weight: 600; }
-        .artifact__meta { font-size: 12px; opacity: 0.5; }
+        .artifact__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold); }
+        .artifact__meta { font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
         .artifact__body { flex: 1; min-height: 0; overflow: auto; }
         .artifact__body > tonk-display { display: contents; }
       </style>
@@ -882,7 +923,4 @@ board-view!: &demo-board
   column: demo-column
 
 
-
-####
-
-# version 13
+# test
