@@ -531,11 +531,6 @@ concept!: &portal
       the: xyz.tonk.portal/content
       cardinality: one
       as: text
-    height:
-      description: Iframe height in pixels
-      the: xyz.tonk.portal/height
-      cardinality: one
-      as: unsigned-integer
 
 # One view per concept, keyed by `model`. Each nested
 # `<tonk-display>` passes only `model=…` (and `entity=…`); with no
@@ -570,16 +565,14 @@ view!:
     <tonk-inspector source={source} />
 
 # The canonical bridge from the `portal` concept to the
-# `<tonk-portal>` element. `html:` forces both bindings through
-# setAttribute so `attributeChangedCallback` fires — required for
-# `height`, an unsigned-integer the renderer would otherwise route to a
-# JS property. Users never write this; nesting a
-# `<tonk-display model=portal>` over a portal entity resolves it by
-# model and renders it.
+# `<tonk-portal>` element. `html:` forces the binding through
+# setAttribute so `attributeChangedCallback` fires. Users never write
+# this; nesting a `<tonk-display model=portal>` over a portal entity
+# resolves it by model and renders it.
 view!:
   model: portal
   display: |
-    <tonk-portal html:content={content} html:height={height} />
+    <tonk-portal html:content={content} />
 
 # ============================================================
 # DEMO CONTENT - DELETE before shipping
@@ -861,7 +854,6 @@ workspace/sheet!:
 # resolves the portal view, which mounts `<tonk-portal>` over it.
 portal!:
   this: id:tonk-workspace/sketch
-  height: 520
   content: |
     <!doctype html>
     <html>

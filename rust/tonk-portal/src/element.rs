@@ -3,7 +3,7 @@
 //! A portal owns one child `<iframe>` and is two things at once:
 //!
 //! - a **painter** — it mirrors the `content` attribute into the
-//!   iframe's `srcdoc` and applies an optional pixel `height`; and
+//!   iframe's `srcdoc`; and
 //! - a **transport** — it injects a small `tonk` object into the
 //!   iframe (see [`crate::bridge`]) through which author code reads and
 //!   writes live data, relaying the iframe's calls onto the existing
@@ -43,7 +43,7 @@ impl CustomElement for TonkPortal {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["content", "height", "entity", "model"]
+        &["content", "entity", "model"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -65,15 +65,11 @@ impl CustomElement for TonkPortal {
         // reachable, so the bridge can inject `tonk` synchronously.
         let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
 
-        // By default the iframe fills its container; `height` pins a
-        // fixed pixel height instead.
+        // The iframe always fills its container.
         let style = iframe.style();
         let _ = style.set_property("width", "100%");
         let _ = style.set_property("height", "100%");
         let _ = style.set_property("border", "0");
-        if let Some(height) = host.get_attribute("height") {
-            set_height(&iframe, &height);
-        }
 
         let state = Rc::new(RefCell::new(PortalState::new()));
         let bridge = bridge::build_bridge(&host, &state);
@@ -110,7 +106,7 @@ impl CustomElement for TonkPortal {
         this: &HtmlElement,
         name: String,
         _old: Option<String>,
-        new: Option<String>,
+        _new: Option<String>,
     ) {
         let host: Element = this.clone().into();
         // Pre-connect callbacks (during upgrade) have no state yet; the
@@ -119,18 +115,6 @@ impl CustomElement for TonkPortal {
             return;
         };
         match name.as_str() {
-            // Height patches in place; no reload, no subscription churn.
-            "height" => {
-                if let Some(iframe) = state.borrow().iframe.as_ref() {
-                    match new {
-                        Some(height) => set_height(iframe, &height),
-                        // Back to filling the container.
-                        None => {
-                            let _ = iframe.style().set_property("height", "100%");
-                        }
-                    }
-                }
-            }
             // New content reloads the iframe wholesale.
             "content" => reload(&host, &state),
             // A re-scope updates the author-facing context, then reloads
@@ -176,15 +160,6 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<PortalState>>) {
         }));
     let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
     error.forget();
-}
-
-/// Set the iframe's pixel height. The `height` attribute is an
-/// `unsigned-integer` grid measure, so it carries a bare number; we
-/// append the `px` unit.
-fn set_height(iframe: &HtmlIFrameElement, height: &str) {
-    let _ = iframe
-        .style()
-        .set_property("height", &format!("{height}px"));
 }
 
 /// Register `<tonk-portal>` with the page. Idempotent. Installs the
@@ -251,10 +226,10 @@ mod tests {
         window().expect("window").document().expect("document")
     }
 
-    /// Mount a `<tonk-portal>` with the given attributes and attach it
-    /// to the body. `register()` runs first so the element upgrades on
+    /// Mount a `<tonk-portal>` with the given content and attach it to
+    /// the body. `register()` runs first so the element upgrades on
     /// connect.
-    fn mount(content: Option<&str>, height: Option<&str>) -> Element {
+    fn mount(content: Option<&str>) -> Element {
         register();
         let document = document();
         let host = document
@@ -262,9 +237,6 @@ mod tests {
             .expect("create tonk-portal");
         if let Some(content) = content {
             host.set_attribute("content", content).expect("set content");
-        }
-        if let Some(height) = height {
-            host.set_attribute("height", height).expect("set height");
         }
         document
             .body()
@@ -285,7 +257,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_mounts_one_same_origin_sandboxed_iframe_on_connect() {
-        let host = mount(Some("<p>hi</p>"), None);
+        let host = mount(Some("<p>hi</p>"));
         assert_eq!(
             host.query_selector_all("iframe").unwrap().length(),
             1,
@@ -302,7 +274,7 @@ mod tests {
 
     #[dialog_common::test]
     fn it_prepends_the_bridge_bootstrap_and_keeps_the_content() {
-        let host = mount(Some("<canvas id=\"c\"></canvas>"), None);
+        let host = mount(Some("<canvas id=\"c\"></canvas>"));
         let srcdoc = iframe_of(&host)
             .get_attribute("srcdoc")
             .expect("srcdoc present");
@@ -317,18 +289,18 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_sets_the_iframe_height_in_pixels_from_the_attribute() {
-        let host = mount(Some("<p>hi</p>"), Some("400"));
+    fn it_fills_its_container_height() {
+        let host = mount(Some("<p>hi</p>"));
         let style = iframe_of(&host)
             .style()
             .get_property_value("height")
             .expect("height property");
-        assert_eq!(style, "400px");
+        assert_eq!(style, "100%");
     }
 
     #[dialog_common::test]
     fn it_reloads_srcdoc_when_content_changes_keeping_the_same_iframe() {
-        let host = mount(Some("<p>one</p>"), None);
+        let host = mount(Some("<p>one</p>"));
         let iframe_before = iframe_of(&host);
 
         host.set_attribute("content", "<p>two</p>")
@@ -350,30 +322,8 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_updates_height_in_place_without_reloading_the_iframe() {
-        let host = mount(Some("<p>hi</p>"), Some("400"));
-        let iframe_before = iframe_of(&host);
-
-        host.set_attribute("height", "600").expect("update height");
-
-        let iframe_after = iframe_of(&host);
-        assert_eq!(
-            iframe_after
-                .style()
-                .get_property_value("height")
-                .as_deref()
-                .ok(),
-            Some("600px"),
-        );
-        assert!(
-            iframe_before.is_same_node(Some(iframe_after.unchecked_ref())),
-            "height change must patch in place, never reload the iframe",
-        );
-    }
-
-    #[dialog_common::test]
     fn it_removes_the_iframe_on_disconnect() {
-        let host = mount(Some("<p>hi</p>"), None);
+        let host = mount(Some("<p>hi</p>"));
         assert_eq!(host.query_selector_all("iframe").unwrap().length(), 1);
 
         host.remove();
