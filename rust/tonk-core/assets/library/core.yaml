@@ -153,24 +153,6 @@ concept!: &workspace/sheet
       cardinality: one
       as: text
 
-# A `tab` view kind: a concept with its own display attribute
-# (`xyz.tonk.tab/display`) so an artifact can have BOTH a default
-# (canvas) view and a `tab` view without collision.
-concept!: &workspace/tab
-  this: tonk:tab
-  description: A tab presentation of a concept (alternate to the default view).
-  with:
-    model:
-      description: Concept this tab view is for
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: HTML template for the tab
-      the: xyz.tonk.tab/display
-      cardinality: one
-      as: text
-
 # Tab selection. Clicking a tab fires the transient `activate-sheet`
 # command, reading which sheet was clicked from the bound element's
 # `data-sheet`. The inductive rule below finds the workspace that owns
@@ -216,12 +198,12 @@ rule!:
     - assert: workspace
       where: { this: ?this, sheet: ?active }
 
-# The workspace view: a canvas region with the sheets on top and a
-# bottom tab strip, matching the wireframe's Layout F. Two
-# iterations of `{sheet}` (cardinality-many): the canvas uses each
-# sheet's default (artifact) view; the strip uses each sheet's `tab`
-# view. Tab selection isn't wired yet (a future interactive pass),
-# so all canvases stack.
+# The workspace view: a top bar over a `<tonk-sheet-binder>`, matching
+# the wireframe's Layout F. The binder takes the workspace's `{sheet}`
+# members (each mounted through its sheet-mount view as a
+# `<tonk-sheet>`), projects the bottom tab strip from them, and shows
+# the `active` sheet's panel. Clicking a tab fires `activate-sheet`,
+# which re-points `active`.
 view!: &workspace/view
   this: id:tonk-workspace/workspace-view
   model: workspace
@@ -318,14 +300,56 @@ view!: &workspace/view
         .workspace__binder > tonk-display:not(:has(tonk-sheet:not([hidden]))) {
           display: none;
         }
-        .workspace__binder > tonk-display > tonk-view,
-        .workspace__binder tonk-sheet,
-        .workspace__binder tonk-sheet > tonk-display,
-        .workspace__binder tonk-sheet > tonk-view {
+        .workspace__binder > tonk-display > tonk-view {
           display: block;
           height: 100%;
           min-height: 0;
         }
+
+        /* The sheet card: a header strip the sheet projects from its
+           attributes, over the sheet's content. Transparent body so the
+           page's dot-grid shows through; bordered frame. */
+        .workspace__binder tonk-sheet {
+          display: flex;
+          flex-direction: column;
+          height: 100%;
+          min-height: 0;
+          color: inherit;
+          font-family: inherit;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          background: transparent;
+          overflow: hidden;
+        }
+        /* The card body: everything after the projected header. The
+           sheet's content <tonk-display> is the last child; it scrolls. */
+        .workspace__binder tonk-sheet > tonk-display {
+          flex: 1;
+          min-height: 0;
+          overflow: auto;
+        }
+        .workspace__binder tonk-sheet > tonk-display > tonk-view {
+          display: block;
+          min-height: 100%;
+        }
+
+        /* The card header the sheet projects (status dot + name +
+           subtitle). A surface fill so it reads as chrome over the
+           transparent body. */
+        .tonk-sheet__head {
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          flex: none;
+          padding: var(--wa-space-s) var(--wa-space-m);
+          background: var(--wa-color-surface-raised);
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+        }
+        .tonk-sheet__dot {
+          width: 7px; height: 7px; border-radius: 50%;
+          background: currentColor; flex: none;
+        }
+        .tonk-sheet__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold); }
+        .tonk-sheet__meta { font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
 
         /* The bottom tab strip the binder projects. Equal-width bullet
            segments separated by rules; the active tab gets a brand
@@ -409,76 +433,20 @@ view!: &workspace/view
     </div>
 
 # The sheet-mount view (default view for `workspace/sheet`): wraps the
-# sheet in a `<tonk-sheet>` carrying its metadata as attributes (the
-# `<tonk-sheet-binder>` reads these to project the tab strip) and its
-# rendered content as the panel. The binder shows the active sheet's
-# panel and builds a tab from each sheet's title/order.
+# sheet's content in a `<tonk-sheet>` carrying its metadata as
+# attributes. `<tonk-sheet>` projects the card header from
+# `title`/`subtitle`/`icon` and `<tonk-sheet-binder>` projects the tab
+# strip from the same attributes; the view supplies only the
+# attributes and the content. The sheet's content renders directly
+# from the sheet's own `entity`/`model`/`view` fields - a sheet is
+# self-describing, so no intermediate concept is needed.
 view!:
   this: id:tonk-workspace/sheet-mount
   model: tonk:sheet
   display: |
-    <tonk-sheet sheet={this} order={order} title={title} icon={icon}>
-      <tonk-display entity={this} model=artifact />
+    <tonk-sheet sheet={this} order={order} title={title} subtitle={subtitle} icon={icon}>
+      <tonk-display entity={entity} model={model} view={view} />
     </tonk-sheet>
-
-# The artifact's default (canvas) view: a status-strip header (the
-# sheet's name + a status dot, matching the wireframe's card header)
-# above the artifact's own entity/model/view render.
-view!:
-  this: id:tonk-workspace/artifact-view
-  model: artifact
-  display: |
-    <div class="artifact">
-      <style>
-        .artifact {
-          display: flex;
-          flex-direction: column;
-          height: 100%;
-          color: inherit;
-          font-family: inherit;
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          /* Transparent so the page's dot-grid shows through the card. */
-          background: transparent;
-          overflow: hidden;
-        }
-        .artifact__head {
-          display: flex;
-          align-items: center;
-          gap: var(--wa-space-s);
-          padding: var(--wa-space-s) var(--wa-space-m);
-          /* A surface fill so the header reads as chrome over the
-             transparent (dot-grid) card body. */
-          background: var(--wa-color-surface-raised);
-          border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-        }
-        .artifact__dot {
-          width: 7px; height: 7px; border-radius: 50%;
-          background: currentColor; flex: none;
-        }
-        .artifact__name { font-size: var(--wa-font-size-s); font-weight: var(--wa-font-weight-semibold); }
-        .artifact__meta { font-size: var(--wa-font-size-s); color: var(--wa-color-text-quiet); }
-        .artifact__body { flex: 1; min-height: 0; overflow: auto; }
-        .artifact__body > tonk-display { display: contents; }
-      </style>
-      <div class="artifact__head">
-        <span class="artifact__dot"></span>
-        <span class="artifact__name">{title}</span>
-        <span class="artifact__meta">{subtitle}</span>
-      </div>
-      <div class="artifact__body">
-        <tonk-display entity={entity} model={model} view={view} />
-      </div>
-    </div>
-
-# The artifact's `tab` view: one bottom-strip tab — a status bullet
-# (the `.tab::before`) plus the title, left-aligned in its segment.
-workspace/tab!:
-  this: id:tonk-workspace/artifact-tab
-  model: artifact
-  display: |
-    <button class="tab" title={title}>
-      <span class="tab__name">{title}</span>
-    </button>
 
 # ============================================================
 # BOARD
