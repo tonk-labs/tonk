@@ -38,6 +38,21 @@ concept!: &view
       cardinality: one
       as: text
 
+concept!: &view/directory
+  this: tonk:view/directory
+  description: A directory view used by tonk-display when entity is not set.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/directory
+      cardinality: one
+      as: text
+
 # ============================================================
 # WORKSPACE
 # ============================================================
@@ -544,27 +559,162 @@ concept!: &portal
 # `subject={field}` and bottoms out in the tile's content display.
 
 view!:
+  this: tonk:board
   model: board-view
   display: |
     <tonk-strip>
+      <style>
+        /* Board layout travels with the view, so any route that
+           mounts `model=board-view` renders the strip identically
+           (board route, bare display route, embedded tile). The
+           only thing a route still owns is giving this view a
+           full-height box to fill: the strip's `block-size: 100%`
+           resolves against whatever height its host establishes.
+
+           The `tonk-display`/`tonk-view` layers that wrap each
+           level are pure rendering wrappers, not layout boxes;
+           `display: contents` makes them transparent so the strip
+           is a flex container over real `<tonk-column>` items, and
+           so the strip itself inherits its host's height instead of
+           collapsing to content. */
+        tonk-display:has(> tonk-view > tonk-strip),
+        tonk-display > tonk-view:has(> tonk-strip) {
+          display: contents;
+        }
+
+        tonk-strip {
+          --pitch: 16px;
+          --cell: 64px;
+          /* Narrow gutter between columns — just enough that the
+             contrasting strip fill reads as a seam. */
+          --gap: 4px;
+
+          display: flex;
+          flex-direction: row;
+          align-items: stretch;
+          gap: var(--gap);
+          padding: 0;
+          box-sizing: border-box;
+          block-size: 100%;
+          inline-size: 100%;
+          overflow-x: auto;
+          overflow-y: hidden;
+          scroll-snap-type: x proximity;
+          /* The strip's fill shows through every seam — between
+             columns AND between tiles within a column (since
+             `<tonk-column>` is transparent). The neutral-fill token
+             adapts with dark / light mode. */
+          background-color: var(--wa-color-neutral-fill-normal);
+        }
+
+        /* The `tonk-display`/`tonk-view` wrappers between the strip
+           and each column are transparent to the strip's flex flow,
+           so each `<tonk-column>` is a direct flex item (its
+           `flex: 0 0 calc(--col-w * --cell)` sizes the column, not
+           the wrapping display). */
+        tonk-strip > tonk-display,
+        tonk-strip > tonk-display > tonk-view {
+          display: contents;
+        }
+      </style>
       <tonk-display entity={column} model=column-view />
     </tonk-strip>
 
 view!:
+  this: tonk:board/column
   model: column-view
   display: |
     <tonk-column style="--col-w: {width};">
+      <style>
+        tonk-column {
+          /* Width is driven by `--col-w` set on the element by this
+             template (one --cell unit is 64px). Tiles stack
+             top-to-bottom inside; overflow is handled here at the
+             column level so the column's dot-grid background scrolls
+             together with the tiles. */
+          flex: 0 0 calc(var(--col-w, 12) * 64px);
+          block-size: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          overflow-y: auto;
+          overflow-x: hidden;
+          scroll-snap-align: start;
+          min-block-size: 0;
+          /* Transparent so the strip's seam fill shows through the
+             column-to-column and tile-to-tile gaps. The column's
+             grid layer still paints (a `background-image`, not a
+             fill) against whatever the strip provides underneath. */
+          background-color: transparent;
+        }
+
+        tonk-column::-webkit-scrollbar { display: none; }
+
+        /* Tiles size to their content along the column's main axis
+           and stack top-to-bottom. Overflow happens at the COLUMN
+           level (the column is the scroller), never inside a tile,
+           so a tile renders its content unclipped and the user
+           scrolls the whole column. Tiles paint the dark canvas
+           fill; the gaps expose the strip's lighter seam fill. */
+        tonk-column > .tile {
+          flex: 0 0 auto;
+          inline-size: 100%;
+          box-sizing: border-box;
+          background-color: var(--wa-color-neutral-fill-quiet);
+
+          /* Two-layer engineering graph-paper background, applied to
+             each tile (the surface the dark canvas occupies). The
+             grid travels with the tile content because the tile is
+             the visible canvas. `background-attachment: local` ties
+             the grid to the column's scroll so the dots travel with
+             vertical scroll. */
+          --dot-gap: 16px;
+          --dot-size-dim: 0.5px;
+          --dot-size-bright: 0.5px;
+          --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
+          --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
+          background-image:
+            radial-gradient(
+              circle,
+              var(--dot-color-bright) var(--dot-size-bright),
+              transparent calc(var(--dot-size-bright) + 0.5px)
+            ),
+            radial-gradient(
+              circle,
+              var(--dot-color-dim) var(--dot-size-dim),
+              transparent calc(var(--dot-size-dim) + 0.5px)
+            );
+          background-size:
+            calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
+            var(--dot-gap) var(--dot-gap);
+          background-position:
+            calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
+            calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
+          background-attachment: local;
+        }
+
+        /* The inner `<tonk-display>` participates in the column's
+           scroll — it must NOT clip or scroll on its own. */
+        tonk-column > .tile > tonk-display,
+        tonk-column > .tile > tonk-display > tonk-view {
+          display: block;
+          inline-size: 100%;
+          overflow: visible;
+        }
+      </style>
       <div class="tile" subject={tile}>
         <tonk-display entity={tile} model=tile />
       </div>
     </tonk-column>
 
 view!:
+  this: tonk:board/tile
   model: tile
   display: |
     <tonk-display entity={entity} model={model} />
 
 view!:
+  this: tonk:inspector-view
   model: inspector-view
   display: |
     <tonk-inspector source={source} />
@@ -577,6 +727,7 @@ view!:
 # `<tonk-display model=portal>` over a portal entity resolves it by
 # model and renders it.
 view!:
+  this: tonk:portal
   model: portal
   display: |
     <tonk-portal html:content={content} html:height={height} />
@@ -924,17 +1075,17 @@ workspace/sheet!:
 # selected as the initial active sheet (a click on a tab re-points
 # `active` via the activate-sheet command + rule).
 workspace!:
-  this: work:space
+  this: about:blank
   name: "Trip planning"
   active: id:tonk-workspace/sheet/itinerary
   sheet: id:tonk-workspace/sheet/itinerary
 
 workspace!:
-  this: work:space
+  this: about:blank
   sheet: id:tonk-workspace/sheet/lodging
 
 workspace!:
-  this: work:space
+  this: about:blank
   sheet: id:tonk-workspace/sheet/sketch
 
 # A single-tile `demo` board: one column with one tile hosting
@@ -951,14 +1102,101 @@ tile!: &inspector-tile
   model: inspector-view
   entity: home-inspector
 
-column-view!: &demo-column
+tile!: &workspace-tile
+  order: "b"
+  model: workspace
+  entity: about:blank
+
+
+
+column-view!: &column-b
+  this: c:b
+  order: "aq"
+  width: 19
+  tile: workspace-tile
+
+column-view!: &column-a
+  this: c:a
   order: "a"
   width: 12
   tile: inspector-tile
 
 board-view!: &demo-board
+  this: about:blank
   name: "demo"
-  column: demo-column
+  column: column-a
+
+board-view!:
+  this: about:blank
+  column: column-b
 
 
 # test
+
+concept!: &db/session:
+  this: concept:session
+  description: Database session information
+  with:
+    profile:
+      description: |
+          Profile entity (as did:key) representing persistent identity on this device
+      the: dialog.session/profile
+      as: entity
+    operator:
+      description: |
+          Operator entity (as did:key) representing an identifier used in this session to query and commit
+      the: dialog.session/operator
+      as: entity
+    branch:
+      description: |
+          Active branch(es) in this session. Can be multiple when overlays are used.
+      the: dialog.session/branch
+      as: entity
+      cardinality: many
+
+concept!: &db/origin:
+  this: concept:origin
+  description: |
+      Entity representing unique identifier for the active repository on this device.
+
+      It can be used to assert/query device specific information.
+  with:
+    subject:
+      description: |
+          The repository subject (as did:key) representing it's unique identifier
+      the: dialog.origin/subject
+      as: entity
+    profile:
+      description: |
+          Profile entity (as did:key) representing persistent identity on this device
+      the: dialog.origin/profile
+      as: entity
+
+concept!: &db/branch:
+  this: concept:branch
+  description: |
+      This represents a branch on some origin.
+       Note that individual replicas can create same named branches and they
+       likely going to be an different revisions, which is why branch is unique
+       per origin as opposed to per repository.
+  with:
+    name:
+      description: The branch name
+      the: dialog.branch/name
+      as: text
+    origin:
+      description: The origin of this branch
+      the: dialog.branch/origin
+      as: entity
+    tree:
+      description: The tree root of this branch
+      the: dialog.branch/tree
+      as: entity
+    period:
+      description: Synchronization point with an upstream
+      the: dialog.branch/period
+      as: entity
+    moment:
+      description: Number of commits made since last synchronization
+      the: dialog.branch/moment
+      as: entity
