@@ -606,11 +606,13 @@ impl Graph {
             }
         }
 
-        // Pass 4 — non-meta `&anchor` heads. With the head concept
-        // (or claim domain) in scope, derive the anchor's entity
-        // using the same `derive_this(predicate, body)` recipe the
-        // mutation pass and the wire path use, so all three
-        // converge on the same URI for the same `(predicate, body)`.
+        // Pass 4 — non-meta `&anchor` heads. The anchor's entity is
+        // the instance's `this`: a `this: <uri>` (or bare symbol
+        // resolving to one) pins it directly, so the anchor names that
+        // exact entity. Only an omitted/`?var` `this:` derives an
+        // entity, using the same `derive_this(predicate, body)` recipe
+        // the mutation pass and wire path use, so all three converge on
+        // the same URI for the same `(predicate, body)`.
         for index in &self.pending_anchors {
             let Expression::Claim(Effectful {
                 anchor: Some(anchor),
@@ -631,7 +633,18 @@ impl Graph {
                 HeadName::Claim(domain) => Entity::of(domain),
                 HeadName::Uri(_) => continue,
             };
-            let entity = derive_this(&predicate_entity, &body_digest(&a.fields, scope)?);
+            // A pinned `this:` IS the entity — don't compute one.
+            // Mirrors `this_term_for_assertion`'s `ThisIntent::Uri`
+            // arm; without this, the body digest (which skips `this:`)
+            // would mint a fresh entity and the anchor would name the
+            // wrong thing.
+            let (this, _) = derive_head_intent(&a.fields, Some(anchor), scope)?;
+            let entity = match this {
+                ThisIntent::Uri(entity) => entity,
+                ThisIntent::Derived | ThisIntent::Variable(_) => {
+                    derive_this(&predicate_entity, &body_digest(&a.fields, scope)?)
+                }
+            };
             scope.declare(&anchor.name, entity, anchor.range)?;
         }
 

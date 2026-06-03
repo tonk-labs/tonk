@@ -1018,6 +1018,63 @@ holder!: &my-holder
         );
     }
 
+    /// A pinned instance (`this: <uri>`) referenced by a later field
+    /// must resolve to that exact pinned URI — NOT a body-derived
+    /// entity. Regression: the anchor pass derived the entity from a
+    /// body digest that skips `this:`, so `target: my-thing` resolved
+    /// to a random `did:key` instead of the pin.
+    #[test]
+    fn it_resolves_a_pinned_instance_anchor_to_its_pinned_uri() {
+        let syntax = must_parse(
+            "\
+concept!: &thing
+  description: \"a thing\"
+  with:
+    source:
+      description: \"src\"
+      the: x.y/source
+      cardinality: one
+      as: text
+
+thing!: &my-thing
+  this: id:my-thing
+  source: \"home\"
+
+concept!: &holder
+  description: \"holds\"
+  with:
+    target:
+      description: \"e\"
+      the: x.y/target
+      cardinality: one
+      as: entity
+
+holder!: &my-holder
+  this: id:my-holder
+  target: my-thing
+",
+        );
+        let tree = super::analyze_local(&syntax).expect("analyzes");
+        // Find the `holder` assert and read its `target` term — it
+        // must be the pinned `id:my-thing`, not a derived entity.
+        let target = flat(tree)
+            .mutate
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Statement::Assert(Application::Concept { query, .. }) => {
+                    query.terms.get("target").and_then(as_constant_entity)
+                }
+                _ => None,
+            })
+            .expect("a holder assert with a resolved target entity");
+        let expected: Entity = "id:my-thing".parse().expect("valid uri");
+        assert_eq!(
+            target, expected,
+            "target must resolve to the pinned `id:my-thing`, not a derived entity",
+        );
+    }
+
     /// A small concept spec the tests pass into [`analyze_with`]:
     /// the published name plus the field set as `(field, the, type)`
     /// triples. Replaces the old `FixedConcept` struct.
