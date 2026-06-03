@@ -886,7 +886,73 @@ workspace/sheet!:
   view: tonk:view
   order: "b"
 
-# The demo workspace owns both trip sheets, with the itinerary
+# A portal entity: a self-contained HTML document (with its own
+# script + canvas) rendered into a sandboxed iframe. This is the
+# imperative escape hatch - the kind of drawing the declarative
+# template stack cannot express. `model: portal` on the sheet below
+# resolves the portal view, which mounts `<tonk-portal>` over it.
+portal!:
+  this: id:tonk-workspace/sketch
+  height: 520
+  content: |
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          html, body { margin: 0; height: 100%; }
+          body {
+            display: grid;
+            place-items: center;
+            font-family: system-ui, sans-serif;
+            background: #1b1130;
+            color: #efe7ff;
+          }
+          canvas { display: block; }
+        </style>
+      </head>
+      <body>
+        <canvas id="c" width="600" height="480"></canvas>
+        <script>
+          const canvas = document.getElementById("c");
+          const ctx = canvas.getContext("2d");
+          const { width: w, height: h } = canvas;
+          let t = 0;
+          function frame() {
+            t += 0.02;
+            ctx.fillStyle = "#1b1130";
+            ctx.fillRect(0, 0, w, h);
+            for (let i = 0; i < 64; i++) {
+              const a = (i / 64) * Math.PI * 2 + t;
+              const r = 150 + 60 * Math.sin(t * 1.5 + i * 0.3);
+              const x = w / 2 + r * Math.cos(a);
+              const y = h / 2 + r * Math.sin(a);
+              ctx.beginPath();
+              ctx.arc(x, y, 6, 0, Math.PI * 2);
+              ctx.fillStyle = `hsl(${(i * 6 + t * 60) % 360} 80% 65%)`;
+              ctx.fill();
+            }
+            requestAnimationFrame(frame);
+          }
+          frame();
+        </script>
+      </body>
+    </html>
+
+# The portal sheet. `model: portal` (not `trip`) routes the sheet
+# content through the portal view to `<tonk-portal>`. No `view:`
+# override - the default model-resolved view is the portal bridge.
+workspace/sheet!:
+  this: id:tonk-workspace/sheet/sketch
+  title: "Sketch"
+  subtitle: "an imperative canvas in a sandboxed iframe"
+  icon: "palette"
+  entity: id:tonk-workspace/sketch
+  model: portal
+  view: tonk:view
+  order: "c"
+
+# The demo workspace owns the three sheets, with the itinerary
 # selected as the initial active sheet (a click on a tab re-points
 # `active` via the activate-sheet command + rule).
 workspace!:
@@ -898,6 +964,10 @@ workspace!:
 workspace!:
   this: work:space
   sheet: id:tonk-workspace/sheet/lodging
+
+workspace!:
+  this: work:space
+  sheet: id:tonk-workspace/sheet/sketch
 
 # A single-tile `demo` board: one column with one tile hosting
 # `<tonk-inspector source="home">`. All entities use stable
