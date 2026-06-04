@@ -38,7 +38,10 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
 
-use crate::resolve::{entity_query, looks_like_uri, view_by_model_query, view_predicate};
+use crate::resolve::{
+    directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_model_query,
+    view_predicate,
+};
 use crate::state::{self, State};
 
 /// Sentinel `view` value that selects carousel mode — enumerate
@@ -139,6 +142,24 @@ struct Inner {
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
     portal_model: Option<String>,
+    /// The view-concept descriptor used to resolve a view by model.
+    /// Retained so the `_:_` default-view fallback can re-query against
+    /// the same view concept when the model-specific view frame is
+    /// empty.
+    view_descriptor: Option<serde_json::Value>,
+    /// The resolved model entity (`model_entity`), retained for the
+    /// `_:_` fallback query and for comparison.
+    model_entity: Option<String>,
+    /// True when the currently-mounted slide came from the `_:_`
+    /// default view rather than a model-specific view. A non-empty
+    /// model-specific view frame replaces it (the specific view takes
+    /// over); set false then.
+    default_slide: bool,
+    /// Directory mode: `true` when the host has no `entity`, so the
+    /// entity subscription matches every instance of the model (`this`
+    /// unbound) and the frame is grouped by `this` (`select_rows`)
+    /// rather than folded to one conclusion.
+    directory: bool,
 }
 
 impl Inner {
@@ -158,6 +179,10 @@ impl Inner {
             depth_annotator: None,
             portal_descriptor: None,
             portal_model: None,
+            view_descriptor: None,
+            model_entity: None,
+            default_slide: false,
+            directory: false,
         }
     }
 
@@ -444,18 +469,19 @@ async fn run(
     state: Rc<RefCell<Inner>>,
     generation: u64,
 ) -> Result<(), ErrorDetail> {
-    let entity = host
-        .get_attribute("entity")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ErrorDetail::new(ErrorKind::Descriptor, "<tonk-display> requires `entity`")
-        })?;
-    if !looks_like_uri(&entity) {
+    // `entity` is optional. Present → single mode: render that one
+    // entity. Absent → directory mode: render every instance of the
+    // model (`this` unbound) through the model's directory view.
+    let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
+    if let Some(entity) = &entity
+        && !looks_like_uri(entity)
+    {
         return Err(ErrorDetail::new(
             ErrorKind::Descriptor,
             "`entity` must be an entity URI (contain `:`)",
         ));
     }
+    let directory = entity.is_none();
 
     // The `view` attribute names a view *concept* (named or URI);
     // when omitted, the built-in `view` concept (`tonk:view`) is
@@ -498,6 +524,11 @@ async fn run(
     // attribute that view kind declares it under, so `view_by_model`
     // reads the right template regardless of the kind.
     let view_descriptor: serde_json::Value = match view.as_deref() {
+        // No explicit `view`: the built-in detail view (`tonk:view`) in
+        // single mode, or the directory view (`tonk:view/directory`) in
+        // directory mode. Both fall back to their `_:_` default when
+        // the model has no specific view of that kind.
+        None if directory => directory_view_predicate(),
         None => view_predicate(),
         Some(view_ref) => {
             let (_, view_descriptor_json) = resolve_model(host, view_ref).await?;
@@ -512,8 +543,13 @@ async fn run(
     })?;
     let view_body = to_body(&view_q)?;
 
-    let entity_q = entity_query(&descriptor_json, &entity)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
+    // Single mode pins `this` to the entity; directory mode leaves
+    // `this` unbound so the query matches every instance of the model.
+    let entity_q = match &entity {
+        Some(entity) => entity_query(&descriptor_json, entity),
+        None => instances_query(&descriptor_json),
+    }
+    .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = to_body(&entity_q)?;
 
     // The view query is model-constrained, so it resolves to one
@@ -542,6 +578,12 @@ async fn run(
         }
         s.view_sub = Some(view_sub);
         s.entity_sub = Some(entity_sub);
+        s.directory = directory;
+        // Retained for the `_:_` default-view fallback: if the
+        // model-specific view frame is empty, `handle_view_frame`
+        // re-queries the same view concept with `model = _:_`.
+        s.view_descriptor = Some(view_descriptor.clone());
+        s.model_entity = Some(model_entity.clone());
         // Context handed to a `<tonk-portal>` if a view frame routes
         // here in portal mode: the subject's model entity (the
         // bridge's `context.model`) and its descriptor (so the bridge
@@ -645,6 +687,28 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // the view concept declares it (see `view_by_model_query`), so an
     // ordinary view never trips this; a `display` change just reloads
     // the portal's `content` in place.
+    // No model-specific view resolved: fall back to the `_:_` default
+    // view (a directory carousel, or the notation dump for a detail
+    // view). Re-query the same view concept with `model = _:_` and
+    // render its result. The model-specific subscription stays live, so
+    // if a view for this model is defined later its frame is non-empty
+    // and the branch below mounts it, replacing the default. Skip if
+    // we're already showing the default (avoid re-querying every empty
+    // frame).
+    if conclusions.is_empty() {
+        let need_default = !s.default_slide;
+        drop(s);
+        if need_default {
+            spawn_default_view(host, state);
+        }
+        return;
+    }
+    // A model-specific view arrived: it wins over any default slide.
+    // Clearing the flag lets the normal slide reconciliation below
+    // replace the default `<tonk-view>` (keyed differently) and the
+    // stale default slide is dropped as a vanished key.
+    s.default_slide = false;
+
     if conclusions
         .iter()
         .any(|c| ipld_str(c.fields.get("type")) == Some("text/html"))
@@ -720,6 +784,123 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     schedule_delegate_refresh(host, state);
 
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+}
+
+/// The sentinel model entity for a default view: a `view!`/
+/// `view/directory!` declared with `model: _:_` matches any model that
+/// has no specific view of that kind. See `tonk-core/docs/templates.md`.
+const DEFAULT_MODEL: &str = "_:_";
+
+/// Query the `_:_` default view (same view concept, `model = _:_`) and
+/// mount its template as the default slide. Spawned from
+/// `handle_view_frame` when the model-specific view frame is empty. The
+/// model-specific subscription stays live; a later non-empty frame
+/// replaces this default (see the `default_slide` flag).
+fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let descriptor = {
+        let s = state.borrow();
+        s.view_descriptor.clone()
+    };
+    let Some(descriptor) = descriptor else { return };
+
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        // If the default view can't be built or resolves to nothing,
+        // settle to Empty rather than leaving the element on `loading`
+        // forever — there is genuinely no presentation for this model
+        // (not even the `_:_` default is seeded).
+        let resolved = async {
+            let query = view_by_model_query(&descriptor, DEFAULT_MODEL).ok()?;
+            let body = to_body(&query).ok()?;
+            let result = host_consumer::query(&host, &body).await.ok()?;
+            first_field(&result, "display").ok().flatten()
+        }
+        .await;
+        let Some(display) = resolved else {
+            // No specific view and no `_:_` default view for this model.
+            // If the entity has data, fall back to a notation dump so
+            // it's still inspectable; otherwise settle (the entity
+            // frame decides not-found vs empty).
+            let conclusion = {
+                let s = state.borrow();
+                if s.disposed || s.default_slide || !s.slides.is_empty() {
+                    return;
+                }
+                s.last_conclusion.clone()
+            };
+            if let Some(conclusion) = conclusion {
+                mount_notation_fallback(&host, &state, &conclusion);
+            }
+            return;
+        };
+        // Another frame may have raced ahead while we were querying: if
+        // a model-specific view landed (default_slide cleared with a
+        // slide present), don't clobber it with the default.
+        let mut s = state.borrow_mut();
+        if s.disposed || (!s.default_slide && !s.slides.is_empty()) {
+            return;
+        }
+        // Replace any prior slides with the single default slide.
+        for (_, slide) in std::mem::take(&mut s.slides) {
+            if let Some(parent) = slide.item.parent_node() {
+                let _: Result<Node, _> = parent.remove_child(&slide.item);
+            }
+        }
+        if let Some(slide) = mount_view_slide(&host, &mut s, &display) {
+            if let Some(c) = s.last_conclusion.clone() {
+                let detail = serialize_conclusion(&with_host_attributes(&host, &c));
+                call_render(&slide.view_el, &detail);
+            }
+            s.slides.insert("__default__".to_owned(), slide);
+            s.default_slide = true;
+            state::set(&host, State::Ready);
+        }
+    });
+}
+
+/// Ultimate fallback when an entity has data but its model has no view
+/// (neither a specific view nor the `_:_` default): mount a
+/// `<tonk-notation>` rendering the conclusion as syntax-highlighted
+/// notation, so any entity is at least inspectable. `<tonk-notation>`
+/// is a passive renderer of notation *text* (via a
+/// `<script type="text/tonk-notation">` child), so we format the
+/// conclusion here (the same `notation_format` recipe carousel mode
+/// uses) and write it into that script.
+fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusion: &Conclusion) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let (Ok(notation), Ok(script)) = (
+        document.create_element("tonk-notation"),
+        document.create_element("script"),
+    ) else {
+        return;
+    };
+    let _ = script.set_attribute("type", "text/tonk-notation");
+    let head = host
+        .get_attribute("model")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "concept".to_owned());
+    let text = crate::notation_format::format(&conclusion.this, &conclusion.fields, &head, None);
+    script.set_text_content(Some(&text));
+    let _ = notation.append_child(&script);
+
+    let mut s = state.borrow_mut();
+    if s.disposed || s.default_slide || !s.slides.is_empty() {
+        return;
+    }
+    let _ = host.append_child(&notation);
+    s.slides.insert(
+        "__notation__".to_owned(),
+        Slide {
+            display: String::new(),
+            item: notation.clone(),
+            view_el: notation,
+        },
+    );
+    s.default_slide = true;
+    state::set(host, State::Ready);
 }
 
 /// Diff a portal-mode view frame. Single-mode only, so at most one
@@ -951,9 +1132,23 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let Some(conclusion) = crate::fold::fold_rows(conclusions) else {
         let mut s = state.borrow_mut();
+        let directory = s.directory;
         s.last_conclusion = None;
         clear_host(host, &mut s);
-        state::set(host, State::Empty);
+        drop(s);
+        // Single mode: an empty entity frame means the entity has no
+        // data on this branch — it doesn't exist. Surface a clear
+        // not-found error rather than a silent empty. Directory mode:
+        // an empty frame is simply zero instances, which is Empty.
+        if directory {
+            state::set(host, State::Empty);
+        } else {
+            fail(
+                host,
+                state,
+                ErrorDetail::new(ErrorKind::UnknownSource, "entity not found"),
+            );
+        }
         return;
     };
 

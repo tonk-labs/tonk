@@ -83,6 +83,44 @@ pub fn view_predicate() -> Value {
     })
 }
 
+/// The descriptor of the built-in **directory** view concept
+/// (`tonk:view/directory`). Same `model` field as [`view_predicate`],
+/// but its template lives under `xyz.tonk.view/directory` so a model
+/// can declare a detail view and a directory view independently (both
+/// keyed by `model`). Used as the default view predicate when
+/// `<tonk-display>` has no `entity` (directory mode). The `display`
+/// term name is kept so `view_by_model_query` and the renderer read
+/// the template uniformly regardless of view kind.
+pub fn directory_view_predicate() -> Value {
+    json!({
+        "with": {
+            "model":   { "the": "xyz.tonk.view/model",     "as": "Entity", "cardinality": "one" },
+            "display": { "the": "xyz.tonk.view/directory", "as": "Text",   "cardinality": "one" }
+        }
+    })
+}
+
+/// Build the live **directory** subscription query: like
+/// [`entity_query`] but with `this` left as a variable instead of
+/// pinned, so the query matches *every* instance of the model. The
+/// worker emits one flat row per (instance, many-value) tuple; the
+/// caller groups them by `this`. Used when `<tonk-display>` has no
+/// `entity` (directory mode).
+pub fn instances_query(descriptor_json: &str) -> Result<Query, serde_json::Error> {
+    let predicate: Value = serde_json::from_str(descriptor_json)?;
+    let with = predicate
+        .get("with")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut terms: IndexMap<String, Value> = IndexMap::new();
+    terms.insert("this".into(), json!({ "?": { "name": "this" } }));
+    for field in with.keys() {
+        terms.insert(field.clone(), json!({ "?": { "name": field } }));
+    }
+    serde_json::from_value(json!({ "terms": terms, "predicate": predicate }))
+}
+
 /// True if `s` looks like an entity URI (contains `:`) rather than
 /// a bookmark name.
 pub fn looks_like_uri(s: &str) -> bool {
