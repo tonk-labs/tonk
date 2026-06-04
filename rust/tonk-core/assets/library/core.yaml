@@ -557,7 +557,7 @@ concept!: &tile
       cardinality: one
       as: entity
 
-concept!: &inspector-view
+concept!: &inspector
   description: An inspector tile body — renders <tonk-inspector source="…">
   with:
     source:
@@ -742,10 +742,16 @@ view!:
     <tonk-display entity={entity} model={model} />
 
 view!:
-  this: tonk:inspector-view
-  model: inspector-view
+  this: tonk:inspector
+  model: inspector
   display: |
     <tonk-inspector source={source} />
+
+view/directory!:
+  this: tonk:inspector/directory
+  model: inspector
+  display: |
+    <tonk-inspector source=home />
 
 # The canonical bridge from the `portal` concept to the
 # `<tonk-portal>` element. `html:` forces the binding through
@@ -1119,12 +1125,12 @@ workspace!:
 # idempotent — the engine deduplicates the same claims rather
 # than minting fresh duplicates.
 
-inspector-view!: &home-inspector
+inspector!: &home-inspector
   source: "home"
 
 tile!: &inspector-tile
   order: "a"
-  model: inspector-view
+  model: inspector
   entity: home-inspector
 
 tile!: &workspace-tile
@@ -1246,4 +1252,7 @@ person!:
   name: Bob
   age: 40
 
-## V4
+# Set tonk:workspace as default view
+name!:
+  this: id:tonk/space
+  entity: tonk:workspace
