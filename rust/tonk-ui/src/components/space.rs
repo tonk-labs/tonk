@@ -135,6 +135,12 @@ pub fn TonkInspector(
         }
     });
 
+    // Background sync for the active repository's upstream branches —
+    // a local write reaches the remote (and remote changes reach this
+    // tab) without anyone clicking Pull/Push. Registered under this
+    // component's owner, so it tears down when the inspector unmounts.
+    crate::sync_controller::mount(source, repository);
+
     // Open the shared invite dialog when the user clicks the
     // share affordance. Dialog itself drives the mint and renders
     // the URL.
@@ -709,6 +715,10 @@ where
                         clear_pushed_diagnostics(&editor_source);
                         last_response.set(Some(Box::new(response)));
                         transact_state.set(TransactState::Idle);
+                        // Nudge the background controller so this
+                        // commit reaches the remote without a manual
+                        // push (debounced controller-side).
+                        crate::sync_controller::notify_committed();
                         // Seal this cell and spawn a fresh one
                         // below — the user is moving on.
                         on_sealed();

@@ -358,6 +358,94 @@ mod tests {
         Ok(())
     }
 
+    /// A local write reaches the `origin` remote on its own — no
+    /// Pull/Push button — once the background sync controller's
+    /// commit trigger fires. Exercises the Phase 1 default-on
+    /// controller end to end: commit locally, signal it the way a
+    /// real editor commit does, then watch the remote catch up.
+    #[dialog_common::test]
+    async fn it_auto_syncs_a_local_write_to_the_remote(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Banner ⇒ the home space mounted, and with it the
+        // background controller for its branches.
+        driver.query(By::Css(".space-banner-title")).first().await?;
+
+        // Commit a fact locally. The worker's evaluate route defaults
+        // to transact=true, so this lands a commit on `main` — local
+        // is now ahead of the auto-configured `origin` remote.
+        let commit = driver
+            .execute(
+                r#"
+                const body = `attribute!: &auto-sync-probe
+  the:         test.tonk/auto-sync-probe
+  as:          text
+  cardinality: one
+  description: marker asserted by the auto-sync test
+`;
+                const response = await fetch('/api/repository/home/branch/main/evaluate', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/yaml' },
+                    body,
+                });
+                return response.ok;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            commit.json().as_bool(),
+            Some(true),
+            "local commit should succeed"
+        );
+
+        // Fire the same signal a real editor commit dispatches — no
+        // button is pressed. The controller debounces, then syncs
+        // every upstream branch of the active repository.
+        driver
+            .execute(
+                &format!(
+                    "window.dispatchEvent(new CustomEvent('{}'));",
+                    crate::sync_controller::COMMITTED_EVENT
+                ),
+                vec![],
+            )
+            .await?;
+
+        // Poll the remote until its head matches the local head. The
+        // `tree` reference serializes as a byte array, so compare the
+        // JSON encodings rather than identity.
+        let caught_up = driver
+            .execute(
+                r#"
+                const localResp = await fetch('/api/repository/home');
+                const localInfo = await localResp.json();
+                const localTree = JSON.stringify(localInfo.branch.main.revision.tree);
+
+                const deadline = Date.now() + 15000;
+                while (Date.now() < deadline) {
+                    const r = await fetch('/api/inspect/repository/home/remote/origin/branch/main');
+                    const s = await r.json();
+                    if (s.success && s.revision && JSON.stringify(s.revision.tree) === localTree) {
+                        return true;
+                    }
+                    await new Promise(res => setTimeout(res, 500));
+                }
+                return false;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            caught_up.json().as_bool(),
+            Some(true),
+            "remote should catch up to the local head via background sync, no button press"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Test the `<tonk-code>` editor mounts inside the default
     /// branch row and exercises its public contract end-to-end:
     /// `value` round-trip, `change` event firing on user input,

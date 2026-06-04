@@ -85,12 +85,29 @@
         "type": "github"
       }
     },
+    "nixpkgs-chromedriver": {
+      "locked": {
+        "lastModified": 1780531915,
+        "narHash": "sha256-1A1ciKeRhy4Nr4gv/SK0zzmUKdXGr9Gke/ujBGs4YeU=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "19c56ae874977658f33ab06c04520b1848c3e4b7",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "master",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
     "root": {
       "inputs": {
         "crane": "crane",
         "flake-utils": "flake-utils",
         "nix-filter": "nix-filter",
         "nixpkgs": "nixpkgs",
+        "nixpkgs-chromedriver": "nixpkgs-chromedriver",
         "rust-overlay": "rust-overlay",
         "wrangler-flake": "wrangler-flake"
       }
