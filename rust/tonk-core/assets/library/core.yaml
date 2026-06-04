@@ -499,32 +499,35 @@ view/directory!:
   this: id:tonk-workspace/directory
   model: workspace
   display: |
-    <tonk-display class="workspace-directory" entity={this} model={dom.host/model} view={dom.host/view}>
+    <div class="workspace-directory">
       <style>
-        /* The directory wraps the workspace instance in a nested
-           `<tonk-display>`. The route gives THIS element (the page view
-           root) a viewport-min height; flex-fill the nested rendering
-           chain so that height reaches the workspace, which then fills
-           the page (tab strip at the bottom). This is the same fill the
-           seamless carousel applies to its slides — without it the
+        /* The route gives this view root (`.workspace-directory`) a
+           viewport-min height. Flex-fill the nested `<tonk-display>`
+           rendering chain so that height reaches the workspace, which
+           then fills the page (tab strip at the bottom) — the same fill
+           the seamless carousel applies to its slides. Without it the
            nested wrapper sits at content height and the workspace stops
-           short. */
-        tonk-display.workspace-directory {
+           short. (`<style>` lives on this `<div>` rather than inside
+           `<tonk-display>`, which discards child markup when it renders
+           its resolved view.) */
+        .workspace-directory {
           display: flex;
           flex-direction: column;
         }
-        tonk-display.workspace-directory > tonk-view {
+        .workspace-directory > tonk-display,
+        .workspace-directory > tonk-display > tonk-view {
           display: flex;
           flex-direction: column;
           flex: 1 1 auto;
           min-height: 0;
         }
-        tonk-display.workspace-directory > tonk-view > * {
+        .workspace-directory > tonk-display > tonk-view > * {
           flex: 1 1 auto;
           min-height: 0;
         }
       </style>
-    </tonk-display>
+      <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
+    </div>
 
 view!:
   this: id:tonk-workspace/sheet-mount
@@ -791,6 +794,8 @@ view!:
   model: inspector
   display: |
     <tonk-inspector source={source} />
+
+
 
 view/directory!:
   this: tonk:inspector/directory
