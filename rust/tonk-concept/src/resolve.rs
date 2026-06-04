@@ -96,9 +96,45 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
+/// Build the name-resolution query: resolve a bookmark `name` to the
+/// entity it points at through the **Name concept** — the `id:<name>`
+/// entity's `dialog.name/referent` claim (cardinality one, so at most
+/// one match).
+///
+/// This is the single source of truth for "what does this name refer
+/// to": the analyzer publishes a `Name` claim for every `&anchor`,
+/// including concepts pinned to a `this:` URI (e.g. `&workspace` +
+/// `this: tonk:workspace` → `id:workspace` → `tonk:workspace`). A
+/// concept's `dialog.meta/name` claim, by contrast, is only emitted
+/// when its `this:` is *derived*, so resolving a model/view name
+/// against `dialog.meta/name` misses pinned concepts. Resolving names
+/// here and feeding the resulting URI to [`phase1_query`] makes model,
+/// view, and entity name resolution agree.
+///
+/// Reads back as `(entity)` — the referent URI.
+pub fn name_query(name: &str) -> Query {
+    let body = json!({
+        "terms": {
+            "this":   format!("id:{name}"),
+            "entity": { "?": { "name": "entity" } },
+        },
+        "predicate": {
+            "with": {
+                "entity": { "the": "dialog.name/referent", "as": "Entity", "cardinality": "one" }
+            }
+        }
+    });
+    serde_json::from_value(body).expect("name query body is well-formed")
+}
+
 /// Build the Phase-1 wire query that asks the concept-of-concept
-/// view for the row whose `name` is `parsed.name_or_uri` (when a
-/// bookmark) or whose `this` equals it (when a URI).
+/// view for the row whose `this` equals `parsed.name_or_uri`.
+///
+/// `parsed.name_or_uri` is expected to be a concept entity URI — a
+/// bookmark name should be resolved to its referent via [`name_query`]
+/// first. (For backwards compatibility a non-URI value still falls
+/// back to a `dialog.meta/name` filter, but that path misses concepts
+/// pinned to a `this:` URI; prefer resolving the name first.)
 ///
 /// Reads back as `(this, name, source)` — the descriptor JSON is
 /// in `source`.
@@ -312,6 +348,36 @@ mod tests {
         let this = q.terms.get("this").expect("this term");
         let value: serde_json::Value = serde_json::to_value(this).unwrap();
         assert_eq!(value, json!("did:key:zPerson"));
+    }
+
+    #[dialog_common::test]
+    fn it_resolves_a_name_through_the_name_concept() {
+        // A bare name resolves via the Name concept: `id:<name>`'s
+        // `dialog.name/referent`. This is what lets `workspace` (a
+        // concept pinned to `this: tonk:workspace`, so carrying a Name
+        // claim but no `dialog.meta/name`) resolve at all.
+        let q = name_query("workspace");
+        let this = q.terms.get("this").expect("this term");
+        assert_eq!(
+            serde_json::to_value(this).unwrap(),
+            json!("id:workspace"),
+            "the name query pins `this` to the `id:<name>` entity",
+        );
+        // It projects `entity` (the referent) and constrains on the
+        // Name attribute.
+        let entity = q.terms.get("entity").expect("entity term");
+        assert_eq!(
+            serde_json::to_value(entity).unwrap(),
+            json!({ "?": { "name": "entity" } }),
+        );
+        let predicate = serde_json::to_value(&q.predicate).unwrap();
+        assert_eq!(
+            predicate
+                .pointer("/with/entity/the")
+                .and_then(|v| v.as_str()),
+            Some("dialog.name/referent"),
+            "the name query constrains on the Name referent attribute",
+        );
     }
 
     #[dialog_common::test]

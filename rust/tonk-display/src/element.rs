@@ -28,7 +28,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
 use js_sys::{Function, Reflect};
-use tonk_concept::resolve::{ParsedSource, parse_source, phase1_query};
+use tonk_concept::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
@@ -652,10 +652,34 @@ fn first_field(value: &JsValue, field: &str) -> Result<Option<String>, ErrorDeta
 }
 
 /// Resolve a concept (bookmark name or entity URI) to its
-/// `(entity, descriptor_json)` via the Phase-1 concept-of-concepts
-/// query.
+/// `(entity, descriptor_json)`.
+///
+/// A bare name is first resolved through the **Name concept**
+/// (`id:<name>` → `dialog.name/referent`) into a concept entity URI,
+/// then that URI drives the Phase-1 concept-of-concepts lookup by
+/// `this`. This is the path that makes a model or view named after a
+/// concept pinned to a `this:` URI (e.g. `workspace` → `tonk:workspace`)
+/// resolve — the concept carries a `Name` claim but no
+/// `dialog.meta/name`, so a direct `name`-filtered Phase-1 would miss
+/// it. A value that is already a URI skips name resolution.
 async fn resolve_model(host: &Element, source: &str) -> Result<(String, String), ErrorDetail> {
     let parsed: ParsedSource = parse_source(source);
+    let parsed = if parsed.is_uri() {
+        parsed
+    } else {
+        // Resolve the bookmark name to its referent URI via the Name
+        // concept. An unresolved name falls through with the original
+        // string, so Phase-1 still reports a clean "no concept matched".
+        let name_result =
+            host_consumer::query(host, &to_body(&name_query(&parsed.name_or_uri))?).await?;
+        match first_field(&name_result, "entity")? {
+            Some(uri) => ParsedSource {
+                name_or_uri: uri,
+                filters: parsed.filters,
+            },
+            None => parsed,
+        }
+    };
     let phase1_q = phase1_query(&parsed);
     let result = host_consumer::query(host, &to_body(&phase1_q)?).await?;
     extract_phase1(&result)
@@ -1092,24 +1116,19 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
                 return;
             }
         }
-        let parsed = parse_source(name);
-        let q = phase1_query(&parsed);
-        let body_val = match serde_wasm_bindgen::to_value(&q) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        match host_consumer::query(host, &body_val).await {
-            Ok(result) => {
-                if let Ok((_entity, descriptor_json)) = extract_phase1(&result) {
-                    match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
-                        Ok(value) => {
-                            descriptors.insert(name.clone(), value);
-                        }
-                        Err(e) => {
-                            web_sys::console::warn_1(&JsValue::from_str(&format!(
-                                "<tonk-display>: descriptor for `{name}` is not valid JSON: {e}",
-                            )));
-                        }
+        // Resolve through the same name-first path as the model/view
+        // (`resolve_model`), so an event-handler concept named after a
+        // pinned-`this` concept resolves via the Name index too.
+        match resolve_model(host, name).await {
+            Ok((_entity, descriptor_json)) => {
+                match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
+                    Ok(value) => {
+                        descriptors.insert(name.clone(), value);
+                    }
+                    Err(e) => {
+                        web_sys::console::warn_1(&JsValue::from_str(&format!(
+                            "<tonk-display>: descriptor for `{name}` is not valid JSON: {e}",
+                        )));
                     }
                 }
             }
