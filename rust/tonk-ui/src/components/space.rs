@@ -1,10 +1,6 @@
 use dialog_repository::SiteAddress;
 use leptos::{either::Either, prelude::*, task::spawn_local, web_sys};
-use leptos_router::{
-    hooks::use_params,
-    location::{BrowserUrl, LocationProvider},
-    params::Params,
-};
+use leptos_router::{hooks::use_params, params::Params};
 use tonk_worker::{
     BranchConfiguration, EvaluateResponse, RemoteConfiguration, RepositoryInfo, Revision,
 };
@@ -60,54 +56,11 @@ impl SyncOp {
 /// summary row; the user opens them on demand.
 const DEFAULT_OPEN_BRANCH: &str = "main";
 
-#[derive(Params, PartialEq, Clone, Debug)]
-pub struct TonkSpaceParams {
-    space: Option<String>,
-}
-
-/// Main workspace area for displaying a repository.
-///
-/// Fetches the repository record at `/api/repository/{space}`. The
-/// component uses [`Suspense`] to render a fallback while the
-/// request is in flight, and [`ErrorBoundary`] to render a fallback
-/// for genuine failures (network errors, 5xx). A 404 is *not* an
-/// error — it's surfaced as `Ok(None)` from the API so it can flow
-/// through the normal value path and render a dedicated view.
-///
-/// If the `:space` segment is missing, redirects to
-/// `/space/{DEFAULT_REPO}`.
-/// Route component for `/space/:space?`. Decodes the URL param,
-/// redirects empty paths to the default space, and delegates the
-/// actual UI to [`TonkInspector`]. Kept around as a thin shim so
-/// existing links / nav targets keep resolving; the body lives in
-/// `TonkInspector` so it can be embedded as a tile body as well.
-#[component]
-#[allow(clippy::unused_unit)]
-pub fn TonkSpace() -> impl IntoView {
-    let params = use_params::<TonkSpaceParams>();
-
-    let space_name = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.space)
-            .filter(|s| !s.is_empty())
-    });
-
-    // Empty-path redirect: when the URL has no `:space` segment,
-    // bounce to the default repository. Lives here (not inside
-    // `TonkInspector`) so the inspector can be reused in non-route
-    // contexts (tiles, embeds) without firing a navigation.
-    Effect::new(move |_| {
-        if space_name.get().is_none() {
-            BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
-        }
-    });
-
-    view! {
-        <TonkInspector source=space_name />
-    }
-}
+// The repository-inspector UI (banner, branches, remotes, share)
+// lives in [`TonkInspector`]. It is reached as the `<tonk-inspector>`
+// custom element (see `super::inspector`) rather than its own route:
+// `/space/{name}/` now renders the space's primary `<tonk-display>`
+// interface. The `/` → default-space redirect lives in `TonkShell`.
 
 /// Renders a single space (banner + branches + remotes). Takes
 /// the space name as a reactive prop so it can be driven from a
@@ -2205,12 +2158,11 @@ fn summarize_address(address: &SiteAddress) -> RemoteAddressSummary {
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkSpaceViewerParams {
     space: Option<String>,
-    branch: Option<String>,
     entity: Option<String>,
 }
 
-/// Entity-rendering view at
-/// `/space/{space}/branch/{branch}/view/{entity}`.
+/// Entity-rendering view at `/space/{space}/view/{entity}`
+/// (`:space` is `{branch}@{name}`).
 ///
 /// Shares the shell layout with [`TonkSpace`] (banner + share
 /// button) but replaces the branches/remotes sections in `main`
@@ -2231,20 +2183,16 @@ pub struct TonkSpaceViewerParams {
 pub fn TonkSpaceViewer() -> impl IntoView {
     let params = use_params::<TonkSpaceViewerParams>();
 
-    let space_name = Signal::derive_local(move || {
+    let space_ref = Signal::derive_local(move || {
         params
             .get()
             .ok()
             .and_then(|p| p.space)
             .filter(|s| !s.is_empty())
+            .and_then(|s| crate::components::route::parse_space(&s))
     });
-    let branch_name = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.branch)
-            .filter(|s| !s.is_empty())
-    });
+    let space_name = Signal::derive_local(move || space_ref.get().map(|s| s.name));
+    let branch_name = Signal::derive_local(move || space_ref.get().map(|s| s.branch));
     let entity_name = Signal::derive_local(move || {
         params
             .get()

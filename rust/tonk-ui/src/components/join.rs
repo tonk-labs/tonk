@@ -540,11 +540,8 @@ mod tests {
 
     #[test]
     fn it_extracts_a_then_suffix_from_a_well_formed_url() {
-        let url = "https://ui.example.test/join?access=abc&then=branch/main/concept/task#seed";
-        assert_eq!(
-            then_suffix_from_url(url).as_deref(),
-            Some("branch/main/concept/task"),
-        );
+        let url = "https://ui.example.test/join?access=abc&then=concept/task#seed";
+        assert_eq!(then_suffix_from_url(url).as_deref(), Some("concept/task"));
     }
 
     #[test]
@@ -568,13 +565,9 @@ mod tests {
     #[test]
     fn it_keeps_then_and_name_independent() {
         // Both parameters can coexist and are read independently.
-        let url =
-            "https://ui.example.test/join?name=tasks&access=abc&then=branch/main/concept/task";
+        let url = "https://ui.example.test/join?name=tasks&access=abc&then=concept/task";
         assert_eq!(suggested_name_from_url(url).as_deref(), Some("tasks"));
-        assert_eq!(
-            then_suffix_from_url(url).as_deref(),
-            Some("branch/main/concept/task"),
-        );
+        assert_eq!(then_suffix_from_url(url).as_deref(), Some("concept/task"));
     }
 
     #[test]
@@ -585,8 +578,8 @@ mod tests {
         // is what keeps the share working when the recipient
         // already had the subject mounted under another name.
         assert_eq!(
-            compose_destination("home", Some("branch/main/concept/task")),
-            "/space/home/branch/main/concept/task",
+            compose_destination("home", Some("concept/task")),
+            "/space/home/concept/task",
         );
         assert_eq!(compose_destination("home", None), "/space/home");
     }

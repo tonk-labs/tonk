@@ -1,4 +1,4 @@
-//! `/space/:space/branch/:branch/board/:board` route.
+//! `/space/:space/board/:board` route (`:space` is `{branch}@{name}`).
 //!
 //! Renders `<tonk-board name={board}>` inside the
 //! `<tonk-repository>` / `<tonk-branch>` routing wrappers. The
@@ -15,12 +15,11 @@ use leptos_router::params::Params;
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkBoardParams {
     space: Option<String>,
-    branch: Option<String>,
     board: Option<String>,
 }
 
-/// Board route. Reads `:space`, `:branch`, `:board` from the URL
-/// and hands the name off to `<tonk-board>`; everything else —
+/// Board route. Reads `:space` (`{branch}@{name}`) and `:board` from
+/// the URL and hands the name off to `<tonk-board>`; everything else —
 /// bootstrap, name resolve, display mount — happens inside the
 /// element via the host event system.
 #[component]
@@ -28,22 +27,18 @@ pub struct TonkBoardParams {
 pub fn TonkBoardView() -> impl IntoView {
     let params = use_params::<TonkBoardParams>();
 
-    let space_name = Signal::derive_local(move || {
+    let space_ref = Signal::derive_local(move || {
         params
             .get()
             .ok()
             .and_then(|p| p.space)
             .filter(|s| !s.is_empty())
-            .unwrap_or_default()
+            .and_then(|s| crate::components::route::parse_space(&s))
     });
-    let branch_name = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.branch)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_default()
-    });
+    let space_name =
+        Signal::derive_local(move || space_ref.get().map(|s| s.name).unwrap_or_default());
+    let branch_name =
+        Signal::derive_local(move || space_ref.get().map(|s| s.branch).unwrap_or_default());
     let board_name = Signal::derive_local(move || {
         params
             .get()
@@ -81,7 +76,7 @@ mod integration_tests {
     /// The board route is self-bootstrapping: `<tonk-board>`'s
     /// `connectedCallback` POSTs the bundled schema + demo data
     /// before resolving the board name. Landing on
-    /// `/space/home/branch/main/board/demo` with a fresh home repo
+    /// `/space/home/board/demo` with a fresh home repo
     /// is expected to produce a rendered strip with two columns
     /// (the demo board's `col-a` and `col-b`) inside the page's
     /// `<tonk-strip>` container — no manual seeding step.
@@ -97,10 +92,7 @@ mod integration_tests {
         // Navigate to the board route. `<tonk-board>` seeds the
         // bootstrap on mount; the strip should appear once the
         // POST + name lookup + subscription frame have landed.
-        let target = format!(
-            "{}space/home/branch/main/board/demo",
-            test_environment.tonk_web
-        );
+        let target = format!("{}space/home/board/demo", test_environment.tonk_web);
         driver.goto(&target).await?;
 
         // The strip element materializes once the view template
