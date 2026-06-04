@@ -96,10 +96,13 @@ struct Inner {
     /// Cancels the entity subscription on disconnect / attribute
     /// change.
     entity_sub: Option<HostSubscription>,
-    /// Last entity conclusion seen; replayed when a fresh slide
-    /// is mounted so it picks up the current data without waiting
-    /// for the next entity frame.
-    last_conclusion: Option<Conclusion>,
+    /// Last folded entity frame seen; replayed in full when a fresh
+    /// slide mounts so it picks up the current data without waiting for
+    /// the next entity frame. The whole frame matters in directory mode
+    /// (one conclusion per instance) — replaying only the lead would
+    /// drop every instance but the first. The lead conclusion (for
+    /// notation / the result event) is `last_frame.first()`.
+    last_frame: Vec<Conclusion>,
     /// `<wa-carousel>` element when in carousel mode, `None` in
     /// single mode.
     carousel: Option<Element>,
@@ -169,7 +172,7 @@ impl Inner {
             generation: 0,
             view_sub: None,
             entity_sub: None,
-            last_conclusion: None,
+            last_frame: Vec::new(),
             carousel: None,
             slides: BTreeMap::new(),
             notation_source: None,
@@ -252,7 +255,7 @@ impl CustomElement for TonkDisplay {
         {
             let mut s = state.borrow_mut();
             s.abort_all();
-            s.last_conclusion = None;
+            s.last_frame = Vec::new();
             // Tear down any mounted slide / carousel chrome so the
             // restart starts from a clean host.
             clear_host(&host, &mut s);
@@ -737,7 +740,14 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     }
 
     // Add or replace slides.
-    let cached = s.last_conclusion.clone();
+    let cached = s.last_frame.clone();
+    let cached_detail = (!cached.is_empty()).then(|| {
+        let augmented: Vec<Conclusion> = cached
+            .iter()
+            .map(|c| with_host_attributes(host, c))
+            .collect();
+        serialize_conclusions(&augmented)
+    });
     for (name, display) in incoming {
         let existing_matches = s
             .slides
@@ -756,13 +766,13 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
             let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
         if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
-            // Push the cached entity conclusion if we have one,
-            // so the new slide renders immediately rather than
-            // waiting for the next entity frame. Augment with the
-            // host's `dom.host/*` attributes, matching the live path.
-            if let Some(c) = cached.as_ref() {
-                let detail = serialize_conclusion(&with_host_attributes(host, c));
-                call_render(&new_slide.view_el, &detail);
+            // Replay the cached frame so the new slide renders
+            // immediately rather than waiting for the next entity frame.
+            // The WHOLE frame is replayed — directory mode has one
+            // conclusion per instance, so a single-conclusion replay
+            // would drop every instance but the first.
+            if let Some(detail) = cached_detail.as_ref() {
+                call_render(&new_slide.view_el, detail);
             }
             s.slides.insert(name, new_slide);
         }
@@ -771,10 +781,10 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // In single mode, mark Ready once the slide is mounted (with
     // or without an entity frame yet — empty content is fine).
     // In carousel mode, ensure the notation slide is fed.
-    if cached.is_some() && !s.slides.is_empty() {
+    if !cached.is_empty() && !s.slides.is_empty() {
         state::set(host, State::Ready);
     }
-    if let Some(c) = cached.as_ref() {
+    if let Some(c) = cached.first() {
         update_notation(host, &s, c);
     }
 
@@ -827,7 +837,7 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
                 if s.disposed || s.default_slide || !s.slides.is_empty() {
                     return;
                 }
-                s.last_conclusion.clone()
+                s.last_frame.first().cloned()
             };
             if let Some(conclusion) = conclusion {
                 mount_notation_fallback(&host, &state, &conclusion);
@@ -848,8 +858,16 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
             }
         }
         if let Some(slide) = mount_view_slide(&host, &mut s, &display) {
-            if let Some(c) = s.last_conclusion.clone() {
-                let detail = serialize_conclusion(&with_host_attributes(&host, &c));
+            // Replay the whole cached frame (directory mode has one
+            // conclusion per instance; a single replay would drop all
+            // but the first).
+            if !s.last_frame.is_empty() {
+                let augmented: Vec<Conclusion> = s
+                    .last_frame
+                    .iter()
+                    .map(|c| with_host_attributes(&host, c))
+                    .collect();
+                let detail = serialize_conclusions(&augmented);
                 call_render(&slide.view_el, &detail);
             }
             s.slides.insert("__default__".to_owned(), slide);
@@ -1130,16 +1148,21 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 /// template renderer's iteration-aware walk does the per-value
 /// cloning from there.
 fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
-    let Some(conclusion) = crate::fold::fold_rows(conclusions) else {
+    // Everything is a list of folds: group the flat rows by `this` into
+    // one folded conclusion per subject. Cardinality-one is just a
+    // one-element frame; the renderer iterates `{this}` over the frame.
+    let frame = crate::fold::select_rows(conclusions);
+
+    if frame.is_empty() {
         let mut s = state.borrow_mut();
         let directory = s.directory;
-        s.last_conclusion = None;
+        s.last_frame = Vec::new();
         clear_host(host, &mut s);
         drop(s);
-        // Single mode: an empty entity frame means the entity has no
-        // data on this branch — it doesn't exist. Surface a clear
-        // not-found error rather than a silent empty. Directory mode:
-        // an empty frame is simply zero instances, which is Empty.
+        // An empty frame means no rows matched. With a specified
+        // `entity` (single subject) that is a missing entity — a clear
+        // not-found error. Without `entity` (a collection) it is simply
+        // zero instances, an empty container, which is Empty.
         if directory {
             state::set(host, State::Empty);
         } else {
@@ -1150,22 +1173,30 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
             );
         }
         return;
-    };
+    }
 
     let mut s = state.borrow_mut();
-    s.last_conclusion = Some(conclusion.clone());
-    // The slide sees the conclusion plus the host's own attributes
-    // under `dom.host/*` (for `{dom.host/model}` etc.); notation,
-    // caching, and the result event keep the unaugmented conclusion.
-    let detail = serialize_conclusion(&with_host_attributes(host, &conclusion));
+    // Cache the whole folded frame for the slide-mount replay (directory
+    // mode has one conclusion per instance). The lead conclusion drives
+    // notation + the result event.
+    let first = frame[0].clone();
+    s.last_frame = frame.clone();
+    // Each slide sees the whole frame, augmented with the host's own
+    // attributes under `dom.host/*`; notation, caching, and the result
+    // event keep the unaugmented conclusions.
+    let augmented: Vec<Conclusion> = frame
+        .iter()
+        .map(|c| with_host_attributes(host, c))
+        .collect();
+    let detail = serialize_conclusions(&augmented);
     for slide in s.slides.values() {
         call_render(&slide.view_el, &detail);
     }
-    update_notation(host, &s, &conclusion);
+    update_notation(host, &s, &first);
     if !s.slides.is_empty() || s.notation_source.is_some() {
         state::set(host, State::Ready);
     }
-    dispatch_event(host, "tonk-display:result", Some(event_detail(&conclusion)));
+    dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -1288,10 +1319,10 @@ fn call_render(el: &Element, detail: &JsValue) {
     let _ = func.call1(&JsValue::NULL, detail);
 }
 
-/// Serialize a `Conclusion` into a JsValue with the shape
-/// `<tonk-view>` / `<tonk-inspector>` expect.
-fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
-    serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
+/// Serialize a frame of conclusions as a JS array — the shape a
+/// slide's `draw` accepts (it renders one row per conclusion).
+fn serialize_conclusions(conclusions: &[Conclusion]) -> JsValue {
+    serde_wasm_bindgen::to_value(conclusions).unwrap_or(JsValue::NULL)
 }
 
 /// Return a copy of `conclusion` with the host `<tonk-display>`'s own

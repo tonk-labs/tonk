@@ -83,6 +83,13 @@ pub struct Renderer {
 
 impl Renderer {
     /// Construct a renderer over a snapshot.
+    ///
+    /// A `<tonk-concept>` shelf clones the **whole template** per
+    /// conclusion (its own row loop), so it consumes `plan.repeat.body`
+    /// — the per-conclusion body — and never the chrome/repeat split a
+    /// `<tonk-display>` uses. Concept row templates do not carry `{this}`
+    /// markers, so the split leaves every node in `repeat.body` with
+    /// fragment-relative paths (`repeat.path == None`).
     pub fn new(plan: BindingPlan, template: DocumentFragment, container: Element) -> Self {
         Self {
             plan,
@@ -123,7 +130,7 @@ impl Renderer {
             if let Some(row) = self.rows.get_mut(&conclusion.this) {
                 update_nodes(
                     &document,
-                    &self.plan.nodes,
+                    &self.plan.repeat.body,
                     &mut row.mounted,
                     &row.root,
                     &self.template,
@@ -159,7 +166,7 @@ impl Renderer {
         let root: Node = clone.clone().into();
         let mounted = build_mounted_nodes(
             document,
-            &self.plan.nodes,
+            &self.plan.repeat.body,
             &root,
             &self.template,
             conclusion,

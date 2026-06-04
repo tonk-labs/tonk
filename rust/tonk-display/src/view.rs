@@ -102,13 +102,22 @@ impl CustomElement for TonkView {
         // how a single prototype method reaches the right
         // instance's state.
         let draw = Closure::wrap(Box::new(move |detail: JsValue| {
-            let conclusion: Conclusion = match serde_wasm_bindgen::from_value(detail) {
-                Ok(c) => c,
-                Err(_) => return,
-            };
+            // `draw` accepts a FRAME (an array of conclusions) — the
+            // renderer renders one row per conclusion. A single
+            // conclusion (`{this, fields}`) is accepted too and treated
+            // as a one-row frame, so callers passing one entity still
+            // work.
+            let frame: Vec<Conclusion> =
+                match serde_wasm_bindgen::from_value::<Vec<Conclusion>>(detail.clone()) {
+                    Ok(frame) => frame,
+                    Err(_) => match serde_wasm_bindgen::from_value::<Conclusion>(detail) {
+                        Ok(c) => vec![c],
+                        Err(_) => return,
+                    },
+                };
             let mut s = state.borrow_mut();
             if let Some(renderer) = s.renderer.as_mut() {
-                renderer.apply(&conclusion);
+                renderer.apply(&frame);
             }
         }) as Box<dyn FnMut(JsValue)>);
         let draw_fn: &Function = draw.as_ref().unchecked_ref();
@@ -1012,6 +1021,127 @@ mod tests {
             items,
             vec!["zA".to_owned(), "zB".to_owned(), "zC".to_owned()],
             "rows should appear in sorted-key order regardless of input array order",
+        );
+    }
+
+    /// Build a serialized FRAME — a JS array of `{ this, fields }`
+    /// conclusions, the shape `<tonk-display>` passes for a directory
+    /// (one conclusion per instance). `draw` fans it out into one repeat
+    /// row per conclusion keyed by `this`.
+    fn frame(members: &[(&str, &[(&str, &str)])]) -> JsValue {
+        let conclusions: Vec<Conclusion> = members
+            .iter()
+            .map(|(this, fields)| {
+                let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
+                for (k, v) in *fields {
+                    map.insert((*k).to_owned(), Ipld::String((*v).to_owned()));
+                }
+                Conclusion {
+                    this: (*this).to_owned(),
+                    fields: map,
+                }
+            })
+            .collect();
+        serde_wasm_bindgen::to_value(&conclusions).expect("serialize frame")
+    }
+
+    // A directory frame with N conclusions must render N repeat rows,
+    // one per subject. Regression: the slide-mount replay used to push
+    // only the lead conclusion (a single-conclusion serialize), so a
+    // directory of [Alice, Bob] rendered Alice alone. The `{this}`
+    // marker on `<wa-carousel-item>` makes it the repeat node; each
+    // conclusion clones it once, stamped with its own `this`.
+    #[dialog_common::test]
+    fn it_renders_one_repeat_row_per_conclusion_in_a_directory_frame() {
+        let host = mount(
+            "<wa-carousel><wa-carousel-item subject={this}>{name}</wa-carousel-item></wa-carousel>",
+        );
+        call_draw(
+            &host,
+            &frame(&[
+                ("did:key:zAlice", &[("name", "Alice")]),
+                ("did:key:zBob", &[("name", "Bob")]),
+            ]),
+        );
+
+        let items = host.query_selector_all("wa-carousel-item").unwrap();
+        assert_eq!(
+            items.length(),
+            2,
+            "a 2-conclusion frame must render 2 rows, got: {}",
+            host.inner_html(),
+        );
+
+        // Each row carries its own `with=<this>` debug attribute and the
+        // per-conclusion `{name}` resolved against that conclusion. Rows
+        // are keyed in sorted-`this` order (zAlice < zBob).
+        let first = items.item(0).unwrap();
+        let first_el = first.dyn_ref::<Element>().expect("element");
+        assert_eq!(
+            first_el.get_attribute("with").as_deref(),
+            Some("did:key:zAlice")
+        );
+        assert_eq!(first_el.text_content().as_deref(), Some("Alice"));
+
+        let second = items.item(1).unwrap();
+        let second_el = second.dyn_ref::<Element>().expect("element");
+        assert_eq!(
+            second_el.get_attribute("with").as_deref(),
+            Some("did:key:zBob")
+        );
+        assert_eq!(second_el.text_content().as_deref(), Some("Bob"));
+    }
+
+    // A single-conclusion frame is just a one-row directory — the same
+    // path, one repeat row. Guards the cardinality-one case the unified
+    // "everything is a list of folds" model collapses into.
+    #[dialog_common::test]
+    fn it_renders_a_single_repeat_row_for_a_one_conclusion_frame() {
+        let host = mount(
+            "<wa-carousel><wa-carousel-item subject={this}>{name}</wa-carousel-item></wa-carousel>",
+        );
+        call_draw(&host, &frame(&[("did:key:zAlice", &[("name", "Alice")])]));
+
+        let items = host.query_selector_all("wa-carousel-item").unwrap();
+        assert_eq!(items.length(), 1, "one conclusion → one row");
+        let only = items.item(0).unwrap();
+        let only_el = only.dyn_ref::<Element>().expect("element");
+        assert_eq!(
+            only_el.get_attribute("with").as_deref(),
+            Some("did:key:zAlice")
+        );
+        assert_eq!(only_el.text_content().as_deref(), Some("Alice"));
+    }
+
+    // Re-applying a frame that grew by one subject adds exactly one row
+    // and preserves the existing row's node identity — the incremental
+    // path the directory carousel relies on when an instance appears.
+    #[dialog_common::test]
+    fn it_appends_a_repeat_row_when_the_frame_grows() {
+        let host = mount(
+            "<wa-carousel><wa-carousel-item subject={this}>{name}</wa-carousel-item></wa-carousel>",
+        );
+        call_draw(&host, &frame(&[("did:key:zAlice", &[("name", "Alice")])]));
+        let alice_before = host
+            .query_selector_all("wa-carousel-item")
+            .unwrap()
+            .item(0)
+            .expect("alice row");
+
+        call_draw(
+            &host,
+            &frame(&[
+                ("did:key:zAlice", &[("name", "Alice")]),
+                ("did:key:zBob", &[("name", "Bob")]),
+            ]),
+        );
+
+        let items = host.query_selector_all("wa-carousel-item").unwrap();
+        assert_eq!(items.length(), 2, "frame grew to 2: {}", host.inner_html());
+        let alice_after = items.item(0).expect("alice row still first");
+        assert!(
+            alice_before.is_same_node(Some(alice_after.unchecked_ref())),
+            "Alice's row must keep its node identity across the grow",
         );
     }
 }
