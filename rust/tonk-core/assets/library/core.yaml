@@ -493,11 +493,38 @@ view!: &workspace/view
 # from the sheet's own `entity`/`model`/`view` fields - a sheet is
 # self-describing, so no intermediate concept is needed.
 
+
+
 view/directory!:
   this: id:tonk-workspace/directory
   model: workspace
   display: |
-    <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
+    <tonk-display class="workspace-directory" entity={this} model={dom.host/model} view={dom.host/view}>
+      <style>
+        /* The directory wraps the workspace instance in a nested
+           `<tonk-display>`. The route gives THIS element (the page view
+           root) a viewport-min height; flex-fill the nested rendering
+           chain so that height reaches the workspace, which then fills
+           the page (tab strip at the bottom). This is the same fill the
+           seamless carousel applies to its slides — without it the
+           nested wrapper sits at content height and the workspace stops
+           short. */
+        tonk-display.workspace-directory {
+          display: flex;
+          flex-direction: column;
+        }
+        tonk-display.workspace-directory > tonk-view {
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 auto;
+          min-height: 0;
+        }
+        tonk-display.workspace-directory > tonk-view > * {
+          flex: 1 1 auto;
+          min-height: 0;
+        }
+      </style>
+    </tonk-display>
 
 view!:
   this: id:tonk-workspace/sheet-mount
@@ -659,6 +686,12 @@ view!:
       </style>
       <tonk-display entity={column} model=column-view />
     </tonk-strip>
+
+view/directory!:
+  this: tonk:board/directory
+  model: board
+  display: |
+    <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
 
 view!:
   this: tonk:board/column

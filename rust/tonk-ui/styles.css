@@ -233,25 +233,25 @@ tonk-repository.display-route,
     display: contents;
 }
 
-/* Bare display route: the route only establishes a viewport-height box
-   for the view to live in — `min-height: 100dvh` (viewport-relative, so
-   it resolves without a definite-height ancestor chain, robust against
-   the `display: contents` wrappers) and a flex column so a view that
-   claims `flex: 1` / `100dvh` can fill it. The PAGE is the scroll
-   container, so a view taller than the screen (the inspector) just
-   scrolls the page.
+/* Bare display route layout. The mount slot fills the viewport at
+   minimum (`min-height: 100dvh`, viewport-relative so it needs no
+   definite-height ancestor) and is a flex column — the PAGE is the
+   scroll container, so a view taller than the screen (the inspector)
+   scrolls the page. The page view root gets the same viewport-min
+   height so a view that wants to fill (the workspace pinning its tab
+   strip to the bottom) does — but ONLY here, as the route's own page;
+   the SAME view mounted elsewhere (a board tile) stays content-sized.
+   Only `min-height` is set on the view root, never `display` /
+   `flex-direction`, so the view keeps its own layout mode (e.g. the
+   board strip's `flex-direction: row`) and isn't clobbered.
 
-   Crucially the chain stops at `tonk-view`: the view's own root element
-   owns its layout. A view that wants to fill (the workspace) sets
-   `min-height: 100dvh` on its root; one that is a fixed internal
-   scroller (the board's `tonk-strip`) sets its own `block-size: 100dvh`
-   and `flex-direction: row`. Imposing flex/`flex-direction` from here
-   would clobber those — which is why carousel-wrapped views (deeper in
-   the tree, untouched by this rule) behaved correctly while bare ones
-   broke.
-
-   Child combinators keep this scoped to the route's OWN mount slot, not
-   every nested `<tonk-display>`/`<tonk-view>` deeper in the tree. */
+   The selector spells out the route's own mount chain
+   (`.display-view-slot > tonk-display > tonk-view > *`) deliberately:
+   it must reach EXACTLY the route's page view root and not any nested
+   `<tonk-display>`/`<tonk-view>` deeper in the tree (carousel slides,
+   board tiles), which own their own sizing. A looser descendant
+   selector would catch those and impose a viewport height on content
+   that should stay content-sized. */
 .display-route > tonk-branch > .display-view-slot {
     display: flex;
     flex-direction: column;
@@ -264,13 +264,6 @@ tonk-repository.display-route,
     flex: 1 1 auto;
     min-height: 0;
 }
-/* The PAGE-LEVEL view root gets a viewport-min height so a view that
-   wants to fill (the workspace pinning its tab strip to the bottom)
-   does — but ONLY here, where the view is the route's own page. The
-   same view mounted elsewhere (a board tile) stays content-sized. Only
-   `min-height` is set, never `display` / `flex-direction`: the view
-   root keeps its own layout mode (e.g. the board strip's
-   `flex-direction: row`), so this doesn't clobber it. */
 .display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view > * {
     min-height: 100dvh;
 }
