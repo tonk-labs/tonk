@@ -199,6 +199,20 @@ where
     let local_subject = info.subject.to_string();
     let space_title = info.name.clone();
 
+    // Per-repository auto-sync toggle. Seeded from the stored
+    // preference; flipping it writes through so the running
+    // controller honors the change on its next sweep.
+    let sync_repo = info.name.clone();
+    let auto_sync_on = RwSignal::new(crate::sync_controller::is_enabled(&sync_repo));
+    let on_toggle_sync = {
+        let sync_repo = sync_repo.clone();
+        move |_ev: leptos::ev::MouseEvent| {
+            let next = !auto_sync_on.get_untracked();
+            auto_sync_on.set(next);
+            crate::sync_controller::set_enabled(&sync_repo, next);
+        }
+    };
+
     // Sort branches/remotes for stable rendering — `HashMap`
     // iteration order is otherwise nondeterministic.
     let mut branches: Vec<(String, BranchConfiguration)> = info.branch.into_iter().collect();
@@ -250,6 +264,24 @@ where
             <h1 class="space-banner-title" title=title_attr>
                 { space_title }
             </h1>
+            <wa-button
+                class="auto-sync-toggle"
+                variant="neutral"
+                appearance="plain"
+                size="small"
+                title=move || if auto_sync_on.get() {
+                    "Auto-sync on — click to pause"
+                } else {
+                    "Auto-sync paused — click to resume"
+                }
+                on:click=on_toggle_sync
+            >
+                <wa-icon
+                    name=move || if auto_sync_on.get() { "arrows-rotate" } else { "pause" }
+                    variant="solid"
+                    label="Toggle auto-sync"
+                ></wa-icon>
+            </wa-button>
             <wa-button
                 variant="neutral"
                 appearance="accent"

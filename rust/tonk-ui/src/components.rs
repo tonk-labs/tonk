@@ -446,6 +446,85 @@ mod tests {
         Ok(())
     }
 
+    /// With auto-sync paused for a repository, a local write does
+    /// *not* reach the remote on its own — only the manual buttons
+    /// act. The Phase 2 per-repository pause preference, honored by
+    /// the controller on every sweep.
+    #[dialog_common::test]
+    async fn it_does_not_auto_sync_a_paused_repository(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        driver.query(By::Css(".space-banner-title")).first().await?;
+
+        // Pause auto-sync for `home` before writing anything.
+        driver
+            .execute(
+                "localStorage.setItem('tonk:auto-sync:home', 'off'); return true;",
+                vec![],
+            )
+            .await?;
+
+        // Commit locally — `home/main` is now ahead of `origin`.
+        let commit = driver
+            .execute(
+                r#"
+                const body = `attribute!: &paused-probe
+  the:         test.tonk/paused-probe
+  as:          text
+  cardinality: one
+  description: marker asserted by the paused auto-sync test
+`;
+                const response = await fetch('/api/repository/home/branch/main/evaluate', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/yaml' },
+                    body,
+                });
+                return response.ok;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(commit.json().as_bool(), Some(true), "local commit succeeds");
+
+        // Fire the commit signal, then wait well past the controller's
+        // debounce. A paused repo must leave the remote untouched.
+        driver
+            .execute(
+                &format!(
+                    "window.dispatchEvent(new CustomEvent('{}'));",
+                    crate::sync_controller::COMMITTED_EVENT
+                ),
+                vec![],
+            )
+            .await?;
+
+        let synced = driver
+            .execute(
+                r#"
+                const localResp = await fetch('/api/repository/home');
+                const localInfo = await localResp.json();
+                const localTree = JSON.stringify(localInfo.branch.main.revision.tree);
+
+                // Generous margin past the 1s commit debounce.
+                await new Promise(res => setTimeout(res, 5000));
+
+                const r = await fetch('/api/inspect/repository/home/remote/origin/branch/main');
+                const s = await r.json();
+                return !!(s.success && s.revision && JSON.stringify(s.revision.tree) === localTree);
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            synced.json().as_bool(),
+            Some(false),
+            "a paused repository must not auto-sync the local write to the remote"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Test the `<tonk-code>` editor mounts inside the default
     /// branch row and exercises its public contract end-to-end:
     /// `value` round-trip, `change` event firing on user input,

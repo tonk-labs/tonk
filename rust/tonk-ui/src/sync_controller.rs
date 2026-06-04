@@ -41,6 +41,39 @@ const COMMIT_DEBOUNCE_MS: f64 = 1_000.0;
 /// controller listens for it to sync shortly after a write.
 pub const COMMITTED_EVENT: &str = "tonk:committed";
 
+/// Per-repository `localStorage` key holding the auto-sync pause
+/// preference. Absent means on (the default).
+fn pref_key(repo: &str) -> String {
+    format!("tonk:auto-sync:{repo}")
+}
+
+/// Interpret a stored auto-sync preference. Default on — only an
+/// explicit `"off"` pauses, so a missing or unrecognized value
+/// leaves background sync running.
+fn pref_is_enabled(stored: Option<&str>) -> bool {
+    stored != Some("off")
+}
+
+/// Whether background sync is enabled for `repo` (default on).
+pub fn is_enabled(repo: &str) -> bool {
+    let stored = window()
+        .local_storage()
+        .ok()
+        .flatten()
+        .and_then(|s| s.get_item(&pref_key(repo)).ok().flatten());
+    pref_is_enabled(stored.as_deref())
+}
+
+/// Persist whether background sync is enabled for `repo`. The
+/// running controller reads this fresh on its next sweep, so the
+/// change takes effect without re-mounting.
+pub fn set_enabled(repo: &str, enabled: bool) {
+    if let Ok(Some(storage)) = window().local_storage() {
+        let value = if enabled { "on" } else { "off" };
+        let _ = storage.set_item(&pref_key(repo), value);
+    }
+}
+
 /// Branch names in `branches` that have an upstream, sorted for a
 /// stable sweep order. Branches without an upstream have nowhere to
 /// sync to, so they're skipped.
@@ -86,6 +119,12 @@ pub fn mount(
         let Some(repo) = source.get_untracked() else {
             return;
         };
+        // Honor the per-repository pause preference, read fresh so a
+        // toggle takes effect on the very next trigger. Paused means
+        // only the manual Pull/Push buttons act.
+        if !is_enabled(&repo) {
+            return;
+        }
         syncing.set(true);
         spawn_local(async move {
             sweep_repository(&repo).await;
@@ -189,5 +228,21 @@ mod tests {
     fn it_returns_empty_when_no_branch_has_an_upstream() {
         let branches = HashMap::from([("main".to_string(), without_upstream())]);
         assert!(branches_to_sync(&branches).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_defaults_to_enabled_when_no_preference_is_stored() {
+        assert!(pref_is_enabled(None));
+    }
+
+    #[dialog_common::test]
+    fn it_is_disabled_only_for_an_explicit_off() {
+        assert!(!pref_is_enabled(Some("off")));
+    }
+
+    #[dialog_common::test]
+    fn it_stays_enabled_for_on_or_unrecognized_values() {
+        assert!(pref_is_enabled(Some("on")));
+        assert!(pref_is_enabled(Some("anything-else")));
     }
 }
