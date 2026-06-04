@@ -65,7 +65,7 @@ view/directory!:
   this: id:tonk:view/directory/default
   model: _:_
   display: |
-    <wa-carousel class="vertical" pagination orientation="vertical">
+    <wa-carousel class="vertical seamless" pagination orientation="vertical">
       <wa-carousel-item subject={this}>
         <tonk-display entity={this} model={dom.host/model} />
       </wa-carousel-item>

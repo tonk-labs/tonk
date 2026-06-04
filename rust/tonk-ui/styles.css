@@ -271,6 +271,70 @@ wa-carousel-item tonk-notation {
     height: 100%;
 }
 
+/* `wa-carousel.seamless` is an opt-in carousel whose chrome takes no
+   visual space: a slide fills the whole element and the pagination dots
+   float on the right edge as a vertical switcher, so the rendered
+   instance looks exactly as it would without the carousel wrapping it.
+   The directory view uses it to present a model's instances as a stack
+   of full-bleed slides. A plain `<wa-carousel>` keeps Web Awesome's
+   default layout (bottom dots, gap, aspect ratio).
+
+   Web Awesome lays its `part="base"` out as a grid with a row gap that
+   reserves space for the pagination beneath the scroll container. We
+   flatten that to a single full-size cell and lift the dots out of flow
+   with `position: absolute`, so they overlay the slide instead of
+   consuming layout. The scroll container then occupies 100% and the
+   slide fills it; the aspect-ratio constraint is dropped so the content
+   sizes to the available space rather than a 16/9 letterbox. */
+wa-carousel.seamless {
+    --aspect-ratio: auto;
+    display: block;
+    height: 100%;
+    position: relative;
+}
+wa-carousel.seamless::part(base) {
+    display: block;
+    height: 100%;
+    gap: 0;
+    padding: 0;
+}
+/* Stretch slides to fill the scroll container instead of centering them
+   at content height — the default grid `align-items: center` is what
+   letterboxed a full-height view into a short, centered band. */
+wa-carousel.seamless::part(scroll-container) {
+    height: 100%;
+    align-items: stretch;
+}
+/* Each slide, and the nested `<tonk-display>` chain inside it, fills the
+   carousel-item so a directory instance occupies the whole viewport just
+   like a bare single-entity route. The bare route gets a full-height
+   chain from the `.display-route > … > tonk-view` rule above, but a
+   carousel-nested display is not a direct child of that chain, so it
+   would otherwise collapse to its content size (a cramped column). */
+wa-carousel.seamless > wa-carousel-item {
+    height: 100%;
+}
+wa-carousel.seamless > wa-carousel-item > tonk-display,
+wa-carousel.seamless > wa-carousel-item > tonk-display > tonk-view,
+wa-carousel.seamless > wa-carousel-item > tonk-display > tonk-notation {
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+/* Pagination dots: overlay on the right edge, centered vertically, in a
+   column so they read as a vertical slide switcher. Out of flow so they
+   take no layout space. */
+wa-carousel.seamless::part(pagination) {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: var(--wa-space-s);
+    margin: 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
 /* `<tonk-notation>`'s rendered `<pre>` reuses the dialog-yaml
    editor palette so the read-only carousel slide visually
    matches what users see when authoring the same notation in a
