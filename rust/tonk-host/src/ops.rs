@@ -126,7 +126,8 @@ fn handle_query(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
-    let url = query_url(space.as_deref(), branch.as_deref());
+    let profile = get_bool(&detail, "profile");
+    let url = query_url(space.as_deref(), branch.as_deref(), profile);
 
     let query_val = match Reflect::get(&detail, &JsValue::from_str("query")) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
@@ -235,6 +236,17 @@ fn get_string(detail: &Object, key: &str) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+/// Read a boolean flag from an event detail. Treats a truthy value
+/// (`true`, a non-empty string) as set. Used for the `profile`
+/// annotation that `<tonk-repository profile>` stamps to target the
+/// profile-as-repository endpoint.
+fn get_bool(detail: &Object, key: &str) -> bool {
+    Reflect::get(detail, &JsValue::from_str(key))
+        .ok()
+        .map(|v| v.is_truthy())
+        .unwrap_or(false)
+}
+
 /// Serialize a JS value as canonical DAG-JSON text. Goes
 /// `JsValue → Ipld` via `serde-wasm-bindgen` (the only
 /// adapter that knows how to project JS `Map`s and typed
@@ -288,7 +300,8 @@ fn handle_claim(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
-    let url = transact_url(space.as_deref(), branch.as_deref());
+    let profile = get_bool(&detail, "profile");
+    let url = transact_url(space.as_deref(), branch.as_deref(), profile);
 
     if !state.borrow().disposed {
         state
@@ -345,7 +358,8 @@ fn handle_subscribe(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
-    let url = query_url(space.as_deref(), branch.as_deref());
+    let profile = get_bool(&detail, "profile");
+    let url = query_url(space.as_deref(), branch.as_deref(), profile);
 
     let query_val = match Reflect::get(&detail, &JsValue::from_str("query")) {
         Ok(v) if !v.is_undefined() && !v.is_null() => v,
@@ -553,10 +567,10 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
     // the DOM looking for the nearest `<tonk-repository>` and
     // `<tonk-branch>` element; their `name` attributes are the
     // current context.
-    let (space, branch) = read_context_from_ancestors(&consumer);
+    let (space, branch, profile) = read_context_from_ancestors(&consumer);
     // Abort the existing upstream and clear its handle so the
     // refresh's new subscription is the only live one.
-    let url = query_url(space.as_deref(), branch.as_deref());
+    let url = query_url(space.as_deref(), branch.as_deref(), profile);
     {
         let mut s = state.borrow_mut();
         if let Some(entry) = s.registry.get(entry_id) {
@@ -644,9 +658,10 @@ async fn refresh_entry(state: &Rc<RefCell<HostState>>, entry_id: crate::registry
 /// `<tonk-repository>` and `<tonk-branch>` ancestor; return their
 /// `name` attributes. Inner-most-wins — the first one found on
 /// the way up.
-fn read_context_from_ancestors(consumer: &Element) -> (Option<String>, Option<String>) {
+fn read_context_from_ancestors(consumer: &Element) -> (Option<String>, Option<String>, bool) {
     let mut space: Option<String> = None;
     let mut branch: Option<String> = None;
+    let mut profile = false;
     let mut node: Option<Element> = consumer.parent_element();
     while let Some(el) = node {
         let tag = el.tag_name().to_ascii_lowercase();
@@ -654,13 +669,21 @@ fn read_context_from_ancestors(consumer: &Element) -> (Option<String>, Option<St
             branch = el.get_attribute("name").filter(|s| !s.is_empty());
         } else if space.is_none() && tag == "tonk-repository" {
             space = el.get_attribute("name").filter(|s| !s.is_empty());
+            // A `<tonk-repository profile>` ancestor routes its
+            // descendants' queries to the profile-as-repository
+            // endpoint, regardless of `name`.
+            if el.has_attribute("profile") {
+                profile = true;
+            }
         }
+        // The branch + the nearest repository (with its profile flag)
+        // fully determine context.
         if space.is_some() && branch.is_some() {
             break;
         }
         node = el.parent_element();
     }
-    (space, branch)
+    (space, branch, profile)
 }
 
 /// `tonk-unsubscribe` handler. Drops all registry entries owned
@@ -711,7 +734,8 @@ fn handle_evaluate(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
 
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
-    let url = evaluate_url(space.as_deref(), branch.as_deref());
+    let profile = get_bool(&detail, "profile");
+    let url = evaluate_url(space.as_deref(), branch.as_deref(), profile);
 
     if !state.borrow().disposed {
         state

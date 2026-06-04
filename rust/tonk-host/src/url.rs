@@ -14,6 +14,12 @@
 //! only valid inside the iframe bridge where the SW intercepts.
 //! In top-level pages, the host should always have annotated
 //! context — missing context will produce a 405.
+//!
+//! A `profile` annotation (from `<tonk-repository profile>`) targets
+//! the profile-as-repository surface (`/api/profile/branch/{branch}/…`)
+//! instead of the named-repo namespace. The profile lives outside
+//! `/api/repository/{name}`, so its routes are parallel; the `space`
+//! name is irrelevant in profile mode.
 
 const DEFAULT_SPACE: &str = "home";
 const DEFAULT_BRANCH: &str = "main";
@@ -21,21 +27,27 @@ const DEFAULT_BRANCH: &str = "main";
 /// Build the `/query` URL — used by `tonk-query` and
 /// `tonk-subscribe` (same endpoint, distinguished by `accept`
 /// header).
-pub(crate) fn query_url(space: Option<&str>, branch: Option<&str>) -> String {
-    endpoint(space, branch, "query")
+pub(crate) fn query_url(space: Option<&str>, branch: Option<&str>, profile: bool) -> String {
+    endpoint(space, branch, profile, "query")
 }
 
 /// Build the `/transact` URL for `tonk-claim`.
-pub(crate) fn transact_url(space: Option<&str>, branch: Option<&str>) -> String {
-    endpoint(space, branch, "transact")
+pub(crate) fn transact_url(space: Option<&str>, branch: Option<&str>, profile: bool) -> String {
+    endpoint(space, branch, profile, "transact")
 }
 
 /// Build the `/evaluate` URL for `tonk-evaluate`.
-pub(crate) fn evaluate_url(space: Option<&str>, branch: Option<&str>) -> String {
-    endpoint(space, branch, "evaluate")
+pub(crate) fn evaluate_url(space: Option<&str>, branch: Option<&str>, profile: bool) -> String {
+    endpoint(space, branch, profile, "evaluate")
 }
 
-fn endpoint(space: Option<&str>, branch: Option<&str>, route: &str) -> String {
+fn endpoint(space: Option<&str>, branch: Option<&str>, profile: bool, route: &str) -> String {
+    if profile {
+        return format!(
+            "/api/profile/branch/{}/{route}",
+            branch.unwrap_or(DEFAULT_BRANCH),
+        );
+    }
     match (space, branch) {
         (None, None) => format!("/{route}"),
         _ => format!(

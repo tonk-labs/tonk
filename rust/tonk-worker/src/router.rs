@@ -103,6 +103,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             get(repository::get_profile_repository),
         )
         .route(
+            "/api/profile/branch/{branch}/query",
+            post(query::query_profile),
+        )
+        .route(
             "/api/profile/branch/{branch}/evaluate",
             post(evaluate::evaluate_profile),
         )

@@ -1282,6 +1282,58 @@ concept!: &db/branch:
       the: dialog.branch/moment
       as: entity
 
+# A space (replica) the profile has access to. These records live on
+# the profile repository's meta branch — one per repository this device
+# has joined or created. The Tonk Hub at `/` queries them through a
+# `<tonk-repository profile>` so the user can pick which space to open.
+concept!: &space
+  this: tonk:space
+  description: A repository this profile can open, by its local name.
+  with:
+    name:
+      description: Local name of the space, used in its `/space/{name}` URL
+      the: xyz.tonk.replica/name
+      cardinality: one
+      as: text
+    subject:
+      description: The repository's subject DID (stable identity)
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+
+# The Hub directory view: the picker shown at `/`. One card per space,
+# linking to its `/space/{name}` page. Rendered as a directory (no
+# entity) over the `space` model on the profile meta branch.
+view/directory!:
+  this: id:tonk:space/directory
+  model: space
+  display: |
+    <div class="hub">
+      <style>
+        .hub {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+          gap: var(--wa-space-l);
+          padding: var(--wa-space-xl);
+          align-content: start;
+        }
+        .hub-card {
+          display: block;
+          text-decoration: none;
+          color: inherit;
+        }
+        .hub-card-name {
+          font-family: var(--wa-font-family-heading);
+          font-size: var(--wa-font-size-xl);
+        }
+      </style>
+      <a class="hub-card" href="/space/{name}" with={this}>
+        <wa-card orientation="horizontal" class="horizontal-card">
+          <span class="hub-card-name">{name}</span>
+        </wa-card>
+      </a>
+    </div>
+
 concept!: &person
   description: Person
   with:

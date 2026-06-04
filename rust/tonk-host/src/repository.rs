@@ -31,14 +31,18 @@ impl CustomElement for TonkRepository {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["name"]
+        &["name", "profile"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         let host: Element = this.clone().into();
-        let installed = attach_annotators(&host, "space");
+        let mut installed = attach_annotators(&host, "space");
+        // `<tonk-repository profile>` routes descendants' queries to
+        // the profile-as-repository endpoint. Stamp `detail.profile`
+        // so the host's URL builder targets `/api/profile/...`.
+        installed.extend(attach_flag_annotators(&host, "profile"));
         *self.listeners.borrow_mut() = installed;
     }
 
@@ -97,6 +101,43 @@ fn annotate(host: &Element, field: &str, ev: &CustomEvent) {
     let existing = Reflect::get(&obj, &key).unwrap_or(JsValue::UNDEFINED);
     if existing.is_undefined() || existing.is_null() {
         let _ = Reflect::set(&obj, &key, &JsValue::from_str(&name));
+    }
+}
+
+/// Attach one bubble-phase listener per operation event that stamps
+/// a boolean `detail.<field> = true` when this element carries the
+/// `<field>` attribute (and the field isn't already set). Used for
+/// the `profile` flag — a presence attribute, not a value.
+pub(crate) fn attach_flag_annotators(host: &Element, field: &'static str) -> Vec<NamedListener> {
+    let mut out = Vec::with_capacity(events::OPERATIONS.len());
+    for &name in events::OPERATIONS {
+        let host_for_handler = host.clone();
+        let closure = Closure::wrap(Box::new(move |ev: CustomEvent| {
+            annotate_flag(&host_for_handler, field, &ev);
+        }) as Box<dyn FnMut(CustomEvent)>);
+        let _ = host.add_event_listener_with_callback(name, closure.as_ref().unchecked_ref());
+        out.push((name, closure));
+    }
+    out
+}
+
+/// Set `event.detail[field] = true` when `host` has the `field`
+/// attribute and the field isn't already set. Inner-most-wins, like
+/// [`annotate`] — an inner repository's flag takes precedence.
+fn annotate_flag(host: &Element, field: &str, ev: &CustomEvent) {
+    if !host.has_attribute(field) {
+        return;
+    }
+    let detail = ev.detail();
+    let obj = if detail.is_object() {
+        detail.unchecked_into::<Object>()
+    } else {
+        return;
+    };
+    let key = JsValue::from_str(field);
+    let existing = Reflect::get(&obj, &key).unwrap_or(JsValue::UNDEFINED);
+    if existing.is_undefined() || existing.is_null() {
+        let _ = Reflect::set(&obj, &key, &JsValue::TRUE);
     }
 }
 

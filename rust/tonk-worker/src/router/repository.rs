@@ -717,6 +717,37 @@ pub async fn bootstrap_profile_meta(
         })?;
     log!("Profile meta bootstrapped");
 
+    // Seed the standard library onto the profile meta branch so a
+    // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
+    // the library's concepts and views — the `space` model and its
+    // directory view — there, the same way a named repo's content
+    // branch carries them. Idempotent: re-evaluating the library
+    // de-duplicates rather than minting fresh claims, so it's safe on
+    // every boot. Fetch is only available in the SW scope; native
+    // builds skip it (the Hub is a browser-only surface).
+    seed_profile_library(tonk).await?;
+
+    Ok(())
+}
+
+/// Fetch and seed the standard library onto the profile meta branch.
+/// SW-only — the fetch needs a service-worker scope.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
+    let library = fetch_standard_library()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("fetch standard library: {e}")))?;
+    super::evaluate::evaluate_profile_body(tonk, META_BRANCH, library, true)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            RepositoryError::Internal(format!("seed standard library on profile meta: {e}"))
+        })
+}
+
+/// Native stub — no service-worker scope to fetch the served library.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+async fn seed_profile_library(_tonk: &TonkState) -> Result<(), RepositoryError> {
     Ok(())
 }
 

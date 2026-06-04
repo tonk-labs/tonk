@@ -4,7 +4,6 @@
 //! It compiles to Wasm and runs in the browser.
 
 use leptos::{logging::log, prelude::*};
-use leptos_router::location::{BrowserUrl, LocationProvider};
 use tonk_worker::{Notification, ProfileInfo};
 use wasm_bindgen::prelude::*;
 
@@ -26,6 +25,9 @@ use concept::*;
 
 mod display;
 use display::*;
+
+mod hub;
+use hub::*;
 
 mod layout;
 use layout::*;
@@ -120,16 +122,10 @@ pub fn TonkShell() -> impl IntoView {
     let init_resource = LocalResource::new(|| async {
         log!("Ensuring default repository...");
 
+        // `/` renders the Tonk Hub (a picker over the profile's spaces),
+        // so there is no longer a redirect into the default space — the
+        // user lands on the Hub and chooses where to go.
         let host_id = api::init().await?;
-
-        let pathname = window()
-            .location()
-            .pathname()
-            .unwrap_or_else(|_| "/".to_string());
-
-        if pathname == "/" {
-            BrowserUrl::redirect(&format!("/space/{}", api::DEFAULT_REPO));
-        }
 
         Ok::<_, crate::error::TonkUiError>(host_id)
     });
