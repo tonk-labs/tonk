@@ -378,7 +378,11 @@
   const reseed = async (library) => {
     const branches = [...document.querySelectorAll("tonk-branch")]
     if (branches.length === 0) {
-      throw new Error("no <tonk-branch> in the page to evaluate against")
+      // No branch mounted in this view (e.g. the repo landing page) —
+      // there is nothing to re-seed here, which is not a failure. The
+      // fetched library is cached; the next view with a branch picks it
+      // up. Return quietly rather than flagging an error.
+      return
     }
 
     for (const branch of branches) {
