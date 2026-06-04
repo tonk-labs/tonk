@@ -249,7 +249,11 @@ view!: &workspace/view
         .workspace {
           display: flex;
           flex-direction: column;
-          height: 100%;
+          /* Content-driven by default: as a board tile the workspace
+             takes only the space it needs. When it is the page's own
+             view, the route gives the view root a viewport-min height
+             (see the `.display-route` rule in the app stylesheet), so
+             the tab strip pins to the bottom there. */
           font-family: var(--wa-font-family-body);
           color: var(--wa-color-text-normal);
           /* Transparent so the page's dot-grid paper shows through
@@ -488,6 +492,43 @@ view!: &workspace/view
 # attributes and the content. The sheet's content renders directly
 # from the sheet's own `entity`/`model`/`view` fields - a sheet is
 # self-describing, so no intermediate concept is needed.
+
+
+
+view/directory!:
+  this: id:tonk-workspace/directory
+  model: workspace
+  display: |
+    <div class="workspace-directory">
+      <style>
+        /* The route gives this view root (`.workspace-directory`) a
+           viewport-min height. Flex-fill the nested `<tonk-display>`
+           rendering chain so that height reaches the workspace, which
+           then fills the page (tab strip at the bottom) — the same fill
+           the seamless carousel applies to its slides. Without it the
+           nested wrapper sits at content height and the workspace stops
+           short. (`<style>` lives on this `<div>` rather than inside
+           `<tonk-display>`, which discards child markup when it renders
+           its resolved view.) */
+        .workspace-directory {
+          display: flex;
+          flex-direction: column;
+        }
+        .workspace-directory > tonk-display,
+        .workspace-directory > tonk-display > tonk-view {
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 auto;
+          min-height: 0;
+        }
+        .workspace-directory > tonk-display > tonk-view > * {
+          flex: 1 1 auto;
+          min-height: 0;
+        }
+      </style>
+      <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
+    </div>
+
 view!:
   this: id:tonk-workspace/sheet-mount
   model: tonk:sheet
@@ -505,7 +546,7 @@ view!:
 # deductive rules; the view templates won't change when that
 # happens.
 
-concept!: &board-view
+concept!: &board
   description: A named board (hierarchical v1, owns columns directly)
   with:
     name:
@@ -557,7 +598,7 @@ concept!: &tile
       cardinality: one
       as: entity
 
-concept!: &inspector-view
+concept!: &inspector
   description: An inspector tile body — renders <tonk-inspector source="…">
   with:
     source:
@@ -588,23 +629,24 @@ concept!: &portal
 
 view!:
   this: tonk:board
-  model: board-view
+  model: board
   display: |
     <tonk-strip>
       <style>
         /* Board layout travels with the view, so any route that
-           mounts `model=board-view` renders the strip identically
-           (board route, bare display route, embedded tile). The
-           only thing a route still owns is giving this view a
-           full-height box to fill: the strip's `block-size: 100%`
-           resolves against whatever height its host establishes.
+           mounts `model=board` renders the strip identically
+           (board route, bare display route, embedded tile). The strip
+           caps its OWN height at the viewport (`block-size: 100dvh`)
+           rather than borrowing a fixed height from the document — so
+           its columns scroll vertically inside a bounded box and the
+           strip scrolls horizontally, without locking the page. (Other
+           views let the page scroll; the board is a self-contained
+           fixed-height scroller.)
 
            The `tonk-display`/`tonk-view` layers that wrap each
            level are pure rendering wrappers, not layout boxes;
            `display: contents` makes them transparent so the strip
-           is a flex container over real `<tonk-column>` items, and
-           so the strip itself inherits its host's height instead of
-           collapsing to content. */
+           is a flex container over real `<tonk-column>` items. */
         tonk-display:has(> tonk-view > tonk-strip),
         tonk-display > tonk-view:has(> tonk-strip) {
           display: contents;
@@ -623,7 +665,7 @@ view!:
           gap: var(--gap);
           padding: 0;
           box-sizing: border-box;
-          block-size: 100%;
+          block-size: 100dvh;
           inline-size: 100%;
           overflow-x: auto;
           overflow-y: hidden;
@@ -647,6 +689,12 @@ view!:
       </style>
       <tonk-display entity={column} model=column-view />
     </tonk-strip>
+
+view/directory!:
+  this: tonk:board/directory
+  model: board
+  display: |
+    <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
 
 view!:
   this: tonk:board/column
@@ -742,10 +790,18 @@ view!:
     <tonk-display entity={entity} model={model} />
 
 view!:
-  this: tonk:inspector-view
-  model: inspector-view
+  this: tonk:inspector
+  model: inspector
   display: |
     <tonk-inspector source={source} />
+
+
+
+view/directory!:
+  this: tonk:inspector/directory
+  model: inspector
+  display: |
+    <tonk-inspector source=home />
 
 # The canonical bridge from the `portal` concept to the
 # `<tonk-portal>` element. `html:` forces the binding through
@@ -1119,12 +1175,12 @@ workspace!:
 # idempotent — the engine deduplicates the same claims rather
 # than minting fresh duplicates.
 
-inspector-view!: &home-inspector
+inspector!: &home-inspector
   source: "home"
 
 tile!: &inspector-tile
   order: "a"
-  model: inspector-view
+  model: inspector
   entity: home-inspector
 
 tile!: &workspace-tile
@@ -1146,12 +1202,12 @@ column-view!: &column-a
   width: 12
   tile: inspector-tile
 
-board-view!: &demo-board
+board!:
   this: about:blank
   name: "demo"
   column: column-a
 
-board-view!:
+board!:
   this: about:blank
   column: column-b
 
@@ -1246,4 +1302,7 @@ person!:
   name: Bob
   age: 40
 
-## V4
+# Set tonk:workspace as default view
+name!:
+  this: id:tonk/space
+  entity: tonk:workspace

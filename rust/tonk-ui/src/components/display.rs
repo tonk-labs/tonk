@@ -1,18 +1,20 @@
-//! `/space/:space/branch/:branch/display/*subject` route.
+//! `/space/:space` and `/space/:space/*subject` routes.
 //!
-//! `subject` is a wildcard (not a single `:segment`) so entity URIs
-//! containing `/` — e.g. `id:tonk-workspace/itinerary` — are
-//! captured whole instead of being truncated at the first slash.
+//! `:space` is the `{branch}@{name}` segment (branch defaults to
+//! `main`); `*subject` is a wildcard (not a single `:segment`) so
+//! entity URIs containing `/` — e.g. `id:tonk-workspace/itinerary` —
+//! are captured whole instead of being truncated at the first slash.
 //!
-//! Mounts a `<tonk-display>` element. The `subject` segment encodes
-//! up to three attributes with `@` and `!` delimiters:
+//! Mounts a `<tonk-display>` element. With no `subject` the space's
+//! default model ([`SPACE_MODEL`]) is shown. Otherwise the segment
+//! encodes up to three attributes with `@` and `!` delimiters:
 //!
 //! - `{model}` — directory mode: only `model` is set, so the element
-//!   renders every instance of the model (e.g. `display/work:space`).
+//!   renders every instance of the model (e.g. `trip`).
 //! - `{entity}@{model}` — `entity` + `model` (e.g.
-//!   `display/id:x@trip`).
+//!   `id:x@trip`).
 //! - `{entity}@{model}!{view}` — all three (e.g.
-//!   `display/id:x@trip!tonk:view`).
+//!   `id:x@trip!tonk:view`).
 //!
 //! The entity part resolves to a concrete URI before mounting:
 //!
@@ -42,12 +44,17 @@ use reqwest::StatusCode;
 use serde_json::json;
 
 use crate::api;
+use crate::components::route::parse_space;
 use crate::error::TonkUiError;
+
+/// The model a bare `/space/{name}/` renders — the space's primary
+/// interface. A user can override it per repository; it presets to the
+/// workspace concept from the wireframes.
+const SPACE_MODEL: &str = "tonk/space";
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkDisplayParams {
     space: Option<String>,
-    branch: Option<String>,
     subject: Option<String>,
 }
 
@@ -60,27 +67,25 @@ pub struct TonkDisplayParams {
 pub fn TonkDisplayView() -> impl IntoView {
     let params = use_params::<TonkDisplayParams>();
 
-    let space_name = Signal::derive_local(move || {
+    // `:space` is `{branch}@{name}` (branch defaults to `main`).
+    let space_ref = Signal::derive_local(move || {
         params
             .get()
             .ok()
             .and_then(|p| p.space)
             .filter(|s| !s.is_empty())
+            .and_then(|s| parse_space(&s))
     });
-    let branch_name = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.branch)
-            .filter(|s| !s.is_empty())
-    });
-    // The `:subject` segment encodes up to three attributes:
+    let space_name = Signal::derive_local(move || space_ref.get().map(|s| s.name));
+    let branch_name = Signal::derive_local(move || space_ref.get().map(|s| s.branch));
+    // The `*subject` segment encodes up to three attributes:
     //   `{model}`                 → directory mode: only `model`.
     //   `{entity}@{model}`        → `entity` + `model`.
     //   `{entity}@{model}!{view}` → `entity` + `model` + `view`.
     // `@` separates the (optional) entity from the model; `!`
     // separates the (optional) view. The entity may be a bookmark
     // name (resolved below); the model/view pass through verbatim.
+    // Absent (`/space/{name}/`) → the space's default model.
     let segment = Signal::derive_local(move || {
         params
             .get()
@@ -88,17 +93,18 @@ pub fn TonkDisplayView() -> impl IntoView {
             .and_then(|p| p.subject)
             .filter(|s| !s.is_empty())
     });
-    let parsed = Signal::derive_local(move || segment.get().map(|s| parse_subject(&s)));
-    let entity_name = Signal::derive_local(move || {
-        parsed
-            .get()
-            .and_then(|p| p.entity)
-            .filter(|s| !s.is_empty())
+    let parsed = Signal::derive_local(move || match segment.get() {
+        Some(s) => parse_subject(&s),
+        None => Subject {
+            entity: None,
+            model: SPACE_MODEL.to_owned(),
+            view: None,
+        },
     });
+    let entity_name = Signal::derive_local(move || parsed.get().entity.filter(|s| !s.is_empty()));
     let model_name =
-        Signal::derive_local(move || parsed.get().map(|p| p.model).filter(|s| !s.is_empty()));
-    let view_name =
-        Signal::derive_local(move || parsed.get().and_then(|p| p.view).filter(|s| !s.is_empty()));
+        Signal::derive_local(move || Some(parsed.get().model).filter(|s| !s.is_empty()));
+    let view_name = Signal::derive_local(move || parsed.get().view.filter(|s| !s.is_empty()));
 
     // Resolve the entity part (if present) → entity URI. URIs pass
     // through; names hit the worker via a `Name` query. In directory

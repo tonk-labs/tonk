@@ -1,4 +1,4 @@
-//! `/space/:space/branch/:branch/concept/:source` route.
+//! `/space/:space/concept/:source` route (`:space` is `{branch}@{name}`).
 //!
 //! Resolves the `source` (bookmark name or entity URI) to its
 //! [`ConceptDescriptor`] over the worker's `/query` endpoint, then
@@ -22,7 +22,6 @@ use crate::error::TonkUiError;
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkConceptParams {
     space: Option<String>,
-    branch: Option<String>,
     source: Option<String>,
 }
 
@@ -35,20 +34,16 @@ pub struct TonkConceptParams {
 pub fn TonkConceptView() -> impl IntoView {
     let params = use_params::<TonkConceptParams>();
 
-    let space_name = Signal::derive_local(move || {
+    let space_ref = Signal::derive_local(move || {
         params
             .get()
             .ok()
             .and_then(|p| p.space)
             .filter(|s| !s.is_empty())
+            .and_then(|s| crate::components::route::parse_space(&s))
     });
-    let branch_name = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.branch)
-            .filter(|s| !s.is_empty())
-    });
+    let space_name = Signal::derive_local(move || space_ref.get().map(|s| s.name));
+    let branch_name = Signal::derive_local(move || space_ref.get().map(|s| s.branch));
     let source_param = Signal::derive_local(move || {
         params
             .get()

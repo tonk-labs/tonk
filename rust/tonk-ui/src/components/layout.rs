@@ -1,4 +1,4 @@
-//! `/space/:space/branch/:branch/layout/:workspace` route.
+//! `/space/:space/layout/:workspace` route (`:space` is `{branch}@{name}`).
 //!
 //! Mounts a `<tonk-layout>` for the given workspace name. Unlike
 //! the display route, no async pre-resolve is needed — the
@@ -13,12 +13,11 @@ use leptos_router::params::Params;
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkLayoutParams {
     space: Option<String>,
-    branch: Option<String>,
     workspace: Option<String>,
 }
 
-/// Layout workspace route. Reads `:space`, `:branch`, `:workspace`
-/// from the URL and mounts a `<tonk-layout>` with them as
+/// Layout workspace route. Reads `:space` (`{branch}@{name}`) and
+/// `:workspace` from the URL and mounts a `<tonk-layout>` with them as
 /// attributes. The element handles all subscriptions, folding, and
 /// reconciliation internally.
 #[component]
@@ -26,20 +25,16 @@ pub struct TonkLayoutParams {
 pub fn TonkLayoutView() -> impl IntoView {
     let params = use_params::<TonkLayoutParams>();
 
-    let space_name = Signal::derive_local(move || {
+    let space_ref = Signal::derive_local(move || {
         params
             .get()
             .ok()
             .and_then(|p| p.space)
             .filter(|s| !s.is_empty())
+            .and_then(|s| crate::components::route::parse_space(&s))
     });
-    let branch_name = Signal::derive_local(move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.branch)
-            .filter(|s| !s.is_empty())
-    });
+    let space_name = Signal::derive_local(move || space_ref.get().map(|s| s.name));
+    let branch_name = Signal::derive_local(move || space_ref.get().map(|s| s.branch));
     let workspace_name = Signal::derive_local(move || {
         params
             .get()

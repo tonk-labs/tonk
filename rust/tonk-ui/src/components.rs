@@ -10,6 +10,8 @@ use wasm_bindgen::prelude::*;
 
 use crate::{api, error::TonkUiError, watch::watch};
 
+pub(crate) mod route;
+
 mod launcher;
 use launcher::*;
 
@@ -214,16 +216,23 @@ mod tests {
     async fn it_falls_back_to_index_for_unhandled_routes(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // 1. Landing on `/` redirects into `/space/home`. The
-        //    banner title renders once `repository_view` resolves,
-        //    so it doubles as a "shell is ready" signal. Its
-        //    `title` attribute carries the subject DID.
-        let title = driver.query(By::Css(".space-banner-title")).first().await?;
-        assert_eq!(title.text().await?, "home");
-        let subject = title.attr("title").await?.unwrap_or_default();
-        assert!(
-            subject.starts_with("did:key:"),
-            "expected banner title attribute to be a did:key, got: {subject}",
+        // 1. Landing on `/` redirects into `/space/home`. The bare
+        //    display route mounts `tonk-repository.display-route`
+        //    once the space is ready, so it doubles as a "shell is
+        //    ready" signal.
+        let repository = driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
+        assert_eq!(
+            driver.current_url().await?.path(),
+            "/space/home",
+            "expected `/` to redirect to /space/home",
+        );
+        assert_eq!(
+            repository.attr("name").await?.unwrap_or_default(),
+            "home",
+            "expected the display route to name the home repository",
         );
 
         // 2. Navigate to an unmatched route. The SPA router's
@@ -250,12 +259,14 @@ mod tests {
     async fn it_configures_upstream(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for the home space banner title to render. This only
-        // appears after the service worker is active, `PUT
-        // /api/repository/home` completed, and the repository
-        // fetch resolved — a strict superset of the old
-        // `.toolbar.visible` readiness signal.
-        driver.query(By::Css(".space-banner-title")).first().await?;
+        // Wait for the home space's bare display route to mount.
+        // `tonk-repository.display-route` only appears after the
+        // service worker is active, `PUT /api/repository/home`
+        // completed, and the redirect to /space/home landed.
+        driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
 
         // Verify the default branch has an upstream after auto-authorization.
         let info_result = driver
@@ -284,12 +295,14 @@ mod tests {
     async fn it_syncs_via_sync_route(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for the home space banner title to render. This only
-        // appears after the service worker is active, `PUT
-        // /api/repository/home` completed, and the repository
-        // fetch resolved — a strict superset of the old
-        // `.toolbar.visible` readiness signal.
-        driver.query(By::Css(".space-banner-title")).first().await?;
+        // Wait for the home space's bare display route to mount.
+        // `tonk-repository.display-route` only appears after the
+        // service worker is active, `PUT /api/repository/home`
+        // completed, and the redirect to /space/home landed.
+        driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
 
         // Perform sync
         let sync_result = driver
@@ -316,12 +329,14 @@ mod tests {
     async fn it_syncs_via_background_sync_api(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
 
-        // Wait for the home space banner title to render. This only
-        // appears after the service worker is active, `PUT
-        // /api/repository/home` completed, and the repository
-        // fetch resolved — a strict superset of the old
-        // `.toolbar.visible` readiness signal.
-        driver.query(By::Css(".space-banner-title")).first().await?;
+        // Wait for the home space's bare display route to mount.
+        // `tonk-repository.display-route` only appears after the
+        // service worker is active, `PUT /api/repository/home`
+        // completed, and the redirect to /space/home landed.
+        driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
 
         let inspect_script = r#"
             const response = await fetch('/api/inspect/repository/home/remote/origin/branch/main');
@@ -378,11 +393,13 @@ mod tests {
             .set_script_timeout(std::time::Duration::from_secs(30))
             .await?;
 
-        // Wait for the home space to render. The `main` branch
-        // row is force-expanded for solo branches (and `main` is
-        // the default-open name regardless), so the editor
-        // mounts on its own without us toggling anything.
-        driver.query(By::Css(".space-banner-title")).first().await?;
+        // Wait for the home space's bare display route to mount.
+        // The `<tonk-code>` editor mounts within the display once
+        // the space is ready, without us toggling anything.
+        driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
 
         // Wait for the editor to mount. CodeMirror lives inside
         // the element's shadow root (open mode), so we poll
@@ -514,8 +531,12 @@ mod tests {
             .set_script_timeout(std::time::Duration::from_secs(30))
             .await?;
 
-        // Wait for the home space to be ready before bootstrapping.
-        driver.query(By::Css(".space-banner-title")).first().await?;
+        // Wait for the home space's bare display route to be ready
+        // before bootstrapping.
+        driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
 
         // Bootstrap the schema + a seeded counter, all in one
         // evaluate. The view's `display` template names `counter`
@@ -611,14 +632,14 @@ counter!: &my-counter
             setup_result.json()
         );
 
-        // Navigate to the display route for the named counter.
-        // `?view=counter-view&model=counter` are forwarded to
-        // <tonk-display> as attributes; the route resolves the
-        // bookmark `my-counter` to its entity URI via the
-        // built-in Name index.
+        // Navigate to the display route for the named counter. The
+        // `{entity}@{model}!{view}` subject encoding carries the
+        // view and model into the path: `my-counter@counter!counter-view`.
+        // The route resolves the bookmark `my-counter` to its
+        // entity URI via the built-in Name index.
         driver
             .goto(&format!(
-                "{}space/home/branch/main/display/my-counter?view=counter-view&model=counter",
+                "{}space/home/my-counter@counter!counter-view",
                 env.tonk_web
             ))
             .await?;
