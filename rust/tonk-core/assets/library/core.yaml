@@ -331,6 +331,21 @@ view!: &workspace/view
           display: block;
           min-height: 100%;
         }
+        /* A portal sheet: `<tonk-portal>`'s iframe has no intrinsic
+           content height, so a plain block would collapse it to the
+           iframe's default 150px. Make the portal's `tonk-view` a flex
+           column and let the portal flex to fill the scroll box — its
+           `height: 100%` has no definite containing block to resolve
+           against here, but `flex: 1` does. */
+        .workspace__binder tonk-sheet > tonk-display > tonk-view:has(> tonk-portal) {
+          display: flex;
+          flex-direction: column;
+        }
+        .workspace__binder tonk-sheet > tonk-display > tonk-view > tonk-portal {
+          display: block;
+          flex: 1;
+          min-height: 0;
+        }
 
         /* The card header the sheet projects (status dot + name +
            subtitle). A surface fill so it reads as chrome over the
@@ -531,11 +546,6 @@ concept!: &portal
       the: xyz.tonk.portal/content
       cardinality: one
       as: text
-    height:
-      description: Iframe height in pixels
-      the: xyz.tonk.portal/height
-      cardinality: one
-      as: unsigned-integer
 
 # One view per concept, keyed by `model`. Each nested
 # `<tonk-display>` passes only `model=…` (and `entity=…`); with no
@@ -570,16 +580,14 @@ view!:
     <tonk-inspector source={source} />
 
 # The canonical bridge from the `portal` concept to the
-# `<tonk-portal>` element. `html:` forces both bindings through
-# setAttribute so `attributeChangedCallback` fires — required for
-# `height`, an unsigned-integer the renderer would otherwise route to a
-# JS property. Users never write this; nesting a
-# `<tonk-display model=portal>` over a portal entity resolves it by
-# model and renders it.
+# `<tonk-portal>` element. `html:` forces the binding through
+# setAttribute so `attributeChangedCallback` fires. Users never write
+# this; nesting a `<tonk-display model=portal>` over a portal entity
+# resolves it by model and renders it.
 view!:
   model: portal
   display: |
-    <tonk-portal html:content={content} html:height={height} />
+    <tonk-portal html:content={content} />
 
 # ============================================================
 # DEMO CONTENT - DELETE before shipping
@@ -861,7 +869,6 @@ workspace/sheet!:
 # resolves the portal view, which mounts `<tonk-portal>` over it.
 portal!:
   this: id:tonk-workspace/sketch
-  height: 520
   content: |
     <!doctype html>
     <html>

@@ -29,6 +29,9 @@ web-sys = { workspace = true, features = [
     "Element",
     "HtmlElement",
     "HtmlIFrameElement",
+    "MessageChannel",
+    "MessageEvent",
+    "MessagePort",
     "Node",
     "Window",
 ] }

@@ -9,9 +9,9 @@
 //!
 //! Like `<tonk-view>`, the portal is a **painter, not a fetcher**. It
 //! opens no subscription and resolves no descriptor; it receives an
-//! already-fetched HTML string through its `content` attribute (and an
-//! explicit `height`, since an iframe has no intrinsic content height)
-//! and does one imperative thing — assign the iframe's `srcdoc`. The
+//! already-fetched HTML string through its `content` attribute and does
+//! one imperative thing — assign the iframe's `srcdoc`. The iframe
+//! always fills its container. The
 //! `content` is itself first-class dialog data: the `portal` concept
 //! holds it, and a nested `<tonk-display model=portal>` fetches it,
 //! exactly as a board column fetches its tiles.

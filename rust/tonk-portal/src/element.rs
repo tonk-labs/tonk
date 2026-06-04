@@ -3,16 +3,15 @@
 //! A portal owns one child `<iframe>` and is two things at once:
 //!
 //! - a **painter** — it mirrors the `content` attribute into the
-//!   iframe's `srcdoc` and applies an optional pixel `height`; and
+//!   iframe's `srcdoc`; and
 //! - a **transport** — it injects a small `tonk` object into the
 //!   iframe (see [`crate::bridge`]) through which author code reads and
 //!   writes live data, relaying the iframe's calls onto the existing
 //!   `tonk-query` / `tonk-subscribe` / `tonk-claim` consumer events.
 //!
-//! The iframe is sandboxed `allow-scripts allow-same-origin`. The
-//! same-origin grant is what lets the bridge inject `tonk` by a direct
-//! `parent.__tonkConnect` call with no MessageChannel. Author code must
-//! reach data only through `tonk`, never through `parent.document`.
+//! The iframe is sandboxed `allow-scripts` — an opaque origin. It
+//! cannot reach `parent.document`; it talks to the parent only over a
+//! `MessagePort` opened by the bridge bootstrap (see [`crate::bridge`]).
 //!
 //! State lives in [`crate::bridge::PortalState`] behind `Rc<RefCell<…>>`
 //! so the lifecycle callbacks, the prototype `reset` / `error` delegates,
@@ -43,7 +42,7 @@ impl CustomElement for TonkPortal {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["content", "height", "entity", "model"]
+        &["content", "entity", "model"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -61,28 +60,24 @@ impl CustomElement for TonkPortal {
             return;
         };
 
-        // Same-origin sandbox: scripts run and `window.parent` is
-        // reachable, so the bridge can inject `tonk` synchronously.
-        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-same-origin");
+        // Opaque-origin sandbox: scripts run but `parent.document` is
+        // unreachable. The bridge bootstrap reaches the parent only over
+        // a `MessagePort` it opens and transfers in its `hello`.
+        let _ = iframe.set_attribute("sandbox", "allow-scripts");
 
-        // By default the iframe fills its container; `height` pins a
-        // fixed pixel height instead.
+        // The iframe always fills its container.
         let style = iframe.style();
         let _ = style.set_property("width", "100%");
         let _ = style.set_property("height", "100%");
         let _ = style.set_property("border", "0");
-        if let Some(height) = host.get_attribute("height") {
-            set_height(&iframe, &height);
-        }
 
         let state = Rc::new(RefCell::new(PortalState::new()));
-        let bridge = bridge::build_bridge(&host, &state);
-        bridge::register_portal(&iframe, &bridge);
+        bridge::register_portal(&iframe, &host, &state);
         install_method_delegates(&host, &state);
 
         // Append before assigning `srcdoc` so `contentWindow` exists;
-        // `__tonkConnect` matches on the live `contentWindow`, so the
-        // bootstrap script resolves this portal's bridge when it runs.
+        // the `hello` listener matches the live `contentWindow`, so the
+        // bootstrap script resolves this portal when it posts `hello`.
         let content = host.get_attribute("content").unwrap_or_default();
         let _ = host.append_child(&iframe);
         let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
@@ -110,7 +105,7 @@ impl CustomElement for TonkPortal {
         this: &HtmlElement,
         name: String,
         _old: Option<String>,
-        new: Option<String>,
+        _new: Option<String>,
     ) {
         let host: Element = this.clone().into();
         // Pre-connect callbacks (during upgrade) have no state yet; the
@@ -119,26 +114,11 @@ impl CustomElement for TonkPortal {
             return;
         };
         match name.as_str() {
-            // Height patches in place; no reload, no subscription churn.
-            "height" => {
-                if let Some(iframe) = state.borrow().iframe.as_ref() {
-                    match new {
-                        Some(height) => set_height(iframe, &height),
-                        // Back to filling the container.
-                        None => {
-                            let _ = iframe.style().set_property("height", "100%");
-                        }
-                    }
-                }
-            }
             // New content reloads the iframe wholesale.
             "content" => reload(&host, &state),
-            // A re-scope updates the author-facing context, then reloads
-            // so the bootstrap re-runs author code against it.
-            "entity" | "model" => {
-                bridge::rescope(&host, &state);
-                reload(&host, &state);
-            }
+            // A re-scope reloads the iframe so the bootstrap re-runs
+            // author code; the fresh `context` rides the new handshake.
+            "entity" | "model" => reload(&host, &state),
             _ => {}
         }
     }
@@ -178,21 +158,12 @@ fn install_method_delegates(host: &Element, state: &Rc<RefCell<PortalState>>) {
     error.forget();
 }
 
-/// Set the iframe's pixel height. The `height` attribute is an
-/// `unsigned-integer` grid measure, so it carries a bare number; we
-/// append the `px` unit.
-fn set_height(iframe: &HtmlIFrameElement, height: &str) {
-    let _ = iframe
-        .style()
-        .set_property("height", &format!("{height}px"));
-}
-
 /// Register `<tonk-portal>` with the page. Idempotent. Installs the
-/// page-level `__tonkConnect` function, defines the element, and
+/// page-level `hello` message listener, defines the element, and
 /// installs the `reset` / `error` prototype shims that route
 /// subscription frames into the per-instance delegates.
 pub fn register() {
-    bridge::install_connect();
+    bridge::install_message_listener();
     if already_registered() {
         return;
     }
@@ -251,10 +222,10 @@ mod tests {
         window().expect("window").document().expect("document")
     }
 
-    /// Mount a `<tonk-portal>` with the given attributes and attach it
-    /// to the body. `register()` runs first so the element upgrades on
+    /// Mount a `<tonk-portal>` with the given content and attach it to
+    /// the body. `register()` runs first so the element upgrades on
     /// connect.
-    fn mount(content: Option<&str>, height: Option<&str>) -> Element {
+    fn mount(content: Option<&str>) -> Element {
         register();
         let document = document();
         let host = document
@@ -262,9 +233,6 @@ mod tests {
             .expect("create tonk-portal");
         if let Some(content) = content {
             host.set_attribute("content", content).expect("set content");
-        }
-        if let Some(height) = height {
-            host.set_attribute("height", height).expect("set height");
         }
         document
             .body()
@@ -284,8 +252,8 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_mounts_one_same_origin_sandboxed_iframe_on_connect() {
-        let host = mount(Some("<p>hi</p>"), None);
+    fn it_mounts_one_opaque_origin_sandboxed_iframe_on_connect() {
+        let host = mount(Some("<p>hi</p>"));
         assert_eq!(
             host.query_selector_all("iframe").unwrap().length(),
             1,
@@ -295,19 +263,19 @@ mod tests {
         let sandbox = iframe_of(&host)
             .get_attribute("sandbox")
             .expect("sandbox attribute present");
-        // The bridge slice runs same-origin to inject `tonk` cheaply;
-        // origin isolation returns with the postMessage transport.
-        assert_eq!(sandbox, "allow-scripts allow-same-origin");
+        // No `allow-same-origin`: the iframe is an opaque origin and
+        // reaches the parent only over the bridge's `MessagePort`.
+        assert_eq!(sandbox, "allow-scripts");
     }
 
     #[dialog_common::test]
     fn it_prepends_the_bridge_bootstrap_and_keeps_the_content() {
-        let host = mount(Some("<canvas id=\"c\"></canvas>"), None);
+        let host = mount(Some("<canvas id=\"c\"></canvas>"));
         let srcdoc = iframe_of(&host)
             .get_attribute("srcdoc")
             .expect("srcdoc present");
         assert!(
-            srcdoc.contains("__tonkConnect"),
+            srcdoc.contains("MessageChannel") && srcdoc.contains("window.tonk"),
             "srcdoc should carry the bridge bootstrap; got: {srcdoc}",
         );
         assert!(
@@ -317,18 +285,18 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_sets_the_iframe_height_in_pixels_from_the_attribute() {
-        let host = mount(Some("<p>hi</p>"), Some("400"));
+    fn it_fills_its_container_height() {
+        let host = mount(Some("<p>hi</p>"));
         let style = iframe_of(&host)
             .style()
             .get_property_value("height")
             .expect("height property");
-        assert_eq!(style, "400px");
+        assert_eq!(style, "100%");
     }
 
     #[dialog_common::test]
     fn it_reloads_srcdoc_when_content_changes_keeping_the_same_iframe() {
-        let host = mount(Some("<p>one</p>"), None);
+        let host = mount(Some("<p>one</p>"));
         let iframe_before = iframe_of(&host);
 
         host.set_attribute("content", "<p>two</p>")
@@ -338,7 +306,7 @@ mod tests {
         let srcdoc = iframe_after.get_attribute("srcdoc").expect("srcdoc");
         assert!(srcdoc.contains("<p>two</p>"), "new content; got: {srcdoc}");
         assert!(
-            srcdoc.contains("__tonkConnect"),
+            srcdoc.contains("MessageChannel"),
             "bootstrap survives reload"
         );
         // A content change reassigns srcdoc on the *same* iframe — the
@@ -350,30 +318,8 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_updates_height_in_place_without_reloading_the_iframe() {
-        let host = mount(Some("<p>hi</p>"), Some("400"));
-        let iframe_before = iframe_of(&host);
-
-        host.set_attribute("height", "600").expect("update height");
-
-        let iframe_after = iframe_of(&host);
-        assert_eq!(
-            iframe_after
-                .style()
-                .get_property_value("height")
-                .as_deref()
-                .ok(),
-            Some("600px"),
-        );
-        assert!(
-            iframe_before.is_same_node(Some(iframe_after.unchecked_ref())),
-            "height change must patch in place, never reload the iframe",
-        );
-    }
-
-    #[dialog_common::test]
     fn it_removes_the_iframe_on_disconnect() {
-        let host = mount(Some("<p>hi</p>"), None);
+        let host = mount(Some("<p>hi</p>"));
         assert_eq!(host.query_selector_all("iframe").unwrap().length(), 1);
 
         host.remove();
