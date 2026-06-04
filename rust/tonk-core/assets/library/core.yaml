@@ -53,6 +53,24 @@ concept!: &view/directory
       cardinality: one
       as: text
 
+# The default directory view: `model: _:_` matches any model with no
+# specific `view/directory`. <tonk-display> with no `entity` resolves a
+# directory view for the model first; finding none, it falls back to
+# this. It renders the model's instances in a <wa-carousel>, one slide
+# per instance, each a nested single-entity <tonk-display> (which then
+# resolves its own view, or this default's detail counterpart). The
+# nested `model` is threaded from the host via `{dom.host/model}`,
+# since an instance carries no pointer to its own model.
+view/directory!:
+  this: id:tonk:view/directory/default
+  model: _:_
+  display: |
+    <wa-carousel navigation>
+      <wa-carousel-item subject={this}>
+        <tonk-display entity={this} model={dom.host/model} />
+      </wa-carousel-item>
+    </wa-carousel>
+
 # ============================================================
 # WORKSPACE
 # ============================================================
@@ -1200,3 +1218,25 @@ concept!: &db/branch:
       description: Number of commits made since last synchronization
       the: dialog.branch/moment
       as: entity
+
+concept!: &person
+  description: Person
+  with:
+    name:
+      description: Name of the person
+      the: xyz.tonk.person/name
+      as: text
+    age:
+      description: Age of the person
+      the: xyz.tonk.person/age
+      as: text
+
+person!:
+   name: Alice
+   age: 3
+
+person!:
+  name: Bob
+  age: 40
+
+## V4
