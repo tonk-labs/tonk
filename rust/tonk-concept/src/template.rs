@@ -572,10 +572,10 @@ mod dom {
             if el.local_name() == "template" {
                 return Some(el);
             }
-            if !is_template_owning_component(&el) {
-                if let Some(found) = find_template(&el) {
-                    return Some(found);
-                }
+            if !is_template_owning_component(&el)
+                && let Some(found) = find_template(&el)
+            {
+                return Some(found);
             }
             child = el.next_element_sibling();
         }
