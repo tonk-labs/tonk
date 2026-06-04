@@ -8,6 +8,8 @@
 //! re-polls every subscription on the branch (push doesn't change
 //! local state, so it doesn't re-poll).
 
+use std::collections::HashMap;
+
 use ::axum::{Json, extract::Path, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_repository::Revision;
@@ -17,7 +19,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::{SyncState, classify};
 
-use super::AppState;
+use super::{AppState, BranchConfiguration};
 use crate::TonkWorkerError;
 use crate::broadcast::{Notification, broadcast};
 
@@ -40,6 +42,93 @@ fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
                 revision,
             },
         );
+    }
+}
+
+/// Tag prefix every durable background sync carries; the repository
+/// name follows the colon. A `sync` event delivers only this string
+/// and the worker has no notion of an "active repository", so the
+/// repo identity has to ride along in the tag.
+const SYNC_TAG_PREFIX: &str = "tonk-sync:";
+
+/// Parse the repository name out of a background-sync tag.
+///
+/// Tags are `tonk-sync:{repo}`. Anything not matching that shape — a
+/// bare or differently-prefixed tag, an empty repo — yields `None`,
+/// so a malformed tag becomes a no-op rather than an error.
+pub fn repo_from_sync_tag(tag: &str) -> Option<&str> {
+    tag.strip_prefix(SYNC_TAG_PREFIX)
+        .filter(|repo| !repo.is_empty())
+}
+
+/// Branch names in `branches` that have an upstream, sorted for a
+/// stable sweep order. Branches without an upstream have nowhere to
+/// sync to, so they're skipped. Shared with the in-page sweep so the
+/// background `sync` event and the in-page polyfill pick exactly the
+/// same branches.
+pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<String> {
+    let mut names: Vec<String> = branches
+        .iter()
+        .filter(|(_, config)| config.upstream.is_some())
+        .map(|(name, _)| name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// Sweep every upstream branch of `repo`, reusing the per-branch
+/// [`sync`] route. This is what a durable background `sync` event runs
+/// once it has parsed the repo out of its tag; it makes the same
+/// branch selection ([`branches_to_sync`]) as the in-page sweep.
+///
+/// `Ok(())` means every selected branch reconciled, or there was
+/// nothing to do. `Err` means at least one branch did not land — the
+/// caller surfaces that as a rejected `sync` so the user agent retries
+/// with backoff. An unknown repo is not an error: there is nothing to
+/// retry, so it resolves as a no-op.
+pub async fn sync_repository(state: &AppState, repo: &str) -> Result<(), String> {
+    let info = match super::repository::get_repository(State(state.clone()), Path(repo.to_string()))
+        .await
+    {
+        Ok(Json(info)) => info,
+        Err(e) => {
+            log!("background sync: could not load '{repo}': {e}");
+            return Ok(());
+        }
+    };
+
+    let mut failed = false;
+    for branch in branches_to_sync(&info.branch) {
+        let params = SyncPath {
+            repo: repo.to_string(),
+            branch: branch.clone(),
+        };
+        // The `/sync` route reports pull/push failures as a 200 with
+        // `success: false` (a non-fast-forward push after divergence,
+        // a fetch failure), so a returned `Ok` is not proof the sync
+        // landed — inspect `success` too.
+        match sync(State(state.clone()), Path(params)).await {
+            Ok(Json(response)) if !response.success => {
+                let detail = response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string());
+                log!("background sync of {repo}/{branch} did not complete: {detail}");
+                failed = true;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log!("background sync of {repo}/{branch} failed: {e}");
+                failed = true;
+            }
+        }
+    }
+
+    if failed {
+        Err(format!(
+            "background sync of '{repo}' did not fully reconcile"
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -317,5 +406,76 @@ pub async fn sync(
                 error: Some(format!("Push failed: {e}")),
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::router::UpstreamConfiguration;
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    fn with_upstream() -> BranchConfiguration {
+        BranchConfiguration {
+            upstream: Some(UpstreamConfiguration {
+                remote: "origin".to_string(),
+                branch: "main".to_string(),
+            }),
+            revision: None,
+        }
+    }
+
+    fn without_upstream() -> BranchConfiguration {
+        BranchConfiguration {
+            upstream: None,
+            revision: None,
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_parses_the_repo_from_a_well_formed_tag() {
+        assert_eq!(repo_from_sync_tag("tonk-sync:home"), Some("home"));
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_a_tag_without_the_sync_prefix() {
+        assert_eq!(repo_from_sync_tag("home"), None);
+        assert_eq!(repo_from_sync_tag("other-tag"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_a_prefix_only_tag_with_an_empty_repo() {
+        assert_eq!(repo_from_sync_tag("tonk-sync:"), None);
+    }
+
+    #[dialog_common::test]
+    fn it_selects_only_branches_with_an_upstream() {
+        let branches = HashMap::from([
+            ("main".to_string(), with_upstream()),
+            ("scratch".to_string(), without_upstream()),
+        ]);
+        assert_eq!(branches_to_sync(&branches), vec!["main".to_string()]);
+    }
+
+    #[dialog_common::test]
+    fn it_returns_branches_sorted_for_a_stable_sweep_order() {
+        let branches = HashMap::from([
+            ("zeta".to_string(), with_upstream()),
+            ("alpha".to_string(), with_upstream()),
+        ]);
+        assert_eq!(
+            branches_to_sync(&branches),
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_returns_empty_when_no_branch_has_an_upstream() {
+        let branches = HashMap::from([("main".to_string(), without_upstream())]);
+        assert!(branches_to_sync(&branches).is_empty());
     }
 }

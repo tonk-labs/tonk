@@ -1,6 +1,7 @@
 use dialog_repository::SiteAddress;
 use leptos::{either::Either, prelude::*, task::spawn_local, web_sys};
 use leptos_router::{hooks::use_params, params::Params};
+use leptos_use::use_event_listener;
 use tonk_worker::{
     BranchConfiguration, EvaluateResponse, Notification, RemoteConfiguration, RepositoryInfo,
     Revision, SyncState as UpstreamState,
@@ -414,6 +415,41 @@ pub(super) fn BranchRow(
                 }
             });
         });
+    }
+
+    // While auto-sync is paused, the worker posts nothing on the branch
+    // channel — no pull/push moves the head — so the broadcast above
+    // can't keep the badge current. The background controller instead
+    // dispatches `tonk:status-refresh` on each tick; we re-read the
+    // read-only sync status (which fetches the upstream head) so a
+    // paused branch still shows when it has fallen behind or diverged.
+    if has_upstream
+        && let BranchOwner::Repository(space_name) = &owner
+        && let Some(repo) = space_name.get_untracked()
+    {
+        let branch = branch_name.clone();
+        let _ = use_event_listener(
+            window(),
+            leptos::ev::Custom::<web_sys::CustomEvent>::new(
+                crate::sync_controller::STATUS_REFRESH_EVENT,
+            ),
+            move |event| {
+                // The event carries the active repository as a plain
+                // string in `detail`; ignore refreshes for other repos.
+                if event.detail().as_string().as_deref() != Some(repo.as_str()) {
+                    return;
+                }
+                let repo = repo.clone();
+                let branch = branch.clone();
+                spawn_local(async move {
+                    if let Ok(status) = api::sync_status(&repo, &branch).await
+                        && upstream_state.get_untracked() != Some(status.state)
+                    {
+                        upstream_state.set(Some(status.state));
+                    }
+                });
+            },
+        );
     }
 
     let trigger_sync = {
