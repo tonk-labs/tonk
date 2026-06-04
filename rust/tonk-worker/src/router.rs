@@ -55,6 +55,8 @@ pub use bridge::BridgeRegistry;
 mod host;
 pub use host::{ClientId, ViewBinding, ViewBindings};
 
+mod migration;
+
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;
 
@@ -117,6 +119,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))
+        .route(
+            "/api/migrate/repo-vs-profile",
+            get(migration::repo_vs_profile),
+        )
         // Repository lifecycle
         .route(
             "/api/repository/{repo}",

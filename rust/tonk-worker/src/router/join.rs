@@ -270,6 +270,7 @@ async fn find_replica_name_for_subject(
             profile: Term::from(tonk_schema::domain::replica::Profile(
                 tonk.profile.did().this(),
             )),
+            kind: Term::var("kind"),
         })
         .perform(&tonk.operator)
         .try_vec()

@@ -89,6 +89,7 @@ pub async fn get_profile(
             name: Term::var("name"),
             subject: Term::var("subject"),
             profile: Term::from(ProfileEntity(profile_did.this())),
+            kind: Term::var("kind"),
         })
         .perform(&tonk.operator)
         .try_vec()

@@ -71,6 +71,7 @@ view/directory!:
       </wa-carousel-item>
     </wa-carousel>
 
+
 # ============================================================
 # WORKSPACE
 # ============================================================
@@ -547,6 +548,7 @@ view!:
 # happens.
 
 concept!: &board
+  this: tonk:board
   description: A named board (hierarchical v1, owns columns directly)
   with:
     name:
@@ -628,7 +630,7 @@ concept!: &portal
 # `subject={field}` and bottoms out in the tile's content display.
 
 view!:
-  this: tonk:board
+  this: tonk:board-view
   model: board
   display: |
     <tonk-strip>
@@ -1193,7 +1195,7 @@ tile!: &workspace-tile
 column-view!: &column-b
   this: c:b
   order: "aq"
-  width: 19
+  width: 15
   tile: workspace-tile
 
 column-view!: &column-a
@@ -1300,6 +1302,14 @@ concept!: &space
       the: xyz.tonk.replica/subject
       cardinality: one
       as: entity
+    kind:
+      description: >
+        tonk:repository for a real space, tonk:profile for the
+        profile's own self-replica. The Hub view hides the latter
+        in CSS via [data-kind].
+      the: xyz.tonk.replica/kind
+      cardinality: one
+      as: entity
 
 # The Hub directory view: the picker shown at `/`. One card per space,
 # linking to its `/space/{name}` page. Rendered as a directory (no
@@ -1322,12 +1332,17 @@ view/directory!:
           text-decoration: none;
           color: inherit;
         }
+        /* The profile's own self-replica rides in on the same
+           query; hide its card so the Hub lists only real spaces. */
+        .hub-card[data-kind="tonk:profile"] {
+          display: none;
+        }
         .hub-card-name {
           font-family: var(--wa-font-family-heading);
           font-size: var(--wa-font-size-xl);
         }
       </style>
-      <a class="hub-card" href="/space/{name}" with={this}>
+      <a class="hub-card" href="/space/{name}" data-kind={kind} with={this}>
         <wa-card orientation="horizontal" class="horizontal-card">
           <span class="hub-card-name">{name}</span>
         </wa-card>
@@ -1357,4 +1372,4 @@ person!:
 # Set tonk:workspace as default view
 name!:
   this: id:tonk/space
-  entity: tonk:workspace
+  entity: workspace
