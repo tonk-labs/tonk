@@ -202,15 +202,24 @@ where
 
     // Per-repository auto-sync toggle. Seeded from the stored
     // preference; flipping it writes through so the running
-    // controller honors the change on its next sweep.
+    // controller honors the change on its next sweep. The controller
+    // reads the persisted preference, not this signal, so we only
+    // move the badge once the write lands — otherwise a rejected
+    // write (no localStorage, quota) would show "paused" while the
+    // controller kept syncing.
     let sync_repo = info.name.clone();
     let auto_sync_on = RwSignal::new(crate::sync_controller::is_enabled(&sync_repo));
     let on_toggle_sync = {
         let sync_repo = sync_repo.clone();
         move |_ev: leptos::ev::MouseEvent| {
             let next = !auto_sync_on.get_untracked();
-            auto_sync_on.set(next);
-            crate::sync_controller::set_enabled(&sync_repo, next);
+            if crate::sync_controller::set_enabled(&sync_repo, next) {
+                auto_sync_on.set(next);
+            } else {
+                leptos::logging::log!(
+                    "auto-sync preference for '{sync_repo}' could not be saved; leaving it unchanged"
+                );
+            }
         }
     };
 

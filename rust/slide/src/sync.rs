@@ -36,7 +36,7 @@ pub struct SyncOutcome {
 pub enum SyncError {
     /// `branch.upstream()` returned `None` — the local branch
     /// has no upstream linkage. The caller should set one with
-    /// `slide remote set-upstream` (Phase 2).
+    /// `slide remote set-upstream`.
     #[error(
         "branch '{branch}' has no upstream configured; \
          set one with `slide remote set-upstream <name>`"
@@ -127,7 +127,7 @@ pub async fn status(site: &SlideSite) -> Result<SyncState, SyncError> {
         .perform(&site.operator)
         .await
         .map_err(map_fetch_error)?;
-    Ok(classify(local.as_ref(), remote.as_ref()))
+    Ok(classify(local.as_ref(), remote.as_ref()).into())
 }
 
 fn map_fetch_error(error: FetchError) -> SyncError {

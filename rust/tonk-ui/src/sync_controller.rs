@@ -14,8 +14,9 @@
 //! - a local commit, debounced by [`COMMIT_DEBOUNCE_MS`] so a burst
 //!   of edits collapses into a single sync.
 //!
-//! Phase 1 is always on; the per-repository pause control is a
-//! later phase.
+//! On by default for every repository; an explicit per-repository
+//! `off` preference pauses it (see [`is_enabled`] / [`set_enabled`]),
+//! leaving only the manual Pull/Push buttons.
 
 use std::collections::HashMap;
 
@@ -64,14 +65,22 @@ pub fn is_enabled(repo: &str) -> bool {
     pref_is_enabled(stored.as_deref())
 }
 
-/// Persist whether background sync is enabled for `repo`. The
-/// running controller reads this fresh on its next sweep, so the
-/// change takes effect without re-mounting.
-pub fn set_enabled(repo: &str, enabled: bool) {
-    if let Ok(Some(storage)) = window().local_storage() {
-        let value = if enabled { "on" } else { "off" };
-        let _ = storage.set_item(&pref_key(repo), value);
-    }
+/// Persist whether background sync is enabled for `repo`, returning
+/// whether the preference was actually written. The running
+/// controller reads this fresh on its next sweep, so the change
+/// takes effect without re-mounting.
+///
+/// A `false` return means the write did not land (localStorage
+/// unavailable or rejected, e.g. quota or a privacy mode). Callers
+/// must not show the new state as in effect when that happens — the
+/// controller still reads the old, unchanged preference.
+#[must_use]
+pub fn set_enabled(repo: &str, enabled: bool) -> bool {
+    let Ok(Some(storage)) = window().local_storage() else {
+        return false;
+    };
+    let value = if enabled { "on" } else { "off" };
+    storage.set_item(&pref_key(repo), value).is_ok()
 }
 
 /// Branch names in `branches` that have an upstream, sorted for a
@@ -170,8 +179,20 @@ async fn sweep_repository(repo: &str) {
         }
     };
     for branch in branches_to_sync(&info.branch) {
-        if let Err(err) = api::sync(repo, &branch).await {
-            log!("background sync of {repo}/{branch} failed: {err}");
+        // The `/sync` route reports pull/push failures as a 200 with
+        // `success: false` (a non-fast-forward push after divergence,
+        // a fetch failure), so a transport-level `Ok` is not proof the
+        // sync landed — inspect `success` too. Background failures are
+        // logged, never surfaced, but they must not vanish silently.
+        match api::sync(repo, &branch).await {
+            Ok(response) if !response.success => {
+                let detail = response
+                    .error
+                    .unwrap_or_else(|| "unknown error".to_string());
+                log!("background sync of {repo}/{branch} did not complete: {detail}");
+            }
+            Ok(_) => {}
+            Err(err) => log!("background sync of {repo}/{branch} failed: {err}"),
         }
     }
 }

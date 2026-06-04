@@ -360,9 +360,9 @@ mod tests {
 
     /// A local write reaches the `origin` remote on its own — no
     /// Pull/Push button — once the background sync controller's
-    /// commit trigger fires. Exercises the Phase 1 default-on
-    /// controller end to end: commit locally, signal it the way a
-    /// real editor commit does, then watch the remote catch up.
+    /// commit trigger fires. Exercises the default-on controller end
+    /// to end: commit locally, signal it the way a real editor commit
+    /// does, then watch the remote catch up.
     #[dialog_common::test]
     async fn it_auto_syncs_a_local_write_to_the_remote(env: TestEnvironment) -> Result<()> {
         let driver = env.driver().await?;
@@ -448,7 +448,7 @@ mod tests {
 
     /// With auto-sync paused for a repository, a local write does
     /// *not* reach the remote on its own — only the manual buttons
-    /// act. The Phase 2 per-repository pause preference, honored by
+    /// act. Exercises the per-repository pause preference, honored by
     /// the controller on every sweep.
     #[dialog_common::test]
     async fn it_does_not_auto_sync_a_paused_repository(env: TestEnvironment) -> Result<()> {

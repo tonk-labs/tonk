@@ -208,7 +208,7 @@ pub async fn sync_status(
         .await
         .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
 
-    let sync_state = classify(local.as_ref(), remote.as_ref());
+    let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
     Ok(Json(SyncStatusResponse {
         state: sync_state,
         local,
