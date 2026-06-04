@@ -8,8 +8,9 @@
 //! no SSE clients), so this skips the reactor wrapper the
 //! worker uses.
 
-use dialog_repository::{PullError, PushError, Revision};
+use dialog_repository::{FetchError, PullError, PushError, Revision};
 use thiserror::Error;
+use tonk_schema::{SyncState, classify};
 
 use crate::ExitCode;
 use crate::site::SlideSite;
@@ -35,7 +36,7 @@ pub struct SyncOutcome {
 pub enum SyncError {
     /// `branch.upstream()` returned `None` — the local branch
     /// has no upstream linkage. The caller should set one with
-    /// `slide remote set-upstream` (Phase 2).
+    /// `slide remote set-upstream`.
     #[error(
         "branch '{branch}' has no upstream configured; \
          set one with `slide remote set-upstream <name>`"
@@ -106,6 +107,34 @@ pub async fn pull(site: &SlideSite) -> Result<SyncOutcome, SyncError> {
         // signal, more reliable than revision comparison.
         advanced: merged.is_some(),
     })
+}
+
+/// Classify the site's main branch against its upstream without
+/// mutating local state.
+///
+/// Reads the local head, fetches the upstream head read-only, and
+/// runs the shared classifier. A branch with no upstream is
+/// [`SyncState::NoUpstream`] — not an error — so `slide status`
+/// always has something to print.
+pub async fn status(site: &SlideSite) -> Result<SyncState, SyncError> {
+    let local = site.branch.revision();
+    if site.branch.upstream().is_none() {
+        return Ok(SyncState::NoUpstream);
+    }
+    let remote = site
+        .branch
+        .fetch()
+        .perform(&site.operator)
+        .await
+        .map_err(map_fetch_error)?;
+    Ok(classify(local.as_ref(), remote.as_ref()).into())
+}
+
+fn map_fetch_error(error: FetchError) -> SyncError {
+    match error {
+        FetchError::BranchHasNoUpstream { branch } => SyncError::UpstreamNotConfigured { branch },
+        other => SyncError::Io(other.to_string()),
+    }
 }
 
 fn map_push_error(error: PushError) -> SyncError {

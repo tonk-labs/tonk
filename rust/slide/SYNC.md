@@ -63,10 +63,21 @@ slide remote add <name> <url> [--subject <did>]
 slide remote list
 slide remote set-upstream <remote>            # links main → <remote>/main
 
+slide eval [--no-sync] …                       # auto pull-before / push-after by default
 slide push                                    # pushes main to its upstream
 slide pull                                    # pulls main from its upstream
-slide sync                                    # pull then push (the agent loop)
+slide status                                  # synced / ahead / behind / diverged / no-upstream
 ```
+
+Auto-sync: a committing `slide eval` pulls its upstream in before
+evaluating and pushes the resulting commit back out afterward,
+when an upstream is configured. Opt out per-invocation with
+`--no-sync`, or for a whole session with the `SLIDE_NO_SYNC`
+environment variable (any value other than empty / `0` / `false` /
+`no`). A branch with no upstream is a silent skip; sync failures
+warn on stderr but never fail the command — the local write is
+already committed, so the manual `slide push` / `slide pull` flow
+stays fully recoverable.
 
 Reasoning for each:
 
@@ -211,12 +222,16 @@ more, it errors out asking for an explicit `set-upstream`. The
 agent's normal flow — one remote, set once at site creation
 or by `slide join` — never hits the explicit path.
 
-**Phase 3 — agent loop polish.** `slide sync` (pull then
-push). Catch authorization failures from the access service
-and emit a friendlier message ("remote rejected the operator's
-authority — re-check the endpoint or delegation") rather than
-the raw dialog error. A `slide doctor`-style check that
-confirms the remote handshake without writing.
+**Phase 3 — agent loop polish.** ✅ auto-sync + status shipped
+(see `plan/background-sync.md`): a committing `slide eval`
+pulls-before / pushes-after by default (`--no-sync` /
+`SLIDE_NO_SYNC` to opt out), and `slide status` prints the
+classified relationship to the upstream. Still open: catch
+authorization failures from the access service and emit a
+friendlier message ("remote rejected the operator's authority —
+re-check the endpoint or delegation") rather than the raw dialog
+error, plus a `slide doctor`-style check that confirms the
+remote handshake without writing.
 
 ## Deferred
 

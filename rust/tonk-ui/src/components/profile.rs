@@ -1,11 +1,8 @@
 use leptos::{either::Either, prelude::*};
 
-use crate::{
-    api,
-    components::{
-        ProfileResource,
-        space::{BranchOwner, BranchRow, RemoteCard},
-    },
+use crate::components::{
+    ProfileResource,
+    space::{BranchOwner, BranchRow, RemoteCard},
 };
 
 /// Profile view, rendered at `/profile`.
@@ -18,25 +15,11 @@ use crate::{
 /// [`ProfileResource`] (`info.profile`), which the shell already
 /// keeps fresh on `/api/profile` broadcasts.
 ///
-/// We still spin up a `LocalResource` keyed on the profile's
-/// local name so [`BranchRow`]'s sync handlers can refetch the
-/// repository representation after a Pull/Push without invalidating
-/// the whole profile resource. Today the profile has no upstream,
-/// so the refetch is rarely exercised — but the wiring keeps the
-/// component honest if/when profile-level sync arrives.
-///
 /// [`ProfileResource`]: super::ProfileResource
 #[component]
 pub fn TonkProfile() -> impl IntoView {
     let profile_resource =
         use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
-
-    // Per-route resource so `BranchRow` can `.refetch()` the
-    // profile's repository representation after a sync. Mirrors
-    // what `TonkSpace` does, but hits the dedicated
-    // `/api/profile/repository` route — the profile lives
-    // outside the named-repo namespace.
-    let repository = LocalResource::new(move || async move { api::profile_repository().await });
 
     view! {
         <Suspense fallback=|| view! { <wa-spinner></wa-spinner> }>
@@ -47,7 +30,7 @@ pub fn TonkProfile() -> impl IntoView {
                 </wa-callout>
             }>
                 { move || profile_resource.get().map(|result| result.map(|info| match info {
-                    Some(info) => Either::Left(render_profile(info.profile, repository)),
+                    Some(info) => Either::Left(render_profile(info.profile)),
                     None => Either::Right(view! {
                         <wa-callout variant="neutral">
                             <wa-icon slot="icon" name="circle-info"></wa-icon>
@@ -64,12 +47,7 @@ pub fn TonkProfile() -> impl IntoView {
 /// name, branches list, remotes list. Mirrors `render_space_view`
 /// minus the share button (you don't share a profile the way you
 /// share a space).
-fn render_profile(
-    info: tonk_worker::RepositoryInfo,
-    repository: LocalResource<
-        Result<Option<tonk_worker::RepositoryInfo>, crate::error::TonkUiError>,
-    >,
-) -> impl IntoView {
+fn render_profile(info: tonk_worker::RepositoryInfo) -> impl IntoView {
     let local_subject = info.subject.to_string();
     let title_attr = local_subject.clone();
     let banner_title = info.name.clone();
@@ -90,7 +68,6 @@ fn render_profile(
                     name=name
                     config=config
                     owner=BranchOwner::Profile
-                    repository=repository
                     force_open=force_open_solo
                 />
             }

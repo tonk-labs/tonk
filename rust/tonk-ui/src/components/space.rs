@@ -2,7 +2,8 @@ use dialog_repository::SiteAddress;
 use leptos::{either::Either, prelude::*, task::spawn_local, web_sys};
 use leptos_router::{hooks::use_params, params::Params};
 use tonk_worker::{
-    BranchConfiguration, EvaluateResponse, RemoteConfiguration, RepositoryInfo, Revision,
+    BranchConfiguration, EvaluateResponse, Notification, RemoteConfiguration, RepositoryInfo,
+    Revision, SyncState as UpstreamState,
 };
 use wasm_bindgen::JsCast;
 
@@ -11,6 +12,7 @@ use crate::{
     components::{HostId, InviteSpace},
     did,
     error::TonkUiError,
+    watch::watch,
 };
 
 /// The currently-running (or last-completed) sync operation for a
@@ -88,6 +90,12 @@ pub fn TonkInspector(
         }
     });
 
+    // Background sync for the active repository's upstream branches —
+    // a local write reaches the remote (and remote changes reach this
+    // tab) without anyone clicking Pull/Push. Registered under this
+    // component's owner, so it tears down when the inspector unmounts.
+    crate::sync_controller::mount(source);
+
     // Open the shared invite dialog when the user clicks the
     // share affordance. Dialog itself drives the mint and renders
     // the URL.
@@ -112,7 +120,6 @@ pub fn TonkInspector(
                     Some(info) => Either::Left(render_space_view(
                         info,
                         source,
-                        repository,
                         on_share,
                     )),
                     None => Either::Right(view! {
@@ -137,7 +144,6 @@ pub fn TonkInspector(
 fn render_space_view<F>(
     info: RepositoryInfo,
     space_name: Signal<Option<String>, LocalStorage>,
-    repository: LocalResource<Result<Option<RepositoryInfo>, crate::error::TonkUiError>>,
     on_share: F,
 ) -> impl IntoView
 where
@@ -145,6 +151,29 @@ where
 {
     let local_subject = info.subject.to_string();
     let space_title = info.name.clone();
+
+    // Per-repository auto-sync toggle. Seeded from the stored
+    // preference; flipping it writes through so the running
+    // controller honors the change on its next sweep. The controller
+    // reads the persisted preference, not this signal, so we only
+    // move the badge once the write lands — otherwise a rejected
+    // write (no localStorage, quota) would show "paused" while the
+    // controller kept syncing.
+    let sync_repo = info.name.clone();
+    let auto_sync_on = RwSignal::new(crate::sync_controller::is_enabled(&sync_repo));
+    let on_toggle_sync = {
+        let sync_repo = sync_repo.clone();
+        move |_ev: leptos::ev::MouseEvent| {
+            let next = !auto_sync_on.get_untracked();
+            if crate::sync_controller::set_enabled(&sync_repo, next) {
+                auto_sync_on.set(next);
+            } else {
+                leptos::logging::log!(
+                    "auto-sync preference for '{sync_repo}' could not be saved; leaving it unchanged"
+                );
+            }
+        }
+    };
 
     // Sort branches/remotes for stable rendering — `HashMap`
     // iteration order is otherwise nondeterministic.
@@ -168,7 +197,6 @@ where
                     name=name
                     config=config
                     owner=BranchOwner::Repository(space_name)
-                    repository=repository
                     force_open=force_open_solo
                 />
             }
@@ -197,18 +225,38 @@ where
             <h1 class="space-banner-title" title=title_attr>
                 { space_title }
             </h1>
-            <wa-button
-                variant="neutral"
-                appearance="accent"
-                size="small"
-                on:click=on_share
-            >
-                <wa-icon
-                    name="share-nodes"
-                    variant="solid"
-                    label="Invite someone to this space"
-                ></wa-icon>
-            </wa-button>
+            <div class="space-banner-actions">
+                <wa-button
+                    class="auto-sync-toggle"
+                    variant="neutral"
+                    appearance="accent"
+                    size="small"
+                    title=move || if auto_sync_on.get() {
+                        "Auto-sync on — click to pause"
+                    } else {
+                        "Auto-sync paused — click to resume"
+                    }
+                    on:click=on_toggle_sync
+                >
+                    <wa-icon
+                        name=move || if auto_sync_on.get() { "arrows-rotate" } else { "pause" }
+                        variant="solid"
+                        label="Toggle auto-sync"
+                    ></wa-icon>
+                </wa-button>
+                <wa-button
+                    variant="neutral"
+                    appearance="accent"
+                    size="small"
+                    on:click=on_share
+                >
+                    <wa-icon
+                        name="share-nodes"
+                        variant="solid"
+                        label="Invite someone to this space"
+                    ></wa-icon>
+                </wa-button>
+            </div>
         </header>
         <main class="wa-stack space-view">
             <section class="wa-stack">
@@ -282,7 +330,6 @@ pub(super) fn BranchRow(
     /// Identifies which routing namespace this branch belongs
     /// to — see [`BranchOwner`].
     owner: BranchOwner,
-    repository: LocalResource<Result<Option<RepositoryInfo>, crate::error::TonkUiError>>,
     /// Caller may force the row to render expanded — used by the
     /// space view when there's only one branch, so a solo `meta`
     /// (or any other lone branch) still pops open by default.
@@ -298,16 +345,76 @@ pub(super) fn BranchRow(
     let upstream_label = upstream
         .as_ref()
         .map(|(remote, branch)| format!("{remote}/{branch}"));
-    let tree_pair = config.revision.as_ref().map(|rev| {
-        let full = rev.tree.to_string();
-        (full.clone(), abbreviate_tree(&full))
-    });
 
     let has_upstream = upstream.is_some();
     let is_default = force_open || name == DEFAULT_OPEN_BRANCH;
     let branch_name = name.clone();
 
     let sync_state = RwSignal::new(SyncState::Idle);
+
+    // Local branch head, rendered as the revision badge. Seeded from
+    // the loaded config and kept live by the branch's broadcast
+    // channel (wired below), so a pull/commit/sync updates the badge
+    // in place — no resource refetch, no row remount.
+    let revision = RwSignal::new(config.revision.clone());
+
+    // Where the local head sits relative to its upstream
+    // (synced/ahead/behind/diverged). Fetched read-only on mount,
+    // then refreshed by the same broadcast channel as the revision.
+    let upstream_state = RwSignal::new(None::<UpstreamState>);
+    if has_upstream
+        && let BranchOwner::Repository(space_name) = &owner
+        && let Some(repo) = space_name.get_untracked()
+    {
+        let branch = branch_name.clone();
+        spawn_local(async move {
+            if let Ok(status) = api::sync_status(&repo, &branch).await {
+                upstream_state.set(Some(status.state));
+            }
+        });
+    }
+
+    // Keep the revision and sync-state badges live without tearing
+    // the row down. The worker posts on this branch's channel after
+    // every pull, push, sync, and commit that moves the head (see
+    // `router::sync` / `router::evaluate`); we read the new revision
+    // straight off the payload and re-read the read-only sync status.
+    // The status round-trip is skipped when nothing could have
+    // changed — the head didn't move and we're already synced — so an
+    // idle background sync tick costs nothing.
+    if let BranchOwner::Repository(space_name) = &owner
+        && let Some(repo) = space_name.get_untracked()
+    {
+        let channel = format!("/api/repository/{repo}/branch/{branch_name}");
+        let head = watch::<Notification>(&channel);
+        let status_branch = branch_name.clone();
+        Effect::new(move |_| {
+            let Some(notification) = head.get() else {
+                return;
+            };
+            let moved =
+                revision.with_untracked(|current| current.as_ref() != Some(&notification.revision));
+            if moved {
+                revision.set(Some(notification.revision.clone()));
+            }
+            // Branches without an upstream have no sync-state badge.
+            if !has_upstream {
+                return;
+            }
+            if !moved && upstream_state.get_untracked() == Some(UpstreamState::Synced) {
+                return;
+            }
+            let repo = repo.clone();
+            let branch = status_branch.clone();
+            spawn_local(async move {
+                if let Ok(status) = api::sync_status(&repo, &branch).await
+                    && upstream_state.get_untracked() != Some(status.state)
+                {
+                    upstream_state.set(Some(status.state));
+                }
+            });
+        });
+    }
 
     let trigger_sync = {
         let branch_name = branch_name.clone();
@@ -341,7 +448,12 @@ pub(super) fn BranchRow(
                             before: response.before.map(Box::new),
                             after: response.after.map(Box::new),
                         });
-                        repository.refetch();
+                        // The revision and sync-state badges refresh
+                        // off the worker's broadcast on this branch's
+                        // channel (see the subscription above), so the
+                        // success path no longer refetches the whole
+                        // repository — that would tear down the editor
+                        // cells in this row.
                     }
                     Ok(response) => {
                         sync_state.set(SyncState::Failed {
@@ -414,27 +526,13 @@ pub(super) fn BranchRow(
                         ></wa-icon>
                         { name }
                     </wa-badge>
-                    { match tree_pair.clone() {
-                        Some((full, short)) => Either::Left(view! {
-                            <wa-badge
-                                variant="neutral"
-                                appearance="filled"
-                                title=full
-                            >
-                                <wa-icon name="code-commit" slot="start"></wa-icon>
-                                { short }
-                            </wa-badge>
-                        }),
-                        None => Either::Right(view! {
-                            <wa-badge
-                                variant="neutral"
-                                appearance="filled"
-                            >
-                                "no commits"
-                            </wa-badge>
-                        }),
-                    } }
+                    { move || revision_badge(revision.get()) }
                 </span>
+                // Upstream relationship (synced / ahead / behind /
+                // diverged) reads as a property of the branch+rev,
+                // so it sits with them on the left rather than out
+                // by the action buttons.
+                { move || upstream_state_badge(upstream_state.get()) }
                 // Sync buttons render unconditionally so the row
                 // shape stays uniform across branches. With an
                 // upstream they're full accent buttons; without
@@ -662,6 +760,10 @@ where
                         clear_pushed_diagnostics(&editor_source);
                         last_response.set(Some(Box::new(response)));
                         transact_state.set(TransactState::Idle);
+                        // Nudge the background controller so this
+                        // commit reaches the remote without a manual
+                        // push (debounced controller-side).
+                        crate::sync_controller::notify_committed();
                         // Seal this cell and spawn a fresh one
                         // below — the user is moving on.
                         on_sealed();
@@ -2067,6 +2169,33 @@ fn sync_chip(state: SyncState) -> impl IntoView {
     }
 }
 
+/// Per-branch badge for how the local head sits relative to its
+/// upstream. A not-yet-fetched status (`None`) and `NoUpstream`
+/// render nothing — there's no relationship to show.
+fn upstream_state_badge(state: Option<UpstreamState>) -> impl IntoView {
+    match state.and_then(upstream_state_chip) {
+        Some((label, variant)) => Either::Left(view! {
+            <wa-badge class="upstream-state" variant=variant appearance="filled">
+                { label }
+            </wa-badge>
+        }),
+        None => Either::Right(()),
+    }
+}
+
+/// Label and `<wa-badge>` variant for an upstream relationship, or
+/// `None` for states with nothing to show (`NoUpstream`). Pure so
+/// the mapping is unit-tested without a browser.
+fn upstream_state_chip(state: UpstreamState) -> Option<(&'static str, &'static str)> {
+    match state {
+        UpstreamState::Synced => Some(("synced", "success")),
+        UpstreamState::Ahead => Some(("ahead", "warning")),
+        UpstreamState::Behind => Some(("behind", "warning")),
+        UpstreamState::Diverged => Some(("diverged", "danger")),
+        UpstreamState::NoUpstream => None,
+    }
+}
+
 /// Compact `before → after` summary for a finished sync. Falls
 /// back to a single revision label when the operation didn't
 /// change the local branch (before == after) or when one side is
@@ -2337,12 +2466,37 @@ mod tests {
     use serde_json::{Value, json};
     use tonk_worker::QueryResult;
 
-    use super::{concept_descriptor, rule_definition};
+    use super::{UpstreamState, concept_descriptor, rule_definition, upstream_state_chip};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_maps_directional_upstream_states_to_badges() {
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Synced),
+            Some(("synced", "success"))
+        );
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Ahead),
+            Some(("ahead", "warning"))
+        );
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Behind),
+            Some(("behind", "warning"))
+        );
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Diverged),
+            Some(("diverged", "danger"))
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renders_no_badge_without_an_upstream() {
+        assert_eq!(upstream_state_chip(UpstreamState::NoUpstream), None);
+    }
 
     /// Build a `rule:` result row whose `definition` field carries
     /// the JSON-stringified `RuleDefinition` an `AnonymousRuleQuery`

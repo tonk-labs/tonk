@@ -15,9 +15,33 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::{SyncState, classify};
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::broadcast::{Notification, broadcast};
+
+/// Announce on the branch's broadcast channel that its head may have
+/// moved, so subscribed UIs refresh their revision and sync-state
+/// badges without a full refetch. The channel mirrors the endpoint
+/// path ("channel name == endpoint path"). A `None` revision (branch
+/// with no commits) is skipped — there's nothing to announce.
+///
+/// Posted after a *successful* pull/push/sync. A push leaves the
+/// local head where it was, so its announcement carries the unchanged
+/// revision; listeners still re-read the read-only sync status, which
+/// is what actually flips (e.g. `ahead` → `synced`).
+fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
+    if let Some(revision) = revision {
+        broadcast(
+            &format!("/api/repository/{repo}/branch/{branch}"),
+            &Notification {
+                branch: branch.to_string(),
+                revision,
+            },
+        );
+    }
+}
 
 /// Path parameters for sync endpoints.
 #[derive(Debug, Deserialize)]
@@ -81,6 +105,7 @@ pub async fn pull(
     {
         Ok(after) => {
             log!("Pull succeeded");
+            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 before,
@@ -134,10 +159,12 @@ pub async fn push(
     {
         Ok(_) => {
             log!("Push succeeded");
+            let after = session.handle().revision();
+            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 before: before.clone(),
-                after: session.handle().revision(),
+                after,
                 error: None,
             }))
         }
@@ -151,6 +178,68 @@ pub async fn push(
             }))
         }
     }
+}
+
+/// Sync-state of a branch relative to its upstream.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    /// How the local head relates to the upstream head.
+    pub state: SyncState,
+    /// Local branch revision, or `null` if it has no commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<Revision>,
+    /// Upstream branch revision as last fetched, or `null` if the
+    /// upstream has no commits (or none is configured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<Revision>,
+}
+
+/// Classify a branch against its upstream without mutating local
+/// state.
+///
+/// Reads the local head, fetches the upstream head read-only (no
+/// merge, no push), and runs the shared classifier. A branch with
+/// no upstream returns [`SyncState::NoUpstream`] rather than an
+/// error, so the indicator has something to render for every
+/// branch.
+#[wasm_compat]
+pub async fn sync_status(
+    State(state): State<AppState>,
+    Path(params): Path<SyncPath>,
+) -> Result<Json<SyncStatusResponse>, TonkWorkerError> {
+    let tonk_state = state.write().await;
+
+    let session = tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+
+    let handle = session.handle();
+    let local = handle.revision();
+
+    if handle.upstream().is_none() {
+        return Ok(Json(SyncStatusResponse {
+            state: SyncState::NoUpstream,
+            local,
+            remote: None,
+        }));
+    }
+
+    let remote = handle
+        .fetch()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+
+    let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    Ok(Json(SyncStatusResponse {
+        state: sync_state,
+        local,
+        remote,
+    }))
 }
 
 /// Full sync: pull then push.
@@ -210,10 +299,12 @@ pub async fn sync(
     {
         Ok(_) => {
             log!("Push succeeded");
+            let after = session.handle().revision();
+            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 before,
-                after: session.handle().revision(),
+                after,
                 error: None,
             }))
         }

@@ -27,7 +27,10 @@ pub use repository::{
 
 mod sync;
 pub use dialog_repository::Revision;
-pub use sync::SyncResponse;
+pub use sync::{SyncResponse, SyncStatusResponse};
+// Re-exported so API consumers (the UI) can name the state without
+// depending on `tonk-schema` directly.
+pub use tonk_schema::SyncState;
 
 mod identify;
 pub use identify::IdentifyResponse;
@@ -137,6 +140,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/sync/push",
             post(sync::push),
+        )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/sync/status",
+            get(sync::sync_status),
         )
         // Claim operations
         .route(
@@ -735,6 +742,206 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_no_upstream_status_for_an_unconfigured_branch() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-sync-status";
+
+        put_repo(&app, repo).await;
+
+        // Land a commit so the branch has a local revision — the
+        // status route should still report `no-upstream` (none is
+        // configured) while surfacing the local head.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{}/branch/main/claim/assert/test:status/test/value",
+                        repo
+                    ))
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("status test"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/sync/status", repo))
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: super::SyncStatusResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status.state, tonk_schema::SyncState::NoUpstream);
+        assert!(
+            status.local.is_some(),
+            "the local head should be reported even with no upstream"
+        );
+        assert!(status.remote.is_none(), "no upstream means no remote head");
+    }
+
+    /// Wire `main`'s upstream to a sibling `upstream` branch in the
+    /// same repo — the in-process stand-in for a real remote, the
+    /// same pattern the slide sync tests use — so the status route's
+    /// fetch + classify path has somewhere local to read from.
+    /// Returns the router for driving the HTTP surface.
+    async fn repo_with_sibling_upstream(repo: &str) -> Router {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        put_repo(&app, repo).await;
+
+        let guard = app_state.read().await;
+        let repo_state = guard
+            .reactor
+            .repository(repo)
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire repository");
+        let upstream = repo_state
+            .repository()
+            .branch("upstream")
+            .open()
+            .perform(&guard.operator)
+            .await
+            .expect("open sibling upstream branch");
+        let main = guard
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire main branch");
+        main.handle()
+            .set_upstream(&upstream)
+            .perform(&guard.operator)
+            .await
+            .expect("set main's upstream to the sibling");
+        app
+    }
+
+    /// Land a commit on `main` by asserting one marker fact. Each
+    /// distinct `marker` is its own entity, so successive calls
+    /// advance the tree.
+    async fn commit_marker(app: &Router, repo: &str, marker: &str) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{repo}/branch/main/claim/assert/test:{marker}/test/value"
+                    ))
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from(marker.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "commit '{marker}' should land"
+        );
+    }
+
+    /// Push `main` to its upstream over the HTTP sync route, asserting
+    /// the push reports success.
+    async fn push_main(app: &Router, repo: &str) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/sync/push"))
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sync: super::SyncResponse = serde_json::from_slice(&body).unwrap();
+        assert!(sync.success, "push should succeed: {:?}", sync.error);
+    }
+
+    /// GET the sync status of `main` and deserialize the response.
+    async fn get_main_status(app: &Router, repo: &str) -> super::SyncStatusResponse {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/sync/status"))
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_synced_status_after_pushing_to_the_upstream() {
+        let repo = "test-sync-status-synced";
+        let app = repo_with_sibling_upstream(repo).await;
+
+        commit_marker(&app, repo, "synced-probe").await;
+        push_main(&app, repo).await;
+
+        // Both heads now populated and equal — exercises the route's
+        // fetch + classify path and the both-revisions-present JSON
+        // shape, not just the no-upstream early return.
+        let status = get_main_status(&app, repo).await;
+        assert_eq!(status.state, tonk_schema::SyncState::Synced);
+        let local = status.local.expect("local head present");
+        let remote = status.remote.expect("remote head present after push");
+        assert_eq!(local.tree, remote.tree, "synced means the heads match");
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_ahead_status_when_local_leads_the_upstream() {
+        let repo = "test-sync-status-ahead";
+        let app = repo_with_sibling_upstream(repo).await;
+
+        // Establish a shared base on the upstream, then advance main
+        // one commit past it.
+        commit_marker(&app, repo, "base").await;
+        push_main(&app, repo).await;
+        commit_marker(&app, repo, "ahead-probe").await;
+
+        let status = get_main_status(&app, repo).await;
+        assert_eq!(status.state, tonk_schema::SyncState::Ahead);
+        assert!(status.local.is_some(), "local head present");
+        assert!(
+            status.remote.is_some(),
+            "remote head present — the shared base the upstream still points at"
+        );
     }
 
     #[dialog_common::test]

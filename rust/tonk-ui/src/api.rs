@@ -5,7 +5,7 @@ use serde::Deserialize;
 use tonk_worker::{
     BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
     IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
-    RepositoryConfiguration, RepositoryInfo, SyncResponse,
+    RepositoryConfiguration, RepositoryInfo, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -491,17 +491,57 @@ pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError>
     sync_op(repo, branch, "push").await
 }
 
+/// Full sync (pull then push) of a branch against its upstream.
+///
+/// `POST /api/repository/{repo}/branch/{branch}/sync`. Used by the
+/// background [`crate::sync_controller`] so a tick reconciles a
+/// branch in both directions in one round-trip.
+pub async fn sync(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
+    sync_op(repo, branch, "").await
+}
+
+/// Read a branch's sync state relative to its upstream.
+///
+/// `GET /api/repository/{repo}/branch/{branch}/sync/status`. Read
+/// only — fetches the upstream head without merging — so the badge
+/// can refresh without moving any data.
+pub async fn sync_status(repo: &str, branch: &str) -> Result<SyncStatusResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let path = format!("/api/repository/{repo}/branch/{branch}/sync/status");
+    let response = reqwest::Client::new()
+        .get(format!("{}{}", origin(), path))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "GET {path} returned {status}: {text}"
+        )));
+    }
+    response
+        .json::<SyncStatusResponse>()
+        .await
+        .map_err(into_api_error)
+}
+
+/// POST a sync route. `op` is `"pull"` / `"push"` for the
+/// directional routes, or `""` for the combined `/sync` route.
 async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, TonkUiError> {
     tonk_host::ready::wait().await;
     log!("Sync ({}) repo='{}' branch='{}'", op, repo, branch);
+    // `op` is a directional suffix (`/pull`, `/push`); the combined
+    // sync route is the bare `/sync` path, so an empty `op` drops
+    // the trailing segment entirely.
+    let suffix = if op.is_empty() {
+        String::new()
+    } else {
+        format!("/{op}")
+    };
+    let path = format!("/api/repository/{repo}/branch/{branch}/sync{suffix}");
     let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/repository/{}/branch/{}/sync/{}",
-            origin(),
-            repo,
-            branch,
-            op,
-        ))
+        .post(format!("{}{}", origin(), path))
         .send()
         .await
         .map_err(into_api_error)?;
@@ -510,8 +550,7 @@ async fn sync_op(repo: &str, branch: &str, op: &str) -> Result<SyncResponse, Ton
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
         return Err(TonkUiError::ApiError(format!(
-            "POST /api/repository/{}/branch/{}/sync/{} returned {}: {}",
-            repo, branch, op, status, text
+            "POST {path} returned {status}: {text}"
         )));
     }
     response

@@ -28,6 +28,7 @@ use tonk_notation::{Parsed, Syntax, parse};
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::broadcast::{Notification, broadcast};
 
 // Re-export the response and match types so router consumers
 // (router.rs, browser clients via wasm-bindgen) name them
@@ -136,7 +137,26 @@ pub async fn evaluate(
         .reactor
         .repository(&path.repo)
         .branch(&path.branch);
-    evaluate_on_branch(&tonk_state, tonk_branch, body, query).await
+    let result = evaluate_on_branch(&tonk_state, tonk_branch, body, query).await;
+
+    // A commit moves the branch head. Announce it on the branch's
+    // channel so subscribed UIs refresh their revision/sync-state
+    // badges without a full refetch (which would tear down the
+    // editor). Pure queries and dry runs leave `revision_after ==
+    // revision_before`, so they announce nothing.
+    if let Ok(Json(response)) = &result
+        && let Some(revision) = &response.revision_after
+        && response.revision_before.as_ref() != Some(revision)
+    {
+        broadcast(
+            &format!("/api/repository/{}/branch/{}", path.repo, path.branch),
+            &Notification {
+                branch: path.branch.clone(),
+                revision: revision.clone(),
+            },
+        );
+    }
+    result
 }
 
 /// `POST /api/profile/branch/{branch}/evaluate`
