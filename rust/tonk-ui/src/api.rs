@@ -5,7 +5,7 @@ use serde::Deserialize;
 use tonk_worker::{
     BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
     IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
-    RepositoryConfiguration, RepositoryInfo, SyncResponse,
+    RepositoryConfiguration, RepositoryInfo, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -498,6 +498,32 @@ pub async fn push(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError>
 /// branch in both directions in one round-trip.
 pub async fn sync(repo: &str, branch: &str) -> Result<SyncResponse, TonkUiError> {
     sync_op(repo, branch, "").await
+}
+
+/// Read a branch's sync state relative to its upstream.
+///
+/// `GET /api/repository/{repo}/branch/{branch}/sync/status`. Read
+/// only — fetches the upstream head without merging — so the badge
+/// can refresh without moving any data.
+pub async fn sync_status(repo: &str, branch: &str) -> Result<SyncStatusResponse, TonkUiError> {
+    tonk_host::ready::wait().await;
+    let path = format!("/api/repository/{repo}/branch/{branch}/sync/status");
+    let response = reqwest::Client::new()
+        .get(format!("{}{}", origin(), path))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "GET {path} returned {status}: {text}"
+        )));
+    }
+    response
+        .json::<SyncStatusResponse>()
+        .await
+        .map_err(into_api_error)
 }
 
 /// POST a sync route. `op` is `"pull"` / `"push"` for the

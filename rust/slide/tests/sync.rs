@@ -7,6 +7,8 @@ use anyhow::Result;
 use dialog_repository::Revision;
 use slide::auto_sync;
 use slide::eval::{Options, Source};
+use slide::sync;
+use tonk_schema::SyncState;
 
 use crate::common::{ATTRIBUTE_DECL, TestSite};
 
@@ -89,6 +91,41 @@ mod when_evaluating_with_an_upstream {
             upstream_revision(&test).await?.is_none(),
             "nothing reaches the upstream when sync is disabled"
         );
+        Ok(())
+    }
+}
+
+mod when_reporting_status {
+    use super::*;
+    use crate::common::CONCEPT_DECL;
+
+    #[dialog_common::test]
+    async fn it_reports_no_upstream_when_none_is_configured() -> Result<()> {
+        let test = TestSite::new().await?;
+        assert_eq!(sync::status(&test.site).await?, SyncState::NoUpstream);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_synced_after_pushing() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        sync::push(&test.site).await?;
+        assert_eq!(sync::status(&test.site).await?, SyncState::Synced);
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_ahead_when_local_has_unpushed_commits() -> Result<()> {
+        let test = TestSite::new().await?;
+        wire_sibling_upstream(&test).await?;
+        // Establish a shared base on the upstream, then advance the
+        // local branch past it.
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        sync::push(&test.site).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        assert_eq!(sync::status(&test.site).await?, SyncState::Ahead);
         Ok(())
     }
 }

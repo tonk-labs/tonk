@@ -436,6 +436,13 @@ tonk-notation .tonk-cm-variable {
     height: 8rem;
     padding-inline: var(--wa-space-xl);
 }
+/* Banner actions (auto-sync toggle + share) cluster on the right;
+   the title takes the remaining space on the left. */
+.space-banner-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+}
 /* Headline-cover treatment after Tachyons'
    `title-highlight-header-cover` example: the dark fill wraps
    the *text* (an inner `<span>`) rather than the heading box.

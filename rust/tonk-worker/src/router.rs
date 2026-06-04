@@ -27,7 +27,10 @@ pub use repository::{
 
 mod sync;
 pub use dialog_repository::Revision;
-pub use sync::SyncResponse;
+pub use sync::{SyncResponse, SyncStatusResponse};
+// Re-exported so API consumers (the UI) can name the state without
+// depending on `tonk-schema` directly.
+pub use tonk_schema::SyncState;
 
 mod identify;
 pub use identify::IdentifyResponse;
@@ -137,6 +140,10 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/sync/push",
             post(sync::push),
+        )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/sync/status",
+            get(sync::sync_status),
         )
         // Claim operations
         .route(
@@ -735,6 +742,58 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[dialog_common::test]
+    async fn it_reports_no_upstream_status_for_an_unconfigured_branch() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-sync-status";
+
+        put_repo(&app, repo).await;
+
+        // Land a commit so the branch has a local revision — the
+        // status route should still report `no-upstream` (none is
+        // configured) while surfacing the local head.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/repository/{}/branch/main/claim/assert/test:status/test/value",
+                        repo
+                    ))
+                    .method("POST")
+                    .header("content-type", "text/plain")
+                    .body(Body::from("status test"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}/branch/main/sync/status", repo))
+                    .method("GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status: super::SyncStatusResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status.state, tonk_schema::SyncState::NoUpstream);
+        assert!(
+            status.local.is_some(),
+            "the local head should be reported even with no upstream"
+        );
+        assert!(status.remote.is_none(), "no upstream means no remote head");
     }
 
     #[dialog_common::test]

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::{SyncState, classify};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -151,6 +152,68 @@ pub async fn push(
             }))
         }
     }
+}
+
+/// Sync-state of a branch relative to its upstream.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SyncStatusResponse {
+    /// How the local head relates to the upstream head.
+    pub state: SyncState,
+    /// Local branch revision, or `null` if it has no commits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<Revision>,
+    /// Upstream branch revision as last fetched, or `null` if the
+    /// upstream has no commits (or none is configured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<Revision>,
+}
+
+/// Classify a branch against its upstream without mutating local
+/// state.
+///
+/// Reads the local head, fetches the upstream head read-only (no
+/// merge, no push), and runs the shared classifier. A branch with
+/// no upstream returns [`SyncState::NoUpstream`] rather than an
+/// error, so the indicator has something to render for every
+/// branch.
+#[wasm_compat]
+pub async fn sync_status(
+    State(state): State<AppState>,
+    Path(params): Path<SyncPath>,
+) -> Result<Json<SyncStatusResponse>, TonkWorkerError> {
+    let tonk_state = state.write().await;
+
+    let session = tonk_state
+        .reactor
+        .repository(&params.repo)
+        .branch(&params.branch)
+        .acquire(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
+
+    let handle = session.handle();
+    let local = handle.revision();
+
+    if handle.upstream().is_none() {
+        return Ok(Json(SyncStatusResponse {
+            state: SyncState::NoUpstream,
+            local,
+            remote: None,
+        }));
+    }
+
+    let remote = handle
+        .fetch()
+        .perform(&tonk_state.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+
+    let sync_state = classify(local.as_ref(), remote.as_ref());
+    Ok(Json(SyncStatusResponse {
+        state: sync_state,
+        local,
+        remote,
+    }))
 }
 
 /// Full sync: pull then push.

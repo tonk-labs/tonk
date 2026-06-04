@@ -7,6 +7,7 @@ use leptos_router::{
 };
 use tonk_worker::{
     BranchConfiguration, EvaluateResponse, RemoteConfiguration, RepositoryInfo, Revision,
+    SyncState as UpstreamState,
 };
 use wasm_bindgen::JsCast;
 
@@ -264,36 +265,38 @@ where
             <h1 class="space-banner-title" title=title_attr>
                 { space_title }
             </h1>
-            <wa-button
-                class="auto-sync-toggle"
-                variant="neutral"
-                appearance="plain"
-                size="small"
-                title=move || if auto_sync_on.get() {
-                    "Auto-sync on — click to pause"
-                } else {
-                    "Auto-sync paused — click to resume"
-                }
-                on:click=on_toggle_sync
-            >
-                <wa-icon
-                    name=move || if auto_sync_on.get() { "arrows-rotate" } else { "pause" }
-                    variant="solid"
-                    label="Toggle auto-sync"
-                ></wa-icon>
-            </wa-button>
-            <wa-button
-                variant="neutral"
-                appearance="accent"
-                size="small"
-                on:click=on_share
-            >
-                <wa-icon
-                    name="share-nodes"
-                    variant="solid"
-                    label="Invite someone to this space"
-                ></wa-icon>
-            </wa-button>
+            <div class="space-banner-actions">
+                <wa-button
+                    class="auto-sync-toggle"
+                    variant="neutral"
+                    appearance="accent"
+                    size="small"
+                    title=move || if auto_sync_on.get() {
+                        "Auto-sync on — click to pause"
+                    } else {
+                        "Auto-sync paused — click to resume"
+                    }
+                    on:click=on_toggle_sync
+                >
+                    <wa-icon
+                        name=move || if auto_sync_on.get() { "arrows-rotate" } else { "pause" }
+                        variant="solid"
+                        label="Toggle auto-sync"
+                    ></wa-icon>
+                </wa-button>
+                <wa-button
+                    variant="neutral"
+                    appearance="accent"
+                    size="small"
+                    on:click=on_share
+                >
+                    <wa-icon
+                        name="share-nodes"
+                        variant="solid"
+                        label="Invite someone to this space"
+                    ></wa-icon>
+                </wa-button>
+            </div>
         </header>
         <main class="wa-stack space-view">
             <section class="wa-stack">
@@ -393,6 +396,24 @@ pub(super) fn BranchRow(
     let branch_name = name.clone();
 
     let sync_state = RwSignal::new(SyncState::Idle);
+
+    // Where the local head sits relative to its upstream
+    // (synced/ahead/behind/diverged). Fetched read-only on mount;
+    // since the rows remount whenever the repository resource
+    // refetches — which the background controller does after every
+    // sweep — the badge stays current on the controller's tick.
+    let upstream_state = RwSignal::new(None::<UpstreamState>);
+    if has_upstream
+        && let BranchOwner::Repository(space_name) = &owner
+        && let Some(repo) = space_name.get_untracked()
+    {
+        let branch = branch_name.clone();
+        spawn_local(async move {
+            if let Ok(status) = api::sync_status(&repo, &branch).await {
+                upstream_state.set(Some(status.state));
+            }
+        });
+    }
 
     let trigger_sync = {
         let branch_name = branch_name.clone();
@@ -520,6 +541,11 @@ pub(super) fn BranchRow(
                         }),
                     } }
                 </span>
+                // Upstream relationship (synced / ahead / behind /
+                // diverged) reads as a property of the branch+rev,
+                // so it sits with them on the left rather than out
+                // by the action buttons.
+                { move || upstream_state_badge(upstream_state.get()) }
                 // Sync buttons render unconditionally so the row
                 // shape stays uniform across branches. With an
                 // upstream they're full accent buttons; without
@@ -2156,6 +2182,33 @@ fn sync_chip(state: SyncState) -> impl IntoView {
     }
 }
 
+/// Per-branch badge for how the local head sits relative to its
+/// upstream. A not-yet-fetched status (`None`) and `NoUpstream`
+/// render nothing — there's no relationship to show.
+fn upstream_state_badge(state: Option<UpstreamState>) -> impl IntoView {
+    match state.and_then(upstream_state_chip) {
+        Some((label, variant)) => Either::Left(view! {
+            <wa-badge class="upstream-state" variant=variant appearance="filled">
+                { label }
+            </wa-badge>
+        }),
+        None => Either::Right(()),
+    }
+}
+
+/// Label and `<wa-badge>` variant for an upstream relationship, or
+/// `None` for states with nothing to show (`NoUpstream`). Pure so
+/// the mapping is unit-tested without a browser.
+fn upstream_state_chip(state: UpstreamState) -> Option<(&'static str, &'static str)> {
+    match state {
+        UpstreamState::Synced => Some(("synced", "success")),
+        UpstreamState::Ahead => Some(("ahead", "warning")),
+        UpstreamState::Behind => Some(("behind", "warning")),
+        UpstreamState::Diverged => Some(("diverged", "danger")),
+        UpstreamState::NoUpstream => None,
+    }
+}
+
 /// Compact `before → after` summary for a finished sync. Falls
 /// back to a single revision label when the operation didn't
 /// change the local branch (before == after) or when one side is
@@ -2431,12 +2484,37 @@ mod tests {
     use serde_json::{Value, json};
     use tonk_worker::QueryResult;
 
-    use super::{concept_descriptor, rule_definition};
+    use super::{UpstreamState, concept_descriptor, rule_definition, upstream_state_chip};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    fn it_maps_directional_upstream_states_to_badges() {
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Synced),
+            Some(("synced", "success"))
+        );
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Ahead),
+            Some(("ahead", "warning"))
+        );
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Behind),
+            Some(("behind", "warning"))
+        );
+        assert_eq!(
+            upstream_state_chip(UpstreamState::Diverged),
+            Some(("diverged", "danger"))
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_renders_no_badge_without_an_upstream() {
+        assert_eq!(upstream_state_chip(UpstreamState::NoUpstream), None);
+    }
 
     /// Build a `rule:` result row whose `definition` field carries
     /// the JSON-stringified `RuleDefinition` an `AnonymousRuleQuery`

@@ -35,7 +35,10 @@ pub fn enabled(no_sync_flag: bool) -> bool {
 /// environment.
 fn env_value_opts_out(value: Option<&str>) -> bool {
     match value {
-        Some(raw) => !matches!(raw.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no"),
+        Some(raw) => !matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no"
+        ),
         None => false,
     }
 }

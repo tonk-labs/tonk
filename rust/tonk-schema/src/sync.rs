@@ -6,9 +6,15 @@
 //! a sync would do anything.
 
 use dialog_repository::Revision;
+use serde::{Deserialize, Serialize};
 
 /// How a branch's local head relates to its upstream head.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serializes kebab-case (`no-upstream`, `synced`, `ahead`,
+/// `behind`, `diverged`) so the wire shape reads the same as the
+/// states the UI and `slide status` render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SyncState {
     /// No upstream is configured for this branch. Supplied by the caller
     /// (which knows the branch's configuration); never inferred here.
@@ -137,5 +143,20 @@ mod tests {
         let local = rev(tree(1), &[tree(3)]);
         let remote = rev(tree(2), &[tree(4)]);
         assert_eq!(classify(Some(&local), Some(&remote)), SyncState::Diverged);
+    }
+
+    #[dialog_common::test]
+    fn it_serializes_states_kebab_case() {
+        // The UI badges and `slide status` read these exact strings.
+        let cases = [
+            (SyncState::NoUpstream, "\"no-upstream\""),
+            (SyncState::Synced, "\"synced\""),
+            (SyncState::Ahead, "\"ahead\""),
+            (SyncState::Behind, "\"behind\""),
+            (SyncState::Diverged, "\"diverged\""),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(serde_json::to_string(&state).unwrap(), expected);
+        }
     }
 }
