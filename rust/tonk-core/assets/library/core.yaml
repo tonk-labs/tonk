@@ -249,7 +249,11 @@ view!: &workspace/view
         .workspace {
           display: flex;
           flex-direction: column;
-          height: 100%;
+          /* Content-driven by default: as a board tile the workspace
+             takes only the space it needs. When it is the page's own
+             view, the route gives the view root a viewport-min height
+             (see the `.display-route` rule in the app stylesheet), so
+             the tab strip pins to the bottom there. */
           font-family: var(--wa-font-family-body);
           color: var(--wa-color-text-normal);
           /* Transparent so the page's dot-grid paper shows through
@@ -488,6 +492,13 @@ view!: &workspace/view
 # attributes and the content. The sheet's content renders directly
 # from the sheet's own `entity`/`model`/`view` fields - a sheet is
 # self-describing, so no intermediate concept is needed.
+
+view/directory!:
+  this: id:tonk-workspace/directory
+  model: workspace
+  display: |
+    <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
+
 view!:
   this: id:tonk-workspace/sheet-mount
   model: tonk:sheet
@@ -505,7 +516,7 @@ view!:
 # deductive rules; the view templates won't change when that
 # happens.
 
-concept!: &board-view
+concept!: &board
   description: A named board (hierarchical v1, owns columns directly)
   with:
     name:
@@ -588,23 +599,24 @@ concept!: &portal
 
 view!:
   this: tonk:board
-  model: board-view
+  model: board
   display: |
     <tonk-strip>
       <style>
         /* Board layout travels with the view, so any route that
-           mounts `model=board-view` renders the strip identically
-           (board route, bare display route, embedded tile). The
-           only thing a route still owns is giving this view a
-           full-height box to fill: the strip's `block-size: 100%`
-           resolves against whatever height its host establishes.
+           mounts `model=board` renders the strip identically
+           (board route, bare display route, embedded tile). The strip
+           caps its OWN height at the viewport (`block-size: 100dvh`)
+           rather than borrowing a fixed height from the document — so
+           its columns scroll vertically inside a bounded box and the
+           strip scrolls horizontally, without locking the page. (Other
+           views let the page scroll; the board is a self-contained
+           fixed-height scroller.)
 
            The `tonk-display`/`tonk-view` layers that wrap each
            level are pure rendering wrappers, not layout boxes;
            `display: contents` makes them transparent so the strip
-           is a flex container over real `<tonk-column>` items, and
-           so the strip itself inherits its host's height instead of
-           collapsing to content. */
+           is a flex container over real `<tonk-column>` items. */
         tonk-display:has(> tonk-view > tonk-strip),
         tonk-display > tonk-view:has(> tonk-strip) {
           display: contents;
@@ -623,7 +635,7 @@ view!:
           gap: var(--gap);
           padding: 0;
           box-sizing: border-box;
-          block-size: 100%;
+          block-size: 100dvh;
           inline-size: 100%;
           overflow-x: auto;
           overflow-y: hidden;
@@ -1152,12 +1164,12 @@ column-view!: &column-a
   width: 12
   tile: inspector-tile
 
-board-view!: &demo-board
+board!:
   this: about:blank
   name: "demo"
   column: column-a
 
-board-view!:
+board!:
   this: about:blank
   column: column-b
 

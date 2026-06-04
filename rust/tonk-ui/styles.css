@@ -223,33 +223,35 @@ tonk-notation {
     width: 100%;
 }
 
-/* The routing elements — `<tonk-diagnostics-provider>`, `<tonk-host>`,
-   `<tonk-repository>`, `<tonk-branch>` — exist only to wire context and
-   event bubbling for their descendants. They must not occupy layout, so
-   `display: contents` removes their boxes entirely and their children
-   participate in the page layout directly. (This also keeps a percentage
-   /flex height chain from breaking on a stray wrapper.) */
-tonk-diagnostics-provider,
-tonk-host,
+/* The routing elements — `<tonk-host>`, `<tonk-repository>`,
+   `<tonk-branch>` — only wire context and event bubbling; they must not
+   occupy layout, so `display: contents` removes their boxes and their
+   children participate in the page layout directly. */
+tonk-host:has(.display-route),
 tonk-repository.display-route,
 .display-route > tonk-branch {
     display: contents;
 }
 
-/* Bare display route fill model. The view should fill the viewport at
-   minimum and grow with its content (the page is the scroll container).
-   `min-height: 100dvh` is viewport-relative, so it resolves without a
-   definite-height ancestor chain — robust against the `display: contents`
-   wrappers above. The mount is a flex column and each level below flexes
-   to fill, so a workspace stretches to the bottom (pinning its tab strip)
-   while an over-tall view (e.g. the inspector) grows past the viewport
-   and the page scrolls.
+/* Bare display route: the route only establishes a viewport-height box
+   for the view to live in — `min-height: 100dvh` (viewport-relative, so
+   it resolves without a definite-height ancestor chain, robust against
+   the `display: contents` wrappers) and a flex column so a view that
+   claims `flex: 1` / `100dvh` can fill it. The PAGE is the scroll
+   container, so a view taller than the screen (the inspector) just
+   scrolls the page.
+
+   Crucially the chain stops at `tonk-view`: the view's own root element
+   owns its layout. A view that wants to fill (the workspace) sets
+   `min-height: 100dvh` on its root; one that is a fixed internal
+   scroller (the board's `tonk-strip`) sets its own `block-size: 100dvh`
+   and `flex-direction: row`. Imposing flex/`flex-direction` from here
+   would clobber those — which is why carousel-wrapped views (deeper in
+   the tree, untouched by this rule) behaved correctly while bare ones
+   broke.
 
    Child combinators keep this scoped to the route's OWN mount slot, not
-   every nested `<tonk-display>`/`<tonk-view>` deeper in the tree, so a
-   view template can still make its inner wrappers transparent (e.g.
-   board-view flattening the strip's child displays with
-   `display: contents`). */
+   every nested `<tonk-display>`/`<tonk-view>` deeper in the tree. */
 .display-route > tonk-branch > .display-view-slot {
     display: flex;
     flex-direction: column;
@@ -262,16 +264,15 @@ tonk-repository.display-route,
     flex: 1 1 auto;
     min-height: 0;
 }
-/* The view template's own root (the direct child of `tonk-view`) is the
-   last link in the fill chain. It carries its own layout (e.g. the
-   workspace's flex column), so flex it to fill `tonk-view` — without
-   this it would size to its content and a workspace would stop short of
-   the viewport bottom. `flex-grow` only stretches it within the
-   `min-height: 100dvh` mount, so an over-tall view still grows past the
-   viewport and the page scrolls. */
+/* The PAGE-LEVEL view root gets a viewport-min height so a view that
+   wants to fill (the workspace pinning its tab strip to the bottom)
+   does — but ONLY here, where the view is the route's own page. The
+   same view mounted elsewhere (a board tile) stays content-sized. Only
+   `min-height` is set, never `display` / `flex-direction`: the view
+   root keeps its own layout mode (e.g. the board strip's
+   `flex-direction: row`), so this doesn't clobber it. */
 .display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view > * {
-    flex: 1 1 auto;
-    min-height: 0;
+    min-height: 100dvh;
 }
 
 /* When a view or notation slide lives inside the carousel
@@ -304,17 +305,13 @@ wa-carousel-item tonk-notation {
    sizes to the available space rather than a 16/9 letterbox. */
 wa-carousel.seamless {
     --aspect-ratio: auto;
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    min-height: 0;
+    display: block;
+    height: 100%;
     position: relative;
 }
 wa-carousel.seamless::part(base) {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    min-height: 0;
+    display: block;
+    height: 100%;
     gap: 0;
     padding: 0;
 }
@@ -322,26 +319,24 @@ wa-carousel.seamless::part(base) {
    at content height — the default grid `align-items: center` is what
    letterboxed a full-height view into a short, centered band. */
 wa-carousel.seamless::part(scroll-container) {
-    flex: 1 1 auto;
-    min-height: 0;
+    height: 100%;
     align-items: stretch;
 }
-/* Each slide, and the nested `<tonk-display>` chain inside it, flexes to
-   fill the carousel so a directory instance occupies the whole viewport
-   just like a bare single-entity route. Flex (not `height: 100%`)
-   propagates the fill without a definite-height ancestor at every level,
-   matching the route's fill model above. */
+/* Each slide, and the nested `<tonk-display>` chain inside it, fills the
+   carousel-item so a directory instance occupies the whole viewport just
+   like a bare single-entity route. The bare route gets a full-height
+   chain from the `.display-route > … > tonk-view` rule above, but a
+   carousel-nested display is not a direct child of that chain, so it
+   would otherwise collapse to its content size (a cramped column). */
 wa-carousel.seamless > wa-carousel-item {
-    display: flex;
-    flex-direction: column;
+    height: 100%;
 }
 wa-carousel.seamless > wa-carousel-item > tonk-display,
 wa-carousel.seamless > wa-carousel-item > tonk-display > tonk-view,
 wa-carousel.seamless > wa-carousel-item > tonk-display > tonk-notation {
-    display: flex;
-    flex-direction: column;
     flex: 1 1 auto;
     width: 100%;
+    height: 100%;
     min-height: 0;
 }
 /* Pagination dots: overlay on the right edge, centered vertically, in a
