@@ -1647,8 +1647,21 @@ mod tests {
         // concept (the query predicate). The view concept declares a
         // `type` attribute, so `view_by_model_query` projects `type` and
         // each view frame carries the value that decides portal mode.
+        //
+        // `resolve_model` resolves a bare name through the Name concept
+        // first (`id:<name>` → `dialog.name/referent`), then runs the
+        // Phase-1 concept query by `this`. So each bare-name resolution
+        // is TWO queries: a name lookup, then the concept lookup. The
+        // fixture answers in dispatch order, so a name-resolution row
+        // precedes each concept row. `mount_display` uses bare names for
+        // both `model` and `view`, hence two name/concept pairs.
+        fn name_row(entity: &str) -> JsValue {
+            rows(&[("did:key:zName", &[("entity", entity)])])
+        }
         fn resolve_responses() -> Vec<JsValue> {
             vec![
+                // model name `counter` → did:key:zModel
+                name_row("did:key:zModel"),
                 rows(&[(
                     "did:key:zModel",
                     &[(
@@ -1656,6 +1669,8 @@ mod tests {
                         r#"{"with":{"count":{"the":"counter/count","as":"UnsignedInteger","cardinality":"one"}}}"#,
                     )],
                 )]),
+                // view name `counter` → did:key:zViewConcept
+                name_row("did:key:zViewConcept"),
                 rows(&[(
                     "did:key:zViewConcept",
                     &[(
