@@ -144,28 +144,23 @@
                 await controlled;
             };
 
-            // Trigger sync - uses Background Sync API if available, otherwise falls back to /api/sync
-            self.sync = async () => {
-                if ("serviceWorker" in navigator && "SyncManager" in window) {
-                    try {
-                        const registration =
-                            await navigator.serviceWorker.ready;
-                        await registration.sync.register("tonk-sync");
-                        console.log("[Tonk] Background sync registered");
-                        return;
-                    } catch (e) {
-                        console.warn(
-                            "[Tonk] Background sync registration failed, falling back:",
-                            e,
-                        );
-                    }
+            // Register a one-shot background sync under `tag` so a
+            // local commit reaches its upstream even if the tab goes
+            // offline or closes before the next in-page sweep. The
+            // user agent fires the SW `sync` event when connectivity
+            // returns, retrying with backoff. Rejects where the
+            // Background Sync API is absent (Safari, Firefox) or
+            // registration fails, so the Rust controller falls back to
+            // the in-page sweep.
+            self.tonkRegisterSync = async (tag) => {
+                if (
+                    !("serviceWorker" in navigator) ||
+                    !("SyncManager" in window)
+                ) {
+                    throw new Error("Background Sync API unavailable");
                 }
-                // Fallback to direct sync call
-                const response = await fetch("/api/sync", { method: "POST" });
-                if (!response.ok) {
-                    throw new Error(`Sync failed: ${response.status}`);
-                }
-                console.log("[Tonk] Direct sync completed");
+                const registration = await navigator.serviceWorker.ready;
+                await registration.sync.register(tag);
             };
         </script>
         <!-- The following are load-bearing configuration for the Trunk build tool

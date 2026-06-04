@@ -15,17 +15,18 @@
 //!   of edits collapses into a single sync.
 //!
 //! On by default for every repository; an explicit per-repository
-//! `off` preference pauses it (see [`is_enabled`] / [`set_enabled`]),
-//! leaving only the manual Pull/Push buttons.
-
-use std::collections::HashMap;
+//! `off` preference pauses it (see [`is_enabled`] / [`set_enabled`]).
+//! Pausing stops pull/push — but the background triggers still fetch
+//! the upstream head read-only on each tick, so the sync-state badges
+//! keep showing where local sits relative to remote. A frozen badge
+//! would make the pause indicator useless.
 
 use leptos::ev;
 use leptos::logging::log;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_use::{use_debounce_fn, use_event_listener, use_interval_fn};
-use tonk_worker::BranchConfiguration;
+use wasm_bindgen::prelude::*;
 
 use crate::api;
 
@@ -40,6 +41,15 @@ const COMMIT_DEBOUNCE_MS: f64 = 1_000.0;
 /// DOM event a successful local commit dispatches on `window`. The
 /// controller listens for it to sync shortly after a write.
 pub const COMMITTED_EVENT: &str = "tonk:committed";
+
+/// DOM event the controller dispatches on `window` to ask the active
+/// repository's branch rows to re-read their read-only sync status.
+/// Fired on each background trigger while auto-sync is paused, so the
+/// sync-state badges keep tracking remote drift even though nothing is
+/// being pulled or pushed. The active repository name rides in the
+/// event's `detail` as a plain string so a row can ignore events for
+/// other repositories.
+pub const STATUS_REFRESH_EVENT: &str = "tonk:status-refresh";
 
 /// Per-repository `localStorage` key holding the auto-sync pause
 /// preference. Absent means on (the default).
@@ -82,17 +92,95 @@ pub fn set_enabled(repo: &str, enabled: bool) -> bool {
     storage.set_item(&pref_key(repo), value).is_ok()
 }
 
-/// Branch names in `branches` that have an upstream, sorted for a
-/// stable sweep order. Branches without an upstream have nowhere to
-/// sync to, so they're skipped.
-pub fn branches_to_sync(branches: &HashMap<String, BranchConfiguration>) -> Vec<String> {
-    let mut names: Vec<String> = branches
-        .iter()
-        .filter(|(_, config)| config.upstream.is_some())
-        .map(|(name, _)| name.clone())
-        .collect();
-    names.sort();
-    names
+#[wasm_bindgen]
+extern "C" {
+    /// Register a one-shot background sync under `tag` via the page's
+    /// `self.tonkRegisterSync` (defined in `index.html`). Resolves once
+    /// the user agent has accepted the registration; rejects where the
+    /// Background Sync API is unavailable (Safari, Firefox) or
+    /// registration fails, which routes the caller to the in-page
+    /// sweep.
+    #[wasm_bindgen(js_namespace = window, catch)]
+    async fn tonkRegisterSync(tag: &str) -> Result<JsValue, JsValue>;
+}
+
+/// The background-sync tag for `repo`. The worker parses the repo back
+/// out of it ([`tonk_worker::repo_from_sync_tag`]); the identity has
+/// to ride in the tag because a `sync` event delivers only a string.
+fn sync_tag(repo: &str) -> String {
+    format!("tonk-sync:{repo}")
+}
+
+/// Whether this browser offers one-shot Background Sync. Chromium
+/// does; Safari and Firefox don't, and there the commit path uses the
+/// in-page sweep instead. A seam so [`commit_action`] is unit-testable
+/// without a browser.
+fn sync_manager_available() -> bool {
+    js_sys::Reflect::has(&window(), &JsValue::from_str("SyncManager")).unwrap_or(false)
+}
+
+/// What the debounced post-commit trigger should do, given whether
+/// auto-sync is enabled for the repo and whether the Background Sync
+/// API is available.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitAction {
+    /// Auto-sync is paused — do nothing.
+    Skip,
+    /// Register a durable one-shot background sync; the user agent
+    /// owns the retry from there, even after the tab is gone.
+    Register,
+    /// Run the in-page sweep now — the polyfill where the Background
+    /// Sync API is absent.
+    Sweep,
+}
+
+/// Decide the post-commit action. Pure so the enabled/disabled and
+/// available/absent branches are testable without a browser.
+fn commit_action(enabled: bool, sync_manager_available: bool) -> CommitAction {
+    if !enabled {
+        CommitAction::Skip
+    } else if sync_manager_available {
+        CommitAction::Register
+    } else {
+        CommitAction::Sweep
+    }
+}
+
+/// What a background trigger (interval, `online`, `visibilitychange`)
+/// should do, given whether auto-sync is enabled for the repo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SweepAction {
+    /// Auto-sync is on — pull then push every upstream branch.
+    Sync,
+    /// Auto-sync is paused — don't touch local or remote state, but
+    /// still fetch the upstream head read-only so the sync-state badges
+    /// keep reflecting where local sits relative to remote.
+    RefreshStatus,
+}
+
+/// Decide what a background trigger should do. Pure so the
+/// enabled/paused branches are testable without a browser.
+fn sweep_action(enabled: bool) -> SweepAction {
+    if enabled {
+        SweepAction::Sync
+    } else {
+        SweepAction::RefreshStatus
+    }
+}
+
+/// Ask the active repository's branch rows to re-read their read-only
+/// sync status, by dispatching [`STATUS_REFRESH_EVENT`] on `window`
+/// with `repo` in the event detail. The rows perform the actual
+/// upstream fetch (via the read-only `sync/status` route), so a paused
+/// repository still learns when remote moves out from under it.
+fn request_status_refresh(repo: &str) {
+    let init = web_sys::CustomEventInit::new();
+    init.set_detail(&JsValue::from_str(repo));
+    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(STATUS_REFRESH_EVENT, &init)
+    else {
+        return;
+    };
+    let _ = window().dispatch_event(&event);
 }
 
 /// Notify the background controller that a local commit just landed,
@@ -130,16 +218,19 @@ pub fn mount(source: Signal<Option<String>, LocalStorage>) {
             return;
         };
         // Honor the per-repository pause preference, read fresh so a
-        // toggle takes effect on the very next trigger. Paused means
-        // only the manual Pull/Push buttons act.
-        if !is_enabled(&repo) {
-            return;
+        // toggle takes effect on the very next trigger. Paused stops
+        // pull/push, but we still refresh the read-only sync status so
+        // the badges keep tracking remote drift.
+        match sweep_action(is_enabled(&repo)) {
+            SweepAction::RefreshStatus => request_status_refresh(&repo),
+            SweepAction::Sync => {
+                syncing.set(true);
+                spawn_local(async move {
+                    sweep_repository(&repo).await;
+                    syncing.set(false);
+                });
+            }
         }
-        syncing.set(true);
-        spawn_local(async move {
-            sweep_repository(&repo).await;
-            syncing.set(false);
-        });
     };
 
     // Steady interval.
@@ -155,8 +246,34 @@ pub fn mount(source: Signal<Option<String>, LocalStorage>) {
         }
     });
 
-    // Local commit — debounced so a burst of edits syncs once.
-    let debounced = use_debounce_fn(sweep, COMMIT_DEBOUNCE_MS);
+    // Local commit — debounced so a burst of edits collapses into one
+    // action. Where the Background Sync API is present we register a
+    // durable one-shot sync so the push survives the tab closing or
+    // going offline; otherwise we run the in-page sweep as the
+    // polyfill. The interval, `online`, and `visibilitychange` triggers
+    // above are untouched and keep running the in-page sweep regardless
+    // of `SyncManager` support — they cover pull and double as a push
+    // safety net.
+    let on_commit = move || {
+        let Some(repo) = source.get_untracked() else {
+            return;
+        };
+        match commit_action(is_enabled(&repo), sync_manager_available()) {
+            CommitAction::Skip => {}
+            CommitAction::Sweep => sweep(),
+            CommitAction::Register => {
+                spawn_local(async move {
+                    if tonkRegisterSync(&sync_tag(&repo)).await.is_err() {
+                        // Unsupported or registration rejected — fall
+                        // back to the in-page sweep so the commit still
+                        // reconciles before the next tick.
+                        sweep();
+                    }
+                });
+            }
+        }
+    };
+    let debounced = use_debounce_fn(on_commit, COMMIT_DEBOUNCE_MS);
     let _ = use_event_listener(
         window(),
         ev::Custom::<web_sys::Event>::new(COMMITTED_EVENT),
@@ -178,7 +295,7 @@ async fn sweep_repository(repo: &str) {
             return;
         }
     };
-    for branch in branches_to_sync(&info.branch) {
+    for branch in tonk_worker::branches_to_sync(&info.branch) {
         // The `/sync` route reports pull/push failures as a 200 with
         // `success: false` (a non-fast-forward push after divergence,
         // a fetch failure), so a transport-level `Ok` is not proof the
@@ -200,55 +317,41 @@ async fn sweep_repository(repo: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tonk_worker::UpstreamConfiguration;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    fn with_upstream() -> BranchConfiguration {
-        BranchConfiguration {
-            upstream: Some(UpstreamConfiguration {
-                remote: "origin".to_string(),
-                branch: "main".to_string(),
-            }),
-            revision: None,
-        }
-    }
-
-    fn without_upstream() -> BranchConfiguration {
-        BranchConfiguration {
-            upstream: None,
-            revision: None,
-        }
+    #[dialog_common::test]
+    fn it_skips_the_commit_action_when_auto_sync_is_paused() {
+        assert_eq!(commit_action(false, true), CommitAction::Skip);
+        assert_eq!(commit_action(false, false), CommitAction::Skip);
     }
 
     #[dialog_common::test]
-    fn it_selects_only_branches_with_an_upstream() {
-        let branches = HashMap::from([
-            ("main".to_string(), with_upstream()),
-            ("scratch".to_string(), without_upstream()),
-        ]);
-        assert_eq!(branches_to_sync(&branches), vec!["main".to_string()]);
+    fn it_registers_a_background_sync_when_enabled_and_supported() {
+        assert_eq!(commit_action(true, true), CommitAction::Register);
     }
 
     #[dialog_common::test]
-    fn it_returns_branches_sorted_for_a_stable_sweep_order() {
-        let branches = HashMap::from([
-            ("zeta".to_string(), with_upstream()),
-            ("alpha".to_string(), with_upstream()),
-        ]);
-        assert_eq!(
-            branches_to_sync(&branches),
-            vec!["alpha".to_string(), "zeta".to_string()]
-        );
+    fn it_falls_back_to_the_in_page_sweep_when_supported_api_is_absent() {
+        assert_eq!(commit_action(true, false), CommitAction::Sweep);
     }
 
     #[dialog_common::test]
-    fn it_returns_empty_when_no_branch_has_an_upstream() {
-        let branches = HashMap::from([("main".to_string(), without_upstream())]);
-        assert!(branches_to_sync(&branches).is_empty());
+    fn it_syncs_on_a_background_trigger_when_enabled() {
+        assert_eq!(sweep_action(true), SweepAction::Sync);
+    }
+
+    #[dialog_common::test]
+    fn it_refreshes_status_only_on_a_background_trigger_when_paused() {
+        assert_eq!(sweep_action(false), SweepAction::RefreshStatus);
+    }
+
+    #[dialog_common::test]
+    fn it_builds_a_sync_tag_the_worker_can_parse() {
+        assert_eq!(sync_tag("home"), "tonk-sync:home");
     }
 
     #[dialog_common::test]

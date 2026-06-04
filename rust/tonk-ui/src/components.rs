@@ -6,7 +6,6 @@
 use leptos::{logging::log, prelude::*};
 use leptos_router::location::{BrowserUrl, LocationProvider};
 use tonk_worker::{Notification, ProfileInfo};
-use wasm_bindgen::prelude::*;
 
 use crate::{api, error::TonkUiError, watch::watch};
 
@@ -47,14 +46,6 @@ use join::*;
 
 mod invite;
 use invite::*;
-
-#[wasm_bindgen]
-extern "C" {
-    /// Triggers a sync operation.
-    /// Uses Background Sync API if available, otherwise falls back to /api/sync.
-    #[wasm_bindgen(js_namespace = window, catch)]
-    pub async fn sync() -> Result<(), JsValue>;
-}
 
 /// The hosting document's service-worker Client ID, learned from
 /// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
@@ -346,13 +337,15 @@ mod tests {
         // Check remote branch state before sync
         let _inspect_result = driver.execute(inspect_script, vec![]).await?;
 
-        // Register sync using the Background Sync API
-        // This triggers the service worker's sync event handler
+        // Register sync using the Background Sync API. The tag carries
+        // the repository identity (`tonk-sync:{repo}`) so the worker's
+        // `sync` event handler knows which repo's upstream branches to
+        // sweep.
         driver
             .execute(
                 r#"
                 const registration = await navigator.serviceWorker.ready;
-                await registration.sync.register('tonk-sync');
+                await registration.sync.register('tonk-sync:home');
                 "#,
                 vec![],
             )

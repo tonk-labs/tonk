@@ -27,7 +27,9 @@ pub use repository::{
 
 mod sync;
 pub use dialog_repository::Revision;
-pub use sync::{SyncResponse, SyncStatusResponse};
+pub use sync::{
+    SyncResponse, SyncStatusResponse, branches_to_sync, repo_from_sync_tag, sync_repository,
+};
 // Re-exported so API consumers (the UI) can name the state without
 // depending on `tonk-schema` directly.
 pub use tonk_schema::SyncState;
@@ -742,6 +744,41 @@ pub mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[dialog_common::test]
+    async fn it_sweeps_a_tagged_repo_with_no_upstream_branches_as_a_no_op() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+        let repo = "test-bgsync-noupstream";
+
+        put_repo(&app, repo).await;
+
+        // No branch has an upstream, so the worker-side sweep selects
+        // nothing and runs the `/sync` route zero times — a clean
+        // resolve, not a rejection.
+        super::sync_repository(&app_state, repo)
+            .await
+            .expect("a no-upstream repo should sweep cleanly");
+    }
+
+    #[dialog_common::test]
+    async fn it_treats_a_tag_for_an_unknown_repo_as_a_no_op() {
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+
+        // Nothing to retry for a repo that does not exist, so the
+        // sweep resolves rather than rejecting.
+        super::sync_repository(&app_state, "no-such-repo")
+            .await
+            .expect("an unknown repo should resolve as a no-op");
     }
 
     #[dialog_common::test]
