@@ -1220,11 +1220,19 @@ mod dom {
             let snapshot = snapshot_template(&host).expect("snapshot");
             let plan = extract_plan(&snapshot.fragment);
             // Only the `{title}` text binding — nothing from the CSS.
+            // `{title}` is a subject field with no `{this}`, so the
+            // fragment root repeats and the binding lives in the repeat
+            // body; chrome is empty.
+            assert!(
+                plan.chrome.is_empty(),
+                "expected no chrome, got {:?}",
+                plan.chrome,
+            );
             assert_eq!(
-                plan.nodes.len(),
+                plan.repeat.body.len(),
                 1,
                 "expected one plan node (the span's title), got {:?}",
-                plan.nodes,
+                plan.repeat.body,
             );
             // The stylesheet text is untouched.
             let style = snapshot
