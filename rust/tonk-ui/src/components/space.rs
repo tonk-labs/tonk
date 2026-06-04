@@ -97,16 +97,6 @@ pub fn TonkInspector(
     // component's owner, so it tears down when the inspector unmounts.
     crate::sync_controller::mount(source);
 
-    // Open the shared invite dialog when the user clicks the
-    // share affordance. Dialog itself drives the mint and renders
-    // the URL.
-    let invite_space = use_context::<InviteSpace>().expect("InviteSpace provided by TonkShell");
-    let on_share = move |_| {
-        if let Some(name) = source.get() {
-            invite_space.set(Some(name));
-        }
-    };
-
     view! {
         <Suspense fallback=|| view! {
             <wa-spinner></wa-spinner>
@@ -121,7 +111,6 @@ pub fn TonkInspector(
                     Some(info) => Either::Left(render_space_view(
                         info,
                         source,
-                        on_share,
                     )),
                     None => Either::Right(view! {
                         <wa-callout variant="neutral">
@@ -138,18 +127,14 @@ pub fn TonkInspector(
     }
 }
 
-/// Top-level layout for a loaded [`RepositoryInfo`]: banner with
-/// share button, branches section (each as a `<wa-details>`
+/// Top-level layout for a loaded [`RepositoryInfo`]: banner with the
+/// auto-sync toggle, branches section (each as a `<wa-details>`
 /// rendered by [`BranchRow`]), remotes section (compact
 /// [`RemoteCard`] tiles).
-fn render_space_view<F>(
+fn render_space_view(
     info: RepositoryInfo,
     space_name: Signal<Option<String>, LocalStorage>,
-    on_share: F,
-) -> impl IntoView
-where
-    F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
-{
+) -> impl IntoView {
     let local_subject = info.subject.to_string();
     let space_title = info.name.clone();
 
@@ -243,18 +228,6 @@ where
                         name=move || if auto_sync_on.get() { "arrows-rotate" } else { "pause" }
                         variant="solid"
                         label="Toggle auto-sync"
-                    ></wa-icon>
-                </wa-button>
-                <wa-button
-                    variant="neutral"
-                    appearance="accent"
-                    size="small"
-                    on:click=on_share
-                >
-                    <wa-icon
-                        name="share-nodes"
-                        variant="solid"
-                        label="Invite someone to this space"
                     ></wa-icon>
                 </wa-button>
             </div>

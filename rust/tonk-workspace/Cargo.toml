@@ -33,6 +33,10 @@ web-sys = { workspace = true, features = [
   "Window",
 ] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+wasm-bindgen-test = { workspace = true }
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
   "cfg(dialog_test_native_integration)",
