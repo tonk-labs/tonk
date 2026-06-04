@@ -19,6 +19,29 @@ use tonk_schema::{SyncState, classify};
 
 use super::AppState;
 use crate::TonkWorkerError;
+use crate::broadcast::{Notification, broadcast};
+
+/// Announce on the branch's broadcast channel that its head may have
+/// moved, so subscribed UIs refresh their revision and sync-state
+/// badges without a full refetch. The channel mirrors the endpoint
+/// path ("channel name == endpoint path"). A `None` revision (branch
+/// with no commits) is skipped — there's nothing to announce.
+///
+/// Posted after a *successful* pull/push/sync. A push leaves the
+/// local head where it was, so its announcement carries the unchanged
+/// revision; listeners still re-read the read-only sync status, which
+/// is what actually flips (e.g. `ahead` → `synced`).
+fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
+    if let Some(revision) = revision {
+        broadcast(
+            &format!("/api/repository/{repo}/branch/{branch}"),
+            &Notification {
+                branch: branch.to_string(),
+                revision,
+            },
+        );
+    }
+}
 
 /// Path parameters for sync endpoints.
 #[derive(Debug, Deserialize)]
@@ -82,6 +105,7 @@ pub async fn pull(
     {
         Ok(after) => {
             log!("Pull succeeded");
+            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 before,
@@ -135,10 +159,12 @@ pub async fn push(
     {
         Ok(_) => {
             log!("Push succeeded");
+            let after = session.handle().revision();
+            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 before: before.clone(),
-                after: session.handle().revision(),
+                after,
                 error: None,
             }))
         }
@@ -273,10 +299,12 @@ pub async fn sync(
     {
         Ok(_) => {
             log!("Push succeeded");
+            let after = session.handle().revision();
+            announce_head(&params.repo, &params.branch, after.clone());
             Ok(Json(SyncResponse {
                 success: true,
                 before,
-                after: session.handle().revision(),
+                after,
                 error: None,
             }))
         }

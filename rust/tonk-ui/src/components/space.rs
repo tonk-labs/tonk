@@ -6,8 +6,8 @@ use leptos_router::{
     params::Params,
 };
 use tonk_worker::{
-    BranchConfiguration, EvaluateResponse, RemoteConfiguration, RepositoryInfo, Revision,
-    SyncState as UpstreamState,
+    BranchConfiguration, EvaluateResponse, Notification, RemoteConfiguration, RepositoryInfo,
+    Revision, SyncState as UpstreamState,
 };
 use wasm_bindgen::JsCast;
 
@@ -16,6 +16,7 @@ use crate::{
     components::{HostId, InviteSpace},
     did,
     error::TonkUiError,
+    watch::watch,
 };
 
 /// The currently-running (or last-completed) sync operation for a
@@ -140,7 +141,7 @@ pub fn TonkInspector(
     // a local write reaches the remote (and remote changes reach this
     // tab) without anyone clicking Pull/Push. Registered under this
     // component's owner, so it tears down when the inspector unmounts.
-    crate::sync_controller::mount(source, repository);
+    crate::sync_controller::mount(source);
 
     // Open the shared invite dialog when the user clicks the
     // share affordance. Dialog itself drives the mint and renders
@@ -166,7 +167,6 @@ pub fn TonkInspector(
                     Some(info) => Either::Left(render_space_view(
                         info,
                         source,
-                        repository,
                         on_share,
                     )),
                     None => Either::Right(view! {
@@ -191,7 +191,6 @@ pub fn TonkInspector(
 fn render_space_view<F>(
     info: RepositoryInfo,
     space_name: Signal<Option<String>, LocalStorage>,
-    repository: LocalResource<Result<Option<RepositoryInfo>, crate::error::TonkUiError>>,
     on_share: F,
 ) -> impl IntoView
 where
@@ -245,7 +244,6 @@ where
                     name=name
                     config=config
                     owner=BranchOwner::Repository(space_name)
-                    repository=repository
                     force_open=force_open_solo
                 />
             }
@@ -379,7 +377,6 @@ pub(super) fn BranchRow(
     /// Identifies which routing namespace this branch belongs
     /// to — see [`BranchOwner`].
     owner: BranchOwner,
-    repository: LocalResource<Result<Option<RepositoryInfo>, crate::error::TonkUiError>>,
     /// Caller may force the row to render expanded — used by the
     /// space view when there's only one branch, so a solo `meta`
     /// (or any other lone branch) still pops open by default.
@@ -395,10 +392,6 @@ pub(super) fn BranchRow(
     let upstream_label = upstream
         .as_ref()
         .map(|(remote, branch)| format!("{remote}/{branch}"));
-    let tree_pair = config.revision.as_ref().map(|rev| {
-        let full = rev.tree.to_string();
-        (full.clone(), abbreviate_tree(&full))
-    });
 
     let has_upstream = upstream.is_some();
     let is_default = force_open || name == DEFAULT_OPEN_BRANCH;
@@ -406,11 +399,15 @@ pub(super) fn BranchRow(
 
     let sync_state = RwSignal::new(SyncState::Idle);
 
+    // Local branch head, rendered as the revision badge. Seeded from
+    // the loaded config and kept live by the branch's broadcast
+    // channel (wired below), so a pull/commit/sync updates the badge
+    // in place — no resource refetch, no row remount.
+    let revision = RwSignal::new(config.revision.clone());
+
     // Where the local head sits relative to its upstream
-    // (synced/ahead/behind/diverged). Fetched read-only on mount;
-    // since the rows remount whenever the repository resource
-    // refetches — which the background controller does after every
-    // sweep — the badge stays current on the controller's tick.
+    // (synced/ahead/behind/diverged). Fetched read-only on mount,
+    // then refreshed by the same broadcast channel as the revision.
     let upstream_state = RwSignal::new(None::<UpstreamState>);
     if has_upstream
         && let BranchOwner::Repository(space_name) = &owner
@@ -421,6 +418,48 @@ pub(super) fn BranchRow(
             if let Ok(status) = api::sync_status(&repo, &branch).await {
                 upstream_state.set(Some(status.state));
             }
+        });
+    }
+
+    // Keep the revision and sync-state badges live without tearing
+    // the row down. The worker posts on this branch's channel after
+    // every pull, push, sync, and commit that moves the head (see
+    // `router::sync` / `router::evaluate`); we read the new revision
+    // straight off the payload and re-read the read-only sync status.
+    // The status round-trip is skipped when nothing could have
+    // changed — the head didn't move and we're already synced — so an
+    // idle background sync tick costs nothing.
+    if let BranchOwner::Repository(space_name) = &owner
+        && let Some(repo) = space_name.get_untracked()
+    {
+        let channel = format!("/api/repository/{repo}/branch/{branch_name}");
+        let head = watch::<Notification>(&channel);
+        let status_branch = branch_name.clone();
+        Effect::new(move |_| {
+            let Some(notification) = head.get() else {
+                return;
+            };
+            let moved =
+                revision.with_untracked(|current| current.as_ref() != Some(&notification.revision));
+            if moved {
+                revision.set(Some(notification.revision.clone()));
+            }
+            // Branches without an upstream have no sync-state badge.
+            if !has_upstream {
+                return;
+            }
+            if !moved && upstream_state.get_untracked() == Some(UpstreamState::Synced) {
+                return;
+            }
+            let repo = repo.clone();
+            let branch = status_branch.clone();
+            spawn_local(async move {
+                if let Ok(status) = api::sync_status(&repo, &branch).await
+                    && upstream_state.get_untracked() != Some(status.state)
+                {
+                    upstream_state.set(Some(status.state));
+                }
+            });
         });
     }
 
@@ -456,7 +495,12 @@ pub(super) fn BranchRow(
                             before: response.before.map(Box::new),
                             after: response.after.map(Box::new),
                         });
-                        repository.refetch();
+                        // The revision and sync-state badges refresh
+                        // off the worker's broadcast on this branch's
+                        // channel (see the subscription above), so the
+                        // success path no longer refetches the whole
+                        // repository — that would tear down the editor
+                        // cells in this row.
                     }
                     Ok(response) => {
                         sync_state.set(SyncState::Failed {
@@ -529,26 +573,7 @@ pub(super) fn BranchRow(
                         ></wa-icon>
                         { name }
                     </wa-badge>
-                    { match tree_pair.clone() {
-                        Some((full, short)) => Either::Left(view! {
-                            <wa-badge
-                                variant="neutral"
-                                appearance="filled"
-                                title=full
-                            >
-                                <wa-icon name="code-commit" slot="start"></wa-icon>
-                                { short }
-                            </wa-badge>
-                        }),
-                        None => Either::Right(view! {
-                            <wa-badge
-                                variant="neutral"
-                                appearance="filled"
-                            >
-                                "no commits"
-                            </wa-badge>
-                        }),
-                    } }
+                    { move || revision_badge(revision.get()) }
                 </span>
                 // Upstream relationship (synced / ahead / behind /
                 // diverged) reads as a property of the branch+rev,

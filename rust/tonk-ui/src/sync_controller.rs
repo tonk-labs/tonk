@@ -25,10 +25,9 @@ use leptos::logging::log;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_use::{use_debounce_fn, use_event_listener, use_interval_fn};
-use tonk_worker::{BranchConfiguration, RepositoryInfo};
+use tonk_worker::BranchConfiguration;
 
 use crate::api;
-use crate::error::TonkUiError;
 
 /// How often the controller sweeps the active repository's branches.
 /// One knob, tuned in one place.
@@ -111,13 +110,15 @@ pub fn notify_committed() {
 /// Call once from the component that owns the active-repository
 /// signal. The interval and event listeners are registered under
 /// the current reactive owner, so they're torn down automatically
-/// when that component unmounts. After each sweep the `repository`
-/// resource is refetched so revisions in the view reflect the new
-/// state.
-pub fn mount(
-    source: Signal<Option<String>, LocalStorage>,
-    repository: LocalResource<Result<Option<RepositoryInfo>, TonkUiError>>,
-) {
+/// when that component unmounts.
+///
+/// A sweep reconciles upstream but does *not* refetch any UI
+/// resource: subscribed components update from the worker's
+/// subscription re-poll, and the branch rows refresh their revision
+/// and sync-state badges off the per-branch broadcast the `/sync`
+/// route posts (see [`crate::components::space`]). Refetching here
+/// would tear down in-flight editor state on every tick.
+pub fn mount(source: Signal<Option<String>, LocalStorage>) {
     // One sweep at a time — a slow sync must not stack ticks.
     let syncing = RwSignal::new(false);
 
@@ -137,7 +138,6 @@ pub fn mount(
         syncing.set(true);
         spawn_local(async move {
             sweep_repository(&repo).await;
-            repository.refetch();
             syncing.set(false);
         });
     };
