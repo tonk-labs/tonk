@@ -4,28 +4,28 @@
 //! containing `/` — e.g. `id:tonk-workspace/itinerary` — are
 //! captured whole instead of being truncated at the first slash.
 //!
-//! Mounts a `<tonk-display>` element after resolving `subject` to
-//! a concrete entity URI. The route accepts either form:
+//! Mounts a `<tonk-display>` element. The `subject` segment encodes
+//! up to three attributes with `@` and `!` delimiters:
+//!
+//! - `{model}` — directory mode: only `model` is set, so the element
+//!   renders every instance of the model (e.g. `display/work:space`).
+//! - `{entity}@{model}` — `entity` + `model` (e.g.
+//!   `display/id:x@trip`).
+//! - `{entity}@{model}!{view}` — all three (e.g.
+//!   `display/id:x@trip!tonk:view`).
+//!
+//! The entity part resolves to a concrete URI before mounting:
 //!
 //! - **Entity URI** — anything containing a `:` (e.g. a `did:key:…`
-//!   or `concept:…` URI). Used verbatim as the element's `entity`
-//!   attribute. No lookup happens.
-//!
+//!   or `id:…` URI). Used verbatim. No lookup happens.
 //! - **Name** — a bare bookmark (e.g. `demo`). The route queries the
-//!   branch for a `Name` row whose `this` equals `id:<subject>` and
-//!   reads its `entity` field. The resolved URI becomes the
-//!   element's `entity` attribute. Missing name ⇒ a 404 section is
-//!   rendered and the element is never mounted.
+//!   branch for a `Name` row whose `this` equals `id:<name>` and
+//!   reads its `entity` field. Missing name ⇒ a 404 section is
+//!   rendered and the element is never mounted. (Directory mode
+//!   supplies no entity, so there is nothing to resolve.)
 //!
-//! Query parameters carry the optional view/model selection:
-//!
-//! - `?view=<name>` — display name, forwarded as the element's
-//!   `view` attribute. If omitted, the element falls back to its
-//!   built-in generic rendering (one `<dl>` row per concept field).
-//! - `?model=<concept>` — concept name or URI, forwarded as the
-//!   element's `model` attribute. If omitted, the element queries
-//!   every attribute on the entity instead of going through a
-//!   concept descriptor.
+//! The model and view parts pass through verbatim as the `model` /
+//! `view` attributes.
 //!
 //! Doing name resolution at the route (rather than inside
 //! `<tonk-display>`) keeps the element decoupled from the routing
@@ -36,7 +36,7 @@
 //! express cleanly.
 
 use leptos::prelude::*;
-use leptos_router::hooks::{use_params, use_query_map};
+use leptos_router::hooks::use_params;
 use leptos_router::params::Params;
 use reqwest::StatusCode;
 use serde_json::json;
@@ -51,15 +51,14 @@ pub struct TonkDisplayParams {
     subject: Option<String>,
 }
 
-/// Single-entity display route. Resolves the path's `:subject`
-/// (either an entity URI or a bookmark name) to an entity URI,
-/// then mounts a `<tonk-display>` element with the resolved URI
-/// plus any `?view=` / `?model=` query parameters as attributes.
+/// Display route. Parses the path's `subject` segment into
+/// `entity`/`model`/`view` (see the module docs), resolves the
+/// optional entity to a URI, and mounts a `<tonk-display>` with those
+/// attributes. With no entity it is directory mode (only `model`).
 #[component]
 #[allow(clippy::unused_unit)]
 pub fn TonkDisplayView() -> impl IntoView {
     let params = use_params::<TonkDisplayParams>();
-    let query_map = use_query_map();
 
     let space_name = Signal::derive_local(move || {
         params
@@ -75,45 +74,53 @@ pub fn TonkDisplayView() -> impl IntoView {
             .and_then(|p| p.branch)
             .filter(|s| !s.is_empty())
     });
-    let subject = Signal::derive_local(move || {
+    // The `:subject` segment encodes up to three attributes:
+    //   `{model}`                 → directory mode: only `model`.
+    //   `{entity}@{model}`        → `entity` + `model`.
+    //   `{entity}@{model}!{view}` → `entity` + `model` + `view`.
+    // `@` separates the (optional) entity from the model; `!`
+    // separates the (optional) view. The entity may be a bookmark
+    // name (resolved below); the model/view pass through verbatim.
+    let segment = Signal::derive_local(move || {
         params
             .get()
             .ok()
             .and_then(|p| p.subject)
             .filter(|s| !s.is_empty())
     });
-    let view_name = Signal::derive_local(move || {
-        query_map
+    let parsed = Signal::derive_local(move || segment.get().map(|s| parse_subject(&s)));
+    let entity_name = Signal::derive_local(move || {
+        parsed
             .get()
-            .get("view")
-            .as_deref()
-            .map(str::to_owned)
+            .and_then(|p| p.entity)
             .filter(|s| !s.is_empty())
     });
-    let model_name = Signal::derive_local(move || {
-        query_map
-            .get()
-            .get("model")
-            .as_deref()
-            .map(str::to_owned)
-            .filter(|s| !s.is_empty())
-    });
+    let model_name =
+        Signal::derive_local(move || parsed.get().map(|p| p.model).filter(|s| !s.is_empty()));
+    let view_name =
+        Signal::derive_local(move || parsed.get().and_then(|p| p.view).filter(|s| !s.is_empty()));
 
-    // Resolve `:subject` → entity URI. URIs pass through; names hit
-    // the worker via a `Name` query. The Suspense below waits on
+    // Resolve the entity part (if present) → entity URI. URIs pass
+    // through; names hit the worker via a `Name` query. In directory
+    // mode (no `@`, so no entity) this resolves to `None` and the
+    // element mounts with only `model`. The Suspense below waits on
     // the resolve before rendering anything substantive.
     let resolved_entity = LocalResource::new(move || {
         let space = space_name.get();
         let branch = branch_name.get();
-        let subject = subject.get();
+        let entity = entity_name.get();
         async move {
-            let (Some(space), Some(branch), Some(subject)) = (space, branch, subject) else {
+            let Some(entity) = entity else {
+                // Directory mode: no entity to resolve.
                 return Ok::<Option<String>, TonkUiError>(None);
             };
-            if looks_like_uri(&subject) {
-                return Ok(Some(subject));
+            let (Some(space), Some(branch)) = (space, branch) else {
+                return Ok(None);
+            };
+            if looks_like_uri(&entity) {
+                return Ok(Some(entity));
             }
-            resolve_name(&space, &branch, &subject).await
+            resolve_name(&space, &branch, &entity).await
         }
     });
 
@@ -134,8 +141,12 @@ pub fn TonkDisplayView() -> impl IntoView {
         };
         let document = leptos::prelude::document();
         slot.set_inner_html("");
+        // An entity name was given in the path but did not resolve →
+        // 404. (Directory mode supplies no entity name, so `None` there
+        // is expected, not a miss.)
+        let unresolved = entity_name.get().is_some() && matches!(result, Ok(None));
         match result {
-            Ok(Some(uri)) => {
+            Ok(uri) if !unresolved => {
                 let host = match document.create_element("tonk-display") {
                     Ok(el) => el,
                     Err(_) => return,
@@ -143,21 +154,27 @@ pub fn TonkDisplayView() -> impl IntoView {
                 // Space and branch come from the surrounding
                 // <tonk-repository> / <tonk-branch> ancestors via
                 // event-annotation; no attributes needed on the
-                // element itself.
-                let _ = host.set_attribute("entity", &uri);
-                if let Some(v) = view_name.get() {
-                    let _ = host.set_attribute("view", &v);
+                // element itself. `entity` is set only when present
+                // (absent in directory mode).
+                if let Some(uri) = uri {
+                    let _ = host.set_attribute("entity", &uri);
                 }
                 if let Some(m) = model_name.get() {
                     let _ = host.set_attribute("model", &m);
                 }
+                if let Some(v) = view_name.get() {
+                    let _ = host.set_attribute("view", &v);
+                }
                 let _ = slot.append_child(&host);
             }
-            Ok(None) => {
+            Ok(_) => {
                 // Unresolved bookmark — render a 404 inline.
                 if let Ok(section) = document.create_element("section") {
                     let _ = section.set_attribute("class", "not-found");
-                    let label = format!("No entity is named {}", subject.get().unwrap_or_default());
+                    let label = format!(
+                        "No entity is named {}",
+                        entity_name.get().unwrap_or_default()
+                    );
                     section.set_text_content(Some(&label));
                     let _ = slot.append_child(&section);
                 }
@@ -184,6 +201,43 @@ pub fn TonkDisplayView() -> impl IntoView {
                 <div class="display-view-slot" node_ref=mount></div>
             </tonk-branch>
         </tonk-repository>
+    }
+}
+
+/// The `<tonk-display>` attributes encoded in a display-route path
+/// segment. `model` is always present; `entity` and `view` are
+/// optional.
+#[derive(Clone)]
+struct Subject {
+    entity: Option<String>,
+    model: String,
+    view: Option<String>,
+}
+
+/// Parse a display-route path segment into its attributes. Grammar:
+///
+/// - `{model}`                 → `entity: None, model, view: None`
+/// - `{entity}@{model}`        → `entity, model, view: None`
+/// - `{entity}@{model}!{view}` → `entity, model, view`
+///
+/// `@` separates an optional entity from the model; `!` separates an
+/// optional view. Entity URIs / model / view names may contain `:`
+/// and `/`, but not `@` or `!`, so the split is unambiguous. The view
+/// is split off first so a `!` after the model is honored even when
+/// there is no `@`.
+fn parse_subject(segment: &str) -> Subject {
+    let (head, view) = match segment.split_once('!') {
+        Some((head, view)) => (head, Some(view.to_owned())),
+        None => (segment, None),
+    };
+    let (entity, model) = match head.split_once('@') {
+        Some((entity, model)) => (Some(entity.to_owned()), model.to_owned()),
+        None => (None, head.to_owned()),
+    };
+    Subject {
+        entity,
+        model,
+        view,
     }
 }
 
