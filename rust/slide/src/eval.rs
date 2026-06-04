@@ -1,7 +1,7 @@
 //! `slide eval` — read a notation document, evaluate it against
 //! the local site, and render the response.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt as _;
@@ -89,8 +89,8 @@ pub struct Outcome {
     pub committed: bool,
 }
 
-/// Failure modes for [`run_against_cwd`] / [`run_against_site`].
-/// Each maps onto a CLI exit code via [`Self::exit_code`].
+/// Failure modes for [`run_against_site`]. Each maps onto a CLI
+/// exit code via [`Self::exit_code`].
 #[derive(Debug, Error)]
 pub enum EvalError {
     /// Source failed to parse — diagnostics are joined into the
@@ -121,20 +121,6 @@ impl EvalError {
             EvalError::Io(_) => ExitCode::IoError,
         }
     }
-}
-
-/// Evaluate `source` against the site discovered by walking up
-/// from `start`. Convenience wrapper around
-/// [`run_against_site`].
-pub async fn run_against_cwd(
-    start: &Path,
-    source: Source,
-    options: Options,
-) -> Result<Outcome, EvalError> {
-    let site = SlideSite::discover_and_open(start)
-        .await
-        .map_err(|e| EvalError::Io(e.to_string()))?;
-    run_against_site(&site, source, options).await
 }
 
 /// Evaluate `source` against an already-opened [`SlideSite`].

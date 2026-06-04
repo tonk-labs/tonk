@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use slide::auto_sync;
 use slide::eval::{self, EvalError, Source};
 use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
@@ -274,6 +275,13 @@ struct EvalArgs {
     /// Omit to read from a piped stdin.
     #[arg(value_name = "PATH")]
     path: Option<String>,
+
+    /// Skip the automatic pull-before / push-after that wraps a
+    /// committing eval when an upstream is configured. The manual
+    /// `slide pull` / `slide push` flow stays available. Also
+    /// settable via the `SLIDE_NO_SYNC` environment variable.
+    #[arg(long = "no-sync")]
+    no_sync: bool,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -365,7 +373,13 @@ async fn eval(args: EvalArgs) -> ExitCode {
         quiet: args.quiet,
     };
 
-    match eval::run_against_cwd(&cwd, source, options).await {
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    let sync = auto_sync::enabled(args.no_sync);
+    match auto_sync::run_eval(&site, source, options, sync).await {
         Ok(outcome) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(outcome.stdout.as_bytes()) {
