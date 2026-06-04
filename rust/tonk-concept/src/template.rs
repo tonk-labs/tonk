@@ -758,6 +758,36 @@ mod dom {
     ///
     /// Mutates `fragment` in place.
     pub fn extract_plan(fragment: &DocumentFragment) -> BindingPlan {
+        let bindings = collect_bindings(fragment);
+        // Fold flat bindings into the iteration-aware plan tree, then
+        // split it around the per-conclusion repeat element. Iteration
+        // roots inside the body are discovered by the LCA of every
+        // binding referencing the same field. The fold and split are
+        // pure (operate on the collected `bindings` vec), which is why
+        // they live outside the wasm-only `dom` module and get
+        // unit-tested natively.
+        let repeat_root = super::this_repeat_root(&bindings);
+        super::split_plan(bindings, repeat_root)
+    }
+
+    /// Like [`extract_plan`] but for a **self-repeating** consumer
+    /// (`<tonk-concept>`) that clones the whole template per conclusion
+    /// itself. It does not want the `{this}` chrome/repeat split — a
+    /// subject ref like `model={model}` would otherwise make the
+    /// fragment-root element the repeat node and rebase every binding's
+    /// path relative to it, which the whole-fragment-cloning concept
+    /// renderer would then mis-navigate. Forcing `repeat_root = None`
+    /// keeps every node in `repeat.body` with fragment-relative paths.
+    pub fn extract_row_plan(fragment: &DocumentFragment) -> BindingPlan {
+        let bindings = collect_bindings(fragment);
+        super::split_plan(bindings, None)
+    }
+
+    /// Walk a fragment, split interpolated text nodes into per-segment
+    /// text nodes (mutating `fragment` in place), and return the flat
+    /// list of bindings. Shared by [`extract_plan`] and
+    /// [`extract_row_plan`].
+    fn collect_bindings(fragment: &DocumentFragment) -> Vec<Binding> {
         let mut bindings: Vec<Binding> = Vec::new();
         // (Path, NodeKind) snapshot — collect first, mutate after,
         // because mutating during walk invalidates the iterator.
@@ -893,15 +923,7 @@ mod dom {
             }
         }
 
-        // Fold flat bindings into the iteration-aware plan tree, then
-        // split it around the per-conclusion repeat element. Iteration
-        // roots inside the body are discovered by the LCA of every
-        // binding referencing the same field. The fold and split are
-        // pure (operate on the collected `bindings` vec), which is why
-        // they live outside the wasm-only `dom` module and get
-        // unit-tested natively.
-        let repeat_root = super::this_repeat_root(&bindings);
-        super::split_plan(bindings, repeat_root)
+        bindings
     }
 
     /// Walk a node and its descendants, calling `visit(path, node)`
@@ -1254,7 +1276,7 @@ mod dom {
 
 #[cfg(target_arch = "wasm32")]
 pub use dom::{
-    Snapshot, apply_attribute_binding, extract_plan, navigate, render_segments,
+    Snapshot, apply_attribute_binding, extract_plan, extract_row_plan, navigate, render_segments,
     render_segments_with_shadow, single_field_value, snapshot_template,
 };
 

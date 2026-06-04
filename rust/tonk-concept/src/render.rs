@@ -87,9 +87,13 @@ impl Renderer {
     /// A `<tonk-concept>` shelf clones the **whole template** per
     /// conclusion (its own row loop), so it consumes `plan.repeat.body`
     /// — the per-conclusion body — and never the chrome/repeat split a
-    /// `<tonk-display>` uses. Concept row templates do not carry `{this}`
-    /// markers, so the split leaves every node in `repeat.body` with
-    /// fragment-relative paths (`repeat.path == None`).
+    /// `<tonk-display>` uses. The plan must come from
+    /// [`crate::template::extract_row_plan`], which forces
+    /// `repeat.path == None` so every node stays in `repeat.body` with
+    /// fragment-relative paths the whole-fragment clone can navigate.
+    /// (Plain [`crate::template::extract_plan`] would rebase paths under
+    /// a subject ref like `model={model}`, which this renderer would
+    /// then mis-navigate.)
     pub fn new(plan: BindingPlan, template: DocumentFragment, container: Element) -> Self {
         Self {
             plan,
@@ -543,7 +547,7 @@ fn collect_values(value: Option<Ipld>) -> Vec<Ipld> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::template::{extract_plan, snapshot_template};
+    use crate::template::{extract_row_plan, snapshot_template};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -566,7 +570,7 @@ mod tests {
             .append_child(&host)
             .expect("attach host");
         let snapshot = snapshot_template(&host).expect("snapshot");
-        let plan = extract_plan(&snapshot.fragment);
+        let plan = extract_row_plan(&snapshot.fragment);
         (
             host,
             Renderer::new(plan, snapshot.fragment, snapshot.container),

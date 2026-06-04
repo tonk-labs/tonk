@@ -28,7 +28,7 @@ use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, window};
 use crate::error::{ErrorDetail, ErrorKind};
 use crate::render::Renderer;
 use crate::resolve::{ParsedSource, parse_source, phase1_query, phase2_query};
-use crate::template::{BindingPlan, extract_plan, snapshot_template};
+use crate::template::{BindingPlan, extract_row_plan, snapshot_template};
 
 /// Internal lifecycle state shared across async closures.
 struct Inner {
@@ -90,7 +90,7 @@ impl CustomElement for TonkConcept {
                 return;
             }
         };
-        let plan = extract_plan(&snapshot.fragment);
+        let plan = extract_row_plan(&snapshot.fragment);
 
         let state = Rc::new(RefCell::new(Inner::new()));
         {
