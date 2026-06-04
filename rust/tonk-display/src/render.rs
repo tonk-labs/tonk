@@ -1,36 +1,45 @@
-//! Single-row DOM renderer used by `<tonk-view>`. Maintains a
-//! mounted-state tree mirroring the [`BindingPlan`] tree, so
-//! repeated `apply` calls update the DOM in place rather than
-//! re-cloning the template every frame.
+//! DOM renderer for a `<tonk-view>` frame. A frame is a list of
+//! folded conclusions — one per subject — and the renderer maintains a
+//! mounted-state tree so repeated `apply` calls update the DOM in place
+//! rather than re-cloning the template every frame.
 //!
-//! Three primitives:
+//! The template is split (by [`tonk_concept::template::split_plan`])
+//! into two halves:
 //!
-//! - **MountedBinding** caches the last rendered string for each
-//!   placeholder; subsequent applies skip the write when the
-//!   value hasn't changed, preserving the text/attribute node's
-//!   identity (and any imperative state authors attached to it).
-//! - **MountedIteration** holds a `BTreeMap` of rows keyed by the
-//!   iteration value's string form, plus a comment-node anchor at
-//!   the iteration's slot in the DOM. New keys clone the template
-//!   and insert at the sorted position; vanished keys remove their
-//!   row; surviving keys recurse into their body to update inner
-//!   bindings/iterations in place.
-//! - The mounted tree is built lazily on the first `apply` and
-//!   reused on every subsequent one. Tearing down (e.g. element
-//!   detach) drops the tree; the next apply rebuilds from scratch.
+//! - **chrome** — bindings outside the per-conclusion repeat element.
+//!   Rendered once against the lead conclusion (e.g. a sheet title
+//!   surrounding a repeated row).
+//! - **repeat** — the element cloned once per conclusion. The renderer
+//!   keys rows by the conclusion's `this`, clones the repeat element
+//!   (or, when no single element encloses the references, the whole
+//!   fragment), renders the repeat body against that conclusion, and
+//!   stamps `with=<this>` on the clone so the repeat boundary is
+//!   inspectable.
 //!
-//! Entity URIs are unique per cardinality-many tuple so they make
-//! excellent keys; DOM order follows BTreeMap's lexicographic
-//! ordering, which gives us deterministic positions across applies
-//! without needing to negotiate "what order did the worker send
-//! them in?"
+//! Inside a repeat row, cardinality-many *subject fields* still iterate
+//! their values via [`MountedNode::Iteration`] — `{this}` chooses the
+//! repeat element, a many-valued `{tags}` repeats a subtree within one
+//! conclusion.
+//!
+//! Three update primitives:
+//!
+//! - **MountedBinding** caches the last rendered string and skips the
+//!   write when the value is unchanged, preserving node identity.
+//! - **MountedIteration** keys rows by the value's string form, cloning
+//!   new keys and detaching vanished ones.
+//! - **MountedRepeat** keys rows by conclusion `this`, the same way, so
+//!   adding/removing a subject touches only its row.
+//!
+//! Rows build **detached** and insert with a single `insertBefore`, so
+//! custom elements inside a row mount exactly once (a move would fire
+//! `disconnected`/`connected` and double-mount nested `<tonk-display>`).
 
 use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
 use tonk_concept::template::{
-    Binding, BindingKind, BindingPlan, PlanNode, Snapshot, apply_attribute_binding, extract_plan,
-    navigate, render_segments_with_shadow, single_field_value,
+    Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, Snapshot, apply_attribute_binding,
+    extract_plan, navigate, render_segments_with_shadow, single_field_value,
 };
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
@@ -38,102 +47,93 @@ use web_sys::{Document, DocumentFragment, Element, Node, window};
 
 use crate::events::preprocess::{self, Bindings};
 
-/// Stateful renderer for one entity. Holds the template,
-/// extracted plan, and (after the first apply) the mounted-state
-/// tree mirroring the plan.
+/// Stateful renderer for one `<tonk-view>`. Holds the template, the
+/// split plan, and (after the first apply) the mounted-state tree.
 pub struct Renderer {
     /// Where the rendered fragment lives.
     host: Element,
-    /// Cloneable template fragment captured at construction time.
-    /// Used for the initial mount and for cloning iteration-root
-    /// subtrees on the fly when new iteration values appear.
+    /// Cloneable template fragment captured at construction time. Used
+    /// for the initial mount and for cloning repeat rows / iteration
+    /// subtrees on the fly.
     template: DocumentFragment,
-    /// Binding plan extracted from `template` at construction time.
+    /// Split binding plan extracted from `template` at construction.
     plan: BindingPlan,
     /// Event-handler bindings discovered on the template by the
-    /// preprocess pass. Exposed via [`Renderer::event_bindings`]
-    /// so the host element can resolve concept descriptors and
-    /// install delegation listeners.
+    /// preprocess pass.
     event_bindings: Bindings,
-    /// The currently mounted state. `None` before the first apply;
-    /// `Some` thereafter. Dropping it (e.g. when the element
-    /// detaches) discards every cached value; the next apply will
-    /// rebuild from scratch.
+    /// Mounted state. `None` before the first apply; `Some` after.
+    /// Dropped on detach; the next apply rebuilds from scratch.
     mounted: Option<MountedScope>,
 }
 
-/// The top-level mounted scope — one `Renderer` has exactly one.
-/// Holds the live root cloned from the template plus the mounted
-/// nodes mirroring `plan.nodes`.
+/// Top-level mounted state — one per `Renderer`. Holds the live root
+/// cloned from the template, the chrome nodes (rendered once), and the
+/// per-conclusion repeat.
 struct MountedScope {
-    /// Live root in the DOM. We hold this for navigate() — the
-    /// browser owns it via parent chain once appended.
+    /// Live root in the DOM (the cloned fragment, held for navigate()).
     root: Node,
-    /// Mirror of `plan.nodes`, in lockstep order.
-    nodes: Vec<MountedNode>,
+    /// Mirror of `plan.chrome`, rendered once against the lead
+    /// conclusion.
+    chrome: Vec<MountedNode>,
+    /// The per-conclusion repeat rows.
+    repeat: MountedRepeat,
 }
 
-/// One mounted plan-tree node. Mirrors [`PlanNode`] but carries
-/// only the DOM bookkeeping needed to update in place — path /
-/// kind / segments stay on the plan node, which we walk in
-/// lockstep with the mounted tree during reconciliation.
+/// The per-conclusion repeat: a keyed set of rows, one per subject,
+/// plus the anchor marking their slot in the DOM.
+struct MountedRepeat {
+    /// Comment node marking where rows insert. Rows sit before it; it
+    /// stays put across applies.
+    anchor: Node,
+    /// Rows keyed by the conclusion's `this`. BTreeMap so DOM order is
+    /// deterministic (lexicographic by subject URI).
+    rows: BTreeMap<String, MountedRow>,
+}
+
+/// One mounted plan-tree node. Mirrors [`PlanNode`] but carries only
+/// the DOM bookkeeping needed to update in place — the plan node stays
+/// authoritative for path / kind / segments.
 enum MountedNode {
-    /// A leaf binding with its last-rendered string cached so we
-    /// can skip writes that wouldn't change anything.
+    /// A leaf binding with its last-rendered string cached.
     Binding {
-        /// The most recent rendered string. Compared against the
-        /// freshly rendered value on each apply; equal ⇒ no write.
+        /// Most recent rendered string; equal ⇒ no write.
         last_value: String,
     },
-    /// An iteration over a field's values. Owns its rows and the
-    /// comment-node anchor in the DOM that marks where new rows
-    /// get inserted before. The plan node's `field` and `body`
-    /// stay authoritative during reconciliation; we cache only
-    /// what the DOM needs.
+    /// An iteration over a subject field's values (cardinality-many
+    /// within one conclusion).
     Iteration {
-        /// Path to the iteration root in the template. Used to
-        /// clone fresh rows; the live DOM doesn't have an
-        /// iteration root element anymore (it's been replaced by
-        /// the anchor and the rows).
+        /// Absolute template path to the iteration root, for cloning.
         template_path: Vec<usize>,
-        /// Comment node marking the iteration's slot in the live
-        /// DOM. Rows insert *before* this node; removed rows
-        /// detach. The anchor stays put across applies.
+        /// Comment anchor marking the iteration's slot.
         anchor: Node,
-        /// Mounted rows, keyed by the stringified iteration value.
-        /// BTreeMap so iteration / DOM order is lexicographic by
-        /// key — deterministic regardless of input array order.
+        /// Rows keyed by the stringified iteration value.
         rows: BTreeMap<String, MountedRow>,
     },
 }
 
-/// One row inside a [`MountedNode::Iteration`]. Holds the row's
-/// live DOM root plus the mounted state of the body bindings
-/// inside it.
+/// One row inside a [`MountedRepeat`] or [`MountedNode::Iteration`].
 struct MountedRow {
-    /// The cloned iteration-root element in the live DOM. Removed
-    /// when the row vanishes.
+    /// The cloned row root in the live DOM. Removed when the row
+    /// vanishes.
     root: Node,
-    /// Mounted state for the body bindings, paths relative to the
-    /// row's `root`.
+    /// Mounted state for the body, paths relative to `root`.
     body: Vec<MountedNode>,
 }
 
+/// The conclusion a scope falls back to when the frame is empty.
+fn empty_conclusion() -> Conclusion {
+    Conclusion {
+        this: String::new(),
+        fields: BTreeMap::new(),
+    }
+}
+
 impl Renderer {
-    /// Construct a renderer from a pre-snapshotted template +
-    /// container pair. Used by `<tonk-view>` after it pulls the
-    /// host's children into a `DocumentFragment` at
-    /// `connectedCallback`. `snapshot.container` becomes the
-    /// renderer's append target.
+    /// Construct a renderer from a snapshotted template + container.
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
-        // Preprocess on<event>=<concept> attributes into
-        // data-on<event>=<concept> before plan extraction. The
-        // rewrite is a pure DOM mutation on the template fragment;
-        // iteration rows clone the rewritten subtree so every row
-        // inherits the data-prefixed form. The plan extractor
-        // ignores attributes without `{field}` interpolation, so
-        // the rewritten data-on<event> attributes pass through
-        // untouched — exactly what the delegation listener needs.
+        // Preprocess on<event>=<concept> into data-on<event> before
+        // plan extraction; the rewrite is a pure DOM mutation that
+        // iteration rows inherit via cloning.
         let event_bindings = preprocess::preprocess(&snapshot.fragment);
         let plan = extract_plan(&snapshot.fragment);
         Self {
@@ -145,33 +145,28 @@ impl Renderer {
         }
     }
 
-    /// Event-handler bindings discovered on the template — the
-    /// set of distinct event types and concept names referenced
-    /// by `on<event>=<concept>` attributes. The host element
-    /// uses these to resolve concept descriptors and install
-    /// delegation listeners.
+    /// Event-handler bindings discovered on the template.
     pub fn event_bindings(&self) -> &Bindings {
         &self.event_bindings
     }
 
-    /// Apply an entity conclusion. First call mounts the template;
-    /// subsequent calls reconcile in place — touch only the DOM
-    /// nodes whose rendered value changed and add/remove iteration
-    /// rows whose key set differs from the previous apply.
-    pub fn apply(&mut self, conclusion: &Conclusion) {
+    /// Apply an entity frame. First call mounts; subsequent calls
+    /// reconcile in place — touch only the nodes whose rendered value
+    /// changed and add/remove repeat rows whose subject set differs.
+    pub fn apply(&mut self, frame: &[Conclusion]) {
         let Some(document) = window().and_then(|w| w.document()) else {
             return;
         };
         if self.mounted.is_none() {
-            self.mount_initial(&document, conclusion);
+            self.mount_initial(&document, frame);
         } else {
-            self.update_existing(&document, conclusion);
+            self.update_existing(&document, frame);
         }
     }
 
-    /// First-apply path — clone the template fragment, build the
-    /// mounted tree from scratch, attach the clone to the host.
-    fn mount_initial(&mut self, document: &Document, conclusion: &Conclusion) {
+    /// First-apply path: clone the template, render chrome once, mount
+    /// one repeat row per conclusion, attach to the host.
+    fn mount_initial(&mut self, document: &Document, frame: &[Conclusion]) {
         let Some(fragment) = self
             .template
             .clone_node_with_deep(true)
@@ -181,99 +176,298 @@ impl Renderer {
             return;
         };
         let root: Node = fragment.clone().into();
-        let nodes = build_mounted_nodes(
+        let lead = frame.first().cloned().unwrap_or_else(empty_conclusion);
+
+        // Chrome renders once against the lead conclusion. No shadow.
+        let chrome = build_mounted_nodes(
             document,
-            &self.plan.nodes,
+            &self.plan.chrome,
             &root,
             &self.template,
             &[],
-            conclusion,
+            &lead,
             &BTreeMap::new(),
         );
 
-        // Tag the first top-level element with `data-this` for
-        // CSS / consumer hooks, matching the prior contract.
-        let children = fragment.child_nodes();
-        for i in 0..children.length() {
-            if let Some(n) = children.item(i)
-                && let Some(el) = n.dyn_ref::<Element>()
-            {
-                let _ = el.set_attribute("data-this", &conclusion.this);
-                break;
-            }
-        }
+        let repeat = mount_repeat(document, &self.plan.repeat, &root, &self.template, frame);
 
         let _ = self.host.append_child(&fragment);
-        self.mounted = Some(MountedScope { root, nodes });
+        self.mounted = Some(MountedScope {
+            root,
+            chrome,
+            repeat,
+        });
     }
 
-    /// Incremental-update path — walk the existing mounted tree
-    /// in lockstep with the plan tree and reconcile against the
-    /// new conclusion. No re-clone of the template, no DOM
-    /// destruction of nodes whose content hasn't changed.
-    fn update_existing(&mut self, document: &Document, conclusion: &Conclusion) {
+    /// Incremental-update path: reconcile chrome against the lead
+    /// conclusion and the repeat rows against the new frame.
+    fn update_existing(&mut self, document: &Document, frame: &[Conclusion]) {
         let Some(scope) = self.mounted.as_mut() else {
             return;
         };
+        let lead = frame.first().cloned().unwrap_or_else(empty_conclusion);
+
         update_nodes(
             document,
-            &self.plan.nodes,
-            &mut scope.nodes,
+            &self.plan.chrome,
+            &mut scope.chrome,
             &scope.root,
             &self.template,
-            conclusion,
+            &lead,
             &BTreeMap::new(),
         );
 
-        // `data-this` should still reflect the conclusion. The
-        // entity URI rarely changes on a `Renderer` (one entity
-        // per view) but if it does, keep the attribute current.
-        let children = scope.root.child_nodes();
-        for i in 0..children.length() {
-            if let Some(n) = children.item(i)
-                && let Some(el) = n.dyn_ref::<Element>()
+        update_repeat(
+            document,
+            &self.plan.repeat,
+            &mut scope.repeat,
+            &self.template,
+            frame,
+        );
+    }
+}
+
+/// Build the per-conclusion repeat at mount: replace the repeat element
+/// with an anchor and clone one keyed row per conclusion.
+///
+/// When `plan.path` is `Some`, the repeat element is located and
+/// replaced. When `None`, the whole fragment repeats: the anchor is
+/// appended at the fragment's end and each row clones every top-level
+/// node of the fragment.
+fn mount_repeat(
+    document: &Document,
+    plan: &RepeatPlan,
+    root: &Node,
+    template: &DocumentFragment,
+    frame: &[Conclusion],
+) -> MountedRepeat {
+    let anchor: Node = document.create_comment("tonk-repeat").into();
+    let mut rows: BTreeMap<String, MountedRow> = BTreeMap::new();
+
+    match &plan.path {
+        Some(path) => {
+            // Locate the repeat element, drop it from the live clone,
+            // put the anchor in its slot, and clone rows from the
+            // pristine template element at `path`.
+            if let Some(repeat_el) = navigate(root, path)
+                && let Some(parent) = repeat_el.parent_node()
             {
-                if el.get_attribute("data-this").as_deref() != Some(&conclusion.this) {
-                    let _ = el.set_attribute("data-this", &conclusion.this);
+                let _ = parent.insert_before(&anchor, Some(&repeat_el));
+                let _: Result<Node, _> = parent.remove_child(&repeat_el);
+                for member in frame {
+                    let key = member.this.clone();
+                    if rows.contains_key(&key) {
+                        continue;
+                    }
+                    if let Some(row) = build_repeat_row(document, plan, template, member) {
+                        let _ = parent.insert_before(&row.root, Some(&anchor));
+                        rows.insert(key, row);
+                    }
                 }
-                break;
             }
+        }
+        None => {
+            // Whole-fragment repeat — a multi-root fragment with no
+            // single enclosing element (e.g. `<h1>{a}</h1><p>{b}</p>`).
+            // There is no element to clone-per-conclusion or stamp
+            // `with=` on, so the lead conclusion renders once over the
+            // fragment's own nodes (matching the historical
+            // clone-whole-fragment contract). Single-root templates
+            // never reach here: `this_repeat_root` returns the root
+            // element path instead.
+            let lead = frame.first().cloned().unwrap_or_else(empty_conclusion);
+            let body = build_mounted_nodes(
+                document,
+                &plan.body,
+                root,
+                template,
+                &[],
+                &lead,
+                &BTreeMap::new(),
+            );
+            if let Some(first) = frame.first() {
+                rows.insert(
+                    first.this.clone(),
+                    MountedRow {
+                        root: root.clone(),
+                        body,
+                    },
+                );
+            }
+        }
+    }
+
+    MountedRepeat { anchor, rows }
+}
+
+/// Reconcile the repeat rows against a new frame: new subjects clone +
+/// mount, vanished subjects detach, surviving subjects recurse into
+/// their body.
+fn update_repeat(
+    document: &Document,
+    plan: &RepeatPlan,
+    mounted: &mut MountedRepeat,
+    template: &DocumentFragment,
+    frame: &[Conclusion],
+) {
+    let Some(parent) = mounted.anchor.parent_node() else {
+        // No anchor in the DOM — the whole-fragment (`None`) path, which
+        // tracks a single lead row. Reconcile it in place against the
+        // lead conclusion; there is nothing to add/remove.
+        if let (Some((_, row)), Some(lead)) = (mounted.rows.iter_mut().next(), frame.first()) {
+            update_nodes(
+                document,
+                &plan.body,
+                &mut row.body,
+                &row.root,
+                template,
+                lead,
+                &BTreeMap::new(),
+            );
+        }
+        return;
+    };
+
+    // Incoming subjects, keyed and deduped, in frame order.
+    let mut incoming: BTreeMap<String, Conclusion> = BTreeMap::new();
+    for member in frame {
+        incoming
+            .entry(member.this.clone())
+            .or_insert_with(|| member.clone());
+    }
+
+    // Single-row rename: when exactly one row exists whose subject
+    // vanished and a fresh subject appears, reuse the row (preserves
+    // inner custom-element state across a single-entity swap).
+    if mounted.rows.len() == 1 {
+        let old_key = mounted.rows.keys().next().cloned().expect("len == 1");
+        if !incoming.contains_key(&old_key)
+            && let Some(new_key) = incoming
+                .keys()
+                .find(|k| !mounted.rows.contains_key(*k))
+                .cloned()
+            && let Some(row) = mounted.rows.remove(&old_key)
+        {
+            mounted.rows.insert(new_key, row);
+        }
+    }
+
+    // Remove vanished subjects.
+    let stale: Vec<String> = mounted
+        .rows
+        .keys()
+        .filter(|k| !incoming.contains_key(*k))
+        .cloned()
+        .collect();
+    for key in stale {
+        if let Some(row) = mounted.rows.remove(&key) {
+            let _: Result<Node, _> = parent.remove_child(&row.root);
+        }
+    }
+
+    // Walk incoming in sorted-key order: reuse + recurse, or clone +
+    // insert at the sorted position.
+    for (key, member) in incoming {
+        if let Some(row) = mounted.rows.get_mut(&key) {
+            update_nodes(
+                document,
+                &plan.body,
+                &mut row.body,
+                &row.root,
+                template,
+                &member,
+                &BTreeMap::new(),
+            );
+            stamp_with(&row.root, &member.this);
+        } else if let Some(new_row) = build_repeat_row(document, plan, template, &member) {
+            let next_anchor = mounted
+                .rows
+                .range(key.clone()..)
+                .next()
+                .map(|(_, row)| row.root.clone())
+                .unwrap_or_else(|| mounted.anchor.clone());
+            let _ = parent.insert_before(&new_row.root, Some(&next_anchor));
+            mounted.rows.insert(key, new_row);
         }
     }
 }
 
-/// Build a fresh `Vec<MountedNode>` from a plan and write its
-/// initial values into the DOM. Used for both the top-level
-/// mount and each iteration row's body.
+/// Clone one repeat row from the pristine template and render its body
+/// against `member`. The returned row is **detached**; the caller
+/// inserts it with a single `insertBefore`. Stamps `with=<this>` on the
+/// clone.
 ///
-/// **Ordering caveat**: iteration nodes mutate the live DOM by
-/// replacing their iteration-root element with an anchor + rows.
-/// Doing that to an earlier sibling shifts subsequent sibling
-/// indices, which would invalidate the path-based navigation
-/// the *next* plan node performs. To avoid that, we process the
-/// plan in two passes:
+/// `plan.path` selects what to clone: a specific element, or (for a
+/// whole-fragment repeat) the fragment's nodes wrapped so the body
+/// paths still resolve.
+fn build_repeat_row(
+    document: &Document,
+    plan: &RepeatPlan,
+    template: &DocumentFragment,
+    member: &Conclusion,
+) -> Option<MountedRow> {
+    let template_root: Node = template.clone().into();
+
+    let (row_root, body_scope): (Node, Vec<usize>) = match &plan.path {
+        Some(path) => {
+            let template_el = navigate(&template_root, path)?;
+            let clone = template_el.clone_node_with_deep(true).ok()?;
+            (clone, path.clone())
+        }
+        None => {
+            // Whole-fragment repeat: clone the fragment's single root
+            // element. A multi-root fragment isn't a supported repeat
+            // unit (no single element to stamp / key); fall back to the
+            // first element child.
+            let clone = template_root.clone_node_with_deep(true).ok()?;
+            (clone, Vec::new())
+        }
+    };
+
+    let body = build_mounted_nodes(
+        document,
+        &plan.body,
+        &row_root,
+        template,
+        &body_scope,
+        member,
+        &BTreeMap::new(),
+    );
+
+    stamp_with(&row_root, &member.this);
+
+    Some(MountedRow {
+        root: row_root,
+        body,
+    })
+}
+
+/// Stamp `with=<this>` on a repeat row's root element so the repeat
+/// boundary is inspectable. No-op when the root isn't an element (a
+/// whole-fragment clone yielding a fragment).
+fn stamp_with(root: &Node, this: &str) {
+    if let Some(el) = root.dyn_ref::<Element>() {
+        let _ = el.set_attribute("with", this);
+    }
+}
+
+/// Build a `Vec<MountedNode>` from a plan and write its initial values
+/// into the DOM. Used for chrome, repeat bodies, and iteration rows.
 ///
-/// 1. **Reverse pass** — process iteration nodes from last to
-///    first, since each iteration's mutation only affects later
-///    siblings (already processed).
-/// 2. **Build in plan order** — assemble the resulting
-///    `MountedNode` Vec in the original plan order so it stays
-///    in lockstep with the plan tree.
-///
-/// Leaf bindings don't mutate sibling structure, so they're
-/// processed in plan order without complication.
+/// **Ordering caveat**: iteration nodes mutate the live DOM (replace
+/// their root with an anchor + rows), shifting later sibling indices.
+/// Process iterations last-to-first so each mutation only affects
+/// already-processed siblings; assemble the result in plan order to
+/// stay in lockstep with the plan.
 fn build_mounted_nodes(
     document: &Document,
     plan: &[PlanNode],
     scope_root: &Node,
     template: &DocumentFragment,
     template_scope: &[usize],
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) -> Vec<MountedNode> {
-    // Allocate the result vec; fill in reverse so iteration
-    // nodes process their DOM mutations from rightmost to
-    // leftmost. Bindings are order-independent.
     let mut out: Vec<Option<MountedNode>> = (0..plan.len()).map(|_| None).collect();
     for (i, node) in plan.iter().enumerate().rev() {
         out[i] = Some(build_mounted_node(
@@ -282,7 +476,7 @@ fn build_mounted_nodes(
             scope_root,
             template,
             template_scope,
-            conclusion,
+            member,
             shadow,
         ));
     }
@@ -291,51 +485,35 @@ fn build_mounted_nodes(
         .collect()
 }
 
-/// Build one mounted node — leaf or iteration — and perform its
-/// initial DOM writes / clones.
+/// Build one mounted node — leaf or iteration — and perform its initial
+/// DOM writes / clones.
 ///
-/// `template_scope` is the path inside `template` that corresponds
-/// to `scope_root` in the live DOM. Nested iterations use it to
-/// reconstruct the absolute template path of their iteration root
-/// (their `path` is relative to the *parent scope*, not the
-/// template fragment).
+/// `template_scope` is the path inside `template` corresponding to
+/// `scope_root` in the live DOM. Nested iterations use it to
+/// reconstruct the absolute template path of their iteration root.
 fn build_mounted_node(
     document: &Document,
     plan: &PlanNode,
     scope_root: &Node,
     template: &DocumentFragment,
     template_scope: &[usize],
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) -> MountedNode {
     match plan {
         PlanNode::Binding(b) => {
-            let rendered = render_binding(b, conclusion, shadow);
-            write_binding(scope_root, b, &rendered, conclusion, shadow);
+            let rendered = render_binding(b, member, shadow);
+            write_binding(scope_root, b, &rendered, member, shadow);
             MountedNode::Binding {
                 last_value: rendered,
             }
         }
         PlanNode::Iteration { field, path, body } => {
-            // Locate the iteration root in this scope, replace it
-            // with a comment anchor, and clone-then-mount one row
-            // per value. The original element is gone from the
-            // live DOM after this; future clones come from the
-            // pristine `template` fragment.
             let anchor: Node = document
                 .create_comment(&format!("tonk-iter:{field}"))
                 .into();
-
             let mut rows: BTreeMap<String, MountedRow> = BTreeMap::new();
 
-            // Compose the absolute template path for cloning rows.
-            // `path` is relative to the parent scope; pre-pending
-            // `template_scope` (the parent's template-absolute
-            // path) gives us the location of the iteration root in
-            // the original fragment. Nested iterations rely on
-            // this — without composition, an inner iter at path
-            // `[0]` would re-clone the outer wrapper instead of
-            // the inner row template.
             let template_iter_path: Vec<usize> = template_scope
                 .iter()
                 .copied()
@@ -345,34 +523,28 @@ fn build_mounted_node(
             if let Some(iter_root) = navigate(scope_root, path)
                 && let Some(parent) = iter_root.parent_node()
             {
-                // Drop the in-clone template element; the anchor
-                // takes its slot so rows can insert before it.
                 let _ = parent.insert_before(&anchor, Some(&iter_root));
                 let _: Result<Node, _> = parent.remove_child(&iter_root);
 
                 let raw_value = shadow
                     .get(field)
-                    .or_else(|| conclusion.fields.get(field))
+                    .or_else(|| member.fields.get(field))
                     .cloned();
-                let keyed = collect_keyed_values(raw_value, &conclusion.this);
+                let keyed = collect_keyed_values(raw_value, &member.this);
 
                 for (key, value) in keyed {
                     if rows.contains_key(&key) {
-                        continue; // dedupe
+                        continue;
                     }
                     if let Some(row) = build_iteration_row(
                         document,
                         &template_iter_path,
                         template,
                         body,
-                        field,
-                        value,
-                        conclusion,
+                        (field, value),
+                        member,
                         shadow,
                     ) {
-                        // BTreeMap order ⇒ DOM order. Insert each
-                        // row before the anchor so they land in
-                        // sorted-key order naturally.
                         let _ = parent.insert_before(&row.root, Some(&anchor));
                         rows.insert(key, row);
                     }
@@ -395,7 +567,7 @@ fn update_nodes(
     mounted: &mut [MountedNode],
     scope_root: &Node,
     template: &DocumentFragment,
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) {
     for (plan_node, mounted_node) in plan.iter().zip(mounted.iter_mut()) {
@@ -405,7 +577,7 @@ fn update_nodes(
             mounted_node,
             scope_root,
             template,
-            conclusion,
+            member,
             shadow,
         );
     }
@@ -418,20 +590,20 @@ fn update_node(
     mounted: &mut MountedNode,
     scope_root: &Node,
     template: &DocumentFragment,
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) {
     match (plan, mounted) {
         (PlanNode::Binding(b), MountedNode::Binding { last_value }) => {
-            let rendered = render_binding(b, conclusion, shadow);
+            let rendered = render_binding(b, member, shadow);
             if *last_value != rendered {
-                write_binding(scope_root, b, &rendered, conclusion, shadow);
+                write_binding(scope_root, b, &rendered, member, shadow);
                 *last_value = rendered;
             }
         }
         (
             PlanNode::Iteration {
-                field: plan_field,
+                field,
                 path: _,
                 body,
             },
@@ -443,27 +615,26 @@ fn update_node(
         ) => {
             update_iteration(
                 document,
-                plan_field,
+                field,
                 template_path,
                 body,
                 anchor,
                 rows,
                 template,
-                conclusion,
+                member,
                 shadow,
             );
         }
         _ => {
-            // Plan/mounted shapes diverged — should be impossible
-            // since the plan is constant for a Renderer instance.
-            // Bail silently rather than panic in production.
+            // Plan/mounted shapes diverged — impossible for a constant
+            // plan. Bail silently rather than panic.
         }
     }
 }
 
-/// Reconcile one mounted iteration against a new value list.
-/// New keys clone + mount; vanished keys detach + drop; surviving
-/// keys recurse into their body.
+/// Reconcile one mounted subject-field iteration against a new value
+/// list. New keys clone + mount; vanished keys detach; survivors
+/// recurse into their body with `field` shadowed.
 #[allow(clippy::too_many_arguments)]
 fn update_iteration(
     document: &Document,
@@ -473,63 +644,33 @@ fn update_iteration(
     anchor: &Node,
     rows: &mut BTreeMap<String, MountedRow>,
     template: &DocumentFragment,
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) {
     let raw_value = shadow
         .get(field)
-        .or_else(|| conclusion.fields.get(field))
+        .or_else(|| member.fields.get(field))
         .cloned();
-    let keyed = collect_keyed_values(raw_value, &conclusion.this);
-
-    // Index incoming values by key, deduping.
     let mut incoming: BTreeMap<String, Ipld> = BTreeMap::new();
-    for (key, value) in keyed {
+    for (key, value) in collect_keyed_values(raw_value, &member.this) {
         incoming.entry(key).or_insert(value);
     }
 
-    // Find the anchor's parent — every row sits between
-    // siblings of the anchor in the parent.
     let Some(parent) = anchor.parent_node() else {
         return;
     };
 
-    // Single-row rename fallback. When the existing set has
-    // exactly one row whose key vanished from `incoming`, and at
-    // least one of the incoming keys isn't currently present,
-    // reuse the old row under a new key instead of destroying it.
-    //
-    // This preserves DOM identity (and therefore inner custom-
-    // element state, focus, in-flight subscriptions) across the
-    // common cardinality transitions that fold_rows produces:
-    //
-    //   - scalar value edit: `width: 12` → `width: 16`. The same
-    //     row is reused, only its bound attribute is patched.
-    //   - scalar → array growth: `column: "a"` → `column: ["a","b"]`.
-    //     The folded representation flips from a string to an
-    //     array, but the row for "a" should survive — the new "b"
-    //     row is added alongside, the existing column is not
-    //     torn down.
-    //   - array → scalar shrink (cardinality 1 → 1 with a swap):
-    //     `column: ["a"]` → `column: "b"`. The single row is
-    //     reused under the new key.
-    //
-    // For "true" array reconciliation (multiple rows on both
-    // sides) the rename never fires — keys match exactly.
+    // Single-row rename fallback (scalar edit / scalar↔array swaps).
     if rows.len() == 1 {
         let old_key = rows.keys().next().cloned().expect("len == 1");
         if !incoming.contains_key(&old_key)
-            && let Some((new_key, _)) = incoming
-                .iter()
-                .find(|(k, _)| !rows.contains_key(*k))
-                .map(|(k, v)| (k.clone(), v.clone()))
+            && let Some(new_key) = incoming.keys().find(|k| !rows.contains_key(*k)).cloned()
             && let Some(row) = rows.remove(&old_key)
         {
             rows.insert(new_key, row);
         }
     }
 
-    // Remove vanished keys.
     let stale: Vec<String> = rows
         .keys()
         .filter(|k| !incoming.contains_key(*k))
@@ -541,82 +682,50 @@ fn update_iteration(
         }
     }
 
-    // Walk incoming in sorted-key order. For each key:
-    //   - Reuse existing row → recurse into body.
-    //   - Add new row → clone from template, mount, insert at
-    //     the correct sorted position.
     for (key, value) in incoming {
         if let Some(row) = rows.get_mut(&key) {
-            // Existing row: update its body bindings in place
-            // with shadow extended by this iteration's value.
             let mut nested_shadow = shadow.clone();
-            nested_shadow.insert(field.to_owned(), value);
+            nested_shadow.insert(field.to_owned(), value.clone());
             update_nodes(
                 document,
                 plan_body,
                 &mut row.body,
                 &row.root,
                 template,
-                conclusion,
+                member,
                 &nested_shadow,
             );
-        } else {
-            // New row: clone + build (detached), then insert
-            // once at the correct sorted position. Single
-            // insertBefore avoids the move-induced custom-element
-            // lifecycle re-fire (see `build_iteration_row`'s
-            // doc-comment).
-            if let Some(new_row) = build_iteration_row(
-                document,
-                template_path,
-                template,
-                plan_body,
-                field,
-                value,
-                conclusion,
-                shadow,
-            ) {
-                let next_anchor = rows
-                    .range(key.clone()..)
-                    .next()
-                    .map(|(_, row)| row.root.clone())
-                    .unwrap_or_else(|| anchor.clone());
-                let _ = parent.insert_before(&new_row.root, Some(&next_anchor));
-                rows.insert(key, new_row);
-            }
+        } else if let Some(new_row) = build_iteration_row(
+            document,
+            template_path,
+            template,
+            plan_body,
+            (field, value),
+            member,
+            shadow,
+        ) {
+            let next_anchor = rows
+                .range(key.clone()..)
+                .next()
+                .map(|(_, row)| row.root.clone())
+                .unwrap_or_else(|| anchor.clone());
+            let _ = parent.insert_before(&new_row.root, Some(&next_anchor));
+            rows.insert(key, new_row);
         }
     }
 }
 
-/// Clone the iteration root from the pristine template, build
-/// its body's mounted state with all bindings applied. The
-/// returned [`MountedRow`] is **detached** — the caller decides
-/// where to insert it via a single `parent.insertBefore` call.
-///
-/// We deliberately don't insert here. Inserting now and then
-/// again at the sorted position would amount to a *move*, which
-/// the DOM spec implements as detach + reattach; that fires
-/// `disconnected_callback` and `connected_callback` on every
-/// custom element inside the row, causing inner `<tonk-display>`
-/// instances to spin up *twice* and mount two slides.
-///
-/// Bindings are written against the detached clone before any
-/// element is connected to the DOM, so custom-element lifecycle
-/// callbacks don't fire during `build_mounted_nodes`. By the
-/// time the caller inserts, every observed attribute is already
-/// at its final value and `connected_callback` runs exactly
-/// once.
-///
-/// Returns `None` if cloning fails (degenerate template).
+/// Clone a subject-field iteration root from the pristine template and
+/// build its body with `field` shadowed to `value`. Detached; caller
+/// inserts.
 #[allow(clippy::too_many_arguments)]
 fn build_iteration_row(
     document: &Document,
     template_path: &[usize],
     template: &DocumentFragment,
     body_plan: &[PlanNode],
-    field: &str,
-    value: Ipld,
-    conclusion: &Conclusion,
+    shadow_entry: (&str, Ipld),
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) -> Option<MountedRow> {
     let template_root: Node = template.clone().into();
@@ -624,18 +733,16 @@ fn build_iteration_row(
     let row_root = template_iter_root.clone_node_with_deep(true).ok()?;
 
     let mut nested_shadow = shadow.clone();
+    let (field, value) = shadow_entry;
     nested_shadow.insert(field.to_owned(), value);
-    // The row's template scope is `template_path` — anything
-    // nested inside (e.g. a child iteration's `path`) is relative
-    // to it. Threading this lets nested iterations recover the
-    // absolute template path needed for cloning.
+
     let body = build_mounted_nodes(
         document,
         body_plan,
         &row_root,
         template,
         template_path,
-        conclusion,
+        member,
         &nested_shadow,
     );
 
@@ -645,10 +752,7 @@ fn build_iteration_row(
     })
 }
 
-/// Stable string key for an iteration value. Entity URIs (and
-/// any other Ipld string) become themselves; non-strings get
-/// canonicalised via dag-json so two equal values produce equal
-/// keys.
+/// Stable string key for an iteration value.
 fn key_for(value: &Ipld) -> String {
     match value {
         Ipld::String(s) => s.clone(),
@@ -659,29 +763,25 @@ fn key_for(value: &Ipld) -> String {
     }
 }
 
-/// Render a binding's segments against the conclusion + shadow,
-/// returning the substituted string.
+/// Render a binding's segments against the conclusion + shadow.
 fn render_binding(
     binding: &Binding,
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) -> String {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
         BindingKind::Attribute { segments, .. } => segments,
     };
-    render_segments_with_shadow(segments, &conclusion.this, &conclusion.fields, shadow)
+    render_segments_with_shadow(segments, &member.this, &member.fields, shadow)
 }
 
-/// Write a binding's rendered value to the target DOM node
-/// identified by its path within `scope_root`. Attribute-form
-/// bindings flow through [`apply_attribute_binding`] which decides
-/// between property and attribute assignment per value type.
+/// Write a binding's rendered value to the target DOM node.
 fn write_binding(
     scope_root: &Node,
     binding: &Binding,
     rendered: &str,
-    conclusion: &Conclusion,
+    member: &Conclusion,
     shadow: &BTreeMap<String, Ipld>,
 ) {
     match &binding.kind {
@@ -691,29 +791,19 @@ fn write_binding(
             }
         }
         BindingKind::Attribute { .. } => {
-            let value = single_field_value(binding, &conclusion.this, &conclusion.fields, shadow);
+            let value = single_field_value(binding, &member.this, &member.fields, shadow);
             apply_attribute_binding(scope_root, binding, rendered, value.as_ref());
         }
     }
 }
 
-/// Resolve a JSON value into the list of (row-key, row-value)
-/// pairs the iteration renderer needs.
+/// Resolve a value into the list of (row-key, row-value) pairs the
+/// iteration renderer needs.
 ///
 /// - `Null` / missing → no rows.
-/// - `Array` → one row per element, keyed by `key_for(value)`
-///   so cardinality-many reconciliation matches rows across
-///   applies by element identity.
-/// - Anything else (a scalar) → one row keyed by the enclosing
-///   conclusion's `this` (entity URI). This identifies the row
-///   by the *entity it describes*, not by the placeholder's
-///   current value, so editing a cardinality-one field (e.g. a
-///   column's width) reuses the same row and patches only the
-///   bound attribute. The `entity_key` is supplied by the
-///   caller because it carries the relevant scope's `this` —
-///   for nested iterations that may differ from the outer
-///   conclusion's `this` once `subject=` markers identify an
-///   inner entity.
+/// - `Array` → one row per element, keyed by `key_for`.
+/// - scalar → one row keyed by the conclusion's `this`, so editing a
+///   cardinality-one field reuses the same row.
 fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, Ipld)> {
     match value {
         None | Some(Ipld::Null) => Vec::new(),

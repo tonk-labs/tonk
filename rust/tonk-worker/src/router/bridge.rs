@@ -423,13 +423,13 @@ async fn handle_subscribe(
     {
         let bridges = state.read().await.bridges.clone();
         let guard = bridges.read().await;
-        if let Some(session) = guard.get(&client) {
-            if session.subscriptions.contains_key(&id) {
-                log!("bridge: subscribe id '{id}' already active for {client:?}");
-                drop(guard);
-                send_error(&state, &client, "subscribe-error", &id, "id already in use").await;
-                return;
-            }
+        if let Some(session) = guard.get(&client)
+            && session.subscriptions.contains_key(&id)
+        {
+            log!("bridge: subscribe id '{id}' already active for {client:?}");
+            drop(guard);
+            send_error(&state, &client, "subscribe-error", &id, "id already in use").await;
+            return;
         }
     }
 

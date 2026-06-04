@@ -207,13 +207,20 @@
         animation: spin 0.8s infinite linear;
       }
 
-      /* Build error: danger fill, spinning ring handle, forced visible. */
+      /* Error: danger fill, forced visible, and it keeps pulsing (the
+         update class stays on) to announce the trouble. The handle is
+         hidden — a spinning ring reads as "in progress" and overlaps
+         the message, and a solid dot adds nothing, so the error pill is
+         just the pulsing danger drawer with its text. The dot selectors
+         below are specific enough to win over the update /
+         input-checked spinner. */
       .notification.error .pill { background: var(--hs-danger); color: var(--hs-danger-fg); opacity: 1; }
-      .notification.error .dot {
+      .notification.error .dot,
+      .notification.update.error input:checked + .pill .dot {
         background: transparent;
-        border: 2px solid transparent;
-        border-left-color: var(--hs-danger-fg);
-        animation: spin 0.8s infinite linear;
+        border: none;
+        animation: none;
+        opacity: 0;
       }
 
       /* FOLDED: retract the drawer — width shrinks back to the handle
@@ -371,7 +378,11 @@
   const reseed = async (library) => {
     const branches = [...document.querySelectorAll("tonk-branch")]
     if (branches.length === 0) {
-      throw new Error("no <tonk-branch> in the page to evaluate against")
+      // No branch mounted in this view (e.g. the repo landing page) —
+      // there is nothing to re-seed here, which is not a failure. The
+      // fetched library is cached; the next view with a branch picks it
+      // up. Return quietly rather than flagging an error.
+      return
     }
 
     for (const branch of branches) {
@@ -460,6 +471,7 @@
   const apply = async (library, glyph = GLYPH_LIBRARY) => {
     const hash = await libraryHash(library)
     await conjure(glyph, hash)
+    view.error = false    // clear any prior failure before retrying
     view.pulse = true     // pulsing = applying
     try {
       await reseed(library)
@@ -474,8 +486,16 @@
         view.folded = false
       }, 600)
     } catch (e) {
+      // Applying the new library failed — it didn't lower (a parse /
+      // analyze error, a dangling anchor) or the evaluate was
+      // rejected. Surface it loudly: red error state, forced visible
+      // and unfolded, still pulsing to announce the trouble, so a bad
+      // edit can't silently leave repos unseeded. The `error` setter
+      // keeps the pulse on; cleared on the next successful apply.
       console.error("[hot-swap]", e)
-      view.pulse = false // stop pulsing but stay visible to signal trouble
+      view.error = true
+      view.folded = false
+      view.setStatus(GLYPH_ERROR, "apply failed")
     }
   }
 

@@ -83,6 +83,17 @@ pub struct Renderer {
 
 impl Renderer {
     /// Construct a renderer over a snapshot.
+    ///
+    /// A `<tonk-concept>` shelf clones the **whole template** per
+    /// conclusion (its own row loop), so it consumes `plan.repeat.body`
+    /// — the per-conclusion body — and never the chrome/repeat split a
+    /// `<tonk-display>` uses. The plan must come from
+    /// [`crate::template::extract_row_plan`], which forces
+    /// `repeat.path == None` so every node stays in `repeat.body` with
+    /// fragment-relative paths the whole-fragment clone can navigate.
+    /// (Plain [`crate::template::extract_plan`] would rebase paths under
+    /// a subject ref like `model={model}`, which this renderer would
+    /// then mis-navigate.)
     pub fn new(plan: BindingPlan, template: DocumentFragment, container: Element) -> Self {
         Self {
             plan,
@@ -123,7 +134,7 @@ impl Renderer {
             if let Some(row) = self.rows.get_mut(&conclusion.this) {
                 update_nodes(
                     &document,
-                    &self.plan.nodes,
+                    &self.plan.repeat.body,
                     &mut row.mounted,
                     &row.root,
                     &self.template,
@@ -159,7 +170,7 @@ impl Renderer {
         let root: Node = clone.clone().into();
         let mounted = build_mounted_nodes(
             document,
-            &self.plan.nodes,
+            &self.plan.repeat.body,
             &root,
             &self.template,
             conclusion,
@@ -536,7 +547,7 @@ fn collect_values(value: Option<Ipld>) -> Vec<Ipld> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::template::{extract_plan, snapshot_template};
+    use crate::template::{extract_row_plan, snapshot_template};
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -559,7 +570,7 @@ mod tests {
             .append_child(&host)
             .expect("attach host");
         let snapshot = snapshot_template(&host).expect("snapshot");
-        let plan = extract_plan(&snapshot.fragment);
+        let plan = extract_row_plan(&snapshot.fragment);
         (
             host,
             Renderer::new(plan, snapshot.fragment, snapshot.container),
@@ -920,5 +931,28 @@ mod tests {
             div.get_attribute("html:hidden").is_none(),
             "the html: prefix attribute must not survive on the cloned element",
         );
+    }
+
+    /// `{dom.host/model}` is a namespaced field name (with a dot and a
+    /// slash). `<tonk-display>` injects host attributes under such keys
+    /// so a directory template can thread the outer model into a nested
+    /// display: `<tonk-display model={dom.host/model}>`. Proves the
+    /// parser + substituter resolve the namespaced placeholder as an
+    /// ordinary field lookup — no special casing needed.
+    #[dialog_common::test]
+    fn it_resolves_a_dom_host_namespaced_field_in_an_attribute() {
+        let (host, mut renderer) = mount("<tonk-display entity={this} model={dom.host/model} />");
+        renderer.apply(&[conclusion("id:trip/a", &[("dom.host/model", "trip")])]);
+        let el = host
+            .query_selector("tonk-display")
+            .unwrap()
+            .expect("nested tonk-display present");
+        assert_eq!(
+            el.get_attribute("model").as_deref(),
+            Some("trip"),
+            "{{dom.host/model}} must resolve to the injected field; html: {}",
+            host.inner_html(),
+        );
+        assert_eq!(el.get_attribute("entity").as_deref(), Some("id:trip/a"));
     }
 }

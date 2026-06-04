@@ -243,7 +243,7 @@ fn reject_404() -> Result<JsValue, JsValue> {
             Some("view clients cannot reach /api/; use the bridge"),
             &init,
         )?;
-        return Ok(JsValue::from(response));
+        Ok(JsValue::from(response))
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {

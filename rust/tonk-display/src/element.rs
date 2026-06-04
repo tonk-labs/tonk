@@ -38,7 +38,10 @@ use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
 
-use crate::resolve::{entity_query, looks_like_uri, view_by_model_query, view_predicate};
+use crate::resolve::{
+    directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_model_query,
+    view_predicate,
+};
 use crate::state::{self, State};
 
 /// Sentinel `view` value that selects carousel mode — enumerate
@@ -93,10 +96,13 @@ struct Inner {
     /// Cancels the entity subscription on disconnect / attribute
     /// change.
     entity_sub: Option<HostSubscription>,
-    /// Last entity conclusion seen; replayed when a fresh slide
-    /// is mounted so it picks up the current data without waiting
-    /// for the next entity frame.
-    last_conclusion: Option<Conclusion>,
+    /// Last folded entity frame seen; replayed in full when a fresh
+    /// slide mounts so it picks up the current data without waiting for
+    /// the next entity frame. The whole frame matters in directory mode
+    /// (one conclusion per instance) — replaying only the lead would
+    /// drop every instance but the first. The lead conclusion (for
+    /// notation / the result event) is `last_frame.first()`.
+    last_frame: Vec<Conclusion>,
     /// `<wa-carousel>` element when in carousel mode, `None` in
     /// single mode.
     carousel: Option<Element>,
@@ -139,6 +145,24 @@ struct Inner {
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
     portal_model: Option<String>,
+    /// The view-concept descriptor used to resolve a view by model.
+    /// Retained so the `_:_` default-view fallback can re-query against
+    /// the same view concept when the model-specific view frame is
+    /// empty.
+    view_descriptor: Option<serde_json::Value>,
+    /// The resolved model entity (`model_entity`), retained for the
+    /// `_:_` fallback query and for comparison.
+    model_entity: Option<String>,
+    /// True when the currently-mounted slide came from the `_:_`
+    /// default view rather than a model-specific view. A non-empty
+    /// model-specific view frame replaces it (the specific view takes
+    /// over); set false then.
+    default_slide: bool,
+    /// Directory mode: `true` when the host has no `entity`, so the
+    /// entity subscription matches every instance of the model (`this`
+    /// unbound) and the frame is grouped by `this` (`select_rows`)
+    /// rather than folded to one conclusion.
+    directory: bool,
 }
 
 impl Inner {
@@ -148,7 +172,7 @@ impl Inner {
             generation: 0,
             view_sub: None,
             entity_sub: None,
-            last_conclusion: None,
+            last_frame: Vec::new(),
             carousel: None,
             slides: BTreeMap::new(),
             notation_source: None,
@@ -158,6 +182,10 @@ impl Inner {
             depth_annotator: None,
             portal_descriptor: None,
             portal_model: None,
+            view_descriptor: None,
+            model_entity: None,
+            default_slide: false,
+            directory: false,
         }
     }
 
@@ -227,7 +255,7 @@ impl CustomElement for TonkDisplay {
         {
             let mut s = state.borrow_mut();
             s.abort_all();
-            s.last_conclusion = None;
+            s.last_frame = Vec::new();
             // Tear down any mounted slide / carousel chrome so the
             // restart starts from a clean host.
             clear_host(&host, &mut s);
@@ -444,18 +472,19 @@ async fn run(
     state: Rc<RefCell<Inner>>,
     generation: u64,
 ) -> Result<(), ErrorDetail> {
-    let entity = host
-        .get_attribute("entity")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ErrorDetail::new(ErrorKind::Descriptor, "<tonk-display> requires `entity`")
-        })?;
-    if !looks_like_uri(&entity) {
+    // `entity` is optional. Present → single mode: render that one
+    // entity. Absent → directory mode: render every instance of the
+    // model (`this` unbound) through the model's directory view.
+    let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
+    if let Some(entity) = &entity
+        && !looks_like_uri(entity)
+    {
         return Err(ErrorDetail::new(
             ErrorKind::Descriptor,
             "`entity` must be an entity URI (contain `:`)",
         ));
     }
+    let directory = entity.is_none();
 
     // The `view` attribute names a view *concept* (named or URI);
     // when omitted, the built-in `view` concept (`tonk:view`) is
@@ -498,6 +527,11 @@ async fn run(
     // attribute that view kind declares it under, so `view_by_model`
     // reads the right template regardless of the kind.
     let view_descriptor: serde_json::Value = match view.as_deref() {
+        // No explicit `view`: the built-in detail view (`tonk:view`) in
+        // single mode, or the directory view (`tonk:view/directory`) in
+        // directory mode. Both fall back to their `_:_` default when
+        // the model has no specific view of that kind.
+        None if directory => directory_view_predicate(),
         None => view_predicate(),
         Some(view_ref) => {
             let (_, view_descriptor_json) = resolve_model(host, view_ref).await?;
@@ -512,8 +546,13 @@ async fn run(
     })?;
     let view_body = to_body(&view_q)?;
 
-    let entity_q = entity_query(&descriptor_json, &entity)
-        .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
+    // Single mode pins `this` to the entity; directory mode leaves
+    // `this` unbound so the query matches every instance of the model.
+    let entity_q = match &entity {
+        Some(entity) => entity_query(&descriptor_json, entity),
+        None => instances_query(&descriptor_json),
+    }
+    .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = to_body(&entity_q)?;
 
     // The view query is model-constrained, so it resolves to one
@@ -542,6 +581,12 @@ async fn run(
         }
         s.view_sub = Some(view_sub);
         s.entity_sub = Some(entity_sub);
+        s.directory = directory;
+        // Retained for the `_:_` default-view fallback: if the
+        // model-specific view frame is empty, `handle_view_frame`
+        // re-queries the same view concept with `model = _:_`.
+        s.view_descriptor = Some(view_descriptor.clone());
+        s.model_entity = Some(model_entity.clone());
         // Context handed to a `<tonk-portal>` if a view frame routes
         // here in portal mode: the subject's model entity (the
         // bridge's `context.model`) and its descriptor (so the bridge
@@ -645,6 +690,28 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // the view concept declares it (see `view_by_model_query`), so an
     // ordinary view never trips this; a `display` change just reloads
     // the portal's `content` in place.
+    // No model-specific view resolved: fall back to the `_:_` default
+    // view (a directory carousel, or the notation dump for a detail
+    // view). Re-query the same view concept with `model = _:_` and
+    // render its result. The model-specific subscription stays live, so
+    // if a view for this model is defined later its frame is non-empty
+    // and the branch below mounts it, replacing the default. Skip if
+    // we're already showing the default (avoid re-querying every empty
+    // frame).
+    if conclusions.is_empty() {
+        let need_default = !s.default_slide;
+        drop(s);
+        if need_default {
+            spawn_default_view(host, state);
+        }
+        return;
+    }
+    // A model-specific view arrived: it wins over any default slide.
+    // Clearing the flag lets the normal slide reconciliation below
+    // replace the default `<tonk-view>` (keyed differently) and the
+    // stale default slide is dropped as a vanished key.
+    s.default_slide = false;
+
     if conclusions
         .iter()
         .any(|c| ipld_str(c.fields.get("type")) == Some("text/html"))
@@ -673,7 +740,14 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     }
 
     // Add or replace slides.
-    let cached = s.last_conclusion.clone();
+    let cached = s.last_frame.clone();
+    let cached_detail = (!cached.is_empty()).then(|| {
+        let augmented: Vec<Conclusion> = cached
+            .iter()
+            .map(|c| with_host_attributes(host, c))
+            .collect();
+        serialize_conclusions(&augmented)
+    });
     for (name, display) in incoming {
         let existing_matches = s
             .slides
@@ -692,11 +766,13 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
             let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
         if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
-            // Push the cached entity conclusion if we have one,
-            // so the new slide renders immediately rather than
-            // waiting for the next entity frame.
-            if let Some(c) = cached.as_ref() {
-                call_render(&new_slide.view_el, &serialize_conclusion(c));
+            // Replay the cached frame so the new slide renders
+            // immediately rather than waiting for the next entity frame.
+            // The WHOLE frame is replayed — directory mode has one
+            // conclusion per instance, so a single-conclusion replay
+            // would drop every instance but the first.
+            if let Some(detail) = cached_detail.as_ref() {
+                call_render(&new_slide.view_el, detail);
             }
             s.slides.insert(name, new_slide);
         }
@@ -705,10 +781,10 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // In single mode, mark Ready once the slide is mounted (with
     // or without an entity frame yet — empty content is fine).
     // In carousel mode, ensure the notation slide is fed.
-    if cached.is_some() && !s.slides.is_empty() {
+    if !cached.is_empty() && !s.slides.is_empty() {
         state::set(host, State::Ready);
     }
-    if let Some(c) = cached.as_ref() {
+    if let Some(c) = cached.first() {
         update_notation(host, &s, c);
     }
 
@@ -718,6 +794,131 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     schedule_delegate_refresh(host, state);
 
     dispatch_event(host, "tonk-display:template", Some(JsValue::from_str("ok")));
+}
+
+/// The sentinel model entity for a default view: a `view!`/
+/// `view/directory!` declared with `model: _:_` matches any model that
+/// has no specific view of that kind. See `tonk-core/docs/templates.md`.
+const DEFAULT_MODEL: &str = "_:_";
+
+/// Query the `_:_` default view (same view concept, `model = _:_`) and
+/// mount its template as the default slide. Spawned from
+/// `handle_view_frame` when the model-specific view frame is empty. The
+/// model-specific subscription stays live; a later non-empty frame
+/// replaces this default (see the `default_slide` flag).
+fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let descriptor = {
+        let s = state.borrow();
+        s.view_descriptor.clone()
+    };
+    let Some(descriptor) = descriptor else { return };
+
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        // If the default view can't be built or resolves to nothing,
+        // settle to Empty rather than leaving the element on `loading`
+        // forever — there is genuinely no presentation for this model
+        // (not even the `_:_` default is seeded).
+        let resolved = async {
+            let query = view_by_model_query(&descriptor, DEFAULT_MODEL).ok()?;
+            let body = to_body(&query).ok()?;
+            let result = host_consumer::query(&host, &body).await.ok()?;
+            first_field(&result, "display").ok().flatten()
+        }
+        .await;
+        let Some(display) = resolved else {
+            // No specific view and no `_:_` default view for this model.
+            // If the entity has data, fall back to a notation dump so
+            // it's still inspectable; otherwise settle (the entity
+            // frame decides not-found vs empty).
+            let conclusion = {
+                let s = state.borrow();
+                if s.disposed || s.default_slide || !s.slides.is_empty() {
+                    return;
+                }
+                s.last_frame.first().cloned()
+            };
+            if let Some(conclusion) = conclusion {
+                mount_notation_fallback(&host, &state, &conclusion);
+            }
+            return;
+        };
+        // Another frame may have raced ahead while we were querying: if
+        // a model-specific view landed (default_slide cleared with a
+        // slide present), don't clobber it with the default.
+        let mut s = state.borrow_mut();
+        if s.disposed || (!s.default_slide && !s.slides.is_empty()) {
+            return;
+        }
+        // Replace any prior slides with the single default slide.
+        for (_, slide) in std::mem::take(&mut s.slides) {
+            if let Some(parent) = slide.item.parent_node() {
+                let _: Result<Node, _> = parent.remove_child(&slide.item);
+            }
+        }
+        if let Some(slide) = mount_view_slide(&host, &mut s, &display) {
+            // Replay the whole cached frame (directory mode has one
+            // conclusion per instance; a single replay would drop all
+            // but the first).
+            if !s.last_frame.is_empty() {
+                let augmented: Vec<Conclusion> = s
+                    .last_frame
+                    .iter()
+                    .map(|c| with_host_attributes(&host, c))
+                    .collect();
+                let detail = serialize_conclusions(&augmented);
+                call_render(&slide.view_el, &detail);
+            }
+            s.slides.insert("__default__".to_owned(), slide);
+            s.default_slide = true;
+            state::set(&host, State::Ready);
+        }
+    });
+}
+
+/// Ultimate fallback when an entity has data but its model has no view
+/// (neither a specific view nor the `_:_` default): mount a
+/// `<tonk-notation>` rendering the conclusion as syntax-highlighted
+/// notation, so any entity is at least inspectable. `<tonk-notation>`
+/// is a passive renderer of notation *text* (via a
+/// `<script type="text/tonk-notation">` child), so we format the
+/// conclusion here (the same `notation_format` recipe carousel mode
+/// uses) and write it into that script.
+fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusion: &Conclusion) {
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let (Ok(notation), Ok(script)) = (
+        document.create_element("tonk-notation"),
+        document.create_element("script"),
+    ) else {
+        return;
+    };
+    let _ = script.set_attribute("type", "text/tonk-notation");
+    let head = host
+        .get_attribute("model")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "concept".to_owned());
+    let text = crate::notation_format::format(&conclusion.this, &conclusion.fields, &head, None);
+    script.set_text_content(Some(&text));
+    let _ = notation.append_child(&script);
+
+    let mut s = state.borrow_mut();
+    if s.disposed || s.default_slide || !s.slides.is_empty() {
+        return;
+    }
+    let _ = host.append_child(&notation);
+    s.slides.insert(
+        "__notation__".to_owned(),
+        Slide {
+            display: String::new(),
+            item: notation.clone(),
+            view_el: notation,
+        },
+    );
+    s.default_slide = true;
+    state::set(host, State::Ready);
 }
 
 /// Diff a portal-mode view frame. Single-mode only, so at most one
@@ -947,25 +1148,55 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
 /// template renderer's iteration-aware walk does the per-value
 /// cloning from there.
 fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
-    let Some(conclusion) = crate::fold::fold_rows(conclusions) else {
+    // Everything is a list of folds: group the flat rows by `this` into
+    // one folded conclusion per subject. Cardinality-one is just a
+    // one-element frame; the renderer iterates `{this}` over the frame.
+    let frame = crate::fold::select_rows(conclusions);
+
+    if frame.is_empty() {
         let mut s = state.borrow_mut();
-        s.last_conclusion = None;
+        let directory = s.directory;
+        s.last_frame = Vec::new();
         clear_host(host, &mut s);
-        state::set(host, State::Empty);
+        drop(s);
+        // An empty frame means no rows matched. With a specified
+        // `entity` (single subject) that is a missing entity — a clear
+        // not-found error. Without `entity` (a collection) it is simply
+        // zero instances, an empty container, which is Empty.
+        if directory {
+            state::set(host, State::Empty);
+        } else {
+            fail(
+                host,
+                state,
+                ErrorDetail::new(ErrorKind::UnknownSource, "entity not found"),
+            );
+        }
         return;
-    };
+    }
 
     let mut s = state.borrow_mut();
-    s.last_conclusion = Some(conclusion.clone());
-    let detail = serialize_conclusion(&conclusion);
+    // Cache the whole folded frame for the slide-mount replay (directory
+    // mode has one conclusion per instance). The lead conclusion drives
+    // notation + the result event.
+    let first = frame[0].clone();
+    s.last_frame = frame.clone();
+    // Each slide sees the whole frame, augmented with the host's own
+    // attributes under `dom.host/*`; notation, caching, and the result
+    // event keep the unaugmented conclusions.
+    let augmented: Vec<Conclusion> = frame
+        .iter()
+        .map(|c| with_host_attributes(host, c))
+        .collect();
+    let detail = serialize_conclusions(&augmented);
     for slide in s.slides.values() {
         call_render(&slide.view_el, &detail);
     }
-    update_notation(host, &s, &conclusion);
+    update_notation(host, &s, &first);
     if !s.slides.is_empty() || s.notation_source.is_some() {
         state::set(host, State::Ready);
     }
-    dispatch_event(host, "tonk-display:result", Some(event_detail(&conclusion)));
+    dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -1088,10 +1319,36 @@ fn call_render(el: &Element, detail: &JsValue) {
     let _ = func.call1(&JsValue::NULL, detail);
 }
 
-/// Serialize a `Conclusion` into a JsValue with the shape
-/// `<tonk-view>` / `<tonk-inspector>` expect.
-fn serialize_conclusion(conclusion: &Conclusion) -> JsValue {
-    serde_wasm_bindgen::to_value(conclusion).unwrap_or(JsValue::NULL)
+/// Serialize a frame of conclusions as a JS array — the shape a
+/// slide's `draw` accepts (it renders one row per conclusion).
+fn serialize_conclusions(conclusions: &[Conclusion]) -> JsValue {
+    serde_wasm_bindgen::to_value(conclusions).unwrap_or(JsValue::NULL)
+}
+
+/// Return a copy of `conclusion` with the host `<tonk-display>`'s own
+/// attributes added to its fields under `dom.host/<attr>` keys, so a
+/// template can reference them with `{dom.host/model}` etc. — the
+/// render-time counterpart of the `dom.event/*` namespace (see
+/// `events::path`). Scalars, constant across the render: a directory
+/// template threads the outer model into each nested
+/// `<tonk-display entity={this} model={dom.host/model}>` this way,
+/// since an instance carries no pointer to its own model.
+///
+/// The augmentation is render-only — the cached/notation/event
+/// conclusion stays unaugmented. The substituter resolves
+/// `{dom.host/X}` by an ordinary field lookup, so no parser or
+/// substituter change is needed, only that these entries are present.
+fn with_host_attributes(host: &Element, conclusion: &Conclusion) -> Conclusion {
+    let mut augmented = conclusion.clone();
+    let attrs = host.attributes();
+    for i in 0..attrs.length() {
+        let Some(attr) = attrs.item(i) else { continue };
+        augmented.fields.insert(
+            format!("dom.host/{}", attr.name()),
+            Ipld::String(attr.value()),
+        );
+    }
+    augmented
 }
 
 fn dispatch_error(host: &Element, err: ErrorDetail) {

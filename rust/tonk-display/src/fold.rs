@@ -1,41 +1,61 @@
-//! Fold a multi-row conclusion frame into a single conclusion
-//! with array-valued fields where the rows disagree.
+//! Project a flat conclusion frame into one conclusion per subject.
 //!
 //! The dialog query engine emits one row per tuple — for a
-//! cardinality-many attribute on a single entity, each value
-//! comes back as its own [`Conclusion`] sharing the same `this`
-//! and differing only in the projected field. `<tonk-display>`
-//! is a *single-entity* element, so it needs to collapse those
-//! rows into one conclusion the template renderer can iterate
-//! over.
+//! cardinality-many attribute, each value comes back as its own
+//! [`Conclusion`] sharing the same `this` and differing only in the
+//! projected field; for a many-instance query, rows span several
+//! subjects. [`select_rows`] groups by `this` and folds each group, so
+//! `<tonk-display>` always gets a frame of one folded conclusion per
+//! subject — cardinality-one is just a one-element frame.
 //!
 //! The fold preserves order: distinct values for the same field
-//! appear in the array in the order they first appeared across
-//! the rows. Identical values across all rows are kept as a
-//! scalar (no needless array wrapping).
+//! appear in the array in the order they first appeared across the
+//! rows. Identical values across all rows are kept as a scalar (no
+//! needless array wrapping).
 //!
-//! Target-independent so the fold logic can be unit-tested
-//! natively without spinning up the orchestrator.
+//! Target-independent so the fold logic can be unit-tested natively
+//! without spinning up the orchestrator.
 
 use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 
-/// Fold a list of conclusions sharing the same `this` into one.
-/// If `conclusions` is empty, returns `None`. If all rows agree
-/// on every field, returns the first row unchanged. Differing
-/// rows collapse the disagreeing fields into `Array` values
-/// preserving first-seen order; identical values are
-/// deduplicated.
+/// Group a flat conclusion frame by `this` and fold each group,
+/// yielding **one conclusion per distinct subject** with its
+/// cardinality-many fields collapsed to `Ipld::List`. Groups appear in
+/// first-seen `this` order.
 ///
-/// Mixed-`this` input is **not** an error — the function uses
-/// the first row's `this` and folds across every row. Callers
-/// who care about identity should group upstream; in practice
-/// `<tonk-display>` only ever feeds rows for a single entity.
-pub fn fold_rows(conclusions: Vec<Conclusion>) -> Option<Conclusion> {
+/// This is the universal projection: the query engine emits one flat
+/// row per tuple, so a query returns rows for one or many subjects.
+/// Grouping by `this` turns that into the conclusion-per-subject frame
+/// the renderer iterates — cardinality-one is just a one-element frame.
+/// Models dialog's `select`/`merge`/`add` aggregation
+/// (`query/src/selector.js`): `this` is the grouping key, many-fields
+/// are the array accumulators.
+pub fn select_rows(conclusions: Vec<Conclusion>) -> Vec<Conclusion> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: BTreeMap<String, Vec<Conclusion>> = BTreeMap::new();
+    for row in conclusions {
+        if !groups.contains_key(&row.this) {
+            order.push(row.this.clone());
+        }
+        groups.entry(row.this.clone()).or_default().push(row);
+    }
+    order
+        .into_iter()
+        .filter_map(|this| groups.remove(&this))
+        .map(fold_group)
+        .collect()
+}
+
+/// Fold a non-empty group of conclusions (sharing one `this`, though
+/// only the first row's `this` is used) into one conclusion,
+/// accumulating distinct per-field values in first-seen order and
+/// collapsing multi-valued fields to `Ipld::List`.
+fn fold_group(conclusions: Vec<Conclusion>) -> Conclusion {
     let mut iter = conclusions.into_iter();
-    let first = iter.next()?;
+    let first = iter.next().expect("fold_group requires a non-empty group");
 
     // For every field, accumulate distinct values in first-seen
     // order. We only need to switch to a `List` representation
@@ -63,10 +83,10 @@ pub fn fold_rows(conclusions: Vec<Conclusion>) -> Option<Conclusion> {
         folded.insert(name, value);
     }
 
-    Some(Conclusion {
+    Conclusion {
         this: first.this,
         fields: folded,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -90,15 +110,22 @@ mod tests {
         }
     }
 
+    /// Fold a single-subject frame to its one conclusion (the common
+    /// shape these tests exercise). `select_rows` of one `this` yields
+    /// a one-element frame.
+    fn fold_one(rows: Vec<Conclusion>) -> Option<Conclusion> {
+        select_rows(rows).into_iter().next()
+    }
+
     #[test]
     fn it_returns_none_for_empty_input() {
-        assert!(fold_rows(vec![]).is_none());
+        assert!(fold_one(vec![]).is_none());
     }
 
     #[test]
     fn it_returns_a_single_row_unchanged() {
         let c = conclusion("did:key:zX", &[("name", json!("Alice"))]);
-        let folded = fold_rows(vec![c.clone()]).expect("single row folds");
+        let folded = fold_one(vec![c.clone()]).expect("single row folds");
         assert_eq!(folded.this, "did:key:zX");
         assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Alice"))));
     }
@@ -109,7 +136,7 @@ mod tests {
             conclusion("did:key:zX", &[("name", json!("Alice"))]),
             conclusion("did:key:zX", &[("name", json!("Alice"))]),
         ];
-        let folded = fold_rows(rows).expect("rows fold");
+        let folded = fold_one(rows).expect("rows fold");
         // Both agree on `name` — should not become an array.
         assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Alice"))));
     }
@@ -141,7 +168,7 @@ mod tests {
                 ],
             ),
         ];
-        let folded = fold_rows(rows).expect("rows fold");
+        let folded = fold_one(rows).expect("rows fold");
         assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Groceries"))));
         assert_eq!(
             folded.fields.get("item"),
@@ -160,7 +187,7 @@ mod tests {
             conclusion("did:key:zX", &[("tag", json!("apple"))]),
             conclusion("did:key:zX", &[("tag", json!("mango"))]),
         ];
-        let folded = fold_rows(rows).expect("rows fold");
+        let folded = fold_one(rows).expect("rows fold");
         assert_eq!(
             folded.fields.get("tag"),
             Some(&ipld(json!(["zebra", "apple", "mango"]))),
@@ -174,7 +201,7 @@ mod tests {
             conclusion("did:key:zX", &[("tag", json!("beta"))]),
             conclusion("did:key:zX", &[("tag", json!("alpha"))]),
         ];
-        let folded = fold_rows(rows).expect("rows fold");
+        let folded = fold_one(rows).expect("rows fold");
         // `alpha` appears twice on the wire but is collapsed to
         // one entry in the folded array.
         assert_eq!(
@@ -194,7 +221,7 @@ mod tests {
             ),
             conclusion("did:key:zX", &[("name", json!("Bag"))]),
         ];
-        let folded = fold_rows(rows).expect("rows fold");
+        let folded = fold_one(rows).expect("rows fold");
         // `item` saw one value, stays scalar.
         assert_eq!(folded.fields.get("item"), Some(&ipld(json!("did:key:zA"))));
         assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Bag"))));

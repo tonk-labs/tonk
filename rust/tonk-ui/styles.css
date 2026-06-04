@@ -230,7 +230,15 @@ tonk-notation {
    .display-view-slot > tonk-display > tonk-view > .workspace`, all of
    which default to inline/auto height and would collapse the view to
    its content size — so establish a 100dvh height chain down to the
-   view. `:has()` lets the host opt in only when it wraps this route. */
+   view. `:has()` lets the host opt in only when it wraps this route.
+
+   The chain uses child combinators so it sizes only the route's OWN
+   mount slot (`.display-view-slot > tonk-display > tonk-view`), not
+   every nested `<tonk-display>`/`<tonk-view>` deeper in the tree. A
+   view template that wants its inner wrappers transparent (e.g.
+   board-view flattening the strip's child displays with
+   `display: contents`) must be able to do so without this chain
+   clawing them back to `display: block`. */
 html:has(.display-route),
 body:has(.display-route) {
     height: 100%;
@@ -243,8 +251,8 @@ tonk-host:has(.display-route) {
 .display-route,
 .display-route > tonk-branch,
 .display-route > tonk-branch > .display-view-slot,
-.display-route tonk-display,
-.display-route tonk-view {
+.display-route > tonk-branch > .display-view-slot > tonk-display,
+.display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view {
     display: block;
     height: 100%;
     min-height: 0;
@@ -261,6 +269,70 @@ tonk-host:has(.display-route) {
 wa-carousel-item tonk-view,
 wa-carousel-item tonk-notation {
     height: 100%;
+}
+
+/* `wa-carousel.seamless` is an opt-in carousel whose chrome takes no
+   visual space: a slide fills the whole element and the pagination dots
+   float on the right edge as a vertical switcher, so the rendered
+   instance looks exactly as it would without the carousel wrapping it.
+   The directory view uses it to present a model's instances as a stack
+   of full-bleed slides. A plain `<wa-carousel>` keeps Web Awesome's
+   default layout (bottom dots, gap, aspect ratio).
+
+   Web Awesome lays its `part="base"` out as a grid with a row gap that
+   reserves space for the pagination beneath the scroll container. We
+   flatten that to a single full-size cell and lift the dots out of flow
+   with `position: absolute`, so they overlay the slide instead of
+   consuming layout. The scroll container then occupies 100% and the
+   slide fills it; the aspect-ratio constraint is dropped so the content
+   sizes to the available space rather than a 16/9 letterbox. */
+wa-carousel.seamless {
+    --aspect-ratio: auto;
+    display: block;
+    height: 100%;
+    position: relative;
+}
+wa-carousel.seamless::part(base) {
+    display: block;
+    height: 100%;
+    gap: 0;
+    padding: 0;
+}
+/* Stretch slides to fill the scroll container instead of centering them
+   at content height — the default grid `align-items: center` is what
+   letterboxed a full-height view into a short, centered band. */
+wa-carousel.seamless::part(scroll-container) {
+    height: 100%;
+    align-items: stretch;
+}
+/* Each slide, and the nested `<tonk-display>` chain inside it, fills the
+   carousel-item so a directory instance occupies the whole viewport just
+   like a bare single-entity route. The bare route gets a full-height
+   chain from the `.display-route > … > tonk-view` rule above, but a
+   carousel-nested display is not a direct child of that chain, so it
+   would otherwise collapse to its content size (a cramped column). */
+wa-carousel.seamless > wa-carousel-item {
+    height: 100%;
+}
+wa-carousel.seamless > wa-carousel-item > tonk-display,
+wa-carousel.seamless > wa-carousel-item > tonk-display > tonk-view,
+wa-carousel.seamless > wa-carousel-item > tonk-display > tonk-notation {
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+/* Pagination dots: overlay on the right edge, centered vertically, in a
+   column so they read as a vertical slide switcher. Out of flow so they
+   take no layout space. */
+wa-carousel.seamless::part(pagination) {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: var(--wa-space-s);
+    margin: 0;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
 }
 
 /* `<tonk-notation>`'s rendered `<pre>` reuses the dialog-yaml
@@ -1560,11 +1632,20 @@ tonk-code:focus-within {
     margin-block-end: var(--wa-space-2xs);
 }
 
-/* ── Board layout ─────────────────────────────────────────────
- * Horizontal strip rendered by `<tonk-board>` and its view
- * templates. See `plan/tonk-board.md`. Tiles fill the column
- * by default; opening another tile splits the column or grows
- * a new column in the strip.
+/* ── Board route height anchor ────────────────────────────────
+ * The board's strip/column/tile layout lives WITH the view, in
+ * the `board-view` / `column-view` `display:` templates (see
+ * core.yaml). Those templates size the strip with
+ * `block-size: 100%`, which only resolves against a host that
+ * establishes a real height — that's the route's job, and the
+ * only board CSS that stays here.
+ *
+ * This route mounts `tonk-board` inside `main.board-view`, so the
+ * height chain runs `main → tonk-repository → tonk-branch →
+ * tonk-board → tonk-display → tonk-view → tonk-strip`. The bare
+ * `/display` route establishes its own chain (see `.display-route`
+ * above); both bottom out at `tonk-strip`, which the view styles
+ * from there down. See `plan/tonk-board.md`.
  */
 .board-view {
     /* Fill the viewport; no padding so the strip's graph-paper
@@ -1576,9 +1657,10 @@ tonk-code:focus-within {
 }
 
 /* Every custom-element layer between <main.board-view> and the
-   leaf content defaults to `display: inline`. Force the whole
-   chain into the layout flow so block-size: 100% propagates from
-   the viewport down to the strip and columns. */
+   strip defaults to `display: inline`. Force the whole chain into
+   the layout flow so block-size: 100% propagates from the
+   viewport down to the strip (the view template takes over from
+   the strip downward). */
 .board-view tonk-repository,
 .board-view tonk-branch,
 .board-view tonk-board,
@@ -1587,128 +1669,4 @@ tonk-code:focus-within {
     display: block;
     block-size: 100%;
     min-block-size: 0;
-}
-
-/* The intermediate <tonk-display>/<tonk-view> layers between the
-   strip and its columns are pure rendering wrappers, not layout
-   boxes. `display: contents` makes them transparent to the
-   strip's flex flow so each <tonk-column> becomes a direct flex
-   item (and its `flex: 0 0 calc(--col-w * --cell)` actually
-   sizes the column instead of the wrapping <tonk-display>). */
-tonk-strip > tonk-display,
-tonk-strip > tonk-display > tonk-view {
-    display: contents;
-}
-
-/* Two-layer engineering-graph-paper background, applied to
-   each tile (the surface the dark canvas occupies). The grid
-   travels with the tile content because the tile is the
-   visible canvas; the strip's lighter seam color shows through
-   every gap (between tiles AND between columns) for a single
-   coherent gutter colour throughout the board.
-
-   `background-attachment: local` ties the grid to the column's
-   scroll position so the dots travel with vertical scroll. */
-tonk-column > .tile {
-    --dot-gap: 16px;
-    --dot-size-dim: 0.5px;
-    --dot-size-bright: 0.5px;
-    --dot-color-dim: color-mix(in oklab, currentColor 16%, transparent);
-    --dot-color-bright: color-mix(in oklab, currentColor 25%, transparent);
-    background-image:
-        radial-gradient(
-            circle,
-            var(--dot-color-bright) var(--dot-size-bright),
-            transparent calc(var(--dot-size-bright) + 0.5px)
-        ),
-        radial-gradient(
-            circle,
-            var(--dot-color-dim) var(--dot-size-dim),
-            transparent calc(var(--dot-size-dim) + 0.5px)
-        );
-    background-size:
-        calc(var(--dot-gap) * 4) calc(var(--dot-gap) * 4),
-        var(--dot-gap) var(--dot-gap);
-    background-position:
-        calc(var(--dot-gap) * -2) calc(var(--dot-gap) * -2),
-        calc(var(--dot-gap) / -2) calc(var(--dot-gap) / -2);
-    background-attachment: local;
-}
-
-tonk-strip {
-    --pitch: 16px;
-    --cell: 64px;
-    /* Narrow gutter between columns — just enough that the
-       contrasting strip fill reads as a seam. */
-    --gap: 4px;
-
-    display: flex;
-    flex-direction: row;
-    align-items: stretch;
-    gap: var(--gap);
-    padding: 0;
-    box-sizing: border-box;
-    block-size: 100%;
-    inline-size: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    scroll-snap-type: x proximity;
-    /* The strip's fill is what shows through every seam —
-       between columns AND between tiles within a column (since
-       <tonk-column> is transparent). Uses the theme's
-       `neutral-fill-normal` token so the gutter contrast
-       adapts with dark / light mode. */
-    background-color: var(--wa-color-neutral-fill-normal);
-}
-
-tonk-column {
-    /* Width is driven by `--col-w` set on the element by the
-       column-view template (one --cell unit = 64px). Tiles
-       stack top-to-bottom inside; overflow is handled here at
-       the column level, so the column's dot-grid background
-       scrolls together with the tiles. */
-    flex: 0 0 calc(var(--col-w, 12) * var(--cell));
-    block-size: 100%;
-    display: flex;
-    flex-direction: column;
-    gap: var(--gap);
-    overflow-y: auto;
-    overflow-x: hidden;
-    scroll-snap-align: start;
-    min-block-size: 0;
-    /* Transparent so the strip's seam fill shows through the
-       column-to-column gaps AND the tile-to-tile gaps inside
-       each column. The column's grid layer still paints (it's a
-       `background-image`, not a fill) and reads against whatever
-       the strip provides underneath. */
-    background-color: transparent;
-}
-
-tonk-column::-webkit-scrollbar {
-    display: none;
-}
-
-/* Tiles size to their content along the column's main axis and
-   stack top-to-bottom. Overflow happens at the COLUMN level
-   (the column is the scroller) — never inside an individual
-   tile — so a tile renders all its content unclipped and the
-   user scrolls the whole column to reach what's below. Tiles
-   paint the dark canvas fill; the gaps between tiles (and the
-   gaps between columns) expose the strip's lighter seam fill
-   underneath, giving a single coherent gutter colour throughout
-   the board. */
-tonk-column > .tile {
-    flex: 0 0 auto;
-    inline-size: 100%;
-    box-sizing: border-box;
-    background-color: var(--wa-color-neutral-fill-quiet);
-}
-
-/* The inner <tonk-display> participates in the column's scroll —
-   it must NOT clip or scroll on its own. */
-tonk-column > .tile > tonk-display,
-tonk-column > .tile > tonk-display > tonk-view {
-    display: block;
-    inline-size: 100%;
-    overflow: visible;
 }

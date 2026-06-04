@@ -121,15 +121,41 @@ pub enum BindingKind {
     },
 }
 
-/// All bindings extracted from a template fragment, plus the set
-/// of distinct field names referenced — the set is precomputed so
-/// the renderer can short-circuit when no field actually changed.
+/// All bindings extracted from a template fragment, partitioned into
+/// the render-once **chrome** and the per-conclusion **repeat body**.
+///
+/// A `<tonk-display>` frame is a list of folded conclusions (one per
+/// subject). The renderer renders `chrome` once, then clones the repeat
+/// element once per conclusion, rendering `body` against each. See
+/// [`this_repeat_root`] for how the repeat element is chosen and
+/// `tonk-core/docs/templates.md` for the model.
 #[derive(Debug, Clone, Default)]
 pub struct BindingPlan {
-    /// Top-level plan nodes — a tree, because iteration roots
-    /// (introduced for cardinality-many fields) contain nested
-    /// bindings whose paths are relative to the root.
-    pub nodes: Vec<PlanNode>,
+    /// Plan nodes outside the repeat element — bindings and iterations
+    /// that render **once** against the lead conclusion (e.g. a sheet
+    /// title surrounding a repeated row). Empty when the whole fragment
+    /// repeats.
+    pub chrome: Vec<PlanNode>,
+    /// The per-conclusion repeat: the template path of the element to
+    /// clone once per conclusion, plus the plan applied inside each
+    /// clone (`body` paths relative to that element). `path` is `None`
+    /// when the whole fragment repeats (no single enclosing element);
+    /// then the renderer clones every top-level node.
+    pub repeat: RepeatPlan,
+}
+
+/// The per-conclusion repeat half of a [`BindingPlan`].
+#[derive(Debug, Clone, Default)]
+pub struct RepeatPlan {
+    /// Template path of the element cloned once per conclusion, or
+    /// `None` to repeat the whole fragment. The renderer stamps
+    /// `with=<this>` on each rendered clone so the repeat boundary is
+    /// inspectable in the DOM.
+    pub path: Option<Vec<usize>>,
+    /// Plan applied inside each clone. When `path` is `Some`, paths are
+    /// relative to that element; when `None`, they are fragment-root
+    /// relative (the whole fragment is the clone).
+    pub body: Vec<PlanNode>,
 }
 
 /// One node in the binding tree. Plain `Binding` nodes are
@@ -194,12 +220,14 @@ pub fn longest_common_path_prefix(paths: &[Vec<usize>]) -> Vec<usize> {
 /// ensures one field per text node); an attribute binding can
 /// mix multiple `{X}` placeholders, all collected here.
 ///
-/// `{this}` is **not** a real field — it's a reserved placeholder
-/// for the entity URI, always scalar, always single. Exclude it
-/// from iteration-root discovery so a template like
-/// `<a href="/entity/{this}">` doesn't get treated as a
-/// cardinality-many iteration target. The substituter still
-/// resolves `{this}` directly off the conclusion.
+/// `{this}` is **not** a field-iteration target — it's the root
+/// scope (one instance per matched conclusion), handled by the
+/// renderer's per-conclusion loop rather than `PlanNode::Iteration`.
+/// Excluding it here keeps a template like `<a href="/x/{this}">`
+/// from being treated as a cardinality-many field. The element that
+/// binds `{this}` becomes the per-conclusion *repeat root* (so
+/// surrounding chrome renders once); that is discovered separately.
+/// See `tonk-core/docs/templates.md`.
 pub fn binding_fields(binding: &Binding) -> Vec<String> {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -215,6 +243,121 @@ pub fn binding_fields(binding: &Binding) -> Vec<String> {
         }
     }
     out
+}
+
+/// A field name in the `dom.host/` namespace — the host element's own
+/// attributes injected into the conclusion (e.g. `{dom.host/model}`).
+/// These describe the *outer* host, not the repeated subject, so they
+/// never participate in repeat-node resolution.
+fn is_dom_host_field(name: &str) -> bool {
+    name.starts_with("dom.host/")
+}
+
+/// Whether a binding is an attribute whose value is *exactly* `{this}`
+/// (a bare single-segment `{this}`, attribute name irrelevant). This is
+/// the explicit repeat marker the author can write, e.g.
+/// `<tr subject={this}>`. A mixed value like `href="/entity/{this}"` is
+/// a URL substitution, not a marker, so it does not count.
+fn binds_this_marker(binding: &Binding) -> bool {
+    let BindingKind::Attribute { segments, .. } = &binding.kind else {
+        return false;
+    };
+    matches!(segments.as_slice(), [Segment::Field(name)] if name == "this")
+}
+
+/// Whether a binding references any non-`{dom.host/*}` field — a
+/// subject field (`{title}`) or `{this}`, in text or attribute, bare or
+/// mixed. These are the references that pin the repeat node; host-attr
+/// references are excluded. Unlike [`binding_fields`] (which omits
+/// `{this}` because it is not a cardinality-many iteration target),
+/// this counts `{this}` — it is the primary repeat reference.
+fn refers_subject(binding: &Binding) -> bool {
+    let segments = match &binding.kind {
+        BindingKind::Text { segments } => segments,
+        BindingKind::Attribute { segments, .. } => segments,
+    };
+    segments
+        .iter()
+        .any(|seg| matches!(seg, Segment::Field(name) if !is_dom_host_field(name)))
+}
+
+/// Resolve the per-conclusion **repeat node**: the element the renderer
+/// clones once per folded conclusion. Everything outside it is rendered
+/// once as chrome.
+///
+/// The rule, from the smallest set of examples that pins it down:
+///
+/// 1. `<div><span>{count}</span></div>` — no `{this}`, one subject ref.
+///    Repeat node is the **fragment root** (`<div>`), with an implicit
+///    `with={this}`.
+/// 2. `<div subject={this}><span>{count}</span></div>` — `{this}` on the
+///    outermost ref-bearing element. Repeat node is that element
+///    (`<div>`). Whereas `<div><span data-this={this} data-name={name}>`
+///    has every reference on the inner `<span>`, so the `<span>` repeats.
+/// 3. `<div><button data-count={count}><span data-of={this}>{name}</span>`
+///    — `{this}` is *deeper* than `{count}`, so it is not on the
+///    outermost ref-bearing element. Repeat node falls back to the
+///    fragment root (`<div>`).
+/// 4. `<div data-model={dom.host/model}><span data-this={this} ...>` —
+///    the `{dom.host/*}` reference is ignored; the `<span>` holding
+///    `{this}` repeats.
+///
+/// Stated as one rule: among bindings that reference a subject field
+/// (anything but `{dom.host/*}`), find the **outermost** (shallowest)
+/// host element. If a bare `{this}` marker sits on *that* element, it is
+/// the repeat node. Otherwise — no `{this}`, or `{this}` nested below
+/// another reference — the **fragment-root element** containing the
+/// references is the repeat node.
+///
+/// `Some(path)` names the exact element to clone per conclusion.
+/// `None` means there is no single enclosing element (the references
+/// span sibling top-level nodes), so the whole fragment repeats.
+pub fn this_repeat_root(bindings: &[Binding]) -> Option<Vec<usize>> {
+    // Host paths of every reference that pins the repeat node.
+    let subject_hosts: Vec<Vec<usize>> = bindings
+        .iter()
+        .filter(|b| refers_subject(b))
+        .map(host_element_path)
+        .collect();
+    if subject_hosts.is_empty() {
+        // Nothing references the subject — no repeat axis. (A template
+        // built only from `{dom.host/*}` refs, say.) Whole fragment.
+        return None;
+    }
+
+    // The outermost ref-bearing element is the shallowest host path,
+    // when it is unique. A `{this}` marker on *that* element makes the
+    // element itself the repeat node (examples 2b/4: every ref on the
+    // inner `<span>`; example 2a: `{this}` on the outer `<div>`).
+    let min_len = subject_hosts.iter().map(Vec::len).min().expect("non-empty");
+    let mut shallowest: Vec<Vec<usize>> = subject_hosts
+        .iter()
+        .filter(|h| h.len() == min_len)
+        .cloned()
+        .collect();
+    shallowest.sort();
+    shallowest.dedup();
+    if let [outermost] = shallowest.as_slice() {
+        let this_on_outermost = bindings
+            .iter()
+            .filter(|b| binds_this_marker(b))
+            .any(|b| &host_element_path(b) == outermost);
+        if this_on_outermost {
+            return Some(outermost.clone());
+        }
+    }
+
+    // No `{this}` on the outermost element (absent, nested deeper, or
+    // the outermost refs split across siblings). The repeat node is the
+    // fragment-root *element* that encloses every reference — the
+    // common length-1 prefix shared by all host paths. If they don't
+    // share one (genuine multi-root fragment), the whole fragment
+    // repeats (`None`).
+    let first = subject_hosts[0].first().copied();
+    match first {
+        Some(idx) if subject_hosts.iter().all(|h| h.first() == Some(&idx)) => Some(vec![idx]),
+        _ => None,
+    }
 }
 
 /// The path of the smallest enclosing element containing a
@@ -393,10 +536,66 @@ fn sort_nodes_by_path(nodes: &mut [PlanNode]) {
     nodes.sort_by(|a, b| node_path(a).cmp(node_path(b)));
 }
 
-fn node_path(node: &PlanNode) -> &[usize] {
+/// The template path of a top-level plan node — a `Binding`'s target
+/// path or an `Iteration` root's path. Used to partition a plan into
+/// the chrome (outside the repeat root) and the per-conclusion row
+/// (inside it).
+pub fn node_path(node: &PlanNode) -> &[usize] {
     match node {
         PlanNode::Binding(b) => &b.path,
         PlanNode::Iteration { path, .. } => path,
+    }
+}
+
+/// Partition the flat bindings around the per-conclusion repeat element
+/// and build a [`BindingPlan`]: the **chrome** (bindings outside the
+/// repeat element, planned and rendered once) and the **repeat body**
+/// (bindings at or under it, paths rebased relative to the repeat
+/// element, planned and rendered per conclusion).
+///
+/// Splitting the *flat bindings* — before [`build_plan_nodes`] folds
+/// them into iteration trees — is what keeps chrome and body
+/// independent. A cardinality-one chrome field (a sheet `title`) would
+/// otherwise be lifted into an iteration root that wraps the repeat
+/// element, swallowing the row into the title's subtree. Planning each
+/// side separately means the title iterates only its own value and the
+/// repeat element is the body's root.
+///
+/// `repeat_root` is `None` when the whole fragment repeats: there is no
+/// chrome, every binding is body, paths unchanged.
+pub fn split_plan(bindings: Vec<Binding>, repeat_root: Option<Vec<usize>>) -> BindingPlan {
+    let Some(root) = repeat_root else {
+        return BindingPlan {
+            chrome: Vec::new(),
+            repeat: RepeatPlan {
+                path: None,
+                body: build_plan_nodes(bindings),
+            },
+        };
+    };
+
+    let mut chrome_bindings = Vec::new();
+    let mut body_bindings = Vec::new();
+    for b in bindings {
+        // A binding belongs to the body when its target sits at or
+        // under the repeat element. Compare the *host element* path so
+        // an attribute on the repeat element itself (host == root) and
+        // a text node inside it both land in the body.
+        if host_element_path(&b).starts_with(&root) {
+            let mut rebased = b;
+            rebased.path = rebased.path[root.len()..].to_vec();
+            body_bindings.push(rebased);
+        } else {
+            chrome_bindings.push(b);
+        }
+    }
+
+    BindingPlan {
+        chrome: build_plan_nodes(chrome_bindings),
+        repeat: RepeatPlan {
+            path: Some(root),
+            body: build_plan_nodes(body_bindings),
+        },
     }
 }
 
@@ -525,10 +724,10 @@ mod dom {
             if el.local_name() == "template" {
                 return Some(el);
             }
-            if !is_template_owning_component(&el) {
-                if let Some(found) = find_template(&el) {
-                    return Some(found);
-                }
+            if !is_template_owning_component(&el)
+                && let Some(found) = find_template(&el)
+            {
+                return Some(found);
             }
             child = el.next_element_sibling();
         }
@@ -559,6 +758,36 @@ mod dom {
     ///
     /// Mutates `fragment` in place.
     pub fn extract_plan(fragment: &DocumentFragment) -> BindingPlan {
+        let bindings = collect_bindings(fragment);
+        // Fold flat bindings into the iteration-aware plan tree, then
+        // split it around the per-conclusion repeat element. Iteration
+        // roots inside the body are discovered by the LCA of every
+        // binding referencing the same field. The fold and split are
+        // pure (operate on the collected `bindings` vec), which is why
+        // they live outside the wasm-only `dom` module and get
+        // unit-tested natively.
+        let repeat_root = super::this_repeat_root(&bindings);
+        super::split_plan(bindings, repeat_root)
+    }
+
+    /// Like [`extract_plan`] but for a **self-repeating** consumer
+    /// (`<tonk-concept>`) that clones the whole template per conclusion
+    /// itself. It does not want the `{this}` chrome/repeat split — a
+    /// subject ref like `model={model}` would otherwise make the
+    /// fragment-root element the repeat node and rebase every binding's
+    /// path relative to it, which the whole-fragment-cloning concept
+    /// renderer would then mis-navigate. Forcing `repeat_root = None`
+    /// keeps every node in `repeat.body` with fragment-relative paths.
+    pub fn extract_row_plan(fragment: &DocumentFragment) -> BindingPlan {
+        let bindings = collect_bindings(fragment);
+        super::split_plan(bindings, None)
+    }
+
+    /// Walk a fragment, split interpolated text nodes into per-segment
+    /// text nodes (mutating `fragment` in place), and return the flat
+    /// list of bindings. Shared by [`extract_plan`] and
+    /// [`extract_row_plan`].
+    fn collect_bindings(fragment: &DocumentFragment) -> Vec<Binding> {
         let mut bindings: Vec<Binding> = Vec::new();
         // (Path, NodeKind) snapshot — collect first, mutate after,
         // because mutating during walk invalidates the iterator.
@@ -694,18 +923,7 @@ mod dom {
             }
         }
 
-        // Fold flat bindings into the iteration-aware plan tree.
-        // Iteration roots are discovered by finding the LCA of
-        // every binding that references the same field — if that
-        // LCA sits strictly inside the fragment (not at the root),
-        // the element there becomes the iteration root and every
-        // binding under it is pulled into its body. The fold is
-        // pure (operates on the collected `bindings` vec), which
-        // is why the helper lives outside the wasm-only `dom`
-        // module and gets unit-tested natively.
-        BindingPlan {
-            nodes: super::build_plan_nodes(bindings),
-        }
+        bindings
     }
 
     /// Walk a node and its descendants, calling `visit(path, node)`
@@ -1024,11 +1242,19 @@ mod dom {
             let snapshot = snapshot_template(&host).expect("snapshot");
             let plan = extract_plan(&snapshot.fragment);
             // Only the `{title}` text binding — nothing from the CSS.
+            // `{title}` is a subject field with no `{this}`, so the
+            // fragment root repeats and the binding lives in the repeat
+            // body; chrome is empty.
+            assert!(
+                plan.chrome.is_empty(),
+                "expected no chrome, got {:?}",
+                plan.chrome,
+            );
             assert_eq!(
-                plan.nodes.len(),
+                plan.repeat.body.len(),
                 1,
                 "expected one plan node (the span's title), got {:?}",
-                plan.nodes,
+                plan.repeat.body,
             );
             // The stylesheet text is untouched.
             let style = snapshot
@@ -1050,7 +1276,7 @@ mod dom {
 
 #[cfg(target_arch = "wasm32")]
 pub use dom::{
-    Snapshot, apply_attribute_binding, extract_plan, navigate, render_segments,
+    Snapshot, apply_attribute_binding, extract_plan, extract_row_plan, navigate, render_segments,
     render_segments_with_shadow, single_field_value, snapshot_template,
 };
 
@@ -1342,5 +1568,140 @@ mod tests {
             }
             other => panic!("expected outer list iteration, got {other:?}"),
         }
+    }
+
+    // --- repeat-node resolution ------------------------------------------
+    //
+    // The repeat node is the element the renderer clones once per folded
+    // conclusion. These five cases pin the rule down (paths shown beside
+    // each element; `[0]` is the single top-level element of the
+    // fragment).
+
+    // 1. <div>                       [0]
+    //      <span>{count}</span>      [0, 0] text host [0, 0]
+    //    No {this}, one subject ref. The fragment-root <div> repeats and
+    //    gets an implicit with={this}.
+    #[dialog_common::test]
+    fn it_repeats_the_root_when_only_a_subject_field_is_bound() {
+        let root = this_repeat_root(&[text_binding(&[0, 0, 0], "count")]);
+        assert_eq!(root, Some(vec![0]));
+    }
+
+    // 2a. <div subject={this}>       [0]     attr {this}
+    //       <span>{count}</span>     [0, 0]  text host [0, 0]
+    //     {this} is on the outermost ref-bearing element (<div>), so the
+    //     <div> repeats.
+    #[dialog_common::test]
+    fn it_repeats_the_element_holding_this_when_this_is_outermost() {
+        let root = this_repeat_root(&[
+            attr_binding(&[0], "subject", "this"),
+            text_binding(&[0, 0, 0], "count"),
+        ]);
+        assert_eq!(root, Some(vec![0]));
+    }
+
+    // 2b. <div>                                  [0]
+    //       <span data-this={this} data-name={name}>  [0, 0] attrs
+    //     Every reference sits on the inner <span>, so the <span>
+    //     repeats — not the <div>.
+    #[dialog_common::test]
+    fn it_repeats_the_inner_element_when_all_refs_are_on_it() {
+        let root = this_repeat_root(&[
+            attr_binding(&[0, 0], "data-this", "this"),
+            attr_binding(&[0, 0], "data-name", "name"),
+        ]);
+        assert_eq!(root, Some(vec![0, 0]));
+    }
+
+    // 3. <div>                            [0]
+    //      <button data-count={count}>    [0, 0]    attr {count}
+    //        <span data-of={this}>{name}</span>  [0,0,0] attr {this}, text {name}
+    //    {this} is *deeper* than {count}, so it is not on the outermost
+    //    ref-bearing element (<button>). The repeat node falls back to
+    //    the fragment-root <div>.
+    #[dialog_common::test]
+    fn it_repeats_the_root_when_this_is_nested_below_another_ref() {
+        let root = this_repeat_root(&[
+            attr_binding(&[0, 0], "data-count", "count"),
+            attr_binding(&[0, 0, 0], "data-of", "this"),
+            text_binding(&[0, 0, 0, 0], "name"),
+        ]);
+        assert_eq!(root, Some(vec![0]));
+    }
+
+    // 4. <div data-model={dom.host/model}>    [0]     attr dom.host ref
+    //      <span data-this={this} data-name={name}>  [0, 0] attrs
+    //    The {dom.host/*} reference is ignored for repeat resolution, so
+    //    the inner <span> (holding {this} and {name}) repeats.
+    #[dialog_common::test]
+    fn it_ignores_dom_host_refs_when_resolving_the_repeat_node() {
+        let root = this_repeat_root(&[
+            attr_binding(&[0], "data-model", "dom.host/model"),
+            attr_binding(&[0, 0], "data-this", "this"),
+            attr_binding(&[0, 0], "data-name", "name"),
+        ]);
+        assert_eq!(root, Some(vec![0, 0]));
+    }
+
+    // Sibling top-level references with no shared enclosing element: the
+    // whole fragment repeats (`None`).
+    #[dialog_common::test]
+    fn it_repeats_the_whole_fragment_for_sibling_roots() {
+        let root = this_repeat_root(&[
+            text_binding(&[0, 0], "title"),
+            text_binding(&[1, 0], "summary"),
+        ]);
+        assert_eq!(root, None);
+    }
+
+    // A {this} marker deep in a table still names its element as the
+    // repeat node when it is the outermost (and only) reference holder.
+    #[dialog_common::test]
+    fn it_finds_a_this_marker_nested_in_chrome() {
+        // <table><tbody><tr subject={this}>  [0, 0, 0]
+        //   <td>{title}</td>                 [0, 0, 0, 0, 0]
+        let root = this_repeat_root(&[
+            attr_binding(&[0, 0, 0], "subject", "this"),
+            text_binding(&[0, 0, 0, 0, 0], "title"),
+        ]);
+        assert_eq!(root, Some(vec![0, 0, 0]));
+    }
+
+    // --- split_plan: chrome vs per-conclusion body -----------------------
+
+    #[dialog_common::test]
+    fn it_splits_chrome_from_the_repeat_body() {
+        // <tonk-sheet title={title}>      [0]     chrome (renders once)
+        //   <tr subject={this}>           [0, 0]  repeat element
+        //     <td>{name}</td>             [0, 0, 0, 0]
+        // The title binding stays chrome; the row binding rebases under
+        // the repeat element. Each side is planned independently so the
+        // cardinality-one title does not wrap the repeated row.
+        let plan = split_plan(
+            vec![
+                attr_binding(&[0], "title", "title"),
+                text_binding(&[0, 0, 0, 0], "name"),
+            ],
+            Some(vec![0, 0]),
+        );
+
+        assert_eq!(plan.repeat.path, Some(vec![0, 0]));
+        // Chrome holds the title — one iteration root at [0].
+        assert_eq!(plan.chrome.len(), 1);
+        assert_eq!(node_path(&plan.chrome[0]), &[0usize][..]);
+        // Body holds the name, rebased relative to the <tr>: the text
+        // node was [0,0,0,0], now [0,0]; its iteration root [0].
+        assert_eq!(plan.repeat.body.len(), 1);
+        assert_eq!(node_path(&plan.repeat.body[0]), &[0usize][..]);
+    }
+
+    #[dialog_common::test]
+    fn it_puts_everything_in_the_body_when_the_fragment_repeats() {
+        // No repeat element: the whole fragment is the clone. Every
+        // binding is body, paths unchanged, RepeatPlan::path stays None.
+        let plan = split_plan(vec![text_binding(&[0, 0], "count")], None);
+        assert!(plan.chrome.is_empty());
+        assert_eq!(plan.repeat.path, None);
+        assert_eq!(plan.repeat.body.len(), 1);
     }
 }

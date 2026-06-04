@@ -108,7 +108,7 @@ async fn open_cache() -> Result<Cache, JsValue> {
 
 fn caches() -> Result<web_sys::CacheStorage, JsValue> {
     let global: ServiceWorkerGlobalScope = js_sys::global().dyn_into()?;
-    Ok(global.caches()?)
+    global.caches()
 }
 
 async fn cache_match(cache: &Cache, request: &Request) -> Result<Option<Response>, JsValue> {
