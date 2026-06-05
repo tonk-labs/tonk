@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::Branch;
 use crate::Remote;
 use crate::domain::remote::Address;
-use crate::domain::replica::{Kind, Name, Profile, Subject};
+use crate::domain::replica::{Kind, Name, Profile, Status, Subject};
 use crate::prelude::*;
 
 /// A replica — this device's view of a specific repository.
@@ -118,6 +118,32 @@ impl SpaceKind {
     }
 }
 
+/// The seeding [`Status`] of a replica as a standalone fact: just
+/// `this` and `status`.
+///
+/// A repository's content branch is seeded asynchronously after the
+/// replica is recorded, so the replica is first stamped
+/// [`Replica::BLANK`] and flipped to [`Replica::INITIALIZED`] once the
+/// seed completes. Asserting one stamps the status onto an existing
+/// replica entity (cardinality one, so a later assert supersedes)
+/// without re-asserting the whole [`Replica`]. The Hub reads it to
+/// reflect the install state on each card.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceStatus {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// The replica's seeding status — see [`Replica::BLANK`] /
+    /// [`Replica::INITIALIZED`].
+    pub status: Status,
+}
+
+impl SpaceStatus {
+    /// A `status` stamp for the given replica entity.
+    pub fn new(this: Entity, status: Status) -> Self {
+        Self { this, status }
+    }
+}
+
 /// Hash input for [`Replica::this`].
 ///
 /// The single-variant enum shape tags the CBOR encoding with the
@@ -171,6 +197,24 @@ impl Replica {
     /// The [`Kind`] for a space.
     pub fn repository_kind() -> Kind {
         Kind(Self::REPOSITORY.parse().expect("tonk:repository parses"))
+    }
+
+    /// `status` URI for a freshly created replica whose content
+    /// branch has not been seeded yet.
+    pub const BLANK: &'static str = "tonk:blank";
+
+    /// `status` URI for a replica whose content branch has been
+    /// seeded.
+    pub const INITIALIZED: &'static str = "tonk:initialized";
+
+    /// The [`Status`] for a not-yet-seeded replica.
+    pub fn blank_status() -> Status {
+        Status(Self::BLANK.parse().expect("tonk:blank parses"))
+    }
+
+    /// The [`Status`] for a seeded replica.
+    pub fn initialized_status() -> Status {
+        Status(Self::INITIALIZED.parse().expect("tonk:initialized parses"))
     }
 
     /// The replica's entity.
