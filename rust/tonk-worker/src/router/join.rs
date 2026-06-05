@@ -251,17 +251,18 @@ async fn find_replica_name_for_subject(
     tonk: &TonkState,
     subject: &Did,
 ) -> Result<Option<String>, TonkWorkerError> {
-    let profile_repository = Repository::from(&tonk.profile);
-    let profile_meta = profile_repository
+    let profile_meta = tonk
+        .reactor
+        .profile_repository()
         .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+        .acquire(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to open profile meta branch: {e}"))
         })?;
 
     let rows: Vec<Replica> = profile_meta
+        .handle()
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),

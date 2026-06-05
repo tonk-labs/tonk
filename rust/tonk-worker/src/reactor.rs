@@ -91,7 +91,13 @@ impl TonkReactor {
             let mut map = self.repos.lock();
             std::mem::take(&mut *map)
         };
-        for (_, repo) in repos {
+        // The profile-as-repository lives in its own slot, not in
+        // `repos`. The Hub subscribes to its meta branch
+        // (`/api/profile/branch/meta/query` SSE), so it must be drained
+        // too — otherwise that one stream stays open and pins the
+        // outgoing worker in `waiting` on every update.
+        let profile = self.profile_repo.lock().take();
+        for repo in repos.into_values().chain(profile) {
             let branches = {
                 let mut map = repo.branches().lock();
                 std::mem::take(&mut *map)

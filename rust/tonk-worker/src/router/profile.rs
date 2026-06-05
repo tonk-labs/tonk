@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::Repository;
 use dialog_varsig::Did;
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -62,7 +61,20 @@ pub async fn get_profile(
 
     let tonk = state.read().await;
     let profile_did = tonk.profile.did();
-    let profile_repository = Repository::from(&tonk.profile);
+
+    // Read through the reactor's cached profile-repository handle so
+    // reads see exactly what writes (which also go through the reactor)
+    // committed — a separate `Repository::from(&tonk.profile)` handle
+    // would resolve a different cached branch state and could disagree.
+    let profile_repository = tonk
+        .reactor
+        .profile_repository()
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to acquire profile repository: {e}"))
+        })?
+        .repository();
 
     // Full info for the profile-as-repository. This handles the
     // branches/remotes surfacing — the profile's meta branch is a
@@ -71,18 +83,20 @@ pub async fn get_profile(
 
     // Space list lives on the same meta branch but is specific
     // to the profile route (regular repositories don't have a
-    // sidebar index to build). Run it as a separate query
-    // rather than extending `build_repository_info`.
-    let meta = profile_repository
+    // sidebar index to build). Run it through the reactor's cached
+    // branch session for the same coherence reason.
+    let session = tonk
+        .reactor
+        .profile_repository()
         .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+        .acquire(&tonk.operator)
         .await
         .map_err(|e| {
-            TonkWorkerError::Internal(format!("Failed to open profile meta branch: {}", e))
+            TonkWorkerError::Internal(format!("Failed to open profile meta branch: {e}"))
         })?;
 
-    let rows: Vec<Replica> = meta
+    let rows: Vec<Replica> = session
+        .handle()
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),

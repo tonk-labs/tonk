@@ -636,19 +636,20 @@ async fn record_replica_in_profile(
     name: &str,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
-    let profile_repository = Repository::from(&tonk.profile);
-    let profile_meta = profile_repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to open profile meta branch: {}", e))
-        })?;
-
     let replica = Replica::new(tonk.profile.did(), subject.clone(), name);
 
-    let revision = profile_meta
+    // Write through the *reactor's* profile-repository handle, not a
+    // fresh `Repository::from(&tonk.profile)`. The reactor caches the
+    // profile repo and its meta-branch handle (opened the first time
+    // the Hub queried, at boot); a commit through a separate handle
+    // leaves that cached handle pinned at its old head, so the Hub —
+    // which reads through the reactor — never sees this replica. Going
+    // through the reactor advances the cached handle and re-polls its
+    // subscriptions, so the new space appears in the Hub immediately.
+    let revision = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
         .transaction()
         .assert(replica)
         .commit()
@@ -692,20 +693,16 @@ pub async fn bootstrap_profile_meta(
     tonk: &TonkState,
     profile_name: &str,
 ) -> Result<(), RepositoryError> {
-    let profile_repository = Repository::from(&tonk.profile);
-    let profile_meta = profile_repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to open profile meta branch: {}", e))
-        })?;
-
     let profile_did = tonk.profile.did();
     let replica = Replica::new(profile_did.clone(), profile_did, profile_name);
 
-    profile_meta
+    // Write through the reactor's profile handle so the cached branch
+    // state (which every read also goes through) advances on this
+    // commit — see `record_replica_in_profile` for why a separate
+    // `Repository::from` handle would leave the reader stale.
+    tonk.reactor
+        .profile_repository()
+        .branch(META_BRANCH)
         .transaction()
         .assert(replica.clone())
         .assert(replica.branch(META_BRANCH))
@@ -794,7 +791,15 @@ pub async fn get_profile_repository(
     log!("GET /api/profile/repository");
 
     let tonk = state.read().await;
-    let repository = Repository::from(&tonk.profile);
+    let repository = tonk
+        .reactor
+        .profile_repository()
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("Failed to acquire profile repository: {e}"))
+        })?
+        .repository();
     let info = build_repository_info(&tonk, &tonk.profile_name, &repository).await;
     Ok(Json(info))
 }

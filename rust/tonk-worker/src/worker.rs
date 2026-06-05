@@ -526,6 +526,7 @@ impl TonkServiceWorker {
             // settles.
             let tonk = state.read().await;
             tonk.reactor.shutdown();
+            log!("Streams are released");
             Ok(JsValue::UNDEFINED)
         })
     }

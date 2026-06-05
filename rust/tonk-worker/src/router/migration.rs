@@ -24,7 +24,6 @@ use ::axum::extract::State;
 use ::axum::response::Redirect;
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::Repository;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
@@ -54,9 +53,7 @@ struct MigrationReport {
 
 /// Handler. Runs the migration then redirects to the Hub (`/`).
 #[wasm_compat]
-pub async fn repo_vs_profile(
-    State(state): State<AppState>,
-) -> Result<Redirect, TonkWorkerError> {
+pub async fn repo_vs_profile(State(state): State<AppState>) -> Result<Redirect, TonkWorkerError> {
     run_migration(state).await?;
     Ok(Redirect::to("/"))
 }
@@ -71,11 +68,14 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
 
     let tonk = state.read().await;
     let profile_entity = tonk.profile.did().this();
-    let profile_repository = Repository::from(&tonk.profile);
-    let meta = profile_repository
+    // Read and write through the reactor's cached profile branch so the
+    // migration sees current state and its commit advances the handle
+    // every other path (notably the Hub) reads through.
+    let meta = tonk
+        .reactor
+        .profile_repository()
         .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+        .acquire(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("Failed to open profile meta branch: {e}"))
@@ -85,6 +85,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     // so it matches records that predate the field as well as new
     // ones.
     let all: Vec<LegacyReplica> = meta
+        .handle()
         .query()
         .select(Query::<LegacyReplica> {
             this: Term::var("this"),
@@ -100,6 +101,7 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     // Replicas that already carry a `kind` — these match the full
     // concept. Anything in `all` but not here needs stamping.
     let already: HashSet<_> = meta
+        .handle()
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),
@@ -119,7 +121,11 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let profile_kind = Replica::profile_kind();
     let repository_kind = Replica::repository_kind();
 
-    let mut transaction = meta.transaction();
+    let mut transaction = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .transaction();
     let mut report = MigrationReport::default();
 
     for replica in &all {
