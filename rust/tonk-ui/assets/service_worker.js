@@ -111,8 +111,18 @@ async function fetchAndCacheIndex(cache) {
 
 self.onfetch = event => {
     if (event.request.mode === "navigate") {
-        event.respondWith(serveNavigation(event.request));
-        return;
+        // `/api/*` navigations are real data-plane requests, not SPA
+        // routes — a user visiting e.g. `/api/migrate/...` directly, or
+        // a server-issued redirect landing there. Route them through
+        // the Rust worker so axum answers (and its redirects resolve),
+        // instead of handing back the shell HTML (which would boot the
+        // SPA and 404 in the client router). Everything else is a
+        // navigation to an app route: serve the cached shell.
+        const path = new URL(event.request.url).pathname;
+        if (!path.startsWith("/api/")) {
+            event.respondWith(serveNavigation(event.request));
+            return;
+        }
     }
     event.respondWith(
         (async () => (await activateWorker()).onfetch(event))(),
