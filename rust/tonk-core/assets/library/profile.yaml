@@ -1,0 +1,78 @@
+# Tonk profile library — the minimal standard library seeded onto the
+# profile repository's meta branch.
+#
+# The profile branch only backs the Tonk Hub at `/`: a picker over the
+# spaces this profile can open. It does NOT render workspaces, boards,
+# sheets, inspectors, or any artifact view — those live on each space's
+# own content branch and are seeded from the full `core.yaml`. Seeding
+# the whole standard library here cost ~2s of DB writes on every first
+# load for 60+ expressions the profile never uses; this lean document
+# carries only the two definitions the Hub needs.
+#
+# Lowering runs `analyze_local` (no running system), so every
+# `&anchor` / bare-name reference must resolve within this file. Both
+# definitions below are self-contained: the directory view's
+# `model: space` resolves to the `&space` anchor here.
+
+# A space (replica) the profile has access to. These records live on
+# the profile repository's meta branch — one per repository this device
+# has joined or created. The Hub queries them through a
+# `<tonk-repository profile>` so the user can pick which space to open.
+concept!: &space
+  this: tonk:space
+  description: A repository this profile can open, by its local name.
+  with:
+    name:
+      description: Local name of the space, used in its `/space/{name}` URL
+      the: xyz.tonk.replica/name
+      cardinality: one
+      as: text
+    subject:
+      description: The repository's subject DID (stable identity)
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    kind:
+      description: >
+        tonk:repository for a real space, tonk:profile for the
+        profile's own self-replica. The Hub view hides the latter
+        in CSS via [data-kind].
+      the: xyz.tonk.replica/kind
+      cardinality: one
+      as: entity
+
+# The `view/directory` concept — the shape `<tonk-display>` queries to
+# find a directory view (a `model` + a `display` template under
+# `xyz.tonk.view/directory`). The `view/directory!:` instance below is
+# an instance of it, so its concept must be present on this branch too.
+concept!: &view/directory
+  this: tonk:view/directory
+  description: A directory view used by tonk-display when entity is not set.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/directory
+      cardinality: one
+      as: text
+
+# The Hub directory view: the picker shown at `/`. One card per space,
+# linking to its `/space/{name}` page. Rendered as a directory (no
+# entity) over the `space` model on the profile meta branch.
+view/directory!:
+  this: id:tonk:space/directory
+  model: space
+  display: |
+    <div class="hub">
+      <a class="hub-card" href="/space/{name}" data-kind={kind} with={this}>
+        <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
+        <span class="hub-card__body">
+          <span class="hub-card__name">{name}</span>
+          <span class="hub-card__url">/space/{name}</span>
+        </span>
+      </a>
+    </div>

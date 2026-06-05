@@ -16,20 +16,36 @@
 use leptos::prelude::*;
 
 use crate::api;
+use crate::components::CreateSpaceOpen;
 
-/// The Tonk Hub view at `/`. Mounts the `space` directory over the
-/// profile's meta branch.
+/// The Tonk Hub view at `/`. A "Repositories" header with a "New
+/// repo" button over the `space` directory, mounted on the profile's
+/// meta branch. The cards (one per space) come from the `space`
+/// directory view in the standard library; the header chrome lives
+/// here because the button drives the shared create-space dialog.
 #[component]
 #[allow(clippy::unused_unit)]
 pub fn TonkHub() -> impl IntoView {
+    let create_space_open =
+        use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
+    let open_create = move |_| create_space_open.set(true);
+
     view! {
-        <tonk-repository class="display-route hub-route" name=api::DEFAULT_REPO profile>
-            <tonk-branch name="meta">
-                <div class="display-view-slot">
-                    <tonk-display model="space"></tonk-display>
-                </div>
-            </tonk-branch>
-        </tonk-repository>
+        <main class="hub-route">
+            <header class="hub-header">
+                <wa-button class="hub-new" variant="neutral" on:click=open_create>
+                    "New space"
+                </wa-button>
+                <h1 class="hub-title">"Spaces"</h1>
+            </header>
+            <tonk-repository class="display-route" name=api::DEFAULT_REPO profile>
+                <tonk-branch name="meta">
+                    <div class="display-view-slot">
+                        <tonk-display model="space"></tonk-display>
+                    </div>
+                </tonk-branch>
+            </tonk-repository>
+        </main>
     }
 }
 

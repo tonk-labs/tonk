@@ -469,7 +469,7 @@ view!: &workspace/view
 
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
-        <span class="workspace__crumb">&lsaquo; all repos</span>
+        <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
         <span class="workspace__title">{name}</span>
         <span class="workspace__sync">synced</span>
         <span class="workspace__spacer"></span>
@@ -1311,43 +1311,6 @@ concept!: &space
       cardinality: one
       as: entity
 
-# The Hub directory view: the picker shown at `/`. One card per space,
-# linking to its `/space/{name}` page. Rendered as a directory (no
-# entity) over the `space` model on the profile meta branch.
-view/directory!:
-  this: id:tonk:space/directory
-  model: space
-  display: |
-    <div class="hub">
-      <style>
-        .hub {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
-          gap: var(--wa-space-l);
-          padding: var(--wa-space-xl);
-          align-content: start;
-        }
-        .hub-card {
-          display: block;
-          text-decoration: none;
-          color: inherit;
-        }
-        /* The profile's own self-replica rides in on the same
-           query; hide its card so the Hub lists only real spaces. */
-        .hub-card[data-kind="tonk:profile"] {
-          display: none;
-        }
-        .hub-card-name {
-          font-family: var(--wa-font-family-heading);
-          font-size: var(--wa-font-size-xl);
-        }
-      </style>
-      <a class="hub-card" href="/space/{name}" data-kind={kind} with={this}>
-        <wa-card orientation="horizontal" class="horizontal-card">
-          <span class="hub-card-name">{name}</span>
-        </wa-card>
-      </a>
-    </div>
 
 concept!: &person
   description: Person

@@ -238,7 +238,7 @@ pub async fn put_repository(
     // unconditionally — failing in any scope without the served asset
     // (e.g. the wasm router tests, which PUT a branchless `{}`).
     if !configuration.branch.is_empty() {
-        let library = fetch_standard_library().await?;
+        let library = fetch_standard_library(STANDARD_LIBRARY_URL).await?;
         for branch_name in configuration.branch.keys() {
             seed_standard_library(&tonk, &name, branch_name, &library).await?;
             log!(
@@ -255,9 +255,17 @@ pub async fn put_repository(
 }
 
 /// URL of the served standard-library notation asset, copied into
-/// the dist from `tonk-core/assets/library/core.yaml` by trunk.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// the dist from `tonk-core/assets/library/core.yaml` by trunk. Seeded
+/// onto each space's content branch.
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
+
+/// URL of the lean profile library — only the `space` concept and the
+/// Hub directory view. Seeded onto the profile's meta branch, which
+/// backs nothing but the Hub, so it doesn't pay to write the full
+/// workspace/board/sheet library it never reads. Only referenced from
+/// the SW-scoped profile seed path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const PROFILE_LIBRARY_URL: &str = "/library/profile.yaml";
 
 /// Fetch the standard-library notation document from the served
 /// asset, sidestepping the HTTP cache so an edited library is seen
@@ -269,14 +277,14 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// client fault: surfaced as an internal error so repository
 /// creation fails loudly rather than seeding an empty repo.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_standard_library() -> Result<String, TonkWorkerError> {
+async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen_futures::JsFuture;
     use web_sys::{Request, RequestCache, RequestInit, Response};
 
     let init = RequestInit::new();
     init.set_cache(RequestCache::NoStore);
-    let request = Request::new_with_str_and_init(STANDARD_LIBRARY_URL, &init)
+    let request = Request::new_with_str_and_init(url, &init)
         .map_err(|e| TonkWorkerError::Internal(format!("standard library request: {e:?}")))?;
 
     let global: web_sys::ServiceWorkerGlobalScope = js_sys::global()
@@ -285,10 +293,10 @@ async fn fetch_standard_library() -> Result<String, TonkWorkerError> {
     let response: Response = JsFuture::from(global.fetch_with_request(&request))
         .await
         .and_then(|v| v.dyn_into())
-        .map_err(|e| TonkWorkerError::Internal(format!("fetch {STANDARD_LIBRARY_URL}: {e:?}")))?;
+        .map_err(|e| TonkWorkerError::Internal(format!("fetch {url}: {e:?}")))?;
     if !response.ok() {
         return Err(TonkWorkerError::Internal(format!(
-            "fetch {STANDARD_LIBRARY_URL} returned HTTP {}",
+            "fetch {url} returned HTTP {}",
             response.status()
         )));
     }
@@ -304,7 +312,7 @@ async fn fetch_standard_library() -> Result<String, TonkWorkerError> {
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn fetch_standard_library() -> Result<String, TonkWorkerError> {
+async fn fetch_standard_library(_url: &str) -> Result<String, TonkWorkerError> {
     // Native builds have no service-worker scope to fetch the served
     // asset from. Tests that need to seed the library read the source
     // file directly and call `seed_standard_library`.
@@ -727,13 +735,13 @@ pub async fn bootstrap_profile_meta(
     Ok(())
 }
 
-/// Fetch and seed the standard library onto the profile meta branch.
-/// SW-only — the fetch needs a service-worker scope.
+/// Fetch and seed the lean profile library onto the profile meta
+/// branch. SW-only — the fetch needs a service-worker scope.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_profile_library(tonk: &TonkState) -> Result<(), RepositoryError> {
-    let library = fetch_standard_library()
+    let library = fetch_standard_library(PROFILE_LIBRARY_URL)
         .await
-        .map_err(|e| RepositoryError::Internal(format!("fetch standard library: {e}")))?;
+        .map_err(|e| RepositoryError::Internal(format!("fetch profile library: {e}")))?;
     super::evaluate::evaluate_profile_body(tonk, META_BRANCH, library, true)
         .await
         .map(|_| ())

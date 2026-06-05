@@ -1,3 +1,34 @@
+/* Web Awesome FOUC cloak. The WA loader registers each `<wa-*>`
+   element lazily, importing its chunk on demand, so until a component
+   is upgraded it renders as an undefined element: a `<wa-button>` shows
+   as bare text, and a `<wa-dialog>` dumps its slotted form inline
+   instead of hiding in a modal. Hide them until `:defined` so they
+   appear already styled rather than flashing. Tonk's own custom
+   elements register synchronously at boot, so they are not affected. */
+wa-button:not(:defined),
+wa-button-group:not(:defined),
+wa-badge:not(:defined),
+wa-callout:not(:defined),
+wa-card:not(:defined),
+wa-carousel:not(:defined),
+wa-carousel-item:not(:defined),
+wa-comparison:not(:defined),
+wa-copy-button:not(:defined),
+wa-details:not(:defined),
+wa-dialog:not(:defined),
+wa-icon:not(:defined),
+wa-input:not(:defined),
+wa-page:not(:defined),
+wa-spinner:not(:defined),
+wa-tab:not(:defined),
+wa-tab-group:not(:defined),
+wa-tab-panel:not(:defined),
+wa-tag:not(:defined),
+wa-tree:not(:defined),
+wa-tree-item:not(:defined) {
+    visibility: hidden;
+}
+
 /* Self-hosted brutalist-theme fonts: Space Grotesk (body),
    IBM Plex Sans Condensed (heading), Space Mono (code). Files
    live under `/fonts/` (copied into the dist by Trunk's
@@ -266,6 +297,114 @@ tonk-repository.display-route,
 }
 .display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view > * {
     min-height: 100dvh;
+}
+
+/* Tonk Hub page (`/`). A centered column: a header row with the
+   "New repo" button and the "Repositories" title, then the space
+   cards (the `space` directory view). The hub here owns its own
+   page chrome, so the directory view inside it should size to its
+   content rather than claim the full viewport height. */
+.hub-route {
+    display: block;
+    box-sizing: border-box;
+    max-inline-size: 56rem;
+    margin-inline: auto;
+    padding: var(--wa-space-2xl) var(--wa-space-xl);
+}
+.hub-header {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--wa-space-l);
+    margin-block-end: var(--wa-space-xl);
+}
+/* The button sits at the top right, the title below it on the left. */
+.hub-header .hub-new {
+    align-self: flex-end;
+}
+/* Opt out of the global heading highlight-cover (the dark filled box):
+   the Hub title is a plain heading like the mock. */
+.hub-title {
+    display: block;
+    margin: 0;
+    padding: 0;
+    background: none;
+    color: var(--wa-color-text-normal);
+    font-family: var(--wa-font-family-heading);
+    font-size: var(--wa-font-size-3xl);
+    font-weight: var(--wa-font-weight-bold);
+    letter-spacing: normal;
+}
+/* Inside the hub page the directory view is content-sized, not a
+   full-height display route. Undo the viewport-min the generic
+   `.display-route` rule imposes. */
+.hub-route .display-route > tonk-branch > .display-view-slot {
+    min-height: 0;
+}
+.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view > * {
+    min-height: 0;
+}
+
+/* The space cards (the `space` directory view in profile.yaml). The
+   view template carries only markup; its styling lives here so it is
+   ready on first paint rather than flashing unstyled while the seed
+   loads and the view renders its own <style>. */
+.hub {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-m);
+}
+/* One repository row: a framed card linking to its space. The sigil is
+   a square swatch on the left; the name and URL stack to its right. */
+.hub-card {
+    display: flex;
+    align-items: stretch;
+    gap: var(--wa-space-l);
+    padding: 0;
+    text-decoration: none;
+    color: inherit;
+    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-m);
+    background: var(--wa-color-surface-default);
+    overflow: hidden;
+}
+.hub-card:hover {
+    border-color: var(--wa-color-neutral-border-loud);
+}
+/* The profile's own self-replica rides in on the same query; hide its
+   card so the Hub lists only real spaces. */
+.hub-card[data-kind="tonk:profile"] {
+    display: none;
+}
+.hub-card__sigil {
+    flex: none;
+    inline-size: 8.5rem;
+    align-self: stretch;
+    display: grid;
+    place-items: center;
+    background: var(--wa-color-surface-lowered);
+}
+.hub-card__sigil tonk-sigil {
+    inline-size: 100%;
+    block-size: 100%;
+    display: block;
+}
+.hub-card__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-2xs);
+    padding: var(--wa-space-m) var(--wa-space-l);
+    min-inline-size: 0;
+}
+.hub-card__name {
+    font-family: var(--wa-font-family-heading);
+    font-size: var(--wa-font-size-l);
+    font-weight: var(--wa-font-weight-semibold);
+}
+.hub-card__url {
+    font-family: var(--wa-font-family-code);
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-text-quiet);
 }
 
 /* When a view or notation slide lives inside the carousel
