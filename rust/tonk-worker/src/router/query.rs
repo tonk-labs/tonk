@@ -37,12 +37,54 @@ pub struct QueryPath {
     pub branch: String,
 }
 
+/// Path parameters for the profile `/query` (no `repo` segment —
+/// the profile lives outside the named-repo namespace).
+#[derive(Debug, Deserialize)]
+pub struct ProfileQueryPath {
+    /// The branch name.
+    pub branch: String,
+}
+
 /// Handler. Reads body, decides one-shot vs subscription based on
 /// `Accept`, dispatches to the reactor.
 #[wasm_compat]
 pub async fn query(
     State(state): State<AppState>,
     Path(path): Path<QueryPath>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Response, TonkWorkerError> {
+    let tonk = state.read().await;
+    let branch = tonk.reactor.repository(&path.repo).branch(&path.branch);
+    query_on_branch(&tonk, branch, headers, request).await
+}
+
+/// `POST /api/profile/branch/{branch}/query`
+///
+/// Profile-side counterpart to [`query`]. The profile is its own
+/// repository but lives outside the named-repo namespace, so the
+/// route surface is parallel rather than nested. Same body / `Accept`
+/// / response contract — only the branch reference differs. Lets a
+/// `<tonk-display>` read the profile's meta branch (e.g. the Hub's
+/// list of spaces) the same way it reads any repository branch.
+#[wasm_compat]
+pub async fn query_profile(
+    State(state): State<AppState>,
+    Path(path): Path<ProfileQueryPath>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Response, TonkWorkerError> {
+    let tonk = state.read().await;
+    let branch = tonk.reactor.profile_repository().branch(&path.branch);
+    query_on_branch(&tonk, branch, headers, request).await
+}
+
+/// Shared body for [`query`] and [`query_profile`]. Takes a
+/// [`crate::reactor::BranchReference`] so the URL extraction is the
+/// only difference between the two routes.
+async fn query_on_branch<'a>(
+    tonk: &'a crate::worker::TonkState,
+    branch: crate::reactor::BranchReference<'a>,
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
@@ -61,13 +103,8 @@ pub async fn query(
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| s.contains("text/event-stream"));
 
-    let tonk = state.read().await;
-
     if want_stream {
-        let subscriber = tonk
-            .reactor
-            .repository(&path.repo)
-            .branch(&path.branch)
+        let subscriber = branch
             .subscribe(query)
             .perform(&tonk.operator)
             .await
@@ -89,10 +126,7 @@ pub async fn query(
             .body(Body::from_stream(body_stream))
             .expect("response builder failed"))
     } else {
-        let session = tonk
-            .reactor
-            .repository(&path.repo)
-            .branch(&path.branch)
+        let session = branch
             .acquire(&tonk.operator)
             .await
             .map_err(reactor_to_error)?;

@@ -42,6 +42,14 @@ pub mod replica {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.replica")]
     pub struct Profile(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.replica")]
+    pub struct Kind(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.replica")]
+    pub struct Status(pub Entity);
 }
 
 /// Attributes that live on [`Branch`] entities (and

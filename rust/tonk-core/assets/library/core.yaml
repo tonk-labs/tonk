@@ -71,6 +71,7 @@ view/directory!:
       </wa-carousel-item>
     </wa-carousel>
 
+
 # ============================================================
 # WORKSPACE
 # ============================================================
@@ -493,7 +494,7 @@ view!: &workspace/view
 
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
-        <span class="workspace__crumb">&lsaquo; all repos</span>
+        <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
         <span class="workspace__title">{name}</span>
         <span class="workspace__sync">synced</span>
         <span class="workspace__spacer"></span>
@@ -1218,7 +1219,7 @@ tile!: &workspace-tile
 column-view!: &column-b
   this: c:b
   order: "aq"
-  width: 19
+  width: 15
   tile: workspace-tile
 
 column-view!: &column-a
@@ -1306,6 +1307,34 @@ concept!: &db/branch:
       description: Number of commits made since last synchronization
       the: dialog.branch/moment
       as: entity
+
+# A space (replica) the profile has access to. These records live on
+# the profile repository's meta branch — one per repository this device
+# has joined or created. The Tonk Hub at `/` queries them through a
+# `<tonk-repository profile>` so the user can pick which space to open.
+concept!: &space
+  this: tonk:space
+  description: A repository this profile can open, by its local name.
+  with:
+    name:
+      description: Local name of the space, used in its `/space/{name}` URL
+      the: xyz.tonk.replica/name
+      cardinality: one
+      as: text
+    subject:
+      description: The repository's subject DID (stable identity)
+      the: xyz.tonk.replica/subject
+      cardinality: one
+      as: entity
+    kind:
+      description: >
+        tonk:repository for a real space, tonk:profile for the
+        profile's own self-replica. The Hub view hides the latter
+        in CSS via [data-kind].
+      the: xyz.tonk.replica/kind
+      cardinality: one
+      as: entity
+
 
 concept!: &person
   description: Person

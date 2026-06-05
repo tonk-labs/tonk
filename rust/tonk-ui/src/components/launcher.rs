@@ -1,5 +1,5 @@
 use crate::components::{
-    LastJoinOutcome, TonkBoardView, TonkConceptView, TonkCreateSpace, TonkDisplayView,
+    LastJoinOutcome, TonkBoardView, TonkConceptView, TonkCreateSpace, TonkDisplayView, TonkHub,
     TonkInviteDialog, TonkJoin, TonkLayoutView, TonkProfile, TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
@@ -23,6 +23,12 @@ pub fn TonkLauncher() -> impl IntoView {
         <tonk-host>
             <Router>
                 <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
+                    // The Tonk Hub at `/` — a picker over the spaces this
+                    // profile can open, rendered bare (no shell chrome)
+                    // just like the display routes. It is a directory view
+                    // mounted on the profile's meta branch.
+                    <Route path=path!("") view=TonkHub />
+
                     // The display route renders bare — just the
                     // `<tonk-display>` and its routing context, no shell
                     // chrome. It sits OUTSIDE the chromed parent route so

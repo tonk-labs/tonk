@@ -31,7 +31,9 @@
   const GLYPH_ERROR = "⚠"
 
   class HotSwap extends HTMLElement {
-    // Persists the auto-apply toggle across reloads.
+    // Persists the auto-apply toggle across reloads, and doubles as the
+    // cross-tab channel: the `storage` event fires in other tabs when
+    // this key changes, so a flip propagates without any extra plumbing.
     static STORAGE_KEY = "tonk:hot-swap:enabled"
     static insert(target) {
       const doc = target.ownerDocument
@@ -287,8 +289,51 @@
         // Re-enabling auto-apply while a change is pending applies it.
         if (this.toggle.checked && this.onenable) this.onenable()
       })
+      // Mirror the toggle across tabs. The `storage` event fires in
+      // *other* tabs (never the one that wrote) when a shared key
+      // changes, so writing the preference above already announces the
+      // flip — no separate channel to keep in step with the persisted
+      // value. Receiving tabs sync their checkbox and run the same
+      // enable side-effect, so an off→on elsewhere applies a held
+      // change here too. Without this, each tab carried its own stale
+      // state and every enabled tab independently reseeded the same
+      // branch.
+      this._onStorage = (event) => {
+        if (event.key !== HotSwap.STORAGE_KEY) return
+        // Read the committed value back from localStorage rather than
+        // trusting `event.newValue` — same source the initial state is
+        // read from, so the two paths can't drift, and it's robust to
+        // null/lagging event payloads.
+        let checked = true
+        try {
+          checked = localStorage.getItem(HotSwap.STORAGE_KEY) !== "0"
+        } catch (_) {
+          // localStorage unavailable — fall back to the event payload.
+          checked = event.newValue !== "0"
+        }
+        if (this.toggle.checked === checked) return
+        this.toggle.checked = checked
+        if (checked && this.onenable) this.onenable()
+      }
+      window.addEventListener("storage", this._onStorage)
     }
+    disconnectedCallback() {
+      if (this._onStorage) {
+        window.removeEventListener("storage", this._onStorage)
+        this._onStorage = null
+      }
+    }
+    // Whether auto-apply is on. Reads localStorage — the shared source
+    // of truth across tabs — rather than this tab's checkbox, which can
+    // be stale if another tab toggled while a `storage` event was still
+    // in flight. Falls back to the checkbox when storage is unavailable.
     get enabled() {
+      try {
+        const stored = localStorage.getItem(HotSwap.STORAGE_KEY)
+        if (stored !== null) return stored !== "0"
+      } catch (_) {
+        // localStorage unavailable — fall through to the checkbox.
+      }
       return this.toggle?.checked ?? true
     }
     set visible(value) {
@@ -445,6 +490,39 @@
   let pending = null
   let pendingReload = false
 
+  // A library change that arrived while this tab was in the background.
+  // A reseed writes the branch through the service worker, which
+  // propagates to every tab — so only ONE tab needs to apply it, and we
+  // let the active (foreground) tab do it to avoid every tab racing to
+  // re-evaluate the same document. If no tab is active when the change
+  // fires, each tab holds it here and the first to come to the
+  // foreground applies it.
+  let pendingActive = null
+
+  // Whether this is the tab that should perform the reseed. The
+  // foreground tab owns the write; backgrounded tabs defer to it.
+  const isActive = () => document.visibilityState === "visible"
+
+  // Cross-tab signal that a library was applied. The reseed itself
+  // reaches other tabs' DATA via the SW; this tells their PILLS so they
+  // reflect the new version (and drop any held copy of the same change)
+  // without re-applying it. A transient fire-and-forget signal, so a
+  // BroadcastChannel fits better than a persisted key.
+  let appliedChannel = null
+  try {
+    appliedChannel = new BroadcastChannel("tonk:hot-swap:applied")
+  } catch (_) {
+    // BroadcastChannel unavailable — tabs just won't cross-reflect
+    // applies; each still handles its own WS signal correctly.
+  }
+  const broadcastApplied = (hash) => {
+    try {
+      appliedChannel?.postMessage({ type: "applied", hash })
+    } catch (_) {
+      // Non-fatal: other tabs simply won't reflect this apply.
+    }
+  }
+
   // How long the toggled-off announcement stays unfolded before it
   // folds back into a pulsing circle.
   const FOLD_DELAY = 45000
@@ -481,7 +559,11 @@
       await reseed(library)
       view.pulse = false
       pending = null
+      pendingActive = null
       await primeLibraryCache()
+      // Tell other tabs this landed so their pills reflect it (the data
+      // already reached them via the SW); they won't re-apply.
+      broadcastApplied(hash)
       // Done: fold back, clear the icon to idle, then vanish.
       view.folded = true
       view.setStatus(GLYPH_IDLE, hash)
@@ -525,6 +607,47 @@
       apply(pending)
     }
   }
+
+  // Briefly flash the pill to reflect a change another tab applied: the
+  // data already arrived here via the SW, so we only update the version
+  // label — no reseed. Conjure → show the hash → settle back to hidden.
+  const reflectApplied = async (hash) => {
+    clearFoldTimer()
+    await conjure(GLYPH_LIBRARY, hash)
+    view.pulse = false
+    view.folded = true
+    view.setStatus(GLYPH_IDLE, hash)
+    setTimeout(() => {
+      view.visible = false
+      view.folded = false
+    }, 600)
+  }
+
+  // Another tab applied a library change. Its reseed already reached
+  // our data through the SW, so drop any copy we were holding for the
+  // same change and just reflect the new version in the pill.
+  if (appliedChannel) {
+    appliedChannel.onmessage = (event) => {
+      if (event.data?.type !== "applied") return
+      pendingActive = null
+      pending = null
+      clearFoldTimer()
+      view.error = false
+      reflectApplied(event.data.hash)
+    }
+  }
+
+  // If a change arrived while this tab was backgrounded and no other
+  // tab has applied it yet, apply it when we return to the foreground.
+  // Guard on `enabled` (re-read from storage) in case the toggle was
+  // flipped off meanwhile.
+  document.addEventListener("visibilitychange", () => {
+    if (isActive() && pendingActive && view.enabled) {
+      const library = pendingActive
+      pendingActive = null
+      apply(library)
+    }
+  })
 
   // Trunk fires `reload` as its pipeline runs, but the `copy-file`
   // re-copy of `core.yaml` into dist can land a beat *after* the
@@ -592,13 +715,22 @@
     // re-copied asset to settle.)
     const library = await awaitChangedLibrary()
     if (library !== null) {
-      // Library-only change. Toggled on → apply in place (the on
-      // flow); off → announce + hold (the off flow).
+      // Library-only change.
       lastLibrary = library
-      if (view.enabled) {
+      if (!view.enabled) {
+        // Toggled off → announce + hold (the off flow).
+        announce(library)
+      } else if (isActive()) {
+        // Enabled and this is the foreground tab → apply in place. The
+        // reseed propagates to the other tabs through the SW; this tab
+        // then broadcasts the hash so their pills reflect it.
         apply(library)
       } else {
-        announce(library)
+        // Enabled but backgrounded → don't reseed (the active tab
+        // will). Hold it: if no tab is active right now, the first to
+        // come to the foreground applies it. If an active tab beats us,
+        // its broadcast clears this.
+        pendingActive = library
       }
       return
     }
@@ -632,12 +764,18 @@
     const cached = await cachedLibrary()
     if (cached !== null && cached === lastLibrary) return
     if (!(await awaitBranch())) return
-    // The library changed while away: toggled on → apply; off →
-    // announce + hold.
-    if (view.enabled) {
+    // The library changed while away.
+    if (!view.enabled) {
+      // Toggled off → announce + hold.
+      announce(lastLibrary)
+    } else if (isActive()) {
+      // Foreground → apply; the reseed reaches the other tabs via the
+      // SW and the broadcast updates their pills.
       await apply(lastLibrary)
     } else {
-      announce(lastLibrary)
+      // Background → defer to the active tab; apply on focus if no
+      // other tab beats us to it.
+      pendingActive = lastLibrary
     }
   }
 

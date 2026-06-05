@@ -283,6 +283,27 @@ pub async fn evaluate_body(
         .map(|Json(r)| r)
 }
 
+/// Like [`evaluate_body`], but against the **profile** repository's
+/// branch rather than a named repo. Used to seed the standard library
+/// onto the profile meta branch at profile creation, so a
+/// `<tonk-display>` reading the profile (e.g. the Hub) can resolve the
+/// library's concepts and views there. SW-only — its sole caller
+/// (`seed_profile_library`) is gated to the service-worker scope.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn evaluate_profile_body(
+    tonk_state: &crate::worker::TonkState,
+    branch: &str,
+    body: String,
+    transact: bool,
+) -> Result<EvaluateResponse, TonkWorkerError> {
+    let tonk_branch = tonk_state.reactor.profile_repository().branch(branch);
+    let query = EvaluateQuery { transact };
+    let bytes = Bytes::from(body.into_bytes());
+    evaluate_on_branch(tonk_state, tonk_branch, bytes, query)
+        .await
+        .map(|Json(r)| r)
+}
+
 /// Project [`Parsed`] onto a successful syntax or a 400 error
 /// carrying the first diagnostic's structure (code + range +
 /// message) so the editor can route it to a positioned

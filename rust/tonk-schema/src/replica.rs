@@ -15,7 +15,7 @@ use serde::Serialize;
 use crate::Branch;
 use crate::Remote;
 use crate::domain::remote::Address;
-use crate::domain::replica::{Name, Profile, Subject};
+use crate::domain::replica::{Kind, Name, Profile, Status, Subject};
 use crate::prelude::*;
 
 /// A replica — this device's view of a specific repository.
@@ -67,6 +67,81 @@ pub struct Replica {
     pub subject: Subject,
     /// Reference to the profile that owns this replica.
     pub profile: Profile,
+    /// What this replica points at: [`Self::PROFILE`] for the
+    /// profile's own self-replica (`subject == profile`),
+    /// [`Self::REPOSITORY`] for a space the profile has joined or
+    /// created. Lets a query select only real spaces (e.g. the
+    /// Hub picker) without re-deriving the self-replica from the
+    /// profile entity.
+    pub kind: Kind,
+}
+
+/// A [`Replica`] as it was written before the [`Kind`] field
+/// existed: `name` + `subject` + `profile`, no `kind`.
+///
+/// A `Replica` query requires every field, so it won't match a
+/// record that predates `kind`. `LegacyReplica` drops `kind` and
+/// therefore matches *every* replica — kinded or not. Used only by
+/// the `repo-vs-profile` migration to enumerate records that still
+/// need stamping; new code should query [`Replica`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegacyReplica {
+    /// The replica's entity.
+    pub this: Entity,
+    /// Human-readable name for the repository on this replica.
+    pub name: Name,
+    /// Reference to the repository this replica is a view of.
+    pub subject: Subject,
+    /// Reference to the profile that owns this replica.
+    pub profile: Profile,
+}
+
+/// The [`Kind`] of a replica as a standalone fact: just `this` and
+/// `kind`.
+///
+/// Asserting one stamps a `kind` onto an existing replica entity
+/// without re-asserting the whole [`Replica`] (which would require
+/// re-deriving every other field). The migration uses it to
+/// backfill `kind` on legacy records.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceKind {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// What the replica points at — see [`Replica::kind`].
+    pub kind: Kind,
+}
+
+impl SpaceKind {
+    /// A `kind` stamp for the given replica entity.
+    pub fn new(this: Entity, kind: Kind) -> Self {
+        Self { this, kind }
+    }
+}
+
+/// The seeding [`Status`] of a replica as a standalone fact: just
+/// `this` and `status`.
+///
+/// A repository's content branch is seeded asynchronously after the
+/// replica is recorded, so the replica is first stamped
+/// [`Replica::BLANK`] and flipped to [`Replica::INITIALIZED`] once the
+/// seed completes. Asserting one stamps the status onto an existing
+/// replica entity (cardinality one, so a later assert supersedes)
+/// without re-asserting the whole [`Replica`]. The Hub reads it to
+/// reflect the install state on each card.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceStatus {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// The replica's seeding status — see [`Replica::BLANK`] /
+    /// [`Replica::INITIALIZED`].
+    pub status: Status,
+}
+
+impl SpaceStatus {
+    /// A `status` stamp for the given replica entity.
+    pub fn new(this: Entity, status: Status) -> Self {
+        Self { this, status }
+    }
 }
 
 /// Hash input for [`Replica::this`].
@@ -90,6 +165,11 @@ impl Replica {
     /// takes anything convertible into [`Name`] — e.g. a `&str`
     /// — so callers don't have to wrap string literals.
     pub fn new(profile: Did, subject: Did, name: impl Into<Name>) -> Self {
+        let kind = if subject == profile {
+            Self::profile_kind()
+        } else {
+            Self::repository_kind()
+        };
         Self {
             this: Entity::of(&This::Replica {
                 subject: &subject,
@@ -98,7 +178,43 @@ impl Replica {
             subject: Subject(subject.this()),
             profile: Profile(profile.this()),
             name: name.into(),
+            kind,
         }
+    }
+
+    /// `kind` URI for the profile's own self-replica.
+    pub const PROFILE: &'static str = "tonk:profile";
+
+    /// `kind` URI for a space (a repository the profile joined or
+    /// created).
+    pub const REPOSITORY: &'static str = "tonk:repository";
+
+    /// The [`Kind`] for the profile's own self-replica.
+    pub fn profile_kind() -> Kind {
+        Kind(Self::PROFILE.parse().expect("tonk:profile parses"))
+    }
+
+    /// The [`Kind`] for a space.
+    pub fn repository_kind() -> Kind {
+        Kind(Self::REPOSITORY.parse().expect("tonk:repository parses"))
+    }
+
+    /// `status` URI for a freshly created replica whose content
+    /// branch has not been seeded yet.
+    pub const BLANK: &'static str = "tonk:blank";
+
+    /// `status` URI for a replica whose content branch has been
+    /// seeded.
+    pub const INITIALIZED: &'static str = "tonk:initialized";
+
+    /// The [`Status`] for a not-yet-seeded replica.
+    pub fn blank_status() -> Status {
+        Status(Self::BLANK.parse().expect("tonk:blank parses"))
+    }
+
+    /// The [`Status`] for a seeded replica.
+    pub fn initialized_status() -> Status {
+        Status(Self::INITIALIZED.parse().expect("tonk:initialized parses"))
     }
 
     /// The replica's entity.
