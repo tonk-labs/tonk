@@ -21,6 +21,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CustomEvent, CustomEventInit, Element, Event, HtmlElement, window};
 
+use crate::ancestors::repo_from_ancestor;
+
 /// A retained click-listener closure, kept alive for the element's
 /// lifetime so the listener stays valid.
 type ClickClosure = Rc<RefCell<Option<Closure<dyn FnMut(Event)>>>>;
@@ -96,18 +98,6 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
 
     let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
     *slot.borrow_mut() = Some(listener);
-}
-
-/// Read the `name` of the nearest `<tonk-repository>` ancestor. The
-/// display route wraps the whole view in `<tonk-repository name=…>`,
-/// so a share control rendered inside any view can recover the repo
-/// it belongs to.
-fn repo_from_ancestor(this: &HtmlElement) -> Option<String> {
-    this.closest("tonk-repository")
-        .ok()
-        .flatten()
-        .and_then(|repo| repo.get_attribute("name"))
-        .filter(|name| !name.is_empty())
 }
 
 /// Dispatch `tonk:share` with `detail = { repo }`, bubbling + composed

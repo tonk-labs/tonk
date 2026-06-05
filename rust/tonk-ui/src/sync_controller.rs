@@ -44,11 +44,13 @@ pub const COMMITTED_EVENT: &str = "tonk:committed";
 
 /// DOM event the controller dispatches on `window` to ask the active
 /// repository's branch rows to re-read their read-only sync status.
-/// Fired on each background trigger while auto-sync is paused, so the
-/// sync-state badges keep tracking remote drift even though nothing is
-/// being pulled or pushed. The active repository name rides in the
-/// event's `detail` as a plain string so a row can ignore events for
-/// other repositories.
+/// Fired on *every* sweep — after a successful `Sync` sweep as well as
+/// on the paused tick — so the sync-state badges keep tracking remote
+/// drift whether or not anything is being pulled or pushed, and a
+/// consumer that reads status off this event (rather than the SSE
+/// `watch` layer) stays current. The active repository name rides in
+/// the event's `detail` as a plain string so a consumer can ignore
+/// events for other repositories.
 pub const STATUS_REFRESH_EVENT: &str = "tonk:status-refresh";
 
 /// Per-repository `localStorage` key holding the auto-sync pause
@@ -227,6 +229,12 @@ pub fn mount(source: Signal<Option<String>, LocalStorage>) {
                 syncing.set(true);
                 spawn_local(async move {
                     sweep_repository(&repo).await;
+                    // Refresh the status badges after the sweep too, not
+                    // just on the paused tick, so a chip that reads
+                    // status off this event (rather than the SSE `watch`
+                    // layer) stays current. Harmless to the inspector's
+                    // branch rows, which de-dupe on `state` equality.
+                    request_status_refresh(&repo);
                     syncing.set(false);
                 });
             }

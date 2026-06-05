@@ -5246,7 +5246,12 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "js-sys",
+ "serde_json",
+ "tonk-common",
+ "tonk-host",
+ "tonk-schema",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
 ]
