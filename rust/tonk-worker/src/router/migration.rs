@@ -28,7 +28,7 @@ use dialog_query::{Output as _, Query, Term};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::domain::replica::Profile as ProfileEntity;
-use tonk_schema::{LegacyReplica, Replica, SpaceKind, prelude::DidExt as _};
+use tonk_schema::{LegacyReplica, Replica, SpaceKind, SpaceStatus, prelude::DidExt as _};
 
 use super::AppState;
 use crate::TonkWorkerError;
@@ -49,6 +49,9 @@ struct MigrationReport {
     /// Of those, how many were classified as spaces
     /// (`tonk:repository`).
     repository: usize,
+    /// How many got a backfilled `status: initialized` (existing
+    /// replicas predate the field and are all already-seeded).
+    status: usize,
 }
 
 /// Handler. Runs the migration then redirects to the Hub (`/`).
@@ -118,8 +121,28 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
         .map(|replica| replica.this)
         .collect();
 
+    // Replicas that already carry a `status` (the `(this, status)`
+    // projection matches only stamped ones). Anything in `all` but not
+    // here needs a status. Existing replicas predate the field and are
+    // all already-seeded, so they get `initialized`.
+    let has_status: HashSet<_> = meta
+        .handle()
+        .query()
+        .select(Query::<SpaceStatus> {
+            this: Term::var("this"),
+            status: Term::var("status"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("status query failed: {e:?}")))?
+        .into_iter()
+        .map(|s| s.this)
+        .collect();
+
     let profile_kind = Replica::profile_kind();
     let repository_kind = Replica::repository_kind();
+    let initialized = Replica::initialized_status();
 
     let mut transaction = tonk
         .reactor
@@ -129,20 +152,32 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     let mut report = MigrationReport::default();
 
     for replica in &all {
-        if already.contains(&replica.this) {
-            continue;
+        let mut touched = false;
+
+        if !already.contains(&replica.this) {
+            // The self-replica is the one whose `subject` is the
+            // profile itself.
+            let kind = if replica.subject.0 == profile_entity {
+                report.profile += 1;
+                profile_kind.clone()
+            } else {
+                report.repository += 1;
+                repository_kind.clone()
+            };
+            transaction = transaction.assert(SpaceKind::new(replica.this.clone(), kind));
+            touched = true;
         }
-        // The self-replica is the one whose `subject` is the
-        // profile itself.
-        let kind = if replica.subject.0 == profile_entity {
-            report.profile += 1;
-            profile_kind.clone()
-        } else {
-            report.repository += 1;
-            repository_kind.clone()
-        };
-        transaction = transaction.assert(SpaceKind::new(replica.this.clone(), kind));
-        report.migrated += 1;
+
+        if !has_status.contains(&replica.this) {
+            transaction =
+                transaction.assert(SpaceStatus::new(replica.this.clone(), initialized.clone()));
+            report.status += 1;
+            touched = true;
+        }
+
+        if touched {
+            report.migrated += 1;
+        }
     }
 
     if report.migrated > 0 {
@@ -154,10 +189,11 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
     }
 
     log!(
-        "Migration repo-vs-profile: migrated={} profile={} repository={}",
+        "Migration repo-vs-profile: migrated={} profile={} repository={} status={}",
         report.migrated,
         report.profile,
-        report.repository
+        report.repository,
+        report.status
     );
     Ok(report)
 }

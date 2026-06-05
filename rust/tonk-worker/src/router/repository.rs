@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
-use tonk_schema::{Branch as MetaBranch, Remote, Replica, TrackingBranch};
+use tonk_schema::{Branch as MetaBranch, Remote, Replica, SpaceStatus, TrackingBranch};
 
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -219,44 +219,91 @@ pub async fn put_repository(
 
     // 2. Create the repository and everything that comes with
     // it — delegation, remotes, branches, upstreams, meta facts.
-    // The helper doesn't know about HTTP; its errors are mapped
-    // to the right status via `RepositoryError::into`.
+    // This records the replica in the profile with `status: blank`
+    // (see `record_replica_in_profile`), so the Hub card appears in
+    // its installing state right away. The helper doesn't know about
+    // HTTP; its errors are mapped to the right status via
+    // `RepositoryError::into`.
     let repository = create_repository(&tonk, &name, &configuration).await?;
+    let subject = repository.did();
+    let info = build_repository_info(&tonk, &name, &repository).await;
 
-    // 3. Seed the standard library into each content branch. The
-    // built-in concepts, views, commands, and rules live in one
-    // served notation asset (`/library/core.yaml`); the worker
-    // fetches it and runs it through the evaluate pipeline — the
-    // same `parse → analyze → commit` path as `/evaluate`, which
-    // commits both claims and `rule!:` installs. Seeding through
-    // notation means rules need no out-of-band carrier: they are
-    // statements in the document. One-time, at creation, so the
-    // library isn't re-evaluated on every mount.
+    // 3. Seed asynchronously, then flip the replica to `initialized`.
+    // Seeding the standard library is the slow part (~seconds of
+    // prolly-tree commits); doing it inline would block this response
+    // and starve the page's asset/Web Awesome loads on the single SW
+    // thread. Instead we return now and seed in the background, then
+    // stamp `status: initialized` so the Hub card settles. The reactor
+    // re-polls the profile subscription on that commit, so the card
+    // updates without the page polling.
     //
-    // Only fetch when there's a branch to seed: a config with no
-    // branches has nothing to seed, and the fetch would otherwise run
-    // unconditionally — failing in any scope without the served asset
-    // (e.g. the wasm router tests, which PUT a branchless `{}`).
-    if !configuration.branch.is_empty() {
-        let library = fetch_standard_library(STANDARD_LIBRARY_URL).await?;
-        for branch_name in configuration.branch.keys() {
-            seed_standard_library(&tonk, &name, branch_name, &library).await?;
+    // The spawned task takes an owned `AppState` (the lock is released
+    // when `tonk` drops at the end of this scope) and re-acquires it.
+    drop(tonk);
+    let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+    spawn_seed(state, name, subject, branches);
+
+    Ok((StatusCode::CREATED, Json(info)))
+}
+
+/// Spawn the background seed + status flip for a freshly created
+/// repository. Returns immediately; the work runs after the PUT
+/// response is sent.
+///
+/// Native builds have no service-worker scope (and no `spawn_local`
+/// runtime here), so they no-op — the seed/status path is browser-only.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn spawn_seed(state: AppState, name: String, subject: Did, branches: Vec<String>) {
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(e) = seed_and_initialize(&state, &name, &subject, &branches).await {
+            log!("Background seed for '{}' failed: {}", name, e);
+        }
+    });
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn spawn_seed(_state: AppState, _name: String, _subject: Did, _branches: Vec<String>) {}
+
+/// Seed the standard library into every branch, then flip the
+/// replica's status to `initialized`. Runs in the background after
+/// `put_repository` has already responded.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn seed_and_initialize(
+    state: &AppState,
+    name: &str,
+    subject: &Did,
+    branches: &[String],
+) -> Result<(), RepositoryError> {
+    if !branches.is_empty() {
+        let library = fetch_standard_library(STANDARD_LIBRARY_URL)
+            .await
+            .map_err(|e| RepositoryError::Internal(format!("fetch standard library: {e}")))?;
+        let tonk = state.read().await;
+        for branch_name in branches {
+            seed_standard_library(&tonk, name, branch_name, &library)
+                .await
+                .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
                 "Seeded standard library on '{}' branch '{}'",
                 name,
                 branch_name
             );
         }
+        set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
+    } else {
+        // Nothing to seed — the replica is immediately initialized.
+        let tonk = state.read().await;
+        set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
-
-    // 4. Respond with the current state of the repository.
-    let info = build_repository_info(&tonk, &name, &repository).await;
-    Ok((StatusCode::CREATED, Json(info)))
+    log!("Repository '{}' initialized", name);
+    Ok(())
 }
 
 /// URL of the served standard-library notation asset, copied into
 /// the dist from `tonk-core/assets/library/core.yaml` by trunk. Seeded
-/// onto each space's content branch.
+/// onto each space's content branch. Only referenced from the
+/// SW-scoped background seed path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 
 /// URL of the lean profile library — only the `space` concept and the
@@ -311,16 +358,6 @@ async fn fetch_standard_library(url: &str) -> Result<String, TonkWorkerError> {
         .ok_or_else(|| TonkWorkerError::Internal("library body is not a string".to_owned()))
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn fetch_standard_library(_url: &str) -> Result<String, TonkWorkerError> {
-    // Native builds have no service-worker scope to fetch the served
-    // asset from. Tests that need to seed the library read the source
-    // file directly and call `seed_standard_library`.
-    Err(TonkWorkerError::Internal(
-        "standard library fetch is only available in a service-worker scope".to_owned(),
-    ))
-}
-
 /// Seed a notation document into `branch` by running it through the
 /// evaluate pipeline — the same `parse → analyze → commit` path as
 /// the `/evaluate` route, which commits concept claims and `rule!:`
@@ -341,18 +378,6 @@ async fn seed_standard_library(
                 "failed to seed standard library on branch '{branch}': {e}"
             ))
         })
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-async fn seed_standard_library(
-    _tonk: &TonkState,
-    _repo: &str,
-    _branch: &str,
-    _library: &str,
-) -> Result<(), TonkWorkerError> {
-    Err(TonkWorkerError::Internal(
-        "standard library seeding is only available in a service-worker scope".to_owned(),
-    ))
 }
 
 /// Build out a repository from a [`RepositoryConfiguration`].
@@ -645,6 +670,11 @@ async fn record_replica_in_profile(
     subject: &Did,
 ) -> Result<(), RepositoryError> {
     let replica = Replica::new(tonk.profile.did(), subject.clone(), name);
+    // Stamp the replica `blank`: the content branch has not been seeded
+    // yet (seeding runs asynchronously after this response). The Hub
+    // renders this as an installing card; `set_replica_status` flips it
+    // to `initialized` once the seed completes.
+    let status = SpaceStatus::new(replica.this().clone(), Replica::blank_status());
 
     // Write through the *reactor's* profile-repository handle, not a
     // fresh `Repository::from(&tonk.profile)`. The reactor caches the
@@ -660,6 +690,7 @@ async fn record_replica_in_profile(
         .branch(META_BRANCH)
         .transaction()
         .assert(replica)
+        .assert(status)
         .commit()
         .perform(&tonk.operator)
         .await
@@ -674,6 +705,49 @@ async fn record_replica_in_profile(
     // The profile repo's representation — what `GET /api/profile`
     // returns — now includes this replica, so tell listeners of
     // `/api/profile`.
+    broadcast(
+        "/api/profile",
+        &Notification {
+            branch: META_BRANCH.to_string(),
+            revision,
+        },
+    );
+
+    Ok(())
+}
+
+/// Flip a replica's seeding [`Status`] by stamping a [`SpaceStatus`]
+/// on its entity. `status` is cardinality-one, so the new value
+/// supersedes the prior one. Goes through the reactor (like
+/// [`record_replica_in_profile`]) so the Hub's subscription re-polls
+/// and the card reflects the change.
+///
+/// The replica entity is re-derived from `(profile, subject)` — the
+/// same hash `Replica::new` uses — so no read is needed to find it.
+///
+/// Only called from the background seed path, which is SW-only.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn set_replica_status(
+    tonk: &TonkState,
+    subject: &Did,
+    status: tonk_schema::domain::replica::Status,
+) -> Result<(), RepositoryError> {
+    let entity = Replica::new(tonk.profile.did(), subject.clone(), "")
+        .this()
+        .clone();
+    let stamp = SpaceStatus::new(entity, status);
+
+    let revision = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .transaction()
+        .assert(stamp)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("Failed to set replica status: {}", e)))?;
+
     broadcast(
         "/api/profile",
         &Notification {
