@@ -644,42 +644,33 @@ impl TonkServiceWorker {
         })
     }
 
-    /// Performs a full sync operation (pull then push) with the upstream remote.
+    /// Runs a durable background sync for the repository named in
+    /// `tag`, invoked from the Background Sync API `onsync` event.
     ///
-    /// This method dispatches to the `/api/repository/home/branch/main/sync`
-    /// route internally, so the sync logic is not duplicated. It is intended to
-    /// be called from the Background Sync API event or as a polyfill.
+    /// The event carries only a tag string, so the repo identity
+    /// travels in it as `tonk-sync:{repo}`. The worker enumerates that
+    /// repo's upstream branches and reconciles each through the
+    /// `/sync` route — the same selection the in-page sweep makes.
     ///
     /// # Returns
     ///
-    /// A JavaScript `Promise` that resolves to `undefined` on success, or
-    /// rejects with an error if the sync failed.
-    pub fn sync(&self) -> Promise {
-        log!("Background sync triggered, dispatching to /api/repository/home/branch/main/sync");
-
-        let router = self.router.clone();
+    /// A JavaScript `Promise` that resolves to `undefined` once every
+    /// upstream branch has reconciled. A malformed or unrecognized tag
+    /// resolves as a no-op. If a branch fails to land, the promise
+    /// rejects so the user agent retries the sync with backoff.
+    pub fn sync(&self, tag: String) -> Promise {
+        let state = self.state.clone();
 
         future_to_promise(async move {
-            let request = axum::http::Request::builder()
-                .method("POST")
-                .uri("/api/repository/home/branch/main/sync")
-                .body(Body::empty())
-                .expect_throw("Failed to build sync request");
+            let Some(repo) = crate::router::repo_from_sync_tag(&tag) else {
+                log!("Background sync: ignoring unrecognized tag {tag:?}");
+                return Ok(JsValue::UNDEFINED);
+            };
+            log!("Background sync triggered for repo '{repo}'");
 
-            let response = router
-                .lock()
-                .await
-                .call(request)
-                .await
-                .expect_throw("Failed to handle sync request");
-
-            if response.status().is_success() {
-                Ok(JsValue::UNDEFINED)
-            } else {
-                Err(JsValue::from_str(&format!(
-                    "Sync failed with status: {}",
-                    response.status()
-                )))
+            match crate::router::sync_repository(&state, repo).await {
+                Ok(()) => Ok(JsValue::UNDEFINED),
+                Err(e) => Err(JsValue::from_str(&e)),
             }
         })
     }

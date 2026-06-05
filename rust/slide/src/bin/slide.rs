@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 
+use slide::auto_sync;
 use slide::eval::{self, EvalError, Source};
 use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
@@ -99,6 +100,11 @@ enum Command {
 
     /// Pull the local main branch from its upstream.
     Pull,
+
+    /// Print how the local main branch relates to its upstream:
+    /// `synced`, `ahead`, `behind`, `diverged`, or `no-upstream`.
+    /// Read-only — fetches the upstream head without merging.
+    Status,
 
     /// Mint a UCAN delegation chain over the local repo and
     /// print a paste-able invite URL. The default form is
@@ -274,6 +280,13 @@ struct EvalArgs {
     /// Omit to read from a piped stdin.
     #[arg(value_name = "PATH")]
     path: Option<String>,
+
+    /// Skip the automatic pull-before / push-after that wraps a
+    /// committing eval when an upstream is configured. The manual
+    /// `slide pull` / `slide push` flow stays available. Also
+    /// settable via the `SLIDE_NO_SYNC` environment variable.
+    #[arg(long = "no-sync")]
+    no_sync: bool,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -305,6 +318,7 @@ async fn main() {
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Push => sync_op(SyncOp::Push).await,
         Command::Pull => sync_op(SyncOp::Pull).await,
+        Command::Status => status_op().await,
         Command::Invite { base_url, remote } => mint_invite(base_url, remote).await,
         Command::Join { url } => claim_invite(url).await,
         Command::Remote { command } => remote_op(command).await,
@@ -365,7 +379,13 @@ async fn eval(args: EvalArgs) -> ExitCode {
         quiet: args.quiet,
     };
 
-    match eval::run_against_cwd(&cwd, source, options).await {
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    let sync = auto_sync::enabled(args.no_sync);
+    match auto_sync::run_eval(&site, source, options, sync).await {
         Ok(outcome) => {
             let mut stdout = std::io::stdout().lock();
             if let Err(e) = stdout.write_all(outcome.stdout.as_bytes()) {
@@ -470,6 +490,41 @@ fn print_sync_outcome(op: SyncOp, outcome: &SyncOutcome) {
         );
     } else {
         println!("{verb}");
+    }
+}
+
+async fn status_op() -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match sync::status(&site).await {
+        Ok(state) => {
+            println!("{}", render_sync_state(state));
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+/// One-line rendering of a [`tonk_schema::SyncState`]: the
+/// kebab-case token plus a short gloss of what to do about it.
+fn render_sync_state(state: tonk_schema::SyncState) -> &'static str {
+    use tonk_schema::SyncState;
+    match state {
+        SyncState::NoUpstream => "no-upstream (set one with `slide remote set-upstream <name>`)",
+        SyncState::Synced => "synced",
+        SyncState::Ahead => "ahead (local has unpushed commits; run `slide push`)",
+        SyncState::Behind => "behind (upstream has new commits; run `slide pull`)",
+        SyncState::Diverged => "diverged (run `slide pull` to merge, then `slide push`)",
     }
 }
 

@@ -18,6 +18,7 @@
 //! - [`migrate`] — copy a `.carry/` directory to `.tonk/`.
 //! - [`guide`] — the asserted-notation reference, baked in.
 
+pub mod auto_sync;
 pub mod eval;
 pub mod guide;
 pub mod identity;

@@ -5,7 +5,6 @@
 
 use leptos::{logging::log, prelude::*};
 use tonk_worker::{Notification, ProfileInfo};
-use wasm_bindgen::prelude::*;
 
 use crate::{api, error::TonkUiError, watch::watch};
 
@@ -50,14 +49,6 @@ use join::*;
 mod invite;
 use invite::*;
 
-#[wasm_bindgen]
-extern "C" {
-    /// Triggers a sync operation.
-    /// Uses Background Sync API if available, otherwise falls back to /api/sync.
-    #[wasm_bindgen(js_namespace = window, catch)]
-    pub async fn sync() -> Result<(), JsValue>;
-}
-
 /// The hosting document's service-worker Client ID, learned from
 /// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
 /// response. Provided as a Leptos context so descendant
@@ -85,7 +76,9 @@ pub type CreateSpaceOpen = RwSignal<bool>;
 
 /// Shared open-state for the invite dialog. `Some(name)` opens
 /// the dialog and triggers a fresh invite mint for that space;
-/// `None` closes it. Set by the `Invite` button in [`TonkSpace`].
+/// `None` closes it. Set by the workspace's `<tonk-share>` control
+/// (via the `tonk:share` window bridge in [`TonkShell`]) and by the
+/// space viewer's share button.
 pub type InviteSpace = RwSignal<Option<String>>;
 
 /// Outcome of the most recent invite redemption, if any. Written
@@ -170,11 +163,35 @@ pub fn TonkShell() -> impl IntoView {
     let create_space_open: CreateSpaceOpen = RwSignal::new(false);
     provide_context(create_space_open);
 
-    // Shared open-state for the invite dialog. The space view's
-    // "Invite" button writes a `Some(name)` here; the dialog
-    // resets it back to `None` on close.
+    // Shared open-state for the invite dialog. The workspace top
+    // bar's `<tonk-share>` control writes a `Some(name)` here (via
+    // the `tonk:share` bridge below); the dialog resets it back to
+    // `None` on close.
     let invite_space: InviteSpace = RwSignal::new(None);
     provide_context(invite_space);
+
+    // Bridge `<tonk-share>` to the invite dialog. The workspace
+    // element can't call into the shell directly — view templates
+    // bind DOM events to data-model commands only, and sharing isn't
+    // a data mutation (it mints a UCAN invite over HTTP and opens a
+    // modal). So the element dispatches a bubbling, composed
+    // `tonk:share` CustomEvent carrying `{ repo }`, and the shell
+    // listens on the window. This mirrors how the sync controller
+    // bridges `tonk:committed` / `tonk:status-refresh`.
+    let _ = leptos_use::use_event_listener(
+        window(),
+        leptos::ev::Custom::<web_sys::CustomEvent>::new("tonk:share"),
+        move |event| {
+            // Prefer the repo the element resolved from its
+            // `<tonk-repository>` ancestor; fall back to the active
+            // repo parsed from the route for any host that fires the
+            // event without a detail.
+            let repo = share_repo_from_event(&event).or_else(active_repo_from_route);
+            if let Some(repo) = repo {
+                invite_space.set(Some(repo));
+            }
+        },
+    );
 
     // The last join outcome lives in a shared signal so the view
     // tree (specifically `TonkLauncher`) can render it as a
@@ -197,6 +214,24 @@ pub fn TonkShell() -> impl IntoView {
             <TonkLauncher></TonkLauncher>
         </tonk-diagnostics-provider>
     }
+}
+
+/// Read the `repo` from a `tonk:share` event's `detail`, if present
+/// and non-empty.
+fn share_repo_from_event(event: &web_sys::CustomEvent) -> Option<String> {
+    js_sys::Reflect::get(&event.detail(), &wasm_bindgen::JsValue::from_str("repo"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .filter(|repo| !repo.is_empty())
+}
+
+/// Fall back to the active repository parsed from the current route
+/// (`/space/{branch}@{name}/…`) when a `tonk:share` event carries no
+/// repo of its own. Mirrors the toolbar's active-space derivation.
+fn active_repo_from_route() -> Option<String> {
+    let pathname = window().location().pathname().ok()?;
+    let segment = pathname.strip_prefix("/space/")?.split('/').next()?;
+    route::parse_space(segment).map(|space| space.name)
 }
 
 #[cfg(test)]
@@ -342,13 +377,15 @@ mod tests {
         // Check remote branch state before sync
         let _inspect_result = driver.execute(inspect_script, vec![]).await?;
 
-        // Register sync using the Background Sync API
-        // This triggers the service worker's sync event handler
+        // Register sync using the Background Sync API. The tag carries
+        // the repository identity (`tonk-sync:{repo}`) so the worker's
+        // `sync` event handler knows which repo's upstream branches to
+        // sweep.
         driver
             .execute(
                 r#"
                 const registration = await navigator.serviceWorker.ready;
-                await registration.sync.register('tonk-sync');
+                await registration.sync.register('tonk-sync:home');
                 "#,
                 vec![],
             )
@@ -363,6 +400,173 @@ mod tests {
             branch_status["success"].as_bool().unwrap_or(false),
             "Remote branch resolution should succeed after sync: {:?}",
             branch_status
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// A local write reaches the `origin` remote on its own — no
+    /// Pull/Push button — once the background sync controller's
+    /// commit trigger fires. Exercises the default-on controller end
+    /// to end: commit locally, signal it the way a real editor commit
+    /// does, then watch the remote catch up.
+    #[dialog_common::test]
+    async fn it_auto_syncs_a_local_write_to_the_remote(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Banner ⇒ the home space mounted, and with it the
+        // background controller for its branches.
+        driver.query(By::Css(".space-banner-title")).first().await?;
+
+        // Commit a fact locally. The worker's evaluate route defaults
+        // to transact=true, so this lands a commit on `main` — local
+        // is now ahead of the auto-configured `origin` remote.
+        let commit = driver
+            .execute(
+                r#"
+                const body = `attribute!: &auto-sync-probe
+  the:         test.tonk/auto-sync-probe
+  as:          text
+  cardinality: one
+  description: marker asserted by the auto-sync test
+`;
+                const response = await fetch('/api/repository/home/branch/main/evaluate', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/yaml' },
+                    body,
+                });
+                return response.ok;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            commit.json().as_bool(),
+            Some(true),
+            "local commit should succeed"
+        );
+
+        // Fire the same signal a real editor commit dispatches — no
+        // button is pressed. The controller debounces, then syncs
+        // every upstream branch of the active repository.
+        driver
+            .execute(
+                &format!(
+                    "window.dispatchEvent(new CustomEvent('{}'));",
+                    crate::sync_controller::COMMITTED_EVENT
+                ),
+                vec![],
+            )
+            .await?;
+
+        // Poll the remote until its head matches the local head. The
+        // `tree` reference serializes as a byte array, so compare the
+        // JSON encodings rather than identity.
+        let caught_up = driver
+            .execute(
+                r#"
+                const localResp = await fetch('/api/repository/home');
+                const localInfo = await localResp.json();
+                const localTree = JSON.stringify(localInfo.branch.main.revision.tree);
+
+                const deadline = Date.now() + 15000;
+                while (Date.now() < deadline) {
+                    const r = await fetch('/api/inspect/repository/home/remote/origin/branch/main');
+                    const s = await r.json();
+                    if (s.success && s.revision && JSON.stringify(s.revision.tree) === localTree) {
+                        return true;
+                    }
+                    await new Promise(res => setTimeout(res, 500));
+                }
+                return false;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            caught_up.json().as_bool(),
+            Some(true),
+            "remote should catch up to the local head via background sync, no button press"
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
+    /// With auto-sync paused for a repository, a local write does
+    /// *not* reach the remote on its own — only the manual buttons
+    /// act. Exercises the per-repository pause preference, honored by
+    /// the controller on every sweep.
+    #[dialog_common::test]
+    async fn it_does_not_auto_sync_a_paused_repository(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        driver.query(By::Css(".space-banner-title")).first().await?;
+
+        // Pause auto-sync for `home` before writing anything.
+        driver
+            .execute(
+                "localStorage.setItem('tonk:auto-sync:home', 'off'); return true;",
+                vec![],
+            )
+            .await?;
+
+        // Commit locally — `home/main` is now ahead of `origin`.
+        let commit = driver
+            .execute(
+                r#"
+                const body = `attribute!: &paused-probe
+  the:         test.tonk/paused-probe
+  as:          text
+  cardinality: one
+  description: marker asserted by the paused auto-sync test
+`;
+                const response = await fetch('/api/repository/home/branch/main/evaluate', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/yaml' },
+                    body,
+                });
+                return response.ok;
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(commit.json().as_bool(), Some(true), "local commit succeeds");
+
+        // Fire the commit signal, then wait well past the controller's
+        // debounce. A paused repo must leave the remote untouched.
+        driver
+            .execute(
+                &format!(
+                    "window.dispatchEvent(new CustomEvent('{}'));",
+                    crate::sync_controller::COMMITTED_EVENT
+                ),
+                vec![],
+            )
+            .await?;
+
+        let synced = driver
+            .execute(
+                r#"
+                const localResp = await fetch('/api/repository/home');
+                const localInfo = await localResp.json();
+                const localTree = JSON.stringify(localInfo.branch.main.revision.tree);
+
+                // Generous margin past the 1s commit debounce.
+                await new Promise(res => setTimeout(res, 5000));
+
+                const r = await fetch('/api/inspect/repository/home/remote/origin/branch/main');
+                const s = await r.json();
+                return !!(s.success && s.revision && JSON.stringify(s.revision.tree) === localTree);
+                "#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            synced.json().as_bool(),
+            Some(false),
+            "a paused repository must not auto-sync the local write to the remote"
         );
 
         driver.quit().await?;

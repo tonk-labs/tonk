@@ -281,6 +281,62 @@ mod integration_tests {
         Ok(())
     }
 
+    /// The shell bridges the workspace's `<tonk-share>` control to
+    /// the invite dialog via a `tonk:share` window event. Firing it
+    /// for the home repo opens the dialog and, once the mint lands,
+    /// surfaces the invite-link input — the same path a real share
+    /// click drives, minus the DOM click on the element (covered by
+    /// `tonk-workspace`'s own dispatch test).
+    #[dialog_common::test]
+    async fn it_opens_the_invite_dialog_on_a_tonk_share_event(env: TestEnvironment) -> Result<()> {
+        let driver = env.driver().await?;
+
+        // Wait for the home space's bare display route — the shell is
+        // live, so the `tonk:share` listener is mounted.
+        driver
+            .query(By::Css("tonk-repository.display-route"))
+            .first()
+            .await?;
+
+        // Fire the bridge event the workspace's `<tonk-share>`
+        // dispatches on click.
+        driver
+            .execute(
+                r#"window.dispatchEvent(new CustomEvent('tonk:share', {
+                    detail: { repo: 'home' },
+                }));"#,
+                vec![],
+            )
+            .await?;
+
+        // The invite-link input renders only after the dialog opened
+        // and the mint resolved, so its presence proves the bridge
+        // opened the dialog and `create_invite` ran.
+        let input = driver.query(By::Css("#tonk-invite-url")).first().await?;
+        assert_eq!(
+            input.tag_name().await?.to_lowercase(),
+            "wa-input",
+            "expected the minted invite link to render in a wa-input",
+        );
+
+        // The dialog itself is open (its `open` property is set by the
+        // shared `invite_space` signal the bridge wrote).
+        let is_open = driver
+            .execute(
+                r#"return document.querySelector('wa-dialog')?.open === true;"#,
+                vec![],
+            )
+            .await?;
+        assert_eq!(
+            is_open.json().as_bool(),
+            Some(true),
+            "expected the invite <wa-dialog> to be open after tonk:share",
+        );
+
+        driver.quit().await?;
+        Ok(())
+    }
+
     /// Land on `/join?...&name=<chosen>#<seed>` carrying an
     /// audience-open invite, click Join, and verify the
     /// recipient lands on `/space/<chosen>` with a banner whose

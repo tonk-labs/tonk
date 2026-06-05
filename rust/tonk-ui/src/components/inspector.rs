@@ -7,18 +7,17 @@
 //! building a Leptos sub-tree.
 //!
 //! Mount strategy: the element creates a fresh Leptos root via
-//! `leptos::mount::mount_to` on its own host node. The only
-//! page-level signal the inspector still consults is
-//! `InviteSpace` (driven by the share button); a no-op stub is
-//! provided locally so click is silently swallowed when the
-//! element runs outside the launcher shell. A follow-up should
-//! replace this with a bubbling CustomEvent so any host can
-//! react.
+//! `leptos::mount::mount_to` on its own host node. The inspector
+//! consults no page-level signal, so it renders standalone in any
+//! host (board tile, demo, embed) without provided context. (The
+//! share affordance now lives in the workspace top bar as
+//! `<tonk-share>`, which bridges to the shell via a `tonk:share`
+//! window event — see `super::invite` / `TonkShell`.)
 
 use std::any::Any;
 use std::cell::RefCell;
 
-use crate::components::{InviteSpace, TonkInspector};
+use crate::components::TonkInspector;
 use custom_elements::CustomElement;
 use leptos::prelude::*;
 use web_sys::{HtmlElement, window};
@@ -57,14 +56,6 @@ impl CustomElement for TonkInspectorElement {
 
         let source = self.source;
         let handle = leptos::mount::mount_to(this.clone(), move || {
-            // Local no-op invite-space stub so the share button
-            // doesn't panic when the inspector runs outside the
-            // launcher (e.g. inside a board tile). The shell's
-            // invite dialog won't open from here until we bridge
-            // it via a CustomEvent.
-            let invite_space: InviteSpace = RwSignal::new(None);
-            provide_context(invite_space);
-
             view! {
                 <TonkInspector source=source />
             }

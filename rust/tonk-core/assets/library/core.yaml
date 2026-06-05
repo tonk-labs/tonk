@@ -313,6 +313,31 @@ view!: &workspace/view
           flex: none;
         }
 
+        /* The share control (`<tonk-share>` renders this button). An
+           icon-only ghost button sized to match the placeholder icons,
+           brightening on hover so it reads as the live action among
+           the chrome. */
+        .workspace__share {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px; height: 28px;
+          padding: 0;
+          flex: none;
+          color: inherit;
+          background: transparent;
+          border: none;
+          border-radius: var(--wa-border-radius-s);
+          cursor: pointer;
+        }
+        .workspace__share:hover {
+          color: var(--wa-color-text-normal);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        .workspace__share-glyph {
+          width: 18px; height: 18px;
+        }
+
         /* The binder fills the space below the top bar: the active sheet
            panel fills the rest, the projected tab strip pins to the
            bottom. */
@@ -474,7 +499,7 @@ view!: &workspace/view
         <span class="workspace__sync">synced</span>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
-          <span class="workspace__icon"></span>
+          <tonk-share></tonk-share>
           <span class="workspace__icon"></span>
           <span class="workspace__icon"></span>
         </span>
@@ -548,7 +573,6 @@ view!:
 # happens.
 
 concept!: &board
-  this: tonk:board
   description: A named board (hierarchical v1, owns columns directly)
   with:
     name:
@@ -630,7 +654,7 @@ concept!: &portal
 # `subject={field}` and bottoms out in the tile's content display.
 
 view!:
-  this: tonk:board-view
+  this: tonk:board
   model: board
   display: |
     <tonk-strip>
@@ -1335,4 +1359,4 @@ person!:
 # Set tonk:workspace as default view
 name!:
   this: id:tonk/space
-  entity: workspace
+  entity: tonk:workspace

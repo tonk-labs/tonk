@@ -4,6 +4,7 @@
   inputs = {
     crane.url = "github:ipetkov/crane";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs-chromedriver.url = "github:NixOS/nixpkgs/master";
     flake-utils.url = "github:numtide/flake-utils";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -21,6 +22,7 @@
       self,
       crane,
       nixpkgs,
+      nixpkgs-chromedriver,
       flake-utils,
       rust-overlay,
       nix-filter,
@@ -41,6 +43,8 @@
         # We get wrangler from a 3P crate because nixpkgs#wrangler lags
         # the latest release
         wrangler = wrangler-flake.packages.${system}.wrangler;
+
+        chromedriverDarwin = nixpkgs-chromedriver.legacyPackages.${system}.chromedriver;
 
         # Common build inputs for all dev shells
         commonBuildInputs =
@@ -117,10 +121,13 @@
           // lib.optionalAttrs stdenv.isLinux {
             "CHROME" = "${chromium}/bin/chromium";
             "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+          }
+          // lib.optionalAttrs stdenv.isDarwin {
+            "CHROMEDRIVER" = "${chromedriverDarwin}/bin/chromedriver";
           };
 
         # Import menu helpers (e.g., colorful Tonk Shell commands)
-        menuHelpers = (import ./nix/menu.nix { inherit pkgs; });
+        menuHelpers = (import ./nix/menu.nix { inherit pkgs chromedriverDarwin; });
 
         inherit (menuHelpers) makeMenu makeDevShellHook menuTestCommand;
 

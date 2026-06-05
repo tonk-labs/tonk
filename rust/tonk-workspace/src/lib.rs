@@ -14,13 +14,16 @@
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod binder;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod share;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod sheet;
 
-/// Register the workspace custom elements (`<tonk-sheet>` and
-/// `<tonk-sheet-binder>`) with the page. Idempotent — calling more
-/// than once is harmless.
+/// Register the workspace custom elements (`<tonk-sheet>`,
+/// `<tonk-sheet-binder>`, and `<tonk-share>`) with the page.
+/// Idempotent — calling more than once is harmless.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
     sheet::register();
     binder::register();
+    share::register();
 }

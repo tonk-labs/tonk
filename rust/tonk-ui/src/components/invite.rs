@@ -18,9 +18,10 @@ fn sigil_value_for_did(did: &str) -> Option<String> {
 /// Modal dialog showing a freshly minted invite URL.
 ///
 /// Mounted once at the launcher level. Visibility is driven by the
-/// shared [`InviteSpace`] signal: a space-view button writes
-/// `Some(name)` to open the dialog and trigger the mint; the
-/// dialog clears the signal back to `None` on close.
+/// shared [`InviteSpace`] signal: the workspace top bar's
+/// `<tonk-share>` control writes `Some(name)` (via the shell's
+/// `tonk:share` window bridge) to open the dialog and trigger the
+/// mint; the dialog clears the signal back to `None` on close.
 ///
 /// Consumes [`api::create_invite`]'s tagged response — for now
 /// only the URL is rendered, but the same component can branch
@@ -126,7 +127,7 @@ pub fn TonkInviteDialog() -> impl IntoView {
 
     view! {
         <wa-dialog
-            label="Invite to space"
+            label="Share this repo."
             prop:open=move || invite_space.get().is_some()
             on:wa-after-hide=on_after_hide
         >
@@ -136,9 +137,7 @@ pub fn TonkInviteDialog() -> impl IntoView {
                     value=move || subject.get().and_then(|s| sigil_value_for_did(&s))
                 ></tonk-sigil>
                 <div class="invite-body-stack wa-stack wa-gap-s">
-                    { move || invite_space.get().map(|name| view! {
-                        <p>"Share this link with someone you want to join " <strong>{ name.clone() }</strong> "."</p>
-                    }) }
+                    <p class="invite-body-caption">"anyone with this link can join & edit"</p>
                     { move || if loading.get() {
                         Some(view! { <wa-spinner></wa-spinner> }.into_any())
                     } else if let Some(value) = url.get() {

@@ -1,6 +1,11 @@
 # This module contains helpers for assembling and printing
 # the Tonk Shell menu.
-{ pkgs, ... }:
+{
+  pkgs,
+  # chromedriver for macOS test commands; null on Linux (see flake.nix).
+  chromedriverDarwin ? null,
+  ...
+}:
 let
   tonkFlower = ''
                                   .-            
@@ -139,6 +144,9 @@ let
     lib.optionalAttrs stdenv.isLinux {
       "CHROME" = "${chromium}/bin/chromium";
       "CHROMEDRIVER" = "${chromedriver}/bin/chromedriver";
+    }
+    // lib.optionalAttrs stdenv.isDarwin {
+      "CHROMEDRIVER" = "${chromedriverDarwin}/bin/chromedriver";
     };
 
   menuTestCommand =

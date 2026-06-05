@@ -60,6 +60,9 @@ pub mod query;
 
 pub mod query_source;
 
+pub mod sync;
+pub use sync::*;
+
 pub mod replica;
 pub use replica::*;
 

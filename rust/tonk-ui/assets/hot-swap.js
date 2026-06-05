@@ -78,7 +78,11 @@
         position: fixed;
         display: inline-block;
         z-index: 2147483647;
-        top: 0px;
+        /* Bottom-right corner: the top-right is the workspace top bar's
+           real controls (share + sync toggle), and this dev pill's
+           invisible hover-zone (.hide::after below) would otherwise
+           intercept clicks on them. */
+        bottom: 0px;
         right: 0px;
         border: none;
         margin: 10px;
@@ -243,7 +247,7 @@
       .notification.hide::after {
         content: "";
         position: absolute;
-        top: 0; right: 0;
+        bottom: 0; right: 0;
         width: 8em; height: 3em;
         pointer-events: all;
         z-index: 0;
