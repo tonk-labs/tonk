@@ -106,6 +106,14 @@ pub fn TonkDisplayView() -> impl IntoView {
         Signal::derive_local(move || Some(parsed.get().model).filter(|s| !s.is_empty()));
     let view_name = Signal::derive_local(move || parsed.get().view.filter(|s| !s.is_empty()));
 
+    // Run background sync for the space while the workspace is shown,
+    // exactly as `TonkInspector` does — a local write reaches the
+    // remote (and remote changes reach this tab) without anyone
+    // clicking Pull/Push, and the top-bar sync chip can track remote
+    // drift. Registered under this component's owner, so it tears down
+    // when the route unmounts.
+    crate::sync_controller::mount(space_name);
+
     // Resolve the entity part (if present) → entity URI. URIs pass
     // through; names hit the worker via a `Name` query. In directory
     // mode (no `@`, so no entity) this resolves to `None` and the

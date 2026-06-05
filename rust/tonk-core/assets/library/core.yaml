@@ -284,33 +284,48 @@ view!: &workspace/view
           font-size: var(--wa-font-size-s);
         }
         .workspace__title { font-weight: var(--wa-font-weight-semibold); }
+        /* The live sync chip (`<tonk-sync-state>` renders this span with
+           one `is-*` state modifier). Layout lives on the base class;
+           colour lives on the modifier. The chip only shows once a state
+           is known because `<tonk-sync-state>` emits the span only then
+           — with no state it emits no span at all, so the element takes
+           no space (there is no CSS rule hiding a modifier-less span). */
         .workspace__sync {
           display: inline-flex;
           align-items: center;
           gap: var(--wa-space-xs);
           padding: var(--wa-space-3xs) var(--wa-space-s);
           font-size: var(--wa-font-size-s);
-          color: var(--wa-color-success-on-quiet);
-          background: var(--wa-color-success-fill-quiet);
           border-radius: var(--wa-border-radius-s);
         }
         .workspace__sync::before {
           content: "";
           width: 7px; height: 7px; border-radius: 50%;
-          background: var(--wa-color-success-fill-loud); flex: none;
+          background: currentColor; flex: none;
         }
+        .workspace__sync.is-synced {
+          color: var(--wa-color-success-on-quiet);
+          background: var(--wa-color-success-fill-quiet);
+        }
+        .workspace__sync.is-synced::before { background: var(--wa-color-success-fill-loud); }
+        .workspace__sync.is-ahead,
+        .workspace__sync.is-behind {
+          color: var(--wa-color-warning-on-quiet);
+          background: var(--wa-color-warning-fill-quiet);
+        }
+        .workspace__sync.is-ahead::before,
+        .workspace__sync.is-behind::before { background: var(--wa-color-warning-fill-loud); }
+        .workspace__sync.is-diverged {
+          color: var(--wa-color-danger-on-quiet);
+          background: var(--wa-color-danger-fill-quiet);
+        }
+        .workspace__sync.is-diverged::before { background: var(--wa-color-danger-fill-loud); }
         .workspace__spacer { flex: 1; }
         .workspace__actions {
           display: inline-flex;
           align-items: center;
           gap: var(--wa-space-m);
           color: var(--wa-color-text-quiet);
-        }
-        .workspace__icon {
-          width: 20px; height: 20px;
-          border-radius: var(--wa-border-radius-s);
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          flex: none;
         }
 
         /* The share control (`<tonk-share>` renders this button). An
@@ -335,6 +350,30 @@ view!: &workspace/view
           background: var(--wa-color-neutral-fill-quiet);
         }
         .workspace__share-glyph {
+          width: 18px; height: 18px;
+        }
+
+        /* The pause/resume control (`<tonk-sync-toggle>` renders this
+           button). Sized and styled like `.workspace__share` — an
+           icon-only ghost button that brightens on hover. */
+        .workspace__sync-toggle {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 28px; height: 28px;
+          padding: 0;
+          flex: none;
+          color: inherit;
+          background: transparent;
+          border: none;
+          border-radius: var(--wa-border-radius-s);
+          cursor: pointer;
+        }
+        .workspace__sync-toggle:hover {
+          color: var(--wa-color-text-normal);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        .workspace__sync-toggle-glyph {
           width: 18px; height: 18px;
         }
 
@@ -496,12 +535,11 @@ view!: &workspace/view
         <span class="workspace__brand">tonk</span>
         <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
         <span class="workspace__title">{name}</span>
-        <span class="workspace__sync">synced</span>
+        <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
+          <tonk-sync-toggle></tonk-sync-toggle>
           <tonk-share></tonk-share>
-          <span class="workspace__icon"></span>
-          <span class="workspace__icon"></span>
         </span>
       </div>
 

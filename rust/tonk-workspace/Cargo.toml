@@ -10,11 +10,19 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Canonical sync-state enum. A base (all-target) dep so the pure
+# state-chip mapping is unit-tested natively; the DOM elements that
+# consume it are wasm-only.
+tonk-schema = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
+serde_json = { workspace = true }
+tonk-common = { workspace = true }
+tonk-host = { workspace = true }
 wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
   "CssStyleDeclaration",
   "CustomElementRegistry",
@@ -25,16 +33,23 @@ web-sys = { workspace = true, features = [
   "Element",
   "Event",
   "HtmlElement",
+  "Location",
   "MutationObserver",
   "MutationObserverInit",
   "MutationRecord",
   "Node",
   "NodeList",
+  "Request",
+  "RequestInit",
+  "Response",
+  "Storage",
   "Window",
 ] }
 
-[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+[dev-dependencies]
 dialog-common = { workspace = true, features = ["helpers"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
 wasm-bindgen-test = { workspace = true }
 
 [lints.rust]
