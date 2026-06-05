@@ -142,7 +142,11 @@ class TonkDiagnosticsProvider extends HTMLElement {
     this.addEventListener("tonk-code-connect", this.#onConnect);
     this.addEventListener("tonk-code-disconnect", this.#onDisconnect);
     this.addEventListener("tonk-push-diagnostics", this.#onPushDiagnostics);
-    this.#ensureClient();
+    // Connect lazily: the LSP client is built the first time an editor
+    // attaches (`tonk-code-connect`), not on mount. On pages with no
+    // `<tonk-code>` (e.g. the Hub at `/`) nothing connects at all, and
+    // by the time an editor mounts the service worker is settled — so
+    // `initialize` never races the SW activation window.
   }
 
   disconnectedCallback(): void {
@@ -172,12 +176,13 @@ class TonkDiagnosticsProvider extends HTMLElement {
     this.#attached.set(detail.source, target);
     if (this.#client) {
       target.connect(this.#client);
+    } else {
+      // First editor to attach — build the client now (lazily). If
+      // the build is still waiting on the service worker, this editor
+      // is already in `#attached`, so `#ensureClient` connects it when
+      // the client comes up.
+      this.#ensureClient();
     }
-    // No client yet: `#ensureClient` runs in `connectedCallback`,
-    // but if the editor mounts first (depth-first ordering can
-    // put a deeply nested child's connect before the provider's
-    // own connectedCallback), the attach happens in `#ensureClient`
-    // when it walks `#attached`.
   };
 
   #onDisconnect = (event: Event): void => {
@@ -234,25 +239,69 @@ class TonkDiagnosticsProvider extends HTMLElement {
     if (this.#client) return;
     const url = this.#resolveUrl(this.getAttribute("language-server"));
     const generation = ++this.#generation;
-    const transport = httpTransport({
-      url,
-      onClose: () => {
-        if (generation !== this.#generation) return;
-        this.#tearDown();
-        this.#scheduleReconnect();
-      },
-    });
-    this.#client = connectLsp(transport);
-    this.#connectedUrl = url;
-    this.#reconnectDelay = 5_000;
-    // Re-attach any editors that announced themselves before the
-    // client existed.
-    for (const editor of this.#attached.values()) {
-      try {
-        editor.connect(this.#client);
-      } catch {
-        // Don't let one bad editor block the rest.
+    // The LSP transport rides on the service worker. On a first load
+    // the SW may still be installing/activating, during which a POST
+    // to `/api/language-server` falls through to the static server
+    // (405) — and the LSP library's `initialize` then rejects on its
+    // own timeout, an uncaught error we can't catch (we don't hold
+    // that promise). Wait for the SW to be settled and controlling
+    // before sending anything, so `initialize` never lands in the
+    // activation window. The generation guard discards the build if a
+    // teardown happened while we waited.
+    void this.#whenWorkerReady().then(() => {
+      if (generation !== this.#generation || this.#client) return;
+      const transport = httpTransport({
+        url,
+        onClose: () => {
+          if (generation !== this.#generation) return;
+          this.#tearDown();
+          this.#scheduleReconnect();
+        },
+      });
+      this.#client = connectLsp(transport);
+      this.#connectedUrl = url;
+      this.#reconnectDelay = 5_000;
+      // Re-attach any editors that announced themselves before the
+      // client existed.
+      for (const editor of this.#attached.values()) {
+        try {
+          editor.connect(this.#client);
+        } catch {
+          // Don't let one bad editor block the rest.
+        }
       }
+    });
+  }
+
+  /** Resolve once the service worker is active and controlling the
+   *  page, so requests reach the worker's router rather than the
+   *  static fallback. Resolves immediately when there's no service
+   *  worker (e.g. a bare page or a non-SW host) so the transport
+   *  still gets a chance against whatever is serving. */
+  async #whenWorkerReady(): Promise<void> {
+    const swContainer = navigator.serviceWorker;
+    if (!swContainer) return;
+    try {
+      await swContainer.ready;
+      if (swContainer.controller) return;
+      // Registered but not yet controlling this client (first load
+      // after install): wait for control, with a bounded fallback so
+      // we never hang if `controllerchange` doesn't fire.
+      await new Promise<void>((resolve) => {
+        const onChange = () => {
+          swContainer.removeEventListener("controllerchange", onChange);
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          swContainer.removeEventListener("controllerchange", onChange);
+          resolve();
+        }, 5_000);
+        swContainer.addEventListener("controllerchange", onChange);
+      });
+    } catch {
+      // SW machinery unavailable/failed — fall through and let the
+      // transport try anyway; its own onClose handles a failure.
     }
   }
 
