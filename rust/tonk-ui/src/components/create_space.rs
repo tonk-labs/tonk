@@ -4,7 +4,6 @@ use leptos::{
     task::spawn_local,
     web_sys,
 };
-use leptos_router::{NavigateOptions, hooks::use_navigate};
 use wasm_bindgen::JsCast;
 
 use crate::{
@@ -15,19 +14,14 @@ use crate::{
 /// Modal dialog for creating a new space.
 ///
 /// Rendered once at the launcher level. Visibility is driven by
-/// the shared [`CreateSpaceOpen`] signal — the sidebar's `+` tile
-/// flips it to `true`, the dialog flips it back to `false` after
-/// a successful create or on Cancel. After a successful create the
-/// dialog just navigates to `/space/{name}` — the sidebar refreshes
-/// on its own when the worker broadcasts on `/api/profile`.
+/// the shared [`CreateSpaceOpen`] signal — the "New space" button
+/// flips it to `true`, the dialog flips it back to `false` after a
+/// successful create or on Cancel. On success the dialog just closes;
+/// the Hub's card for the new space appears (in its installing state)
+/// over the profile subscription, so there's nothing to navigate to.
 #[component]
 pub fn TonkCreateSpace() -> impl IntoView {
     let open = use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
-    // `use_navigate` must be called during component setup — its
-    // returned closure can be invoked later, including from async
-    // blocks, but calling the hook itself from inside a handler
-    // is a silent no-op.
-    let navigate = use_navigate();
 
     let name = RwSignal::new(String::new());
     let error = RwSignal::new(Option::<String>::None);
@@ -54,14 +48,16 @@ pub fn TonkCreateSpace() -> impl IntoView {
 
         error.set(None);
         submitting.set(true);
-        let navigate = navigate.clone();
         spawn_local(async move {
             match api::create_space(&requested).await {
                 Ok(_) => {
+                    // Stay on the Hub: the new space's card appears in
+                    // its installing state and settles to clickable when
+                    // the background seed completes. Navigating now would
+                    // land in a not-yet-seeded space.
                     open.set(false);
                     name.set(String::new());
                     submitting.set(false);
-                    navigate(&format!("/space/{}", requested), NavigateOptions::default());
                 }
                 Err(CreateSpaceError::AlreadyExists) => {
                     submitting.set(false);

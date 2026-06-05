@@ -363,13 +363,13 @@ tonk-repository.display-route,
     padding: 0;
     text-decoration: none;
     color: inherit;
-    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    border: var(--wa-border-width-s) solid var(--wa-color-neutral-fill-loud);
     border-radius: var(--wa-border-radius-m);
-    background: var(--wa-color-surface-default);
+    background: transparent;
     overflow: hidden;
 }
 .hub-card:hover {
-    border-color: var(--wa-color-neutral-border-loud);
+    border-color: var(--wa-color-brand-fill-loud);
 }
 /* The profile's own self-replica rides in on the same query; hide its
    card so the Hub lists only real spaces. */
@@ -405,6 +405,62 @@ tonk-repository.display-route,
     font-family: var(--wa-font-family-code);
     font-size: var(--wa-font-size-s);
     color: var(--wa-color-text-quiet);
+}
+
+/* Install state. A freshly created space is `status: tonk:blank`
+   while its content branch seeds in the background; the worker flips
+   it to `tonk:initialized` when done, which arrives over the Hub's
+   subscription and settles the card. While blank: the card is not yet
+   clickable, the "/space/..." URL is replaced by an "Installing"
+   label, and a thin progress line sweeps across the bottom of the card
+   (after the loader in interactivate-dat) reading like the space is
+   downloading. */
+.hub-card__status {
+    display: none;
+    font-family: var(--wa-font-family-code);
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-text-quiet);
+}
+.hub-card[data-status="tonk:blank"] {
+    pointer-events: none;
+    position: relative;
+}
+/* The progress line is an overlay pseudo-element pinned to the bottom
+   edge: the card's children carry opaque backgrounds that would paint
+   over a card background, and `overflow: hidden` keeps the line tucked
+   inside the rounded corners. It grows from the left, then slides off
+   to the right, looping — an indeterminate sweep while the seed runs
+   for an unknown length of time. */
+.hub-card[data-status="tonk:blank"]::after {
+    content: "";
+    position: absolute;
+    inset-block-end: 0;
+    inset-inline-start: 0;
+    inline-size: 35%;
+    block-size: 2px;
+    background: var(--wa-color-brand-fill-loud);
+    pointer-events: none;
+    animation: hub-progress 1.6s ease-in-out infinite;
+}
+.hub-card[data-status="tonk:blank"] .hub-card__url {
+    display: none;
+}
+.hub-card[data-status="tonk:blank"] .hub-card__status {
+    display: block;
+}
+.hub-card[data-status="tonk:blank"] .hub-card__status::before {
+    content: "Installing\2026";
+}
+/* The line is 35% of the card wide; it travels from just off the left
+   edge to just off the right (its own width is 100% of `translateX`'s
+   reference, so -100% hides it left and ~286% clears the right). */
+@keyframes hub-progress {
+    0% {
+        transform: translateX(-100%);
+    }
+    100% {
+        transform: translateX(286%);
+    }
 }
 
 /* When a view or notation slide lives inside the carousel

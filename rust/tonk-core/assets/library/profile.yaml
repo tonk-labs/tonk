@@ -40,6 +40,14 @@ concept!: &space
       the: xyz.tonk.replica/kind
       cardinality: one
       as: entity
+    status:
+      description: >
+        tonk:blank while the space's content branch is still
+        seeding, tonk:initialized once seeded. The Hub card
+        reflects it via [data-status] (an installing animation).
+      the: xyz.tonk.replica/status
+      cardinality: one
+      as: entity
 
 # The `view/directory` concept — the shape `<tonk-display>` queries to
 # find a directory view (a `model` + a `display` template under
@@ -68,11 +76,12 @@ view/directory!:
   model: space
   display: |
     <div class="hub">
-      <a class="hub-card" href="/space/{name}" data-kind={kind} with={this}>
+      <a class="hub-card" href="/space/{name}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
           <span class="hub-card__name">{name}</span>
           <span class="hub-card__url">/space/{name}</span>
+          <span class="hub-card__status"></span>
         </span>
       </a>
     </div>
