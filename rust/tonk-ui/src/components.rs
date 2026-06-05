@@ -74,7 +74,9 @@ pub type CreateSpaceOpen = RwSignal<bool>;
 
 /// Shared open-state for the invite dialog. `Some(name)` opens
 /// the dialog and triggers a fresh invite mint for that space;
-/// `None` closes it. Set by the `Invite` button in [`TonkSpace`].
+/// `None` closes it. Set by the workspace's `<tonk-share>` control
+/// (via the `tonk:share` window bridge in [`TonkShell`]) and by the
+/// space viewer's share button.
 pub type InviteSpace = RwSignal<Option<String>>;
 
 /// Outcome of the most recent invite redemption, if any. Written
@@ -165,11 +167,35 @@ pub fn TonkShell() -> impl IntoView {
     let create_space_open: CreateSpaceOpen = RwSignal::new(false);
     provide_context(create_space_open);
 
-    // Shared open-state for the invite dialog. The space view's
-    // "Invite" button writes a `Some(name)` here; the dialog
-    // resets it back to `None` on close.
+    // Shared open-state for the invite dialog. The workspace top
+    // bar's `<tonk-share>` control writes a `Some(name)` here (via
+    // the `tonk:share` bridge below); the dialog resets it back to
+    // `None` on close.
     let invite_space: InviteSpace = RwSignal::new(None);
     provide_context(invite_space);
+
+    // Bridge `<tonk-share>` to the invite dialog. The workspace
+    // element can't call into the shell directly — view templates
+    // bind DOM events to data-model commands only, and sharing isn't
+    // a data mutation (it mints a UCAN invite over HTTP and opens a
+    // modal). So the element dispatches a bubbling, composed
+    // `tonk:share` CustomEvent carrying `{ repo }`, and the shell
+    // listens on the window. This mirrors how the sync controller
+    // bridges `tonk:committed` / `tonk:status-refresh`.
+    let _ = leptos_use::use_event_listener(
+        window(),
+        leptos::ev::Custom::<web_sys::CustomEvent>::new("tonk:share"),
+        move |event| {
+            // Prefer the repo the element resolved from its
+            // `<tonk-repository>` ancestor; fall back to the active
+            // repo parsed from the route for any host that fires the
+            // event without a detail.
+            let repo = share_repo_from_event(&event).or_else(active_repo_from_route);
+            if let Some(repo) = repo {
+                invite_space.set(Some(repo));
+            }
+        },
+    );
 
     // The last join outcome lives in a shared signal so the view
     // tree (specifically `TonkLauncher`) can render it as a
@@ -192,6 +218,24 @@ pub fn TonkShell() -> impl IntoView {
             <TonkLauncher></TonkLauncher>
         </tonk-diagnostics-provider>
     }
+}
+
+/// Read the `repo` from a `tonk:share` event's `detail`, if present
+/// and non-empty.
+fn share_repo_from_event(event: &web_sys::CustomEvent) -> Option<String> {
+    js_sys::Reflect::get(&event.detail(), &wasm_bindgen::JsValue::from_str("repo"))
+        .ok()
+        .and_then(|value| value.as_string())
+        .filter(|repo| !repo.is_empty())
+}
+
+/// Fall back to the active repository parsed from the current route
+/// (`/space/{branch}@{name}/…`) when a `tonk:share` event carries no
+/// repo of its own. Mirrors the toolbar's active-space derivation.
+fn active_repo_from_route() -> Option<String> {
+    let pathname = window().location().pathname().ok()?;
+    let segment = pathname.strip_prefix("/space/")?.split('/').next()?;
+    route::parse_space(segment).map(|space| space.name)
 }
 
 #[cfg(test)]
