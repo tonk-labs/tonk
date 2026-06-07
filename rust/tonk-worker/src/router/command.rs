@@ -23,10 +23,21 @@ use crate::reactor::CommandRegistry;
 
 /// Build the registry of command handlers the worker installs at
 /// startup. Real handlers register here via the chainable
-/// [`command`](CommandRegistry::command) builder, e.g.
-/// `CommandRegistry::new().command(create_repo)`.
+/// [`command`](CommandRegistry::command) builder.
+///
+/// `create_space` is the SW-scoped repository-creation handler; it's
+/// gated to wasm because seeding fetches a served asset that only
+/// exists in the service-worker scope. Native builds get an empty
+/// registry (tests that exercise dispatch register their own).
 pub fn command_registry() -> CommandRegistry {
-    CommandRegistry::new()
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        CommandRegistry::new().command(super::repository::create_space)
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        CommandRegistry::new()
+    }
 }
 
 /// Run every command handler the just-committed `transients` triggered,
@@ -42,6 +53,20 @@ pub fn command_registry() -> CommandRegistry {
 /// *concurrently* — handlers don't block one another, and a slow or
 /// failing one doesn't hold up the rest. (Concurrent, not parallel:
 /// they share the single SW task, interleaving at await points.)
+///
+/// TODO(stm): handlers have no transactional isolation. A handler reads
+/// durable state (via `State<AppState>`), decides an outcome, then the
+/// outcome commits later — but between the read and the commit, another
+/// commit may have changed what it read. The goal is STM-like
+/// optimistic concurrency: record the revision (or the read set) a
+/// handler observed, and on outcome commit verify nothing it read has
+/// changed since; on conflict, re-run the handler against fresh state
+/// (or fail it) rather than committing a decision based on stale reads.
+/// Concurrency (above) makes this sharper: two handlers in the same
+/// batch can read the same state and both commit, with neither seeing
+/// the other's write. Introducing real read-set tracking + compare-and-
+/// commit is a sizeable change; until then, handlers must assume their
+/// reads may be stale at commit time.
 pub async fn dispatch(state: &AppState, repo: RepoTarget, branch: String, transients: Changes) {
     // Match handlers and build their `'static` run-futures while
     // holding the read lock — the futures own everything (decoded
@@ -94,6 +119,12 @@ async fn commit_outcome(state: &AppState, repo: &RepoTarget, branch: &str, chang
         RepoTarget::Named(name) => tonk.reactor.repository(name),
     };
 
+    // TODO(stm): commit unconditionally — no check that the state the
+    // handler read still holds. The transactional goal is to thread the
+    // handler's observed revision/read-set here and commit conditionally
+    // (compare-and-swap on the branch revision, or per-read conflict
+    // detection), so an outcome derived from stale reads is rejected and
+    // the handler re-runs rather than overwriting a concurrent change.
     // `Changes` implements `Statement`, so the whole outcome batch
     // asserts in one call.
     let result = repository
