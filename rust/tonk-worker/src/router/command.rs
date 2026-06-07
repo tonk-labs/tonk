@@ -38,17 +38,17 @@ pub fn command_registry() -> CommandRegistry {
 /// already been swept from durable storage by the commit; we matched
 /// them from the pre-commit buffer, so the trigger fired exactly once.
 ///
-/// Each handler runs and its outcome commits independently — one
-/// handler failing or producing nothing doesn't block another. Handlers
-/// are pure transforms, so running them holds no lock for IO; only the
-/// outcome commit touches the DB.
+/// Each handler runs and its outcome commits independently and
+/// *concurrently* — handlers don't block one another, and a slow or
+/// failing one doesn't hold up the rest. (Concurrent, not parallel:
+/// they share the single SW task, interleaving at await points.)
 pub async fn dispatch(state: &AppState, repo: RepoTarget, branch: String, transients: Changes) {
     // Match handlers and build their `'static` run-futures while
     // holding the read lock — the futures own everything (decoded
     // trigger, extracted capabilities), so we can drop the lock before
     // awaiting them. That keeps handler IO from ever running under a
     // held lock (a handler that extracts `State<AppState>` may re-lock).
-    let futures = {
+    let run_futures = {
         let tonk = state.read().await;
         if tonk.commands.is_empty() {
             return;
@@ -60,13 +60,16 @@ pub async fn dispatch(state: &AppState, repo: RepoTarget, branch: String, transi
             .collect::<Vec<_>>()
     };
 
-    // Await each handler and commit its outcome to the command's branch,
-    // independently. Lock released — handlers may re-lock freely.
-    for future in futures {
-        if let Some(changes) = future.await {
+    // Drive every (run → commit) chain concurrently. Each chain awaits
+    // its handler, then commits its outcome to the command's branch;
+    // `join_all` interleaves them so independent effects make progress
+    // together rather than strictly in sequence.
+    let chains = run_futures.into_iter().map(|run| async {
+        if let Some(changes) = run.await {
             commit_outcome(state, &repo, &branch, changes).await;
         }
-    }
+    });
+    futures_util::future::join_all(chains).await;
 }
 
 /// Which repository a command's branch belongs to — the profile
