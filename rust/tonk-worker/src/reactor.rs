@@ -23,6 +23,7 @@ use dialog_operator::Profile;
 use parking_lot::Mutex;
 
 mod branch;
+mod command;
 mod env;
 mod error;
 mod pull;
@@ -33,6 +34,10 @@ mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState};
+pub use command::{
+    Command, CommandFn, CommandHandler, CommandRegistry, EntityFacts, FromContext, Source, State,
+    Transaction as CommandTx, TypedHandler,
+};
 pub use env::{
     BranchOpenProvider, CommitProvider, LoadProvider, PullProvider, PushProvider, SelectProvider,
 };
