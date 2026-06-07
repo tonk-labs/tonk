@@ -52,6 +52,20 @@ pub mod replica {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for transient *command* concepts — the effect triggers
+/// dispatched to typed-Rust handlers after a commit. A command is a
+/// plain concept marked transient; these are the fields its triggers
+/// carry.
+pub mod command {
+    use super::Attribute;
+
+    /// The local name a [`CreateSpace`](crate::command::CreateSpace)
+    /// command requests for the new space.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command")]
+    pub struct SpaceName(pub String);
+}
+
 /// Attributes that live on [`Branch`] entities (and
 /// [`TrackingBranch`], which extends `Branch`).
 ///

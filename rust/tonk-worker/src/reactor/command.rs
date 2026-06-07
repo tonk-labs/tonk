@@ -209,6 +209,14 @@ pub trait FromContext: Sized {
 /// signatures. The handler reaches the operator/reactor by re-locking
 /// through this handle when it needs them — declared in the signature,
 /// not handed wholesale.
+///
+/// TODO(stm): reads through `State<T>` are not tracked, so the
+/// dispatcher's outcome commit can't tell whether what the handler read
+/// still holds. The transactional goal is a read-tracking extractor
+/// (e.g. a `Snapshot<C>`/`Current<C>` that records the revision or
+/// datoms it observed) so dispatch can commit-or-conflict against the
+/// handler's read set. See the `TODO(stm)` notes on
+/// `router::command::dispatch`/`commit_outcome`.
 pub struct State<T>(pub T);
 
 impl FromContext for State<Source> {

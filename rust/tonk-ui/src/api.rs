@@ -32,6 +32,9 @@ struct ErrorDetail {
 pub const DEFAULT_REPO: &str = "home";
 /// Default branch name.
 const DEFAULT_BRANCH: &str = "main";
+/// The profile repository's meta branch — where the Hub's spaces live
+/// and where `CreateSpace` commands are asserted.
+const META_BRANCH: &str = "meta";
 /// Path of the UCAN access service, resolved against the window origin.
 const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
@@ -204,43 +207,45 @@ impl From<TonkUiError> for CreateSpaceError {
     }
 }
 
-/// Creates a new repository with the given name.
+/// Requests a new space by asserting a transient `CreateSpace`
+/// command.
 ///
-/// Sends `PUT /api/repository/{name}` with `If-None-Match: *` and
-/// a body that defines a single `main` branch with no upstream and
-/// no remotes. On success the worker registers a replica for this
-/// repository in the profile repo and broadcasts on `/api/profile`,
-/// so anything subscribed to that channel (notably the shell's
-/// `ProfileResource`) can refresh.
-pub async fn create_space(name: &str) -> Result<RepositoryInfo, CreateSpaceError> {
+/// Posts a transient `CreateSpace` claim to the profile's meta branch
+/// (`POST /api/profile/branch/meta/transact`). The worker's command
+/// dispatcher runs the `create_space` handler, which records the
+/// replica (`status: blank`) — so the Hub card appears installing right
+/// away — then creates the repository and seeds it in the background,
+/// flipping the status to `initialized` when done. The card settles
+/// over the `/api/profile` subscription.
+///
+/// Returns as soon as the command is accepted: there's no synchronous
+/// `RepositoryInfo` (creation is asynchronous) and no `AlreadyExists`
+/// signal (a duplicate command no-ops; the Hub simply won't show a
+/// second card). The dialog can close immediately and watch the Hub.
+pub async fn create_space(name: &str) -> Result<(), CreateSpaceError> {
     tonk_host::ready::wait().await;
-    log!("Creating space '{}'...", name);
+    log!("Requesting space '{}'...", name);
 
-    let configuration =
-        RepositoryConfiguration::default().branch(DEFAULT_BRANCH, BranchConfiguration::default());
+    let request = tonk_worker::CreateSpace::into_request(name);
 
     let response = reqwest::Client::new()
-        .put(format!("{}/api/repository/{}", origin(), name))
-        .header("If-None-Match", "*")
-        .json(&configuration)
+        .post(format!(
+            "{}/api/profile/branch/{}/transact",
+            origin(),
+            META_BRANCH
+        ))
+        .json(&request)
         .send()
         .await
         .map_err(into_api_error)?;
 
     match response.status() {
-        StatusCode::CREATED => response
-            .json::<RepositoryInfo>()
-            .await
-            .map_err(into_api_error)
-            .map_err(CreateSpaceError::Other),
-        StatusCode::PRECONDITION_FAILED | StatusCode::CONFLICT => {
-            Err(CreateSpaceError::AlreadyExists)
-        }
+        StatusCode::OK => Ok(()),
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
-                "PUT /api/repository/{} returned {}: {}",
-                name, status, text
+                "POST /api/profile/branch/{}/transact returned {}: {}",
+                META_BRANCH, status, text
             ))
             .into())
         }
