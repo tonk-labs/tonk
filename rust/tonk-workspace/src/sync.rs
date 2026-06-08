@@ -1,19 +1,26 @@
 //! Background-sync chrome for the workspace top bar.
 //!
-//! Two dumb light-DOM custom elements, cut from the same cloth as
-//! [`super::share`]: they resolve their repo/branch from the nearest
-//! `<tonk-repository>` / `<tonk-branch>` ancestors and otherwise hold
+//! One dumb light-DOM custom element, cut from the same cloth as
+//! [`super::share`]: it resolves its repo/branch from the nearest
+//! `<tonk-repository>` / `<tonk-branch>` ancestors and otherwise holds
 //! no app policy.
 //!
-//! - `<tonk-sync-toggle>` pauses/resumes background sync by flipping
-//!   the per-repository `tonk:auto-sync:{repo}` `localStorage`
-//!   preference — the exact key the Leptos `sync_controller` reads.
-//! - `<tonk-sync-state>` paints a live `synced` / `ahead` / `behind` /
-//!   `diverged` chip for the branch in scope relative to its remote,
-//!   re-reading the read-only `sync/status` route whenever the
-//!   controller dispatches `tonk:status-refresh` or a commit lands.
+//! - `<tonk-sync-state>` is the status indicator *and* the pause/resume
+//!   button in one. It shows exactly three states for the branch in
+//!   scope:
+//!     - `synced`  — auto-sync on and up to date with the remote.
+//!     - `syncing` — auto-sync on and mid-reconcile (pushing/pulling).
+//!       The remote's `ahead` / `behind` / `diverged` states all fold
+//!       into this one: if sync is running, those deltas are being
+//!       reconciled right now.
+//!     - `paused`  — auto-sync off. Overrides any real drift.
+//!   It re-reads the read-only `sync/status` route whenever the
+//!   controller dispatches `tonk:status-refresh` or a commit lands, and
+//!   clicking the pill flips the per-repository `tonk:auto-sync:{repo}`
+//!   `localStorage` preference — the exact key the Leptos
+//!   `sync_controller` reads.
 //!
-//! The two coordinate with the controller only through that shared
+//! It coordinates with the controller only through that shared
 //! `localStorage` key and the `tonk:status-refresh` / `tonk:committed`
 //! window events — no direct coupling to `tonk-ui`.
 
@@ -46,17 +53,29 @@ mod logic {
             .unwrap_or_else(|| "main".to_string())
     }
 
-    /// Label and modifier class for a sync state, or `None` for states
-    /// with nothing to show (`NoUpstream`). A pure mirror of
-    /// `tonk-ui`'s `upstream_state_chip`, with the workspace's own
-    /// `is-*` modifier classes in place of the `<wa-badge>` variants.
-    pub(crate) fn state_chip(state: SyncState) -> Option<(&'static str, &'static str)> {
+    /// The pill's `(label, modifier-class)` for the paused preference
+    /// and for an absent / unreachable remote. `paused` comes from the
+    /// preference (not a `SyncState`); `offline` covers both `NoUpstream`
+    /// (no remote configured) and a failed status fetch (remote
+    /// unavailable), which read identically to the user.
+    pub(crate) const PAUSED_CHIP: (&'static str, &'static str) = ("paused", "is-paused");
+    pub(crate) const OFFLINE_CHIP: (&'static str, &'static str) = ("offline", "is-offline");
+
+    /// Label and modifier class for a live sync state.
+    ///
+    /// The pill shows only three *running* labels: `synced` when up to
+    /// date, `syncing…` for any drift (`Ahead` / `Behind` / `Diverged`
+    /// all mean auto-sync is mid-reconcile, so they collapse into one),
+    /// and `offline` when there is no upstream to sync against. (`paused`
+    /// is not a `SyncState`; it comes from the preference and is painted
+    /// by the element directly.)
+    pub(crate) fn state_chip(state: SyncState) -> (&'static str, &'static str) {
         match state {
-            SyncState::Synced => Some(("synced", "is-synced")),
-            SyncState::Ahead => Some(("ahead", "is-ahead")),
-            SyncState::Behind => Some(("behind", "is-behind")),
-            SyncState::Diverged => Some(("diverged", "is-diverged")),
-            SyncState::NoUpstream => None,
+            SyncState::Synced => ("synced", "is-synced"),
+            SyncState::Ahead | SyncState::Behind | SyncState::Diverged => {
+                ("syncing…", "is-syncing")
+            }
+            SyncState::NoUpstream => OFFLINE_CHIP,
         }
     }
 }
@@ -81,7 +100,9 @@ mod dom {
 
     use tonk_schema::SyncState;
 
-    use super::logic::{branch_or_default, pref_is_enabled, pref_key, state_chip};
+    use super::logic::{
+        OFFLINE_CHIP, PAUSED_CHIP, branch_or_default, pref_is_enabled, pref_key, state_chip,
+    };
     use crate::ancestors::repo_from_ancestor;
 
     /// Window event the controller dispatches to ask the chip to
@@ -185,7 +206,7 @@ mod dom {
     }
 
     /// Dispatch [`STATUS_REFRESH_EVENT`] on `window` with `repo` in the
-    /// detail, so the chip re-reads status immediately after a toggle.
+    /// detail, so the pill re-reads status immediately after a toggle.
     fn request_status_refresh(repo: &str) {
         let init = CustomEventInit::new();
         init.set_detail(&JsValue::from_str(repo));
@@ -197,114 +218,66 @@ mod dom {
         }
     }
 
-    // ---- `<tonk-sync-toggle>` -------------------------------------
+    // ---- `<tonk-sync-state>` --------------------------------------
 
-    /// CSS class the consuming workspace view styles for the toggle.
-    const TOGGLE_BUTTON: &str = "workspace__sync-toggle";
+    /// CSS class for the pill button (with an `is-*` state modifier).
+    const STATE_CHIP: &str = "workspace__sync";
 
-    /// Title/`aria-label` while auto-sync is running. Mirrors tonk-ui.
+    /// Title/`aria-label` on the pill while auto-sync is running and
+    /// reachable — the `synced` / `syncing…` states, where a click pauses.
     const RUNNING_LABEL: &str = "Auto-sync on — click to pause";
-    /// Title/`aria-label` while auto-sync is paused. Mirrors tonk-ui.
+    /// Title/`aria-label` on the pill while paused (and reachable), where
+    /// a click resumes.
     const PAUSED_LABEL: &str = "Auto-sync paused — click to resume";
+    /// Title/`aria-label` on the offline pill — no upstream or an
+    /// unreachable remote. Not a toggle hint: the pill isn't clickable.
+    const OFFLINE_LABEL: &str = "Offline — no remote to sync";
 
-    /// Inline rotating-arrows glyph (running) — the icon *reflects the
-    /// active mode*, mirroring tonk-ui's inspector toggle
-    /// (`arrows-rotate`). Drawn with `currentColor`.
-    const SYNC_GLYPH: &str = r#"<svg class="workspace__sync-toggle-glyph" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>"#;
-    /// Inline pause glyph (paused). Drawn with `currentColor`.
-    const PAUSE_GLYPH: &str = r#"<svg class="workspace__sync-toggle-glyph" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><rect x="6" y="5" width="4" height="14"></rect><rect x="14" y="5" width="4" height="14"></rect></svg>"#;
-
-    /// Per-element state for `<tonk-sync-toggle>`.
-    #[derive(Default)]
-    pub(crate) struct TonkSyncToggle {
-        click: Listener,
-    }
-
-    impl CustomElement for TonkSyncToggle {
-        fn shadow() -> bool {
-            false
-        }
-
-        fn observed_attributes() -> &'static [&'static str] {
-            &[]
-        }
-
-        fn inject_children(&mut self, _this: &HtmlElement) {}
-
-        fn connected_callback(&mut self, this: &HtmlElement) {
-            if let Some(button) = ensure_toggle_button(this) {
-                let repo = repo_from_ancestor(this).unwrap_or_default();
-                paint_toggle(&button, is_enabled(&repo));
-            }
-            install_toggle_click(this, &self.click);
-        }
-
-        fn disconnected_callback(&mut self, _this: &HtmlElement) {
-            self.click.borrow_mut().take();
-        }
-    }
-
-    /// Find or create the toggle button as the element's only child.
-    fn ensure_toggle_button(this: &HtmlElement) -> Option<Element> {
-        if let Ok(Some(existing)) = this.query_selector(&format!(":scope > .{TOGGLE_BUTTON}")) {
-            return Some(existing);
-        }
-        let document = window()?.document()?;
-        let button = document.create_element("button").ok()?;
-        let _ = button.set_attribute("class", TOGGLE_BUTTON);
-        let _ = button.set_attribute("type", "button");
-        let _ = button.set_attribute("part", "button");
-        let _ = this.append_child(&button);
-        Some(button)
-    }
-
-    /// Paint the toggle button's glyph + title/`aria-label` for the
-    /// current state. The glyph reflects the active mode: rotating
-    /// sync-arrows + "click to pause" when running; pause bars +
-    /// "click to resume" when paused.
-    fn paint_toggle(button: &Element, enabled: bool) {
-        let (glyph, label) = if enabled {
-            (SYNC_GLYPH, RUNNING_LABEL)
-        } else {
-            (PAUSE_GLYPH, PAUSED_LABEL)
-        };
-        button.set_inner_html(glyph);
-        let _ = button.set_attribute("title", label);
-        let _ = button.set_attribute("aria-label", label);
-    }
-
-    /// Install the toggle's click listener: flip the preference and, if
-    /// the write lands, repaint and ask the chip to refresh. A rejected
-    /// write leaves the icon as-is — the controller still reads the old
-    /// preference, so UI and behaviour stay consistent.
+    /// Install the pill's click listener on the host: flip the
+    /// preference and ask for a status refresh. The refresh dispatches
+    /// `tonk:status-refresh`, which this element's own listener catches
+    /// and repaints from — the same route the controller's sweep uses,
+    /// so the pill has a single refresh path. A rejected write leaves
+    /// the pill as-is. The click bubbles up from the inner button, so a
+    /// click anywhere on the pill toggles.
+    ///
+    /// `offline` is the exception: with no upstream (or an unreachable
+    /// one) there is nothing to pause, so a click on the offline pill is
+    /// a no-op — the user can't toggle into `paused` from there.
     fn install_toggle_click(this: &HtmlElement, slot: &Listener) {
         let host = this.clone();
         let listener = Closure::wrap(Box::new(move |_event: Event| {
-            let repo = repo_from_ancestor(&host).unwrap_or_default();
+            if is_offline(&host) {
+                return;
+            }
+            let Some(repo) = repo_from_ancestor(&host) else {
+                return;
+            };
             let next = !is_enabled(&repo);
             if set_enabled(&repo, next) {
-                if let Ok(Some(button)) = host.query_selector(&format!(":scope > .{TOGGLE_BUTTON}"))
-                {
-                    paint_toggle(&button, next);
-                }
                 request_status_refresh(&repo);
             }
         }) as Box<dyn FnMut(Event)>);
-
         let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
         *slot.borrow_mut() = Some(listener);
     }
 
-    // ---- `<tonk-sync-state>` --------------------------------------
-
-    /// CSS class for the chip span (with an `is-*` state modifier).
-    const STATE_CHIP: &str = "workspace__sync";
+    /// Whether the pill is currently showing the (non-actionable)
+    /// `offline` state, read from the painted button's modifier class.
+    fn is_offline(host: &HtmlElement) -> bool {
+        let (_, offline_class) = OFFLINE_CHIP;
+        host.query_selector(&format!(":scope > .{STATE_CHIP}"))
+            .ok()
+            .flatten()
+            .is_some_and(|button| button.class_list().contains(offline_class))
+    }
 
     /// Per-element state for `<tonk-sync-state>`.
     #[derive(Default)]
     pub(crate) struct TonkSyncState {
         refresh: Listener,
         committed: Listener,
+        click: Listener,
     }
 
     impl CustomElement for TonkSyncState {
@@ -321,6 +294,7 @@ mod dom {
         fn connected_callback(&mut self, this: &HtmlElement) {
             refresh_state(this);
             install_state_listeners(this, &self.refresh, &self.committed);
+            install_toggle_click(this, &self.click);
         }
 
         fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -340,55 +314,85 @@ mod dom {
             }
             self.refresh.borrow_mut().take();
             self.committed.borrow_mut().take();
+            self.click.borrow_mut().take();
         }
     }
 
-    /// Resolve repo+branch and refresh the chip. With no repository
-    /// ancestor there is nothing to show, so the chip is hidden. With a
-    /// repo, fetch the status and paint; a fetch failure leaves the chip
-    /// as-is rather than flashing error chrome — holding the last good
-    /// value in steady state, or staying empty on a first-load failure
-    /// until the next refresh event (the controller's ≤20s sweep fires
-    /// one, so a blank chip self-heals).
+    /// Resolve repo+branch and repaint the pill. With no repository
+    /// ancestor there is nothing to show, so the host is cleared.
+    ///
+    /// State priority, highest first:
+    ///   1. `offline` — no upstream, or an unreachable remote (a `None`
+    ///      fetch). Nothing to sync *or* pause, so it overrides the
+    ///      preference entirely (and the pill goes inert).
+    ///   2. `paused`  — preference off and the remote reachable. Overrides
+    ///      the real drift (`ahead` / `behind` / `diverged`).
+    ///   3. `synced` / `syncing…` — running and reachable.
+    ///
+    /// The status is fetched on every refresh — even while paused —
+    /// because only the fetch can tell `offline` from `paused`. The
+    /// paused pill is painted optimistically first so it appears at once;
+    /// the fetch then confirms it or overrides it with `offline`. A
+    /// repaint never clears first, so a refresh holds the last good pill
+    /// until the new one is ready.
     fn refresh_state(this: &HtmlElement) {
         let Some(repo) = repo_from_ancestor(this) else {
-            paint_chip(this, None);
+            this.set_inner_html("");
             return;
         };
+        // Optimistic: show `paused` immediately so the pill is present
+        // without waiting on the network. The fetch below may override
+        // it with `offline`.
+        if !is_enabled(&repo) {
+            paint(this, PAUSED_CHIP, PAUSED_LABEL);
+        }
         let branch = branch_from_ancestor(this);
         let host = this.clone();
         spawn_local(async move {
-            if let Some(state) = fetch_sync_status(&repo, &branch).await {
-                paint_chip(&host, state_chip(state));
+            match fetch_sync_status(&repo, &branch).await {
+                // Offline wins over the preference: no reachable remote.
+                None | Some(SyncState::NoUpstream) => {
+                    paint(&host, OFFLINE_CHIP, OFFLINE_LABEL);
+                }
+                // Reachable + running: the live state.
+                Some(state) if is_enabled(&repo) => {
+                    paint(&host, state_chip(state), RUNNING_LABEL);
+                }
+                // Reachable + paused: the preference overrides real drift.
+                Some(_) => paint(&host, PAUSED_CHIP, PAUSED_LABEL),
             }
         });
     }
 
-    /// Paint (or hide) the chip. `None` — no repo or `NoUpstream` —
-    /// clears the host so it takes no space; `Some((label, class))`
-    /// renders a single `<span class="workspace__sync {class}">label</span>`.
-    fn paint_chip(host: &HtmlElement, chip: Option<(&'static str, &'static str)>) {
-        match chip {
-            None => host.set_inner_html(""),
-            Some((label, class)) => {
-                if let Some(span) = ensure_chip_span(host) {
-                    let _ = span.set_attribute("class", &format!("{STATE_CHIP} {class}"));
-                    span.set_text_content(Some(label));
-                }
-            }
+    /// Paint the pill button: set its `is-*` modifier + label and the
+    /// `title`/`aria-label`. The title is supplied by the caller — a
+    /// toggle hint for the actionable states (`RUNNING_LABEL` /
+    /// `PAUSED_LABEL`) or a plain status note for the inert `offline`
+    /// pill (`OFFLINE_LABEL`).
+    fn paint(host: &HtmlElement, chip: (&'static str, &'static str), title: &str) {
+        let (label, class) = chip;
+        if let Some(button) = ensure_pill_button(host) {
+            let _ = button.set_attribute("class", &format!("{STATE_CHIP} {class}"));
+            button.set_text_content(Some(label));
+            let _ = button.set_attribute("title", title);
+            let _ = button.set_attribute("aria-label", title);
         }
     }
 
-    /// Find or create the chip span as the element's only child.
-    fn ensure_chip_span(host: &HtmlElement) -> Option<Element> {
+    /// Find or create the pill `<button>` as the element's only child.
+    /// A real button so the whole pill is focusable and click-to-toggle;
+    /// the host's click listener catches the bubble.
+    fn ensure_pill_button(host: &HtmlElement) -> Option<Element> {
         if let Ok(Some(existing)) = host.query_selector(&format!(":scope > .{STATE_CHIP}")) {
             return Some(existing);
         }
         let document = window()?.document()?;
-        let span = document.create_element("span").ok()?;
-        let _ = span.set_attribute("class", STATE_CHIP);
-        let _ = host.append_child(&span);
-        Some(span)
+        let button = document.create_element("button").ok()?;
+        let _ = button.set_attribute("class", STATE_CHIP);
+        let _ = button.set_attribute("type", "button");
+        let _ = button.set_attribute("part", "button");
+        let _ = host.append_child(&button);
+        Some(button)
     }
 
     /// Install the chip's window listeners: `tonk:status-refresh`
@@ -431,14 +435,11 @@ mod dom {
         *committed_slot.borrow_mut() = Some(committed_listener);
     }
 
-    /// Register both elements. Idempotent.
+    /// Register the element. Idempotent.
     pub(crate) fn register() {
         let Some(elements) = window().map(|w| w.custom_elements()) else {
             return;
         };
-        if elements.get("tonk-sync-toggle").is_undefined() {
-            TonkSyncToggle::define("tonk-sync-toggle");
-        }
         if elements.get("tonk-sync-state").is_undefined() {
             TonkSyncState::define("tonk-sync-state");
         }
@@ -452,79 +453,117 @@ mod dom {
         wasm_bindgen_test_configure!(run_in_browser);
 
         #[dialog_common::test]
-        async fn it_toggles_the_preference_and_swaps_the_icon() {
+        async fn it_shows_paused_on_connect_and_toggles_the_preference_on_click() {
             register();
             let document = window().unwrap().document().unwrap();
             let body = document.body().unwrap();
             let storage = window().unwrap().local_storage().unwrap().unwrap();
             let key = "tonk:auto-sync:toggletest";
-            let _ = storage.remove_item(key);
+            // Start paused so the pill paints synchronously on connect —
+            // the running branch would await a status fetch that never
+            // resolves in this DOM-only test (no service worker).
+            storage.set_item(key, "off").unwrap();
 
             let repo = document.create_element("tonk-repository").unwrap();
             repo.set_attribute("name", "toggletest").unwrap();
-            let toggle = document.create_element("tonk-sync-toggle").unwrap();
-            repo.append_child(&toggle).unwrap();
+            let state = document.create_element("tonk-sync-state").unwrap();
+            repo.append_child(&state).unwrap();
             // Defined element → connectedCallback runs synchronously on
-            // append, so the button is present by the time it returns.
+            // append, so the pill is present by the time it returns.
             body.append_child(&repo).unwrap();
 
-            let button = toggle
-                .query_selector(".workspace__sync-toggle")
+            let button = state
+                .query_selector(".workspace__sync")
                 .unwrap()
-                .expect("toggle button injected on connect");
+                .expect("pill injected on connect");
 
-            // Default on: running label + the sync-arrows glyph
-            // (distinguished by its `polyline` arrowheads).
+            // Paused: the neutral `is-paused` pill reading "paused",
+            // labelled for the resume action.
+            assert_eq!(button.text_content().as_deref(), Some("paused"));
+            assert_eq!(button.class_name(), "workspace__sync is-paused");
             assert_eq!(
                 button.get_attribute("title").as_deref(),
-                Some(RUNNING_LABEL)
+                Some(PAUSED_LABEL)
             );
-            assert!(button.inner_html().contains("polyline"));
 
-            // Click → paused: preference flips to off, label + glyph swap
-            // to the pause bars (`rect`s).
-            button.dyn_ref::<HtmlElement>().unwrap().click();
-            assert_eq!(storage.get_item(key).unwrap().as_deref(), Some("off"));
-            assert_eq!(button.get_attribute("title").as_deref(), Some(PAUSED_LABEL));
-            assert!(button.inner_html().contains("rect"));
-
-            // Click again → running.
+            // Click → running: the preference flips to "on". (The running
+            // pill awaits a status fetch that can't resolve here, so we
+            // assert on the persisted preference — the load-bearing side
+            // effect — rather than the repainted label.)
             button.dyn_ref::<HtmlElement>().unwrap().click();
             assert_eq!(storage.get_item(key).unwrap().as_deref(), Some("on"));
-            assert_eq!(
-                button.get_attribute("title").as_deref(),
-                Some(RUNNING_LABEL)
-            );
+
+            // Click again → paused: flips back and repaints synchronously.
+            button.dyn_ref::<HtmlElement>().unwrap().click();
+            assert_eq!(storage.get_item(key).unwrap().as_deref(), Some("off"));
+            assert_eq!(button.text_content().as_deref(), Some("paused"));
 
             repo.remove();
             let _ = storage.remove_item(key);
         }
 
         #[dialog_common::test]
-        async fn it_paints_the_chip_for_a_state_and_hides_on_no_upstream() {
+        async fn it_ignores_clicks_while_offline() {
+            register();
+            let document = window().unwrap().document().unwrap();
+            let body = document.body().unwrap();
+            let storage = window().unwrap().local_storage().unwrap().unwrap();
+            let key = "tonk:auto-sync:offlinetest";
+            // Running (on) — `offline` is a *running* sub-state.
+            storage.set_item(key, "on").unwrap();
+
+            let repo = document.create_element("tonk-repository").unwrap();
+            repo.set_attribute("name", "offlinetest").unwrap();
+            let state = document.create_element("tonk-sync-state").unwrap();
+            repo.append_child(&state).unwrap();
+            body.append_child(&repo).unwrap();
+
+            // Force the offline pill (the connect-time fetch can't resolve
+            // in this DOM-only test, so paint it directly).
+            let host_el = state.dyn_ref::<HtmlElement>().unwrap();
+            paint(host_el, OFFLINE_CHIP, OFFLINE_LABEL);
+            let button = state
+                .query_selector(".workspace__sync")
+                .unwrap()
+                .expect("offline pill present");
+            assert_eq!(button.class_name(), "workspace__sync is-offline");
+
+            // Click → no-op: there's nothing to pause, so the preference
+            // stays "on" and the pill stays offline.
+            button.dyn_ref::<HtmlElement>().unwrap().click();
+            assert_eq!(storage.get_item(key).unwrap().as_deref(), Some("on"));
+            assert_eq!(button.class_name(), "workspace__sync is-offline");
+
+            repo.remove();
+            let _ = storage.remove_item(key);
+        }
+
+        #[dialog_common::test]
+        async fn it_paints_each_running_state_on_the_pill() {
             let document = window().unwrap().document().unwrap();
             let body = document.body().unwrap();
             let host = document.create_element("tonk-sync-state").unwrap();
             body.append_child(&host).unwrap();
             let host_el = host.dyn_ref::<HtmlElement>().unwrap();
 
-            // A concrete state renders the label + single modifier class.
-            paint_chip(host_el, state_chip(SyncState::Ahead));
-            let span = host
+            // Synced → green "synced" pill, filled dot (via the class).
+            paint(host_el, state_chip(SyncState::Synced), RUNNING_LABEL);
+            let button = host
                 .query_selector(".workspace__sync")
                 .unwrap()
-                .expect("chip painted for a concrete state");
-            assert_eq!(span.text_content().as_deref(), Some("ahead"));
-            assert_eq!(span.class_name(), "workspace__sync is-ahead");
+                .expect("pill painted for a concrete state");
+            assert_eq!(button.text_content().as_deref(), Some("synced"));
+            assert_eq!(button.class_name(), "workspace__sync is-synced");
 
-            // NoUpstream → nothing to show → host cleared.
-            paint_chip(host_el, state_chip(SyncState::NoUpstream));
-            assert!(host.query_selector(".workspace__sync").unwrap().is_none());
+            // Any drift collapses to the single "syncing…" state.
+            paint(host_el, state_chip(SyncState::Behind), RUNNING_LABEL);
+            assert_eq!(button.text_content().as_deref(), Some("syncing…"));
+            assert_eq!(button.class_name(), "workspace__sync is-syncing");
 
-            // No repo (None) hides the same way.
-            paint_chip(host_el, state_chip(SyncState::Behind));
-            paint_chip(host_el, None);
-            assert!(host.query_selector(".workspace__sync").unwrap().is_none());
+            // NoUpstream → "offline" (same pill as an unreachable remote).
+            paint(host_el, state_chip(SyncState::NoUpstream), OFFLINE_LABEL);
+            assert_eq!(button.text_content().as_deref(), Some("offline"));
+            assert_eq!(button.class_name(), "workspace__sync is-offline");
 
             host.remove();
         }
@@ -546,30 +585,33 @@ mod tests {
 
     #[dialog_common::test]
     fn it_maps_synced_to_the_synced_chip() {
-        assert_eq!(state_chip(SyncState::Synced), Some(("synced", "is-synced")));
+        assert_eq!(state_chip(SyncState::Synced), ("synced", "is-synced"));
     }
 
     #[dialog_common::test]
-    fn it_maps_ahead_to_the_ahead_chip() {
-        assert_eq!(state_chip(SyncState::Ahead), Some(("ahead", "is-ahead")));
+    fn it_collapses_ahead_to_the_syncing_chip() {
+        assert_eq!(state_chip(SyncState::Ahead), ("syncing…", "is-syncing"));
     }
 
     #[dialog_common::test]
-    fn it_maps_behind_to_the_behind_chip() {
-        assert_eq!(state_chip(SyncState::Behind), Some(("behind", "is-behind")));
+    fn it_collapses_behind_to_the_syncing_chip() {
+        assert_eq!(state_chip(SyncState::Behind), ("syncing…", "is-syncing"));
     }
 
     #[dialog_common::test]
-    fn it_maps_diverged_to_the_diverged_chip() {
-        assert_eq!(
-            state_chip(SyncState::Diverged),
-            Some(("diverged", "is-diverged"))
-        );
+    fn it_collapses_diverged_to_the_syncing_chip() {
+        assert_eq!(state_chip(SyncState::Diverged), ("syncing…", "is-syncing"));
     }
 
     #[dialog_common::test]
-    fn it_hides_the_chip_for_no_upstream() {
-        assert_eq!(state_chip(SyncState::NoUpstream), None);
+    fn it_maps_no_upstream_to_the_offline_chip() {
+        assert_eq!(state_chip(SyncState::NoUpstream), OFFLINE_CHIP);
+        assert_eq!(OFFLINE_CHIP, ("offline", "is-offline"));
+    }
+
+    #[dialog_common::test]
+    fn it_labels_the_paused_chip() {
+        assert_eq!(PAUSED_CHIP, ("paused", "is-paused"));
     }
 
     #[dialog_common::test]

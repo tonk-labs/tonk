@@ -283,43 +283,86 @@ view!: &workspace/view
           font-family: var(--wa-font-family-code);
           font-size: var(--wa-font-size-s);
         }
-        .workspace__title { font-weight: var(--wa-font-weight-semibold); }
-        /* The live sync chip (`<tonk-sync-state>` renders this span with
-           one `is-*` state modifier). Layout lives on the base class;
-           colour lives on the modifier. The chip only shows once a state
-           is known because `<tonk-sync-state>` emits the span only then
-           — with no state it emits no span at all, so the element takes
-           no space (there is no CSS rule hiding a modifier-less span). */
+        .workspace__title {
+          font-size: var(--wa-font-size-l);
+          font-weight: var(--wa-font-weight-semibold);
+        }
+        /* The sync pill (`<tonk-sync-state>`): the status indicator *and*
+           the pause/resume button in one. It renders a single
+           `<button class="workspace__sync is-*">` carrying one of four
+           states — `synced`, `syncing`, `paused`, `offline`. Layout and
+           the button reset live on the base class; colour lives on the
+           modifier (text, border, and dot all read `currentColor`). The
+           dot is filled for the running states and a hollow ring for
+           `paused` / `offline`. The whole pill is the button, so a click
+           anywhere toggles auto-sync. */
         .workspace__sync {
           display: inline-flex;
           align-items: center;
-          gap: var(--wa-space-xs);
-          padding: var(--wa-space-3xs) var(--wa-space-s);
-          font-size: var(--wa-font-size-s);
+          box-sizing: border-box;
+          /* The whole pill is a fixed 21px tall (border included),
+             matching the mock — a fixed height rather than letting the
+             text's line-box drive it. With 11px text that leaves ~4px
+             above/below, the couple px of breathing room. A little inline
+             padding so the dot/label don't touch the border. */
+          height: 21px;
+          gap: var(--wa-space-2xs);
+          padding: 0 5px;
+          font-family: inherit;
+          font-size: var(--wa-font-size-2xs);
+          line-height: 1;
+          color: var(--wa-color-text-quiet);
+          background: transparent;
+          border: var(--wa-border-width-s) solid currentColor;
           border-radius: var(--wa-border-radius-s);
+          cursor: pointer;
         }
+        /* A faint state-tinted wash on hover so the pill reads as the
+           live control it is. */
+        .workspace__sync:hover {
+          background: color-mix(in oklab, currentColor 8%, transparent);
+        }
+        .workspace__sync:focus-visible {
+          outline: var(--wa-border-width-m) solid currentColor;
+          outline-offset: 2px;
+        }
+        /* The status dot: filled by default (the running states); the
+           hollow variants below swap the fill for a ring. */
         .workspace__sync::before {
           content: "";
-          width: 7px; height: 7px; border-radius: 50%;
-          background: currentColor; flex: none;
+          width: 7px; height: 7px;
+          border-radius: 50%;
+          border: var(--wa-border-width-s) solid currentColor;
+          background: currentColor;
+          box-sizing: border-box;
+          flex: none;
         }
-        .workspace__sync.is-synced {
-          color: var(--wa-color-success-on-quiet);
-          background: var(--wa-color-success-fill-quiet);
+        .workspace__sync.is-synced { color: var(--wa-color-success-on-quiet); }
+        .workspace__sync.is-syncing { color: var(--wa-color-warning-on-quiet); }
+        /* Paused: a mid grey. Offline: a lighter grey, so "no remote"
+           reads as more recessed than a deliberate pause. */
+        .workspace__sync.is-paused { color: var(--wa-color-text-quiet); }
+        .workspace__sync.is-offline {
+          color: color-mix(in oklab, var(--wa-color-text-quiet) 60%, transparent);
+          /* Offline isn't actionable — nothing to pause — so it reads as
+             inert: no pointer, no hover wash. */
+          cursor: default;
         }
-        .workspace__sync.is-synced::before { background: var(--wa-color-success-fill-loud); }
-        .workspace__sync.is-ahead,
-        .workspace__sync.is-behind {
-          color: var(--wa-color-warning-on-quiet);
-          background: var(--wa-color-warning-fill-quiet);
+        .workspace__sync.is-offline:hover { background: transparent; }
+        /* Hollow dot for the two settled states. */
+        .workspace__sync.is-paused::before,
+        .workspace__sync.is-offline::before { background: transparent; }
+        /* Syncing pulses to read as in-progress. */
+        .workspace__sync.is-syncing::before {
+          animation: workspace__sync-pulse 1.2s ease-in-out infinite;
         }
-        .workspace__sync.is-ahead::before,
-        .workspace__sync.is-behind::before { background: var(--wa-color-warning-fill-loud); }
-        .workspace__sync.is-diverged {
-          color: var(--wa-color-danger-on-quiet);
-          background: var(--wa-color-danger-fill-quiet);
+        @keyframes workspace__sync-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
         }
-        .workspace__sync.is-diverged::before { background: var(--wa-color-danger-fill-loud); }
+        @media (prefers-reduced-motion: reduce) {
+          .workspace__sync.is-syncing::before { animation: none; }
+        }
         .workspace__spacer { flex: 1; }
         .workspace__actions {
           display: inline-flex;
@@ -350,30 +393,6 @@ view!: &workspace/view
           background: var(--wa-color-neutral-fill-quiet);
         }
         .workspace__share-glyph {
-          width: 18px; height: 18px;
-        }
-
-        /* The pause/resume control (`<tonk-sync-toggle>` renders this
-           button). Sized and styled like `.workspace__share` — an
-           icon-only ghost button that brightens on hover. */
-        .workspace__sync-toggle {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 28px; height: 28px;
-          padding: 0;
-          flex: none;
-          color: inherit;
-          background: transparent;
-          border: none;
-          border-radius: var(--wa-border-radius-s);
-          cursor: pointer;
-        }
-        .workspace__sync-toggle:hover {
-          color: var(--wa-color-text-normal);
-          background: var(--wa-color-neutral-fill-quiet);
-        }
-        .workspace__sync-toggle-glyph {
           width: 18px; height: 18px;
         }
 
@@ -538,7 +557,6 @@ view!: &workspace/view
         <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
-          <tonk-sync-toggle></tonk-sync-toggle>
           <tonk-share></tonk-share>
         </span>
       </div>
