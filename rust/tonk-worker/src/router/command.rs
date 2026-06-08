@@ -1,18 +1,15 @@
 //! Command registration and post-commit dispatch.
 //!
-//! [`command_registry`] builds the registry of typed-Rust command
-//! handlers the worker carries on [`TonkState`]. [`dispatch`] runs the
-//! handlers a freshly-committed transient batch triggers, committing
-//! each handler's outcome back to the branch the command arrived on.
+//! [`command_registry`] builds the registry of supported command *types*
+//! the worker carries on [`TonkState`]. [`dispatch`] runs the commands a
+//! freshly-committed transient batch triggers.
 //!
-//! The split honours the sandbox: a handler declares its capability in
-//! its signature (axum-style `State<…>`), so a pure handler
-//! (`async fn(C, Transaction) -> Transaction`) gets nothing, while one
-//! that needs IO names `State<AppState>` and the dispatcher supplies it.
-//! Either way the handler's only fact-write path is the returned
-//! [`Transaction`](crate::reactor::CommandTx); the privileged commit
-//! lives here, in the worker layer, and always targets the command's
-//! own branch — so a handler can never "commit whatever whenever".
+//! A command is a [`dialog_capability::Command`] run by a
+//! [`Provider<C>`](dialog_capability::Provider) — there is no handler
+//! function. The provider is [`CommandEnv`], a cheap handle over
+//! [`AppState`]; registering a command requires `CommandEnv: Provider<C>`,
+//! so capability is a compile-time gate. A command is self-contained: its
+//! `execute` does its own IO and commits its own outcomes through the env.
 //!
 //! [`TonkState`]: crate::worker::TonkState
 
