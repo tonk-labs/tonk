@@ -165,7 +165,8 @@ async fn handle_via_router(
     rewritten_path: Option<String>,
 ) -> Result<JsValue, JsValue> {
     let mut request: axum::http::Request<Body> = RequestConversion::from(browser_request)
-        .try_into()
+        .into_axum_request()
+        .await
         .map_err(JsValue::from)?;
 
     if let Some(new_path) = rewritten_path {
