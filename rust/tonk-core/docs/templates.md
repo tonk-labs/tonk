@@ -261,3 +261,30 @@ and the (empty) list is hidden. When the first trip lands the host flips
 to `data-state="ready"` → the list shows and the launchpad hides, live,
 because the same mounted view reconciled rather than being torn down and
 rebuilt.
+
+### `<tonk-fallback>`: the launchpad without the CSS
+
+`<tonk-fallback>` packages the "show only when empty" half. It finds its
+nearest `<tonk-display>` ancestor, reads that host's `data-state`, and
+hides itself unless the state is `empty` — watching the host so the flip
+is live. The entries stay as the normal repeat; the fallback needs no
+stylesheet:
+
+```yaml
+view/directory!:
+  model: trip
+  directory: |
+    <ul>
+      <li subject={this}>{title}</li>
+    </ul>
+    <tonk-fallback>
+      <h1>No trips yet</h1>
+      <button onclick=create>Plan one</button>
+    </tonk-fallback>
+```
+
+It is sibling chrome (no subject reference), so it is decoupled from how
+the entries render — a `{this}` repeat as above, or nested per-instance
+`<tonk-display>`s. Place it in the *outer* directory template, not inside
+a nested per-instance display, so `closest()` reads the outer
+collection's emptiness.
