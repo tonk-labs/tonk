@@ -63,7 +63,7 @@ pub use host::{ClientId, ViewBinding, ViewBindings};
 mod migration;
 
 mod command;
-pub use command::{RepoTarget, command_registry, dispatch};
+pub use command::{CommandEnv, command_registry, dispatch};
 
 /// Shared application state containing profile and operator.
 pub type AppState = Arc<RwLock<TonkState>>;

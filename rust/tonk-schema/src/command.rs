@@ -17,6 +17,7 @@
 //! `dialog.concept/transient` marker), not of the type.
 
 use dialog_artifacts::Entity;
+use dialog_capability::Command;
 use dialog_query::Concept;
 
 use crate::domain::command::Value as SpaceName;
@@ -41,4 +42,13 @@ pub struct CreateSpace {
     pub this: Entity,
     /// Local name for the new space, read from the form's `name` input.
     pub name: SpaceName,
+}
+
+/// `CreateSpace` is a [`dialog_capability::Command`]: a `Provider<CreateSpace>`
+/// (a tonk command env wrapping `AppState`) executes it. The input is the
+/// decoded command itself; the provider is self-contained (it does its own
+/// IO and commits), so the output is `()`.
+impl Command for CreateSpace {
+    type Input = Self;
+    type Output = ();
 }
