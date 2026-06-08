@@ -14,8 +14,9 @@ use axum::{
 use futures_util::TryStreamExt;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsError, JsValue, UnwrapThrowExt};
+use wasm_bindgen_futures::JsFuture;
 use wasm_streams::ReadableStream;
-use web_sys::{Request as BrowserRequest, Response as BrowserResponse, ResponseInit};
+use web_sys::{Blob, Request as BrowserRequest, Response as BrowserResponse, ResponseInit};
 
 use tonk_common::ExclusiveStream;
 
@@ -34,11 +35,18 @@ impl From<RequestConversion> for BrowserRequest {
     }
 }
 
-impl TryFrom<RequestConversion> for AxumRequest<Body> {
-    type Error = JsError;
-
-    fn try_from(request: RequestConversion) -> Result<Self, Self::Error> {
-        let request: BrowserRequest = request.into();
+impl RequestConversion {
+    /// Convert the browser request into an Axum request.
+    ///
+    /// Firefox does not expose the body of a service-worker-intercepted
+    /// request as a `ReadableStream`: [`BrowserRequest::body`] is `undefined`
+    /// (mapped to `None`) even when bytes are present. Reading the body via
+    /// `blob()` works in every browser, so when `body()` yields nothing we
+    /// fall back to streaming the blob. A genuinely bodyless request (e.g.
+    /// `GET`) yields an empty blob, hence an empty stream, matching the
+    /// previous `Body::empty()` behaviour.
+    pub async fn into_axum_request(self) -> Result<AxumRequest<Body>, JsError> {
+        let request: BrowserRequest = self.into();
         let method = Method::from_str(&request.method())?;
         let uri = Uri::try_from(&request.url())?;
 
@@ -60,25 +68,36 @@ impl TryFrom<RequestConversion> for AxumRequest<Body> {
             request_builder = request_builder.header(header_name, header_value);
         }
 
-        let request = match request.body() {
-            Some(stream) => {
-                request_builder.body(Body::from_stream(Box::pin(ExclusiveStream::new(
-                    wasm_streams::ReadableStream::from_raw(stream)
-                        .into_stream()
-                        .map_ok(|bytes| {
-                            bytes
-                                .dyn_into::<Uint8Array>()
-                                .expect_throw("Could not convert readable stream bytes")
-                                .to_vec()
-                        })
-                        .map_err(|error| format!("{:?}", error)),
-                ))))
+        let stream = match request.body() {
+            Some(stream) => stream,
+            None => {
+                let promise = request
+                    .blob()
+                    .map_err(|value| JsError::new(&format!("request.blob() failed: {value:?}")))?;
+                let blob: Blob = JsFuture::from(promise)
+                    .await
+                    .map_err(|value| JsError::new(&format!("reading request blob: {value:?}")))?
+                    .dyn_into()
+                    .map_err(|value| {
+                        JsError::new(&format!("request.blob() was not a Blob: {value:?}"))
+                    })?;
+                blob.stream()
             }
-            None => request_builder.body(Body::empty()),
-        }
-        .expect_throw("Could not set request body");
+        };
 
-        Ok(request)
+        request_builder
+            .body(Body::from_stream(Box::pin(ExclusiveStream::new(
+                ReadableStream::from_raw(stream)
+                    .into_stream()
+                    .map_ok(|bytes| {
+                        bytes
+                            .dyn_into::<Uint8Array>()
+                            .expect_throw("Could not convert readable stream bytes")
+                            .to_vec()
+                    })
+                    .map_err(|error| format!("{:?}", error)),
+            ))))
+            .map_err(|error| JsError::new(&format!("Could not set request body: {error}")))
     }
 }
 
@@ -155,8 +174,9 @@ mod tests {
         let request = BrowserRequest::new_with_str_and_init("https://example.com/api/test", &init)
             .expect("Failed to create request");
 
-        let axum_request: AxumRequest<Body> = RequestConversion::from(request)
-            .try_into()
+        let axum_request = RequestConversion::from(request)
+            .into_axum_request()
+            .await
             .expect("Failed to convert request");
 
         assert_eq!(axum_request.method(), Method::GET);
@@ -181,8 +201,9 @@ mod tests {
             BrowserRequest::new_with_str_and_init("https://example.com/api/authorize", &init)
                 .expect("Failed to create request");
 
-        let axum_request: AxumRequest<Body> = RequestConversion::from(request)
-            .try_into()
+        let axum_request = RequestConversion::from(request)
+            .into_axum_request()
+            .await
             .expect("Failed to convert request");
 
         assert_eq!(axum_request.method(), Method::POST);
@@ -208,8 +229,9 @@ mod tests {
             let request = BrowserRequest::new_with_str_and_init("https://example.com/api", &init)
                 .expect("Failed to create request");
 
-            let axum_request: AxumRequest<Body> = RequestConversion::from(request)
-                .try_into()
+            let axum_request = RequestConversion::from(request)
+                .into_axum_request()
+                .await
                 .expect("Failed to convert request");
 
             assert_eq!(axum_request.method().as_str(), *method);
