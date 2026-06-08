@@ -362,6 +362,29 @@ async fn seed_and_initialize(
                 branch_name
             );
         }
+        // The showcase demo (the "Trip to Pistoia" sample) lands only
+        // in the default `home` repository, on top of the scaffold. It
+        // resolves its bare concept references against the scaffold just
+        // committed above. Every other repo gets the scaffold alone, so
+        // its directory render has zero `workspace` instances and reads
+        // as genuinely empty — the precondition for the launchpad view.
+        if name == DEFAULT_REPOSITORY_NAME {
+            let demo = fetch_standard_library(DEMO_LIBRARY_URL)
+                .await
+                .map_err(|e| RepositoryError::Internal(format!("fetch showcase demo: {e}")))?;
+            for branch_name in branches {
+                seed_standard_library(&tonk, name, branch_name, &demo)
+                    .await
+                    .map_err(|e| {
+                        RepositoryError::Internal(format!("seed demo '{branch_name}': {e}"))
+                    })?;
+                log!(
+                    "Seeded showcase demo on '{}' branch '{}'",
+                    name,
+                    branch_name
+                );
+            }
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
         // Nothing to seed — the replica is immediately initialized.
@@ -378,6 +401,20 @@ async fn seed_and_initialize(
 /// SW-scoped background seed path.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
+
+/// URL of the served showcase-demo notation asset (`demo.yaml`),
+/// copied into the dist alongside `core.yaml`. Seeded on top of the
+/// scaffold, but only into the default `home` repository, so every
+/// other repo starts with zero workspace instances. Only referenced
+/// from the SW-scoped background seed path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
+
+/// The default repository created for a fresh profile. The showcase
+/// demo is seeded only here; every other repository gets the scaffold
+/// alone and renders empty until populated.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEFAULT_REPOSITORY_NAME: &str = "home";
 
 /// URL of the lean profile library — only the `space` concept and the
 /// Hub directory view. Seeded onto the profile's meta branch, which
@@ -1202,5 +1239,124 @@ where
         profile: tonk.profile.did(),
         branch: branches,
         remote: remotes,
+    }
+}
+
+/// Seed-split regression tests: the scaffold (`core.yaml`) makes a
+/// repository renderable but seeds zero instances, and the showcase
+/// (`demo.yaml`) layers the demo content on top, resolving its bare
+/// concept references against the committed scaffold.
+///
+/// These embed the real assets via `include_str!` and seed them
+/// through [`evaluate_body`] — the same `parse → analyze → commit`
+/// path the worker runs at creation, minus the served-asset fetch
+/// (unavailable in the wasm test scope, which is why
+/// [`fetch_standard_library`] is bypassed here).
+///
+/// wasm32-only — `evaluate_body` and the worker test `TonkState` are
+/// built from the service-worker harness.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use crate::router::evaluate::evaluate_body;
+    use crate::router::{AppState, api_router_with_state, tests::test_state};
+
+    /// The scaffold and showcase notation, embedded at compile time.
+    const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+    const DEMO: &str = include_str!("../../../tonk-core/assets/library/demo.yaml");
+
+    /// Create a fresh repo and return the wrapped state. PUTs a
+    /// branchless `{}` so the worker seeds nothing — the test seeds
+    /// the assets itself. The `main` branch is created on first write
+    /// (the first `seed` call). Tolerates `412` from IndexedDB state
+    /// surviving a prior run in the same browser session.
+    async fn fresh_repo(repo: &str) -> AppState {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}"))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .header("if-none-match", "*")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        assert!(
+            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
+            "expected 201 or 412 from PUT /api/repository/{repo}, got {status}",
+        );
+        state
+    }
+
+    /// Seed a notation document into the repo's `main` branch.
+    async fn seed(state: &AppState, repo: &str, document: &str) {
+        let guard = state.read().await;
+        evaluate_body(&guard, repo, "main", document.to_owned(), true)
+            .await
+            .unwrap_or_else(|e| panic!("seed failed: {e}"));
+    }
+
+    /// Run a query document and return the number of result rows in
+    /// its single match block (zero if the query matched nothing).
+    async fn count(state: &AppState, repo: &str, query: &str) -> usize {
+        let guard = state.read().await;
+        let response = evaluate_body(&guard, repo, "main", query.to_owned(), false)
+            .await
+            .unwrap_or_else(|e| panic!("query failed: {e}"));
+        response
+            .matches_after
+            .first()
+            .map(|block| block.results.len())
+            .unwrap_or(0)
+    }
+
+    /// The scaffold alone defines the `workspace` concept — so the
+    /// directory route can resolve it — but seeds zero `workspace`
+    /// instances. That empty render is the precondition for the
+    /// launchpad.
+    #[dialog_common::test]
+    async fn it_seeds_scaffold_without_showcase_instances() {
+        let repo = "test-seed-scaffold-only";
+        let state = fresh_repo(repo).await;
+        seed(&state, repo, CORE).await;
+
+        assert_eq!(
+            count(&state, repo, "workspace:\n").await,
+            0,
+            "scaffold-only repo must have zero workspace instances",
+        );
+    }
+
+    /// The showcase, seeded on top of the scaffold, resolves its bare
+    /// concept references (`workspace`, `person`, …) against the
+    /// committed scaffold and lands the demo instances — what the
+    /// default `home` repo gets. Guards the cross-document resolution
+    /// the split depends on.
+    #[dialog_common::test]
+    async fn it_seeds_showcase_on_top_of_scaffold() {
+        let repo = "test-seed-showcase";
+        let state = fresh_repo(repo).await;
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, DEMO).await;
+
+        assert!(
+            count(&state, repo, "workspace:\n").await >= 1,
+            "showcase must seed at least one workspace instance",
+        );
+        assert_eq!(
+            count(&state, repo, "person:\n").await,
+            2,
+            "showcase must seed the Alice and Bob person instances",
+        );
     }
 }
