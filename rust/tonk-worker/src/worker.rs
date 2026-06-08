@@ -326,6 +326,10 @@ pub struct TonkState {
     /// ID. Each session owns the transferred `MessagePort` and the
     /// abort handles for any open subscriptions on that client.
     pub bridges: BridgeRegistry,
+    /// Registered command handlers — the typed-Rust effects fired by
+    /// transient command concepts after a commit. Consulted by the
+    /// transact path's post-commit dispatch.
+    pub commands: crate::reactor::CommandRegistry,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -485,6 +489,7 @@ impl TonkServiceWorker {
             reactor,
             view_bindings: Default::default(),
             bridges: Default::default(),
+            commands: crate::router::command_registry(),
         };
         bootstrap_profile_meta(&state, PROFILE_NAME)
             .await

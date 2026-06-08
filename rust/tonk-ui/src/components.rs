@@ -40,9 +40,6 @@ pub use inspector::register as register_inspector;
 mod profile;
 use profile::*;
 
-mod create_space;
-use create_space::*;
-
 mod join;
 use join::*;
 
@@ -67,12 +64,6 @@ pub struct HostId(pub String);
 /// `Ok(None)` is used to model "not yet ready" (shell still
 /// initialising); `Ok(Some(info))` is a successful fetch.
 pub type ProfileResource = LocalResource<Result<Option<ProfileInfo>, TonkUiError>>;
-
-/// Shared open-state for the create-space dialog. Flipped to
-/// `true` by the sidebar's `+` tile; flipped back to `false` by
-/// the dialog itself on cancel, successful create, or when the
-/// user dismisses via Esc / click-outside.
-pub type CreateSpaceOpen = RwSignal<bool>;
 
 /// Shared open-state for the invite dialog. `Some(name)` opens
 /// the dialog and triggers a fresh invite mint for that space;
@@ -156,12 +147,6 @@ pub fn TonkShell() -> impl IntoView {
             profile_resource.refetch();
         }
     });
-
-    // Shared open-state for the create-space dialog. The `+`
-    // tile in the sidebar flips this to `true`; the dialog
-    // itself resets it on close.
-    let create_space_open: CreateSpaceOpen = RwSignal::new(false);
-    provide_context(create_space_open);
 
     // Shared open-state for the invite dialog. The workspace top
     // bar's `<tonk-share>` control writes a `Some(name)` here (via

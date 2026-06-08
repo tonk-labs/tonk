@@ -2,10 +2,7 @@ use js_sys::{decode_uri_component, encode_uri_component};
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 
-use crate::{
-    components::{CreateSpaceOpen, ProfileResource},
-    did,
-};
+use crate::{components::ProfileResource, did};
 
 /// Render a DID as the 8-hex-digit sigil value consumed by
 /// `<tonk-sigil value=...>`. Returns `None` when the DID isn't a
@@ -35,9 +32,6 @@ pub fn TonkToolbar() -> impl IntoView {
     // any write lands.
     let profile_resource =
         use_context::<ProfileResource>().expect("ProfileResource provided by TonkShell");
-    let create_space_open =
-        use_context::<CreateSpaceOpen>().expect("CreateSpaceOpen provided by TonkShell");
-    let open_create_space = move |_| create_space_open.set(true);
 
     // Current path drives the active-space indicator. Reading
     // `pathname` here keeps the toolbar reactive to route changes
@@ -133,7 +127,7 @@ pub fn TonkToolbar() -> impl IntoView {
             <wa-button
                 class="sidebar-space sidebar-space--add"
                 aria-label="Add space"
-                on:click=open_create_space
+                href="/"
             >
                 <svg
                     class="sidebar-add-glyph"

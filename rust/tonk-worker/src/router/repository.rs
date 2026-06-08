@@ -246,6 +246,89 @@ pub async fn put_repository(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
+/// Command handler for [`CreateSpace`] — the asserted-command path that
+/// replaces a direct `PUT /api/repository/{name}`. The "New space"
+/// button asserts a transient `CreateSpace`; the dispatcher runs this.
+///
+/// It does the same work as [`put_repository`]: record the replica
+/// (`status: blank`) so the Hub shows it installing, create the
+/// repository, seed the standard library, then flip the status to
+/// `initialized`. An existing name is a no-op (logged) rather than an
+/// error — there's no HTTP caller to receive a 409/412.
+///
+/// Capability is declared as `State<AppState>`: this handler does
+/// genuine multi-branch IO (creates a repo, commits to the profile and
+/// content branches), so it is a privileged handler. The returned
+/// [`CommandTx`] is unused — outcomes are written through the create
+/// path itself, not the deferred buffer.
+///
+/// TODO(ucan): gate this by capability rather than by simply holding
+/// `State<AppState>`. Long-term a command is a UCAN-like invocation:
+/// the handler attempts the work and the operator's capabilities decide
+/// whether each action (create repo, commit to branch) is permitted.
+/// See `project_effect_command_design`.
+///
+/// TODO(stm): the existence check and the create are not atomic against
+/// concurrent commands — two `CreateSpace` for the same name could both
+/// pass the check. The transactional goal (read-set tracking + commit-
+/// or-conflict) would close this.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn create_space(
+    command: tonk_schema::command::CreateSpace,
+    // Our command `State`, not axum's (which this module also imports):
+    // it's the capability extractor pulling `AppState` from the dispatch
+    // source.
+    crate::reactor::State(state): crate::reactor::State<AppState>,
+    tx: crate::reactor::CommandTx,
+) -> crate::reactor::CommandTx {
+    let name = command.name.0.clone();
+    log!("command CreateSpace name={}", name);
+
+    if let Err(error) = create_space_inner(&state, &name).await {
+        log!("CreateSpace '{}' failed: {}", name, error);
+    }
+    tx
+}
+
+/// The body of [`create_space`], split out so its `?` errors are logged
+/// once at the handler boundary. Mirrors [`put_repository`] minus the
+/// HTTP shell.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn create_space_inner(state: &AppState, name: &str) -> Result<(), RepositoryError> {
+    // The button asks for a `main`-branch space (the same config the old
+    // `create_space` fetch sent).
+    let configuration =
+        RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
+
+    let (subject, branches) = {
+        let tonk = state.write().await;
+
+        // Already exists → no-op. Without an HTTP caller there's no
+        // 409/412 to return; a duplicate command just does nothing.
+        if tonk
+            .profile
+            .repository(name)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .is_ok()
+        {
+            log!("CreateSpace '{}': already exists, skipping", name);
+            return Ok(());
+        }
+
+        // Create the repository (records the replica with status:blank).
+        let repository = create_repository(&tonk, name, &configuration).await?;
+        let subject = repository.did();
+        let branches: Vec<String> = configuration.branch.keys().cloned().collect();
+        (subject, branches)
+    };
+
+    // Seed + flip to initialized once the lock is released (seeding is
+    // the slow part; holding the lock would stall the page).
+    seed_and_initialize(state, name, &subject, &branches).await
+}
+
 /// Spawn the background seed + status flip for a freshly created
 /// repository. Returns immediately; the work runs after the PUT
 /// response is sent.

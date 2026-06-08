@@ -1,6 +1,6 @@
 use crate::components::{
-    LastJoinOutcome, TonkBoardView, TonkConceptView, TonkCreateSpace, TonkDisplayView, TonkHub,
-    TonkInviteDialog, TonkJoin, TonkLayoutView, TonkProfile, TonkSpaceViewer, TonkToolbar,
+    LastJoinOutcome, TonkBoardView, TonkConceptView, TonkDisplayView, TonkHub, TonkInviteDialog,
+    TonkJoin, TonkLayoutView, TonkProfile, TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -12,11 +12,9 @@ use leptos_router::{
 /// navigation sits in its own column on desktop and collapses into a
 /// drawer (with a hamburger toggle) below the mobile breakpoint.
 ///
-/// The create-space dialog is mounted here once (outside the
-/// `<Routes>`) so it survives navigation and can be triggered from
-/// any screen via the shared [`CreateSpaceOpen`] signal.
-///
-/// [`CreateSpaceOpen`]: super::CreateSpaceOpen
+/// Creating a space is driven from the Hub's own view now (a
+/// `<form onsubmit=space/create>` in the `space` directory view), so
+/// there's no Leptos create-space dialog to mount here.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
     view! {
@@ -79,7 +77,6 @@ pub fn TonkLauncher() -> impl IntoView {
                         <Route path=path!("join") view=TonkJoin />
                     </ParentRoute>
                 </Routes>
-                <TonkCreateSpace />
                 <TonkInviteDialog />
             </Router>
         </tonk-host>

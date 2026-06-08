@@ -311,16 +311,22 @@ tonk-repository.display-route,
     margin-inline: auto;
     padding: var(--wa-space-2xl) var(--wa-space-xl);
 }
+/* Title on the left, "New space" trigger button on the right — one row
+   above the cards. Lives inside the directory view now (rendered once
+   as chrome, before the repeated cards). */
 .hub-header {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
     gap: var(--wa-space-l);
     margin-block-end: var(--wa-space-xl);
 }
-/* The button sits at the top right, the title below it on the left. */
-.hub-header .hub-new {
-    align-self: flex-end;
+/* The create form lives in the dialog, laid out as a simple stack. */
+.hub-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-s);
 }
 /* Opt out of the global heading highlight-cover (the dark filled box):
    the Hub title is a plain heading like the mock. */
