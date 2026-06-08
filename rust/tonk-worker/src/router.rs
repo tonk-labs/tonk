@@ -143,6 +143,13 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/repository/{repo}/invite",
             post(create_invite::create_invite),
         )
+        // Opt-in remote attach — wires a remote (and branch upstream)
+        // onto an existing repo, idempotently. See
+        // `router/repository.rs::attach_remote`.
+        .route(
+            "/api/repository/{repo}/remote",
+            post(repository::attach_remote),
+        )
         // Sync operations
         .route(
             "/api/repository/{repo}/branch/{branch}/sync",

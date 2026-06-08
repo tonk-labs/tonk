@@ -40,6 +40,8 @@ mod notation_tokens;
 #[cfg(target_arch = "wasm32")]
 mod element;
 #[cfg(target_arch = "wasm32")]
+mod fallback;
+#[cfg(target_arch = "wasm32")]
 mod notation;
 #[cfg(target_arch = "wasm32")]
 mod render;
@@ -62,4 +64,5 @@ pub fn register() {
     view::register();
     notation::register();
     element::register();
+    fallback::register();
 }

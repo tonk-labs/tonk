@@ -15,7 +15,9 @@ use ::axum::{
 use axum_wasm_macros::wasm_compat;
 use dialog_credentials::SignerCredential;
 use dialog_query::{Output as _, Query, Term};
-use dialog_repository::{RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress};
+use dialog_repository::{
+    RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
+};
 use dialog_varsig::{Did, Principal};
 use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -362,6 +364,29 @@ async fn seed_and_initialize(
                 branch_name
             );
         }
+        // The showcase demo (the "Trip to Pistoia" sample) lands only
+        // in the default `home` repository, on top of the scaffold. It
+        // resolves its bare concept references against the scaffold just
+        // committed above. Every other repo gets the scaffold alone, so
+        // its directory render has zero `workspace` instances and reads
+        // as genuinely empty — the precondition for the launchpad view.
+        if name == DEFAULT_REPOSITORY_NAME {
+            let demo = fetch_standard_library(DEMO_LIBRARY_URL)
+                .await
+                .map_err(|e| RepositoryError::Internal(format!("fetch showcase demo: {e}")))?;
+            for branch_name in branches {
+                seed_standard_library(&tonk, name, branch_name, &demo)
+                    .await
+                    .map_err(|e| {
+                        RepositoryError::Internal(format!("seed demo '{branch_name}': {e}"))
+                    })?;
+                log!(
+                    "Seeded showcase demo on '{}' branch '{}'",
+                    name,
+                    branch_name
+                );
+            }
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
         // Nothing to seed — the replica is immediately initialized.
@@ -378,6 +403,20 @@ async fn seed_and_initialize(
 /// SW-scoped background seed path.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
+
+/// URL of the served showcase-demo notation asset (`demo.yaml`),
+/// copied into the dist alongside `core.yaml`. Seeded on top of the
+/// scaffold, but only into the default `home` repository, so every
+/// other repo starts with zero workspace instances. Only referenced
+/// from the SW-scoped background seed path.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
+
+/// The default repository created for a fresh profile. The showcase
+/// demo is seeded only here; every other repository gets the scaffold
+/// alone and renders empty until populated.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const DEFAULT_REPOSITORY_NAME: &str = "home";
 
 /// URL of the lean profile library — only the `space` concept and the
 /// Hub directory view. Seeded onto the profile's meta branch, which
@@ -1202,5 +1241,512 @@ where
         profile: tonk.profile.did(),
         branch: branches,
         remote: remotes,
+    }
+}
+
+/// Idempotently ensure an existing repository carries the remotes and
+/// branch upstreams named in `configuration`.
+///
+/// The dialog-layer mutations are probed before they run — a remote
+/// is created only when [`load`](dialog_repository) reports it
+/// missing, and an upstream is set only when the branch isn't already
+/// tracking it — because `create` errors on a duplicate remote and
+/// `set_upstream` would otherwise reset the branch's sync divergence
+/// base. The meta-branch concept assertions are content-addressed, so
+/// they're re-asserted unconditionally (a no-op when already present).
+///
+/// Generic over the credential type for the same reason as
+/// [`record_repository_meta`]: the operator/profile authority signs
+/// the commits, not the repository credential.
+async fn ensure_remote_config<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+    name: &str,
+    configuration: &RepositoryConfiguration,
+) -> Result<(), RepositoryError>
+where
+    C: Principal + Clone,
+{
+    if configuration.remote.is_empty() && configuration.branch.is_empty() {
+        return Ok(());
+    }
+
+    let meta = repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
+
+    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+    let mut transaction = meta.transaction().assert(replica.clone());
+
+    // Ensure each configured remote exists at the dialog layer, then
+    // mirror it on the meta branch. A remote that already exists is
+    // loaded rather than recreated — `create` errors on a duplicate.
+    let mut remotes: HashMap<String, Remote> = HashMap::with_capacity(configuration.remote.len());
+    for (remote_name, remote_config) in &configuration.remote {
+        let subject = remote_config
+            .subject
+            .clone()
+            .unwrap_or_else(|| repository.did());
+
+        match repository
+            .remote(remote_name.as_str())
+            .load()
+            .perform(&tonk.operator)
+            .await
+        {
+            Ok(_) => log!("Remote '{}' already present; left as-is", remote_name),
+            Err(_) => {
+                let mut create = repository
+                    .remote(remote_name.as_str())
+                    .create(remote_config.address.clone());
+                if remote_config.subject.is_some() {
+                    create = create.subject(subject.clone());
+                }
+                create.perform(&tonk.operator).await.map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to create remote '{}': {}",
+                        remote_name, e
+                    ))
+                })?;
+                log!("Remote '{}' created", remote_name);
+            }
+        }
+
+        let concept = replica.remote(remote_name.as_str(), subject, &remote_config.address);
+        transaction = transaction.assert(concept.clone());
+        remotes.insert(remote_name.clone(), concept);
+    }
+
+    // Wire each configured branch's upstream. The branch is opened
+    // (created on first open if absent), its upstream set only when it
+    // isn't already tracking the requested remote branch, and the
+    // tracking link mirrored on the meta branch.
+    for (branch_name, settings) in &configuration.branch {
+        let Some(upstream) = &settings.upstream else {
+            continue;
+        };
+
+        let branch = repository
+            .branch(branch_name.as_str())
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .map_err(|e| {
+                RepositoryError::Internal(format!("Failed to open branch '{}': {}", branch_name, e))
+            })?;
+
+        // The upstream's remote must be one named in this request —
+        // mirrors the create path, where an upstream can only
+        // reference a remote in the same configuration.
+        let concept = remotes.get(&upstream.remote).ok_or_else(|| {
+            RepositoryError::InvalidConfiguration(format!(
+                "Upstream for branch '{}' references remote '{}', which is not in the request",
+                branch_name, upstream.remote
+            ))
+        })?;
+
+        let already_tracking = matches!(
+            branch.upstream(),
+            Some(Upstream::Remote { ref remote, branch: ref tracked, .. })
+                if *remote == upstream.remote && *tracked == upstream.branch
+        );
+
+        if already_tracking {
+            log!(
+                "Branch '{}' already tracks {}/{}; left as-is",
+                branch_name,
+                upstream.remote,
+                upstream.branch
+            );
+        } else {
+            let remote = repository
+                .remote(upstream.remote.as_str())
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to load remote '{}' for upstream: {}",
+                        upstream.remote, e
+                    ))
+                })?;
+            let target = remote
+                .branch(upstream.branch.as_str())
+                .open()
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to open remote branch '{}/{}': {}",
+                        upstream.remote, upstream.branch, e
+                    ))
+                })?;
+            branch
+                .set_upstream(&target)
+                .perform(&tonk.operator)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to set upstream for branch '{}': {}",
+                        branch_name, e
+                    ))
+                })?;
+            log!(
+                "Branch '{}' now tracks {}/{}",
+                branch_name,
+                upstream.remote,
+                upstream.branch
+            );
+        }
+
+        // Mirror the upstream on the meta branch (idempotent): the
+        // local branch, the remote-side tracked branch, and the
+        // tracking link between them.
+        let tracked = concept.branch(upstream.branch.as_str());
+        transaction = transaction
+            .assert(replica.branch(branch_name.as_str()))
+            .assert(tracked.clone())
+            .assert(replica.branch(branch_name.as_str()).set_upstream(&tracked));
+    }
+
+    let revision = transaction
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!(
+                "Failed to commit meta for repository '{}': {}",
+                name, e
+            ))
+        })?;
+
+    // Mirror the create path: tell listeners of the repository's
+    // representation that its remotes/branches changed.
+    broadcast(
+        &format!("/api/repository/{name}"),
+        &Notification {
+            branch: META_BRANCH.to_string(),
+            revision,
+        },
+    );
+
+    Ok(())
+}
+
+/// Attach remotes (and branch upstreams) to an **existing**
+/// repository — the opt-in counterpart to wiring a remote at create
+/// time.
+///
+/// `POST /api/repository/{repo}/remote`. The body is a
+/// [`RepositoryConfiguration`] — the same shape `PUT` accepts — so a
+/// caller advertises the remote and the branch that tracks it exactly
+/// as it would at creation:
+///
+/// ```json
+/// { "remote": { "origin": { "address": … } },
+///   "branch": { "main": { "upstream": { "remote": "origin", "branch": "main" } } } }
+/// ```
+///
+/// Idempotent: a remote that already exists keeps its address and
+/// subject (it is not recreated), and a branch already tracking the
+/// requested upstream is left untouched (so its sync divergence base
+/// isn't reset). Calling twice is a safe no-op.
+///
+/// Why this is opt-in rather than baked into `create_space`: the
+/// access-service remote is useful for exercising the sync/invite
+/// loop now, but production provisions sync differently. Keeping the
+/// attach an explicit, isolated action means prod swaps this one call
+/// instead of unpicking it from the create path, and a freshly
+/// created repo stays local until something explicitly gives it a
+/// remote.
+#[wasm_compat]
+pub async fn attach_remote(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    body_bytes: Bytes,
+) -> Result<Json<RepositoryInfo>, TonkWorkerError> {
+    log!("POST /api/repository/{}/remote", name);
+
+    let configuration: RepositoryConfiguration = if body_bytes.is_empty() {
+        RepositoryConfiguration::default()
+    } else {
+        serde_json::from_slice(&body_bytes)
+            .map_err(|e| TonkWorkerError::Router(format!("Invalid request body: {e}")))?
+    };
+
+    let tonk = state.write().await;
+
+    let repository = tonk
+        .profile
+        .repository(&name)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{}' not found: {}", name, e))
+        })?;
+
+    ensure_remote_config(&tonk, &repository, &name, &configuration).await?;
+
+    let info = build_repository_info(&tonk, &name, &repository).await;
+    Ok(Json(info))
+}
+
+/// Seed-split regression tests: the scaffold (`core.yaml`) makes a
+/// repository renderable but seeds zero instances, and the showcase
+/// (`demo.yaml`) layers the demo content on top, resolving its bare
+/// concept references against the committed scaffold.
+///
+/// These embed the real assets via `include_str!` and seed them
+/// through [`evaluate_body`] — the same `parse → analyze → commit`
+/// path the worker runs at creation, minus the served-asset fetch
+/// (unavailable in the wasm test scope, which is why
+/// [`fetch_standard_library`] is bypassed here).
+///
+/// wasm32-only — `evaluate_body` and the worker test `TonkState` are
+/// built from the service-worker harness.
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use axum::Router;
+    use dialog_remote_ucan_s3::UcanAddress;
+    use dialog_repository::SiteAddress;
+
+    use super::{
+        BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    };
+    use crate::router::evaluate::evaluate_body;
+    use crate::router::{AppState, CreateInviteResponse, api_router_with_state, tests::test_state};
+
+    /// The scaffold and showcase notation, embedded at compile time.
+    const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
+    const DEMO: &str = include_str!("../../../tonk-core/assets/library/demo.yaml");
+
+    /// Create a fresh repo and return its router + wrapped state. PUTs
+    /// a branchless `{}` so the worker seeds nothing — the test drives
+    /// seeding / attaching itself. The `main` branch is created on
+    /// first write. Tolerates `412` from IndexedDB state surviving a
+    /// prior run in the same browser session.
+    async fn fresh_repo(repo: &str) -> (Router, AppState) {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}"))
+                    .method("PUT")
+                    .header("content-type", "application/json")
+                    .header("if-none-match", "*")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        assert!(
+            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
+            "expected 201 or 412 from PUT /api/repository/{repo}, got {status}",
+        );
+        (app, state)
+    }
+
+    /// Seed a notation document into the repo's `main` branch.
+    async fn seed(state: &AppState, repo: &str, document: &str) {
+        let guard = state.read().await;
+        evaluate_body(&guard, repo, "main", document.to_owned(), true)
+            .await
+            .unwrap_or_else(|e| panic!("seed failed: {e}"));
+    }
+
+    /// Run a query document and return the number of result rows in
+    /// its single match block (zero if the query matched nothing).
+    async fn count(state: &AppState, repo: &str, query: &str) -> usize {
+        let guard = state.read().await;
+        let response = evaluate_body(&guard, repo, "main", query.to_owned(), false)
+            .await
+            .unwrap_or_else(|e| panic!("query failed: {e}"));
+        response
+            .matches_after
+            .first()
+            .map(|block| block.results.len())
+            .unwrap_or(0)
+    }
+
+    /// The scaffold alone defines the `workspace` concept — so the
+    /// directory route can resolve it — but seeds zero `workspace`
+    /// instances. That empty render is the precondition for the
+    /// launchpad.
+    #[dialog_common::test]
+    async fn it_seeds_scaffold_without_showcase_instances() {
+        let repo = "test-seed-scaffold-only";
+        let (_app, state) = fresh_repo(repo).await;
+        seed(&state, repo, CORE).await;
+
+        assert_eq!(
+            count(&state, repo, "workspace:\n").await,
+            0,
+            "scaffold-only repo must have zero workspace instances",
+        );
+    }
+
+    /// The showcase, seeded on top of the scaffold, resolves its bare
+    /// concept references (`workspace`, `person`, …) against the
+    /// committed scaffold and lands the demo instances — what the
+    /// default `home` repo gets. Guards the cross-document resolution
+    /// the split depends on.
+    #[dialog_common::test]
+    async fn it_seeds_showcase_on_top_of_scaffold() {
+        let repo = "test-seed-showcase";
+        let (_app, state) = fresh_repo(repo).await;
+        seed(&state, repo, CORE).await;
+        seed(&state, repo, DEMO).await;
+
+        assert!(
+            count(&state, repo, "workspace:\n").await >= 1,
+            "showcase must seed at least one workspace instance",
+        );
+        assert_eq!(
+            count(&state, repo, "person:\n").await,
+            2,
+            "showcase must seed the Alice and Bob person instances",
+        );
+    }
+
+    /// A `RepositoryConfiguration` that attaches an `origin` remote at
+    /// `endpoint` and points `main` at `origin/main` — the shape the
+    /// launchpad sends to make a `create_space` repo sync-capable.
+    fn origin_config(endpoint: &str) -> RepositoryConfiguration {
+        let address = SiteAddress::from(UcanAddress::new(endpoint));
+        RepositoryConfiguration::default()
+            .remote("origin", RemoteConfiguration::new(address))
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            )
+    }
+
+    /// POST a remote-attach config to `repo` and decode the resulting
+    /// `RepositoryInfo`.
+    async fn attach(app: &Router, repo: &str, config: &RepositoryConfiguration) -> RepositoryInfo {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "attach should return 200"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap_or_else(|e| panic!("decode RepositoryInfo: {e}"))
+    }
+
+    /// Attaching the access-service remote to an existing, remote-less
+    /// repo wires `origin` and points `main` at `origin/main`.
+    #[dialog_common::test]
+    async fn it_attaches_a_remote_and_tracks_main() {
+        let repo = "test-attach-remote";
+        let (app, _state) = fresh_repo(repo).await;
+
+        let info = attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+
+        assert!(
+            info.remote.contains_key("origin"),
+            "attach must register the origin remote; got {:?}",
+            info.remote.keys().collect::<Vec<_>>(),
+        );
+        let main = info
+            .branch
+            .get("main")
+            .expect("attach must surface the main branch");
+        let upstream = main
+            .upstream
+            .as_ref()
+            .expect("main must have an upstream after attach");
+        assert_eq!(upstream.remote, "origin");
+        assert_eq!(upstream.branch, "main");
+    }
+
+    /// Attach is idempotent: a second call on an already-wired repo
+    /// succeeds and leaves a single `origin` still tracking
+    /// `origin/main` (no duplicate-remote error, no reset).
+    #[dialog_common::test]
+    async fn it_attaches_remote_idempotently() {
+        let repo = "test-attach-remote-idempotent";
+        let (app, _state) = fresh_repo(repo).await;
+        let config = origin_config("https://example.test/ucan/");
+
+        attach(&app, repo, &config).await;
+        let info = attach(&app, repo, &config).await;
+
+        assert!(info.remote.contains_key("origin"));
+        let upstream = info
+            .branch
+            .get("main")
+            .and_then(|b| b.upstream.as_ref())
+            .expect("main must still track an upstream after a second attach");
+        assert_eq!(upstream.remote, "origin");
+        assert_eq!(upstream.branch, "main");
+    }
+
+    /// After attach, a minted invite carries the `remote=` endpoint —
+    /// the whole point of the opt-in remote, so `slide join` has
+    /// something to pull from. Before attach the repo is remote-less
+    /// and the invite carries no remote.
+    #[dialog_common::test]
+    async fn it_mints_an_invite_with_a_remote_after_attach() {
+        let repo = "test-attach-then-invite";
+        let (app, _state) = fresh_repo(repo).await;
+
+        attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/invite"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "invite mint should succeed"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let invite: CreateInviteResponse =
+            serde_json::from_slice(&body).unwrap_or_else(|e| panic!("decode invite: {e}"));
+
+        let has_remote = invite.url().query_pairs().any(|(key, _)| key == "remote");
+        assert!(
+            has_remote,
+            "invite minted after attach must embed a remote= param; url was {}",
+            invite.url(),
+        );
     }
 }

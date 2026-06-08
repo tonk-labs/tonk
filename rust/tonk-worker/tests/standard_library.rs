@@ -30,6 +30,9 @@ const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core
 /// command and its form).
 const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
 
+/// The served showcase demo, embedded at compile time.
+const DEMO_LIBRARY: &str = include_str!("../../tonk-core/assets/library/demo.yaml");
+
 /// Lower a library document the same way the seed does, asserting it
 /// parses, analyzes with no running system, and lowers to claims.
 fn assert_library_lowers(label: &str, document: &str) {
@@ -63,4 +66,25 @@ fn it_lowers_the_standard_library() {
 #[test]
 fn it_lowers_the_profile_library() {
     assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
+}
+
+#[test]
+fn it_parses_the_showcase_demo() {
+    // The demo is seeded *after* the scaffold and resolves its bare
+    // concept references (`workspace`, `board`, …) against the
+    // committed scaffold, so it can't be `analyze_local`'d here with
+    // no running system. A parse check still catches the syntax-level
+    // faults that would break the seed; the full cross-document lower
+    // is exercised by the wasm `it_seeds_showcase_on_top_of_scaffold`
+    // test in `router::repository`.
+    let parsed = tonk_notation::parse(DEMO_LIBRARY);
+    assert!(
+        parsed.diagnostics.is_empty(),
+        "showcase demo must parse with no diagnostics; got {:?}",
+        parsed.diagnostics,
+    );
+    assert!(
+        parsed.syntax.is_some(),
+        "showcase demo must produce a syntax tree",
+    );
 }
