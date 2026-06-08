@@ -1096,3 +1096,74 @@ concept!: &space
 name!:
   this: id:tonk/space
   entity: tonk:workspace
+
+command!: &workspace/create-sheet
+  description: Create a new sheet in the workspace
+  with:
+    name:
+      description: Name of the artifact
+      the: dom.event.current-target.elements.name/value
+      as: text
+    # Not ideal solution but it creates unique entities and allows
+    # us to switch to more revision based approach in the future.
+    time:
+      description: Time when the event occurred
+      the: dom.event/time-stamp
+      as: unsigned-integer
+    order:
+      description: Order of the sheet in the workspace
+      the: dom.event.current-target.elements.order/value
+      as: text
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
+
+rule!:
+  description: Creates a new workspace sheet
+  assert!: workspace/sheet
+  when:
+    - assert: workspace/create-sheet
+      where:
+        this: ?this
+        name: ?title
+        order: ?order
+    - assert: ==
+      where:
+        this: ?model
+        is: about:blank
+    - assert: ==
+      where:
+        this: ?view
+        is: tonk:view
+    - assert: ==
+      where:
+        this: ?entity
+        is: about:blank
+    - assert: ==
+      where:
+        this: ?subtitle
+        is: ""
+    - assert: ==
+      where:
+        this: ?icon
+        is: "blank"
+
+rule!:
+  description: Adds new sheet to the workspace
+  assert!: workspace
+  when:
+    - assert: workspace/create-sheet
+      where:
+        this: ?sheet
+        name: ?title
+        order: ?order
+    - assert: workspace
+      where:
+        this: ?this
+        name: ?name
+        active: ?active
+    - assert: ==
+      where:
+        this: ?this
+        is: about:blank
