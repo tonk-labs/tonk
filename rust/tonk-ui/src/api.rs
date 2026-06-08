@@ -32,9 +32,6 @@ struct ErrorDetail {
 pub const DEFAULT_REPO: &str = "home";
 /// Default branch name.
 const DEFAULT_BRANCH: &str = "main";
-/// The profile repository's meta branch — where the Hub's spaces live
-/// and where `CreateSpace` commands are asserted.
-const META_BRANCH: &str = "meta";
 /// Path of the UCAN access service, resolved against the window origin.
 const ACCESS_SERVICE_PATH: &str = "/ucan/";
 
@@ -182,72 +179,6 @@ pub async fn init() -> Result<String, TonkUiError> {
                 "PUT /api/repository/{} returned {}: {}",
                 DEFAULT_REPO, status, text
             )))
-        }
-    }
-}
-
-/// Outcome of [`create_space`].
-///
-/// Distinguishes "name already taken" from other failures so the
-/// dialog can surface a field-specific message instead of a
-/// generic error. 409/412 both mean "already exists" — the 412
-/// case just signals that the caller used `If-None-Match: *`,
-/// which we always do here.
-#[derive(Debug)]
-pub enum CreateSpaceError {
-    /// A repository with this name is already registered.
-    AlreadyExists,
-    /// Any other failure — network, 5xx, serialization, etc.
-    Other(TonkUiError),
-}
-
-impl From<TonkUiError> for CreateSpaceError {
-    fn from(error: TonkUiError) -> Self {
-        Self::Other(error)
-    }
-}
-
-/// Requests a new space by asserting a transient `CreateSpace`
-/// command.
-///
-/// Posts a transient `CreateSpace` claim to the profile's meta branch
-/// (`POST /api/profile/branch/meta/transact`). The worker's command
-/// dispatcher runs the `create_space` handler, which records the
-/// replica (`status: blank`) — so the Hub card appears installing right
-/// away — then creates the repository and seeds it in the background,
-/// flipping the status to `initialized` when done. The card settles
-/// over the `/api/profile` subscription.
-///
-/// Returns as soon as the command is accepted: there's no synchronous
-/// `RepositoryInfo` (creation is asynchronous) and no `AlreadyExists`
-/// signal (a duplicate command no-ops; the Hub simply won't show a
-/// second card). The dialog can close immediately and watch the Hub.
-pub async fn create_space(name: &str) -> Result<(), CreateSpaceError> {
-    tonk_host::ready::wait().await;
-    log!("Requesting space '{}'...", name);
-
-    let request = tonk_worker::CreateSpace::into_request(name);
-
-    let response = reqwest::Client::new()
-        .post(format!(
-            "{}/api/profile/branch/{}/transact",
-            origin(),
-            META_BRANCH
-        ))
-        .json(&request)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    match response.status() {
-        StatusCode::OK => Ok(()),
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "POST /api/profile/branch/{}/transact returned {}: {}",
-                META_BRANCH, status, text
-            ))
-            .into())
         }
     }
 }

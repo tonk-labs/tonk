@@ -25,26 +25,42 @@
 /// relative to this source file.
 const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
 
-#[test]
-fn it_lowers_the_standard_library() {
-    let parsed = tonk_notation::parse(STANDARD_LIBRARY);
+/// The lean profile library — seeded onto the profile meta branch,
+/// backs the Hub (the `space` directory view + the `space/create`
+/// command and its form).
+const PROFILE_LIBRARY: &str = include_str!("../../tonk-core/assets/library/profile.yaml");
+
+/// Lower a library document the same way the seed does, asserting it
+/// parses, analyzes with no running system, and lowers to claims.
+fn assert_library_lowers(label: &str, document: &str) {
+    let parsed = tonk_notation::parse(document);
     let syntax = parsed
         .syntax
-        .expect("standard library must parse with no diagnostics");
+        .unwrap_or_else(|| panic!("{label} must parse with no diagnostics"));
     let tree = tonk_analyzer::analyzer::analyze_local(&syntax)
-        .expect("standard library must analyze with no running system");
+        .unwrap_or_else(|e| panic!("{label} must analyze with no running system: {e:#?}"));
 
     // Both halves of the seed must lower without error: the concept
     // claims and the `rule!:` installs. A failure in either is a
-    // document that would break the repository-creation seed.
+    // document that would break the seed.
     let request = tree
         .analysis
         .lower_to_claims()
-        .expect("standard library must lower to claims");
+        .unwrap_or_else(|e| panic!("{label} must lower to claims: {e:#?}"));
     let _rules = tree.analysis.rule_installs();
 
     assert!(
         !request.claims.is_empty(),
-        "standard library should lower to at least one claim",
+        "{label} should lower to at least one claim",
     );
+}
+
+#[test]
+fn it_lowers_the_standard_library() {
+    assert_library_lowers("standard library (core.yaml)", STANDARD_LIBRARY);
+}
+
+#[test]
+fn it_lowers_the_profile_library() {
+    assert_library_lowers("profile library (profile.yaml)", PROFILE_LIBRARY);
 }

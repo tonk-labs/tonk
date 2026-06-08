@@ -16,60 +16,29 @@
 //! property of how the command is asserted (the
 //! `dialog.concept/transient` marker), not of the type.
 
-use dialog_artifacts::{Entity, Value};
-use dialog_query::{Concept, Predicate};
-use tonk_core::claim::{
-    Claim, ConceptDescriptor as ClaimConceptDescriptor, PredicateApplication, TransactRequest,
-    ValueMap,
-};
+use dialog_artifacts::Entity;
+use dialog_query::Concept;
 
-use crate::domain::command::SpaceName;
+use crate::domain::command::Value as SpaceName;
 
 /// Request to create a new space (repository) by local name.
 ///
-/// Asserted transiently when the user creates a space: the handler
+/// Asserted transiently when the user submits the Add Space form (a
+/// `<form onsubmit=space/create>` defined in `profile.yaml`). The
+/// notation event layer reads `name` from the form's
+/// `elements.name.value` and POSTs the transient claim; the handler
 /// records the replica (`status: blank`) so the Hub shows it
 /// installing, then creates the repository, seeds the standard library,
-/// and flips the status to `initialized`. Replaces the direct
-/// `PUT /api/repository/{name}` call — the button asserts this command
-/// and the handler does the rest.
+/// and flips the status to `initialized`.
+///
+/// `name`'s attribute is a `dom.event.*` read-path so the same concept
+/// the form asserts is the one the worker handler decodes — see
+/// [`crate::domain::command::Value`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CreateSpace {
-    /// The command entity (a fresh id per invocation).
+    /// The command entity (a fresh id per invocation, derived by the
+    /// worker from the predicate + payload).
     pub this: Entity,
-    /// Local name for the new space, used in its `/space/{name}` URL.
+    /// Local name for the new space, read from the form's `name` input.
     pub name: SpaceName,
-}
-
-impl CreateSpace {
-    /// A `CreateSpace` command for the given entity and name.
-    pub fn new(this: Entity, name: impl Into<String>) -> Self {
-        Self {
-            this,
-            name: SpaceName(name.into()),
-        }
-    }
-
-    /// Build a [`TransactRequest`] that asserts this command
-    /// *transiently* — the shape the UI POSTs to `/transact` to fire
-    /// the command. `this` is omitted from the parameters so the worker
-    /// derives a fresh command entity from the predicate + payload (one
-    /// invocation per request).
-    ///
-    /// The descriptor is wrapped [`Transient`](ClaimConceptDescriptor::Transient)
-    /// so the reactor buckets it as a command: it triggers the handler
-    /// and is swept from durable storage at the same commit.
-    pub fn into_request(name: impl Into<String>) -> TransactRequest {
-        let descriptor =
-            dialog_query::ConceptDescriptor::from(<Self as Predicate>::Application::default());
-        let mut parameters = ValueMap::new();
-        parameters.insert("name".into(), Value::String(name.into()));
-        TransactRequest {
-            claims: vec![Claim::Assert(PredicateApplication {
-                predicate: ClaimConceptDescriptor::Transient(descriptor),
-                parameters,
-                name: None,
-            })],
-        }
-    }
 }

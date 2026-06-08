@@ -59,11 +59,20 @@ pub mod replica {
 pub mod command {
     use super::Attribute;
 
-    /// The local name a [`CreateSpace`](crate::command::CreateSpace)
-    /// command requests for the new space.
+    /// The space name read from the Add Space form's submit event:
+    /// `event.currentTarget.elements.name.value` (the `<wa-input
+    /// name="name">` inside the `<form onsubmit=space/create>`).
+    ///
+    /// The `the:` is a `dom.event.*` read-path so the notation event
+    /// layer populates it from the form on submit. The handler decodes
+    /// the command by this same attribute — form source and handler
+    /// decode agree on one attribute. Written kebab-case
+    /// (`current-target`); the event layer converts to `currentTarget`
+    /// at read time. The struct is named `Value` because the attribute
+    /// is `…elements.name/value` (domain + `/value`).
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.command")]
-    pub struct SpaceName(pub String);
+    #[domain("dom.event.current-target.elements.name")]
+    pub struct Value(pub String);
 }
 
 /// Attributes that live on [`Branch`] entities (and

@@ -78,10 +78,5 @@ pub use r#async::*;
 mod reactor;
 pub use reactor::*;
 
-/// Command concepts and the transient-request builder the UI uses to
-/// fire them (e.g. the "New space" button asserts a [`CreateSpace`]).
-pub use tonk_schema::claim::TransactRequest;
-pub use tonk_schema::command::CreateSpace;
-
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;
