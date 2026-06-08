@@ -328,6 +328,159 @@ tonk-repository.display-route,
     flex-direction: column;
     gap: var(--wa-space-s);
 }
+/* The default-service button (`<tonk-default-remote>` renders this) in
+   the workspace topbar's enable-sync form — fills the URL field with
+   this server. In the global stylesheet so it is theme-consistent
+   wherever the element is used. A quiet inline button. */
+.workspace__default-remote {
+    align-self: flex-start;
+    padding: var(--wa-space-2xs) var(--wa-space-s);
+    font: inherit;
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-text-quiet);
+    background: transparent;
+    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-s);
+    cursor: pointer;
+}
+.workspace__default-remote:hover {
+    color: var(--wa-color-text-normal);
+    background: var(--wa-color-neutral-fill-quiet);
+}
+
+/* Space topbar chrome. Hoisted out of the per-instance workspace view so
+   it renders on every space — including empty ones with no workspace
+   instance — at the space (directory) level. The `<tonk-repo-name>`,
+   `<tonk-sync-state>`, `<tonk-sync-toggle>`, and `<tonk-share>` elements
+   render into these classes and resolve their repo from the
+   `<tonk-repository>` route ancestor, so the bar works wherever it sits.
+   In the global stylesheet because the directory view that hosts the bar
+   always renders, while the per-instance view's <style> does not. */
+.workspace__topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-m);
+    flex: none;
+    height: 52px;
+    padding: 0 var(--wa-space-l);
+    background: var(--wa-color-surface-raised);
+    border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    font-size: var(--wa-font-size-m);
+}
+.workspace__brand {
+    font-weight: var(--wa-font-weight-bold);
+}
+.workspace__crumb {
+    color: var(--wa-color-text-quiet);
+    font-family: var(--wa-font-family-code);
+    font-size: var(--wa-font-size-s);
+}
+.workspace__title {
+    font-weight: var(--wa-font-weight-semibold);
+}
+/* The live sync chip (`<tonk-sync-state>` renders this span with one
+   `is-*` modifier). Layout on the base class, colour on the modifier. */
+.workspace__sync {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+    padding: var(--wa-space-3xs) var(--wa-space-s);
+    font-size: var(--wa-font-size-s);
+    border-radius: var(--wa-border-radius-s);
+}
+.workspace__sync::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+}
+.workspace__sync.is-synced {
+    color: var(--wa-color-success-on-quiet);
+    background: var(--wa-color-success-fill-quiet);
+}
+.workspace__sync.is-synced::before {
+    background: var(--wa-color-success-fill-loud);
+}
+.workspace__sync.is-ahead,
+.workspace__sync.is-behind {
+    color: var(--wa-color-warning-on-quiet);
+    background: var(--wa-color-warning-fill-quiet);
+}
+.workspace__sync.is-ahead::before,
+.workspace__sync.is-behind::before {
+    background: var(--wa-color-warning-fill-loud);
+}
+.workspace__sync.is-diverged {
+    color: var(--wa-color-danger-on-quiet);
+    background: var(--wa-color-danger-fill-quiet);
+}
+.workspace__sync.is-diverged::before {
+    background: var(--wa-color-danger-fill-loud);
+}
+.workspace__spacer {
+    flex: 1;
+}
+.workspace__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-m);
+    color: var(--wa-color-text-quiet);
+}
+/* The share (`<tonk-share>`) and pause/resume (`<tonk-sync-toggle>`)
+   controls: icon-only ghost buttons that brighten on hover. */
+.workspace__share,
+.workspace__sync-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    flex: none;
+    color: inherit;
+    background: transparent;
+    border: none;
+    border-radius: var(--wa-border-radius-s);
+    cursor: pointer;
+}
+.workspace__share:hover,
+.workspace__sync-toggle:hover {
+    color: var(--wa-color-text-normal);
+    background: var(--wa-color-neutral-fill-quiet);
+}
+.workspace__share-glyph,
+.workspace__sync-toggle-glyph {
+    width: 18px;
+    height: 18px;
+}
+/* The enable-sync trigger (`<tonk-sync-state>` renders this in place of
+   the chip when the branch has no upstream). A small "turn sync on" pill
+   sitting where the status chip otherwise would. */
+.workspace__enable-sync {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+    padding: var(--wa-space-3xs) var(--wa-space-s);
+    font: inherit;
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-brand-on-quiet);
+    background: var(--wa-color-brand-fill-quiet);
+    border: none;
+    border-radius: var(--wa-border-radius-s);
+    cursor: pointer;
+}
+.workspace__enable-sync:hover {
+    background: var(--wa-color-brand-fill-normal);
+}
+/* The enable-sync dialog's form: a vertical stack of the URL field and
+   the default-service button. */
+.workspace__sync-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-s);
+}
 /* Opt out of the global heading highlight-cover (the dark filled box):
    the Hub title is a plain heading like the mock. */
 .hub-title {

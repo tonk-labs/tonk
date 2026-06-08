@@ -64,6 +64,19 @@ command!: &space/create
       description: The space name, read from the form's `name` input on submit
       the: dom.event.current-target.elements.name/value
       as: text
+    remote:
+      description: >
+        Optional sync URL, read from the form's `remote` input. The
+        worker's `CreateSpaceHandler` matches on `name` alone (so this
+        command keeps decoding against an older profile descriptor that
+        lacks this field), and reads `remote` opportunistically: blank
+        creates a local-only space, a URL is attached after creation as
+        the `origin` remote with `main` tracking `origin/main`. The
+        `<tonk-default-remote>` button fills it with this server. Single
+        word `remote` (not `remote-url`) because read-path segments are
+        kebab→camel-cased.
+      the: dom.event.current-target.elements.remote/value
+      as: text
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -102,6 +115,8 @@ view/directory!:
       <wa-dialog id="space-create" label="New space" class="hub-dialog">
         <form id="space-create-form" class="hub-form" onsubmit=space/create>
           <wa-input name="name" label="Space name" placeholder="e.g. pictures" autocomplete="off" autofocus required></wa-input>
+          <wa-input name="remote" label="Sync server (optional)" placeholder="leave blank for a local-only space"></wa-input>
+          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="space-create-form" data-dialog="close">Create</wa-button>

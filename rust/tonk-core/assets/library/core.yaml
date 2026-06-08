@@ -232,6 +232,33 @@ rule!:
     - assert: workspace
       where: { this: ?this, sheet: ?active }
 
+# The Enable-sync command. Submitting the topbar's "Enable sync" form
+# asserts this transient command; the worker's `CreateSpaceHandler`
+# (which serves both this and `space/create`, keyed on the shared `name`
+# attribute) idempotently attaches the remote to the named space — the
+# repo already exists, so the create step no-ops and only the attach
+# runs. `remote` is the URL typed (or the `<tonk-default-remote>` button
+# populated); `name` is the space's local repository name. The workspace
+# concept's `{name}` is a display label, NOT the repo name, so the
+# `<tonk-sync-state>` element (which resolves the repo from its
+# `<tonk-repository>` ancestor) stamps the real name into the form's
+# hidden `name` input on click — the one identifier notation can't read
+# from the event. `prevent-default` stops the page reloading.
+command!: &space/enable-sync
+  description: A request to attach a sync remote to the current space.
+  with:
+    name:
+      description: The space's local repository name, stamped into the hidden `name` input
+      the: dom.event.current-target.elements.name/value
+      as: text
+    remote:
+      description: The sync URL, read from the form's `remote` input on submit
+      the: dom.event.current-target.elements.remote/value
+      as: text
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
 # The workspace view: a top bar over a `<tonk-sheet-binder>`, matching
 # the wireframe's Layout F. The binder takes the workspace's `{sheet}`
 # members (each mounted through its sheet-mount view as a
@@ -607,7 +634,80 @@ view/directory!:
           flex: 1 1 auto;
           min-height: 0;
         }
+
+        /* Launchpad shown while the space has no workspace instance
+           (a freshly created space gets only the scaffold, so its
+           workspace collection is empty). `<tonk-fallback>` reveals
+           itself when the enclosing directory `<tonk-display>` is
+           `data-state="empty"` and hides the moment content lands. */
+        .workspace-launchpad {
+          flex: 1 1 auto;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 0;
+          padding: var(--wa-space-2xl);
+        }
+        .workspace-launchpad[hidden] { display: none; }
+        .workspace-launchpad__inner {
+          max-width: 28rem;
+          text-align: center;
+        }
+        /* Opt out of the global heading highlight-cover (the dark
+           filled box from styles.css `h1..h6`): it isn't theme-aware,
+           so its inverted text vanishes in dark mode. A plain heading
+           in the normal text colour reads correctly in both. Mirrors
+           `.hub-title`. */
+        .workspace-launchpad__title {
+          display: block;
+          margin: 0 0 var(--wa-space-s);
+          padding: 0;
+          background: none;
+          font-family: var(--wa-font-family-heading);
+          font-size: var(--wa-font-size-2xl);
+          font-weight: var(--wa-font-weight-bold);
+          letter-spacing: normal;
+          color: var(--wa-color-text-normal);
+        }
+        .workspace-launchpad__hint {
+          margin: 0;
+          color: var(--wa-color-text-quiet);
+        }
       </style>
+      <div class="workspace__topbar">
+        <span class="workspace__brand">tonk</span>
+        <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
+        <span class="workspace__title"><tonk-repo-name></tonk-repo-name></span>
+        <tonk-sync-state></tonk-sync-state>
+        <span class="workspace__spacer"></span>
+        <span class="workspace__actions">
+          <tonk-share></tonk-share>
+        </span>
+      </div>
+
+      <!-- Enable-sync dialog: shown via the `<tonk-sync-state>` enable
+           trigger on a no-upstream space. That element stamps the
+           resolved repo name into the hidden `name` input on click; the
+           `remote` input + `<tonk-default-remote>` button collect the
+           URL; submit asserts the transient `space/enable-sync` command.
+           Lives in this always-rendered directory view (with the topbar)
+           so sync can be enabled on any space, including an empty one. -->
+      <wa-dialog id="enable-sync" label="Enable sync" class="workspace__sync-dialog">
+        <form id="enable-sync-form" class="workspace__sync-form" onsubmit=space/enable-sync>
+          <input type="hidden" name="name">
+          <wa-input name="remote" label="Sync server" placeholder="https://…" autocomplete="off" autofocus required></wa-input>
+          <tonk-default-remote field="remote">Use this server</tonk-default-remote>
+        </form>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="enable-sync-form" data-dialog="close">Enable</wa-button>
+      </wa-dialog>
+
+      <tonk-fallback class="workspace-launchpad" hidden>
+        <div class="workspace-launchpad__inner">
+          <h1 class="workspace-launchpad__title">This space is empty</h1>
+          <p class="workspace-launchpad__hint">Nothing has been added here yet.</p>
+        </div>
+      </tonk-fallback>
       <tonk-display entity={this} model={dom.host/model} view={dom.host/view} />
     </div>
 

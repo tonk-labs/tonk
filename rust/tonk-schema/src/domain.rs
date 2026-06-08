@@ -73,6 +73,26 @@ pub mod command {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("dom.event.current-target.elements.name")]
     pub struct Value(pub String);
+
+    /// The remote URL read from a space form's submit event:
+    /// `event.currentTarget.elements.remote.value` (the `<wa-input
+    /// name="remote">` inside the create / enable-sync forms).
+    ///
+    /// Single word `remote` (not `remote-url`) deliberately: every
+    /// path segment is kebab→camel-cased at read time, so a hyphen
+    /// would force the input's `name` to be `remoteUrl`. Keeping it one
+    /// word lets the form field and the read-path agree on `remote`.
+    ///
+    /// Optional in practice: an empty input coerces to `""` (the input
+    /// element still resolves, so the field is never *unresolved*), and
+    /// the handler reads `""` as "no remote — local-only".
+    pub mod remote {
+        use super::Attribute;
+
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.remote")]
+        pub struct Value(pub String);
+    }
 }
 
 /// Attributes that live on [`Branch`] entities (and

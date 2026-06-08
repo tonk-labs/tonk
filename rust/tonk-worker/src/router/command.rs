@@ -51,13 +51,25 @@ impl CommandEnv {
 /// Build the registry of supported command *types*. Registration is just
 /// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
 ///
-/// `CreateSpace` is gated to wasm because its provider seeds from a
-/// served asset that only exists in the service-worker scope. Native
-/// builds get an empty registry (tests register their own).
+/// Gated to wasm because the handler does service-worker-scoped IO
+/// (seeding from a served asset, opening a remote branch over the
+/// network). Native builds get an empty registry (tests register their
+/// own).
+///
+/// One custom [`CreateSpaceHandler`] serves both the Hub "New space"
+/// (`space/create`) and topbar "Enable sync" (`space/enable-sync`) forms:
+/// both post the same `name`(+`remote`) shape, the handler keys on the
+/// shared `name` attribute, and it reads the optional remote from the
+/// transient's facts — which a typed `Provider`, receiving only the
+/// decoded command, can't do.
+///
+/// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
 pub fn command_registry() -> CommandRegistry {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        CommandRegistry::new().command::<tonk_schema::command::CreateSpace>()
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
+        registry
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
