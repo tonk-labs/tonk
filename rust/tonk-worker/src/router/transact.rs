@@ -69,26 +69,19 @@ pub async fn transact(
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact repo={}, branch={}", path.repo, path.branch);
-    let (response, dispatch) = {
+    let (response, transients) = {
         let tonk_state = state.write().await;
         let tonk_branch = tonk_state
             .reactor
             .repository(&path.repo)
             .branch(&path.branch);
-        transact_on_branch(
-            &tonk_state,
-            tonk_branch,
-            super::RepoTarget::Named(path.repo.clone()),
-            path.branch.clone(),
-            body,
-        )
-        .await?
+        transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
     // The transient commands (if any) were captured before commit;
     // dispatch them now that the state lock is released, so each
-    // handler's outcome commit can re-acquire it.
-    if let Some(work) = dispatch {
-        super::dispatch(&state, work.repo, work.branch, work.transients).await;
+    // command's `execute` can re-acquire it.
+    if let Some(transients) = transients {
+        super::dispatch(&state, transients).await;
     }
     Ok(response)
 }
@@ -102,39 +95,22 @@ pub async fn transact_profile(
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact profile branch={}", path.branch);
-    let (response, dispatch) = {
+    let (response, transients) = {
         let tonk_state = state.write().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
-        transact_on_branch(
-            &tonk_state,
-            tonk_branch,
-            super::RepoTarget::Profile,
-            path.branch.clone(),
-            body,
-        )
-        .await?
+        transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
-    if let Some(work) = dispatch {
-        super::dispatch(&state, work.repo, work.branch, work.transients).await;
+    if let Some(transients) = transients {
+        super::dispatch(&state, transients).await;
     }
     Ok(response)
-}
-
-/// Captured inputs for post-commit command dispatch: the transient
-/// batch that was committed, and the branch it landed on.
-struct DispatchWork {
-    repo: super::RepoTarget,
-    branch: String,
-    transients: dialog_artifacts::Changes,
 }
 
 async fn transact_on_branch<'a>(
     tonk_state: &'a crate::worker::TonkState,
     tonk_branch: BranchReference<'a>,
-    repo: super::RepoTarget,
-    branch: String,
     body: Bytes,
-) -> Result<(Json<TransactResponse>, Option<DispatchWork>), TonkWorkerError> {
+) -> Result<(Json<TransactResponse>, Option<dialog_artifacts::Changes>), TonkWorkerError> {
     let request: TransactRequest = serde_json::from_slice(&body)
         .map_err(|e| TonkWorkerError::Router(format!("invalid TransactRequest body: {e}")))?;
 
@@ -169,15 +145,7 @@ async fn transact_on_branch<'a>(
     // is the only post-commit view of which commands arrived. Empty →
     // no command dispatch.
     let transients = builder.transients.clone();
-    let dispatch = if transients.is_empty() {
-        None
-    } else {
-        Some(DispatchWork {
-            repo,
-            branch,
-            transients,
-        })
-    };
+    let to_dispatch = (!transients.is_empty()).then_some(transients);
 
     let revision_after = builder
         .commit()
@@ -194,7 +162,7 @@ async fn transact_on_branch<'a>(
                 entities: Default::default(),
             },
         }),
-        dispatch,
+        to_dispatch,
     ))
 }
 

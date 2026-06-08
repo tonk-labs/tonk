@@ -14,38 +14,43 @@ transient concept asserted in a commit, swept before the durable write.
 ## The shape
 
 A command is an ordinary `#[derive(Concept)]` that is *asserted
-transiently*. The transient channel (see effects.md) makes the trigger
-edge-triggered: the fact exists only for the commit that asserted it, so
-the handler fires exactly once and the command leaves no durable trace.
+transiently* and also implements
+[`dialog_capability::Command`](https://github.com/dialog-db/dialog-db)
+(`Input = Self`, `Output = ()`). The transient channel (see effects.md)
+makes the trigger edge-triggered: the fact exists only for the commit
+that asserted it, so the command fires exactly once and leaves no durable
+trace.
 
-A handler is an `async fn` whose parameters declare what it needs, axum
-style:
+What *runs* a command is a `Provider<C>` — there is no handler function.
+The provider is a tonk-owned env, `CommandEnv`, a cheap handle over
+`AppState`:
 
 ```rust
-// pure — no capability
-async fn record(cmd: SomeCommand, tx: Transaction) -> Transaction { … }
+// the command concept (tonk-schema)
+#[derive(Concept)]
+struct CreateSpace { this: Entity, name: SpaceName }
+impl dialog_capability::Command for CreateSpace {
+    type Input = Self;
+    type Output = ();
+}
 
-// needs IO — declares the capability
-async fn create_space(
-    cmd: CreateSpace,
-    State(state): State<AppState>,   // declared capability
-    tx: Transaction,
-) -> Transaction { … }
+// the provider (tonk-worker) — capability + behaviour in one impl
+#[async_trait(?Send)]
+impl Provider<CreateSpace> for CommandEnv {
+    async fn execute(&self, cmd: CreateSpace) {
+        // re-lock through self.state() to reach the operator/reactor,
+        // do the IO, commit outcomes. Self-contained; returns ().
+    }
+}
 ```
 
-- The first parameter is the decoded command (owned).
-- Any `State<…>` parameters are *declared capabilities* — the
-  dispatcher supplies them; a pure handler declares none.
-- `Transaction` is the outcome buffer (the Bevy `Commands` analog): the
-  handler `assert`/`retract`s into it and returns it. The dispatcher
-  commits it to the branch the command arrived on.
-
-The handler's only fact-write path is the returned `Transaction`, and it
-always lands on the command's own branch — so a handler can't "commit
-whatever wherever". (A privileged handler that declares `State<AppState>`
-can still do multi-branch IO through the reactor, e.g. `create_space`
-creating a repo; that is an acknowledged exception, gated today only by
-holding the capability. See "Future direction".)
+A command is *self-contained*: `execute` does its own IO and commits its
+own outcomes through the env. There is no outcome buffer and no
+dispatcher-side commit. Capability is **structural** — a command can run
+only if `CommandEnv: Provider<C>` is implemented, and registering a
+command requires that bound, so an unsupported command won't even
+register. (The runtime UCAN-style gate — the operator actually *holding*
+the capability — layers on top of this later; see "Future direction".)
 
 ## How a command flows
 
@@ -68,14 +73,15 @@ holding the capability. See "Future direction".)
 
 3. **Dispatch.** After the commit and once the state lock is released,
    `router::command::dispatch` runs. It matches the captured transients
-   against the registry, runs each matched handler, and commits each
-   outcome to the command's branch — **concurrently and independently**
-   (one handler's IO or failure doesn't block another).
+   against the registry and calls each matched command's
+   `Provider::execute` on a clone of the `CommandEnv` —
+   **concurrently and independently** (one command's IO or failure
+   doesn't block another).
 
-4. **Outcome.** The handler's `Transaction` commits durably, so UIs
-   react over their subscriptions like any other state change. Errors
-   are facts too: a handler asserts a `Failed`/`status` outcome rather
-   than returning an error.
+4. **Outcome.** The provider commits its own outcomes through the env, so
+   UIs react over their subscriptions like any other state change. Errors
+   are facts too: a provider asserts a `Failed`/`status` outcome rather
+   than surfacing an error.
 
 ## The decode bridge (dynamic → static)
 
@@ -101,15 +107,16 @@ subscription-like, no tiebreak.
    (see [event-handling.md](./event-handling.md) and the kebab-case note
    below).
 
-2. **Write the handler** (`tonk-worker/src/router/…`), an
-   `async fn(C, [State<…>,] Transaction) -> Transaction`. Use the
-   reactor's `State` (`crate::reactor::State`), NOT axum's — both are in
-   scope in router modules, and only the reactor one is a command
-   capability.
+2. **Impl `Command`** for the concept (`Input = Self`, `Output = ()`),
+   and **impl `Provider<C>` for `CommandEnv`** (`tonk-worker`). The
+   `execute` body re-locks through `self.state()` to reach the
+   operator/reactor, does the IO, and commits its outcomes. Use
+   `#[cfg_attr(not(wasm32), async_trait)] #[cfg_attr(wasm32,
+   async_trait(?Send))]` (or plain `?Send` for a wasm-only provider).
 
-3. **Register it** in `router::command_registry()`:
-   `CommandRegistry::new().command(create_space)`. The builder infers
-   the command type and capabilities from the fn signature.
+3. **Register the type** in `router::command_registry()`:
+   `CommandRegistry::new().command::<CreateSpace>()`. This compiles only
+   if `CommandEnv: Provider<CreateSpace>` — the capability gate.
 
 4. **Define the trigger.** For a form/click, add the `command!` to the
    library (the concept must be present on the branch so the view's
@@ -135,22 +142,24 @@ subscription-like, no tiebreak.
 
 ## Transactional caveat (TODO)
 
-Handlers have no read-set isolation. A handler reads durable state via
-`State<…>`, decides an outcome, and that outcome commits later without
-checking that what it read still holds; concurrent handlers can both
-read and write the same state. The goal (marked `TODO(stm)` on
-`dispatch`/`commit_outcome`/`State`) is STM-like optimistic concurrency:
-track the observed revision/read-set and commit-or-conflict, re-running a
-handler whose reads went stale rather than committing on them.
+Commands have no read-set isolation. A provider reads durable state
+through the env, decides, and commits — without checking that what it
+read still holds; concurrent commands in one batch can both read and
+write the same state. The goal (marked `TODO(stm)` on
+`reactor::command::TypedCommand::run` and `dispatch`) is STM-like
+optimistic concurrency: track the observed revision/read-set and
+commit-or-conflict, re-running a command whose reads went stale rather
+than committing on them.
 
-## Future direction — capability-based commands
+## Future direction — runtime capability gating
 
-The handler layer is bespoke today. The intended end state is to express
-commands as `dialog_capability::Command` (or `Effect`) and replace
-handlers with `impl Provider<CreateSpace> for <env>`: the operator's (or
-a tonk command env's) capability set decides whether a command may run,
-which is UCAN-shaped — a command attempted without the capability simply
-isn't provided. The router would then register command *types* and look
-up the provider, rather than registering handler functions. The decode
-bridge and the transient-trigger dispatch above stay; only the "what
-runs" layer changes.
+Commands are already `dialog_capability::Command`s run by a
+`Provider<C>`, so the *compile-time* capability gate is in place: a
+command can't be registered unless the env provides it. The next step is
+the *runtime* UCAN gate — `execute` succeeding only if the operator
+actually **holds** the capability for each action it attempts (create a
+repo, commit to a branch), rather than the env unconditionally doing the
+work. Moving providers from `CommandEnv` toward the operator's own
+capability chain (where orphan rules allow) is the path there. The decode
+bridge and the transient-trigger dispatch stay; only the authorization
+inside `execute` changes.

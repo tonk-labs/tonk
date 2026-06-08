@@ -23,7 +23,8 @@
 use std::collections::HashMap;
 
 use dialog_artifacts::{Artifact, Changes, Entity, Instruction};
-use dialog_common::{ConditionalSend, ConditionalSync};
+use dialog_capability::{Command, Provider};
+use dialog_common::ConditionalSync;
 use dialog_query::concept::Concept;
 use dialog_query::{Application, ConceptDescriptor, Conclusion, Match, Term};
 
@@ -81,14 +82,18 @@ where
     query.realize(source).ok()
 }
 
-/// A transient trigger concept — the `&C` member of a command
-/// handler's query. Supplies the reverse-index keys (its field
-/// attribute names) and a decode from a transient entity's facts.
+/// A transient trigger concept: the command type a [`Provider`] runs.
+/// Supplies the reverse-index keys (its field attribute names) and a
+/// decode from a transient entity's facts.
 ///
 /// Blanket-implemented for any decodable [`Concept`]; the bounds are
 /// exactly what [`decode_concept`] needs, so a plain
-/// `#[derive(Concept)]` is a `Command` with no extra code.
-pub trait Command: Sized {
+/// `#[derive(Concept)]` is `Decode` with no extra code. (Named `Decode`
+/// rather than `Command` to leave that name to
+/// [`dialog_capability::Command`], which a command type also implements.)
+///
+/// [`Provider`]: dialog_capability::Provider
+pub trait Decode: Sized {
     /// Fully-qualified attribute URIs (`domain/name`) of this
     /// trigger's fields. An entity in the transient set is a
     /// candidate when it carries any of these.
@@ -99,7 +104,7 @@ pub trait Command: Sized {
     fn decode(this: Entity, facts: &EntityFacts) -> Option<Self>;
 }
 
-impl<C> Command for C
+impl<C> Decode for C
 where
     C: Concept<Conclusion = C> + Conclusion,
     C::Application: Default + Application<Conclusion = C>,
@@ -118,167 +123,29 @@ where
     }
 }
 
-/// The write side of a command handler — the Bevy `Commands` analog.
-/// A deferred buffer: the handler calls [`Self::assert`] /
-/// [`Self::retract`] as it runs, and the reactor commits the
-/// accumulated [`Changes`] as one durable transaction after the
-/// handler future resolves (step 4). The handler does NOT commit and
-/// can't read back its own writes mid-run.
+/// The environment a command runs against — the [`Provider`] the
+/// dispatcher calls `execute` on. Supplied at dispatch time (the
+/// registry can't bake it in: it lives *inside* the state, an `Arc`
+/// cycle). In practice the worker's `CommandEnv` wrapping `AppState`;
+/// the alias keeps this module from naming the worker type directly.
 ///
-/// Outcomes are durable (so UIs react over their subscriptions); the
-/// transient trigger self-retracts at the originating commit, so a
-/// handler never retracts its own command.
-#[derive(Default)]
-pub struct Transaction {
-    changes: Changes,
-}
+/// [`Provider`]: dialog_capability::Provider
+pub type Env = crate::router::CommandEnv;
 
-impl Transaction {
-    /// An empty outcome buffer.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Buffer an assertion. Accepts anything assertable — typically a
-    /// `#[derive(Concept)]` outcome (`StatusChange`, `Failed`, …),
-    /// which implements [`Statement`](dialog_artifacts::Statement).
-    pub fn assert<S: dialog_artifacts::Statement>(&mut self, claim: S) -> &mut Self {
-        self.changes.assert(claim);
-        self
-    }
-
-    /// Buffer a retraction.
-    pub fn retract<S: dialog_artifacts::Statement>(&mut self, claim: S) -> &mut Self {
-        self.changes.retract(claim);
-        self
-    }
-
-    /// Consume the buffer, yielding the accumulated [`Changes`] for
-    /// the reactor to commit.
-    pub fn into_changes(self) -> Changes {
-        self.changes
-    }
-}
-
-/// A `'static` boxed future yielding the outcome `Changes` (or `None`
-/// if the trigger didn't decode), `Send` only off wasm. `'static` so
-/// the dispatcher can collect these, release the state lock, then await
-/// them — handler IO never runs while a lock is held.
-#[cfg(not(target_arch = "wasm32"))]
-pub type RunFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Changes>> + Send + 'static>>;
-#[cfg(target_arch = "wasm32")]
-pub type RunFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Changes>> + 'static>>;
-
-/// A `'static` future yielding the populated outcome buffer, `Send`
-/// only off wasm — matches the reactor's
+/// A `'static` boxed future for one command's execution, `Send` only
+/// off wasm — matches the reactor's
 /// [`ConditionalSync`](dialog_common::ConditionalSync) convention so a
-/// handler runs on the single-threaded SW executor.
+/// command runs on the single-threaded SW executor. `'static` so the
+/// dispatcher can build it, release the state lock, then await it —
+/// command IO never runs while a lock is held.
 #[cfg(not(target_arch = "wasm32"))]
-pub type HandlerFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Transaction> + Send + 'static>>;
+pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
 #[cfg(target_arch = "wasm32")]
-pub type HandlerFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Transaction> + 'static>>;
+pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>;
 
-/// The source extractors pull their context from — the shared state,
-/// supplied to a handler at dispatch time. Mirrors axum's per-request
-/// state injection: the registry doesn't bake state in (the registry
-/// lives *inside* the state, so it can't hold an `Arc` to itself), so
-/// the dispatcher passes the source when it runs a handler.
-///
-/// `Source` is the worker's [`AppState`](crate::router::AppState) in
-/// practice; the trait keeps this module from depending on it directly.
-pub type Source = crate::router::AppState;
-
-/// Extract `Self` from the shared [`Source`] — the command analog of
-/// axum's `FromRef`/`FromRequestParts`. A handler parameter that is
-/// `FromContext` is a *declared capability*: the handler names what it
-/// needs (`State<AppState>`, …) and the dispatcher provides it from the
-/// source. Pure handlers declare none.
-pub trait FromContext: Sized {
-    /// Pull this value from the source. Cheap — typically an `Arc`
-    /// clone — so the resulting handler future stays `'static`.
-    fn from_context(source: &Source) -> Self;
-}
-
-/// Capability extractor: a cheap handle onto the shared state, named by
-/// `T` (axum's `State<T>`). For now `T = Source`; `FromRef`-style
-/// sub-handle extraction can layer on later without changing handler
-/// signatures. The handler reaches the operator/reactor by re-locking
-/// through this handle when it needs them — declared in the signature,
-/// not handed wholesale.
-///
-/// TODO(stm): reads through `State<T>` are not tracked, so the
-/// dispatcher's outcome commit can't tell whether what the handler read
-/// still holds. The transactional goal is a read-tracking extractor
-/// (e.g. a `Snapshot<C>`/`Current<C>` that records the revision or
-/// datoms it observed) so dispatch can commit-or-conflict against the
-/// handler's read set. See the `TODO(stm)` notes on
-/// `router::command::dispatch`/`commit_outcome`.
-pub struct State<T>(pub T);
-
-impl FromContext for State<Source> {
-    fn from_context(source: &Source) -> Self {
-        State(source.clone())
-    }
-}
-
-/// A typed command handler function: an `async fn` taking the decoded
-/// trigger (owned), zero or more declared-capability extractors, and an
-/// outcome [`Transaction`] to fill (returned).
-///
-/// One blanket impl per extractor arity (axum/bevy style). A handler
-/// with no extractor is a pure transform — no capability — and can only
-/// decide outcomes. A handler that needs IO declares it as a
-/// `FromContext` parameter (e.g. `State<AppState>`); the dispatcher
-/// supplies it from the source. Outcome facts always flow only through
-/// the returned `Transaction`, committed by the dispatcher to the
-/// command's branch — declaring a capability grants IO, never commit
-/// authority.
-///
-/// All values are owned so the future is `'static` and can run detached
-/// past the triggering commit.
-pub trait CommandFn<C, Args>: 'static {
-    /// Run the handler against the dispatch `source`: extract the
-    /// declared capabilities, then invoke the handler with the trigger
-    /// and outcome buffer.
-    fn run(&self, command: C, tx: Transaction, source: &Source) -> HandlerFuture;
-}
-
-// Arity 0: pure transform `async fn(C, Transaction) -> Transaction`.
-impl<C, F, Fut> CommandFn<C, ()> for F
-where
-    F: Fn(C, Transaction) -> Fut + 'static,
-    Fut: std::future::Future<Output = Transaction> + ConditionalSend + 'static,
-    C: 'static,
-{
-    fn run(&self, command: C, tx: Transaction, _source: &Source) -> HandlerFuture {
-        Box::pin(self(command, tx))
-    }
-}
-
-// Arity 1: one declared capability `async fn(C, E1, Transaction) ->
-// Transaction`. The extractor sits between the trigger and the
-// transaction, matching the read-context-then-write shape.
-impl<C, F, Fut, E1> CommandFn<C, (E1,)> for F
-where
-    F: Fn(C, E1, Transaction) -> Fut + 'static,
-    Fut: std::future::Future<Output = Transaction> + ConditionalSend + 'static,
-    C: 'static,
-    E1: FromContext,
-{
-    fn run(&self, command: C, tx: Transaction, source: &Source) -> HandlerFuture {
-        let e1 = E1::from_context(source);
-        Box::pin(self(command, e1, tx))
-    }
-}
-
-/// Dyn-safe handler stored in the [`CommandRegistry`]. One per
-/// registered command. The concrete handler fn and its trigger
-/// concept `C` are erased behind this object; the registry interacts
-/// only through the methods here.
+/// Dyn-safe entry stored in the [`CommandRegistry`]. One per registered
+/// command *type*. The concrete command `C` is erased behind this
+/// object; the registry interacts only through the methods here.
 ///
 /// `ConditionalSync` (Send + Sync off wasm, nothing on wasm) keeps a
 /// `Box<dyn CommandHandler>` — and therefore [`TonkState`] /
@@ -287,29 +154,22 @@ where
 /// [`TonkState`]: crate::worker::TonkState
 /// [`AppState`]: crate::router::AppState
 pub trait CommandHandler: ConditionalSync {
-    /// Attribute names whose presence on a transient entity makes
-    /// this handler a candidate. Drives the reverse index.
+    /// Attribute names whose presence on a transient entity makes this
+    /// command a candidate. Drives the reverse index.
     fn trigger_attributes(&self) -> &[String];
 
     /// Whether `facts` (the asserted artifacts for a single transient
-    /// entity) satisfy this handler's trigger concept — i.e. the `&C`
-    /// member decodes.
+    /// entity) decode as this command.
     fn matches(&self, facts: &EntityFacts) -> bool;
 
-    /// Decode the trigger from `facts`, run the handler against
-    /// `source` (the dispatch-time capability source), and return the
-    /// outcome [`Changes`] for the dispatcher to commit. `None` if the
-    /// facts don't decode (treated as "didn't fire").
-    ///
-    /// The returned future owns the decoded trigger, the outcome
-    /// buffer, and any extracted capabilities, so it is `'static` and
-    /// can run detached past the triggering commit. Crucially this lets
-    /// the dispatcher release the state lock before awaiting it, so
-    /// handler IO never runs under a held lock. The dispatcher drains
-    /// the returned `Changes` into a durable commit on the command's
-    /// branch. Boxed so the trait stays dyn-safe for
-    /// `Box<dyn CommandHandler>` storage.
-    fn run(&self, facts: &EntityFacts, source: &Source) -> RunFuture;
+    /// Decode the command from `facts` and execute it via the
+    /// [`Provider`](dialog_capability::Provider) impl on a clone of
+    /// `env`. The returned future owns the decoded command and the env
+    /// clone, so it is `'static` and can run detached past the
+    /// triggering commit — the dispatcher releases the state lock
+    /// before awaiting it. A no-op future when the facts don't decode.
+    /// Boxed so the trait stays dyn-safe for `Box<dyn CommandHandler>`.
+    fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture;
 }
 
 /// The `of` (entity) shared by a transient entity's facts. Every
@@ -319,39 +179,51 @@ fn facts_entity(facts: &EntityFacts) -> Option<Entity> {
     facts.first().map(|artifact| artifact.of.clone())
 }
 
-/// A handler whose trigger is the typed command concept `C`, running
-/// the captured `async fn` `F` whose declared capabilities are `Args`.
-/// Erases all three behind [`CommandHandler`]: `matches` is the derived
-/// decode of `C`, `trigger_attributes` comes off `C`'s descriptor, and
-/// `run` decodes, extracts the capabilities from the source, then
-/// invokes `F`.
-pub struct TypedHandler<C, Args, F> {
+/// A registry entry for the command type `C`. Holds no handler — the
+/// behaviour is the [`Provider<C>`](dialog_capability::Provider) impl on
+/// [`Env`]. Erases `C` behind [`CommandHandler`]: `matches` is the
+/// derived decode of `C`, `trigger_attributes` comes off `C`'s
+/// descriptor, and `run` decodes then calls `Env::execute`.
+///
+/// A command is registrable iff `Env: Provider<C>` — i.e. the env has
+/// the capability to run it. That bound on [`Self::new`] is the
+/// (compile-time) capability gate; the UCAN-style runtime gate layers on
+/// top of it later.
+pub struct TypedCommand<C> {
     attributes: Vec<String>,
-    handler: F,
-    _command: std::marker::PhantomData<fn() -> (C, Args)>,
+    _command: std::marker::PhantomData<fn() -> C>,
 }
 
-impl<C, Args, F> TypedHandler<C, Args, F>
+impl<C> TypedCommand<C>
 where
-    C: Command,
-    F: CommandFn<C, Args>,
+    C: Decode + Command<Input = C> + 'static,
+    Env: Provider<C>,
 {
-    /// Build a handler for command `C` from the `async fn` to run.
-    /// Caches `C`'s trigger attribute names.
-    pub fn new(handler: F) -> Self {
+    /// Register command `C`, caching its trigger attribute names. The
+    /// `Env: Provider<C>` bound means a command can only be registered
+    /// if the env can execute it.
+    pub fn new() -> Self {
         Self {
             attributes: C::trigger_attributes(),
-            handler,
             _command: std::marker::PhantomData,
         }
     }
 }
 
-impl<C, Args, F> CommandHandler for TypedHandler<C, Args, F>
+impl<C> Default for TypedCommand<C>
 where
-    C: Command,
-    Args: 'static,
-    F: CommandFn<C, Args> + ConditionalSync,
+    C: Decode + Command<Input = C> + 'static,
+    Env: Provider<C>,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<C> CommandHandler for TypedCommand<C>
+where
+    C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
+    Env: Provider<C> + Clone + ConditionalSync + 'static,
 {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
@@ -364,21 +236,15 @@ where
         C::decode(this, facts).is_some()
     }
 
-    fn run(&self, facts: &EntityFacts, source: &Source) -> RunFuture {
-        // Decode the trigger and extract capabilities from the source
-        // synchronously, here, while the caller still holds the lock.
-        // `self.handler.run(...)` returns a `'static` `HandlerFuture`
-        // (it owns the trigger, buffer, and capability clones), so the
-        // future below borrows neither `self` nor `source` — the
-        // dispatcher can drop the lock before awaiting it. `None`
-        // (didn't decode) yields no outcome.
+    fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture {
+        // Decode synchronously here (the caller still holds the lock),
+        // then hand the owned command + an env clone to a `'static`
+        // future so the dispatcher can drop the lock before awaiting.
         let decoded = facts_entity(facts).and_then(|this| C::decode(this, facts));
-        let handler_future =
-            decoded.map(|command| self.handler.run(command, Transaction::new(), source));
+        let env = env.clone();
         Box::pin(async move {
-            match handler_future {
-                Some(future) => Some(future.await.into_changes()),
-                None => None,
+            if let Some(command) = decoded {
+                env.execute(command).await;
             }
         })
     }
@@ -404,22 +270,23 @@ impl CommandRegistry {
         Self::default()
     }
 
-    /// Register a typed handler for command `C`, axum `.route`-style.
-    /// `C` is inferred from the handler's first parameter; declared
-    /// capabilities (`State<…>`) are inferred as `Args`. Chainable.
+    /// Register the command type `C`. Lighter than passing a handler:
+    /// the behaviour is the [`Provider<C>`](dialog_capability::Provider)
+    /// impl on [`Env`], so registration is just the type. The
+    /// `Env: Provider<C>` bound means a command can only be registered if
+    /// the env has the capability to run it. Chainable.
     ///
     /// ```ignore
     /// let registry = CommandRegistry::new()
-    ///     .command(create_repo)   // async fn(CreateRepo, State<AppState>, Transaction) -> Transaction
-    ///     .command(rename_space);
+    ///     .command::<CreateSpace>()   // Env: Provider<CreateSpace>
+    ///     .command::<RenameSpace>();
     /// ```
-    pub fn command<C, Args, F>(mut self, handler: F) -> Self
+    pub fn command<C>(mut self) -> Self
     where
-        C: Command + 'static,
-        Args: 'static,
-        F: CommandFn<C, Args> + ConditionalSync,
+        C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
+        Env: Provider<C> + Clone + ConditionalSync + 'static,
     {
-        self.register(Box::new(TypedHandler::<C, Args, F>::new(handler)));
+        self.register(Box::new(TypedCommand::<C>::new()));
         self
     }
 
@@ -509,12 +376,13 @@ mod tests {
     #![allow(missing_docs)]
 
     use super::*;
-    use dialog_artifacts::Statement;
+    use dialog_artifacts::{Statement, Value};
     use dialog_query::{Attribute, Concept, the};
 
-    // A real command concept: the typed trigger a handler reads
-    // through `&CreateRepo`. Plain derives — no marker trait — so the
-    // blanket `Command` impl (and `TypedHandler`) apply for free.
+    // --- Test command concepts ------------------------------------------
+    // Their `Provider`s live at the router layer; here we test the decode,
+    // grouping, and registry/matching machinery, which needs no env.
+
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.command")]
     pub struct RepoName(pub String);
@@ -525,159 +393,313 @@ mod tests {
         pub name: RepoName,
     }
 
-    /// The attribute `CreateRepo`'s `name` field stores under — the
-    /// `RepoName` attribute's name (snake-cased from its struct name),
-    /// which is what the trigger reverse-index keys on.
-    fn create_repo_name_attr() -> dialog_query::attribute::The {
-        the!("xyz.tonk.command/repo-name")
+    // A two-field command: `name` (text) + `owner` (entity), to cover
+    // multi-field decode and a typed (entity) field.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command")]
+    pub struct Owner(pub Entity);
+
+    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Share {
+        pub this: Entity,
+        pub name: RepoName,
+        pub owner: Owner,
     }
 
-    /// A one-fact transient `CreateRepo{this: of, name}` batch.
+    fn entity(uri: &str) -> Entity {
+        uri.parse().expect("entity URI")
+    }
+
+    /// A one-fact transient `CreateRepo{this: of, name}` batch. The
+    /// attribute is `RepoName`'s name (snake-cased from its struct name),
+    /// which is what the reverse index keys on.
     fn create_repo_transient(of: &str, name: &str) -> Changes {
         let mut changes = Changes::new();
-        create_repo_name_attr()
-            .of(of.parse::<Entity>().expect("entity URI"))
+        the!("xyz.tonk.command/repo-name")
+            .of(entity(of))
             .is(name.to_string())
             .assert(&mut changes);
         changes
     }
 
+    fn noise_fact(changes: &mut Changes, of: &str) {
+        the!("xyz.tonk.unrelated/noise")
+            .of(entity(of))
+            .is("x".to_string())
+            .assert(changes);
+    }
+
+    fn facts_for(changes: Changes) -> (Entity, EntityFacts) {
+        group_by_entity(changes)
+            .into_iter()
+            .next()
+            .expect("one entity")
+    }
+
+    // --- decode ---------------------------------------------------------
+
     #[dialog_common::test]
     fn it_decodes_a_command_from_its_transient_facts() {
-        let changes = create_repo_transient("did:key:zCmd", "pictures");
-        let by_entity = group_by_entity(changes);
-        let (entity, facts) = by_entity.into_iter().next().expect("one entity");
-
+        let (entity, facts) = facts_for(create_repo_transient("did:key:zCmd", "pictures"));
         let decoded = CreateRepo::decode(entity.clone(), &facts).expect("decodes");
         assert_eq!(decoded.this, entity);
         assert_eq!(decoded.name.0, "pictures");
     }
 
     #[dialog_common::test]
-    fn it_does_not_decode_when_a_required_field_is_absent() {
-        // An entity carrying an unrelated attribute (not `name`)
-        // shouldn't decode as a CreateRepo.
+    fn it_decodes_a_multi_field_command() {
+        let owner = entity("did:key:zOwner");
         let mut changes = Changes::new();
-        the!("xyz.tonk.unrelated/noise")
-            .of("did:key:zNoise".parse::<Entity>().expect("entity URI"))
-            .is("x".to_string())
+        the!("xyz.tonk.command/repo-name")
+            .of(entity("did:key:zShare"))
+            .is("pics".to_string())
             .assert(&mut changes);
-        let by_entity = group_by_entity(changes);
-        let (entity, facts) = by_entity.into_iter().next().expect("one entity");
+        the!("xyz.tonk.command/owner")
+            .of(entity("did:key:zShare"))
+            .is(owner.clone())
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
 
+        let decoded = Share::decode(this, &facts).expect("two-field concept decodes");
+        assert_eq!(decoded.name.0, "pics");
+        assert_eq!(decoded.owner.0, owner);
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_decode_when_a_required_field_is_absent() {
+        let mut changes = Changes::new();
+        noise_fact(&mut changes, "did:key:zNoise");
+        let (entity, facts) = facts_for(changes);
         assert!(
             CreateRepo::decode(entity, &facts).is_none(),
             "missing required `name` field should fail to decode"
         );
     }
 
-    // An outcome concept the test handler asserts: `Created{this}`.
-    // Stands in for a real `StatusChange`/`Failed` outcome.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.command")]
-    pub struct CreatedName(pub String);
-
-    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct Created {
-        pub this: Entity,
-        pub name: CreatedName,
-    }
-
-    /// A test handler: on a `CreateRepo`, assert a `Created` outcome
-    /// echoing the requested name. A pure transform — no IO — proving
-    /// the decode → run → outcome path.
-    async fn record_created(command: CreateRepo, mut tx: Transaction) -> Transaction {
-        tx.assert(Created {
-            this: command.this.clone(),
-            name: CreatedName(command.name.0.clone()),
-        });
-        tx
-    }
-
-    /// Build a `TypedHandler` over [`record_created`] (arity-0 `Args`
-    /// — a pure transform, no declared capability).
-    fn created_handler() -> Box<dyn CommandHandler> {
-        Box::new(TypedHandler::<CreateRepo, (), _>::new(record_created))
-    }
-
     #[dialog_common::test]
-    fn it_matches_a_handler_by_its_trigger_concept() {
-        let mut registry = CommandRegistry::new();
-        registry.register(created_handler());
-
-        let changes = create_repo_transient("did:key:zCmd", "pictures");
-        assert_eq!(
-            registry.match_transients(&changes).len(),
-            1,
-            "the CreateRepo trigger should fire once"
-        );
-    }
-
-    #[dialog_common::test]
-    fn it_ignores_a_transient_no_handler_triggers_on() {
-        let mut registry = CommandRegistry::new();
-        registry.register(created_handler());
-
-        let mut changes = Changes::new();
-        the!("xyz.tonk.unrelated/noise")
-            .of("did:key:zNoise".parse::<Entity>().expect("entity URI"))
-            .is("x".to_string())
-            .assert(&mut changes);
+    fn it_does_not_decode_a_partial_multi_field_command() {
+        // `Share` needs name AND owner; only `name` present → no decode.
+        let (this, facts) = facts_for(create_repo_transient("did:key:zShare", "pics"));
         assert!(
-            registry.match_transients(&changes).is_empty(),
-            "an unrelated transient should not fire"
+            Share::decode(this, &facts).is_none(),
+            "a multi-field command missing one field must not decode"
         );
     }
 
     #[dialog_common::test]
-    fn it_fires_every_matching_handler_subscription_style() {
-        // Two handlers on the same command: both fire (commands are
-        // subscription-like, no tiebreak).
-        let mut registry = CommandRegistry::new();
-        registry.register(created_handler());
-        registry.register(created_handler());
+    fn it_does_not_decode_on_a_type_mismatch() {
+        // `Share.owner` is an entity field; give it a string. The
+        // `try_into` in the derived realize fails → no decode.
+        let mut changes = Changes::new();
+        the!("xyz.tonk.command/repo-name")
+            .of(entity("did:key:zBad"))
+            .is("pics".to_string())
+            .assert(&mut changes);
+        the!("xyz.tonk.command/owner")
+            .of(entity("did:key:zBad"))
+            .is("not-an-entity".to_string()) // wrong type for `Owner(Entity)`
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+        assert!(
+            Share::decode(this, &facts).is_none(),
+            "an entity field given a string must fail to decode"
+        );
+    }
 
-        let changes = create_repo_transient("did:key:zCmd", "pictures");
+    #[dialog_common::test]
+    fn it_ignores_unrelated_attributes_when_decoding() {
+        // The command's own fields decode even though the entity carries
+        // an extra, unrelated attribute.
+        let mut changes = create_repo_transient("did:key:zExtra", "pictures");
+        noise_fact(&mut changes, "did:key:zExtra");
+        let (this, facts) = facts_for(changes);
+        let decoded = CreateRepo::decode(this, &facts).expect("decodes despite extra attr");
+        assert_eq!(decoded.name.0, "pictures");
+    }
+
+    #[dialog_common::test]
+    fn it_reports_a_commands_trigger_attributes() {
+        let attrs = CreateRepo::trigger_attributes();
+        assert_eq!(attrs, vec!["xyz.tonk.command/repo-name".to_string()]);
+
+        let mut share = Share::trigger_attributes();
+        share.sort();
         assert_eq!(
-            registry.match_transients(&changes).len(),
+            share,
+            vec![
+                "xyz.tonk.command/owner".to_string(),
+                "xyz.tonk.command/repo-name".to_string(),
+            ]
+        );
+    }
+
+    // --- group_by_entity ------------------------------------------------
+
+    #[dialog_common::test]
+    fn it_groups_facts_of_one_entity_together() {
+        let mut changes = create_repo_transient("did:key:zA", "alpha");
+        noise_fact(&mut changes, "did:key:zA"); // same entity, 2nd fact
+        let by_entity = group_by_entity(changes);
+        assert_eq!(by_entity.len(), 1, "one entity → one group");
+        assert_eq!(
+            by_entity.values().next().unwrap().len(),
             2,
-            "both handlers on the command fire"
+            "both facts land in the group"
         );
     }
 
     #[dialog_common::test]
-    fn it_reports_empty_until_a_handler_is_registered() {
-        let registry = CommandRegistry::new();
-        assert!(registry.is_empty(), "a fresh registry has no handlers");
-    }
-
-    #[dialog_common::test]
-    async fn it_runs_a_pure_handler_and_returns_the_outcome_changes() {
-        // A pure handler (arity-0) ignores the source, so we can run it
-        // directly by invoking the captured fn — the `CommandHandler::run`
-        // path that takes a `Source` is exercised end-to-end at the
-        // router layer where a real `AppState` exists.
-        let by_entity = group_by_entity(create_repo_transient("did:key:zCmd", "pictures"));
-        let (entity, facts) = by_entity.into_iter().next().expect("one entity");
-        let command = CreateRepo::decode(entity, &facts).expect("decodes");
-
-        let tx = record_created(command, Transaction::new()).await;
-        let names: Vec<String> = tx
-            .into_changes()
-            .into_instructions()
-            .into_iter()
-            .filter_map(|inst| match inst {
-                Instruction::Assert(a) | Instruction::Replace(a) => match a.is {
-                    dialog_artifacts::Value::String(s) => Some(s),
-                    _ => None,
-                },
-                Instruction::Retract(_) => None,
-            })
-            .collect();
+    fn it_groups_distinct_entities_separately() {
+        let mut changes = create_repo_transient("did:key:zA", "alpha");
+        noise_fact(&mut changes, "did:key:zB");
         assert_eq!(
-            names,
-            vec!["pictures".to_string()],
-            "handler should have asserted a Created outcome echoing the name"
+            group_by_entity(changes).len(),
+            2,
+            "two distinct entities → two groups"
         );
+    }
+
+    #[dialog_common::test]
+    fn it_groups_an_empty_batch_to_nothing() {
+        assert!(group_by_entity(Changes::new()).is_empty());
+    }
+
+    // --- registry + matching (via a stub handler) -----------------------
+    // A stub `CommandHandler` lets us exercise the reverse-index match and
+    // the "all matches fire" / "candidate but doesn't decode" edges
+    // without a real `Provider` env (which lives at the router layer).
+
+    struct StubHandler {
+        attributes: Vec<String>,
+        // Decode succeeds only when the entity carries this attribute.
+        decode_on: String,
+    }
+
+    impl StubHandler {
+        fn boxed(attribute: &str) -> Box<dyn CommandHandler> {
+            Box::new(StubHandler {
+                attributes: vec![attribute.to_string()],
+                decode_on: attribute.to_string(),
+            })
+        }
+    }
+
+    impl CommandHandler for StubHandler {
+        fn trigger_attributes(&self) -> &[String] {
+            &self.attributes
+        }
+        fn matches(&self, facts: &EntityFacts) -> bool {
+            facts.iter().any(|a| a.the.to_string() == self.decode_on)
+        }
+        fn run(&self, _facts: &EntityFacts, _env: &Env) -> RunFuture {
+            Box::pin(async {})
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_reports_empty_until_a_command_is_registered() {
+        let mut registry = CommandRegistry::new();
+        assert!(registry.is_empty());
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        assert!(!registry.is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_matches_a_registered_command_on_its_trigger() {
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        assert_eq!(fired.len(), 1);
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_match_an_unrelated_transient() {
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let mut changes = Changes::new();
+        noise_fact(&mut changes, "did:key:zNoise");
+        assert!(registry.match_transients(&changes).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_fires_all_matching_commands_subscription_style() {
+        // Two commands registered on the same trigger attribute: BOTH
+        // fire (commands are subscription-like, no tiebreak).
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        assert_eq!(fired.len(), 2, "both commands on the attribute fire");
+    }
+
+    #[dialog_common::test]
+    fn it_drops_a_candidate_whose_trigger_does_not_decode() {
+        // A command keyed on an attribute the entity has, but whose
+        // `matches` (decode) returns false, is a candidate but does NOT
+        // fire. We register a stub keyed on `repo-name` but that only
+        // decodes on `owner`, then submit a `repo-name`-only entity.
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(StubHandler {
+            attributes: vec!["xyz.tonk.command/repo-name".to_string()],
+            decode_on: "xyz.tonk.command/owner".to_string(),
+        }));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        assert!(
+            fired.is_empty(),
+            "a candidate that fails to decode must not fire"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_considers_a_command_once_when_two_of_its_attributes_match() {
+        // A command keyed on two attributes, both present on the entity,
+        // is still considered once (candidate dedup).
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(StubHandler {
+            attributes: vec![
+                "xyz.tonk.command/repo-name".to_string(),
+                "xyz.tonk.command/owner".to_string(),
+            ],
+            decode_on: "xyz.tonk.command/repo-name".to_string(),
+        }));
+        let mut changes = create_repo_transient("did:key:zCmd", "pics");
+        the!("xyz.tonk.command/owner")
+            .of(entity("did:key:zCmd"))
+            .is(entity("did:key:zOwner"))
+            .assert(&mut changes);
+        let fired = registry.match_transients(&changes);
+        assert_eq!(fired.len(), 1, "the command fires once, not per-attribute");
+    }
+
+    #[dialog_common::test]
+    fn it_matches_each_command_entity_in_a_batch() {
+        // Two distinct command entities in one batch each match.
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let mut changes = create_repo_transient("did:key:zA", "alpha");
+        the!("xyz.tonk.command/repo-name")
+            .of(entity("did:key:zB"))
+            .is("beta".to_string())
+            .assert(&mut changes);
+        let fired = registry.match_transients(&changes);
+        assert_eq!(fired.len(), 2, "each command entity fires once");
+    }
+
+    #[dialog_common::test]
+    fn it_hands_each_match_the_full_entity_facts() {
+        // The facts handed to a matched handler are that entity's facts
+        // (so the handler can decode every field).
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        let (_, facts) = &fired[0];
+        let name = facts
+            .iter()
+            .find(|a| a.the.to_string() == "xyz.tonk.command/repo-name")
+            .and_then(|a| match &a.is {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            });
+        assert_eq!(name.as_deref(), Some("pics"));
     }
 }

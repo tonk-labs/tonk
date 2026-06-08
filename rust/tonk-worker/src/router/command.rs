@@ -1,18 +1,15 @@
 //! Command registration and post-commit dispatch.
 //!
-//! [`command_registry`] builds the registry of typed-Rust command
-//! handlers the worker carries on [`TonkState`]. [`dispatch`] runs the
-//! handlers a freshly-committed transient batch triggers, committing
-//! each handler's outcome back to the branch the command arrived on.
+//! [`command_registry`] builds the registry of supported command *types*
+//! the worker carries on [`TonkState`]. [`dispatch`] runs the commands a
+//! freshly-committed transient batch triggers.
 //!
-//! The split honours the sandbox: a handler declares its capability in
-//! its signature (axum-style `State<…>`), so a pure handler
-//! (`async fn(C, Transaction) -> Transaction`) gets nothing, while one
-//! that needs IO names `State<AppState>` and the dispatcher supplies it.
-//! Either way the handler's only fact-write path is the returned
-//! [`Transaction`](crate::reactor::CommandTx); the privileged commit
-//! lives here, in the worker layer, and always targets the command's
-//! own branch — so a handler can never "commit whatever whenever".
+//! A command is a [`dialog_capability::Command`] run by a
+//! [`Provider<C>`](dialog_capability::Provider) — there is no handler
+//! function. The provider is [`CommandEnv`], a cheap handle over
+//! [`AppState`]; registering a command requires `CommandEnv: Provider<C>`,
+//! so capability is a compile-time gate. A command is self-contained: its
+//! `execute` does its own IO and commits its own outcomes through the env.
 //!
 //! [`TonkState`]: crate::worker::TonkState
 
@@ -21,18 +18,46 @@ use dialog_artifacts::Changes;
 use super::AppState;
 use crate::reactor::CommandRegistry;
 
-/// Build the registry of command handlers the worker installs at
-/// startup. Real handlers register here via the chainable
-/// [`command`](CommandRegistry::command) builder.
+/// The environment commands run against — a cheap handle (clone of
+/// [`AppState`]) that implements
+/// [`Provider<C>`](dialog_capability::Provider) for each command `C` the
+/// worker supports. The dispatcher hands a clone to the matched command;
+/// `execute` does the work, reaching the operator/reactor by re-locking
+/// through the `AppState`.
 ///
-/// `create_space` is the SW-scoped repository-creation handler; it's
-/// gated to wasm because seeding fetches a served asset that only
-/// exists in the service-worker scope. Native builds get an empty
-/// registry (tests that exercise dispatch register their own).
+/// Capability is structural: a command runs iff `CommandEnv: Provider<C>`
+/// is implemented. Registering a command requires that bound, so an
+/// unsupported command won't even register. (The runtime UCAN-style gate
+/// — the operator actually *holding* the capability — layers on top of
+/// this later.)
+#[derive(Clone)]
+pub struct CommandEnv {
+    state: AppState,
+}
+
+impl CommandEnv {
+    /// Build the env over a clone of the shared state.
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
+
+    /// Borrow the underlying state — `Provider` impls re-lock through
+    /// this to reach the operator and reactor.
+    pub fn state(&self) -> &AppState {
+        &self.state
+    }
+}
+
+/// Build the registry of supported command *types*. Registration is just
+/// the type — the behaviour is the `Provider<C>` impl on [`CommandEnv`].
+///
+/// `CreateSpace` is gated to wasm because its provider seeds from a
+/// served asset that only exists in the service-worker scope. Native
+/// builds get an empty registry (tests register their own).
 pub fn command_registry() -> CommandRegistry {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        CommandRegistry::new().command(super::repository::create_space)
+        CommandRegistry::new().command::<tonk_schema::command::CreateSpace>()
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
@@ -40,104 +65,49 @@ pub fn command_registry() -> CommandRegistry {
     }
 }
 
-/// Run every command handler the just-committed `transients` triggered,
-/// committing each handler's outcome to the same `(repo, branch)` the
-/// command arrived on.
+/// Run every command the just-committed `transients` triggered.
 ///
 /// Called by a mutation path (e.g. `/transact`) after its commit, with
-/// `AppState` and the branch identity in hand. The transients have
-/// already been swept from durable storage by the commit; we matched
-/// them from the pre-commit buffer, so the trigger fired exactly once.
+/// `AppState` in hand. The transients have already been swept from
+/// durable storage by the commit; we matched them from the pre-commit
+/// buffer, so the trigger fired exactly once.
 ///
-/// Each handler runs and its outcome commits independently and
-/// *concurrently* — handlers don't block one another, and a slow or
-/// failing one doesn't hold up the rest. (Concurrent, not parallel:
-/// they share the single SW task, interleaving at await points.)
+/// Each command's `Provider::execute` runs *concurrently and
+/// independently* — they don't block one another, and a slow or failing
+/// one doesn't hold up the rest. (Concurrent, not parallel: they share
+/// the single SW task, interleaving at await points.) A command is
+/// self-contained: it does its own IO and commits through the
+/// [`CommandEnv`], so there's no outcome buffer to commit here.
 ///
-/// TODO(stm): handlers have no transactional isolation. A handler reads
-/// durable state (via `State<AppState>`), decides an outcome, then the
-/// outcome commits later — but between the read and the commit, another
-/// commit may have changed what it read. The goal is STM-like
-/// optimistic concurrency: record the revision (or the read set) a
-/// handler observed, and on outcome commit verify nothing it read has
-/// changed since; on conflict, re-run the handler against fresh state
-/// (or fail it) rather than committing a decision based on stale reads.
-/// Concurrency (above) makes this sharper: two handlers in the same
-/// batch can read the same state and both commit, with neither seeing
-/// the other's write. Introducing real read-set tracking + compare-and-
-/// commit is a sizeable change; until then, handlers must assume their
-/// reads may be stale at commit time.
-pub async fn dispatch(state: &AppState, repo: RepoTarget, branch: String, transients: Changes) {
-    // Match handlers and build their `'static` run-futures while
-    // holding the read lock — the futures own everything (decoded
-    // trigger, extracted capabilities), so we can drop the lock before
-    // awaiting them. That keeps handler IO from ever running under a
-    // held lock (a handler that extracts `State<AppState>` may re-lock).
+/// TODO(stm): commands have no transactional isolation. A command reads
+/// durable state through the env, decides, and commits — but between the
+/// read and the commit another commit may have changed what it read, and
+/// concurrent commands in the same batch can both read and write the same
+/// state. The goal is STM-like optimistic concurrency: track the observed
+/// revision/read-set and commit-or-conflict, re-running on conflict. See
+/// the `TODO(stm)` notes on `reactor::command::TypedCommand::run`.
+pub async fn dispatch(state: &AppState, transients: Changes) {
+    // Match commands and build their `'static` run-futures while holding
+    // the read lock — each future owns its decoded command and an env
+    // clone, so we can drop the lock before awaiting them. That keeps
+    // command IO from ever running under a held lock (a command re-locks
+    // through its env).
     let run_futures = {
         let tonk = state.read().await;
         if tonk.commands.is_empty() {
             return;
         }
+        let env = CommandEnv::new(state.clone());
         tonk.commands
             .match_transients(&transients)
             .into_iter()
-            .map(|(handler, facts)| handler.run(&facts, state))
+            .map(|(handler, facts)| handler.run(&facts, &env))
             .collect::<Vec<_>>()
     };
 
-    // Drive every (run → commit) chain concurrently. Each chain awaits
-    // its handler, then commits its outcome to the command's branch;
-    // `join_all` interleaves them so independent effects make progress
-    // together rather than strictly in sequence.
-    let chains = run_futures.into_iter().map(|run| async {
-        if let Some(changes) = run.await {
-            commit_outcome(state, &repo, &branch, changes).await;
-        }
-    });
-    futures_util::future::join_all(chains).await;
-}
-
-/// Which repository a command's branch belongs to — the profile
-/// repository, or a named one. Mirrors the reactor's repository
-/// addressing so the outcome commit re-acquires the right branch.
-#[derive(Clone, Debug)]
-pub enum RepoTarget {
-    /// The profile-as-repository (the Hub's meta branch lives here).
-    Profile,
-    /// A named repository.
-    Named(String),
-}
-
-/// Commit one handler's outcome `Changes` to `(repo, branch)` through
-/// the reactor, so the write fans out to subscribers like any other.
-/// Logs and swallows errors: an outcome that fails to commit must not
-/// take down the dispatch loop (the command already succeeded).
-async fn commit_outcome(state: &AppState, repo: &RepoTarget, branch: &str, changes: Changes) {
-    let tonk = state.read().await;
-    let repository = match repo {
-        RepoTarget::Profile => tonk.reactor.profile_repository(),
-        RepoTarget::Named(name) => tonk.reactor.repository(name),
-    };
-
-    // TODO(stm): commit unconditionally — no check that the state the
-    // handler read still holds. The transactional goal is to thread the
-    // handler's observed revision/read-set here and commit conditionally
-    // (compare-and-swap on the branch revision, or per-read conflict
-    // detection), so an outcome derived from stale reads is rejected and
-    // the handler re-runs rather than overwriting a concurrent change.
-    // `Changes` implements `Statement`, so the whole outcome batch
-    // asserts in one call.
-    let result = repository
-        .branch(branch)
-        .transaction()
-        .assert(changes)
-        .commit()
-        .perform(&tonk.operator)
-        .await;
-
-    if let Err(error) = result {
-        tonk_common::log!("[command] outcome commit failed on branch '{branch}': {error}");
-    }
+    // Drive every command concurrently. `join_all` interleaves them so
+    // independent effects make progress together rather than in sequence.
+    futures_util::future::join_all(run_futures).await;
 }
 
 #[cfg(test)]
@@ -145,15 +115,15 @@ mod tests {
     #![allow(missing_docs)]
 
     use super::*;
-    use crate::reactor::{CommandTx, State};
-    use dialog_artifacts::{Changes, Statement};
+    use dialog_artifacts::Statement;
     use dialog_query::{Attribute, Concept, Entity, the};
+    use std::sync::Mutex;
 
-    // A command that declares a capability: it reads `State<AppState>`,
-    // proving a non-pure handler registers and triggers. The handler
-    // body doesn't touch the state here (a real one would re-lock to
-    // reach the operator/reactor) — the point is that declaring the
-    // capability compiles and the dispatcher supplies it.
+    // A test command whose provider RECORDS each invocation's tag, so a
+    // test can observe whether (and with what) `execute` ran. The
+    // provider does no IO, so `run`-level tests don't need a real
+    // service-worker scope — only `dispatch` (which builds a real
+    // `CommandEnv` from `AppState`) is browser-gated.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.command")]
     pub struct PingTag(pub String);
@@ -164,10 +134,28 @@ mod tests {
         pub tag: PingTag,
     }
 
-    async fn handle_ping(ping: Ping, _state: State<AppState>, mut tx: CommandTx) -> CommandTx {
-        // A real handler would use `_state` to do IO; here we just echo.
-        tx.assert(ping);
-        tx
+    impl dialog_capability::Command for Ping {
+        type Input = Self;
+        type Output = ();
+    }
+
+    /// Tags passed to `Ping`'s provider, in invocation order. The `run`
+    /// tests `drain` it; serialized within the single-threaded test run.
+    static PING_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Take and clear the recorded tags. Only the wasm-gated `run` tests
+    /// read it; the provider writes it on every target.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn drain_ping_log() -> Vec<String> {
+        std::mem::take(&mut *PING_LOG.lock().unwrap())
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+    #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+    impl dialog_capability::Provider<Ping> for CommandEnv {
+        async fn execute(&self, command: Ping) {
+            PING_LOG.lock().unwrap().push(command.tag.0);
+        }
     }
 
     fn ping_transient(of: &str, tag: &str) -> Changes {
@@ -181,15 +169,139 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_registers_a_capability_declaring_handler() {
-        // `handle_ping` declares `State<AppState>`; the chainable
-        // builder infers `C = Ping` and `Args = (State<AppState>,)`.
-        let registry = command_registry().command(handle_ping);
+    fn it_registers_a_command_type_by_its_provider() {
+        // `command::<Ping>()` compiles only because `CommandEnv:
+        // Provider<Ping>` — the capability gate. The registered type
+        // matches its trigger.
+        let registry = command_registry().command::<Ping>();
         let changes = ping_transient("did:key:zPing", "hi");
         assert_eq!(
             registry.match_transients(&changes).len(),
             1,
-            "the capability-declaring Ping handler should match its trigger"
+            "the registered Ping command should match its trigger"
         );
+    }
+
+    // The `run` and `dispatch` tests build a real `CommandEnv` from an
+    // `AppState`, which needs the service-worker scope (`test_state`).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    mod run {
+        use super::*;
+        use crate::reactor::{CommandRegistry, EntityFacts};
+        use crate::router::AppState;
+        use crate::router::tests::test_state;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        async fn env() -> (AppState, CommandEnv) {
+            let state: AppState = Arc::new(RwLock::new(test_state().await));
+            let env = CommandEnv::new(state.clone());
+            (state, env)
+        }
+
+        fn one_match<'a>(
+            registry: &'a CommandRegistry,
+            changes: &Changes,
+        ) -> (&'a dyn crate::reactor::CommandHandler, EntityFacts) {
+            let mut fired = registry.match_transients(changes);
+            assert_eq!(fired.len(), 1, "expected exactly one matched command");
+            fired.pop().unwrap()
+        }
+
+        #[dialog_common::test]
+        async fn it_runs_the_provider_with_the_decoded_command() {
+            let _ = drain_ping_log();
+            let (_state, env) = env().await;
+            let registry = CommandRegistry::new().command::<Ping>();
+            let changes = ping_transient("did:key:zPing", "hello");
+
+            let (handler, facts) = one_match(&registry, &changes);
+            handler.run(&facts, &env).await;
+
+            assert_eq!(
+                drain_ping_log(),
+                vec!["hello".to_string()],
+                "the provider should run once with the decoded tag"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_runs_the_provider_for_a_non_decoding_entity_as_a_noop() {
+            // `TypedCommand::run`'s own decode guard: handed an entity's
+            // facts that don't decode as `Ping`, `run` is a no-op (the
+            // provider is never called). We get a handler from a real
+            // match, then run it against unrelated facts directly.
+            let _ = drain_ping_log();
+            let (_state, env) = env().await;
+            let registry = CommandRegistry::new().command::<Ping>();
+            let matched = registry.match_transients(&ping_transient("did:key:zP", "t"));
+            let handler = matched[0].0;
+
+            let unrelated: EntityFacts = {
+                let mut changes = Changes::new();
+                the!("xyz.tonk.unrelated/noise")
+                    .of("did:key:zNoise".parse::<Entity>().unwrap())
+                    .is("x".to_string())
+                    .assert(&mut changes);
+                // One entity → its facts.
+                match changes.into_instructions().into_iter().next().unwrap() {
+                    dialog_artifacts::Instruction::Assert(a)
+                    | dialog_artifacts::Instruction::Replace(a)
+                    | dialog_artifacts::Instruction::Retract(a) => vec![a],
+                }
+            };
+            handler.run(&unrelated, &env).await;
+
+            assert!(
+                drain_ping_log().is_empty(),
+                "a non-decoding entity must not run the provider"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_dispatches_every_matched_command_in_a_batch() {
+            let _ = drain_ping_log();
+            let (state, _env) = env().await;
+            // Install the registry on the state so `dispatch` sees it.
+            {
+                let mut tonk = state.write().await;
+                tonk.commands = CommandRegistry::new().command::<Ping>();
+            }
+
+            // Two distinct Ping entities in one batch → two invocations.
+            let mut changes = ping_transient("did:key:zA", "alpha");
+            the!("xyz.tonk.command/ping-tag")
+                .of("did:key:zB".parse::<Entity>().unwrap())
+                .is("beta".to_string())
+                .assert(&mut changes);
+
+            dispatch(&state, changes).await;
+
+            let mut tags = drain_ping_log();
+            tags.sort();
+            assert_eq!(
+                tags,
+                vec!["alpha".to_string(), "beta".to_string()],
+                "dispatch runs each matched command's provider"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_dispatches_nothing_when_no_command_matches() {
+            let _ = drain_ping_log();
+            let (state, _env) = env().await;
+            {
+                let mut tonk = state.write().await;
+                tonk.commands = CommandRegistry::new().command::<Ping>();
+            }
+            let mut changes = Changes::new();
+            the!("xyz.tonk.unrelated/noise")
+                .of("did:key:zNoise".parse::<Entity>().unwrap())
+                .is("x".to_string())
+                .assert(&mut changes);
+
+            dispatch(&state, changes).await;
+            assert!(drain_ping_log().is_empty());
+        }
     }
 }
