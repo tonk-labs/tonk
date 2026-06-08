@@ -376,11 +376,13 @@ mod tests {
     #![allow(missing_docs)]
 
     use super::*;
-    use dialog_artifacts::Statement;
+    use dialog_artifacts::{Statement, Value};
     use dialog_query::{Attribute, Concept, the};
 
-    // A command concept whose `Provider` lives at the router layer; here
-    // we test only the decode + match machinery, which needs no env.
+    // --- Test command concepts ------------------------------------------
+    // Their `Provider`s live at the router layer; here we test the decode,
+    // grouping, and registry/matching machinery, which needs no env.
+
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.command")]
     pub struct RepoName(pub String);
@@ -391,41 +393,83 @@ mod tests {
         pub name: RepoName,
     }
 
+    // A two-field command: `name` (text) + `owner` (entity), to cover
+    // multi-field decode and a typed (entity) field.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.command")]
+    pub struct Owner(pub Entity);
+
+    #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Share {
+        pub this: Entity,
+        pub name: RepoName,
+        pub owner: Owner,
+    }
+
+    fn entity(uri: &str) -> Entity {
+        uri.parse().expect("entity URI")
+    }
+
     /// A one-fact transient `CreateRepo{this: of, name}` batch. The
     /// attribute is `RepoName`'s name (snake-cased from its struct name),
     /// which is what the reverse index keys on.
     fn create_repo_transient(of: &str, name: &str) -> Changes {
         let mut changes = Changes::new();
         the!("xyz.tonk.command/repo-name")
-            .of(of.parse::<Entity>().expect("entity URI"))
+            .of(entity(of))
             .is(name.to_string())
             .assert(&mut changes);
         changes
     }
 
+    fn noise_fact(changes: &mut Changes, of: &str) {
+        the!("xyz.tonk.unrelated/noise")
+            .of(entity(of))
+            .is("x".to_string())
+            .assert(changes);
+    }
+
+    fn facts_for(changes: Changes) -> (Entity, EntityFacts) {
+        group_by_entity(changes)
+            .into_iter()
+            .next()
+            .expect("one entity")
+    }
+
+    // --- decode ---------------------------------------------------------
+
     #[dialog_common::test]
     fn it_decodes_a_command_from_its_transient_facts() {
-        let changes = create_repo_transient("did:key:zCmd", "pictures");
-        let by_entity = group_by_entity(changes);
-        let (entity, facts) = by_entity.into_iter().next().expect("one entity");
-
+        let (entity, facts) = facts_for(create_repo_transient("did:key:zCmd", "pictures"));
         let decoded = CreateRepo::decode(entity.clone(), &facts).expect("decodes");
         assert_eq!(decoded.this, entity);
         assert_eq!(decoded.name.0, "pictures");
     }
 
     #[dialog_common::test]
-    fn it_does_not_decode_when_a_required_field_is_absent() {
-        // An entity carrying an unrelated attribute (not `name`)
-        // shouldn't decode as a CreateRepo.
+    fn it_decodes_a_multi_field_command() {
+        let owner = entity("did:key:zOwner");
         let mut changes = Changes::new();
-        the!("xyz.tonk.unrelated/noise")
-            .of("did:key:zNoise".parse::<Entity>().expect("entity URI"))
-            .is("x".to_string())
+        the!("xyz.tonk.command/repo-name")
+            .of(entity("did:key:zShare"))
+            .is("pics".to_string())
             .assert(&mut changes);
-        let by_entity = group_by_entity(changes);
-        let (entity, facts) = by_entity.into_iter().next().expect("one entity");
+        the!("xyz.tonk.command/owner")
+            .of(entity("did:key:zShare"))
+            .is(owner.clone())
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
 
+        let decoded = Share::decode(this, &facts).expect("two-field concept decodes");
+        assert_eq!(decoded.name.0, "pics");
+        assert_eq!(decoded.owner.0, owner);
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_decode_when_a_required_field_is_absent() {
+        let mut changes = Changes::new();
+        noise_fact(&mut changes, "did:key:zNoise");
+        let (entity, facts) = facts_for(changes);
         assert!(
             CreateRepo::decode(entity, &facts).is_none(),
             "missing required `name` field should fail to decode"
@@ -433,15 +477,229 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_groups_transients_by_entity() {
-        // Two facts on one entity group together; an unrelated entity is
-        // its own group.
-        let mut changes = create_repo_transient("did:key:zA", "alpha");
-        the!("xyz.tonk.unrelated/noise")
-            .of("did:key:zB".parse::<Entity>().expect("entity URI"))
-            .is("x".to_string())
+    fn it_does_not_decode_a_partial_multi_field_command() {
+        // `Share` needs name AND owner; only `name` present → no decode.
+        let (this, facts) = facts_for(create_repo_transient("did:key:zShare", "pics"));
+        assert!(
+            Share::decode(this, &facts).is_none(),
+            "a multi-field command missing one field must not decode"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_decode_on_a_type_mismatch() {
+        // `Share.owner` is an entity field; give it a string. The
+        // `try_into` in the derived realize fails → no decode.
+        let mut changes = Changes::new();
+        the!("xyz.tonk.command/repo-name")
+            .of(entity("did:key:zBad"))
+            .is("pics".to_string())
             .assert(&mut changes);
+        the!("xyz.tonk.command/owner")
+            .of(entity("did:key:zBad"))
+            .is("not-an-entity".to_string()) // wrong type for `Owner(Entity)`
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+        assert!(
+            Share::decode(this, &facts).is_none(),
+            "an entity field given a string must fail to decode"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_ignores_unrelated_attributes_when_decoding() {
+        // The command's own fields decode even though the entity carries
+        // an extra, unrelated attribute.
+        let mut changes = create_repo_transient("did:key:zExtra", "pictures");
+        noise_fact(&mut changes, "did:key:zExtra");
+        let (this, facts) = facts_for(changes);
+        let decoded = CreateRepo::decode(this, &facts).expect("decodes despite extra attr");
+        assert_eq!(decoded.name.0, "pictures");
+    }
+
+    #[dialog_common::test]
+    fn it_reports_a_commands_trigger_attributes() {
+        let attrs = CreateRepo::trigger_attributes();
+        assert_eq!(attrs, vec!["xyz.tonk.command/repo-name".to_string()]);
+
+        let mut share = Share::trigger_attributes();
+        share.sort();
+        assert_eq!(
+            share,
+            vec![
+                "xyz.tonk.command/owner".to_string(),
+                "xyz.tonk.command/repo-name".to_string(),
+            ]
+        );
+    }
+
+    // --- group_by_entity ------------------------------------------------
+
+    #[dialog_common::test]
+    fn it_groups_facts_of_one_entity_together() {
+        let mut changes = create_repo_transient("did:key:zA", "alpha");
+        noise_fact(&mut changes, "did:key:zA"); // same entity, 2nd fact
         let by_entity = group_by_entity(changes);
-        assert_eq!(by_entity.len(), 2, "two distinct entities → two groups");
+        assert_eq!(by_entity.len(), 1, "one entity → one group");
+        assert_eq!(
+            by_entity.values().next().unwrap().len(),
+            2,
+            "both facts land in the group"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_groups_distinct_entities_separately() {
+        let mut changes = create_repo_transient("did:key:zA", "alpha");
+        noise_fact(&mut changes, "did:key:zB");
+        assert_eq!(
+            group_by_entity(changes).len(),
+            2,
+            "two distinct entities → two groups"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_groups_an_empty_batch_to_nothing() {
+        assert!(group_by_entity(Changes::new()).is_empty());
+    }
+
+    // --- registry + matching (via a stub handler) -----------------------
+    // A stub `CommandHandler` lets us exercise the reverse-index match and
+    // the "all matches fire" / "candidate but doesn't decode" edges
+    // without a real `Provider` env (which lives at the router layer).
+
+    struct StubHandler {
+        attributes: Vec<String>,
+        // Decode succeeds only when the entity carries this attribute.
+        decode_on: String,
+    }
+
+    impl StubHandler {
+        fn boxed(attribute: &str) -> Box<dyn CommandHandler> {
+            Box::new(StubHandler {
+                attributes: vec![attribute.to_string()],
+                decode_on: attribute.to_string(),
+            })
+        }
+    }
+
+    impl CommandHandler for StubHandler {
+        fn trigger_attributes(&self) -> &[String] {
+            &self.attributes
+        }
+        fn matches(&self, facts: &EntityFacts) -> bool {
+            facts.iter().any(|a| a.the.to_string() == self.decode_on)
+        }
+        fn run(&self, _facts: &EntityFacts, _env: &Env) -> RunFuture {
+            Box::pin(async {})
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_reports_empty_until_a_command_is_registered() {
+        let mut registry = CommandRegistry::new();
+        assert!(registry.is_empty());
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        assert!(!registry.is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_matches_a_registered_command_on_its_trigger() {
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        assert_eq!(fired.len(), 1);
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_match_an_unrelated_transient() {
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let mut changes = Changes::new();
+        noise_fact(&mut changes, "did:key:zNoise");
+        assert!(registry.match_transients(&changes).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_fires_all_matching_commands_subscription_style() {
+        // Two commands registered on the same trigger attribute: BOTH
+        // fire (commands are subscription-like, no tiebreak).
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        assert_eq!(fired.len(), 2, "both commands on the attribute fire");
+    }
+
+    #[dialog_common::test]
+    fn it_drops_a_candidate_whose_trigger_does_not_decode() {
+        // A command keyed on an attribute the entity has, but whose
+        // `matches` (decode) returns false, is a candidate but does NOT
+        // fire. We register a stub keyed on `repo-name` but that only
+        // decodes on `owner`, then submit a `repo-name`-only entity.
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(StubHandler {
+            attributes: vec!["xyz.tonk.command/repo-name".to_string()],
+            decode_on: "xyz.tonk.command/owner".to_string(),
+        }));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        assert!(
+            fired.is_empty(),
+            "a candidate that fails to decode must not fire"
+        );
+    }
+
+    #[dialog_common::test]
+    fn it_considers_a_command_once_when_two_of_its_attributes_match() {
+        // A command keyed on two attributes, both present on the entity,
+        // is still considered once (candidate dedup).
+        let mut registry = CommandRegistry::new();
+        registry.register(Box::new(StubHandler {
+            attributes: vec![
+                "xyz.tonk.command/repo-name".to_string(),
+                "xyz.tonk.command/owner".to_string(),
+            ],
+            decode_on: "xyz.tonk.command/repo-name".to_string(),
+        }));
+        let mut changes = create_repo_transient("did:key:zCmd", "pics");
+        the!("xyz.tonk.command/owner")
+            .of(entity("did:key:zCmd"))
+            .is(entity("did:key:zOwner"))
+            .assert(&mut changes);
+        let fired = registry.match_transients(&changes);
+        assert_eq!(fired.len(), 1, "the command fires once, not per-attribute");
+    }
+
+    #[dialog_common::test]
+    fn it_matches_each_command_entity_in_a_batch() {
+        // Two distinct command entities in one batch each match.
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let mut changes = create_repo_transient("did:key:zA", "alpha");
+        the!("xyz.tonk.command/repo-name")
+            .of(entity("did:key:zB"))
+            .is("beta".to_string())
+            .assert(&mut changes);
+        let fired = registry.match_transients(&changes);
+        assert_eq!(fired.len(), 2, "each command entity fires once");
+    }
+
+    #[dialog_common::test]
+    fn it_hands_each_match_the_full_entity_facts() {
+        // The facts handed to a matched handler are that entity's facts
+        // (so the handler can decode every field).
+        let mut registry = CommandRegistry::new();
+        registry.register(StubHandler::boxed("xyz.tonk.command/repo-name"));
+        let fired = registry.match_transients(&create_repo_transient("did:key:zCmd", "pics"));
+        let (_, facts) = &fired[0];
+        let name = facts
+            .iter()
+            .find(|a| a.the.to_string() == "xyz.tonk.command/repo-name")
+            .and_then(|a| match &a.is {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            });
+        assert_eq!(name.as_deref(), Some("pics"));
     }
 }

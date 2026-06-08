@@ -120,10 +120,13 @@ mod tests {
     use super::*;
     use dialog_artifacts::Statement;
     use dialog_query::{Attribute, Concept, Entity, the};
+    use std::sync::Mutex;
 
-    // A test command + its `Provider` impl on `CommandEnv`, proving the
-    // capability-based registration: `command::<Ping>()` only compiles
-    // because `CommandEnv: Provider<Ping>` is implemented below.
+    // A test command whose provider RECORDS each invocation's tag, so a
+    // test can observe whether (and with what) `execute` ran. The
+    // provider does no IO, so `run`-level tests don't need a real
+    // service-worker scope — only `dispatch` (which builds a real
+    // `CommandEnv` from `AppState`) is browser-gated.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.command")]
     pub struct PingTag(pub String);
@@ -139,12 +142,22 @@ mod tests {
         type Output = ();
     }
 
+    /// Tags passed to `Ping`'s provider, in invocation order. The `run`
+    /// tests `drain` it; serialized within the single-threaded test run.
+    static PING_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Take and clear the recorded tags. Only the wasm-gated `run` tests
+    /// read it; the provider writes it on every target.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn drain_ping_log() -> Vec<String> {
+        std::mem::take(&mut *PING_LOG.lock().unwrap())
+    }
+
     #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
     #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
     impl dialog_capability::Provider<Ping> for CommandEnv {
-        async fn execute(&self, _command: Ping) {
-            // A real provider would use `self.state()` to do IO; this
-            // test only needs the impl to exist so `Ping` is registrable.
+        async fn execute(&self, command: Ping) {
+            PING_LOG.lock().unwrap().push(command.tag.0);
         }
     }
 
@@ -170,5 +183,128 @@ mod tests {
             1,
             "the registered Ping command should match its trigger"
         );
+    }
+
+    // The `run` and `dispatch` tests build a real `CommandEnv` from an
+    // `AppState`, which needs the service-worker scope (`test_state`).
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    mod run {
+        use super::*;
+        use crate::reactor::{CommandRegistry, EntityFacts};
+        use crate::router::AppState;
+        use crate::router::tests::test_state;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+
+        async fn env() -> (AppState, CommandEnv) {
+            let state: AppState = Arc::new(RwLock::new(test_state().await));
+            let env = CommandEnv::new(state.clone());
+            (state, env)
+        }
+
+        fn one_match<'a>(
+            registry: &'a CommandRegistry,
+            changes: &Changes,
+        ) -> (&'a dyn crate::reactor::CommandHandler, EntityFacts) {
+            let mut fired = registry.match_transients(changes);
+            assert_eq!(fired.len(), 1, "expected exactly one matched command");
+            fired.pop().unwrap()
+        }
+
+        #[dialog_common::test]
+        async fn it_runs_the_provider_with_the_decoded_command() {
+            let _ = drain_ping_log();
+            let (_state, env) = env().await;
+            let registry = CommandRegistry::new().command::<Ping>();
+            let changes = ping_transient("did:key:zPing", "hello");
+
+            let (handler, facts) = one_match(&registry, &changes);
+            handler.run(&facts, &env).await;
+
+            assert_eq!(
+                drain_ping_log(),
+                vec!["hello".to_string()],
+                "the provider should run once with the decoded tag"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_runs_the_provider_for_a_non_decoding_entity_as_a_noop() {
+            // `TypedCommand::run`'s own decode guard: handed an entity's
+            // facts that don't decode as `Ping`, `run` is a no-op (the
+            // provider is never called). We get a handler from a real
+            // match, then run it against unrelated facts directly.
+            let _ = drain_ping_log();
+            let (_state, env) = env().await;
+            let registry = CommandRegistry::new().command::<Ping>();
+            let matched = registry.match_transients(&ping_transient("did:key:zP", "t"));
+            let handler = matched[0].0;
+
+            let unrelated: EntityFacts = {
+                let mut changes = Changes::new();
+                the!("xyz.tonk.unrelated/noise")
+                    .of("did:key:zNoise".parse::<Entity>().unwrap())
+                    .is("x".to_string())
+                    .assert(&mut changes);
+                // One entity → its facts.
+                match changes.into_instructions().into_iter().next().unwrap() {
+                    dialog_artifacts::Instruction::Assert(a)
+                    | dialog_artifacts::Instruction::Replace(a)
+                    | dialog_artifacts::Instruction::Retract(a) => vec![a],
+                }
+            };
+            handler.run(&unrelated, &env).await;
+
+            assert!(
+                drain_ping_log().is_empty(),
+                "a non-decoding entity must not run the provider"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_dispatches_every_matched_command_in_a_batch() {
+            let _ = drain_ping_log();
+            let (state, _env) = env().await;
+            // Install the registry on the state so `dispatch` sees it.
+            {
+                let mut tonk = state.write().await;
+                tonk.commands = CommandRegistry::new().command::<Ping>();
+            }
+
+            // Two distinct Ping entities in one batch → two invocations.
+            let mut changes = ping_transient("did:key:zA", "alpha");
+            the!("xyz.tonk.command/ping-tag")
+                .of("did:key:zB".parse::<Entity>().unwrap())
+                .is("beta".to_string())
+                .assert(&mut changes);
+
+            dispatch(&state, changes).await;
+
+            let mut tags = drain_ping_log();
+            tags.sort();
+            assert_eq!(
+                tags,
+                vec!["alpha".to_string(), "beta".to_string()],
+                "dispatch runs each matched command's provider"
+            );
+        }
+
+        #[dialog_common::test]
+        async fn it_dispatches_nothing_when_no_command_matches() {
+            let _ = drain_ping_log();
+            let (state, _env) = env().await;
+            {
+                let mut tonk = state.write().await;
+                tonk.commands = CommandRegistry::new().command::<Ping>();
+            }
+            let mut changes = Changes::new();
+            the!("xyz.tonk.unrelated/noise")
+                .of("did:key:zNoise".parse::<Entity>().unwrap())
+                .is("x".to_string())
+                .assert(&mut changes);
+
+            dispatch(&state, changes).await;
+            assert!(drain_ping_log().is_empty());
+        }
     }
 }
