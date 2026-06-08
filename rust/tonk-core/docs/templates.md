@@ -217,3 +217,47 @@ row's `{this}`/`{title}` resolving to that trip. The same template
 language; the only difference from a detail view is that the frame
 carries many conclusions instead of one, and the template names which
 element repeats.
+
+## Empty directories and the fallback region
+
+A directory can have **zero** instances — a fresh repo before anything
+is created. The chrome/repeat split already covers this: the chrome
+renders once regardless of instance count, and the repeat root simply
+produces no rows. So a directory view stays mounted when empty, showing
+its chrome with an empty body, and reconciles **in place** the moment the
+first instance lands — no reload.
+
+To turn that into a landing page, put a fallback region in the chrome
+(any element that references no subject field, so it is not lifted into
+the repeat) and gate its visibility on the host's lifecycle state.
+`<tonk-display>` reflects that state on itself as `data-state`:
+`loading` while resolving, `empty` when the collection has zero
+instances, `ready` once at least one is rendered. The fallback shows
+under `empty` and the entries show under `ready`:
+
+```yaml
+view/directory!:
+  model: trip
+  directory: |
+    <style>
+      .launchpad { display: none; }
+      tonk-display[data-state="empty"] .launchpad { display: block; }
+      tonk-display[data-state="empty"] .trips    { display: none; }
+    </style>
+    <ul class="trips">
+      <li subject={this}>{title}</li>
+    </ul>
+    <div class="launchpad">
+      <h1>No trips yet</h1>
+      <button onclick=create>Plan one</button>
+    </div>
+```
+
+The `<ul class="trips">` repeat root clones per trip; the
+`<div class="launchpad">` is chrome (no `{this}`/`{field}` reference), so
+it is always present and the stylesheet decides when it shows. On an
+empty repo the host is `data-state="empty"` → the launchpad is visible
+and the (empty) list is hidden. When the first trip lands the host flips
+to `data-state="ready"` → the list shows and the launchpad hides, live,
+because the same mounted view reconciled rather than being torn down and
+rebuilt.

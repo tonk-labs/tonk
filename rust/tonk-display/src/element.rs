@@ -765,13 +765,20 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 
     // Add or replace slides.
     let cached = s.last_frame.clone();
-    let cached_detail = (!cached.is_empty()).then(|| {
+    // Always replay the cached frame to a freshly mounted slide — even
+    // when it is empty — so the slide's chrome (e.g. a fallback region)
+    // renders right away on a cold-empty collection rather than staying
+    // blank until an entity frame that has already passed. The WHOLE
+    // frame is replayed: directory mode has one conclusion per instance,
+    // so a single-conclusion replay would drop every instance but the
+    // first.
+    let cached_detail = {
         let augmented: Vec<Conclusion> = cached
             .iter()
             .map(|c| with_host_attributes(host, c))
             .collect();
         serialize_conclusions(&augmented)
-    });
+    };
     for (name, display) in incoming {
         let existing_matches = s
             .slides
@@ -790,14 +797,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
             let _: Result<Node, _> = parent.remove_child(&slide.item);
         }
         if let Some(new_slide) = mount_view_slide(host, &mut s, &display) {
-            // Replay the cached frame so the new slide renders
-            // immediately rather than waiting for the next entity frame.
-            // The WHOLE frame is replayed — directory mode has one
-            // conclusion per instance, so a single-conclusion replay
-            // would drop every instance but the first.
-            if let Some(detail) = cached_detail.as_ref() {
-                call_render(&new_slide.view_el, detail);
-            }
+            call_render(&new_slide.view_el, &cached_detail);
             s.slides.insert(name, new_slide);
         }
     }
@@ -1176,15 +1176,24 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
         let mut s = state.borrow_mut();
         let directory = s.directory;
         s.last_frame = Vec::new();
-        clear_host(host, &mut s);
-        drop(s);
         // An empty frame means no rows matched. With a specified
         // `entity` (single subject) that is a missing entity — a clear
-        // not-found error. Without `entity` (a collection) it is simply
-        // zero instances, an empty container, which is Empty.
+        // not-found error, so tear the host down. Without `entity` (a
+        // collection) it is simply zero instances: keep the mounted view
+        // and render the empty frame through it, so the template's chrome
+        // (e.g. a fallback region) stays put and the repeat clears its
+        // rows. The same slide then reconciles in place when an instance
+        // later lands — no teardown, no reload.
         if directory {
+            let empty = serialize_conclusions(&[]);
+            for slide in s.slides.values() {
+                call_render(&slide.view_el, &empty);
+            }
+            drop(s);
             state::set(host, State::Empty);
         } else {
+            clear_host(host, &mut s);
+            drop(s);
             fail(
                 host,
                 state,
@@ -1770,6 +1779,117 @@ mod tests {
                 vec!["entity".to_owned(), "view".to_owned()],
                 "inline mode opens both the view and entity subscriptions",
             );
+        }
+
+        // --- Directory mode: empty -> content live flip ---
+        //
+        // Directory mode (no `entity` attribute) resolves only the
+        // subject `model` concept; the built-in directory view predicate
+        // needs no branch lookup, so two query responses suffice: the
+        // model name lookup and the concept row.
+        fn directory_resolve_responses() -> Vec<JsValue> {
+            vec![
+                name_row("did:key:zModel"),
+                rows(&[(
+                    "did:key:zModel",
+                    &[(
+                        "source",
+                        r#"{"with":{"title":{"the":"item/title","as":"Text","cardinality":"one"}}}"#,
+                    )],
+                )]),
+            ]
+        }
+
+        fn mount_directory(host: &FakeHost, model: &str) -> Element {
+            register();
+            crate::view::register();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", model).unwrap();
+            host.container.append_child(&display).unwrap();
+            display
+        }
+
+        // A directory collection that goes empty -> one instance must
+        // render the new instance *live*, with no reload. The empty frame
+        // used to tear the mounted view down, so when the first instance
+        // landed there were no slides left to render it and the page
+        // stayed blank until a refresh.
+        #[dialog_common::test]
+        async fn it_renders_an_instance_that_lands_after_an_empty_directory_frame() {
+            let host = FakeHost::install(directory_resolve_responses());
+            let display = mount_directory(&host, "item");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            // The directory view: a per-instance row (`{this}` marks the
+            // repeat) plus a fallback region that is chrome (no subject
+            // reference, so it renders once regardless of instance count).
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[(
+                        "display",
+                        "<div><ul><li data-id={this}>{title}</li></ul><p class=\"fallback\">empty</p></div>",
+                    )],
+                )]),
+            );
+
+            // The collection starts empty.
+            host.push_frame("entity", &rows(&[]));
+
+            // The first instance lands.
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+
+            let row = await_selector(&display, "li[data-id]")
+                .await
+                .expect("an instance landing after an empty frame should render live");
+            assert_eq!(row.text_content().as_deref(), Some("Hello"));
+        }
+
+        // On a cold-empty collection the empty entity frame can arrive
+        // before the view template. The view must still mount and render
+        // its chrome (the fallback region) so the launchpad shows on an
+        // empty repo, rather than staying blank until the first instance.
+        #[dialog_common::test]
+        async fn it_renders_the_fallback_chrome_when_empty_before_the_view_arrives() {
+            let host = FakeHost::install(directory_resolve_responses());
+            let display = mount_directory(&host, "item");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            // The empty collection frame arrives first...
+            host.push_frame("entity", &rows(&[]));
+
+            // ...then the view template.
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[(
+                        "display",
+                        "<div><ul><li data-id={this}>{title}</li></ul><p class=\"fallback\">Nothing yet</p></div>",
+                    )],
+                )]),
+            );
+
+            let fallback = await_selector(&display, "p.fallback")
+                .await
+                .expect("the fallback chrome should render on an empty collection at mount");
+            assert_eq!(fallback.text_content().as_deref(), Some("Nothing yet"));
         }
     }
 }
