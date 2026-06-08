@@ -2500,6 +2500,625 @@ ping!:\n\
         Ok(())
     }
 
+    /// Closing a *background* sheet (one that is not the workspace's
+    /// active sheet) must leave `active` pointing at the same sheet —
+    /// removing a background tab never steals focus.
+    ///
+    /// Mirrors the `core.yaml` workspace model: a `workspace` concept
+    /// (with `active` + `sheet`), the `workspace/active-sheet` and
+    /// `workspace/sheet-member` projections, the transient
+    /// `close-sheet` command, and the two close rules (retract the
+    /// membership; reassign `active` only when the *active* sheet
+    /// closes). The reassign rule is gated on `active: ?sheet`, so a
+    /// background close must not match it.
+    #[dialog_common::test]
+    async fn it_keeps_active_when_a_background_sheet_closes() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Declare the workspace model + close rules, then seed a
+        // workspace owning three sheets with `a` active, asserted at
+        // `about:blank` across multiple statements — mirroring exactly
+        // how core.yaml seeds the demo workspace.
+        let install_doc = r#"
+concept!: &workspace
+  with:
+    name:
+      the: xyz.tonk.workspace/name
+      as: text
+      cardinality: one
+      description: "name"
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/active-sheet
+  with:
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+
+concept!: &workspace/sheet-member
+  with:
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/activate-sheet
+  transient:
+  with:
+    sheet:
+      the: dom.event.detail/sheet
+      as: entity
+      description: "sheet"
+
+concept!: &workspace/close-sheet
+  transient:
+  with:
+    sheet:
+      the: dom.event.detail/closed
+      as: entity
+      description: "sheet"
+    next:
+      the: dom.event.detail/next
+      as: entity
+      description: "next"
+
+rule!:
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/activate-sheet
+      where: { sheet: ?active }
+    - assert: workspace
+      where: { this: ?this, sheet: ?active }
+
+rule!:
+  retract!: workspace/sheet-member
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet }
+    - assert: workspace
+      where: { this: ?this, sheet: ?sheet }
+
+rule!:
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet, next: ?active }
+    - assert: workspace
+      where: { this: ?this, active: ?sheet, sheet: ?active }
+
+workspace!:
+  this: about:blank
+  name: "W"
+  active: did:key:zSheetA
+  sheet: did:key:zSheetA
+
+workspace!:
+  this: about:blank
+  sheet: did:key:zSheetB
+
+workspace!:
+  this: about:blank
+  sheet: did:key:zSheetC
+"#;
+
+        let parsed = parse(install_doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "install parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        let workspace: dialog_artifacts::Entity = "about:blank".parse()?;
+        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
+        let sheet_c: dialog_artifacts::Entity = "did:key:zSheetC".parse()?;
+
+        // Sanity: active is sheet A.
+        let active_before: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/active"))
+                    .of(Term::from(workspace.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert_eq!(
+            active_before.len(),
+            1,
+            "exactly one active before close; saw {active_before:?}"
+        );
+
+        // Submit a transient close-sheet for the BACKGROUND sheet C
+        // (active is A). next = B (C's neighbour, as the binder would
+        // compute). The retract rule should drop C's membership; the
+        // reassign rule must NOT fire (active != C), so active stays A.
+        let close_entity: dialog_artifacts::Entity = "did:key:zCloseBgCmd".parse()?;
+        let mut transients = Changes::new();
+        the!("dom.event.detail/closed")
+            .of(close_entity.clone())
+            .is(sheet_c.clone())
+            .assert(&mut transients);
+        the!("dom.event.detail/next")
+            .of(close_entity.clone())
+            .is(sheet_b.clone())
+            .assert(&mut transients);
+
+        use crate::effects::TransactionExt as _;
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce (close bg): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Sheet C's membership is gone; A and B remain.
+        let members: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/sheet"))
+                    .of(Term::from(workspace.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let member_set: Vec<String> = members.iter().map(|c| format!("{:?}", c.is)).collect();
+        assert!(
+            member_set.iter().any(|m| m.contains("zSheetA")),
+            "sheet A should remain a member; saw {member_set:?}"
+        );
+        assert!(
+            !member_set.iter().any(|m| m.contains("zSheetC")),
+            "sheet C's membership should be retracted; saw {member_set:?}"
+        );
+
+        // Active must still be sheet A — closing a background tab does
+        // not move focus.
+        let active_after: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/active"))
+                    .of(Term::from(workspace.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let active_set: Vec<String> = active_after.iter().map(|c| format!("{:?}", c.is)).collect();
+        assert_eq!(
+            active_set.len(),
+            1,
+            "active must remain cardinality-one; saw {active_set:?}"
+        );
+        assert!(
+            active_set[0].contains("zSheetA"),
+            "background close must keep active on sheet A; saw {active_set:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Closing the *active* sheet moves `active` to the neighbour the
+    /// command carries (`next`). The companion to
+    /// [`it_keeps_active_when_a_background_sheet_closes`]: here the
+    /// reassign rule *must* fire, because the closed sheet is the
+    /// active one. Shares the same workspace model.
+    #[dialog_common::test]
+    async fn it_moves_active_to_the_neighbour_when_the_active_sheet_closes() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let install_doc = r#"
+concept!: &workspace
+  with:
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/active-sheet
+  with:
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+
+concept!: &workspace/sheet-member
+  with:
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/close-sheet
+  transient:
+  with:
+    sheet:
+      the: dom.event.detail/closed
+      as: entity
+      description: "sheet"
+    next:
+      the: dom.event.detail/next
+      as: entity
+      description: "next"
+
+rule!:
+  retract!: workspace/sheet-member
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet }
+    - assert: workspace
+      where: { this: ?this, sheet: ?sheet }
+
+rule!:
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet, next: ?active }
+    - assert: workspace
+      where: { this: ?this, active: ?sheet, sheet: ?active }
+
+workspace!:
+  this: did:key:zCloseActiveWorkspace
+  active: did:key:zSheetA
+  sheet: did:key:zSheetA
+
+workspace!:
+  this: did:key:zCloseActiveWorkspace
+  sheet: did:key:zSheetB
+"#;
+
+        let parsed = parse(install_doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "install parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        let workspace: dialog_artifacts::Entity = "did:key:zCloseActiveWorkspace".parse()?;
+        let sheet_a: dialog_artifacts::Entity = "did:key:zSheetA".parse()?;
+        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
+
+        // Close the ACTIVE sheet A; next = B (its neighbour).
+        let close_entity: dialog_artifacts::Entity = "did:key:zCloseActiveCmd".parse()?;
+        let mut transients = Changes::new();
+        the!("dom.event.detail/closed")
+            .of(close_entity.clone())
+            .is(sheet_a.clone())
+            .assert(&mut transients);
+        the!("dom.event.detail/next")
+            .of(close_entity.clone())
+            .is(sheet_b.clone())
+            .assert(&mut transients);
+
+        use crate::effects::TransactionExt as _;
+        branch
+            .transaction()
+            .integrate(transients.clone())
+            .induce(transients)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce (close active): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Active must now be sheet B (the neighbour).
+        let active_after: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/active"))
+                    .of(Term::from(workspace.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let active_set: Vec<String> = active_after.iter().map(|c| format!("{:?}", c.is)).collect();
+        assert_eq!(
+            active_set.len(),
+            1,
+            "active must remain cardinality-one; saw {active_set:?}"
+        );
+        assert!(
+            active_set[0].contains("zSheetB"),
+            "closing the active sheet must move active to the neighbour B; saw {active_set:?}"
+        );
+
+        Ok(())
+    }
+
+    /// Repro of the live focus bug: seed a workspace, *create* a new
+    /// sheet via the `create-sheet` command (the "Adds new sheet" rule
+    /// re-asserts the whole `workspace` to add it), then close that new
+    /// sheet while a *different* sheet is active. Closing the new
+    /// (background) sheet must not disturb `active`.
+    ///
+    /// Mirrors `core.yaml`: the create-sheet command + its two rules
+    /// (mint the sheet, add it to the workspace) plus the close rules.
+    #[dialog_common::test]
+    async fn it_keeps_active_after_creating_then_closing_a_background_sheet() -> anyhow::Result<()>
+    {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let install_doc = r#"
+concept!: &workspace
+  with:
+    name:
+      the: xyz.tonk.workspace/name
+      as: text
+      cardinality: one
+      description: "name"
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/sheet
+  with:
+    title:
+      the: xyz.tonk.artifact/title
+      as: text
+      cardinality: one
+      description: "title"
+    order:
+      the: xyz.tonk.sheet/order
+      as: text
+      cardinality: one
+      description: "order"
+
+concept!: &workspace/active-sheet
+  with:
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+
+concept!: &workspace/sheet-member
+  with:
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/create-sheet
+  transient:
+  with:
+    name:
+      the: dom.event.detail/name
+      as: text
+      description: "name"
+    order:
+      the: dom.event.detail/order
+      as: text
+      description: "order"
+
+concept!: &workspace/close-sheet
+  transient:
+  with:
+    sheet:
+      the: dom.event.detail/closed
+      as: entity
+      description: "sheet"
+    next:
+      the: dom.event.detail/next
+      as: entity
+      description: "next"
+
+rule!:
+  assert!: workspace/sheet
+  when:
+    - assert: workspace/create-sheet
+      where: { this: ?this, name: ?title, order: ?order }
+
+rule!:
+  assert!: workspace
+  when:
+    - assert: workspace/create-sheet
+      where: { this: ?sheet, name: ?title, order: ?order }
+    - assert: workspace
+      where: { this: ?this, name: ?name, active: ?active }
+
+rule!:
+  retract!: workspace/sheet-member
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet }
+    - assert: workspace
+      where: { this: ?this, sheet: ?sheet }
+
+rule!:
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet, next: ?active }
+    - assert: workspace
+      where: { this: ?this, active: ?sheet, sheet: ?active }
+
+workspace!:
+  this: did:key:zCreateCloseWorkspace
+  name: "W"
+  active: did:key:zSheetA
+  sheet: did:key:zSheetA
+
+workspace!:
+  this: did:key:zCreateCloseWorkspace
+  sheet: did:key:zSheetB
+"#;
+
+        let parsed = parse(install_doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "install parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        let workspace: dialog_artifacts::Entity = "did:key:zCreateCloseWorkspace".parse()?;
+
+        // Fire create-sheet (the new sheet entity = the command entity).
+        let new_sheet: dialog_artifacts::Entity = "did:key:zCreatedSheet".parse()?;
+        let mut create = Changes::new();
+        the!("dom.event.detail/name")
+            .of(new_sheet.clone())
+            .is("New".to_string())
+            .assert(&mut create);
+        the!("dom.event.detail/order")
+            .of(new_sheet.clone())
+            .is("e".to_string())
+            .assert(&mut create);
+
+        use crate::effects::TransactionExt as _;
+        branch
+            .transaction()
+            .integrate(create.clone())
+            .induce(create)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce (create): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // The new sheet is now a member, active is still A.
+        let active_mid: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/active"))
+                    .of(Term::from(workspace.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let active_mid_set: Vec<String> =
+            active_mid.iter().map(|c| format!("{:?}", c.is)).collect();
+        assert_eq!(
+            active_mid_set.len(),
+            1,
+            "after create, exactly one active; saw {active_mid_set:?}"
+        );
+        assert!(
+            active_mid_set[0].contains("zSheetA"),
+            "creating a sheet must not change active; saw {active_mid_set:?}"
+        );
+
+        // Now close the NEW (background) sheet; active is A, next = B.
+        let sheet_b: dialog_artifacts::Entity = "did:key:zSheetB".parse()?;
+        let close_entity: dialog_artifacts::Entity = "did:key:zCreateCloseCmd".parse()?;
+        let mut close = Changes::new();
+        the!("dom.event.detail/closed")
+            .of(close_entity.clone())
+            .is(new_sheet.clone())
+            .assert(&mut close);
+        the!("dom.event.detail/next")
+            .of(close_entity.clone())
+            .is(sheet_b.clone())
+            .assert(&mut close);
+        branch
+            .transaction()
+            .integrate(close.clone())
+            .induce(close)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce (close new): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // Active must STILL be A — closing the new background sheet must
+        // not move focus.
+        let active_after: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/active"))
+                    .of(Term::from(workspace.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let active_set: Vec<String> = active_after.iter().map(|c| format!("{:?}", c.is)).collect();
+        assert_eq!(
+            active_set.len(),
+            1,
+            "active must remain cardinality-one after closing the new sheet; saw {active_set:?}"
+        );
+        assert!(
+            active_set[0].contains("zSheetA"),
+            "closing the new background sheet must keep active on A; saw {active_set:?}"
+        );
+
+        Ok(())
+    }
+
     /// `syntax.analyze(source).perform(env)` standalone — the
     /// first lifecycle entry point used on its own, with no
     /// `compile` or `evaluate` step. Installs a concept on the

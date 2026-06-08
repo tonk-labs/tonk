@@ -259,6 +259,75 @@ command!: &space/enable-sync
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# Tab close. Clicking a tab's close button fires the transient
+# `close-sheet` command. `sheet` is the closed sheet; `next` is the
+# neighbour the binder picked (by tab order) to fall back to when the
+# closed sheet was the active one. The two rules below (a) retract the
+# workspace -> sheet membership so the tab disappears, and (b) move the
+# `active` pointer to `next` if the closed sheet was active.
+command!: &workspace/close-sheet
+  description: A request to remove `sheet` from its workspace.
+  with:
+    sheet:
+      description: |
+        The sheet to close, from the binder's `close` event detail.
+        Carried on a close-specific attribute (`dom.event.detail/closed`),
+        NOT `dom.event.detail/sheet` - the latter is what the
+        `activate-sheet` command reads, so reusing it here would make a
+        close also read as an activate request and select the closed
+        tab.
+      the: dom.event.detail/closed
+      as: entity
+    next:
+      description: The neighbour sheet to activate if the closed one was active
+      the: dom.event.detail/next
+      as: entity
+
+# A minimal projection of one workspace -> sheet membership triple:
+# the workspace (`this`) and one of its `sheet` members, on the same
+# `xyz.tonk.workspace/sheet` attribute the `workspace` concept reads.
+# A `retract!:` rule over this dissociates exactly that one membership
+# (binding only `this` + `sheet`), rather than re-asserting the whole
+# `workspace` concept.
+concept!: &workspace/sheet-member
+  description: One workspace -> sheet membership, as a standalone fact.
+  with:
+    sheet:
+      description: A sheet that is a member of this workspace
+      the: xyz.tonk.workspace/sheet
+      cardinality: many
+      as: entity
+
+# Retract the membership: when `close-sheet` fires, find the workspace
+# owning the closed sheet and dissociate that one `sheet` triple. The
+# sheet's own facts (title/entity/...) persist - only its workspace
+# membership is removed, so it could be re-added later.
+rule!:
+  description: Removes a sheet from its workspace when closed
+  retract!: workspace/sheet-member
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet }
+    - assert: workspace
+      where: { this: ?this, sheet: ?sheet }
+
+# Reassign active: when the closed sheet was the workspace's active
+# one, point `active` at the neighbour the binder supplied. Both the
+# closed sheet (`active: ?sheet`) and the neighbour (`sheet: ?active`)
+# are joined through the workspace's own membership, mirroring the
+# `activate-sheet` rule above - the new `active` is a sheet the
+# workspace actually owns, not just a value carried on the command.
+# The `active: ?sheet` join gates this to the active-sheet case;
+# closing a non-active sheet leaves `active` untouched (no match).
+rule!:
+  description: Moves the active pointer to the neighbour when the active sheet closes
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet, next: ?active }
+    - assert: workspace
+      where: { this: ?this, active: ?sheet, sheet: ?active }
+
 # The workspace view: a top bar over a `<tonk-sheet-binder>`, matching
 # the wireframe's Layout F. The binder takes the workspace's `{sheet}`
 # members (each mounted through its sheet-mount view as a
@@ -575,6 +644,32 @@ view!: &workspace/view
           background: var(--wa-color-brand-fill-loud);
           border-color: var(--wa-color-brand-fill-loud);
         }
+
+        /* The close button the binder appends to each tab. A small
+           `×` glyph after the title, hidden until the tab is hovered
+           (the wireframe's editor-tab behaviour). It brightens to the
+           danger colour on its own hover. */
+        .tonk-sheet-binder__close {
+          width: 16px; height: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex: none;
+          font-size: var(--wa-font-size-m);
+          line-height: 1;
+          color: var(--wa-color-text-quiet);
+          border-radius: var(--wa-border-radius-s);
+          visibility: hidden;
+          cursor: pointer;
+        }
+        .tonk-sheet-binder__tab:hover .tonk-sheet-binder__close,
+        .tonk-sheet-binder__tab.is-active .tonk-sheet-binder__close {
+          visibility: visible;
+        }
+        .tonk-sheet-binder__close:hover {
+          color: var(--wa-color-danger-on-quiet);
+          background: var(--wa-color-danger-fill-quiet);
+        }
       </style>
 
       <div class="workspace__topbar">
@@ -588,7 +683,7 @@ view!: &workspace/view
         </span>
       </div>
 
-      <tonk-sheet-binder class="workspace__binder" active={active} onactivate=workspace/activate-sheet>
+      <tonk-sheet-binder class="workspace__binder" active={active} onactivate=workspace/activate-sheet onclose=workspace/close-sheet>
         <tonk-display entity={sheet} model=tonk:sheet />
       </tonk-sheet-binder>
     </div>
