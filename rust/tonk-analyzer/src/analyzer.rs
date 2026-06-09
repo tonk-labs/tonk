@@ -3809,6 +3809,71 @@ person!:
         );
     }
 
+    /// A field a rule premise omits — or writes as a blank (`_`) —
+    /// lifts to a true `Term::blank()` wildcard, not a named
+    /// anonymous variable. This matters for `unless:` premises:
+    /// negations never bind variables, so the planner treats a named
+    /// variable in a negation as a required-but-unbound binding and
+    /// rejects the rule with `RequiredBindings`. A blank is skipped
+    /// as a wildcard, so the rule compiles.
+    ///
+    /// Regression: a `unless: tonk/binder { this: ?this }` premise
+    /// against a `tonk/binder` concept with an extra `active` field
+    /// (left unmentioned) failed to compile because the omitted
+    /// `active` became `__N`.
+    #[dialog_common::test]
+    async fn it_compiles_a_negation_premise_omitting_a_concept_field() {
+        let specs = [
+            fixed_concept_typed("replica", &[("subject", "dialog.origin/subject", "Entity")]),
+            fixed_concept_typed("binder", &[("active", "xyz.tonk.binder/active", "Entity")]),
+        ];
+
+        // The head `binder`'s `this` is bound by the positive
+        // `replica` premise, `active` by the `==`. The `unless`
+        // negation reads only `this`; its omitted `active` field must
+        // lift to a blank wildcard, not a `__N` variable the planner
+        // would demand be bound.
+        let omitted = must_parse(
+            r#"
+rule!:
+  assert!: binder
+  when:
+    - assert: replica
+      where: { this: ?this }
+    - assert: ==
+      where: { this: ?active, is: about:blank }
+  unless:
+    - assert: binder
+      where: { this: ?this }
+"#,
+        );
+        assert!(
+            analyze_with_concepts(&omitted, &specs).await.is_ok(),
+            "a negation premise omitting a concept field should compile",
+        );
+
+        // Same rule, but `unless` writes `active` as an explicit
+        // blank (`_`) rather than omitting it.
+        let blanked = must_parse(
+            r#"
+rule!:
+  assert!: binder
+  when:
+    - assert: replica
+      where: { this: ?this }
+    - assert: ==
+      where: { this: ?active, is: about:blank }
+  unless:
+    - assert: binder
+      where: { this: ?this, active: _ }
+"#,
+        );
+        assert!(
+            analyze_with_concepts(&blanked, &specs).await.is_ok(),
+            "a negation premise with an explicit `_` field should compile",
+        );
+    }
+
     /// `transient_entities()` returns exactly the concept
     /// entities asserted against a `transient:` concept — the
     /// durable concept's entity is absent.
