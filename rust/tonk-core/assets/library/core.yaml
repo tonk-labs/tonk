@@ -116,6 +116,22 @@ concept!: &artifact
       cardinality: one
       as: entity
 
+# The `empty-artifact` concept: a freshly created, not-yet-configured
+# sheet. It carries only a `title` (the typed name) on the shared
+# `xyz.tonk.artifact/title` attribute, and its view renders the
+# "empty artifact" canvas (a deeplink to hand to an agent, plus
+# instructions). Pinned to `tonk:empty-artifact` so the create rule can
+# point a new sheet's `model` at it by a stable URI.
+concept!: &empty-artifact
+  this: tonk:empty-artifact
+  description: A newly created, not-yet-configured sheet awaiting content.
+  with:
+    title:
+      description: The artifact's name, shown on the empty canvas
+      the: xyz.tonk.artifact/title
+      cardinality: one
+      as: text
+
 # The `workspace` concept: the UI surface below the header. It owns
 # its sheets (cardinality-many). Pinned to `tonk:workspace` so the
 # shell can query a workspace by a stable concept entity.
@@ -258,6 +274,75 @@ command!: &space/enable-sync
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
+
+# Tab close. Clicking a tab's close button fires the transient
+# `close-sheet` command. `sheet` is the closed sheet; `next` is the
+# neighbour the binder picked (by tab order) to fall back to when the
+# closed sheet was the active one. The two rules below (a) retract the
+# workspace -> sheet membership so the tab disappears, and (b) move the
+# `active` pointer to `next` if the closed sheet was active.
+command!: &workspace/close-sheet
+  description: A request to remove `sheet` from its workspace.
+  with:
+    sheet:
+      description: |
+        The sheet to close, from the binder's `close` event detail.
+        Carried on a close-specific attribute (`dom.event.detail/closed`),
+        NOT `dom.event.detail/sheet` - the latter is what the
+        `activate-sheet` command reads, so reusing it here would make a
+        close also read as an activate request and select the closed
+        tab.
+      the: dom.event.detail/closed
+      as: entity
+    next:
+      description: The neighbour sheet to activate if the closed one was active
+      the: dom.event.detail/next
+      as: entity
+
+# A minimal projection of one workspace -> sheet membership triple:
+# the workspace (`this`) and one of its `sheet` members, on the same
+# `xyz.tonk.workspace/sheet` attribute the `workspace` concept reads.
+# A `retract!:` rule over this dissociates exactly that one membership
+# (binding only `this` + `sheet`), rather than re-asserting the whole
+# `workspace` concept.
+concept!: &workspace/sheet-member
+  description: One workspace -> sheet membership, as a standalone fact.
+  with:
+    sheet:
+      description: A sheet that is a member of this workspace
+      the: xyz.tonk.workspace/sheet
+      cardinality: many
+      as: entity
+
+# Retract the membership: when `close-sheet` fires, find the workspace
+# owning the closed sheet and dissociate that one `sheet` triple. The
+# sheet's own facts (title/entity/...) persist - only its workspace
+# membership is removed, so it could be re-added later.
+rule!:
+  description: Removes a sheet from its workspace when closed
+  retract!: workspace/sheet-member
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet }
+    - assert: workspace
+      where: { this: ?this, sheet: ?sheet }
+
+# Reassign active: when the closed sheet was the workspace's active
+# one, point `active` at the neighbour the binder supplied. Both the
+# closed sheet (`active: ?sheet`) and the neighbour (`sheet: ?active`)
+# are joined through the workspace's own membership, mirroring the
+# `activate-sheet` rule above - the new `active` is a sheet the
+# workspace actually owns, not just a value carried on the command.
+# The `active: ?sheet` join gates this to the active-sheet case;
+# closing a non-active sheet leaves `active` untouched (no match).
+rule!:
+  description: Moves the active pointer to the neighbour when the active sheet closes
+  assert!: workspace/active-sheet
+  when:
+    - assert: workspace/close-sheet
+      where: { sheet: ?sheet, next: ?active }
+    - assert: workspace
+      where: { this: ?this, active: ?sheet, sheet: ?active }
 
 # The workspace view: a top bar over a `<tonk-sheet-binder>`, matching
 # the wireframe's Layout F. The binder takes the workspace's `{sheet}`
@@ -575,6 +660,105 @@ view!: &workspace/view
           background: var(--wa-color-brand-fill-loud);
           border-color: var(--wa-color-brand-fill-loud);
         }
+
+        /* The close button the binder appends to each tab. A small
+           `×` glyph after the title, hidden until the tab is hovered
+           (the wireframe's editor-tab behaviour). It brightens to the
+           danger colour on its own hover. */
+        .tonk-sheet-binder__close {
+          width: 16px; height: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          flex: none;
+          font-size: var(--wa-font-size-m);
+          line-height: 1;
+          color: var(--wa-color-text-quiet);
+          border-radius: var(--wa-border-radius-s);
+          visibility: hidden;
+          cursor: pointer;
+        }
+        .tonk-sheet-binder__tab:hover .tonk-sheet-binder__close,
+        .tonk-sheet-binder__tab.is-active .tonk-sheet-binder__close {
+          visibility: visible;
+        }
+        .tonk-sheet-binder__close:hover {
+          color: var(--wa-color-danger-on-quiet);
+          background: var(--wa-color-danger-fill-quiet);
+        }
+
+        /* The "+" add-sheet button the binder appends after the tabs. A
+           dashed-border square that solidifies and brightens on hover,
+           matching the wireframe's `tab-strip__add`. */
+        .tonk-sheet-binder__add {
+          align-self: center;
+          flex: none;
+          margin-left: var(--wa-space-s);
+          width: 28px; height: 28px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          font-size: var(--wa-font-size-l);
+          line-height: 1;
+          color: var(--wa-color-text-quiet);
+          background: transparent;
+          border: var(--wa-border-width-s) dashed var(--wa-color-surface-border);
+          border-radius: var(--wa-border-radius-s);
+          cursor: pointer;
+        }
+        .tonk-sheet-binder__add:hover {
+          color: var(--wa-color-text-normal);
+          border-style: solid;
+          border-color: var(--wa-color-text-normal);
+        }
+
+        /* The inline create form the binder swaps in for the "+" button
+           while naming a new sheet: an underlined name input plus
+           create / esc controls, with a brand-accent top bar like an
+           active tab. */
+        .tonk-sheet-binder__create {
+          align-self: stretch;
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          margin-left: var(--wa-space-s);
+          padding: 0 var(--wa-space-m);
+          border-top: 2px solid var(--wa-color-brand-fill-loud);
+          background: var(--wa-color-surface-default);
+        }
+        .tonk-sheet-binder__create-input {
+          min-width: 160px;
+          padding: var(--wa-space-2xs) 0;
+          font: inherit;
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-normal);
+          background: transparent;
+          border: none;
+          border-bottom: var(--wa-border-width-s) solid var(--wa-color-text-normal);
+          outline: none;
+        }
+        .tonk-sheet-binder__create-input::placeholder { color: var(--wa-color-text-quiet); }
+        .tonk-sheet-binder__create-commit,
+        .tonk-sheet-binder__create-cancel {
+          flex: none;
+          font: inherit;
+          cursor: pointer;
+          border: none;
+          border-radius: var(--wa-border-radius-s);
+          padding: var(--wa-space-2xs) var(--wa-space-s);
+        }
+        .tonk-sheet-binder__create-commit {
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-brand-on-loud);
+          background: var(--wa-color-brand-fill-loud);
+        }
+        .tonk-sheet-binder__create-cancel {
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-xs);
+          color: var(--wa-color-text-quiet);
+          background: transparent;
+        }
+        .tonk-sheet-binder__create-cancel:hover { color: var(--wa-color-text-normal); }
       </style>
 
       <div class="workspace__topbar">
@@ -588,7 +772,7 @@ view!: &workspace/view
         </span>
       </div>
 
-      <tonk-sheet-binder class="workspace__binder" active={active} onactivate=workspace/activate-sheet>
+      <tonk-sheet-binder class="workspace__binder" active={active} onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
         <tonk-display entity={sheet} model=tonk:sheet />
       </tonk-sheet-binder>
     </div>
@@ -718,6 +902,135 @@ view!:
     <tonk-sheet sheet={this} order={order} title={title} subtitle={subtitle} icon={icon}>
       <tonk-display entity={entity} model={model} view={view} />
     </tonk-sheet>
+
+# The empty-artifact canvas: what a freshly created sheet renders until
+# it has real content. Mirrors the wireframe's "empty artifact
+# (terminal)" frame - the artifact name, an agent-link row to hand to an
+# agent, and a short instructional block. Styling uses the app's Web
+# Awesome tokens so it follows the active theme.
+view!:
+  this: tonk:empty-artifact/view
+  model: tonk:empty-artifact
+  display: |
+    <div class="empty-artifact">
+      <style>
+        .empty-artifact {
+          display: flex;
+          flex-direction: column;
+          gap: var(--wa-space-2xl);
+          width: 100%;
+          max-width: 620px;
+          margin: 0 auto;
+          padding: var(--wa-space-3xl) var(--wa-space-2xl);
+          color: var(--wa-color-text-normal);
+          font-family: var(--wa-font-family-body);
+        }
+        /* The artifact name, large and light, with a file glyph. The
+           app stylesheet gives every `h1` an inverted "headline cover"
+           background; override it back to plain text here so the title
+           reads as a heading, not a highlighted block. */
+        .empty-artifact__title {
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          margin: 0;
+          padding: 0;
+          background: transparent;
+          color: var(--wa-color-text-normal);
+          font-family: var(--wa-font-family-body);
+          font-size: var(--wa-font-size-2xl);
+          font-weight: var(--wa-font-weight-normal);
+          letter-spacing: -0.02em;
+        }
+        .empty-artifact__glyph { color: var(--wa-color-text-quiet); flex: none; }
+        /* The agent-link panel: an uppercase mono label over a copy
+           control. `<tonk-invite>` renders the button
+           (`.empty-artifact__share`) with a copy icon + label; clicking
+           it mints a fresh artifact-scoped invite and copies it, swapping
+           the icon to a check on success (like `<wa-copy-button>`). */
+        .empty-artifact__deeplink {
+          display: flex;
+          flex-direction: column;
+          gap: var(--wa-space-xs);
+          align-items: flex-start;
+        }
+        .empty-artifact__deeplink-label {
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-xs);
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--wa-color-text-quiet);
+        }
+        .empty-artifact__share {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          padding: var(--wa-space-s) var(--wa-space-l);
+          font: inherit;
+          font-size: var(--wa-font-size-m);
+          font-weight: var(--wa-font-weight-semibold);
+          color: var(--wa-color-brand-on-loud);
+          background: var(--wa-color-brand-fill-loud);
+          border: none;
+          border-radius: var(--wa-border-radius-m);
+          cursor: pointer;
+        }
+        .empty-artifact__share:hover { background: var(--wa-color-brand-fill-loud); filter: brightness(1.06); }
+        .empty-artifact__share .tonk-invite__icon { font-size: 16px; flex: none; }
+        /* The copy-failed fallback: the link in a bordered field + the
+           native copy control. */
+        .tonk-invite__result {
+          display: flex;
+          align-items: stretch;
+          width: 100%;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          border-radius: var(--wa-border-radius-s);
+          overflow: hidden;
+        }
+        .tonk-invite__url {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          overflow-x: auto;
+          white-space: nowrap;
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-normal);
+          padding: var(--wa-space-s) var(--wa-space-m);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        /* A quoted instructional block with a brand left-accent bar. */
+        .empty-artifact__instr {
+          display: flex;
+          flex-direction: column;
+          gap: var(--wa-space-2xs);
+          padding-left: var(--wa-space-m);
+          border-left: 2px solid var(--wa-color-brand-fill-loud);
+          font-size: var(--wa-font-size-m);
+          line-height: var(--wa-line-height-normal);
+          color: var(--wa-color-text-quiet);
+        }
+        .empty-artifact__instr p { margin: 0; }
+        .empty-artifact__instr b { color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-semibold); }
+      </style>
+      <h1 class="empty-artifact__title">
+        <wa-icon class="empty-artifact__glyph" name="file" variant="regular"></wa-icon>
+        {title}
+      </h1>
+      <section class="empty-artifact__deeplink">
+        <div class="empty-artifact__deeplink-label">agent link &middot; paste into your agent</div>
+        <tonk-invite
+          artifact={this}
+          concept="tonk:artifact"
+          button-class="empty-artifact__share"
+          label="copy"></tonk-invite>
+      </section>
+      <div class="empty-artifact__instr">
+        <p>Paste this link into your agent's chat to start building.</p>
+        <p>The agent will edit <b>{title}</b> directly &mdash; you'll see changes here as they happen.</p>
+      </div>
+    </div>
 
 # ============================================================
 # BOARD
@@ -1096,3 +1409,103 @@ concept!: &space
 name!:
   this: id:tonk/space
   entity: tonk:workspace
+
+command!: &workspace/create-sheet
+  description: Create a new sheet in the workspace
+  with:
+    name:
+      description: Name of the artifact, from the binder's `create` event detail
+      the: dom.event.detail/name
+      as: text
+    order:
+      description: |
+        Lexicographic order key for the new tab, computed by the binder
+        (after the last existing tab) and carried on the `create` event
+        detail.
+      the: dom.event.detail/order
+      as: text
+    # The command entity is derived from its fields, so a per-event
+    # nonce keeps successive creates (same name/order) distinct. The
+    # binder stamps it on the event detail as a whole-number token;
+    # `dom.event/time-stamp` itself is fractional and won't coerce to an
+    # unsigned integer. Not ideal, but it mints unique entities and lets
+    # us switch to a revision-based approach later.
+    time:
+      description: A monotonic integer nonce, from the binder's event detail
+      the: dom.event.detail/time
+      as: unsigned-integer
+
+
+# A created sheet is self-describing: its `entity` is the sheet entity
+# itself (`?this`), its `model` is `tonk:empty-artifact`, and its `view`
+# is the built-in default. The companion rule below asserts the
+# `empty-artifact` title against that same entity, so the empty-artifact
+# canvas can render the sheet's name. `entity: ?this` is expressed as an
+# equality between two variables, which unifies the head's `entity`
+# field with the command's `this`.
+rule!:
+  description: Creates a new workspace sheet
+  assert!: workspace/sheet
+  when:
+    - assert: workspace/create-sheet
+      where:
+        this: ?this
+        name: ?title
+        order: ?order
+    - assert: ==
+      where:
+        this: ?entity
+        is: ?this
+    - assert: ==
+      where:
+        this: ?model
+        is: tonk:empty-artifact
+    - assert: ==
+      where:
+        this: ?view
+        is: tonk:view
+    - assert: ==
+      where:
+        this: ?subtitle
+        is: ""
+    - assert: ==
+      where:
+        this: ?icon
+        is: "blank"
+
+# Give the new sheet entity its empty-artifact title (the typed name),
+# so the empty-artifact view bound to it shows the artifact name.
+rule!:
+  description: Titles the new sheet's empty-artifact entity
+  assert!: empty-artifact
+  when:
+    - assert: workspace/create-sheet
+      where:
+        this: ?this
+        name: ?title
+        order: ?order
+
+rule!:
+  description: Adds new sheet to the workspace and activates it
+  assert!: workspace
+  when:
+    - assert: workspace/create-sheet
+      where:
+        this: ?sheet
+        name: ?title
+        order: ?order
+    - assert: workspace
+      where:
+        this: ?this
+        name: ?name
+    - assert: ==
+      where:
+        this: ?this
+        is: about:blank
+    # Auto-activate the freshly created sheet - creating lands the user
+    # on the new empty artifact (the head's `active` field unifies with
+    # `?sheet`).
+    - assert: ==
+      where:
+        this: ?active
+        is: ?sheet

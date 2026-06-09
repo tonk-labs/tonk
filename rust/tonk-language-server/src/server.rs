@@ -273,11 +273,13 @@ impl Server {
             return head_completions(opened.as_ref()).await;
         }
 
-        // A premise's `assert:` value accepts a concept name or a
-        // built-in formula name — offer both.
+        // A premise's `assert:` value accepts a concept name, a
+        // built-in formula name, or a built-in constraint name —
+        // offer all three.
         if is_premise_assert_position(&line_prefix) {
             let mut out = head_completions(opened.as_ref()).await;
             out.extend(formula_completions_items());
+            out.extend(constraint_completions_items());
             return out;
         }
 
@@ -910,6 +912,27 @@ fn formula_completions_items() -> Vec<CompletionItem> {
         .collect()
 }
 
+/// The built-in constraints (`==`) as completion items for a
+/// premise's `assert:` value. Sourced from the analyzer's
+/// constraint registry so the list never drifts from what the
+/// analyzer accepts.
+fn constraint_completions_items() -> Vec<CompletionItem> {
+    use lsp_types::{CompletionItemKind, Documentation};
+    use tonk_analyzer::analyzer::constraint_completions;
+
+    constraint_completions()
+        .into_iter()
+        .map(|constraint| CompletionItem {
+            label: constraint.name.to_owned(),
+            kind: Some(CompletionItemKind::OPERATOR),
+            detail: Some(constraint.detail.clone()),
+            documentation: Some(Documentation::String(constraint.detail)),
+            insert_text: Some(constraint.name.to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 /// Find the identifier surrounding `col` on a single line. Returns
 /// `(start_col, end_col, name)` widened in both directions over
 /// [`is_symbol_char`]. `None` when the cursor isn't sitting on an
@@ -1452,7 +1475,8 @@ mod tests {
     }
 
     /// In a premise's `assert:` value the completion list carries
-    /// the built-in formulas (`math/sum`, …) alongside concepts.
+    /// the built-in formulas (`math/sum`, …) and constraints (`==`)
+    /// alongside concepts.
     #[dialog_common::test]
     async fn it_offers_formulas_in_premise_assert_position() {
         let mut server = Server::new();
@@ -1499,15 +1523,16 @@ mod tests {
             .iter()
             .map(|i| i["label"].as_str().unwrap_or_default())
             .collect();
-        for formula in [
+        for name in [
             "math/sum",
             "math/difference",
             "boolean/and",
             "text/concatenate",
+            "==",
         ] {
             assert!(
-                labels.contains(&formula),
-                "expected `{formula}` in completion list, got {labels:?}",
+                labels.contains(&name),
+                "expected `{name}` in completion list, got {labels:?}",
             );
         }
     }

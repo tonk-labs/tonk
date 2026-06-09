@@ -37,6 +37,7 @@
 //!   small utilities
 
 mod assertion;
+mod constraint;
 mod declaration;
 mod error;
 mod field;
@@ -60,6 +61,7 @@ use crate::analysis::{
 };
 use tonk_core::claim::ConceptDescriptor;
 
+pub use constraint::{ConstraintCompletion, constraint_completions};
 pub use error::{
     AnalyzeDiagnostic, AnalyzeDiagnosticKind, AnalyzeError, AnalyzeErrorKind, DiagnosticSeverity,
 };

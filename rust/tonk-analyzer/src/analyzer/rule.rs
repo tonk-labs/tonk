@@ -18,6 +18,7 @@
 //! commit step where a branch is available.
 
 use dialog_query::concept::query::ConceptQuery;
+use dialog_query::constraint::Constraint;
 use dialog_query::formula::query::FormulaQuery;
 use dialog_query::premise::Premise as DialogPremise;
 use dialog_query::{InductiveRule, Negation, Parameters, Proposition, Term};
@@ -25,6 +26,7 @@ use tonk_notation::{
     Application as SyntaxApplication, FieldValue, Premise as NotationPremise, Scalar,
 };
 
+use super::constraint::{ConstraintInfo, lookup_constraint};
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::field_value_to_term;
 use super::formula::{FormulaInfo, lookup_formula};
@@ -527,11 +529,11 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
 
 /// Resolve one notation premise into a dialog [`Proposition`].
 ///
-/// A premise head names either a built-in formula (`math/sum`,
-/// `boolean/and`, …) or a concept. Formula names are recognised
-/// first — they're a fixed set that never lives on the branch, so
-/// the registry lookup is authoritative. Anything else resolves
-/// as a concept.
+/// A premise head names a built-in formula (`math/sum`,
+/// `boolean/and`, …), a built-in constraint (`==`), or a concept.
+/// Formulas and constraints are recognised first — they're fixed
+/// sets that never live on the branch, so the registry lookups are
+/// authoritative. Anything else resolves as a concept.
 fn lift_premise(
     premise: &NotationPremise,
     scope: &Scope,
@@ -541,6 +543,10 @@ fn lift_premise(
 
     if let Some(formula) = lookup_formula(name) {
         return lift_formula_premise(premise, formula, scope, analysis);
+    }
+
+    if let Some(constraint) = lookup_constraint(name) {
+        return lift_constraint_premise(premise, constraint, scope, analysis);
     }
 
     let resolved = scope.concept(name).ok_or_else(|| {
@@ -704,6 +710,88 @@ fn lift_formula_premise(
     })?;
 
     Ok(Proposition::Formula(query))
+}
+
+/// Lift a premise whose head names a built-in constraint (`==`)
+/// into a dialog [`Proposition::Constraint`].
+///
+/// A constraint relates the terms it's given — every operand is
+/// required, with nothing to auto-fill (no `this` slot, no
+/// `#[output]` slots). Validation mirrors [`lift_formula_premise`]:
+///
+/// - An operand the user wrote that the constraint doesn't have is
+///   an [`AnalyzeErrorKind::UnknownFormulaOperand`].
+/// - A required operand the user didn't write is a
+///   [`AnalyzeErrorKind::MissingFormulaOperand`].
+///
+/// (The constraint reuses the formula operand diagnostics rather
+/// than minting parallel variants — both are "this premise head's
+/// fixed operand set doesn't match what you wrote.")
+fn lift_constraint_premise(
+    premise: &NotationPremise,
+    constraint: &ConstraintInfo,
+    scope: &Scope,
+    analysis: &Working,
+) -> Result<Proposition, AnalyzeError> {
+    // Reject `where:` operands the constraint doesn't declare.
+    for field in &premise.bindings {
+        if !constraint.operands().any(|operand| operand == field.name) {
+            let mut valid: Vec<&str> = constraint.operands().collect();
+            valid.sort_unstable();
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::UnknownFormulaOperand {
+                    formula: constraint.name.to_owned(),
+                    operand: field.name.clone(),
+                    valid: valid.join(", "),
+                },
+                field.name_range,
+            ));
+        }
+    }
+
+    // Translate every operand the constraint declares. All are
+    // required — a constraint has nothing to compute, so an
+    // unbound operand is an error rather than an anonymous fill.
+    let mut terms = Parameters::new();
+    for operand in constraint.operands() {
+        let term = match premise.bindings.iter().find(|f| f.name == operand) {
+            Some(field) => field_value_to_term(
+                operand,
+                &field.value,
+                field.value_range,
+                scope,
+                analysis,
+                None,
+            )?,
+            None => {
+                return Err(AnalyzeError::at(
+                    AnalyzeErrorKind::MissingFormulaOperand {
+                        formula: constraint.name.to_owned(),
+                        operand: operand.to_owned(),
+                    },
+                    premise.concept.range,
+                ));
+            }
+        };
+        terms.insert(operand.to_string(), term);
+    }
+
+    // Construct the typed `Constraint` through its name-keyed serde
+    // representation: `{"assert": <name>, "where": <terms>}`.
+    // dialog-query owns the constraint↔name mapping, so routing
+    // through serde keeps the analyzer from matching constraint
+    // types by hand.
+    let value = serde_json::json!({ "assert": constraint.name, "where": terms });
+    let constraint_value: Constraint = serde_json::from_value(value).map_err(|e| {
+        AnalyzeError::at(
+            AnalyzeErrorKind::RuleCompileFailed {
+                reason: format!("constraint {:?}: {e}", constraint.name),
+            },
+            premise.concept.range,
+        )
+    })?;
+
+    Ok(Proposition::Constraint(constraint_value))
 }
 
 #[cfg(test)]
@@ -1295,6 +1383,107 @@ rule!:\n\
                     if formula == "math/sum" && operand == "with"
             ),
             "expected MissingFormulaOperand(math/sum, with), got {err:?}"
+        );
+    }
+
+    /// A `rule!:` whose body uses the `==` equality constraint to
+    /// bind a fresh variable to a literal lifts into an effect —
+    /// the empty-artifact shape (fill an unbound head field with a
+    /// constant).
+    #[dialog_common::test]
+    async fn it_lifts_a_rule_with_an_equality_constraint_premise() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("artifact", one_entity_field("io.gozala.artifact", "model"))
+            .await;
+        fixture
+            .declare("request", one_text_field("io.gozala.request", "name"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: artifact
+  when:
+    - assert: request
+      where: { this: ?this, name: ?name }
+    - assert: ==
+      where: { this: ?model, is: about:blank }
+"#;
+        let parsed = parse(doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "unexpected parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("analyze should succeed");
+        assert_eq!(
+            only_installed_effect(&analysis).polarity(),
+            EffectPolarity::Assert
+        );
+    }
+
+    /// A `where:` operand the `==` constraint doesn't have surfaces
+    /// as [`AnalyzeErrorKind::UnknownFormulaOperand`] (constraints
+    /// reuse the formula operand diagnostics).
+    #[dialog_common::test]
+    async fn it_rejects_unknown_constraint_operand() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("artifact", one_entity_field("io.gozala.artifact", "model"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: artifact
+  when:
+    - assert: ==
+      where: { this: ?model, equals: about:blank }
+"#;
+        let parsed = parse(doc);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
+        assert!(
+            matches!(
+                err.kind,
+                AnalyzeErrorKind::UnknownFormulaOperand { ref formula, ref operand, .. }
+                    if formula == "==" && operand == "equals"
+            ),
+            "expected UnknownFormulaOperand(==, equals), got {err:?}"
+        );
+    }
+
+    /// Omitting a required `==` operand surfaces as
+    /// [`AnalyzeErrorKind::MissingFormulaOperand`] — a constraint
+    /// relates the terms it's given, so a missing one is an error
+    /// rather than an anonymous fill.
+    #[dialog_common::test]
+    async fn it_rejects_missing_constraint_operand() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("artifact", one_entity_field("io.gozala.artifact", "model"))
+            .await;
+
+        let doc = r#"
+rule!:
+  assert!: artifact
+  when:
+    - assert: ==
+      where: { this: ?model }
+"#;
+        let parsed = parse(doc);
+        let syntax = parsed.syntax.expect("parsed syntax");
+        let err = fixture.analyze(&syntax).await.expect_err("should fail");
+        assert!(
+            matches!(
+                err.kind,
+                AnalyzeErrorKind::MissingFormulaOperand { ref formula, ref operand }
+                    if formula == "==" && operand == "is"
+            ),
+            "expected MissingFormulaOperand(==, is), got {err:?}"
         );
     }
 
