@@ -34,7 +34,9 @@ mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState};
-pub use command::{CommandHandler, CommandRegistry, Decode, EntityFacts, Env, TypedCommand};
+pub use command::{
+    CommandHandler, CommandRegistry, Decode, EntityFacts, Env, RunFuture, TypedCommand,
+};
 pub use env::{
     BranchOpenProvider, CommitProvider, LoadProvider, PullProvider, PushProvider, SelectProvider,
 };
@@ -108,6 +110,68 @@ impl TonkReactor {
                 branch.clear_subscribers();
             }
         }
+    }
+
+    /// Reconcile the cached handle for `repo`/`branch` with durable
+    /// storage after its upstream/remote wiring changed on a *separate*
+    /// repository handle.
+    ///
+    /// A [`Branch`](dialog_repository::Branch) captures its `upstream`
+    /// cell when first opened — e.g. during the standard-library seed,
+    /// before any remote is attached. A later `set_upstream` on a
+    /// freshly loaded handle publishes to durable storage but never
+    /// touches that cached cell, so sync — which reads through this
+    /// cache — sees no upstream and fails with `BranchHasNoUpstream`.
+    /// Re-opening re-resolves the upstream from durable storage, so the
+    /// fresh handle reflects the change; we swap it into the cache and
+    /// carry the existing subscriptions over so live SSE streams keep
+    /// updating.
+    ///
+    /// No-op when the repo or branch isn't cached: the next `acquire`
+    /// opens a fresh handle that already reflects durable state.
+    pub async fn refresh_branch<Env>(
+        &self,
+        repo: &str,
+        branch: &str,
+        env: &Env,
+    ) -> Result<(), ReactorError>
+    where
+        Env: BranchOpenProvider,
+    {
+        // Only a cached repository can hold a stale cached branch.
+        let Some(repo_state) = self.repos.lock().get(repo).map(Arc::clone) else {
+            return Ok(());
+        };
+        // An uncached branch opens fresh on next acquire — already
+        // current, nothing to reconcile.
+        if !repo_state.branches().lock().contains_key(branch) {
+            return Ok(());
+        }
+
+        // Re-open outside the lock (open is async). This re-resolves the
+        // branch's upstream cell from durable storage, so the fresh
+        // handle reflects a `set_upstream` performed elsewhere.
+        let handle = repo_state
+            .repository()
+            .branch(branch)
+            .open()
+            .perform(env)
+            .await
+            .map_err(|e| ReactorError::BranchNotFound {
+                repo: repo.to_owned(),
+                branch: branch.to_owned(),
+                reason: e.to_string(),
+            })?;
+        let fresh = Arc::new(BranchState::new(handle));
+
+        // Swap under the branches lock so a concurrent subscribe can't
+        // land on the discarded state between the adopt and the insert.
+        let mut branches = repo_state.branches().lock();
+        if let Some(old) = branches.get(branch) {
+            fresh.adopt_subscriptions_from(old);
+        }
+        branches.insert(branch.to_owned(), fresh);
+        Ok(())
     }
 
     /// Begin a chain scoped to the named repository.

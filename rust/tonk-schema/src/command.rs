@@ -35,6 +35,24 @@ use crate::domain::command::Value as SpaceName;
 /// `name`'s attribute is a `dom.event.*` read-path so the same concept
 /// the form asserts is the one the worker handler decodes — see
 /// [`crate::domain::command::Value`].
+///
+/// Deliberately a single matched field. A command concept must keep
+/// decoding against the descriptor an *older* version seeded — a profile
+/// branch is seeded once and not re-seeded across versions, so its
+/// `space/create` descriptor is frozen at the version that created it.
+/// Adding a required field here would make the command silently fail to
+/// match every such profile (the transient commits, no provider runs),
+/// breaking all space creation.
+///
+/// The optional sync remote is therefore *not* a field here: the worker's
+/// `CreateSpaceHandler` matches on `name` and reads the remote URL
+/// directly from the transient's facts. It can't be a `String`-typed
+/// concept field anyway — a URL round-trips through JSON and the worker's
+/// untagged `Value` deserialization picks `Entity` for any string with a
+/// `:`, so a `remote: String` field would never decode a URL. Reading the
+/// artifact directly tolerates both `String` and `Entity`. The same
+/// handler also serves the topbar's "Enable sync" form (which posts the
+/// same `name`+`remote` shape against an existing space).
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CreateSpace {
     /// The command entity (a fresh id per invocation, derived by the
@@ -44,10 +62,10 @@ pub struct CreateSpace {
     pub name: SpaceName,
 }
 
-/// `CreateSpace` is a [`dialog_capability::Command`]: a `Provider<CreateSpace>`
-/// (a tonk command env wrapping `AppState`) executes it. The input is the
-/// decoded command itself; the provider is self-contained (it does its own
-/// IO and commits), so the output is `()`.
+/// `CreateSpace` is a [`dialog_capability::Command`]. Note the worker
+/// registers a custom `CreateSpaceHandler` (not a plain `Provider`) so it
+/// can read the optional remote from the facts; the `Command` impl is
+/// kept for the decode/`Decode` machinery.
 impl Command for CreateSpace {
     type Input = Self;
     type Output = ();

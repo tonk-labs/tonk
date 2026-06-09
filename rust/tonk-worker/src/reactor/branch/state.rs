@@ -58,6 +58,22 @@ impl BranchState {
         self.subscriptions.lock().clear();
     }
 
+    /// Move every subscription registered on `other` into this state,
+    /// leaving `other` empty.
+    ///
+    /// Used when the reactor replaces a cached branch handle (e.g. to
+    /// pick up an upstream wired on a separate handle): the fresh
+    /// [`BranchState`] adopts the live subscribers so their SSE streams
+    /// keep updating instead of silently freezing on the discarded
+    /// handle. Each `SubscriberSession` carries its `mpsc::Sender`, so
+    /// re-polls through the new state reach the same receivers; the
+    /// subscriptions keep their `last_hash`, so the next poll only
+    /// re-emits on a genuine change.
+    pub fn adopt_subscriptions_from(&self, other: &BranchState) {
+        let moved = std::mem::take(&mut *other.subscriptions.lock());
+        *self.subscriptions.lock() = moved;
+    }
+
     /// Register a fresh subscriber for `query`. Returns a
     /// [`Subscriber`] carrying the subscription's hash and the
     /// receiver to read broadcast bytes from. The caller is

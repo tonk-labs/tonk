@@ -19,7 +19,12 @@
 //!   controller dispatches `tonk:status-refresh` or a commit lands, and
 //!   clicking the pill flips the per-repository `tonk:auto-sync:{repo}`
 //!   `localStorage` preference — the exact key the Leptos
-//!   `sync_controller` reads.
+//!   `sync_controller` reads. For a branch with no upstream it instead
+//!   reveals an "Enable sync" trigger that opens the notation
+//!   `#enable-sync` dialog, stamping the repo it resolved from its
+//!   ancestor into the dialog's hidden `name` input (the workspace
+//!   `{name}` is a display label, not the repo name, so the form can't
+//!   read it declaratively).
 //!
 //! It coordinates with the controller only through that shared
 //! `localStorage` key and the `tonk:status-refresh` / `tonk:committed`
@@ -242,13 +247,15 @@ mod dom {
     /// the pill as-is. The click bubbles up from the inner button, so a
     /// click anywhere on the pill toggles.
     ///
-    /// `offline` is the exception: with no upstream (or an unreachable
-    /// one) there is nothing to pause, so a click on the offline pill is
-    /// a no-op — the user can't toggle into `paused` from there.
+    /// Only the actionable pill toggles: an `offline` pill (no upstream
+    /// or unreachable) and the "Enable sync" trigger (shown in place of
+    /// the pill for a no-upstream branch) have nothing to pause, so a
+    /// click on them is a no-op — and the trigger's own listener still
+    /// runs to open the enable-sync dialog.
     fn install_toggle_click(this: &HtmlElement, slot: &Listener) {
         let host = this.clone();
         let listener = Closure::wrap(Box::new(move |_event: Event| {
-            if is_offline(&host) {
+            if !is_togglable(&host) {
                 return;
             }
             let Some(repo) = repo_from_ancestor(&host) else {
@@ -263,22 +270,41 @@ mod dom {
         *slot.borrow_mut() = Some(listener);
     }
 
-    /// Whether the pill is currently showing the (non-actionable)
-    /// `offline` state, read from the painted button's modifier class.
-    fn is_offline(host: &HtmlElement) -> bool {
+    /// Whether the host is currently showing an actionable pill — a
+    /// `synced` / `syncing…` / `paused` state the user can pause or
+    /// resume. False for the inert `offline` pill and when the
+    /// enable-sync trigger is showing instead of a pill (no pill child).
+    fn is_togglable(host: &HtmlElement) -> bool {
         let (_, offline_class) = OFFLINE_CHIP;
         host.query_selector(&format!(":scope > .{STATE_CHIP}"))
             .ok()
             .flatten()
-            .is_some_and(|button| button.class_list().contains(offline_class))
+            .is_some_and(|button| !button.class_list().contains(offline_class))
     }
+
+    /// CSS class for the "Enable sync" trigger button rendered in place
+    /// of the chip when the branch has no upstream.
+    const ENABLE_BUTTON: &str = "workspace__enable-sync";
+
+    /// Label for the enable-sync trigger.
+    const ENABLE_LABEL: &str = "Enable sync";
+
+    /// `id` of the notation enable-sync form (`core.yaml`) whose hidden
+    /// `name` input this element stamps with the resolved repo on click.
+    const ENABLE_SYNC_FORM_ID: &str = "enable-sync-form";
 
     /// Per-element state for `<tonk-sync-state>`.
     #[derive(Default)]
     pub(crate) struct TonkSyncState {
         refresh: Listener,
         committed: Listener,
+        /// Pause/resume toggle on the pill (the synced/syncing/paused
+        /// states); a no-op while the enable-sync trigger or an offline
+        /// pill is showing.
         click: Listener,
+        /// Enable-sync trigger: stamps the resolved repo into the
+        /// notation enable-sync form before its dialog opens.
+        trigger: Listener,
     }
 
     impl CustomElement for TonkSyncState {
@@ -296,6 +322,7 @@ mod dom {
             refresh_state(this);
             install_state_listeners(this, &self.refresh, &self.committed);
             install_toggle_click(this, &self.click);
+            install_trigger_click(this, &self.trigger);
         }
 
         fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -315,7 +342,11 @@ mod dom {
             }
             self.refresh.borrow_mut().take();
             self.committed.borrow_mut().take();
+            // The click and trigger listeners are element-local (on
+            // `this`), so removal drops with the element; just free the
+            // closures.
             self.click.borrow_mut().take();
+            self.trigger.borrow_mut().take();
         }
     }
 
@@ -351,11 +382,14 @@ mod dom {
         let host = this.clone();
         spawn_local(async move {
             match fetch_sync_status(&repo, &branch).await {
-                // Offline wins over the preference: no reachable remote.
-                None | Some(SyncState::NoUpstream) => {
-                    paint(&host, OFFLINE_CHIP, OFFLINE_LABEL);
-                }
-                // Reachable + running: the live state.
+                // No upstream: offer the "Enable sync" trigger instead of
+                // a pill — a local-only branch can't sync until it has a
+                // remote, so the actionable affordance is to add one.
+                Some(SyncState::NoUpstream) => paint_enable_sync(&host),
+                // Unreachable remote (a `None` fetch): there *is* an
+                // upstream, but we can't reach it — the inert offline pill.
+                None => paint(&host, OFFLINE_CHIP, OFFLINE_LABEL),
+                // Reachable + running: the live state, click pauses.
                 Some(state) if is_enabled(&repo) => {
                     paint(&host, state_chip(state), RUNNING_LABEL);
                 }
@@ -369,14 +403,33 @@ mod dom {
     /// `title`/`aria-label`. The title is supplied by the caller — a
     /// toggle hint for the actionable states (`RUNNING_LABEL` /
     /// `PAUSED_LABEL`) or a plain status note for the inert `offline`
-    /// pill (`OFFLINE_LABEL`).
+    /// pill (`OFFLINE_LABEL`). Clears any stale enable-sync trigger, so a
+    /// branch that just gained an upstream swaps the trigger for the pill.
     fn paint(host: &HtmlElement, chip: (&'static str, &'static str), title: &str) {
         let (label, class) = chip;
+        remove_child(host, ENABLE_BUTTON);
         if let Some(button) = ensure_pill_button(host) {
             let _ = button.set_attribute("class", &format!("{STATE_CHIP} {class}"));
             button.set_text_content(Some(label));
             let _ = button.set_attribute("title", title);
             let _ = button.set_attribute("aria-label", title);
+        }
+    }
+
+    /// Reveal the "Enable sync" trigger for a no-upstream branch,
+    /// replacing any stale pill. The button opens the notation
+    /// `#enable-sync` dialog through Web Awesome's `data-dialog`
+    /// handler; the repo it attaches to is stamped into the dialog's
+    /// hidden `name` input by [`install_trigger_click`] on click.
+    fn paint_enable_sync(host: &HtmlElement) {
+        remove_child(host, STATE_CHIP);
+        let _ = ensure_enable_button(host);
+    }
+
+    /// Remove the element's only child matching `class`, if present.
+    fn remove_child(host: &HtmlElement, class: &str) {
+        if let Ok(Some(child)) = host.query_selector(&format!(":scope > .{class}")) {
+            child.remove();
         }
     }
 
@@ -394,6 +447,64 @@ mod dom {
         let _ = button.set_attribute("part", "button");
         let _ = host.append_child(&button);
         Some(button)
+    }
+
+    /// Find or create the enable-sync trigger button as the element's
+    /// only child. Carries `data-dialog="open enable-sync"` so a click
+    /// opens the notation dialog (Web Awesome's global handler).
+    fn ensure_enable_button(host: &HtmlElement) -> Option<Element> {
+        if let Ok(Some(existing)) = host.query_selector(&format!(":scope > .{ENABLE_BUTTON}")) {
+            return Some(existing);
+        }
+        let document = window()?.document()?;
+        let button = document.create_element("button").ok()?;
+        let _ = button.set_attribute("class", ENABLE_BUTTON);
+        let _ = button.set_attribute("type", "button");
+        let _ = button.set_attribute("part", "button");
+        let _ = button.set_attribute("data-dialog", "open enable-sync");
+        button.set_text_content(Some(ENABLE_LABEL));
+        let _ = host.append_child(&button);
+        Some(button)
+    }
+
+    /// Install the trigger's click listener on the host: stamp the repo
+    /// resolved from the `<tonk-repository>` ancestor into the notation
+    /// enable-sync form's hidden `name` input, so the asserted command
+    /// targets the right repository. Harmless when the element is
+    /// showing a chip (the chip carries no `data-dialog`, so no dialog
+    /// opens — the stamp is just unused).
+    fn install_trigger_click(this: &HtmlElement, slot: &Listener) {
+        let host = this.clone();
+        let listener = Closure::wrap(Box::new(move |_event: Event| {
+            if let Some(repo) = repo_from_ancestor(&host) {
+                stamp_enable_sync_repo(&repo);
+            }
+        }) as Box<dyn FnMut(Event)>);
+
+        let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
+        *slot.borrow_mut() = Some(listener);
+    }
+
+    /// Write `repo` into the notation enable-sync form's hidden `name`
+    /// input. The input is a native `<input>`, but we set the `value`
+    /// *property* (via reflection) since that's the slot the event
+    /// layer reads on submit (`elements.name.value`).
+    fn stamp_enable_sync_repo(repo: &str) {
+        let Some(document) = window().and_then(|w| w.document()) else {
+            return;
+        };
+        let Some(form) = document.get_element_by_id(ENABLE_SYNC_FORM_ID) else {
+            return;
+        };
+        let Ok(Some(input)) = form.query_selector("[name=\"name\"]") else {
+            return;
+        };
+        let input_js: &JsValue = input.as_ref();
+        let _ = js_sys::Reflect::set(
+            input_js,
+            &JsValue::from_str("value"),
+            &JsValue::from_str(repo),
+        );
     }
 
     /// Install the chip's window listeners: `tonk:status-refresh`
@@ -564,6 +675,81 @@ mod dom {
             assert_eq!(button.class_name(), "workspace__sync is-offline");
 
             host.remove();
+        }
+
+        #[dialog_common::test]
+        async fn it_reveals_the_enable_sync_trigger_and_swaps_with_the_pill() {
+            let document = window().unwrap().document().unwrap();
+            let body = document.body().unwrap();
+            let host = document.create_element("tonk-sync-state").unwrap();
+            body.append_child(&host).unwrap();
+            let host_el = host.dyn_ref::<HtmlElement>().unwrap();
+
+            // No upstream → an "Enable sync" trigger that opens the
+            // notation dialog (`data-dialog`), not a pill.
+            paint_enable_sync(host_el);
+            let button = host
+                .query_selector(".workspace__enable-sync")
+                .unwrap()
+                .expect("enable-sync trigger painted for no-upstream");
+            assert_eq!(button.text_content().as_deref(), Some("Enable sync"));
+            assert_eq!(
+                button.get_attribute("data-dialog").as_deref(),
+                Some("open enable-sync"),
+            );
+
+            // A concrete state replaces the trigger with the pill — no
+            // stale button left behind.
+            paint(host_el, state_chip(SyncState::Synced), RUNNING_LABEL);
+            assert!(
+                host.query_selector(".workspace__enable-sync")
+                    .unwrap()
+                    .is_none(),
+                "painting the pill must remove the enable-sync trigger",
+            );
+            assert!(host.query_selector(".workspace__sync").unwrap().is_some());
+
+            host.remove();
+        }
+
+        #[dialog_common::test]
+        async fn it_stamps_the_resolved_repo_into_the_enable_sync_form_on_click() {
+            register();
+            let document = window().unwrap().document().unwrap();
+            let body = document.body().unwrap();
+
+            // The notation form the element stamps: a hidden `name`
+            // input inside `#enable-sync-form`.
+            let form = document.create_element("form").unwrap();
+            form.set_id("enable-sync-form");
+            let hidden = document.create_element("input").unwrap();
+            hidden.set_attribute("type", "hidden").unwrap();
+            hidden.set_attribute("name", "name").unwrap();
+            form.append_child(&hidden).unwrap();
+            body.append_child(&form).unwrap();
+
+            // <tonk-repository name="pictures"><tonk-sync-state/></tonk-repository>
+            let repo = document.create_element("tonk-repository").unwrap();
+            repo.set_attribute("name", "pictures").unwrap();
+            let state = document.create_element("tonk-sync-state").unwrap();
+            repo.append_child(&state).unwrap();
+            body.append_child(&repo).unwrap();
+
+            // Clicking the element resolves the ancestor repo and stamps
+            // it into the form's hidden `name` input.
+            state.dyn_ref::<HtmlElement>().unwrap().click();
+
+            let value = js_sys::Reflect::get(hidden.as_ref(), &JsValue::from_str("value"))
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            assert_eq!(
+                value, "pictures",
+                "click should stamp the ancestor repo into the enable-sync form"
+            );
+
+            form.remove();
+            repo.remove();
         }
     }
 }

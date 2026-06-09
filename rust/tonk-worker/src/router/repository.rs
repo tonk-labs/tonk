@@ -248,47 +248,184 @@ pub async fn put_repository(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
-/// `CommandEnv` provides [`CreateSpace`] — the asserted-command path that
-/// replaces a direct `PUT /api/repository/{name}`. The "New space" form
-/// asserts a transient `CreateSpace`; the dispatcher calls this.
+/// The form-event attribute carrying the optional sync URL — the
+/// `remote` input on the `space/create` and `space/enable-sync` forms.
+/// Kept in sync with those notation commands' `remote` field `the:`.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+const REMOTE_ATTR: &str = "dom.event.current-target.elements.remote/value";
+
+/// Read the optional remote URL from a transient's facts, tolerating
+/// both `Value::String` and `Value::Entity`.
 ///
-/// It does the same work as [`put_repository`]: record the replica
-/// (`status: blank`) so the Hub shows it installing, create the
-/// repository, seed the standard library, then flip the status to
-/// `initialized`. An existing name is a no-op (logged) rather than an
-/// error — there's no HTTP caller to receive a 409/412.
+/// A URL like `http://host/ucan/` round-trips through JSON, and the
+/// worker's untagged `Value` deserialization picks `Entity` for any
+/// string containing a `:` — so a `String`-typed concept field never
+/// decodes a URL (that's the bug a `remote: String` field hit). Reading
+/// the artifact directly sidesteps the concept decode and accepts either
+/// representation. Empty/whitespace → `None` (a local-only space).
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
+    use dialog_artifacts::Value;
+
+    facts
+        .iter()
+        .find(|artifact| artifact.the.to_string() == REMOTE_ATTR)
+        .and_then(|artifact| match &artifact.is {
+            Value::String(url) => Some(url.clone()),
+            Value::Entity(uri) => Some(uri.to_string()),
+            _ => None,
+        })
+        .map(|url| url.trim().to_string())
+        .filter(|url| !url.is_empty())
+}
+
+/// Command handler for the "New space" form (`space/create`) and the
+/// topbar's "Enable sync" form (`space/enable-sync`).
 ///
-/// The provider re-locks the state through the env to do its (genuinely
-/// multi-branch) IO and commits its own outcomes. `Output = ()`.
+/// `CreateSpace` is matched **name-only** so it keeps decoding against an
+/// older, frozen profile descriptor (see [`CreateSpace`]). The optional
+/// sync URL is read straight from the transient's facts by
+/// [`remote_from_facts`] — not as a concept field, both because a
+/// required field would break the frozen-descriptor match and because a
+/// URL deserializes as `Value::Entity`, which a `String` field can't
+/// decode.
 ///
-/// TODO(ucan): gate this by capability rather than by the mere existence
-/// of this `Provider` impl. Long-term a command is a UCAN-like
-/// invocation: the provider attempts the work and the operator's
-/// capabilities decide whether each action is permitted.
+/// The repository is **created-or-reused** (`create_space_inner` no-ops
+/// an existing one), then, if a remote was given, attached best-effort
+/// via [`enable_sync_inner`]. So the same handler serves both forms: the
+/// Hub "New space" form (new repo) and the topbar "Enable sync" form
+/// (existing repo) — both post the same `name`(+`remote`) shape, and the
+/// handler keys on the shared `name` attribute. A remote/auth failure
+/// leaves a working local space, retryable from the topbar.
 ///
-/// TODO(stm): the existence check and the create are not atomic against
-/// concurrent commands — two `CreateSpace` for the same name could both
-/// pass the check. The transactional goal (read-set tracking + commit-
-/// or-conflict) would close this.
+/// A custom handler (not a plain `Provider<CreateSpace>`) is required
+/// because the provider only receives the decoded command, never the
+/// facts the remote must be read from.
+///
+/// [`CreateSpace`]: tonk_schema::command::CreateSpace
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[async_trait::async_trait(?Send)]
-impl dialog_capability::Provider<tonk_schema::command::CreateSpace> for super::CommandEnv {
-    async fn execute(&self, command: tonk_schema::command::CreateSpace) {
-        let name = command.name.0.clone();
-        log!("command CreateSpace name={}", name);
-        if let Err(error) = create_space_inner(self.state(), &name).await {
-            log!("CreateSpace '{}' failed: {}", name, error);
+pub(crate) struct CreateSpaceHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl CreateSpaceHandler {
+    /// Cache `CreateSpace`'s trigger attributes (its `name` field) so the
+    /// registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::CreateSpace::trigger_attributes(),
         }
     }
 }
 
-/// The body of the [`CreateSpace`](tonk_schema::command::CreateSpace)
-/// provider, split out so its `?` errors are logged once at the boundary.
-/// Mirrors [`put_repository`] minus the HTTP shell.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler for CreateSpaceHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::CreateSpace::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::reactor::Env,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock), then
+        // hand owned values + an env clone to the `'static` future.
+        let name = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::CreateSpace::decode(entity, facts))
+            .map(|command| command.name.0);
+        // The optional remote is read from the facts directly (tolerating
+        // the URL's `Value::Entity` representation), not via a concept.
+        let remote = remote_from_facts(facts);
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(name) = name else {
+                return;
+            };
+            log!("command CreateSpace name={} remote={:?}", name, remote);
+
+            // 1. Always create local-only first, so the space appears
+            //    whether or not a remote was given (and never vanishes on
+            //    a remote failure).
+            if let Err(error) = create_space_inner(env.state(), &name).await {
+                log!("CreateSpace '{}' failed: {}", name, error);
+                return;
+            }
+
+            // 2. If the form carried a remote, attach it best-effort. The
+            //    space already exists, so a failure here just leaves it
+            //    local-only — retryable from the topbar's Enable sync.
+            //    (`remote_from_facts` already dropped empty/blank URLs.)
+            if let Some(remote) = remote
+                && let Err(error) = enable_sync_inner(env.state(), &name, &remote).await
+            {
+                log!("CreateSpace '{}': remote attach failed: {}", name, error);
+            }
+        })
+    }
+}
+
+/// Build the [`RepositoryConfiguration`] for a space with a single
+/// `main` branch, optionally synced to `remote`.
+///
+/// An empty (or whitespace-only) `remote` yields a local-only space —
+/// the historical [`CreateSpace`](tonk_schema::command::CreateSpace)
+/// behaviour. A non-empty `remote` is wired as the `origin` remote with
+/// `main` tracking `origin/main`, so the space syncs from creation —
+/// the same shape `init()` builds for `home`.
+///
+/// The URL is interpreted as a UCAN access-service endpoint (the only
+/// remote scheme the UI offers): the topbar's default-service button
+/// fills it with the worker origin + `/ucan/`, and a user may type any
+/// other UCAN endpoint.
+///
+/// Shared by [`enable_sync_inner`] (called for both the create and
+/// enable-sync forms) so they produce an identical remote shape.
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), test))]
+fn space_config(remote: &str) -> RepositoryConfiguration {
+    use dialog_remote_ucan_s3::UcanAddress;
+
+    let remote = remote.trim();
+    if remote.is_empty() {
+        return RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
+    }
+    let address = SiteAddress::from(UcanAddress::new(remote));
+    RepositoryConfiguration::default()
+        .remote("origin", RemoteConfiguration::new(address))
+        .branch(
+            "main",
+            BranchConfiguration::default().upstream("origin", "main"),
+        )
+}
+
+/// Create a space local-only, split out so its `?` errors are logged
+/// once at the boundary. Mirrors [`put_repository`] minus the HTTP shell.
+/// An existing name is a no-op (logged), so the create handler can call
+/// this unconditionally for both the "New space" and "Enable sync" forms.
+///
+/// A sync remote is never wired here — it would make a remote/auth
+/// failure abort the whole create, so the space never appears.
+/// [`CreateSpaceHandler`] attaches the remote separately, after this.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn create_space_inner(state: &AppState, name: &str) -> Result<(), RepositoryError> {
-    // The button asks for a `main`-branch space (the same config the old
-    // `create_space` fetch sent).
+    // A local-only `main`-branch space (the same config the button asks
+    // for); a remote is attached afterwards by the handler.
     let configuration =
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
@@ -319,6 +456,53 @@ async fn create_space_inner(state: &AppState, name: &str) -> Result<(), Reposito
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
     seed_and_initialize(state, name, &subject, &branches).await
+}
+
+/// Attach a sync remote to a space, idempotently, via
+/// [`ensure_remote_config`] — the same helper [`attach_remote`] uses, so
+/// the in-app path and the HTTP route converge on one implementation.
+///
+/// Called by [`CreateSpaceHandler`] after the repository exists (created
+/// or pre-existing), for both the Hub "New space" and topbar "Enable
+/// sync" forms. A missing repository or empty URL is a no-op (logged),
+/// not an error.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn enable_sync_inner(
+    state: &AppState,
+    name: &str,
+    remote: &str,
+) -> Result<(), RepositoryError> {
+    if remote.trim().is_empty() {
+        // Submitted with no URL — nothing to attach.
+        log!("enable sync '{}': empty remote, nothing to attach", name);
+        return Ok(());
+    }
+    let configuration = space_config(remote);
+
+    let tonk = state.write().await;
+    // A missing repository is a no-op, not an error — defensive against a
+    // stale name (e.g. an enable-sync form whose hidden repo field didn't
+    // populate). The create path always runs `create_space_inner` first,
+    // so the repo is present by the time this is reached on that path.
+    let repository = match tonk
+        .profile
+        .repository(name)
+        .load()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(repository) => repository,
+        Err(error) => {
+            log!(
+                "enable sync '{}': repository not present, skipping ({})",
+                name,
+                error
+            );
+            return Ok(());
+        }
+    };
+
+    ensure_remote_config(&tonk, &repository, name, &configuration).await
 }
 
 /// Spawn the background seed + status flip for a freshly created
@@ -1433,6 +1617,27 @@ where
         },
     );
 
+    // The upstream was just published on *this* loaded handle, but the
+    // reactor caches a separate branch handle (opened earlier, e.g. when
+    // the standard library was seeded) whose `upstream` cell predates it.
+    // Sync reads through that cached handle, so without reconciling it the
+    // pull would fail with `BranchHasNoUpstream` even though the upstream
+    // is durable. Refresh each branch we wired so the cached handle
+    // reflects it.
+    for (branch_name, settings) in &configuration.branch {
+        if settings.upstream.is_some() {
+            tonk.reactor
+                .refresh_branch(name, branch_name, &tonk.operator)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!(
+                        "Failed to refresh cached branch '{}' after wiring upstream: {}",
+                        branch_name, e
+                    ))
+                })?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1506,6 +1711,134 @@ pub async fn attach_remote(
 /// (unavailable in the wasm test scope, which is why
 /// [`fetch_standard_library`] is bypassed here).
 ///
+/// The pure remote-shape builder shared by the create and attach paths.
+/// Native — no browser/service-worker scope needed.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod space_config_tests {
+    use super::space_config;
+
+    #[test]
+    fn it_builds_a_local_only_config_for_an_empty_remote() {
+        let config = space_config("");
+        assert!(
+            config.remote.is_empty(),
+            "an empty remote must leave the space local-only"
+        );
+        let main = config.branch.get("main").expect("main branch present");
+        assert!(
+            main.upstream.is_none(),
+            "a local-only space's main branch must have no upstream"
+        );
+    }
+
+    #[test]
+    fn it_treats_a_whitespace_remote_as_local_only() {
+        let config = space_config("   ");
+        assert!(config.remote.is_empty());
+        assert!(config.branch.get("main").unwrap().upstream.is_none());
+    }
+
+    #[test]
+    fn it_wires_origin_and_tracks_main_for_a_remote_url() {
+        let config = space_config("https://example.test/ucan/");
+        assert!(
+            config.remote.contains_key("origin"),
+            "a remote URL must register the origin remote"
+        );
+        let upstream = config
+            .branch
+            .get("main")
+            .and_then(|b| b.upstream.as_ref())
+            .expect("main must track an upstream when a remote is given");
+        assert_eq!(upstream.remote, "origin");
+        assert_eq!(upstream.branch, "main");
+    }
+}
+
+/// The optional-remote reader the create/enable handler uses. Native.
+#[cfg(all(test, not(all(target_arch = "wasm32", target_os = "unknown"))))]
+mod remote_from_facts_tests {
+    use super::remote_from_facts;
+    use dialog_artifacts::{Artifact, Changes, Entity, Instruction, Statement, Value};
+    use dialog_query::the;
+
+    const URL: &str = "http://127.0.0.1:8080/ucan/";
+
+    fn artifacts(changes: Changes) -> Vec<Artifact> {
+        changes
+            .into_instructions()
+            .into_iter()
+            .map(|instruction| match instruction {
+                Instruction::Assert(artifact)
+                | Instruction::Replace(artifact)
+                | Instruction::Retract(artifact) => artifact,
+            })
+            .collect()
+    }
+
+    /// Seed the always-present `name` fact (the create form's required field).
+    fn name_fact(changes: &mut Changes, of: &Entity) {
+        the!("dom.event.current-target.elements.name/value")
+            .of(of.clone())
+            .is("test".to_string())
+            .assert(changes);
+    }
+
+    #[test]
+    fn it_reads_a_string_remote() {
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        // `.is(String)` produces a `Value::String` — the relative-path case.
+        the!("dom.event.current-target.elements.remote/value")
+            .of(of)
+            .is(URL.to_string())
+            .assert(&mut changes);
+        assert_eq!(remote_from_facts(&artifacts(changes)).as_deref(), Some(URL));
+    }
+
+    #[test]
+    fn it_reads_an_entity_remote() {
+        // A URL deserializes as `Value::Entity` (any string with a `:`) —
+        // exactly the case a `String`-typed concept field couldn't decode,
+        // which is why the handler reads the artifact directly.
+        let url_value: Value = serde_json::from_str(&format!("\"{URL}\"")).unwrap();
+        let url = match url_value {
+            Value::Entity(entity) => entity,
+            other => panic!("URL should deserialize as Entity, got {other:?}"),
+        };
+        let of: Entity = "did:key:zCreate".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        // `.is(Entity)` produces a `Value::Entity` — the URL case.
+        the!("dom.event.current-target.elements.remote/value")
+            .of(of)
+            .is(url)
+            .assert(&mut changes);
+        assert_eq!(remote_from_facts(&artifacts(changes)).as_deref(), Some(URL));
+    }
+
+    #[test]
+    fn it_returns_none_without_a_remote_fact() {
+        let of: Entity = "did:key:zLocal".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        assert!(remote_from_facts(&artifacts(changes)).is_none());
+    }
+
+    #[test]
+    fn it_treats_a_blank_remote_as_none() {
+        let of: Entity = "did:key:zBlank".parse().expect("entity");
+        let mut changes = Changes::new();
+        name_fact(&mut changes, &of);
+        the!("dom.event.current-target.elements.remote/value")
+            .of(of)
+            .is("   ".to_string())
+            .assert(&mut changes);
+        assert!(remote_from_facts(&artifacts(changes)).is_none());
+    }
+}
+
 /// wasm32-only — `evaluate_body` and the worker test `TonkState` are
 /// built from the service-worker harness.
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
@@ -1748,5 +2081,103 @@ mod tests {
             "invite minted after attach must embed a remote= param; url was {}",
             invite.url(),
         );
+    }
+
+    /// Regression: the reactor caches a branch handle the first time it's
+    /// touched — e.g. when the standard library is seeded — capturing its
+    /// `upstream` cell *before* any remote is attached. Attaching a remote
+    /// later sets the upstream on a freshly loaded handle; the cached
+    /// handle must be reconciled, or sync (which reads through the cache)
+    /// fails with `BranchHasNoUpstream` even though the upstream is durable.
+    #[dialog_common::test]
+    async fn it_reconciles_the_cached_branch_handle_after_attach() {
+        use dialog_repository::Upstream;
+
+        let repo = "test-attach-refreshes-cache";
+        let (app, state) = fresh_repo(repo).await;
+
+        // Seed through the reactor so `main` is cached with no upstream —
+        // the state real space creation leaves behind before sync is on.
+        seed(&state, repo, CORE).await;
+
+        attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+
+        // The cached handle that sync reads must now report the upstream.
+        let guard = state.read().await;
+        let session = guard
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("acquire cached main");
+        let upstream = session
+            .handle()
+            .upstream()
+            .expect("cached main must report the upstream after attach");
+        assert!(
+            matches!(
+                upstream,
+                Upstream::Remote { ref remote, ref branch, .. }
+                    if remote == "origin" && branch == "main"
+            ),
+            "cached main must track origin/main, got {upstream:?}",
+        );
+    }
+
+    /// Reconciling the cached handle swaps in a fresh `BranchState`, but it
+    /// must carry the live subscriptions across so in-flight SSE streams
+    /// don't silently freeze on the discarded handle.
+    #[dialog_common::test]
+    async fn it_keeps_live_subscriptions_when_refreshing_a_branch() {
+        use std::sync::Arc;
+
+        use dialog_query::{ConceptQuery, Query};
+        use tonk_schema::meta::Name;
+
+        let repo = "test-attach-keeps-subscriptions";
+        let (app, state) = fresh_repo(repo).await;
+        seed(&state, repo, CORE).await;
+
+        // Register a subscription on the cached `main` and note which
+        // `BranchState` it landed on. Hold the subscriber so its receiver
+        // (and the paired sender in the state) stays connected.
+        let subscriber;
+        let before_ptr;
+        {
+            let guard = state.read().await;
+            let session = guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .acquire(&guard.operator)
+                .await
+                .expect("acquire cached main");
+            subscriber = session
+                .subscribe(ConceptQuery::from(Query::<Name>::default()))
+                .expect("subscribe");
+            before_ptr = Arc::as_ptr(&session.state);
+        }
+
+        attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
+
+        let guard = state.read().await;
+        let session = guard
+            .reactor
+            .repository(repo)
+            .branch("main")
+            .acquire(&guard.operator)
+            .await
+            .expect("re-acquire main");
+        assert!(
+            !std::ptr::eq(before_ptr, Arc::as_ptr(&session.state)),
+            "refresh must swap in a fresh BranchState",
+        );
+        assert_eq!(
+            session.state.subscriptions().lock().len(),
+            1,
+            "the live subscription must survive the refresh",
+        );
+        drop(subscriber);
     }
 }

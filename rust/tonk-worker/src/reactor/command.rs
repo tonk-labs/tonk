@@ -140,6 +140,9 @@ pub type Env = crate::router::CommandEnv;
 /// command IO never runs while a lock is held.
 #[cfg(not(target_arch = "wasm32"))]
 pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>;
+/// A `'static` boxed future for one command's execution (the wasm
+/// single-threaded variant — no `Send` bound). See the native variant
+/// above for the rationale.
 #[cfg(target_arch = "wasm32")]
 pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>;
 
@@ -463,6 +466,31 @@ mod tests {
         let decoded = Share::decode(this, &facts).expect("two-field concept decodes");
         assert_eq!(decoded.name.0, "pics");
         assert_eq!(decoded.owner.0, owner);
+    }
+
+    /// Regression: the real [`CreateSpace`] command must decode from
+    /// facts that carry only `name`. A profile branch seeded by an older
+    /// version has the name-only `space/create` descriptor, so its form
+    /// asserts a name-only transient. A `CreateSpace` that required an
+    /// extra field (e.g. a remote URL) would silently fail to match
+    /// there — `dispatch` commits the transient and runs nothing — and
+    /// break *all* space creation for existing profiles. Keep create-time
+    /// fields off the matched concept.
+    #[dialog_common::test]
+    fn it_decodes_create_space_from_name_only_facts() {
+        use tonk_schema::command::CreateSpace;
+
+        let this = entity("did:key:zCreateSpace");
+        let mut changes = Changes::new();
+        the!("dom.event.current-target.elements.name/value")
+            .of(this.clone())
+            .is("pictures".to_string())
+            .assert(&mut changes);
+        let (this, facts) = facts_for(changes);
+
+        let decoded = CreateSpace::decode(this, &facts)
+            .expect("CreateSpace must decode from name-only facts (older descriptor / blank form)");
+        assert_eq!(decoded.name.0, "pictures");
     }
 
     #[dialog_common::test]
