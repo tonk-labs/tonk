@@ -24,9 +24,9 @@ mod sheet;
 mod sync;
 
 /// Register the workspace custom elements (`<tonk-sheet>`,
-/// `<tonk-sheet-binder>`, `<tonk-share>`, `<tonk-sync-toggle>`, and
-/// `<tonk-sync-state>`) with the page. Idempotent — calling more than
-/// once is harmless.
+/// `<tonk-sheet-binder>`, `<tonk-share>`, and `<tonk-sync-state>` — the
+/// status pill that doubles as the pause/resume button) with the page.
+/// Idempotent — calling more than once is harmless.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
     sheet::register();
