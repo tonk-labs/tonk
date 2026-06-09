@@ -18,6 +18,8 @@ mod binder;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod invite;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod repo_name;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod share;
@@ -28,7 +30,7 @@ mod sheet;
 mod sync;
 
 /// Register the workspace custom elements (`<tonk-sheet>`,
-/// `<tonk-sheet-binder>`, `<tonk-share>`, `<tonk-sync-state>` — the
+/// `<tonk-sheet-binder>`, `<tonk-share>`, `<tonk-invite>`, `<tonk-sync-state>` — the
 /// status pill that doubles as the pause/resume button —
 /// `<tonk-default-remote>`, and `<tonk-repo-name>`) with the page.
 /// Idempotent — calling more than once is harmless.
@@ -37,6 +39,7 @@ pub fn register() {
     sheet::register();
     binder::register();
     share::register();
+    invite::register();
     sync::register();
     default_remote::register();
     repo_name::register();

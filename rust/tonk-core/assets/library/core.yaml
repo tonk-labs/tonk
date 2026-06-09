@@ -943,11 +943,11 @@ view!:
           letter-spacing: -0.02em;
         }
         .empty-artifact__glyph { color: var(--wa-color-text-quiet); flex: none; }
-        /* The agent-link panel: an uppercase mono label over a share
-           control that mints a real invite. `<tonk-share>` renders the
-           button (`.empty-artifact__share`); clicking it dispatches
-           `tonk:share`, which the shell turns into a UCAN invite + copy
-           dialog (the same flow as the top-bar share). */
+        /* The agent-link panel: an uppercase mono label over a copy
+           control. `<tonk-invite>` renders the button
+           (`.empty-artifact__share`) with a copy icon + label; clicking
+           it mints a fresh artifact-scoped invite and copies it, swapping
+           the icon to a check on success (like `<wa-copy-button>`). */
         .empty-artifact__deeplink {
           display: flex;
           flex-direction: column;
@@ -976,7 +976,30 @@ view!:
           cursor: pointer;
         }
         .empty-artifact__share:hover { background: var(--wa-color-brand-fill-loud); filter: brightness(1.06); }
-        .empty-artifact__share-glyph { width: 16px; height: 16px; flex: none; }
+        .empty-artifact__share .tonk-invite__icon { font-size: 16px; flex: none; }
+        /* The copy-failed fallback: the link in a bordered field + the
+           native copy control. */
+        .tonk-invite__result {
+          display: flex;
+          align-items: stretch;
+          width: 100%;
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          border-radius: var(--wa-border-radius-s);
+          overflow: hidden;
+        }
+        .tonk-invite__url {
+          flex: 1;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          overflow-x: auto;
+          white-space: nowrap;
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-normal);
+          padding: var(--wa-space-s) var(--wa-space-m);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
         /* A quoted instructional block with a brand left-accent bar. */
         .empty-artifact__instr {
           display: flex;
@@ -997,13 +1020,14 @@ view!:
       </h1>
       <section class="empty-artifact__deeplink">
         <div class="empty-artifact__deeplink-label">agent link &middot; paste into your agent</div>
-        <tonk-share
+        <tonk-invite
+          artifact={this}
+          concept="tonk:artifact"
           button-class="empty-artifact__share"
-          glyph-class="empty-artifact__share-glyph"
-          label="Generate agent link"></tonk-share>
+          label="copy"></tonk-invite>
       </section>
       <div class="empty-artifact__instr">
-        <p>Generate a link and paste it into your agent's chat to start building.</p>
+        <p>Paste this link into your agent's chat to start building.</p>
         <p>The agent will edit <b>{title}</b> directly &mdash; you'll see changes here as they happen.</p>
       </div>
     </div>
