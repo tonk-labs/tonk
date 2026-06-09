@@ -14,6 +14,7 @@
 //!       into this one: if sync is running, those deltas are being
 //!       reconciled right now.
 //!     - `paused`  — auto-sync off. Overrides any real drift.
+//!
 //!   It re-reads the read-only `sync/status` route whenever the
 //!   controller dispatches `tonk:status-refresh` or a commit lands, and
 //!   clicking the pill flips the per-repository `tonk:auto-sync:{repo}`
@@ -58,8 +59,8 @@ mod logic {
     /// preference (not a `SyncState`); `offline` covers both `NoUpstream`
     /// (no remote configured) and a failed status fetch (remote
     /// unavailable), which read identically to the user.
-    pub(crate) const PAUSED_CHIP: (&'static str, &'static str) = ("paused", "is-paused");
-    pub(crate) const OFFLINE_CHIP: (&'static str, &'static str) = ("offline", "is-offline");
+    pub(crate) const PAUSED_CHIP: (&str, &str) = ("paused", "is-paused");
+    pub(crate) const OFFLINE_CHIP: (&str, &str) = ("offline", "is-offline");
 
     /// Label and modifier class for a live sync state.
     ///
@@ -481,10 +482,7 @@ mod dom {
             // labelled for the resume action.
             assert_eq!(button.text_content().as_deref(), Some("paused"));
             assert_eq!(button.class_name(), "workspace__sync is-paused");
-            assert_eq!(
-                button.get_attribute("title").as_deref(),
-                Some(PAUSED_LABEL)
-            );
+            assert_eq!(button.get_attribute("title").as_deref(), Some(PAUSED_LABEL));
 
             // Click → running: the preference flips to "on". (The running
             // pill awaits a status fetch that can't resolve here, so we
