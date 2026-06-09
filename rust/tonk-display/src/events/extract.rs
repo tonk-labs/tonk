@@ -208,7 +208,7 @@ fn coerce(value: &JsValue, as_type: &str) -> Option<Value> {
         }
         "Boolean" | "boolean" => value.as_bool().map(Value::Bool),
         "UnsignedInt" | "SignedInt" | "Integer" | "integer" | "unsigned-integer"
-        | "signed-integer" => {
+        | "signed-integer" | "UnsignedInteger" | "SignedInteger" => {
             let n = value.as_f64()?;
             if n.is_finite() && n.fract() == 0.0 {
                 serde_json::Number::from_f64(n).map(Value::Number)
@@ -415,6 +415,43 @@ mod tests {
         assert_eq!(parameters["counter"], json!("did:key:zCounter"));
         assert_eq!(claims[0]["op"], json!("assert"));
         assert_eq!(app["predicate"]["kind"], json!("transient"));
+    }
+
+    /// A field declared `as: unsigned-integer` whose descriptor `as`
+    /// serializes to `UnsignedInteger` (the dialog `Value` variant
+    /// name) must coerce a whole-number event property. Regression for
+    /// the `create-sheet` command's `time` nonce, which silently failed
+    /// to resolve — the coerce match listed `UnsignedInt` /
+    /// `unsigned-integer` but not `UnsignedInteger`, so the whole
+    /// binding fell through and no command fired.
+    #[dialog_common::test]
+    fn it_coerces_an_unsigned_integer_typed_field() {
+        let event = synthetic_event(&[]);
+        // Put an integer `time` directly on the event object so the
+        // `dom.event/time` path resolves it.
+        let event_js: &JsValue = event.as_ref();
+        Reflect::set(
+            event_js,
+            &JsValue::from_str("time"),
+            &JsValue::from_f64(1_780_982_815_290.0),
+        )
+        .unwrap();
+
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "time": { "the": "dom.event/time", "as": "UnsignedInteger", "cardinality": "one" }
+                }
+            }"#,
+        );
+        let binding = binding_element(&[]);
+        let body = build_transact_body(&descriptor, "noop", &event, &binding)
+            .expect("build_transact_body");
+        let params = &body["claims"][0]["application"]["parameters"];
+        // The field resolved (the binding didn't fall through) and holds
+        // the integer value. Compare as f64 since the coerced number is
+        // built via `Number::from_f64`.
+        assert_eq!(params["time"].as_f64(), Some(1_780_982_815_290.0));
     }
 
     #[dialog_common::test]

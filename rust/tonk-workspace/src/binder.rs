@@ -53,6 +53,10 @@ pub(crate) struct TonkSheetBinder {
     observer: ObserverCell,
     click: ClickClosure,
     mutation: MutationClosure,
+    /// The create form's `submit` listener (Enter commits, no reload).
+    submit: ClickClosure,
+    /// The create input's `keydown` listener (Escape cancels).
+    keydown: ClickClosure,
 }
 
 impl CustomElement for TonkSheetBinder {
@@ -70,6 +74,7 @@ impl CustomElement for TonkSheetBinder {
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         install_click(this, &self.click);
+        install_create_listeners(this, &self.submit, &self.keydown);
         install_observer(this, &self.observer, &self.mutation);
         project(this);
     }
@@ -80,6 +85,8 @@ impl CustomElement for TonkSheetBinder {
         }
         self.click.borrow_mut().take();
         self.mutation.borrow_mut().take();
+        self.submit.borrow_mut().take();
+        self.keydown.borrow_mut().take();
     }
 
     fn attribute_changed_callback(
@@ -102,6 +109,19 @@ const TAB: &str = "tonk-sheet-binder__tab";
 const TAB_LABEL: &str = "tonk-sheet-binder__tab-label";
 const CLOSE: &str = "tonk-sheet-binder__close";
 const ACTIVE: &str = "is-active";
+/// The "+" add-sheet button shown at the end of the strip when idle.
+const ADD: &str = "tonk-sheet-binder__add";
+/// The inline create form shown in place of the "+" button while
+/// naming a new sheet.
+const CREATE: &str = "tonk-sheet-binder__create";
+const CREATE_INPUT: &str = "tonk-sheet-binder__create-input";
+const CREATE_COMMIT: &str = "tonk-sheet-binder__create-commit";
+const CREATE_CANCEL: &str = "tonk-sheet-binder__create-cancel";
+/// Host attribute flag: present (any value) while the create input is
+/// open. `project()` reads it to decide whether to render the "+"
+/// button or the inline form; it lives on the DOM so the stateless
+/// `project()` can see it across re-renders.
+const CREATING: &str = "data-creating";
 
 /// Build/refresh the tab strip from the `<tonk-sheet>` children, then
 /// apply ordering + the active state. Idempotent.
@@ -155,6 +175,104 @@ fn project(this: &HtmlElement) {
             let _ = sheet.el.set_attribute("hidden", "");
         }
     }
+
+    // The add control sits after the tabs: the "+" button (idle) or the
+    // inline create form (while naming a new sheet).
+    ensure_add_control(this, &strip, &document);
+}
+
+/// Render the strip's trailing add control: the "+" button when idle,
+/// or the inline create form when the host carries `data-creating`.
+/// Idempotent — reuses the existing element when it's already the right
+/// kind (so an open input keeps its value and focus across re-projects).
+fn ensure_add_control(this: &HtmlElement, strip: &Element, document: &Document) {
+    let creating = this.has_attribute(CREATING);
+    let has_add = strip
+        .query_selector(&format!(":scope > .{ADD}"))
+        .ok()
+        .flatten()
+        .is_some();
+    let has_form = strip
+        .query_selector(&format!(":scope > .{CREATE}"))
+        .ok()
+        .flatten()
+        .is_some();
+
+    if creating {
+        if has_add && let Ok(Some(btn)) = strip.query_selector(&format!(":scope > .{ADD}")) {
+            btn.remove();
+        }
+        if !has_form {
+            let form = build_create_form(document);
+            place_last(&form);
+            let _ = strip.append_child(&form);
+            // Focus the input now that it's mounted.
+            if let Ok(Some(input)) = form.query_selector(&format!(".{CREATE_INPUT}"))
+                && let Some(input) = input.dyn_ref::<HtmlElement>()
+            {
+                let _ = input.focus();
+            }
+        }
+    } else {
+        if has_form && let Ok(Some(form)) = strip.query_selector(&format!(":scope > .{CREATE}")) {
+            form.remove();
+        }
+        if !has_add {
+            let btn = document
+                .create_element("button")
+                .expect("create add button");
+            let _ = btn.set_attribute("class", ADD);
+            let _ = btn.set_attribute("type", "button");
+            let _ = btn.set_attribute("part", "add");
+            let _ = btn.set_attribute("aria-label", "New sheet");
+            btn.set_text_content(Some("+"));
+            place_last(&btn);
+            let _ = strip.append_child(&btn);
+        }
+    }
+}
+
+/// Pin a strip child to the end via a large CSS `order`. Tabs get
+/// `order` = their rank (0..n) so they lay out left-to-right; the add
+/// control must sort after all of them regardless of how many tabs
+/// exist.
+fn place_last(el: &Element) {
+    if let Some(html) = el.dyn_ref::<HtmlElement>() {
+        let _ = html.style().set_property("order", "9999");
+    }
+}
+
+/// Build the inline create form: a name input plus create / esc
+/// controls. The form's `submit` and the input's Enter both commit; the
+/// cancel button and Escape both close. Wiring is delegated through the
+/// binder's single click/keydown listeners.
+fn build_create_form(document: &Document) -> Element {
+    let form = document.create_element("form").expect("create form");
+    let _ = form.set_attribute("class", CREATE);
+    let _ = form.set_attribute("part", "create");
+    let _ = form.set_attribute("aria-label", "Name the new sheet");
+
+    let input = document.create_element("input").expect("create input");
+    let _ = input.set_attribute("class", CREATE_INPUT);
+    let _ = input.set_attribute("type", "text");
+    let _ = input.set_attribute("name", "name");
+    let _ = input.set_attribute("placeholder", "name this artifact…");
+    let _ = input.set_attribute("autocomplete", "off");
+    let _ = form.append_child(&input);
+
+    let commit = document.create_element("button").expect("create commit");
+    let _ = commit.set_attribute("class", CREATE_COMMIT);
+    let _ = commit.set_attribute("type", "submit");
+    commit.set_text_content(Some("create"));
+    let _ = form.append_child(&commit);
+
+    let cancel = document.create_element("button").expect("create cancel");
+    let _ = cancel.set_attribute("class", CREATE_CANCEL);
+    let _ = cancel.set_attribute("type", "button");
+    cancel.set_text_content(Some("esc"));
+    let _ = form.append_child(&cancel);
+
+    form
 }
 
 /// A `<tonk-sheet>` child and its metadata.
@@ -274,7 +392,9 @@ fn css_escape(value: &str) -> String {
 
 /// Delegated click on a projected tab. A click on the close button
 /// closes the sheet (`close` event); a click anywhere else on the
-/// tab activates it (`activate` event).
+/// tab activates it (`activate` event). Clicks on the add control
+/// (the "+" button, or the create form's commit/cancel) open, submit,
+/// or close the inline create input.
 fn install_click(this: &HtmlElement, slot: &ClickClosure) {
     let host = this.clone();
     let listener = Closure::wrap(Box::new(move |event: Event| {
@@ -282,6 +402,37 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
         let Ok(node) = target.dyn_into::<Element>() else {
             return;
         };
+
+        // The "+" add button: open the inline create input.
+        if node.closest(&format!(".{ADD}")).ok().flatten().is_some() {
+            let _ = host.set_attribute(CREATING, "");
+            project(&host);
+            return;
+        }
+        // The create form's "create" button: commit. (The form also
+        // submits on Enter; both route through `commit_create`.)
+        if node
+            .closest(&format!(".{CREATE_COMMIT}"))
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            event.stop_propagation();
+            commit_create(&host);
+            return;
+        }
+        // The create form's "esc" button: cancel.
+        if node
+            .closest(&format!(".{CREATE_CANCEL}"))
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            event.stop_propagation();
+            cancel_create(&host);
+            return;
+        }
+
         let Ok(Some(tab)) = node.closest(&format!(".{TAB}")) else {
             return;
         };
@@ -328,6 +479,54 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
 
     let _ = this.add_event_listener_with_callback("click", listener.as_ref().unchecked_ref());
     *slot.borrow_mut() = Some(listener);
+}
+
+/// Install the create form's `submit` (Enter commits) and `keydown`
+/// (Escape cancels) listeners on the host. Both events bubble from the
+/// form / input to the host, so one delegated listener each suffices.
+fn install_create_listeners(this: &HtmlElement, submit: &ClickClosure, keydown: &ClickClosure) {
+    // submit: Enter (or the create button's implicit submit). Prevent
+    // the default form navigation, then commit.
+    let host = this.clone();
+    let on_submit = Closure::wrap(Box::new(move |event: Event| {
+        // Only our create form submits inside the binder, but guard
+        // anyway so an unrelated nested form wouldn't be hijacked.
+        let from_create = event
+            .target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+            .and_then(|el| el.closest(&format!(".{CREATE}")).ok().flatten())
+            .is_some();
+        if !from_create {
+            return;
+        }
+        event.prevent_default();
+        commit_create(&host);
+    }) as Box<dyn FnMut(Event)>);
+    let _ = this.add_event_listener_with_callback("submit", on_submit.as_ref().unchecked_ref());
+    *submit.borrow_mut() = Some(on_submit);
+
+    // keydown: Escape cancels the create input. (Enter is handled by
+    // the form's submit; we don't intercept it here.)
+    let host = this.clone();
+    let on_keydown = Closure::wrap(Box::new(move |event: Event| {
+        let Ok(event) = event.dyn_into::<web_sys::KeyboardEvent>() else {
+            return;
+        };
+        if event.key() != "Escape" {
+            return;
+        }
+        let in_create = event
+            .target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+            .and_then(|el| el.closest(&format!(".{CREATE}")).ok().flatten())
+            .is_some();
+        if in_create {
+            event.prevent_default();
+            cancel_create(&host);
+        }
+    }) as Box<dyn FnMut(Event)>);
+    let _ = this.add_event_listener_with_callback("keydown", on_keydown.as_ref().unchecked_ref());
+    *keydown.borrow_mut() = Some(on_keydown);
 }
 
 /// The sheet adjacent to `sheet` in `order` order: the next one if
@@ -387,6 +586,87 @@ fn dispatch_activate(host: &HtmlElement, sheet: &str) {
     init.set_composed(true);
     if let Ok(event) = CustomEvent::new_with_event_init_dict("activate", &init) {
         let _ = host.dispatch_event(&event);
+    }
+}
+
+/// Commit the inline create form: read the typed name (empty →
+/// "untitled", matching the wireframe), compute the new tab's order,
+/// dispatch `create`, and close the form. The consuming view maps
+/// `create` to the `workspace/create-sheet` command, which mints the
+/// sheet; the new tab arrives via the data round-trip.
+fn commit_create(host: &HtmlElement) {
+    let name = create_input_value(host).unwrap_or_default();
+    let name = name.trim();
+    let name = if name.is_empty() { "untitled" } else { name };
+    let order = next_order(host);
+    dispatch_create(host, name, &order);
+    let _ = host.remove_attribute(CREATING);
+    project(host);
+}
+
+/// Close the inline create form without creating anything.
+fn cancel_create(host: &HtmlElement) {
+    let _ = host.remove_attribute(CREATING);
+    project(host);
+}
+
+/// The current value of the open create input, if any.
+fn create_input_value(host: &HtmlElement) -> Option<String> {
+    let input = host
+        .query_selector(&format!(".{CREATE_INPUT}"))
+        .ok()
+        .flatten()?;
+    input
+        .dyn_ref::<web_sys::HtmlInputElement>()
+        .map(|i| i.value())
+}
+
+/// Dispatch `create` with `detail = { name, order, time }`, bubbling +
+/// composed. The view maps it to `workspace/create-sheet`; the binder
+/// owns `order` (so the new tab lands after the existing ones) and a
+/// `time` nonce (a whole-millisecond integer that keeps the command's
+/// derived entity unique across repeated creates). The nonce is stamped
+/// here rather than read off `dom.event/time-stamp`, which is
+/// fractional and won't coerce to an unsigned integer.
+fn dispatch_create(host: &HtmlElement, name: &str, order: &str) {
+    let detail = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &detail,
+        &JsValue::from_str("name"),
+        &JsValue::from_str(name),
+    );
+    let _ = js_sys::Reflect::set(
+        &detail,
+        &JsValue::from_str("order"),
+        &JsValue::from_str(order),
+    );
+    // Whole-millisecond nonce for entity uniqueness.
+    let time = js_sys::Date::now().trunc();
+    let _ = js_sys::Reflect::set(
+        &detail,
+        &JsValue::from_str("time"),
+        &JsValue::from_f64(time),
+    );
+    let init = CustomEventInit::new();
+    init.set_detail(&detail);
+    init.set_bubbles(true);
+    init.set_composed(true);
+    if let Ok(event) = CustomEvent::new_with_event_init_dict("create", &init) {
+        let _ = host.dispatch_event(&event);
+    }
+}
+
+/// An order key that sorts strictly after every existing sheet's
+/// `order`, so a created tab lands at the end of the strip. Appends
+/// `"z"` to the current lexicographic max (any string is a prefix of
+/// itself + "z", so the result sorts after it); `"a"` when there are no
+/// sheets yet. Matches the simple single-/few-char order scheme the
+/// demo data uses.
+fn next_order(this: &HtmlElement) -> String {
+    let sheets = collect_sheets(this);
+    match sheets.iter().map(|s| s.order.as_str()).max() {
+        Some(max) => format!("{max}z"),
+        None => "a".to_string(),
     }
 }
 
@@ -640,6 +920,122 @@ mod tests {
             closed.borrow().as_deref(),
             None,
             "tab-body click must not close"
+        );
+        binder.remove();
+    }
+
+    /// The "+" add button is projected at the end of the strip and,
+    /// when clicked, swaps in the inline create input.
+    #[dialog_common::test]
+    async fn it_opens_the_create_input_on_add_click() {
+        let binder = mount_binder("a", &[("a", "a", "First")]);
+        let add = binder
+            .query_selector(&format!(".{ADD}"))
+            .unwrap()
+            .expect("add button projected");
+        add.dyn_ref::<HtmlElement>().unwrap().click();
+
+        assert!(
+            binder
+                .query_selector(&format!(".{CREATE_INPUT}"))
+                .unwrap()
+                .is_some(),
+            "clicking + must show the create input",
+        );
+        assert!(
+            binder.query_selector(&format!(".{ADD}")).unwrap().is_none(),
+            "the + button is replaced by the form while creating",
+        );
+        binder.remove();
+    }
+
+    /// Submitting the create form dispatches `create` with the typed
+    /// name and an order that sorts after the last tab.
+    #[dialog_common::test]
+    async fn it_dispatches_create_with_name_and_trailing_order() {
+        let binder = mount_binder("a", &[("a", "a", "First"), ("b", "b", "Second")]);
+        let (name, _n) = capture_detail("create", "name");
+        let (order, _o) = capture_detail("create", "order");
+
+        let add = binder.query_selector(&format!(".{ADD}")).unwrap().unwrap();
+        add.dyn_ref::<HtmlElement>().unwrap().click();
+
+        let input = binder
+            .query_selector(&format!(".{CREATE_INPUT}"))
+            .unwrap()
+            .expect("input shown")
+            .dyn_into::<web_sys::HtmlInputElement>()
+            .unwrap();
+        input.set_value("Notes");
+
+        let commit = binder
+            .query_selector(&format!(".{CREATE_COMMIT}"))
+            .unwrap()
+            .expect("commit button");
+        commit.dyn_ref::<HtmlElement>().unwrap().click();
+
+        assert_eq!(name.borrow().as_deref(), Some("Notes"));
+        // The max existing order is "b"; the new order must sort after.
+        let new_order = order.borrow().clone().expect("order in detail");
+        assert!(
+            new_order.as_str() > "b",
+            "new order {new_order:?} must sort after the last tab \"b\"",
+        );
+        // Form closes back to the + button after commit.
+        assert!(
+            binder.query_selector(&format!(".{ADD}")).unwrap().is_some(),
+            "the + button returns after creating",
+        );
+        binder.remove();
+    }
+
+    /// An empty name commits as "untitled" (matching the wireframe).
+    #[dialog_common::test]
+    async fn it_defaults_an_empty_name_to_untitled() {
+        let binder = mount_binder("a", &[("a", "a", "First")]);
+        let (name, _n) = capture_detail("create", "name");
+
+        let add = binder.query_selector(&format!(".{ADD}")).unwrap().unwrap();
+        add.dyn_ref::<HtmlElement>().unwrap().click();
+        let commit = binder
+            .query_selector(&format!(".{CREATE_COMMIT}"))
+            .unwrap()
+            .unwrap();
+        commit.dyn_ref::<HtmlElement>().unwrap().click();
+
+        assert_eq!(name.borrow().as_deref(), Some("untitled"));
+        binder.remove();
+    }
+
+    /// Cancelling closes the input without dispatching `create`.
+    #[dialog_common::test]
+    async fn it_cancels_the_create_input_without_dispatching() {
+        let binder = mount_binder("a", &[("a", "a", "First")]);
+        let (name, _n) = capture_detail("create", "name");
+
+        let add = binder.query_selector(&format!(".{ADD}")).unwrap().unwrap();
+        add.dyn_ref::<HtmlElement>().unwrap().click();
+        let cancel = binder
+            .query_selector(&format!(".{CREATE_CANCEL}"))
+            .unwrap()
+            .expect("cancel button");
+        cancel.dyn_ref::<HtmlElement>().unwrap().click();
+
+        assert_eq!(
+            name.borrow().as_deref(),
+            None,
+            "cancel must not dispatch create",
+        );
+        assert!(
+            binder.query_selector(&format!(".{ADD}")).unwrap().is_some(),
+            "the + button returns after cancel",
+        );
+        assert!(
+            binder
+                .query_selector(&format!(".{CREATE_INPUT}"))
+                .unwrap()
+                .is_none(),
+            "the input is gone after cancel",
         );
         binder.remove();
     }

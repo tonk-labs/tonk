@@ -3119,6 +3119,235 @@ workspace!:
         Ok(())
     }
 
+    /// The real `core.yaml` create flow: a `create-sheet` command mints
+    /// a self-describing empty sheet (entity = the sheet itself, model =
+    /// empty-artifact), titles its empty-artifact entity with the typed
+    /// name, and auto-activates it. Mirrors the three create rules in
+    /// the standard library.
+    #[dialog_common::test]
+    async fn it_creates_a_self_describing_empty_sheet_and_activates_it() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let install_doc = r#"
+concept!: &workspace
+  with:
+    name:
+      the: xyz.tonk.workspace/name
+      as: text
+      cardinality: one
+      description: "name"
+    active:
+      the: xyz.tonk.workspace/active
+      as: entity
+      cardinality: one
+      description: "active"
+    sheet:
+      the: xyz.tonk.workspace/sheet
+      as: entity
+      cardinality: many
+      description: "sheet"
+
+concept!: &workspace/sheet
+  with:
+    title:
+      the: xyz.tonk.artifact/title
+      as: text
+      cardinality: one
+      description: "title"
+    entity:
+      the: xyz.tonk.artifact/entity
+      as: entity
+      cardinality: one
+      description: "entity"
+    model:
+      the: xyz.tonk.artifact/model
+      as: entity
+      cardinality: one
+      description: "model"
+    order:
+      the: xyz.tonk.sheet/order
+      as: text
+      cardinality: one
+      description: "order"
+
+concept!: &empty-artifact
+  this: tonk:empty-artifact
+  with:
+    title:
+      the: xyz.tonk.artifact/title
+      as: text
+      cardinality: one
+      description: "title"
+
+concept!: &workspace/create-sheet
+  transient:
+  with:
+    name:
+      the: dom.event.detail/name
+      as: text
+      description: "name"
+    order:
+      the: dom.event.detail/order
+      as: text
+      description: "order"
+
+rule!:
+  assert!: workspace/sheet
+  when:
+    - assert: workspace/create-sheet
+      where: { this: ?this, name: ?title, order: ?order }
+    - assert: ==
+      where: { this: ?entity, is: ?this }
+    - assert: ==
+      where: { this: ?model, is: tonk:empty-artifact }
+
+rule!:
+  assert!: empty-artifact
+  when:
+    - assert: workspace/create-sheet
+      where: { this: ?this, name: ?title, order: ?order }
+
+rule!:
+  assert!: workspace
+  when:
+    - assert: workspace/create-sheet
+      where: { this: ?sheet, name: ?title, order: ?order }
+    - assert: workspace
+      where: { this: ?this, name: ?name }
+    - assert: ==
+      where: { this: ?this, is: about:blank }
+    - assert: ==
+      where: { this: ?active, is: ?sheet }
+
+workspace!:
+  this: about:blank
+  name: "W"
+  active: did:key:zSheetA
+  sheet: did:key:zSheetA
+"#;
+
+        let parsed = parse(install_doc);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "install parse diagnostics: {:?}",
+            parsed.diagnostics
+        );
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("evaluate (install): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("commit (install): {e}"))?;
+
+        // Fire create-sheet. The new sheet entity = the command entity.
+        let new_sheet: dialog_artifacts::Entity = "did:key:zNewSheet".parse()?;
+        let mut create = Changes::new();
+        the!("dom.event.detail/name")
+            .of(new_sheet.clone())
+            .is("Notes".to_string())
+            .assert(&mut create);
+        the!("dom.event.detail/order")
+            .of(new_sheet.clone())
+            .is("bz".to_string())
+            .assert(&mut create);
+
+        use crate::effects::TransactionExt as _;
+        branch
+            .transaction()
+            .integrate(create.clone())
+            .induce(create)
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("induce (create): {e}"))?
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        // The sheet's title is the typed name.
+        let title: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.artifact/title"))
+                    .of(Term::from(new_sheet.clone()))
+                    .is(Term::<String>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            title
+                .iter()
+                .any(|c| format!("{:?}", c.is).contains("Notes")),
+            "the new sheet/empty-artifact should be titled \"Notes\"; saw {title:?}"
+        );
+
+        // The sheet's entity points at itself, and its model is the
+        // empty-artifact concept.
+        let entity: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.artifact/entity"))
+                    .of(Term::from(new_sheet.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            entity
+                .iter()
+                .any(|c| format!("{:?}", c.is).contains("zNewSheet")),
+            "the sheet's entity should be self-referential; saw {entity:?}"
+        );
+        let model: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.artifact/model"))
+                    .of(Term::from(new_sheet.clone()))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            model
+                .iter()
+                .any(|c| format!("{:?}", c.is).contains("tonk:empty-artifact")),
+            "the sheet's model should be tonk:empty-artifact; saw {model:?}"
+        );
+
+        // The workspace auto-activated the new sheet.
+        let workspace: dialog_artifacts::Entity = "about:blank".parse()?;
+        let active: Vec<dialog_query::Claim> = branch
+            .query()
+            .select(dialog_query::AttributeQuery::from(
+                Term::from(the!("xyz.tonk.workspace/active"))
+                    .of(Term::from(workspace))
+                    .is(Term::<dialog_artifacts::Entity>::var("v")),
+            ))
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        let active_set: Vec<String> = active.iter().map(|c| format!("{:?}", c.is)).collect();
+        assert_eq!(
+            active_set.len(),
+            1,
+            "active must be cardinality-one; saw {active_set:?}"
+        );
+        assert!(
+            active_set[0].contains("zNewSheet"),
+            "creating must auto-activate the new sheet; saw {active_set:?}"
+        );
+
+        Ok(())
+    }
+
     /// `syntax.analyze(source).perform(env)` standalone — the
     /// first lifecycle entry point used on its own, with no
     /// `compile` or `evaluate` step. Installs a concept on the

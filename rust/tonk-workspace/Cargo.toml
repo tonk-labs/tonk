@@ -33,6 +33,8 @@ web-sys = { workspace = true, features = [
   "Element",
   "Event",
   "HtmlElement",
+  "HtmlInputElement",
+  "KeyboardEvent",
   "Location",
   "MutationObserver",
   "MutationObserverInit",
