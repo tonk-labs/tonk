@@ -905,10 +905,9 @@ view!:
 
 # The empty-artifact canvas: what a freshly created sheet renders until
 # it has real content. Mirrors the wireframe's "empty artifact
-# (terminal)" frame - a "just created" header with the artifact name,
-# an agent-link row to hand to an agent, and a short instructional
-# block. Styling uses the app's Web Awesome tokens so it follows the
-# active theme.
+# (terminal)" frame - the artifact name, an agent-link row to hand to an
+# agent, and a short instructional block. Styling uses the app's Web
+# Awesome tokens so it follows the active theme.
 view!:
   this: tonk:empty-artifact/view
   model: tonk:empty-artifact
@@ -918,86 +917,93 @@ view!:
         .empty-artifact {
           display: flex;
           flex-direction: column;
-          gap: var(--wa-space-l);
-          max-width: 560px;
+          gap: var(--wa-space-2xl);
+          width: 100%;
+          max-width: 620px;
           margin: 0 auto;
-          padding: var(--wa-space-2xl) var(--wa-space-l);
+          padding: var(--wa-space-3xl) var(--wa-space-2xl);
           color: var(--wa-color-text-normal);
           font-family: var(--wa-font-family-body);
         }
-        .empty-artifact__meta {
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-quiet);
-          text-transform: lowercase;
-          letter-spacing: 0.04em;
-        }
+        /* The artifact name, large and light, with a file glyph. The
+           app stylesheet gives every `h1` an inverted "headline cover"
+           background; override it back to plain text here so the title
+           reads as a heading, not a highlighted block. */
         .empty-artifact__title {
           display: flex;
           align-items: center;
           gap: var(--wa-space-s);
-          font-size: var(--wa-font-size-2xl);
-          font-weight: var(--wa-font-weight-semibold);
           margin: 0;
+          padding: 0;
+          background: transparent;
+          color: var(--wa-color-text-normal);
+          font-family: var(--wa-font-family-body);
+          font-size: var(--wa-font-size-2xl);
+          font-weight: var(--wa-font-weight-normal);
+          letter-spacing: -0.02em;
         }
         .empty-artifact__glyph { color: var(--wa-color-text-quiet); flex: none; }
-        /* The agent-link panel: a labelled row with the URL in a
-           monospace box and a copy button. */
+        /* The agent-link panel: an uppercase mono label over a share
+           control that mints a real invite. `<tonk-share>` renders the
+           button (`.empty-artifact__share`); clicking it dispatches
+           `tonk:share`, which the shell turns into a UCAN invite + copy
+           dialog (the same flow as the top-bar share). */
         .empty-artifact__deeplink {
           display: flex;
           flex-direction: column;
           gap: var(--wa-space-xs);
-          padding: var(--wa-space-m);
-          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
-          border-radius: var(--wa-border-radius-m);
-          background: var(--wa-color-surface-raised);
+          align-items: flex-start;
         }
         .empty-artifact__deeplink-label {
           font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-s);
+          font-size: var(--wa-font-size-xs);
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
           color: var(--wa-color-text-quiet);
         }
-        .empty-artifact__deeplink-row {
-          display: flex;
+        .empty-artifact__share {
+          display: inline-flex;
           align-items: center;
           gap: var(--wa-space-s);
+          padding: var(--wa-space-s) var(--wa-space-l);
+          font: inherit;
+          font-size: var(--wa-font-size-m);
+          font-weight: var(--wa-font-weight-semibold);
+          color: var(--wa-color-brand-on-loud);
+          background: var(--wa-color-brand-fill-loud);
+          border: none;
+          border-radius: var(--wa-border-radius-m);
+          cursor: pointer;
         }
-        .empty-artifact__url {
-          flex: 1;
-          min-width: 0;
-          overflow-x: auto;
-          white-space: nowrap;
-          font-family: var(--wa-font-family-code);
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-normal);
-          padding: var(--wa-space-2xs) var(--wa-space-xs);
-          background: var(--wa-color-neutral-fill-quiet);
-          border-radius: var(--wa-border-radius-s);
-        }
+        .empty-artifact__share:hover { background: var(--wa-color-brand-fill-loud); filter: brightness(1.06); }
+        .empty-artifact__share-glyph { width: 16px; height: 16px; flex: none; }
+        /* A quoted instructional block with a brand left-accent bar. */
         .empty-artifact__instr {
           display: flex;
           flex-direction: column;
           gap: var(--wa-space-2xs);
+          padding-left: var(--wa-space-m);
+          border-left: 2px solid var(--wa-color-brand-fill-loud);
           font-size: var(--wa-font-size-m);
-          color: var(--wa-color-text-quiet);
           line-height: var(--wa-line-height-normal);
+          color: var(--wa-color-text-quiet);
         }
+        .empty-artifact__instr p { margin: 0; }
         .empty-artifact__instr b { color: var(--wa-color-text-normal); font-weight: var(--wa-font-weight-semibold); }
       </style>
-      <div class="empty-artifact__meta">just created &middot; empty</div>
       <h1 class="empty-artifact__title">
         <wa-icon class="empty-artifact__glyph" name="file" variant="regular"></wa-icon>
         {title}
       </h1>
       <section class="empty-artifact__deeplink">
         <div class="empty-artifact__deeplink-label">agent link &middot; paste into your agent</div>
-        <div class="empty-artifact__deeplink-row">
-          <code class="empty-artifact__url">{this}</code>
-          <wa-copy-button value={this}></wa-copy-button>
-        </div>
+        <tonk-share
+          button-class="empty-artifact__share"
+          glyph-class="empty-artifact__share-glyph"
+          label="Generate agent link"></tonk-share>
       </section>
       <div class="empty-artifact__instr">
-        <p>Paste this link into your agent's chat to start building.</p>
+        <p>Generate a link and paste it into your agent's chat to start building.</p>
         <p>The agent will edit <b>{title}</b> directly &mdash; you'll see changes here as they happen.</p>
       </div>
     </div>

@@ -62,27 +62,63 @@ impl CustomElement for TonkShare {
     }
 }
 
-/// CSS class the consuming workspace view styles.
+/// Default CSS class the workspace top bar styles (icon-only button).
 const BUTTON: &str = "workspace__share";
 
 /// Inline share-nodes glyph (three connected nodes), drawn with
-/// `currentColor` so it follows the button's text colour.
-const GLYPH: &str = r#"<svg class="workspace__share-glyph" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="5" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"></line><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"></line></svg>"#;
+/// `currentColor` so it follows the button's text colour. The class is
+/// the `<svg>`'s own; it sizes via the consuming view's stylesheet.
+fn glyph(svg_class: &str) -> String {
+    format!(
+        r#"<svg class="{svg_class}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="5" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.6" y1="10.6" x2="15.4" y2="6.4"></line><line x1="8.6" y1="13.4" x2="15.4" y2="17.6"></line></svg>"#
+    )
+}
 
 /// Find or create the share button as the element's only child.
 /// Idempotent — a reconnect reuses the existing button.
+///
+/// Attributes on `<tonk-share>` let a consumer reskin it without the
+/// element knowing about any particular surface:
+///
+/// - `button-class` overrides the button's CSS class (default
+///   `workspace__share`), so the empty-artifact canvas can render a
+///   prominent labelled button instead of the top bar's icon button.
+/// - `label` adds visible button text after the glyph; absent → an
+///   icon-only button (the top bar).
+/// - `glyph-class` sets the inline SVG's class (default
+///   `workspace__share-glyph`).
 fn ensure_button(this: &HtmlElement) -> Option<Element> {
     let document = window().and_then(|w| w.document())?;
-    if let Ok(Some(existing)) = this.query_selector(&format!(":scope > .{BUTTON}")) {
+    let button_class = this
+        .get_attribute("button-class")
+        .unwrap_or_else(|| BUTTON.to_owned());
+    let selector = format!(
+        ":scope > .{}",
+        button_class.split_whitespace().next().unwrap_or(BUTTON)
+    );
+    if let Ok(Some(existing)) = this.query_selector(&selector) {
         return Some(existing);
     }
+    let glyph_class = this
+        .get_attribute("glyph-class")
+        .unwrap_or_else(|| "workspace__share-glyph".to_owned());
+    let label = this.get_attribute("label");
+
     let button = document.create_element("button").ok()?;
-    let _ = button.set_attribute("class", BUTTON);
+    let _ = button.set_attribute("class", &button_class);
     let _ = button.set_attribute("type", "button");
     let _ = button.set_attribute("part", "button");
     let _ = button.set_attribute("aria-label", "Share this repo");
     let _ = button.set_attribute("title", "Share this repo");
-    button.set_inner_html(GLYPH);
+    match &label {
+        Some(text) => {
+            button.set_inner_html(&glyph(&glyph_class));
+            let span = document.create_element("span").ok()?;
+            span.set_text_content(Some(text));
+            let _ = button.append_child(&span);
+        }
+        None => button.set_inner_html(&glyph(&glyph_class)),
+    }
     let _ = this.append_child(&button);
     Some(button)
 }
@@ -223,6 +259,64 @@ mod tests {
         button.dyn_ref::<HtmlElement>().unwrap().click();
 
         assert_eq!(captured.borrow().as_deref(), Some(""));
+
+        window()
+            .unwrap()
+            .remove_event_listener_with_callback("tonk:share", listener.as_ref().unchecked_ref())
+            .unwrap();
+        share.remove();
+    }
+
+    /// With `button-class` + `label`, the element renders a labelled
+    /// button under the custom class (the empty-artifact canvas's
+    /// prominent share button) and still dispatches `tonk:share`.
+    #[dialog_common::test]
+    async fn it_renders_a_labelled_button_with_a_custom_class() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let share = document.create_element("tonk-share").unwrap();
+        share
+            .set_attribute("button-class", "empty-artifact__share")
+            .unwrap();
+        share.set_attribute("label", "Generate agent link").unwrap();
+        body.append_child(&share).unwrap();
+
+        let button = share
+            .query_selector(".empty-artifact__share")
+            .unwrap()
+            .expect("custom-class button injected on connect");
+        assert!(
+            button
+                .text_content()
+                .unwrap_or_default()
+                .contains("Generate agent link"),
+            "labelled button should carry the label text",
+        );
+        assert!(
+            share.query_selector(".workspace__share").unwrap().is_none(),
+            "the default class must not be used when button-class is set",
+        );
+
+        let captured: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let sink = captured.clone();
+        let listener = Closure::wrap(Box::new(move |event: Event| {
+            let event = event.dyn_into::<CustomEvent>().unwrap();
+            *sink.borrow_mut() = js_sys::Reflect::get(&event.detail(), &JsValue::from_str("repo"))
+                .ok()
+                .and_then(|v| v.as_string());
+        }) as Box<dyn FnMut(Event)>);
+        window()
+            .unwrap()
+            .add_event_listener_with_callback("tonk:share", listener.as_ref().unchecked_ref())
+            .unwrap();
+
+        button.dyn_ref::<HtmlElement>().unwrap().click();
+        assert!(
+            captured.borrow().is_some(),
+            "clicking must dispatch tonk:share"
+        );
 
         window()
             .unwrap()
