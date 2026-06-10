@@ -19,7 +19,6 @@ serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
 serde_ipld_dagjson = { workspace = true }
-tonk-concept = { workspace = true }
 tonk-host = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }

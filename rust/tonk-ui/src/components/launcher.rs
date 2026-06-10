@@ -1,6 +1,6 @@
 use crate::components::{
-    LastJoinOutcome, TonkBoardView, TonkConceptView, TonkDisplayView, TonkHub, TonkInviteDialog,
-    TonkJoin, TonkLayoutView, TonkProfile, TonkSpaceViewer, TonkToolbar,
+    LastJoinOutcome, TonkBoardView, TonkDisplayView, TonkHub, TonkInviteDialog, TonkJoin,
+    TonkLayoutView, TonkProfile, TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -60,10 +60,6 @@ pub fn TonkLauncher() -> impl IntoView {
                         <Route
                             path=path!("space/:space/view/:entity")
                             view=TonkSpaceViewer
-                        />
-                        <Route
-                            path=path!("space/:space/concept/:source")
-                            view=TonkConceptView
                         />
                         <Route
                             path=path!("space/:space/layout/:workspace")

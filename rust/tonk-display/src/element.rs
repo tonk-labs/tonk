@@ -25,10 +25,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use crate::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use custom_elements::CustomElement;
 use ipld_core::ipld::Ipld;
 use js_sys::{Function, Reflect};
-use tonk_concept::resolve::{ParsedSource, name_query, parse_source, phase1_query};
 use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscription};
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;

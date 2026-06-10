@@ -1424,5 +1424,3 @@ rule!:
 
 tonk/binder-init!:
    reason: Initialize a new tonk repository
-
-# test

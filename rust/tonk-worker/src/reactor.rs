@@ -47,9 +47,8 @@ pub use repository::{RepositoryReference, RepositoryState};
 pub use subscribe::Subscribe;
 pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
 /// On-the-wire `Conclusion` and `Query` — re-exported from
-/// [`tonk_schema`] so consumers (browser clients, the
-/// `<tonk-concept>` element) can deserialize without depending
-/// on this crate.
+/// [`tonk_schema`] so consumers (browser clients, the consumer
+/// elements) can deserialize without depending on this crate.
 pub use tonk_schema::conclusion::Conclusion;
 pub use tonk_schema::query::Query;
 pub use transaction::{Commit, TransactionBuilder};

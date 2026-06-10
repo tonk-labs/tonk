@@ -1,16 +1,16 @@
 # View templates: interpolation, iteration, and directories
 
-This documents the template language that `<tonk-display>` and
-`<tonk-concept>` share: how an HTML template with `{placeholder}`
-holes is filled from a concept's fields, how cardinality-many fields
-make a subtree repeat, and how a single template renders either *one*
-entity or a *directory* of many.
+This documents the template language `<tonk-display>` uses: how an
+HTML template with `{placeholder}` holes is filled from a concept's
+fields, how cardinality-many fields make a subtree repeat, and how a
+single template renders either *one* entity or a *directory* of many.
 
-The engine lives in `tonk-concept` (`template.rs` plans, `render.rs`
-diffs into the DOM); `tonk-display` runs the same algorithm for its
-single-entity case. This doc lives in `tonk-core` because the model is
-grounded in `tonk-core`'s `conclusion` primitive, which is the unit a
-template renders.
+The planning half lives in `tonk-concept` (`template.rs` parses a
+template into a chrome/repeat plan and substitutes fields); `tonk-display`
+owns the rendering half (`render.rs` diffs each frame into the DOM).
+This doc lives in `tonk-core` because the model is grounded in
+`tonk-core`'s `conclusion` primitive, which is the unit a template
+renders.
 
 ## The shape of a template
 
@@ -138,8 +138,8 @@ element repeats, not just a text node inside it; a mixed value like
 lift a repeat root.
 
 When a template binds **no** `{this}`, the repeat root defaults to the
-whole fragment — the entire template clones per conclusion (the
-`<tonk-concept>` behavior that predates this). And in a **single-entity**
+whole fragment — the entire template clones per conclusion. And in a
+**single-entity**
 render there is exactly one conclusion, so the template renders once
 whether or not it binds `{this}`. Single-entity is the one-conclusion
 case of the same per-conclusion loop.

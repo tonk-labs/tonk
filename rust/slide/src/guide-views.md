@@ -55,32 +55,6 @@ view** — every instance of the model — using the model's
 Share a display: `slide share display <entity> --view <view-name>`
 (or `--model <concept>` for carousel mode).
 
-## `<tonk-concept>` — many rows, live
-
-`<tonk-concept source="<concept>[?k=v...]">` opens a live subscription
-and clones a row template per match. Rows insert/update/remove as the
-branch changes.
-
-```html
-<tonk-concept source="person">
-  <ul>
-    <template>
-      <li>{name} is {age}</li>
-    </template>
-  </ul>
-</tonk-concept>
-```
-
-- `source` is a concept name (`person`) or an entity URI (anything with
-  `:`), plus optional `?key=value` constant filters
-  (`person?name=Alice`).
-- With a `<template>` child, its parent is the row container and the
-  surrounding chrome (`<ul>`, `<tbody>`, …) survives. Without one, each
-  direct child of `<tonk-concept>` is the row template and rows append
-  to the host.
-- `{field}` substitutes in text and attribute values. A field with no
-  value renders empty; unknown `{` has no escape.
-
 ## Escape hatch: raw `text/html` views
 
 For a one-off HTML page (no live binding), assert a `text/html` claim

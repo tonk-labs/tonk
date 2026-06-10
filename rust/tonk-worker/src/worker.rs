@@ -79,10 +79,9 @@ enum Route {
 ///   directly from an iframe; only the bridge is.
 /// - Paths under `/api/` from non-view clients are handled by the
 ///   axum router as-is.
-/// - A small allow-list of shared dist-root assets (the
-///   `<tonk-concept>` web-target build and the wasm-bindgen
-///   `/snippets/*` shims it pulls in) is passed straight through,
-///   even from guest iframes — see [`is_shared_asset`] for why.
+/// - A small allow-list of shared dist-root assets (the iframe
+///   bridge module) is passed straight through, even from guest
+///   iframes — see [`is_shared_asset`] for why.
 /// - Requests whose initiating client is a registered guest
 ///   iframe are *also* handled by the router, but with their
 ///   path rewritten to live under
@@ -137,17 +136,11 @@ async fn route_for(path: &str, client_id: &str, state: &AppState) -> Route {
 
 /// Paths that must reach the network even when the requesting
 /// client is a registered guest iframe. The iframe shell loads
-/// `<tonk-concept>` from the dist root via `<script type="module"
-/// src="/tonk-concept.js">`; without this exemption the
-/// guest-binding rewrite would re-root that fetch under the
-/// iframe's branch and 404. `/snippets/*` covers the wasm-bindgen
-/// JS shims that the element's glue imports (e.g. for the
-/// `custom-elements` crate).
+/// `/__tonk/bridge.js` to install `globalThis.tonk`; without this
+/// exemption the guest-binding rewrite would re-root that fetch
+/// under the iframe's branch and 404.
 fn is_shared_asset(path: &str) -> bool {
-    matches!(
-        path,
-        "/tonk-concept.js" | "/tonk-concept_bg.wasm" | "/__tonk/bridge.js"
-    ) || path.starts_with("/snippets/")
+    matches!(path, "/__tonk/bridge.js")
 }
 
 /// Route the request through the axum router, apply response

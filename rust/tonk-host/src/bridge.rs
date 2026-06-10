@@ -18,7 +18,7 @@ use web_sys::{ReadableStream, ReadableStreamDefaultReader, window};
 /// error if the bridge module hasn't loaded yet — the wrapper
 /// injected by `host::wrap_html_body` loads bridge.js before this
 /// crate's runtime, so the only way this should fail is if a
-/// caller mounted `<tonk-concept>` outside the iframe shell.
+/// caller mounted a bridge consumer outside the iframe shell.
 fn tonk_global() -> Result<JsValue, ErrorDetail> {
     let win = window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no window"))?;
     let tonk = Reflect::get(&win, &JsValue::from_str("tonk"))

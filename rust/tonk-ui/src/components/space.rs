@@ -1404,8 +1404,7 @@ fn render_result_tabs(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoVie
 /// row is the projected field names; each result is a row, with
 /// the entity URI in a leading `this` column. The `this` column
 /// is monospaced and hard-clipped to its last few characters
-/// (the unique suffix), the full URI on the cell `title` — the
-/// same treatment the `<tonk-concept>` table uses.
+/// (the unique suffix), the full URI on the cell `title`.
 fn render_match_block_tables(blocks: Vec<tonk_worker::QueryMatchBlock>) -> impl IntoView {
     view! {
         <div class="query-tables wa-stack wa-gap-l">
