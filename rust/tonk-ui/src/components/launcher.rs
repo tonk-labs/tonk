@@ -27,6 +27,33 @@ pub fn TonkLauncher() -> impl IntoView {
                     // mounted on the profile's meta branch.
                     <Route path=path!("") view=TonkHub />
 
+                    // Every other route renders inside the adaptive
+                    // `<wa-page>` shell (navigation column on desktop,
+                    // drawer on mobile) plus the toolbar. The parent
+                    // route provides that chrome once and slots the
+                    // matched child through `<Outlet/>`.
+                    //
+                    // The inspector/dev routes share the `{branch}@{name}`
+                    // space convention. Their static keyword segment
+                    // (`view`/`board`) must be defined BEFORE the
+                    // bare-space display routes below because the Leptos
+                    // router matches in definition order — the `*subject`
+                    // wildcard would otherwise capture them. A model named
+                    // `view` or `board` at the space root is therefore
+                    // reserved.
+                    <ParentRoute path=path!("") view=ChromeShell>
+                        <Route
+                            path=path!("space/:space/view/:entity")
+                            view=TonkSpaceViewer
+                        />
+                        <Route
+                            path=path!("space/:space/board/:board")
+                            view=TonkBoardView
+                        />
+                        <Route path=path!("profile") view=TonkProfile />
+                        <Route path=path!("join") view=TonkJoin />
+                    </ParentRoute>
+
                     // The display route renders bare — just the
                     // `<tonk-display>` and its routing context, no shell
                     // chrome. It sits OUTSIDE the chromed parent route so
@@ -41,32 +68,14 @@ pub fn TonkLauncher() -> impl IntoView {
                     //   /space/{name}/{model}/               directory
                     //   /space/{name}/{entity}@{model}/*     artifact
                     //   /space/{name}/{entity}@{model}!{view}/*  ad-hoc
+                    //
+                    // These routes must come AFTER the ParentRoute above.
+                    // The router matches in definition order; placing them
+                    // here ensures the static-keyword chromed routes win
+                    // over the bare wildcard on any path they share a
+                    // prefix with.
                     <Route path=path!("space/:space") view=TonkDisplayView />
                     <Route path=path!("space/:space/*subject") view=TonkDisplayView />
-
-                    // Every other route renders inside the adaptive
-                    // `<wa-page>` shell (navigation column on desktop,
-                    // drawer on mobile) plus the toolbar. The parent
-                    // route provides that chrome once and slots the
-                    // matched child through `<Outlet/>`.
-                    //
-                    // The inspector/dev routes share the `{branch}@{name}`
-                    // space convention. Their static keyword segment
-                    // (`view`/`board`) is matched before the bare-space
-                    // display routes above by the router's specificity
-                    // ordering.
-                    <ParentRoute path=path!("") view=ChromeShell>
-                        <Route
-                            path=path!("space/:space/view/:entity")
-                            view=TonkSpaceViewer
-                        />
-                        <Route
-                            path=path!("space/:space/board/:board")
-                            view=TonkBoardView
-                        />
-                        <Route path=path!("profile") view=TonkProfile />
-                        <Route path=path!("join") view=TonkJoin />
-                    </ParentRoute>
                 </Routes>
                 <TonkInviteDialog />
             </Router>

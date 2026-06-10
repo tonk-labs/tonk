@@ -92,12 +92,56 @@ for _ in $(seq 1 60); do
   loc="${loc%\"}"
   case "$loc" in
     */join*) sleep 1 ;;
-    *) echo "bridge: landed on $loc" >&2; exit 0 ;;
+    *) echo "bridge: landed on $loc" >&2; break ;;
   esac
 done
 
-echo "bridge: join did not complete within 60s" >&2
-# Print current page state for debugging
-"$B" eval "document.title" >&2 || true
-"$B" eval "window.location.href" >&2 || true
-exit 1
+# Re-check after loop — if still on /join, the join timed out.
+loc="$("$B" eval "window.location.pathname")"
+loc="${loc#\"}"
+loc="${loc%\"}"
+case "$loc" in
+  */join*)
+    echo "bridge: join did not complete within 60s" >&2
+    "$B" eval "document.title" >&2 || true
+    "$B" eval "window.location.href" >&2 || true
+    exit 1
+    ;;
+esac
+
+# Trigger an explicit pull so the browser replica has the latest
+# remote data before any screenshot is taken. join.rs calls pull
+# already, but racing the service-worker startup means it may land
+# before the worker is ready.  A second pull here is cheap (no-op
+# when already at HEAD) and makes the data-visible guarantee tight.
+#
+# The pull endpoint is handled by the service worker (not Caddy), so
+# we fire it from the page via a synchronous XHR -- the SW intercepts
+# page-side fetch/XHR regardless of sync flag.
+echo "bridge: triggering post-join pull for space $SPACE_NAME" >&2
+"$B" eval "(function() {
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/repository/$SPACE_NAME/branch/main/sync/pull', false);
+  xhr.send();
+  return xhr.status + ':' + xhr.responseText.slice(0, 80);
+})()" >&2 || true
+
+# Poll the pull endpoint until the response contains a revision (success),
+# or we time out. Polling is bounded to ~30 s.
+echo "bridge: waiting for pull to confirm data..." >&2
+for i in $(seq 1 60); do
+  pull_raw="$("$B" eval "(function() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/repository/$SPACE_NAME/branch/main/sync/pull', false);
+    xhr.send();
+    return xhr.status + ':' + xhr.responseText.slice(0, 200);
+  })()" 2>/dev/null || true)"
+  pull_raw="${pull_raw#\"}"
+  pull_raw="${pull_raw%\"}"
+  case "$pull_raw" in
+    200:*'"success":true'*) echo "bridge: pull confirmed (poll $i)" >&2; break ;;
+    200:*) echo "bridge: pull ok but success missing (poll $i): $pull_raw" >&2; break ;;
+    *) echo "bridge: pull poll $i: $pull_raw" >&2; sleep 0.5 ;;
+  esac
+done
+echo "bridge: done" >&2

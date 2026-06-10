@@ -6,7 +6,7 @@
 //! Three flavours, sharing a common skeleton:
 //!
 //! - [`share_concept`] points at tonk-ui's auto-rendered concept
-//!   route — `then=branch/main/concept/<name>`.
+//!   route — `then=concept/<name>` (maps to `/space/<name>/concept/<source>`).
 //! - [`share_view`] points at the iframe viewer route — the
 //!   target resolves to an entity URI carrying a `text/html`
 //!   claim, and `then=branch/main/view/<entity>`.
@@ -262,7 +262,8 @@ impl From<RemoteError> for ShareError {
 }
 
 /// Push the local repo, mint an audience-open invite over it,
-/// and produce a launcher URL pointing at a concept view.
+/// and produce a launcher URL pointing at the chromed concept view
+/// (`/space/<name>/concept/<concept_name>`).
 ///
 /// Pre-flight ordering matters: each step that can fail
 /// independently runs before the side-effecting ones (push, mint)
@@ -290,10 +291,11 @@ pub async fn share_concept(
 
     let remote_record = prepare_share(site, options.remote.as_deref()).await?;
     let space_name = effective_space_name(options.space_name.as_deref());
-    let then = format!(
-        "branch/{branch}/concept/{concept_name}",
-        branch = site::BRANCH_NAME,
-    );
+    // `then=` is a suffix under `/space/<name>/`; the concept route is
+    // `space/:space/concept/:source` so the suffix must start with
+    // `concept/`. No branch segment — `:space` defaults to `main` when
+    // no `{branch}@` prefix is present.
+    let then = format!("concept/{concept_name}");
     let url = mint_and_compose(
         site,
         options.ui_base.as_deref(),
