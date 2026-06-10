@@ -25,9 +25,6 @@ use display::*;
 mod hub;
 use hub::*;
 
-mod layout;
-use layout::*;
-
 mod board;
 use board::*;
 

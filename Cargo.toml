@@ -11,7 +11,6 @@ members = [
     "rust/tonk-evaluator",
     "rust/tonk-host",
     "rust/tonk-invite",
-    "rust/tonk-layout",
     "rust/tonk-language-server",
     "rust/tonk-macros",
     "rust/tonk-notation",
@@ -43,7 +42,6 @@ tonk-evaluator = { path = "./rust/tonk-evaluator" }
 tonk-host = { path = "./rust/tonk-host" }
 tonk-invite = { path = "./rust/tonk-invite" }
 tonk-language-server = { path = "./rust/tonk-language-server" }
-tonk-layout = { path = "./rust/tonk-layout" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-portal = { path = "./rust/tonk-portal" }
