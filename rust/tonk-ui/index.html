@@ -181,23 +181,6 @@
             data-bindgen-target="web"
             data-wasm-opt="z"
         />
-        <!-- Standalone `<tonk-concept>` element module. The parent shell
-       registers the element directly from its own bundle; this
-       artefact exists so the tonk-worker HTML wrapper can also
-       register it inside the iframe's separate `customElements`
-       registry (see `rust/tonk-worker/src/router/host.rs`). Built
-       from the bin shim at `rust/tonk-concept/src/bin/tonk-concept.rs`.
-       Trunk's `worker` type drops the file at a stable unhashed
-       URL (`/tonk-concept.js`) without auto-injecting any script
-       into this page. -->
-        <link
-            data-trunk
-            rel="rust"
-            data-bin="tonk-concept"
-            data-type="worker"
-            data-bindgen-target="web"
-            data-wasm-opt="z"
-        />
 
         <!-- Bridge module injected by host::wrap_html_body into iframe srcdoc.
        Served at `/__tonk/bridge.js` by the dev server / CDN so the

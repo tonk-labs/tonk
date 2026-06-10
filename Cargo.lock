@@ -4873,7 +4873,6 @@ dependencies = [
 name = "tonk-concept"
 version = "0.1.0"
 dependencies = [
- "custom-elements",
  "dialog-common",
  "indexmap",
  "ipld-core",
@@ -4883,10 +4882,8 @@ dependencies = [
  "serde_ipld_dagjson",
  "serde_json",
  "tokio",
- "tonk-host",
  "tonk-schema",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "web-sys",
 ]
@@ -5161,7 +5158,6 @@ dependencies = [
  "tonk-access-service",
  "tonk-board",
  "tonk-code",
- "tonk-concept",
  "tonk-display",
  "tonk-host",
  "tonk-invite",

@@ -4,13 +4,12 @@ version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
-description = "<tonk-concept> custom element — live-subscribes to a tonk-worker query and renders matches into an author-supplied HTML template."
+description = "Shared notation-template machinery (source parsing, chrome/repeat plan, field substitution) backing <tonk-display>."
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [dependencies]
-custom-elements = { workspace = true }
 indexmap = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
@@ -18,10 +17,8 @@ serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
 serde_ipld_dagjson = { workspace = true }
-tonk-host = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
-wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "Attr",
     "Comment",

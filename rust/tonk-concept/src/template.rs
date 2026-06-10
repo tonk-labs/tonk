@@ -723,12 +723,13 @@ mod dom {
 
     /// Find the host's own row `<template>`: the first `<template>`
     /// in tree order that is **not** inside a nested template-owning
-    /// component. A `<tonk-view>` display body embeds `<tonk-concept>`
-    /// shelves, each owning its own `<template>`; a plain
+    /// component. A `<tonk-view>` display body can embed nested
+    /// `<tonk-display>`s, each owning its own `<template>`; a plain
     /// `query_selector_all("template")` would return the first
-    /// shelf's template and `snapshot_template` would then strip it,
-    /// breaking that shelf. The walk stops at component boundaries so
-    /// each element only ever claims a template it actually owns.
+    /// nested template and `snapshot_template` would then strip it,
+    /// breaking that component. The walk stops at component
+    /// boundaries so each element only ever claims a template it
+    /// actually owns.
     fn find_template(host: &Element) -> Option<Element> {
         let mut child = host.first_element_child();
         while let Some(el) = child {
@@ -749,17 +750,13 @@ mod dom {
     /// their `connected_callback`. Their templates belong to them,
     /// so an ancestor's template search must skip their subtrees.
     ///
-    /// Keep this list in sync with the elements that actually
-    /// register a template-snapshotting custom element: `tonk-concept`
-    /// here and `tonk-display` / `tonk-view` in the `tonk-display`
-    /// crate. A template-owning element missing from this list would
-    /// have its template stolen by an ancestor — the exact bug this
-    /// guard prevents.
+    /// Keep this list in sync with the template-snapshotting custom
+    /// elements that actually register (`tonk-display` / `tonk-view`
+    /// in the `tonk-display` crate). A template-owning element missing
+    /// from this list would have its template stolen by an ancestor —
+    /// the exact bug this guard prevents.
     fn is_template_owning_component(el: &Element) -> bool {
-        matches!(
-            el.local_name().as_str(),
-            "tonk-concept" | "tonk-display" | "tonk-view"
-        )
+        matches!(el.local_name().as_str(), "tonk-display" | "tonk-view")
     }
 
     /// Walk a fragment, replace any text node containing
