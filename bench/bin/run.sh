@@ -55,7 +55,8 @@ for i in $(seq 1 "$RUNS"); do
 
   if [ "$SCRIPTED" != 1 ]; then
     "$ROOT/bench/bin/metrics.sh"
-    "$ROOT/bench/bin/judge.sh"
+    judge_status=0
+    "$ROOT/bench/bin/judge.sh" || judge_status=$?
   fi
   "$ROOT/bench/bin/visual-diff.sh"
   "$ROOT/bench/bin/report-run.sh"

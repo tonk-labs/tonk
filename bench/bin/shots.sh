@@ -16,12 +16,6 @@ B="$ROOT/bench/bin/browser.sh"
 SLIDE="$ROOT/target/release/slide"
 mkdir -p "$RUN_DIR/shots"
 
-# URL-decode a percent-encoded string (handles %XX sequences).
-urldecode() {
-  local encoded="$1"
-  printf '%b' "$(printf '%s' "$encoded" | sed 's/%/\\x/g')"
-}
-
 # Resolve a display:<view-name> checkpoint to a navigable URL.
 #
 # Strategy:
@@ -36,7 +30,7 @@ urldecode() {
 #    directory mode (all instances of <model>) using the named view
 #    template.
 #
-# Falls back to `<view-name>!<view-name>` when the model lookup fails —
+# Falls back to `<view-name>!tonk:view` when the model lookup fails —
 # the URL resolves but may render an error state. Failures append to
 # MISSING, never fatal.
 resolve_display() {

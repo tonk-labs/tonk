@@ -47,7 +47,7 @@ nix develop -c bench/bin/bench baseline <scenario> <run-dir>
 ```
 
 Run artifacts land in `bench/runs/<timestamp>-<n>-<scenario>/` (gitignored):
-`transcript.jsonl`, `shots/`, `metrics.json`, `judge.json`, `scores.json`,
+`episode.jsonl`, `shots/`, `metrics.json`, `judge.json`, `scores.json`,
 `report.md`, `visual-diff.json`.
 
 ### Improvement loop
@@ -107,13 +107,16 @@ from the judge.
 
 ## Requirements
 
-- Repo devshell: `nix develop` provides caddy, trunk, jq, imagemagick.
+- Repo devshell: `nix develop` provides caddy, trunk, jq, imagemagick, GNU
+  coreutils `timeout`.
 - `chromedriver` via `$CHROMEDRIVER` env var (set in the devshell).
 - Chrome at `/Applications/Google Chrome.app` (macOS default).
 - `claude` CLI on PATH.
 - `ANTHROPIC_API_KEY` — `op://` references are resolved via `op read` before
   launching the headless claude subprocesses; requires an unlocked 1Password
   session.
+- `slide` release binary — built automatically by `stack.sh start` via
+  `cargo build --release -p slide` (no-ops when already up to date).
 
 ## Interpreting reports
 
@@ -163,3 +166,7 @@ is not supported by the analyzer; use a content attribute instead.
 
 **`--max-turns` unsupported** — the installed `claude` CLI has no `--max-turns`
 flag. Episodes are bounded by `EPISODE_TIMEOUT` via `timeout(1)` from coreutils.
+
+**`SPACE_NAME` is fixed to `bench`** — per-run S3 state is scoped by the
+in-process `LocalS3` instance (fresh per run), so a unique space name per run
+is unnecessary. All harness scripts default to `SPACE_NAME=bench`.

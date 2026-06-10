@@ -22,6 +22,11 @@ ensure_access_bin() {
   (cd "$ROOT" && cargo build --release -p tonk-access-service --features helpers --bin tonk-access-local)
 }
 
+ensure_slide() {
+  echo "stack: cargo build slide..." >&2
+  (cd "$ROOT" && cargo build --release -p slide)
+}
+
 start() {
   if [ -f "$RUN_DIR/access.pid" ] && kill -0 "$(cat "$RUN_DIR/access.pid")" 2>/dev/null \
   && [ -f "$RUN_DIR/caddy.pid" ] && kill -0 "$(cat "$RUN_DIR/caddy.pid")" 2>/dev/null; then
@@ -32,6 +37,7 @@ start() {
 
   ensure_ui
   ensure_access_bin
+  ensure_slide
   mkdir -p "$RUN_DIR"
 
   # --- launch access service ---
