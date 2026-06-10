@@ -1,4 +1,4 @@
-## Reactive views: events and effects
+# Reactive views: events and effects
 
 Templates with `{field}` interpolation cover the read path: a
 view subscribes to a query and re-renders rows in place when the
@@ -253,7 +253,7 @@ concept!: &complete
   transient: true
   with:
     todo:
-      the: dom.event.target.dataset/todo
+      the: dom.event.current-target.dataset/todo
       as:  entity
 
 rule!:
@@ -286,8 +286,9 @@ slide share display <subject> --view <view-name>
   template). Omit `--view` and the element falls back to
   carousel mode — every view published for the subject's model.
 
-There is no `--model`: the view declares its own `model`, so the
-caller never repeats it. The `view` concept is `{model,
+With `--view`, you don't pass `--model`: the named view declares its
+own `model`, so the caller never repeats it. (`--model` is the carousel
+form — see `slide guide views`.) The `view` concept is `{model,
 display}`; identity lives in the anchor name, not a `name` field.
 
 Concrete example, given the counter setup above:
@@ -317,21 +318,6 @@ Two related verbs to keep apart:
 
 `slide share display` is the verb that pairs with this guide.
 
-### What this replaces
-
-Earlier drafts of this guide pointed at a `globalThis.tonk` API
-(`tonk.query`, `tonk.subscribe`, `tonk.evaluate`) that lived on
-the window inside the served view iframe. That API still backs
-the host elements internally, but it is no longer the agent
-surface: writing views as `<script type="module">` blocks that
-call into it is a stopgap, not a pattern to lean on.
-
-The declarative path is the right one because every piece is
-the same machinery the rest of the system already uses:
-concepts, rules, queries, subscriptions. Adding a new
-interaction means adding a transient concept and a rule, not
-inventing a new request shape on the wire.
-
 ### When the declarative path doesn't fit
 
 Anything that needs to render arbitrary HTML/CSS/JS without
@@ -340,3 +326,8 @@ embeds, complex canvas drawing, a charting library — belongs
 in a sandboxed iframe view rather than in the main view body.
 That sandbox is a separate piece (`<tonk-portal>`) outside the
 scope of this guide.
+
+---
+
+Don't memorize built-ins — run `slide schema` to see the concepts,
+rules, and transient commands already on the branch.

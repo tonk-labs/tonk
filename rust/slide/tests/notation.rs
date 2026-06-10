@@ -302,14 +302,38 @@ mod when_introspecting_the_schema {
     }
 }
 
-mod when_bundling_the_notation_guide {
+mod when_serving_the_guide {
     use slide::guide;
 
     #[dialog_common::test]
-    fn it_bakes_the_guide_into_the_binary() {
-        // `include_str!` resolves at compile time, so the binary
-        // works in sandboxes without source-tree access.
-        assert!(guide::GUIDE.starts_with("# Asserted-notation guide"));
-        assert!(guide::GUIDE.contains("attribute!"));
+    fn it_returns_the_index_for_no_topic() {
+        let text = guide::resolve(None).expect("index resolves");
+        assert!(text.contains("slide guide notation"));
+    }
+
+    #[dialog_common::test]
+    fn it_returns_each_topic_body() {
+        assert!(guide::topic("notation").unwrap().contains("attribute!"));
+        assert!(guide::topic("views").unwrap().contains("tonk:view"));
+        assert!(guide::topic("events").unwrap().contains("rule!"));
+        assert!(
+            guide::topic("workspace")
+                .unwrap()
+                .contains("view: tonk:view")
+        );
+        assert!(guide::topic("bogus").is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_returns_the_full_guide_for_all() {
+        let all = guide::resolve(Some("all")).expect("all resolves");
+        assert!(all.starts_with("# Asserted-notation guide"));
+        assert_eq!(all, guide::GUIDE);
+    }
+
+    #[dialog_common::test]
+    fn it_errors_on_an_unknown_topic() {
+        let err = guide::resolve(Some("nope")).expect_err("unknown rejects");
+        assert!(err.to_string().contains("notation"));
     }
 }

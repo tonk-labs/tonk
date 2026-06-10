@@ -1,88 +1,113 @@
-# Slide-specific notation: HTML views
+# Views: rendering data
 
-slide ships two share verbs that turn local data into a URL a human can
-paste into a browser: `slide share concept <name>` and `slide share view
-<name|entity>`. The concept share is automatic — any concept the agent
-has defined is shareable as-is. The view share targets entities that
-carry a `text/html` claim, and that claim has to come from somewhere.
+A **view** is an HTML template bound to a concept. The tonk-ui host
+ships two custom elements that render live branch data into views;
+neither needs a framework or a `<script>`. Author views by asserting
+the `view` concept — there is no separate write path.
 
-slide does not invent a write path for HTML; it goes through `slide eval`
-like everything else. The convention is one attribute and one concept,
-which you assert once per repository:
+## The `view` concept
+
+`view` is `{model, display}`: the concept it renders and the HTML
+template. Assert one per presentation:
+
+```yaml
+view!: &person-card
+  model: person
+  display: !text/html |
+    <article>
+      <h2>{name}</h2>
+      <p>{age}</p>
+    </article>
+```
+
+`{field}` placeholders interpolate the rendered entity's fields, drawn
+from the `model` concept's shape. A view is identified by its **anchor
+name** (`&person-card` publishes `id:person-card`); re-asserting the
+same anchor with a new `display` re-points the name, so edits replace
+in place and never leave duplicate rows.
+
+## `<tonk-display>` — one entity through a view
+
+`<tonk-display entity=<uri> model=<concept> view=<view-concept>>`
+renders a single entity. The resolution that trips people up:
+
+- `model` is the entity's concept; it projects the entity's fields.
+- `view` is a **view concept** (e.g. the built-in `tonk:view`), NOT a
+  specific view instance. `<tonk-display>` resolves the view concept,
+  then runs a **model-constrained query** to find the view instance
+  whose `model` equals the resolved model.
+
+So you author the instance with a `model` (above) and point callers at
+the concept:
+
+```yaml
+# Correct: the sheet/host references the view CONCEPT.
+view: tonk:view
+# Wrong: referencing a view instance (id:person-card) makes the
+# concept-of-concepts lookup miss → "Not found / no concept matched".
+```
+
+Omit `view` to fall back to the built-in detail view for the model. A
+`<tonk-display>` with a `model` but no `entity` renders a **directory
+view** — every instance of the model — using the model's
+`view/directory`, or a default carousel.
+
+Share a display: `slide share display <entity> --view <view-name>`
+(or `--model <concept>` for carousel mode).
+
+## `<tonk-concept>` — many rows, live
+
+`<tonk-concept source="<concept>[?k=v...]">` opens a live subscription
+and clones a row template per match. Rows insert/update/remove as the
+branch changes.
+
+```html
+<tonk-concept source="person">
+  <ul>
+    <template>
+      <li>{name} is {age}</li>
+    </template>
+  </ul>
+</tonk-concept>
+```
+
+- `source` is a concept name (`person`) or an entity URI (anything with
+  `:`), plus optional `?key=value` constant filters
+  (`person?name=Alice`).
+- With a `<template>` child, its parent is the row container and the
+  surrounding chrome (`<ul>`, `<tbody>`, …) survives. Without one, each
+  direct child of `<tonk-concept>` is the row template and rows append
+  to the host.
+- `{field}` substitutes in text and attribute values. A field with no
+  value renders empty; unknown `{` has no escape.
+
+## Escape hatch: raw `text/html` views
+
+For a one-off HTML page (no live binding), assert a `text/html` claim
+and serve it through the iframe viewer:
 
 ```yaml
 attribute!: &html-body
-  description: "HTML body of a slide-authored view"
+  description: "HTML body of a one-off page"
   the:         text/html
   as:          text
   cardinality: many
 
-concept!: &view
-  description: "An HTML view, served via the host route"
-  with:
-    body: html-body
-```
+concept!: &page
+  with: { body: html-body }
 
-The non-obvious bit is `the: text/html`. Attribute URIs (the `the:`
-field on `attribute!`) are validated at the dialog layer, which
-accepts any `<domain>/<name>` shape — including MIME-style strings
-like `text/html`. Once that attribute is declared, `view` is a normal
-concept and you write views the way you write any other concept
-assertion.
-
-## You are writing a body fragment, not a full document
-
-A view body is the **inside of `<body>`**, nothing more. The host
-wraps it at serve time with a fixed shell that provides the
-doctype, a `<meta charset>`, and the `<tonk-concept>` runtime script
-that hydrates live data into your templates. Write content, not
-chrome:
-
-```yaml
-view!: &my-task-list
+page!: &about
   body: |
-    <h1>Tasks</h1>
-    <tonk-concept source="task">
-      <ul>
-        <template>
-          <li>{title} — {status}</li>
-        </template>
-      </ul>
-    </tonk-concept>
+    <h1>About</h1>
 ```
 
-Do **not** write `<!doctype>`, `<html>`, `<head>`, `<body>`, or
-`<title>` tags yourself — the host wraps your body in its own
-shell, so writing chrome doubles it up. If you need page-level
-styling, put a `<style>` tag at the top of the body fragment.
+`slide views` lists every entity carrying a `text/html` claim;
+`slide share view <name>` opens it in the iframe viewer. The viewer
+shell does not register `<tonk-display>`, so events won't fire there —
+use `slide share display` for interactive, data-bound views.
 
-The runtime that activates `<tonk-concept>` is provided by the host
-and ships with every served view. You don't import it, link to it,
-or include it — assume it's there.
+---
 
-For interactive views (forms, buttons, custom write flows), wire
-DOM events declaratively with `on<event>=<concept>` attributes and
-let a rule pick up the resulting transient assertion. See the next
-section.
-
-Git-tag semantics apply: re-asserting the same body is idempotent
-(same content → same content-derived entity), a different body
-produces a new entity and re-points the `my-task-list` name. To
-retract every attribute in the projection, query the entity into a
-variable and use `..: _`:
-
-```yaml
-view:
-  this: ?v
-  body: ?body
-
-view!:
-  this: ?v
-  ..:   _
-```
-
-To list views: `slide views`. To share one: `slide share view my-task-list`.
-The listing is claim-driven — it surfaces every entity holding a
-`text/html` claim regardless of which concept (if any) it was asserted
-through — so a non-`view` schema that happens to assert `text/html` still
-shows up.
+For interactivity (clicks, forms) see `slide guide events`. Don't
+memorize built-ins — run `slide schema` / `slide concepts` /
+`slide views` to see what's on the branch.
