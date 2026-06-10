@@ -24,13 +24,30 @@ wd() { # method path [json-body]
 sid() { cat "$SESSION_FILE"; }
 
 start() {
+  # Double-start guard
+  if [ -f "$RUN_DIR/chromedriver.pid" ] && kill -0 "$(cat "$RUN_DIR/chromedriver.pid")" 2>/dev/null; then
+    echo "browser: already running (pid $(cat "$RUN_DIR/chromedriver.pid"))" >&2
+    return 0
+  fi
+
+  set -m
   "${CHROMEDRIVER:?CHROMEDRIVER not set (enter the devshell)}" --port="$PORT" \
     > "$RUN_DIR/chromedriver.log" 2>&1 &
   echo $! > "$RUN_DIR/chromedriver.pid"
+  set +m
+
   for _ in $(seq 1 20); do
     curl -fso /dev/null "$BASE/status" && break
     sleep 0.5
   done
+
+  # Fail loudly if chromedriver never came up
+  curl -fso /dev/null "$BASE/status" || {
+    echo "browser: chromedriver did not start; tail of log:" >&2
+    tail -5 "$RUN_DIR/chromedriver.log" >&2
+    exit 1
+  }
+
   local caps
   caps=$(jq -n --arg udd "$RUN_DIR/chrome-profile" '{capabilities:{alwaysMatch:{
     browserName:"chrome",
@@ -47,7 +64,13 @@ stop() {
     rm -f "$SESSION_FILE"
   fi
   if [ -f "$RUN_DIR/chromedriver.pid" ]; then
-    kill "$(cat "$RUN_DIR/chromedriver.pid")" 2>/dev/null || true
+    local pid
+    pid="$(cat "$RUN_DIR/chromedriver.pid")"
+    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.5
+    done
     rm -f "$RUN_DIR/chromedriver.pid"
   fi
 }
@@ -63,12 +86,13 @@ evaljs() {
 
 # Poll a JS predicate until it returns true. wait_for <js-expr> <timeout-s> <label>
 wait_for() {
-  local expr="$1" timeout="${2:-30}" label="${3:-condition}"
+  local expr="$1" timeout="${2:-30}" label="${3:-condition}" out=""
   for _ in $(seq 1 $((timeout * 2))); do
-    [ "$(evaljs "$expr")" = "true" ] && return 0
+    out="$(evaljs "$expr" 2>&1 || true)"
+    [ "$out" = "true" ] && return 0
     sleep 0.5
   done
-  echo "browser: timed out waiting for $label" >&2
+  echo "browser: timed out waiting for $label (last output: $out)" >&2
   return 1
 }
 
