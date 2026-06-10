@@ -6,6 +6,11 @@ version.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "tonk-access-local"
+path = "src/bin/local.rs"
+required-features = ["helpers"]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -62,7 +67,7 @@ getrandom = { workspace = true }
 anyhow = { workspace = true, optional = true }
 hyper = { workspace = true, optional = true }
 hyper-util = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["macros", "rt-multi-thread", "signal"] }
 async-trait = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 http-body-util = { workspace = true, optional = true }

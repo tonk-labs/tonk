@@ -51,6 +51,7 @@
           with pkgs;
           [
             binaryen
+            caddy
             cachix
             cargo-nextest
             esbuild
