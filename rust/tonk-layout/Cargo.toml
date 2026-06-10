@@ -16,7 +16,6 @@ ipld-core = { workspace = true }
 js-sys = { workspace = true }
 serde_json = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
-tonk-concept = { workspace = true }
 tonk-host = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }

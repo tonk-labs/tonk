@@ -643,7 +643,7 @@ mod dom {
     use web_sys::{DocumentFragment, Element, HtmlTemplateElement, Node, window};
 
     use super::{Binding, BindingKind, BindingPlan, Segment, has_field, parse_segments};
-    use crate::error::{ErrorDetail, ErrorKind};
+    use tonk_host::error::{ErrorDetail, ErrorKind};
     use wasm_bindgen::JsCast;
 
     /// Move the row template's content out of the host element

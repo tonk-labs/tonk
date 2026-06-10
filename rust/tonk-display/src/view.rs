@@ -30,9 +30,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::template::snapshot_template;
 use custom_elements::CustomElement;
 use js_sys::{Function, Reflect};
-use tonk_concept::template::snapshot_template;
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;

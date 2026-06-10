@@ -6,7 +6,6 @@ members = [
     "rust/tonk-board",
     "rust/tonk-code",
     "rust/tonk-common",
-    "rust/tonk-concept",
     "rust/tonk-core",
     "rust/tonk-display",
     "rust/tonk-evaluator",
@@ -38,7 +37,6 @@ tonk-analyzer = { path = "./rust/tonk-analyzer" }
 tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
 tonk-common = { path = "./rust/tonk-common" }
-tonk-concept = { path = "./rust/tonk-concept" }
 tonk-core = { path = "./rust/tonk-core" }
 tonk-display = { path = "./rust/tonk-display" }
 tonk-evaluator = { path = "./rust/tonk-evaluator" }

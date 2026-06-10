@@ -15,6 +15,13 @@
 
 pub mod events;
 pub mod resolve;
+// Notation-template machinery (segment parsing, chrome/repeat
+// binding plan, field substitution) folded in from the retired
+// `tonk-concept` crate. The pure planning fns are
+// target-independent so their tests run under `cargo test`; the
+// DOM-walking fns live behind the wasm cfg inside the module.
+#[cfg(any(target_arch = "wasm32", test))]
+pub mod template;
 
 // `notation_tokens` and `notation_format` are the tokenizer and
 // Conclusion-to-source formatter driving the wasm-only `notation`

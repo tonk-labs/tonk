@@ -3,7 +3,7 @@
 //! mounted-state tree so repeated `apply` calls update the DOM in place
 //! rather than re-cloning the template every frame.
 //!
-//! The template is split (by [`tonk_concept::template::split_plan`])
+//! The template is split (by [`crate::template::split_plan`])
 //! into two halves:
 //!
 //! - **chrome** — bindings outside the per-conclusion repeat element.
@@ -36,11 +36,11 @@
 
 use std::collections::BTreeMap;
 
-use ipld_core::ipld::Ipld;
-use tonk_concept::template::{
+use crate::template::{
     Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, Snapshot, apply_attribute_binding,
     extract_plan, navigate, render_segments_with_shadow, single_field_value,
 };
+use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion;
 use wasm_bindgen::JsCast;
 use web_sys::{Document, DocumentFragment, Element, Node, window};
