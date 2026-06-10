@@ -1032,6 +1032,8 @@ view/directory!:
            collapse (their inner <tonk-sheet> is `hidden`). Scrolling
            happens inside the sheet's card. */
         .workspace__binder > tonk-display {
+          display: flex;
+          flex-direction: column;
           flex: 1;
           min-height: 0;
           padding: var(--wa-space-l);
@@ -1042,8 +1044,9 @@ view/directory!:
           display: none;
         }
         .workspace__binder > tonk-display > tonk-view {
-          display: block;
-          height: 100%;
+          display: flex;
+          flex-direction: column;
+          flex: 1;
           min-height: 0;
         }
 
@@ -1053,7 +1056,7 @@ view/directory!:
         .workspace__binder tonk-sheet {
           display: flex;
           flex-direction: column;
-          height: 100%;
+          flex: 1;
           min-height: 0;
           color: inherit;
           font-family: inherit;
