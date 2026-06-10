@@ -1,6 +1,6 @@
 use crate::components::{
     LastJoinOutcome, TonkBoardView, TonkDisplayView, TonkHub, TonkInviteDialog, TonkJoin,
-    TonkLayoutView, TonkProfile, TonkSpaceViewer, TonkToolbar,
+    TonkProfile, TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -52,18 +52,13 @@ pub fn TonkLauncher() -> impl IntoView {
                     //
                     // The inspector/dev routes share the `{branch}@{name}`
                     // space convention. Their static keyword segment
-                    // (`view`/`concept`/`layout`/`board`) is matched
-                    // before the bare-space display routes above by the
-                    // router's specificity ordering, so a model named
-                    // `concept` is the only collision and is reserved.
+                    // (`view`/`board`) is matched before the bare-space
+                    // display routes above by the router's specificity
+                    // ordering.
                     <ParentRoute path=path!("") view=ChromeShell>
                         <Route
                             path=path!("space/:space/view/:entity")
                             view=TonkSpaceViewer
-                        />
-                        <Route
-                            path=path!("space/:space/layout/:workspace")
-                            view=TonkLayoutView
                         />
                         <Route
                             path=path!("space/:space/board/:board")
