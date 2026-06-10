@@ -54,6 +54,8 @@
             cachix
             cargo-nextest
             esbuild
+            imagemagick
+            jq
             python3
             tailwindcss_4
             trunk

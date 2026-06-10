@@ -56,6 +56,9 @@ dist
 !Cargo.lock
 references/
 
+# bench runs
+bench/runs/
+
 # temp dirs
 tmp/**
 temp/**
