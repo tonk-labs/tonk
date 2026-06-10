@@ -10,8 +10,11 @@ The model has three pieces:
 
 1. **`on<event>=<concept>`** on a template element names the
    concept a DOM event produces.
-2. A **transient concept** describes the shape of that event-
-   derived fact and where each field reads from.
+2. A **command** (`command!:`) describes the shape of that event-
+   derived fact and where each field reads from. A command is a
+   transient concept — `command!:` is the keyword `slide schema`
+   shows and is equivalent to `concept!:` with `transient: true`;
+   both write a fact that lives one cycle and is never persisted.
 3. A **rule** (`rule!:`) watches for the transient and asserts
    downstream state. The transient is the trigger; its one-cycle
    lifetime makes the rule fire exactly once per event.
@@ -32,10 +35,9 @@ concept!: &counter
   with:
     count: count
 
-# The event-derived concept. `transient: true` is what tells the
-# reactor not to persist it.
-concept!: &increment
-  transient: true
+# The event-derived command — a transient concept the reactor
+# sweeps after one cycle instead of persisting.
+command!: &increment
   with:
     subject:
       the: dom.event.current-target.dataset/subject
@@ -105,6 +107,7 @@ the live JS event. The `the:` identifier names a path:
 | `dom.event.target/value`                      | `event.target.value`                 |
 | `dom.event.current-target.dataset/subject`    | the bound element's `data-subject`   |
 | `dom.event.current-target.dataset/item-id`    | the bound element's `data-item-id`   |
+| `dom.event.detail/sheet`                      | a CustomEvent's `event.detail.sheet` |
 
 Rules of the translation:
 
@@ -112,6 +115,11 @@ Rules of the translation:
   successive property step on the event object.
 - Within a segment, kebab-case becomes camelCase before lookup
   (`shift-key` → `shiftKey`, `item-id` → `itemId`).
+- A leading `detail` segment is `event.detail` — the payload a
+  custom element dispatches with a `CustomEvent` (e.g. a
+  `<tonk-sheet-binder>` emitting `{detail: {sheet}}`). Plain DOM
+  events have no `detail`; this is how you read fields off an
+  event a component raised rather than a raw click.
 - A leading `target` segment is `event.target` — the *deepest*
   node the event fired on. A leading `current-target` segment
   is the **bound element**: the closest ancestor of
@@ -121,9 +129,13 @@ Rules of the translation:
   `data-*` you put on the element with the handler, always use
   `current-target` — `target` may be a child you didn't author
   (e.g. a `<span>` inside the button).
-- The path is evaluated live, at handler-fire time. A missing
-  path (e.g. `event.pressure` on a `MouseEvent`) omits that
-  field from the asserted fact.
+- The path is evaluated live, at handler-fire time. A path that
+  fails to resolve — a missing/`undefined` step (e.g.
+  `event.pressure` on a `MouseEvent`), or a value that won't
+  coerce to `as:` — aborts the *whole* assertion: nothing is
+  posted and the event falls through to the next matching
+  binding. Only a `the:` that doesn't address the event at all
+  is silently dropped.
 - The `as:` type drives coercion: `text` → string, `entity` →
   string parsed as a URI (rejected if it has no `:`),
   `unsigned-integer` / `signed-integer` / `float` → number,
@@ -146,8 +158,7 @@ view!: &todo-row
       <button onclick=complete data-todo={this}>done</button>
     </li>
 
-concept!: &complete
-  transient: true
+command!: &complete
   with:
     todo:
       the: dom.event.current-target.dataset/todo
@@ -182,8 +193,7 @@ runtime sees a `the:` under `dom.event.do` and calls the method
 before the handler returns.
 
 ```yaml
-concept!: &save
-  transient: true
+command!: &save
   with:
     body:
       the: dom.event.current-target.elements.body/value
@@ -204,8 +214,13 @@ view!: &save-form
 
 The submit fires on the `<form>`, so `current-target` is the
 form and `elements.body` is the named `<textarea>` — its
-`value` becomes the `body` field. `preventDefault` fires
-synchronously so the page doesn't reload.
+`value` becomes the `body` field. The lookup is by the control's
+`name` (here `name="body"`), but remember each path segment is
+camelCased first: a multi-word field must be named in camelCase
+(`name="noteBody"`, read as `…elements.noteBody/value`) — a
+kebab `name="note-body"` won't resolve, since the path looks up
+`noteBody`. `preventDefault` fires synchronously so the page
+doesn't reload.
 
 ### `rule!:` — the reactive layer
 
@@ -249,8 +264,7 @@ between bindings.
 To remove a fact in response to a transient, use `retract!:`:
 
 ```yaml
-concept!: &complete
-  transient: true
+command!: &complete
   with:
     todo:
       the: dom.event.current-target.dataset/todo

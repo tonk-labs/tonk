@@ -332,8 +332,41 @@ mod when_serving_the_guide {
     }
 
     #[dialog_common::test]
+    fn it_concatenates_the_per_topic_bodies_into_the_full_guide() {
+        // `GUIDE` repeats the `include_str!` paths literally (concat!
+        // needs them), so it can silently drift from the per-topic
+        // consts. Pin it to the concatenation so a renamed/moved topic
+        // file updated in only one place fails here.
+        let expected = format!(
+            "{}\n{}\n{}\n{}",
+            guide::NOTATION,
+            guide::VIEWS,
+            guide::EVENTS,
+            guide::WORKSPACE,
+        );
+        assert_eq!(guide::GUIDE, expected);
+    }
+
+    #[dialog_common::test]
+    fn it_resolves_every_advertised_topic() {
+        // `TOPICS`, the `topic()` match arms, and the unknown-topic
+        // error message are three hand-synced lists. Drive the test
+        // off `TOPICS` so a name advertised there but missing a match
+        // arm (or vice versa) is caught.
+        for name in guide::TOPICS {
+            let body =
+                guide::topic(name).unwrap_or_else(|| panic!("advertised topic {name} has no body"));
+            assert!(!body.is_empty(), "topic {name} is empty");
+            assert_eq!(guide::resolve(Some(name)).expect("topic resolves"), body);
+        }
+    }
+
+    #[dialog_common::test]
     fn it_errors_on_an_unknown_topic() {
         let err = guide::resolve(Some("nope")).expect_err("unknown rejects");
-        assert!(err.to_string().contains("notation"));
+        let message = err.to_string();
+        assert!(message.contains("nope"), "echoes the bad input");
+        assert!(message.contains("notation"), "lists a valid topic");
+        assert!(message.contains("all"), "advertises the `all` pseudo-topic");
     }
 }
