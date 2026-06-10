@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Thin WebDriver client over chromedriver. Headless Chrome with a
 # fresh per-run profile. Subcommands:
-#   start | stop | goto <url> | eval <js-expr> | wait-render | wait-sw | shot <out.png>
+#   start | stop | goto <url> | eval <js-expr> | eval-async <js-expr> | wait-render | wait-sw | shot <out.png>
 #
 # `eval` wraps the expression in `return (...)` and prints the JSON value.
+# `eval-async` awaits a promise-valued expression via execute/async.
 # Env: RUN_DIR, CHROMEDRIVER (from devshell), BENCH_CDP_PORT (default 9515)
 set -euo pipefail
 

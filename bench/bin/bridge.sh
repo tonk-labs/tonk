@@ -123,8 +123,8 @@ esac
 # data-visible guarantee tight.
 #
 # The pull endpoint is handled by the service worker (not Caddy), so
-# we fire it from the page via a synchronous XHR — the SW intercepts
-# page-side fetch/XHR regardless of sync flag.
+# we fire it from the page via an async fetch() (eval-async): Chrome
+# does not route synchronous XHR through async SW fetch handlers.
 echo "bridge: waiting for pull to confirm data for space $SPACE_NAME..." >&2
 pull_confirmed=0
 for i in $(seq 1 60); do
