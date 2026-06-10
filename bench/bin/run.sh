@@ -57,6 +57,7 @@ for i in $(seq 1 "$RUNS"); do
     "$ROOT/bench/bin/metrics.sh"
     "$ROOT/bench/bin/judge.sh"
   fi
+  "$ROOT/bench/bin/visual-diff.sh"
   "$ROOT/bench/bin/report-run.sh"
 
   cleanup
