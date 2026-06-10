@@ -28,7 +28,8 @@ use slide::{ExitCode, guide, identity, schema, site};
     name = "slide",
     about = "Headless CLI for reading/writing data and views",
     version,
-    propagate_version = true
+    propagate_version = true,
+    after_help = "Start here:\n  slide guide            one-screen index\n  slide schema           every concept + attribute on the branch\n\nExamples:\n  slide eval -c 'person:'\n  slide concepts\n  slide share display alice --view person-card"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -38,6 +39,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Initialize a new repo in the current working directory
+    #[command(after_help = "Examples:\n  slide init\n  slide init my-repo")]
     Init {
         /// Optional label for the repository.
         ///
@@ -49,6 +51,7 @@ enum Command {
 
     /// Show the local profile DID. With `--reset`, deletes the
     /// on-disk profile and creates a fresh identity.
+    #[command(after_help = "Examples:\n  slide identity\n  slide identity --reset")]
     Identity {
         /// Wipe the on-disk profile and create a new one. This removes
         /// access to exisitng repos without re-delegation.
@@ -59,18 +62,29 @@ enum Command {
     /// Evaluate commands in the current repo
     Eval(EvalArgs),
 
-    /// Print the asserted-notation guide. Useful for agent harnesses
-    /// that need to learn the syntax without repo access.
-    Guide,
+    /// Print the agent reference. With no topic, prints a one-screen
+    /// index; `slide guide <topic>` prints one section; `slide guide
+    /// all` prints everything. Useful for agent harnesses that need to
+    /// learn the syntax without repo access.
+    // Topic list here is hand-rolled for help text; keep in sync with `guide::TOPICS`.
+    #[command(after_help = "Topics: notation, views, events, workspace, all\n\nExamples:\n  slide guide\n  slide guide notation\n  slide guide views\n  slide guide all")]
+    Guide {
+        /// One of: notation, views, events, workspace, all. Omit for
+        /// the index.
+        #[arg(value_name = "TOPIC")]
+        topic: Option<String>,
+    },
 
     /// Print the current site's schema (every named attribute and
     /// concept) as a re-submittable notation document.
+    #[command(after_help = "Examples:\n  slide schema\n  slide schema > schema.notation")]
     Schema,
 
     /// List user-defined concepts on the local branch. One row
     /// per concept, tab-separated `name<TAB>description`. Built-in
     /// concepts (`attribute`, `concept`, …) are omitted — they're
     /// resolvable everywhere and would just be noise.
+    #[command(after_help = "Examples:\n  slide concepts")]
     Concepts,
 
     /// List entities that carry a `text/html` claim on the local
@@ -78,11 +92,13 @@ enum Command {
     /// `name<TAB>entity<TAB>bytes`. Claim-driven: surfaces
     /// anything the host route would serve, regardless of how
     /// the claim was asserted.
+    #[command(after_help = "Examples:\n  slide views")]
     Views,
 
     /// Migrate a `.carry/` directory to `.tonk/`. Walks up from
     /// `$PWD` to find the source unless `--from` is supplied; the
     /// destination is always a sibling `.tonk/` of the source.
+    #[command(after_help = "Examples:\n  slide migrate\n  slide migrate --from ../old --move")]
     Migrate {
         /// Explicit source `.carry/` directory. Default: walk up
         /// from `$PWD`.
@@ -96,20 +112,24 @@ enum Command {
     },
 
     /// Push the local main branch to its upstream.
+    #[command(after_help = "Examples:\n  slide push")]
     Push,
 
     /// Pull the local main branch from its upstream.
+    #[command(after_help = "Examples:\n  slide pull")]
     Pull,
 
     /// Print how the local main branch relates to its upstream:
     /// `synced`, `ahead`, `behind`, `diverged`, or `no-upstream`.
     /// Read-only — fetches the upstream head without merging.
+    #[command(after_help = "Examples:\n  slide status")]
     Status,
 
     /// Mint a UCAN delegation chain over the local repo and
     /// print a paste-able invite URL. The default form is
     /// audience-open: anyone holding the URL can claim by
     /// redelegating from the embedded ephemeral key.
+    #[command(after_help = "Examples:\n  slide invite\n  slide invite --remote prod")]
     Invite {
         /// Override the URL prefix the invite is built against.
         #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
@@ -125,6 +145,7 @@ enum Command {
 
     /// Claim an invite URL into a fresh `.tonk/` under the
     /// current directory. Refuses if a site already exists.
+    #[command(after_help = "Examples:\n  slide join 'https://...#invite'")]
     Join {
         /// Invite URL produced by `slide invite` or
         /// tonk-ui's invite flow.
@@ -151,6 +172,7 @@ enum ShareCommand {
     /// Share a named concept. The recipient lands on the
     /// auto-rendered concept view at
     /// `/space/<space-name>/branch/main/concept/<name>`.
+    #[command(after_help = "Examples:\n  slide share concept person\n  slide share concept person --space-name demo")]
     Concept {
         /// Local name of the concept to share.
         #[arg(value_name = "NAME")]
@@ -173,6 +195,7 @@ enum ShareCommand {
     /// Share an HTML view. The recipient lands on the iframe
     /// viewer at `/space/<space-name>/branch/main/view/<entity>`
     /// with the body served from the entity's `text/html` claim.
+    #[command(after_help = "Examples:\n  slide share view my-page")]
     View {
         /// Bookmark name or `did:key:…` entity URI for the view.
         /// `slide views` lists what's available.
@@ -196,6 +219,7 @@ enum ShareCommand {
     /// Use this for declarative views built against the `view`
     /// concept (`{model, display}`), identified by their anchor
     /// name — `share view` is for the iframe viewer.
+    #[command(after_help = "Examples:\n  slide share display alice --view person-card\n  slide share display alice --model person")]
     Display {
         /// Bookmark name or `did:key:…` entity URI for the
         /// entity to render. Names survive entity-URI changes
@@ -234,6 +258,7 @@ enum RemoteCommand {
     /// Register a UCAN-S3 access-service remote on the local
     /// site. Writes the dialog remote handle and the
     /// meta-branch `Remote` concept browsers read.
+    #[command(after_help = "Examples:\n  slide remote add prod https://access.example.com")]
     Add {
         /// Local name for the remote.
         #[arg(value_name = "NAME")]
@@ -249,10 +274,12 @@ enum RemoteCommand {
     },
 
     /// Print every remote registered on the meta branch.
+    #[command(after_help = "Examples:\n  slide remote list")]
     List,
 
     /// Wire the local `main` branch's upstream to
     /// `<remote>/main`.
+    #[command(after_help = "Examples:\n  slide remote set-upstream prod")]
     SetUpstream {
         /// Name of the remote to track.
         #[arg(value_name = "REMOTE")]
@@ -261,6 +288,7 @@ enum RemoteCommand {
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "Examples:\n  slide eval -c 'person:'\n  slide eval ./doc.notation\n  cat doc.notation | slide eval -\n  slide eval -c 'person:' --format json\n  slide eval ./doc.notation --no-sync")]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
     /// path / `-`.
@@ -311,7 +339,7 @@ async fn main() {
         Command::Init { label } => init(label).await,
         Command::Identity { reset } => identity(reset).await,
         Command::Eval(args) => eval(args).await,
-        Command::Guide => print_guide(),
+        Command::Guide { topic } => print_guide(topic.as_deref()),
         Command::Schema => print_schema().await,
         Command::Concepts => print_concepts().await,
         Command::Views => print_views().await,
@@ -430,9 +458,13 @@ fn resolve_source(args: &EvalArgs) -> Result<Source, String> {
     }
 }
 
-fn print_guide() -> ExitCode {
+fn print_guide(topic: Option<&str>) -> ExitCode {
+    let text = match guide::resolve(topic) {
+        Ok(text) => text,
+        Err(err) => return print_error(err.to_string()),
+    };
     let mut stdout = std::io::stdout().lock();
-    if let Err(e) = stdout.write_all(guide::GUIDE.as_bytes()) {
+    if let Err(e) = stdout.write_all(text.as_bytes()) {
         return print_error(format!("failed to write stdout: {e}"));
     }
     ExitCode::Success
