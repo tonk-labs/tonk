@@ -756,7 +756,7 @@ mod when_sharing_a_view {
             .collect();
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some(format!("branch/main/view/{}", outcome.entity).as_str()),
+            Some(format!("view/{}", outcome.entity).as_str()),
         );
         assert_eq!(pairs.get("remote").map(String::as_str), Some(ENDPOINT));
         Ok(())
@@ -925,7 +925,7 @@ mod when_sharing_a_concept {
         // `name=` when they already have the subject mounted).
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("branch/main/concept/task"),
+            Some("concept/task"),
         );
         Ok(())
     }
@@ -954,7 +954,7 @@ mod when_sharing_a_concept {
         // ends up in.
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("branch/main/concept/task"),
+            Some("concept/task"),
         );
         Ok(())
     }
@@ -1157,7 +1157,7 @@ mod when_sharing_a_display {
         // so the URL survives entity-URI churn.
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("branch/main/display/buy-milk?view=basic&model=task"),
+            Some("buy-milk?view=basic&model=task"),
         );
         Ok(())
     }
@@ -1180,7 +1180,7 @@ mod when_sharing_a_display {
         // from `slide share display`.
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("branch/main/display/buy-milk"),
+            Some("buy-milk"),
         );
         Ok(())
     }
@@ -1241,7 +1241,7 @@ mod when_sharing_a_display {
             .collect();
         // URI subjects land in `then=` verbatim — no bookmark to
         // prefer over them.
-        let expected = format!("branch/main/display/{entity}?view=basic&model=task");
+        let expected = format!("{entity}?view=basic&model=task");
         assert_eq!(
             pairs.get("then").map(String::as_str),
             Some(expected.as_str())
@@ -1305,7 +1305,7 @@ mod when_sharing_a_display {
             .collect();
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("branch/main/display/buy-milk?model=did%3Akey%3AzPretendConcept"),
+            Some("buy-milk?model=did%3Akey%3AzPretendConcept"),
         );
         Ok(())
     }

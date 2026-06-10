@@ -109,26 +109,17 @@ case "$loc" in
     ;;
 esac
 
-# Trigger an explicit pull so the browser replica has the latest
-# remote data before any screenshot is taken. join.rs calls pull
-# already, but racing the service-worker startup means it may land
-# before the worker is ready.  A second pull here is cheap (no-op
-# when already at HEAD) and makes the data-visible guarantee tight.
+# Poll the pull endpoint until the response confirms success, or we
+# time out (~30 s). join.rs calls pull already, but racing the
+# service-worker startup means it may land before the worker is ready;
+# polling here is cheap (no-op when already at HEAD) and makes the
+# data-visible guarantee tight.
 #
 # The pull endpoint is handled by the service worker (not Caddy), so
-# we fire it from the page via a synchronous XHR -- the SW intercepts
+# we fire it from the page via a synchronous XHR — the SW intercepts
 # page-side fetch/XHR regardless of sync flag.
-echo "bridge: triggering post-join pull for space $SPACE_NAME" >&2
-"$B" eval "(function() {
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/repository/$SPACE_NAME/branch/main/sync/pull', false);
-  xhr.send();
-  return xhr.status + ':' + xhr.responseText.slice(0, 80);
-})()" >&2 || true
-
-# Poll the pull endpoint until the response contains a revision (success),
-# or we time out. Polling is bounded to ~30 s.
-echo "bridge: waiting for pull to confirm data..." >&2
+echo "bridge: waiting for pull to confirm data for space $SPACE_NAME..." >&2
+pull_confirmed=0
 for i in $(seq 1 60); do
   pull_raw="$("$B" eval "(function() {
     var xhr = new XMLHttpRequest();
@@ -139,9 +130,13 @@ for i in $(seq 1 60); do
   pull_raw="${pull_raw#\"}"
   pull_raw="${pull_raw%\"}"
   case "$pull_raw" in
-    200:*'"success":true'*) echo "bridge: pull confirmed (poll $i)" >&2; break ;;
-    200:*) echo "bridge: pull ok but success missing (poll $i): $pull_raw" >&2; break ;;
+    200:*'"success":true'*) echo "bridge: pull confirmed (poll $i)" >&2; pull_confirmed=1; break ;;
+    200:*) echo "bridge: pull ok but success missing (poll $i): $pull_raw" >&2; pull_confirmed=1; break ;;
     *) echo "bridge: pull poll $i: $pull_raw" >&2; sleep 0.5 ;;
   esac
 done
+if [ "$pull_confirmed" -eq 0 ]; then
+  echo "bridge: data sync did not confirm" >&2
+  exit 1
+fi
 echo "bridge: done" >&2
