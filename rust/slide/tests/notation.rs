@@ -302,14 +302,71 @@ mod when_introspecting_the_schema {
     }
 }
 
-mod when_bundling_the_notation_guide {
+mod when_serving_the_guide {
     use slide::guide;
 
     #[dialog_common::test]
-    fn it_bakes_the_guide_into_the_binary() {
-        // `include_str!` resolves at compile time, so the binary
-        // works in sandboxes without source-tree access.
-        assert!(guide::GUIDE.starts_with("# Asserted-notation guide"));
-        assert!(guide::GUIDE.contains("attribute!"));
+    fn it_returns_the_index_for_no_topic() {
+        let text = guide::resolve(None).expect("index resolves");
+        assert!(text.contains("slide guide notation"));
+    }
+
+    #[dialog_common::test]
+    fn it_returns_each_topic_body() {
+        assert!(guide::topic("notation").unwrap().contains("attribute!"));
+        assert!(guide::topic("views").unwrap().contains("tonk:view"));
+        assert!(guide::topic("events").unwrap().contains("rule!"));
+        assert!(
+            guide::topic("workspace")
+                .unwrap()
+                .contains("view: tonk:view")
+        );
+        assert!(guide::topic("bogus").is_none());
+    }
+
+    #[dialog_common::test]
+    fn it_returns_the_full_guide_for_all() {
+        let all = guide::resolve(Some("all")).expect("all resolves");
+        assert!(all.starts_with("# Asserted-notation guide"));
+        assert_eq!(all, guide::GUIDE);
+    }
+
+    #[dialog_common::test]
+    fn it_concatenates_the_per_topic_bodies_into_the_full_guide() {
+        // `GUIDE` repeats the `include_str!` paths literally (concat!
+        // needs them), so it can silently drift from the per-topic
+        // consts. Pin it to the concatenation so a renamed/moved topic
+        // file updated in only one place fails here.
+        let expected = format!(
+            "{}\n{}\n{}\n{}",
+            guide::NOTATION,
+            guide::VIEWS,
+            guide::EVENTS,
+            guide::WORKSPACE,
+        );
+        assert_eq!(guide::GUIDE, expected);
+    }
+
+    #[dialog_common::test]
+    fn it_resolves_every_advertised_topic() {
+        // `TOPICS`, the `topic()` match arms, and the unknown-topic
+        // error message are three hand-synced lists. Drive the test
+        // off `TOPICS` so a name advertised there but missing a match
+        // arm (or vice versa) is caught.
+        for name in guide::TOPICS {
+            let body =
+                guide::topic(name).unwrap_or_else(|| panic!("advertised topic {name} has no body"));
+            assert!(!body.is_empty(), "topic {name} is empty");
+            assert_eq!(guide::resolve(Some(name)).expect("topic resolves"), body);
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_errors_on_an_unknown_topic() {
+        let err = guide::resolve(Some("nope")).expect_err("unknown rejects");
+        let message = err.to_string();
+        assert!(message.contains("nope"), "echoes the bad input");
+        assert!(message.contains("notation"), "lists a valid topic");
+        assert!(message.contains("all"), "advertises the `all` pseudo-topic");
     }
 }

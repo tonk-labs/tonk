@@ -7,9 +7,9 @@ retraction. The worker's `/evaluate` route runs a whole
 document in one transaction, returning matches and a commit
 summary.
 
-This guide builds up examples that you can paste into the
-editor in order — each one runs against the branch the previous
-ones left behind.
+The examples below can be pasted into the editor and evaluated
+against a branch; the worked example near the top runs against an
+empty branch.
 
 ## Two flavours of expression
 
@@ -71,50 +71,9 @@ URIs come in several schemes:
 
 All of these are direct references and require no resolution.
 
-## Worked tutorial
+## A worked example
 
-The shortest path from "empty branch" to "you can read and
-write your own data." Run the snippets in order.
-
-### 1. Define an attribute
-
-`attribute!` is the built-in concept for declaring an attribute.
-The body says where the attribute lives (`the:`), what kind of
-value it carries (`as:`), and how many values per entity
-(`cardinality:`). The `&person-name` anchor publishes the
-resulting attribute entity under the name `person-name`, so
-future revisions can reference it by that bare symbol.
-
-```yaml
-attribute!: &person-name
-  description: "The person's name"
-  the:         xyz.tonk.person/name
-  as:          text
-  cardinality: one
-```
-
-After the commit, the URI `id:person-name` is an entity pointing
-to the new attribute entity. The bare symbol `person-name`,
-when resolves to the attribute entity itself.
-
-### 2. Define more attributes
-
-Each `attribute!` concept produces one attribute entity. You can
-have many in one document; they all commit in one transaction.
-
-```yaml
-attribute!: &person-age
-  description: The person's age in years
-  the:         xyz.tonk.person/age
-  as:          unsigned-integer
-  cardinality: one
-```
-
-### 3. Define a concept
-
-`concept!` composes attributes into a named shape. Its `with:`
-block maps field names to attributes. References are written
-as bare symbols, which resolve through the name table.
+Define attributes, compose a concept, assert an entity, query it:
 
 ```yaml
 attribute!: &person-name
@@ -123,175 +82,24 @@ attribute!: &person-name
   as:          text
   cardinality: one
 
-attribute!: &person-age
-  description: The person's age
-  the:         xyz.tonk.person/age
-  as:          unsigned-integer
-  cardinality: one
-
 concept!: &person
-  description: "A person"
+  description: A person
   with:
     name: person-name
-    age:  person-age
-```
 
-The bare symbols `person-name` and `person-age` in the `with:`
-block resolve against the names published earlier or in the same
-document.
-
-### 4. Add a person
-
-`person!:` is asserts the `person` concept. Use `&maintainer` to name the resulting entity `maintainer`:
-
-```yaml
-person!: &maintainer
-  name: Alice
-  age:  28
-```
-
-The semantics:
-
-- The entity is derived from the asserted payload
-  (`Entity::of(&{name: "Alice", age: 28})`).
-- Derived entity gets associated with `id:alice`.
-- Re-running the same body is a no-op.
-- Re-running with a *different* body produces a different
-  entity and associates `id:alice` to the new one. The previous
-  entity still exists with its claims; but the name
-  no longer resolves to it.
-
-### 5. Read it back
-
-Anonymous query — `person:` matches every entity satisfying
-the `person` concept's schema and surfaces every field:
-
-```yaml
-person:
-```
-
-Constrain the match by giving fields literal values:
-
-```yaml
-person:
-  name: Alice
-```
-
-Bind the matched entity to a variable using `this:`, and captures it under a
-variable so it could be used in other expressions.
-
-```yaml
-person:
-  this: ?p
-  name: Alice
-  age:  ?age
-```
-
-`?p` and `?age` come back in the result frame.
-
-### 6. Update Maintainer
-
-Two distinct operations, syntactically different.
-
-**Re-point the name** to a new entity (same name, different
-target). Reuse the anchor with a different body:
-
-```yaml
-person!: &maintainer
-  name: Bob
-  age:  40
-```
-
-This produces a *new* entity (different body hash). The name
-`id:maintainer` is re-pointed to it.
-
-**Update the same entity**. Use a query to bind the entity to
-a variable, then assert against the variable:
-
-```yaml
-person:
-  this: ?alice
-  name: Alice
-
-person!:
-  this: ?alice
-  age:  29
-```
-
-The query binds `?alice` to every entity currently named
-"Alice" in the `person` concept. The assertion writes
-`age = 30` on each match. Because `xyz.tonk.person/age` is
-`cardinality: one`, the prior age claim is auto-retracted as
-part of the transaction.
-
-### 7. Retract Alice's whole projection
-
-Retraction always happens inside an assertion body, against an
-entity selected via `this:`. The blank value `_` does the work.
-Two shapes cover all cases:
-
-- `field: _` — retract just that one attribute.
-- `..: _` — retract every attribute in the concept's `with:` map
-  that isn't named explicitly elsewhere in the body.
-
-To retract a single field:
-
-```yaml
-person!:
-  this: ?alice
-  age: _
-```
-
-To retract every attribute in the concept (full concept-level
-retraction), combine `..: _` with a query that binds the entity:
-
-```yaml
-person:
-  this: ?alice
+person!: &alice
   name: "Alice"
 
-person!:
-  this: ?alice
-  ..: _
+person:
+  this: ?p
+  name: "Alice"
 ```
 
-The worker queries the branch for every fact whose attribute is
-in the `person` concept's `with:` map and whose subject is the
-matched `?alice` entity, and dissociates each match.
-
-To retract every attribute *except* the ones you specify,
-combine explicit fields with `..: _`:
-
-```yaml
-person!:
-  this: ?alice
-  name: ?name
-  ..: _
-```
-
-This preserves `name` and retracts every other attribute in the
-concept's `with:` map.
-
-You can name the entity directly without a prior query — by URI:
-
-```yaml
-person!:
-  this: did:key:zHjKf…
-  ..: _
-```
-
-Or by name:
-
-```yaml
-person!:
-  this: alice
-  ..: _
-```
-
-Retraction by name follows the name's current redirection. If
-`id:alice` was re-pointed since the data was written, the
-retraction targets the entity it currently points to, not the
-original.
+`&alice` publishes `id:alice`. Re-asserting the same body is a no-op;
+a different body mints a new entity and re-points the name. To update
+the same entity, bind it with a query and assert against the variable
+(`this: ?p`). To retract, assert `field: _` (one attribute) or
+`..: _` (every attribute in the concept's `with:` map).
 
 ## Symbols and strings
 
@@ -798,14 +606,3 @@ name:
 In practice you rarely write `name!` directly; the `&`
 anchor sugar covers most uses.
 
-## Why the parser is permissive
-
-The parser produces diagnostics as it goes and continues past
-recoverable errors so the editor can show every problem in
-one pass. A document with three malformed expressions
-surfaces three diagnostics, not one.
-
-This means `parse(code).syntax` can be `Some(..)` *with* a
-non-empty `diagnostics` list — partial trees are
-intentional, and the analyzer in `tonk-schema` will refuse to
-build an `Analysis` from a tree that has any errors.
