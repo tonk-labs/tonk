@@ -5,6 +5,11 @@ Branch: `feat/tonk-concept-component`
 Owner: TBD
 Last updated: 2026-05-07
 
+> Historical note: the `<tonk-concept>` custom element this RFC
+> references has since been removed. `<tonk-display>` covers the
+> rendering surface it provided; the examples below are preserved as
+> the design proposed at the time.
+
 ## TL;DR
 
 Slide is a tiny CLI for reading and writing tonk/dialog facts via the

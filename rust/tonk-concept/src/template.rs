@@ -703,7 +703,7 @@ mod dom {
         if !fragment.has_child_nodes() {
             return Err(ErrorDetail::new(
                 ErrorKind::Descriptor,
-                "<tonk-concept> has no row template",
+                "view has no row template",
             ));
         }
         Ok(Snapshot {
@@ -778,23 +778,9 @@ mod dom {
         super::split_plan(bindings, repeat_root)
     }
 
-    /// Like [`extract_plan`] but for a **self-repeating** consumer
-    /// (`<tonk-concept>`) that clones the whole template per conclusion
-    /// itself. It does not want the `{this}` chrome/repeat split — a
-    /// subject ref like `model={model}` would otherwise make the
-    /// fragment-root element the repeat node and rebase every binding's
-    /// path relative to it, which the whole-fragment-cloning concept
-    /// renderer would then mis-navigate. Forcing `repeat_root = None`
-    /// keeps every node in `repeat.body` with fragment-relative paths.
-    pub fn extract_row_plan(fragment: &DocumentFragment) -> BindingPlan {
-        let bindings = collect_bindings(fragment);
-        super::split_plan(bindings, None)
-    }
-
     /// Walk a fragment, split interpolated text nodes into per-segment
     /// text nodes (mutating `fragment` in place), and return the flat
-    /// list of bindings. Shared by [`extract_plan`] and
-    /// [`extract_row_plan`].
+    /// list of bindings. Used by [`extract_plan`].
     fn collect_bindings(fragment: &DocumentFragment) -> Vec<Binding> {
         let mut bindings: Vec<Binding> = Vec::new();
         // (Path, NodeKind) snapshot — collect first, mutate after,
@@ -1198,24 +1184,24 @@ mod dom {
             host
         }
 
-        // A display view embeds `<tonk-concept>` shelves, each owning
-        // its own `<template>`. A host's template snapshot must not
-        // adopt a nested component's template as its own — doing so
-        // strips the first shelf of its row template.
+        // A display view can embed nested template-owning components,
+        // each owning its own `<template>`. A host's template snapshot
+        // must not adopt a nested component's template as its own —
+        // doing so strips that component of its row template.
         #[dialog_common::test]
-        fn it_skips_a_template_nested_in_a_tonk_concept() {
+        fn it_skips_a_template_nested_in_a_component() {
             let host = host_with(
-                "<tonk-concept source=\"book\"><ul><template><li>{title}</li></template></ul></tonk-concept>",
+                "<tonk-display entity=\"did:key:zBook\"><ul><template><li>{title}</li></template></ul></tonk-display>",
             );
             assert!(find_template(&host).is_none());
         }
 
-        // Tree order would pick the nested concept's template first;
+        // Tree order would pick the nested component's template first;
         // the search must skip it and reach the host's own template.
         #[dialog_common::test]
-        fn it_prefers_an_own_template_over_one_inside_a_nested_concept() {
+        fn it_prefers_an_own_template_over_one_inside_a_nested_component() {
             let host = host_with(
-                "<tonk-concept source=\"book\"><template data-which=\"nested\"><li>{b}</li></template></tonk-concept><template data-which=\"own\"><p>{a}</p></template>",
+                "<tonk-display entity=\"did:key:zBook\"><template data-which=\"nested\"><li>{b}</li></template></tonk-display><template data-which=\"own\"><p>{a}</p></template>",
             );
             let found = find_template(&host).expect("a usable own template");
             assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
@@ -1237,15 +1223,15 @@ mod dom {
         #[dialog_common::test]
         fn it_finds_an_own_template_in_a_wrapper_preceding_a_component() {
             let host = host_with(
-                "<div><template data-which=\"own\"><p>{a}</p></template></div><tonk-concept source=\"book\"><template data-which=\"nested\"><li>{b}</li></template></tonk-concept>",
+                "<div><template data-which=\"own\"><p>{a}</p></template></div><tonk-display entity=\"did:key:zBook\"><template data-which=\"nested\"><li>{b}</li></template></tonk-display>",
             );
             let found = find_template(&host).expect("own template in the leading wrapper");
             assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
         }
 
-        // The boundary applies to every template-owning component, not
-        // just `tonk-concept`: a template inside a nested `tonk-display`
-        // or `tonk-view` belongs to that component and must be skipped.
+        // The boundary applies to every template-owning component: a
+        // template inside a nested `tonk-display` or `tonk-view` belongs
+        // to that component and must be skipped.
         #[dialog_common::test]
         fn it_skips_templates_nested_in_other_owning_components() {
             for tag in ["tonk-display", "tonk-view"] {
@@ -1304,7 +1290,7 @@ mod dom {
 
 #[cfg(target_arch = "wasm32")]
 pub use dom::{
-    Snapshot, apply_attribute_binding, extract_plan, extract_row_plan, navigate, render_segments,
+    Snapshot, apply_attribute_binding, extract_plan, navigate, render_segments,
     render_segments_with_shadow, single_field_value, snapshot_template,
 };
 

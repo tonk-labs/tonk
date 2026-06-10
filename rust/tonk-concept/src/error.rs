@@ -1,4 +1,5 @@
-//! Error payloads dispatched as `tonk-concept:error` custom events.
+//! Error payloads a consumer element dispatches as a `*:error`
+//! custom event (e.g. `<tonk-display>`'s `tonk-display:error`).
 
 use serde::Serialize;
 

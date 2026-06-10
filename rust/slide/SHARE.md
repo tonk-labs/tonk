@@ -4,6 +4,11 @@ Status: draft, pre-implementation
 Branch: `feat/slide`
 Last updated: 2026-05-08
 
+> Historical note: the `<tonk-concept>` custom element used in the
+> examples below has since been removed. `<tonk-display>` covers the
+> rendering surface it provided; the examples are preserved as the
+> design proposed at the time.
+
 ## Goal
 
 The agent runs slide locally, generates one URL, the human pastes it into

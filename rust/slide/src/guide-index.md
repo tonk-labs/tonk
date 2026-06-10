@@ -23,8 +23,8 @@ Run `slide guide <topic>` — e.g. `slide guide notation`:
 
 - `notation`  — asserted-notation syntax: queries, assertions, names,
                 `this:`, fields, blanks, joins, built-ins.
-- `views`     — display templates, `<tonk-display>` / `<tonk-concept>`,
-                and how a view resolves from a model.
+- `views`     — display templates, `<tonk-display>`, and how a view
+                resolves from a model.
 - `events`    — interactivity: effects, rules, transient concepts, and
                 `on<event>=<concept>` DOM bindings.
 - `workspace` — building sheets for the tonk-ui workspace shell

@@ -13,8 +13,8 @@
 //! - **`<tonk-branch name="…">`** annotates `detail.branch` on
 //!   outbound consumer events as they bubble.
 //!
-//! Consumer elements (`<tonk-display>`, `<tonk-concept>`,
-//! `<tonk-layout>`) dispatch one of five operation events on
+//! Consumer elements (`<tonk-display>`, `<tonk-layout>`) dispatch
+//! one of five operation events on
 //! themselves; the events bubble up through routing elements
 //! (which annotate context) to the host (which performs IO).
 //!
