@@ -122,6 +122,10 @@ const CREATE_CANCEL: &str = "tonk-sheet-binder__create-cancel";
 /// button or the inline form; it lives on the DOM so the stateless
 /// `project()` can see it across re-renders.
 const CREATING: &str = "data-creating";
+/// Host attribute flag: present (any value) while the binder has no
+/// sheets. `project()` sets it so the consuming view can style the
+/// empty binder; it pairs with revealing the `[slot="empty"]` region.
+const EMPTY: &str = "data-empty";
 
 /// Build/refresh the tab strip from the `<tonk-sheet>` children, then
 /// apply ordering + the active state. Idempotent.
@@ -159,9 +163,12 @@ fn project(this: &HtmlElement) {
 
     // Reconcile tab buttons against the sheets: build one tab per
     // sheet (reuse by `data-sheet`), drop tabs whose sheet vanished.
-    // The tab highlight follows the real `active`, not the display
-    // fallback — a fallback panel shouldn't light up a tab as selected.
-    reconcile_tabs(&document, &strip, &sheets, &active);
+    // The highlighted tab follows `shown` — the sheet whose panel is
+    // visible — so the tab strip and the canvas always agree. When
+    // `active` names a present sheet that is the same as `shown`; when
+    // `active` is unset / `about:blank` / dangling, `shown` falls back
+    // to the first sheet and its tab lights up to match the panel.
+    reconcile_tabs(&document, &strip, &sheets, &shown);
 
     // Order + show/hide the sheet panels: show the `shown` sheet (the
     // active one, or the fallback), hide the rest.
@@ -176,9 +183,40 @@ fn project(this: &HtmlElement) {
         }
     }
 
+    // Empty state: with no sheets, reveal the view-supplied
+    // `[slot="empty"]` launchpad and flag the host `data-empty` so the
+    // view can style the empty binder (e.g. hide the tab strip's panel
+    // area). With sheets present the launchpad is hidden and the host
+    // flag cleared. The strip's add control stays in both states, so
+    // creating the first sheet is always one click.
+    project_empty(this, sheets.is_empty());
+
     // The add control sits after the tabs: the "+" button (idle) or the
     // inline create form (while naming a new sheet).
     ensure_add_control(this, &strip, &document);
+}
+
+/// Toggle the view-supplied empty-state region. The consuming view
+/// places a `[slot="empty"]` child (e.g. a launchpad) inside the binder
+/// alongside the `<tonk-sheet>` children; it is shown only when the
+/// binder has zero sheets. The host carries a `data-empty` flag in the
+/// same condition so the view's stylesheet can react (light DOM, so no
+/// real `<slot>` — the binder toggles `hidden` directly).
+fn project_empty(this: &HtmlElement, empty: bool) {
+    if empty {
+        let _ = this.set_attribute(EMPTY, "");
+    } else {
+        let _ = this.remove_attribute(EMPTY);
+    }
+    if let Ok(nodes) = this.query_selector_all(":scope > [slot=\"empty\"]") {
+        for i in 0..nodes.length() {
+            if let Some(node) = nodes.item(i)
+                && let Some(el) = node.dyn_ref::<HtmlElement>()
+            {
+                el.set_hidden(!empty);
+            }
+        }
+    }
 }
 
 /// Render the strip's trailing add control: the "+" button when idle,
@@ -403,8 +441,13 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
             return;
         };
 
-        // The "+" add button: open the inline create input.
-        if node.closest(&format!(".{ADD}")).ok().flatten().is_some() {
+        // The "+" add button, or any `[data-create]` trigger the view
+        // places in its empty-state launchpad: open the inline create
+        // input. Routing the launchpad's "add artifact" button here
+        // reuses the strip's create flow (a single create path).
+        if node.closest(&format!(".{ADD}")).ok().flatten().is_some()
+            || node.closest("[data-create]").ok().flatten().is_some()
+        {
             let _ = host.set_attribute(CREATING, "");
             project(&host);
             return;
@@ -455,12 +498,12 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
             // is gone the panel CSS (`:has(tonk-sheet:not([hidden]))`)
             // finds no visible panel and collapses the layout. Pointing
             // `active` at the surviving neighbour now keeps a panel
-            // shown throughout. The command (fired below) persists the
-            // same `active` via the reassign rule, idempotently.
-            if host.get_attribute("active").as_deref() == Some(sheet.as_str())
-                && let Some(next) = next.as_deref()
-            {
-                let _ = host.set_attribute("active", next);
+            // shown throughout. With no neighbour (the last sheet),
+            // `active` moves to `about:blank` so the binder reads as
+            // empty and reveals the launchpad. The command (fired below)
+            // persists the same `active` via the reassign rule.
+            if host.get_attribute("active").as_deref() == Some(sheet.as_str()) {
+                let _ = host.set_attribute("active", next.as_deref().unwrap_or(NO_NEIGHBOUR));
             }
 
             dispatch_close(&host, &sheet, next.as_deref());
@@ -547,8 +590,14 @@ fn neighbour(this: &HtmlElement, sheet: &str) -> Option<String> {
 /// the `activate` event uses `sheet`, and the workspace's
 /// `activate-sheet` command reads `dom.event.detail/sheet`, so a close
 /// carrying `sheet` would also match that command and select the
-/// closed tab. `next` is the neighbour to activate after the close, or
-/// absent when the closed sheet was the only one.
+/// closed tab. `next` is the neighbour to activate after the close; when
+/// the closed sheet was the only one it falls back to `about:blank` (the
+/// "no selection" sentinel) so the command always has a value to bind —
+/// the `close-sheet` command's `next` field is required, and an absent
+/// event field would fail the whole command build, leaving the last tab
+/// unclosable. Reassigning active to `about:blank` renders as empty, so
+/// closing the last sheet reveals the launchpad.
+const NO_NEIGHBOUR: &str = "about:blank";
 fn dispatch_close(host: &HtmlElement, closed: &str, next: Option<&str>) {
     let detail = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
@@ -556,13 +605,11 @@ fn dispatch_close(host: &HtmlElement, closed: &str, next: Option<&str>) {
         &JsValue::from_str("closed"),
         &JsValue::from_str(closed),
     );
-    if let Some(next) = next {
-        let _ = js_sys::Reflect::set(
-            &detail,
-            &JsValue::from_str("next"),
-            &JsValue::from_str(next),
-        );
-    }
+    let _ = js_sys::Reflect::set(
+        &detail,
+        &JsValue::from_str("next"),
+        &JsValue::from_str(next.unwrap_or(NO_NEIGHBOUR)),
+    );
     let init = CustomEventInit::new();
     init.set_detail(&detail);
     init.set_bubbles(true);
@@ -809,7 +856,11 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_omits_next_when_closing_the_only_sheet() {
+    async fn it_falls_back_to_about_blank_next_when_closing_the_only_sheet() {
+        // Closing the last sheet has no neighbour, so `next` falls back to
+        // `about:blank` rather than being omitted: the `close-sheet`
+        // command's `next` field is required, and an absent event field
+        // would fail the whole command build, leaving the tab unclosable.
         let binder = mount_binder("a", &[("a", "a", "Only")]);
         let (closed, _closed_l) = capture_detail("close", "closed");
         let (next, _next_l) = capture_detail("close", "next");
@@ -823,8 +874,8 @@ mod tests {
         assert_eq!(closed.borrow().as_deref(), Some("a"));
         assert_eq!(
             next.borrow().as_deref(),
-            None,
-            "no neighbour to fall back to"
+            Some("about:blank"),
+            "the only sheet has no neighbour, so next falls back to about:blank",
         );
         binder.remove();
     }
@@ -866,13 +917,88 @@ mod tests {
         binder.remove();
     }
 
+    /// Append a `[slot="empty"]` launchpad child to a binder and
+    /// return it. Used by the empty-state tests.
+    fn add_empty_slot(binder: &Element) -> Element {
+        let document = window().unwrap().document().unwrap();
+        let slot = document.create_element("div").unwrap();
+        slot.set_attribute("slot", "empty").unwrap();
+        slot.set_inner_html("<button data-create>add</button>");
+        binder.append_child(&slot).unwrap();
+        slot
+    }
+
+    #[dialog_common::test]
+    async fn it_reveals_the_empty_slot_when_there_are_no_sheets() {
+        // No sheets: the binder flags itself `data-empty` and reveals the
+        // view-supplied `[slot="empty"]` launchpad.
+        let binder = mount_binder("about:blank", &[]);
+        let slot = add_empty_slot(&binder);
+        // Re-project now that the slot exists (it was appended after the
+        // connectedCallback projection); a mutation re-projects in the
+        // app, but drive it directly here.
+        project(binder.dyn_ref::<HtmlElement>().unwrap());
+
+        assert!(
+            binder.has_attribute(EMPTY),
+            "the binder flags itself data-empty with no sheets",
+        );
+        assert!(
+            !slot.dyn_ref::<HtmlElement>().unwrap().hidden(),
+            "the empty slot is revealed when there are no sheets",
+        );
+        binder.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_hides_the_empty_slot_when_a_sheet_is_present() {
+        let binder = mount_binder("a", &[("a", "a", "First")]);
+        let slot = add_empty_slot(&binder);
+        project(binder.dyn_ref::<HtmlElement>().unwrap());
+
+        assert!(
+            !binder.has_attribute(EMPTY),
+            "the binder clears data-empty when a sheet exists",
+        );
+        assert!(
+            slot.dyn_ref::<HtmlElement>().unwrap().hidden(),
+            "the empty slot is hidden when a sheet is present",
+        );
+        binder.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_opens_the_create_input_from_an_empty_slot_data_create_button() {
+        // The launchpad's `[data-create]` button routes to the binder's
+        // inline create flow, the same path as the strip's "+".
+        let binder = mount_binder("about:blank", &[]);
+        let slot = add_empty_slot(&binder);
+        project(binder.dyn_ref::<HtmlElement>().unwrap());
+
+        let button = slot
+            .query_selector("[data-create]")
+            .unwrap()
+            .expect("data-create button in the empty slot");
+        button.dyn_ref::<HtmlElement>().unwrap().click();
+
+        assert!(
+            binder
+                .query_selector(&format!(".{CREATE_INPUT}"))
+                .unwrap()
+                .is_some(),
+            "clicking the launchpad add button opens the create input",
+        );
+        binder.remove();
+    }
+
     #[dialog_common::test]
     async fn it_shows_the_first_sheet_when_active_is_dangling() {
         // `active` names a sheet that isn't present (a stale persisted
         // pointer). The binder must still show a panel — the first sheet
-        // by order — rather than collapse the layout. It does NOT rewrite
-        // `active` (display-only fallback), so it can't steal focus
-        // during a transient reconcile gap.
+        // by order — rather than collapse the layout, and the tab strip
+        // follows the shown panel. It does NOT rewrite `active`
+        // (display-only fallback), so it can't steal focus during a
+        // transient reconcile gap.
         let binder = mount_binder("id:gone", &[("b", "b", "Second"), ("a", "a", "First")]);
 
         let first_panel = binder
@@ -897,6 +1023,33 @@ mod tests {
             binder.get_attribute("active").as_deref(),
             Some("id:gone"),
             "the binder must not rewrite a dangling active",
+        );
+        binder.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_highlights_the_first_tab_when_active_is_unset() {
+        // No selection yet (the binder's `active` is `about:blank` until
+        // a tab is clicked). The panel falls back to the first sheet by
+        // order, and the tab strip must agree: the first tab lights up so
+        // the strip and the canvas show the same sheet.
+        let binder = mount_binder("about:blank", &[("b", "b", "Second"), ("a", "a", "First")]);
+
+        let first_tab = binder
+            .query_selector(&format!(".{TAB}[data-sheet=\"a\"]"))
+            .unwrap()
+            .expect("first tab present");
+        assert!(
+            first_tab.class_list().contains(ACTIVE),
+            "the first tab must be highlighted to match the shown panel",
+        );
+        let second_tab = binder
+            .query_selector(&format!(".{TAB}[data-sheet=\"b\"]"))
+            .unwrap()
+            .expect("second tab present");
+        assert!(
+            !second_tab.class_list().contains(ACTIVE),
+            "only the shown (first) tab is highlighted",
         );
         binder.remove();
     }

@@ -552,8 +552,8 @@ async fn seed_and_initialize(
         // in the default `home` repository, on top of the scaffold. It
         // resolves its bare concept references against the scaffold just
         // committed above. Every other repo gets the scaffold alone, so
-        // its directory render has zero `workspace` instances and reads
-        // as genuinely empty — the precondition for the launchpad view.
+        // its directory render has zero sheet instances and reads as
+        // genuinely empty — the precondition for the launchpad view.
         if name == DEFAULT_REPOSITORY_NAME {
             let demo = fetch_standard_library(DEMO_LIBRARY_URL)
                 .await
@@ -591,7 +591,7 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 /// URL of the served showcase-demo notation asset (`demo.yaml`),
 /// copied into the dist alongside `core.yaml`. Seeded on top of the
 /// scaffold, but only into the default `home` repository, so every
-/// other repo starts with zero workspace instances. Only referenced
+/// other repo starts with zero sheet instances. Only referenced
 /// from the SW-scoped background seed path.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
@@ -1914,10 +1914,9 @@ mod tests {
             .unwrap_or(0)
     }
 
-    /// The scaffold alone defines the `workspace` concept — so the
-    /// directory route can resolve it — but seeds zero `workspace`
-    /// instances. That empty render is the precondition for the
-    /// launchpad.
+    /// The scaffold alone defines the `workspace/sheet` concept — so the
+    /// directory route can resolve it — but seeds zero sheet instances.
+    /// That empty render is the precondition for the launchpad.
     #[dialog_common::test]
     async fn it_seeds_scaffold_without_showcase_instances() {
         let repo = "test-seed-scaffold-only";
@@ -1925,14 +1924,14 @@ mod tests {
         seed(&state, repo, CORE).await;
 
         assert_eq!(
-            count(&state, repo, "workspace:\n").await,
+            count(&state, repo, "workspace/sheet:\n").await,
             0,
-            "scaffold-only repo must have zero workspace instances",
+            "scaffold-only repo must have zero sheet instances",
         );
     }
 
     /// The showcase, seeded on top of the scaffold, resolves its bare
-    /// concept references (`workspace`, `person`, …) against the
+    /// concept references (`workspace/sheet`, `person`, …) against the
     /// committed scaffold and lands the demo instances — what the
     /// default `home` repo gets. Guards the cross-document resolution
     /// the split depends on.
@@ -1944,8 +1943,8 @@ mod tests {
         seed(&state, repo, DEMO).await;
 
         assert!(
-            count(&state, repo, "workspace:\n").await >= 1,
-            "showcase must seed at least one workspace instance",
+            count(&state, repo, "workspace/sheet:\n").await >= 1,
+            "showcase must seed at least one sheet instance",
         );
         assert_eq!(
             count(&state, repo, "person:\n").await,

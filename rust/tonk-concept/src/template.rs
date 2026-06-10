@@ -228,6 +228,16 @@ pub fn longest_common_path_prefix(paths: &[Vec<usize>]) -> Vec<usize> {
 /// binds `{this}` becomes the per-conclusion *repeat root* (so
 /// surrounding chrome renders once); that is discovered separately.
 /// See `tonk-core/docs/templates.md`.
+///
+/// `{dom.host/*}` references are excluded too: they copy a scalar
+/// attribute off the *outer* host element (e.g.
+/// `active={dom.host/data-active}`), they are not subject fields with
+/// a cardinality. Without this exclusion a host-attribute reference
+/// would make its element an iteration root, so an absent host
+/// attribute (zero values) would clone the element zero times and
+/// drop it entirely — `<tonk-sheet-binder active={dom.host/data-active}>`
+/// vanished when the host carried no `data-active`. The same exclusion
+/// already governs repeat-node resolution (see [`refers_subject`]).
 pub fn binding_fields(binding: &Binding) -> Vec<String> {
     let segments = match &binding.kind {
         BindingKind::Text { segments } => segments,
@@ -237,6 +247,7 @@ pub fn binding_fields(binding: &Binding) -> Vec<String> {
     for seg in segments {
         if let Segment::Field(name) = seg
             && name != "this"
+            && !is_dom_host_field(name)
             && !out.contains(name)
         {
             out.push(name.clone());
@@ -1048,6 +1059,7 @@ mod dom {
         let BindingKind::Attribute {
             attr_name,
             force_attribute,
+            segments,
             ..
         } = &binding.kind
         else {
@@ -1060,8 +1072,27 @@ mod dom {
             return;
         };
 
+        // A lone `{field}` binding (not `this`) whose field is absent
+        // resolves to no value: omit the attribute entirely rather than
+        // setting it to the empty string. `active={dom.host/data-active}`
+        // with no `data-active` on the host must leave `<tonk-sheet-binder>`
+        // with no `active` attribute at all, not `active=""` — the latter
+        // is a real "" selection, not "unset". A present-but-empty value
+        // still writes `""`; only a missing field clears the attribute.
+        let absent_single_field = single_field_value.is_none()
+            && matches!(segments.as_slice(), [Segment::Field(name)] if name != "this");
+
         if *force_attribute {
-            write_forced_attribute(el, attr_name, rendered, single_field_value);
+            if absent_single_field {
+                let _ = el.remove_attribute(attr_name);
+            } else {
+                write_forced_attribute(el, attr_name, rendered, single_field_value);
+            }
+            return;
+        }
+
+        if absent_single_field {
+            let _ = el.remove_attribute(attr_name);
             return;
         }
 
@@ -1420,6 +1451,22 @@ mod tests {
                 }
             }
             other => panic!("expected single Iteration, got {other:?}"),
+        }
+    }
+
+    #[dialog_common::test]
+    fn it_does_not_make_a_dom_host_attribute_an_iteration_root() {
+        // `<tonk-sheet-binder active={dom.host/data-active}>` — an
+        // attribute that copies a scalar off the outer host, not a
+        // subject field. It must stay a flat `Binding`, never an
+        // `Iteration`: otherwise an absent `data-active` (zero values)
+        // would clone the element zero times and drop it entirely.
+        let nodes = build_plan_nodes(vec![attr_binding(&[0], "active", "dom.host/data-active")]);
+        match &nodes[..] {
+            [PlanNode::Binding(b)] => {
+                assert_eq!(b.path, vec![0]);
+            }
+            other => panic!("expected a single flat Binding, got {other:?}"),
         }
     }
 

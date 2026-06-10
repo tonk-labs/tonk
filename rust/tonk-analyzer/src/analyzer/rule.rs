@@ -580,15 +580,23 @@ fn lift_premise(
         terms.insert("this".into(), Term::<dialog_query::Any>::unique());
     }
 
-    // Per-field bindings declared by the user. Fields not
-    // mentioned default to anonymous variables (consistent with
-    // how `Query` bodies project unmentioned fields).
+    // Per-field bindings declared by the user. A field the user
+    // omits, or writes as a blank (`_`), becomes a true
+    // `Term::blank()` wildcard: a premise has no result block to
+    // project a value into, so the query-side `_`-renders-back
+    // substitution (which mints a named `__N` variable) does not
+    // apply here. A named variable in a negation premise would be
+    // treated as a required-but-unbound binding by the planner and
+    // fail to compile; a blank is skipped as a wildcard.
     for (field_name, attr) in descriptor.with().iter() {
         if field_name == "this" {
             continue;
         }
         let user_binding = premise.bindings.iter().find(|f| f.name == *field_name);
         let term = match user_binding {
+            Some(field) if matches!(field.value, FieldValue::Blank) => {
+                Term::<dialog_query::Any>::blank()
+            }
             Some(field) => field_value_to_term(
                 field_name,
                 &field.value,
@@ -597,7 +605,7 @@ fn lift_premise(
                 analysis,
                 attr.content_type(),
             )?,
-            None => Term::<dialog_query::Any>::unique(),
+            None => Term::<dialog_query::Any>::blank(),
         };
         terms.insert(field_name.to_string(), term);
     }
