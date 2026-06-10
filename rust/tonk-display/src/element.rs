@@ -212,7 +212,14 @@ impl CustomElement for TonkDisplay {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["entity", "model", "view"]
+        // `entity`/`model`/`view` are the subject inputs: a change to any
+        // restarts the resolve/subscribe flow. `data-active` is a
+        // host-context attribute a parent view threads in (read by a
+        // template as `{dom.host/data-active}`); a change to it does not
+        // alter what this display resolves, only the value projected into
+        // the already-mounted view, so it is propagated in place rather
+        // than restarting. See `attribute_changed_callback`.
+        &["entity", "model", "view", "data-active"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -244,14 +251,33 @@ impl CustomElement for TonkDisplay {
     fn attribute_changed_callback(
         &mut self,
         this: &HtmlElement,
-        _name: String,
-        _old: Option<String>,
-        _new: Option<String>,
+        name: String,
+        old: Option<String>,
+        new: Option<String>,
     ) {
+        if old == new {
+            return;
+        }
         let host: Element = this.clone().into();
         let Some(state) = self.inner.borrow().clone() else {
             return;
         };
+
+        // Only a subject input — `entity`/`model`/`view` — changes what
+        // this display resolves (a different entity, model, or view
+        // template), so only those tear down and restart the
+        // resolve/subscribe flow. Every other observed attribute is
+        // host-context (e.g. `data-active`, threaded in for a template to
+        // read as `{dom.host/<attr>}`): it leaves the resolved template
+        // unchanged and only alters a value projected into the mounted
+        // view, so it is propagated in place — re-augment the cached
+        // frame and replay it through the existing slides, which the
+        // `<tonk-view>` renderer diffs into the DOM without a teardown.
+        if !resolves_template(&name) {
+            replay_host_attributes(&host, &state);
+            return;
+        }
+
         {
             let mut s = state.borrow_mut();
             s.abort_all();
@@ -1379,6 +1405,44 @@ fn with_host_attributes(host: &Element, conclusion: &Conclusion) -> Conclusion {
     augmented
 }
 
+/// Whether a change to `name` resolves a different view template —
+/// `entity`/`model`/`view` are the subject inputs that decide what this
+/// display resolves, so a change to any tears down and restarts the
+/// flow. Every other observed attribute is host-context (threaded in
+/// for a template to read as `{dom.host/<name>}`) and updates in place.
+///
+/// Conservative for now: a `model` change tears down even when the
+/// resolved view template is unchanged (a model only re-projects the
+/// field set). The ideal is to tear down solely on a view *template*
+/// change and otherwise re-resolve the projection in place; that needs
+/// the in-place path to re-run the query without rebuilding the DOM,
+/// which is a larger change left for later.
+fn resolves_template(name: &str) -> bool {
+    matches!(name, "entity" | "model" | "view")
+}
+
+/// Re-project the host's current attributes into the mounted view(s)
+/// without restarting. Re-augments the cached frame with
+/// `with_host_attributes` (picking up the changed `data-*` value) and
+/// replays it through each slide's `<tonk-view>` renderer, which diffs
+/// the new values into the existing DOM in place. A no-op before
+/// anything is mounted (no frame, no slides).
+fn replay_host_attributes(host: &Element, state: &Rc<RefCell<Inner>>) {
+    let s = state.borrow();
+    if s.last_frame.is_empty() || s.slides.is_empty() {
+        return;
+    }
+    let augmented: Vec<Conclusion> = s
+        .last_frame
+        .iter()
+        .map(|c| with_host_attributes(host, c))
+        .collect();
+    let detail = serialize_conclusions(&augmented);
+    for slide in s.slides.values() {
+        call_render(&slide.view_el, &detail);
+    }
+}
+
 fn dispatch_error(host: &Element, err: ErrorDetail) {
     dispatch_event(host, "tonk-display:error", Some(event_detail(&err)));
 }
@@ -1414,6 +1478,23 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Only the subject inputs (`entity`/`model`/`view`) re-resolve what
+    /// the display renders, so only those force a teardown. A host-context
+    /// attribute like `data-active` (threaded in for a template to read
+    /// as `{dom.host/data-active}`) leaves the resolved view unchanged and
+    /// must update in place — a teardown there would re-resolve and reload
+    /// the whole subtree on every selection change.
+    #[dialog_common::test]
+    fn it_tears_down_only_on_subject_input_changes() {
+        assert!(resolves_template("entity"));
+        assert!(resolves_template("model"));
+        assert!(resolves_template("view"));
+        assert!(
+            !resolves_template("data-active"),
+            "a host-context attribute must update in place, not tear down",
+        );
+    }
 
     /// Outbound `tonk-display:result` / `:error` details must be plain
     /// JS objects so consumers can read `event.detail.<field>`.
@@ -1890,6 +1971,118 @@ mod tests {
                 .await
                 .expect("the fallback chrome should render on an empty collection at mount");
             assert_eq!(fallback.text_content().as_deref(), Some("Nothing yet"));
+        }
+
+        // A chrome element binding a host-context attribute
+        // (`{dom.host/data-active}`) must receive the host's `data-active`
+        // value, even when `data-active` is set on the host before any
+        // frame arrives. The binder relies on this to learn which sheet is
+        // active: `<tonk-sheet-binder active={dom.host/data-active}>`.
+        #[dialog_common::test]
+        async fn it_projects_a_host_attribute_set_before_the_frame_into_chrome() {
+            let host = FakeHost::install(directory_resolve_responses());
+            let display = mount_directory(&host, "item");
+            // The host carries `data-active` from the start, mirroring the
+            // shell threading it in before the directory view resolves.
+            display
+                .set_attribute("data-active", "id:active-one")
+                .unwrap();
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            // Chrome `<span data-x={dom.host/data-active}>` (no subject
+            // ref, so it renders once) plus a per-instance row.
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[(
+                        "display",
+                        "<div><span class=\"probe\" data-x={dom.host/data-active}></span><ul><li data-id={this}>{title}</li></ul></div>",
+                    )],
+                )]),
+            );
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+
+            let probe = await_selector(&display, "span.probe")
+                .await
+                .expect("the chrome probe should render");
+            assert_eq!(
+                probe.get_attribute("data-x").as_deref(),
+                Some("id:active-one"),
+                "chrome must project the host's data-active via {{dom.host/data-active}}",
+            );
+        }
+
+        // Changing `data-active` after mount reprojects it into the chrome
+        // in place (no teardown), so a tab switch's persisted active is
+        // reflected without a reload.
+        #[dialog_common::test]
+        async fn it_reprojects_a_host_attribute_change_into_chrome_in_place() {
+            let host = FakeHost::install(directory_resolve_responses());
+            let display = mount_directory(&host, "item");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[(
+                        "display",
+                        "<div><span class=\"probe\" data-x={dom.host/data-active}></span><ul><li data-id={this}>{title}</li></ul></div>",
+                    )],
+                )]),
+            );
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+
+            let probe = await_selector(&display, "span.probe")
+                .await
+                .expect("the chrome probe should render");
+
+            // The instance content rendered: capture it so we can assert it
+            // is NOT torn down by the host-attribute change.
+            let row = await_selector(&display, "li[data-id]")
+                .await
+                .expect("the instance row should render");
+
+            display
+                .set_attribute("data-active", "id:active-two")
+                .unwrap();
+
+            // The change reprojects into the same chrome node in place.
+            for _ in 0..200 {
+                if probe.get_attribute("data-x").as_deref() == Some("id:active-two") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                probe.get_attribute("data-x").as_deref(),
+                Some("id:active-two"),
+                "a data-active change must reproject into chrome",
+            );
+            // Same node — an in-place update, not a teardown/remount.
+            assert!(
+                row.is_connected(),
+                "the mounted instance must survive a host-attribute change (no teardown)",
+            );
         }
     }
 }

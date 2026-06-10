@@ -192,8 +192,19 @@ impl Renderer {
         let repeat = mount_repeat(document, &self.plan.repeat, &root, &self.template, frame);
 
         let _ = self.host.append_child(&fragment);
+        // After `append_child` the fragment is emptied — its children now
+        // live under `host`. `navigate()` on a later update must walk the
+        // live tree, so the stored navigation root is the host, not the
+        // now-empty fragment. The fragment's top-level children appended
+        // in order onto an empty host, so a path relative to the fragment
+        // root is equally valid relative to the host. (Initial chrome /
+        // repeat above ran against the still-populated fragment, which is
+        // why they mount correctly; only the update path read the emptied
+        // fragment and silently found no node — dropping every chrome
+        // update, e.g. `<tonk-sheet-binder active={dom.host/data-active}>`
+        // never reflecting a host-attribute change.)
         self.mounted = Some(MountedScope {
-            root,
+            root: self.host.clone().into(),
             chrome,
             repeat,
         });

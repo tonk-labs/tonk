@@ -159,9 +159,12 @@ fn project(this: &HtmlElement) {
 
     // Reconcile tab buttons against the sheets: build one tab per
     // sheet (reuse by `data-sheet`), drop tabs whose sheet vanished.
-    // The tab highlight follows the real `active`, not the display
-    // fallback — a fallback panel shouldn't light up a tab as selected.
-    reconcile_tabs(&document, &strip, &sheets, &active);
+    // The highlighted tab follows `shown` — the sheet whose panel is
+    // visible — so the tab strip and the canvas always agree. When
+    // `active` names a present sheet that is the same as `shown`; when
+    // `active` is unset / `about:blank` / dangling, `shown` falls back
+    // to the first sheet and its tab lights up to match the panel.
+    reconcile_tabs(&document, &strip, &sheets, &shown);
 
     // Order + show/hide the sheet panels: show the `shown` sheet (the
     // active one, or the fallback), hide the rest.
@@ -870,9 +873,10 @@ mod tests {
     async fn it_shows_the_first_sheet_when_active_is_dangling() {
         // `active` names a sheet that isn't present (a stale persisted
         // pointer). The binder must still show a panel — the first sheet
-        // by order — rather than collapse the layout. It does NOT rewrite
-        // `active` (display-only fallback), so it can't steal focus
-        // during a transient reconcile gap.
+        // by order — rather than collapse the layout, and the tab strip
+        // follows the shown panel. It does NOT rewrite `active`
+        // (display-only fallback), so it can't steal focus during a
+        // transient reconcile gap.
         let binder = mount_binder("id:gone", &[("b", "b", "Second"), ("a", "a", "First")]);
 
         let first_panel = binder
@@ -897,6 +901,33 @@ mod tests {
             binder.get_attribute("active").as_deref(),
             Some("id:gone"),
             "the binder must not rewrite a dangling active",
+        );
+        binder.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_highlights_the_first_tab_when_active_is_unset() {
+        // No selection yet (the binder's `active` is `about:blank` until
+        // a tab is clicked). The panel falls back to the first sheet by
+        // order, and the tab strip must agree: the first tab lights up so
+        // the strip and the canvas show the same sheet.
+        let binder = mount_binder("about:blank", &[("b", "b", "Second"), ("a", "a", "First")]);
+
+        let first_tab = binder
+            .query_selector(&format!(".{TAB}[data-sheet=\"a\"]"))
+            .unwrap()
+            .expect("first tab present");
+        assert!(
+            first_tab.class_list().contains(ACTIVE),
+            "the first tab must be highlighted to match the shown panel",
+        );
+        let second_tab = binder
+            .query_selector(&format!(".{TAB}[data-sheet=\"b\"]"))
+            .unwrap()
+            .expect("second tab present");
+        assert!(
+            !second_tab.class_list().contains(ACTIVE),
+            "only the shown (first) tab is highlighted",
         );
         binder.remove();
     }
