@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 RUN_DIR="${RUN_DIR:?}"
+SCENARIO_NAME="${SCENARIO_NAME:-unknown}"
 {
   echo "# Bench run: $SCENARIO_NAME"
   echo

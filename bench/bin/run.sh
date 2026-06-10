@@ -19,19 +19,20 @@ done
 SCENARIO="$ROOT/bench/scenarios/$SCENARIO_NAME"
 [ -d "$SCENARIO" ] || { echo "no scenario $SCENARIO_NAME" >&2; exit 2; }
 
+cleanup() {
+  "$ROOT/bench/bin/browser.sh" stop 2>/dev/null || true
+  "$ROOT/bench/bin/stack.sh" stop 2>/dev/null || true
+}
+
 for i in $(seq 1 "$RUNS"); do
-  RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-$SCENARIO_NAME"
+  RUN_DIR="$ROOT/bench/runs/$(date +%Y%m%d-%H%M%S)-${i}-$SCENARIO_NAME"
   mkdir -p "$RUN_DIR"
   export RUN_DIR SCENARIO SCENARIO_NAME
   export BENCH_PORT="${BENCH_PORT:-8787}"
   export BENCH_URL="http://127.0.0.1:$BENCH_PORT"
-  export SPACE_NAME="bench"
+  export SPACE_NAME="${SPACE_NAME:-bench}"
   echo "run: $RUN_DIR" >&2
 
-  cleanup() {
-    "$ROOT/bench/bin/browser.sh" stop 2>/dev/null || true
-    "$ROOT/bench/bin/stack.sh" stop 2>/dev/null || true
-  }
   trap cleanup EXIT
 
   "$ROOT/bench/bin/stack.sh" start
@@ -47,7 +48,9 @@ for i in $(seq 1 "$RUNS"); do
   echo "{\"episode_exit\": $episode_status}" > "$RUN_DIR/episode-exit.json"
 
   "$ROOT/bench/bin/browser.sh" start
-  "$ROOT/bench/bin/bridge.sh"
+  bridge_status=0
+  "$ROOT/bench/bin/bridge.sh" || bridge_status=$?
+  echo "{\"bridge_exit\": $bridge_status}" > "$RUN_DIR/bridge-exit.json"
   "$ROOT/bench/bin/shots.sh"
 
   if [ "$SCRIPTED" != 1 ]; then
