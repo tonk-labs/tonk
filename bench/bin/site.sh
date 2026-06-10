@@ -23,6 +23,10 @@ setup() {
 
 # Mint an invite launcher URL for the browser side; prints the URL.
 invite() {
+  if [ ! -d "$SITE/.tonk" ]; then
+    echo "site: no site at $SITE (run setup first)" >&2
+    exit 1
+  fi
   cd "$SITE"
   "$SLIDE" invite --remote origin
 }

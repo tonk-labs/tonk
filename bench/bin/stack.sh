@@ -23,10 +23,12 @@ ensure_access_bin() {
 }
 
 start() {
-  if [ -f "$RUN_DIR/access.pid" ] && kill -0 "$(cat "$RUN_DIR/access.pid")" 2>/dev/null; then
+  if [ -f "$RUN_DIR/access.pid" ] && kill -0 "$(cat "$RUN_DIR/access.pid")" 2>/dev/null \
+  && [ -f "$RUN_DIR/caddy.pid" ] && kill -0 "$(cat "$RUN_DIR/caddy.pid")" 2>/dev/null; then
     echo "stack: already running (access pid $(cat "$RUN_DIR/access.pid"))" >&2
     return 0
   fi
+  stop
 
   ensure_ui
   ensure_access_bin
@@ -69,7 +71,7 @@ start() {
     reverse_proxy 127.0.0.1:$ACCESS_PORT
   }
   handle {
-    root * $ROOT/rust/tonk-ui/dist
+    root * "$ROOT/rust/tonk-ui/dist"
     try_files {path} /index.html
     file_server
   }
