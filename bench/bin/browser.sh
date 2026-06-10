@@ -56,6 +56,8 @@ start() {
       "--no-first-run",("--user-data-dir="+$udd)]}}}}')
   wd POST /session "$caps" | jq -r '.value.sessionId' > "$SESSION_FILE"
   [ -s "$SESSION_FILE" ] || { echo "browser: no session" >&2; exit 1; }
+  # Set async script timeout to 30 s so eval-async calls have headroom.
+  wd POST "/session/$(sid)/timeouts" '{"script":30000}' >/dev/null
 }
 
 stop() {
@@ -82,6 +84,19 @@ goto() {
 evaljs() {
   wd POST "/session/$(sid)/execute/sync" \
     "$(jq -n --arg s "return ($1);" '{script:$s,args:[]}')" | jq -c '.value'
+}
+
+# evaljs_async: run a script that calls the WebDriver callback (arguments[0])
+# with its result. The script has access to Promise and fetch — useful for
+# SW-intercepted fetches that cannot be made synchronously.
+#
+# The script receives a done callback as arguments[0]; it must call
+# done(value) to complete. Example:
+#   evaljs_async "fetch('/api/foo', {method:'POST'}).then(r=>arguments[0](r.status))"
+evaljs_async() {
+  wd POST "/session/$(sid)/execute/async" \
+    "$(jq -n --arg s "$1" '{script:$s,args:[]}')" \
+    | jq -c '.value'
 }
 
 # Poll a JS predicate until it returns true. wait_for <js-expr> <timeout-s> <label>
@@ -128,8 +143,9 @@ case "${1:-}" in
   stop) stop ;;
   goto) goto "$2" ;;
   eval) evaljs "$2" ;;
+  eval-async) evaljs_async "$2" ;;
   wait-render) wait_render ;;
   wait-sw) wait_sw ;;
   shot) shot "$2" ;;
-  *) echo "usage: browser.sh {start|stop|goto <url>|eval <js>|wait-render|wait-sw|shot <png>}" >&2; exit 2 ;;
+  *) echo "usage: browser.sh {start|stop|goto <url>|eval <js>|eval-async <js>|wait-render|wait-sw|shot <png>}" >&2; exit 2 ;;
 esac

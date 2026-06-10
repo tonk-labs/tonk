@@ -109,6 +109,13 @@ case "$loc" in
     ;;
 esac
 
+# After the join navigation lands us on the space route, the SW must
+# be controlling the page before the /api pull XHR will be intercepted.
+# wait-sw issues a reload if the SW isn't controlling yet and polls
+# until it is.
+"$B" wait-render
+"$B" wait-sw
+
 # Poll the pull endpoint until the response confirms success, or we
 # time out (~30 s). join.rs calls pull already, but racing the
 # service-worker startup means it may land before the worker is ready;
@@ -121,12 +128,7 @@ esac
 echo "bridge: waiting for pull to confirm data for space $SPACE_NAME..." >&2
 pull_confirmed=0
 for i in $(seq 1 60); do
-  pull_raw="$("$B" eval "(function() {
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/repository/$SPACE_NAME/branch/main/sync/pull', false);
-    xhr.send();
-    return xhr.status + ':' + xhr.responseText.slice(0, 200);
-  })()" 2>/dev/null || true)"
+  pull_raw="$("$B" eval-async "(function(done){fetch('/api/repository/$SPACE_NAME/branch/main/sync/pull', {method:'POST'}).then(function(r){return r.text().then(function(t){done(r.status+':'+t.slice(0,200));});}).catch(function(e){done('err:'+String(e));});})(arguments[0])" 2>/dev/null || true)"
   pull_raw="${pull_raw#\"}"
   pull_raw="${pull_raw%\"}"
   case "$pull_raw" in
