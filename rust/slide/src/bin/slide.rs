@@ -67,7 +67,9 @@ enum Command {
     /// all` prints everything. Useful for agent harnesses that need to
     /// learn the syntax without repo access.
     // Topic list here is hand-rolled for help text; keep in sync with `guide::TOPICS`.
-    #[command(after_help = "Topics: notation, views, events, workspace, all\n\nExamples:\n  slide guide\n  slide guide notation\n  slide guide views\n  slide guide all")]
+    #[command(
+        after_help = "Topics: notation, views, events, workspace, all\n\nExamples:\n  slide guide\n  slide guide notation\n  slide guide views\n  slide guide all"
+    )]
     Guide {
         /// One of: notation, views, events, workspace, all. Omit for
         /// the index.
@@ -172,7 +174,9 @@ enum ShareCommand {
     /// Share a named concept. The recipient lands on the
     /// auto-rendered concept view at
     /// `/space/<space-name>/branch/main/concept/<name>`.
-    #[command(after_help = "Examples:\n  slide share concept person\n  slide share concept person --space-name demo")]
+    #[command(
+        after_help = "Examples:\n  slide share concept person\n  slide share concept person --space-name demo"
+    )]
     Concept {
         /// Local name of the concept to share.
         #[arg(value_name = "NAME")]
@@ -219,7 +223,9 @@ enum ShareCommand {
     /// Use this for declarative views built against the `view`
     /// concept (`{model, display}`), identified by their anchor
     /// name — `share view` is for the iframe viewer.
-    #[command(after_help = "Examples:\n  slide share display alice --view person-card\n  slide share display alice --model person")]
+    #[command(
+        after_help = "Examples:\n  slide share display alice --view person-card\n  slide share display alice --model person"
+    )]
     Display {
         /// Bookmark name or `did:key:…` entity URI for the
         /// entity to render. Names survive entity-URI changes
@@ -288,7 +294,9 @@ enum RemoteCommand {
 }
 
 #[derive(Args, Debug)]
-#[command(after_help = "Examples:\n  slide eval -c 'person:'\n  slide eval ./doc.notation\n  cat doc.notation | slide eval -\n  slide eval -c 'person:' --format json\n  slide eval ./doc.notation --no-sync")]
+#[command(
+    after_help = "Examples:\n  slide eval -c 'person:'\n  slide eval ./doc.notation\n  cat doc.notation | slide eval -\n  slide eval -c 'person:' --format json\n  slide eval ./doc.notation --no-sync"
+)]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
     /// path / `-`.
