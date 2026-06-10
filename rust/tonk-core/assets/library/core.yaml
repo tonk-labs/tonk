@@ -960,44 +960,6 @@ view/directory!:
           min-height: 0;
         }
 
-        /* Launchpad shown while the space has no workspace instance
-           (a freshly created space gets only the scaffold, so its
-           workspace collection is empty). `<tonk-fallback>` reveals
-           itself when the enclosing directory `<tonk-display>` is
-           `data-state="empty"` and hides the moment content lands. */
-        .workspace-launchpad {
-          flex: 1 1 auto;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          min-height: 0;
-          padding: var(--wa-space-2xl);
-        }
-        .workspace-launchpad[hidden] { display: none; }
-        .workspace-launchpad__inner {
-          max-width: 28rem;
-          text-align: center;
-        }
-        /* Opt out of the global heading highlight-cover (the dark
-           filled box from styles.css `h1..h6`): it isn't theme-aware,
-           so its inverted text vanishes in dark mode. A plain heading
-           in the normal text colour reads correctly in both. Mirrors
-           `.hub-title`. */
-        .workspace-launchpad__title {
-          display: block;
-          margin: 0 0 var(--wa-space-s);
-          padding: 0;
-          background: none;
-          font-family: var(--wa-font-family-heading);
-          font-size: var(--wa-font-size-2xl);
-          font-weight: var(--wa-font-weight-bold);
-          letter-spacing: normal;
-          color: var(--wa-color-text-normal);
-        }
-        .workspace-launchpad__hint {
-          margin: 0;
-          color: var(--wa-color-text-quiet);
-        }
       </style>
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
@@ -1027,12 +989,6 @@ view/directory!:
         <wa-button slot="footer" variant="primary" type="submit" form="enable-sync-form" data-dialog="close">Enable</wa-button>
       </wa-dialog>
 
-      <tonk-fallback class="workspace-launchpad" hidden>
-        <div class="workspace-launchpad__inner">
-          <h1 class="workspace-launchpad__title">This space is empty</h1>
-          <p class="workspace-launchpad__hint">Nothing has been added here yet.</p>
-        </div>
-      </tonk-fallback>
       <tonk-display model=workspace/sheet data-active={active} />
     </div>
 
@@ -1311,9 +1267,81 @@ view/directory!:
           background: transparent;
         }
         .tonk-sheet-binder__create-cancel:hover { color: var(--wa-color-text-normal); }
+
+
+        /* Empty state. The binder reveals `[slot="empty"]` and flags
+           itself `data-empty` when it has no sheets. The launchpad fills
+           the canvas area above the (add-only) tab strip, centered over
+           the dot-grid paper - matching the wireframe's "empty repo"
+           frame. The binder hides it (`hidden`) whenever a sheet exists. */
+        .workspace-launchpad {
+          flex: 1 1 auto;
+          order: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 0;
+          padding: var(--wa-space-2xl);
+        }
+        .workspace-launchpad[hidden] { display: none; }
+        .workspace-launchpad__inner {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: var(--wa-space-m);
+          max-width: 28rem;
+          text-align: center;
+        }
+        /* Opt out of the global heading highlight-cover (the dark filled
+           box from styles.css `h1..h6`): a plain heading in the normal
+           text colour reads correctly in both light and dark. */
+        .workspace-launchpad__title {
+          display: block;
+          margin: 0;
+          padding: 0;
+          background: none;
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-2xl);
+          font-weight: var(--wa-font-weight-bold);
+          letter-spacing: normal;
+          color: var(--wa-color-text-normal);
+        }
+        .workspace-launchpad__hint {
+          margin: 0;
+          color: var(--wa-color-text-quiet);
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-s);
+        }
+        /* The prominent "add artifact" button: a hatched/dashed frame
+           that solidifies on hover, echoing the strip's "+" add control
+           and the wireframe's center call to action. */
+        .workspace-launchpad__add {
+          margin-top: var(--wa-space-s);
+          padding: var(--wa-space-s) var(--wa-space-l);
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-m);
+          font-weight: var(--wa-font-weight-semibold);
+          color: var(--wa-color-text-normal);
+          background: transparent;
+          border: var(--wa-border-width-s) dashed var(--wa-color-surface-border);
+          border-radius: var(--wa-border-radius-s);
+          cursor: pointer;
+        }
+        .workspace-launchpad__add:hover {
+          border-style: solid;
+          border-color: var(--wa-color-text-normal);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
       </style>
 
       <tonk-sheet-binder active={dom.host/data-active} class="workspace__binder" onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
+        <div slot="empty" class="workspace-launchpad" hidden>
+          <div class="workspace-launchpad__inner">
+            <h1 class="workspace-launchpad__title">nothing here yet.</h1>
+            <p class="workspace-launchpad__hint">start by creating an artifact &mdash; the agent will fill it.</p>
+            <button type="button" class="workspace-launchpad__add" data-create>+ add artifact</button>
+          </div>
+        </div>
         <tonk-display entity={this} model=tonk:sheet />
       </tonk-sheet-binder>
     </div>
@@ -1371,3 +1399,5 @@ rule!:
 
 tonk/binder-init!:
    reason: Initialize a new tonk repository
+
+# test

@@ -1973,6 +1973,94 @@ mod tests {
             assert_eq!(fallback.text_content().as_deref(), Some("Nothing yet"));
         }
 
+        // A static element that is a direct *sibling* of the repeat root
+        // (the `{this}` element) must survive rendering — it is chrome,
+        // not part of the repeat. Regression for the binder's
+        // `[slot="empty"]` launchpad: `<tonk-sheet-binder>` holds the
+        // repeat `<tonk-display entity={this}>` and a static `<div
+        // slot="empty">` as direct siblings; the launchpad was dropped
+        // when it sat *after* the repeat element. (A static node BEFORE
+        // the repeat element survived, which is what made the bug
+        // position-dependent.)
+        #[dialog_common::test]
+        async fn it_keeps_a_static_sibling_after_the_repeat_element() {
+            let host = FakeHost::install(directory_resolve_responses());
+            let display = mount_directory(&host, "item");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            // The repeat root is the `<span data-id={this}>` element; the
+            // `<p class="after">` is its direct following sibling (chrome).
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[(
+                        "display",
+                        "<div><span data-id={this}>{title}</span><p class=\"after\">keep me</p></div>",
+                    )],
+                )]),
+            );
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+
+            let row = await_selector(&display, "span[data-id]")
+                .await
+                .expect("the repeat row should render");
+            assert_eq!(row.text_content().as_deref(), Some("Hello"));
+
+            let after = await_selector(&display, "p.after")
+                .await
+                .expect("a static sibling after the repeat element must survive");
+            assert_eq!(after.text_content().as_deref(), Some("keep me"));
+        }
+
+        // The static sibling must also survive when the repeat element
+        // is a *custom element* (the binder's real shape): the renderer
+        // must not let the element's own connectedCallback / mutation
+        // churn drop chrome that follows it.
+        #[dialog_common::test]
+        async fn it_keeps_a_static_sibling_after_a_repeat_custom_element() {
+            let host = FakeHost::install(directory_resolve_responses());
+            let display = mount_directory(&host, "item");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 2 {
+                    break;
+                }
+                sleep(5).await;
+            }
+
+            // Repeat root is a nested `<tonk-display entity={this}>` (a
+            // custom element); the `<p class="after">` follows it.
+            host.push_frame(
+                "view",
+                &rows(&[(
+                    "did:key:zView",
+                    &[(
+                        "display",
+                        "<div><tonk-display entity={this} model=item data-id={this}></tonk-display><p class=\"after\">keep me</p></div>",
+                    )],
+                )]),
+            );
+            host.push_frame(
+                "entity",
+                &rows(&[("did:key:zItem1", &[("title", "Hello")])]),
+            );
+
+            let after = await_selector(&display, "p.after")
+                .await
+                .expect("a static sibling after a custom-element repeat root must survive");
+            assert_eq!(after.text_content().as_deref(), Some("keep me"));
+        }
+
         // A chrome element binding a host-context attribute
         // (`{dom.host/data-active}`) must receive the host's `data-active`
         // value, even when `data-active` is set on the host before any
