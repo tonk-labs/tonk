@@ -25,15 +25,21 @@ ensure_ui() {
 }
 
 start() {
+  if [ -f "$RUN_DIR/wrangler.pid" ] && kill -0 "$(cat "$RUN_DIR/wrangler.pid")" 2>/dev/null; then
+    echo "stack: already running (pid $(cat "$RUN_DIR/wrangler.pid"))" >&2
+    return 0
+  fi
   ensure_shim
   ensure_ui
   mkdir -p "$RUN_DIR"
+  set -m
   WRANGLER_SEND_METRICS=false wrangler dev \
     --config "$ROOT/bench/wrangler.bench.toml" \
     --port "$BENCH_PORT" --ip 127.0.0.1 \
     --persist-to "$RUN_DIR/wrangler-state" \
     > "$RUN_DIR/wrangler.log" 2>&1 &
   echo $! > "$RUN_DIR/wrangler.pid"
+  set +m
   for _ in $(seq 1 60); do
     if curl -fso /dev/null "$BENCH_URL/"; then
       echo "stack: up at $BENCH_URL" >&2
@@ -48,7 +54,14 @@ start() {
 
 stop() {
   if [ -f "$RUN_DIR/wrangler.pid" ]; then
-    kill "$(cat "$RUN_DIR/wrangler.pid")" 2>/dev/null || true
+    local pid
+    pid="$(cat "$RUN_DIR/wrangler.pid")"
+    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+    # wait briefly for the port to free up before returning
+    for _ in $(seq 1 10); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.5
+    done
     rm -f "$RUN_DIR/wrangler.pid"
   fi
 }
