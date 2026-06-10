@@ -389,6 +389,8 @@ view!: &workspace/view
            collapse (their inner <tonk-sheet> is `hidden`). Scrolling
            happens inside the sheet's card. */
         .workspace__binder > tonk-display {
+          display: flex;
+          flex-direction: column;
           flex: 1;
           min-height: 0;
           padding: var(--wa-space-l);
@@ -399,8 +401,9 @@ view!: &workspace/view
           display: none;
         }
         .workspace__binder > tonk-display > tonk-view {
-          display: block;
-          height: 100%;
+          display: flex;
+          flex-direction: column;
+          flex: 1;
           min-height: 0;
         }
 
@@ -410,7 +413,7 @@ view!: &workspace/view
         .workspace__binder tonk-sheet {
           display: flex;
           flex-direction: column;
-          height: 100%;
+          flex: 1;
           min-height: 0;
           color: inherit;
           font-family: inherit;
@@ -430,19 +433,41 @@ view!: &workspace/view
           min-height: 100%;
         }
         /* A portal sheet: `<tonk-portal>`'s iframe has no intrinsic
-           content height, so a plain block would collapse it to the
-           iframe's default 150px. Make the portal's `tonk-view` a flex
-           column and let the portal flex to fill the scroll box — its
-           `height: 100%` has no definite containing block to resolve
-           against here, but `flex: 1` does. */
+           content height, so a percentage height collapses it to the
+           iframe's default 150px — a percentage can't resolve against
+           the flex-grown content display (its height is not "definite"
+           in that sense). Carry the height down the whole portal
+           sub-chain by flex instead, the same fill the directory chain
+           uses: the content display and its view each fill by `flex: 1`,
+           and the portal fills the view. No percentages, so nothing to
+           collapse. */
+        .workspace__binder tonk-sheet > tonk-display:has(> tonk-view > tonk-portal) {
+          display: flex;
+          flex-direction: column;
+        }
         .workspace__binder tonk-sheet > tonk-display > tonk-view:has(> tonk-portal) {
           display: flex;
           flex-direction: column;
+          flex: 1;
+          min-height: 0;
         }
         .workspace__binder tonk-sheet > tonk-display > tonk-view > tonk-portal {
           display: block;
           flex: 1;
           min-height: 0;
+          /* Positioning context for the iframe below. */
+          position: relative;
+        }
+        /* `<tonk-portal>` sizes its iframe `height: 100%`, but that
+           percentage can't resolve against the portal's flex-grown
+           height (flex-grown is not "definite" for a replaced element's
+           percentage), so the iframe collapses to its intrinsic 150px.
+           Absolutely positioning it fills the portal: an abs box's
+           percentage height resolves against its containing block's used
+           height, flex-grown or not. */
+        .workspace__binder tonk-sheet > tonk-display > tonk-view > tonk-portal > iframe {
+          position: absolute;
+          inset: 0;
         }
 
         /* The card header the sheet projects (status dot + name +
