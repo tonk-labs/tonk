@@ -354,22 +354,11 @@ workspace/sheet!:
   view: tonk:view
   order: "c"
 
-# The demo workspace owns the three sheets, with the itinerary
-# selected as the initial active sheet (a click on a tab re-points
-# `active` via the activate-sheet command + rule).
-workspace!:
-  this: about:blank
-  name: "Trip planning"
-  active: id:tonk-workspace/sheet/itinerary
-  sheet: id:tonk-workspace/sheet/itinerary
-
-workspace!:
-  this: about:blank
-  sheet: id:tonk-workspace/sheet/lodging
-
-workspace!:
-  this: about:blank
-  sheet: id:tonk-workspace/sheet/sketch
+# The three sheets above are top-level `tonk:sheet` instances; the
+# binder enumerates every sheet directly (no workspace membership). The
+# binder's `active` is seeded to `about:blank` at repository creation,
+# so the binder falls back to showing the first sheet by order until a
+# tab is clicked (the activate-sheet command re-points `active`).
 
 # ============================================================
 # DEMO BOARD
@@ -388,17 +377,6 @@ tile!: &inspector-tile
   model: inspector
   entity: home-inspector
 
-tile!: &workspace-tile
-  order: "b"
-  model: workspace
-  entity: about:blank
-
-column-view!: &column-b
-  this: c:b
-  order: "aq"
-  width: 15
-  tile: workspace-tile
-
 column-view!: &column-a
   this: c:a
   order: "a"
@@ -409,10 +387,6 @@ board!:
   this: about:blank
   name: "demo"
   column: column-a
-
-board!:
-  this: about:blank
-  column: column-b
 
 # ============================================================
 # DEMO PEOPLE
