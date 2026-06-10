@@ -16,6 +16,20 @@ jq, imagemagick) plus the `claude` CLI and Chrome at the default
 
 ## Notes from implementation
 
+### episode.sh: `--max-turns` not available
+
+The installed `claude` CLI does not support `--max-turns`. The flag was dropped
+from `episode.sh`; the episode is bounded instead by `EPISODE_TIMEOUT` (default
+1200 s) via `timeout(1)` from coreutils.
+
+### episode.sh: op:// API key reference must be resolved before launching claude
+
+When `ANTHROPIC_API_KEY` is set to an `op://` reference (1Password CLI secret
+reference), the headless claude subprocess receives the literal string rather
+than a real key, producing a 401. `episode.sh` detects the `op://` prefix and
+calls `op read` to resolve the key before exec-ing claude.
+
+
 ### site.sh: remote URL includes /ucan/ suffix
 
 The access service mounts its UCAN endpoint at `/ucan/`, so `site.sh` passes
