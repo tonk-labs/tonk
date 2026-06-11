@@ -15,17 +15,43 @@ use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
 use web_sys::{Element, window};
 
-/// The four states authors can target from CSS.
+/// The lifecycle states authors can target from CSS via `data-state`.
+///
+/// Every non-`Ready` state stays subscribed: none is terminal. The
+/// display reports where it is and the embedder skins it (the built-in
+/// presentation is a CSS placeholder, not a forced callout) — except
+/// the genuinely-broken states ([`State::Malformed`], [`State::Offline`],
+/// [`State::Unauthorized`]) which still surface a visible callout via
+/// [`set_error`]. See `plan/tonk-display-states.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// Resolving concept / view / entity; no DOM yet.
+    /// A resolve query is in flight; nothing known yet.
     Loading,
-    /// Entity rendered.
+    /// Row(s) rendered by a model-specific view.
     Ready,
-    /// Entity not found / stream emitted zero rows.
+    /// No model-specific view defined; the built-in `_:_` fallback
+    /// view is rendering. Rows render, but via the generic fallback.
+    DefaultView,
+    /// The `model` concept is not defined on the branch (yet). The
+    /// model subscription stays open and recovers when it lands.
+    NoModel,
+    /// Model resolved; an explicit `view` was requested but is not
+    /// defined and there is no `_:_` fallback to fall through to.
+    NoView,
+    /// Single mode: concept + view resolved, the entity **row** is
+    /// absent (not synced yet / retracted). Stays subscribed.
+    NoEntity,
+    /// Directory mode: the collection has **zero instances**. A
+    /// legitimate steady state (an empty repo), distinct from a missing
+    /// single row. `<tonk-fallback>` keys its launchpad on this.
     Empty,
-    /// Concept lookup, view lookup, or network failure.
-    Error,
+    /// A query returned 403 — no access to this repo/branch.
+    Unauthorized,
+    /// Transport failure / the service worker is unreachable.
+    Offline,
+    /// Author/protocol error — a bad `model`/`entity` attribute or a
+    /// decode failure. Recovers when the author fixes the attribute.
+    Malformed,
 }
 
 impl State {
@@ -35,9 +61,29 @@ impl State {
         match self {
             State::Loading => "loading",
             State::Ready => "ready",
+            State::DefaultView => "default-view",
+            State::NoModel => "no-model",
+            State::NoView => "no-view",
+            State::NoEntity => "no-entity",
             State::Empty => "empty",
-            State::Error => "error",
+            State::Unauthorized => "unauthorized",
+            State::Offline => "offline",
+            State::Malformed => "malformed",
         }
+    }
+
+    /// Whether this state injects a visible `<wa-callout>` via
+    /// [`set_error`]. The recoverable absences ([`State::NoModel`],
+    /// [`State::NoView`], [`State::NoEntity`]) are skinned by the
+    /// embedder's CSS off `data-state`, not a forced callout, so a
+    /// still-seeding card shows a quiet placeholder instead of a red
+    /// error. The genuinely-broken states stay loud.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn is_loud(self) -> bool {
+        matches!(
+            self,
+            State::Unauthorized | State::Offline | State::Malformed
+        )
     }
 }
 
@@ -54,6 +100,20 @@ pub fn error_title(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// Classify an upstream [`ErrorKind`] into the lifecycle [`State`] it
+/// should drive. A network failure is `Offline` (transport, recovers on
+/// reconnect); a bad descriptor / decode is `Malformed` (author or
+/// protocol error). `UnknownSource` here means a query result was
+/// well-formed but empty in a context the caller treats as a hard error
+/// — it maps to `Malformed` so the recoverable absences stay distinct
+/// (those set their state directly, not through the error path).
+pub fn state_for(kind: ErrorKind) -> State {
+    match kind {
+        ErrorKind::Network => State::Offline,
+        ErrorKind::Parse | ErrorKind::Descriptor | ErrorKind::UnknownSource => State::Malformed,
+    }
+}
+
 /// Sentinel `data-` attribute we tag the injected callout with so
 /// we can find and replace it on the next state transition without
 /// disturbing whatever else the renderer mounted.
@@ -63,26 +123,30 @@ const ERROR_CALLOUT_ATTR: &str = "data-tonk-display-error";
 /// Set `data-state` on `host`. Idempotent — safe to call repeatedly
 /// with the same state.
 ///
-/// Transitioning *away* from `Error` removes any callout we
-/// previously injected.
+/// Transitioning to any non-loud state removes a callout a prior loud
+/// state injected, so a recoverable absence (`no-model` / `no-entity`)
+/// or a recovery to `ready` never leaves a stale red box behind.
 #[cfg(target_arch = "wasm32")]
 pub fn set(host: &Element, state: State) {
     let _ = host.set_attribute("data-state", state.as_str());
-    if state != State::Error {
+    if !state.is_loud() {
         remove_error_callout(host);
     }
 }
 
-/// Transition the host to error state and surface a
+/// Transition the host to a loud error `state` and surface a
 /// `<wa-callout variant="danger">` inside the host with the given
 /// `title` + `message`. The shape matches Web Awesome's reference
 /// danger callout: icon in the `icon` slot, a bold title line, a
 /// `<br>`, then the message body. Replaces any existing callout
 /// from a prior error so the user always sees the most recent
 /// failure.
+///
+/// `state` is the classified loud state (`offline` / `unauthorized` /
+/// `malformed`) so `data-state` and the callout stay in step.
 #[cfg(target_arch = "wasm32")]
-pub fn set_error(host: &Element, title: &str, message: &str) {
-    let _ = host.set_attribute("data-state", State::Error.as_str());
+pub fn set_error(host: &Element, state: State, title: &str, message: &str) {
+    let _ = host.set_attribute("data-state", state.as_str());
     remove_error_callout(host);
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
@@ -150,8 +214,37 @@ mod tests {
         // every loading/error skin downstream.
         assert_eq!(State::Loading.as_str(), "loading");
         assert_eq!(State::Ready.as_str(), "ready");
+        assert_eq!(State::DefaultView.as_str(), "default-view");
+        assert_eq!(State::NoModel.as_str(), "no-model");
+        assert_eq!(State::NoView.as_str(), "no-view");
+        assert_eq!(State::NoEntity.as_str(), "no-entity");
         assert_eq!(State::Empty.as_str(), "empty");
-        assert_eq!(State::Error.as_str(), "error");
+        assert_eq!(State::Unauthorized.as_str(), "unauthorized");
+        assert_eq!(State::Offline.as_str(), "offline");
+        assert_eq!(State::Malformed.as_str(), "malformed");
+    }
+
+    #[test]
+    fn it_keeps_recoverable_absences_quiet_and_breakage_loud() {
+        // The recoverable absences are skinned by embedder CSS off
+        // `data-state`, not a forced callout, so a still-seeding card
+        // never flashes a red box. The genuinely-broken states stay loud.
+        assert!(!State::Loading.is_loud());
+        assert!(!State::NoModel.is_loud());
+        assert!(!State::NoView.is_loud());
+        assert!(!State::NoEntity.is_loud());
+        assert!(!State::DefaultView.is_loud());
+        assert!(State::Malformed.is_loud());
+        assert!(State::Offline.is_loud());
+        assert!(State::Unauthorized.is_loud());
+    }
+
+    #[test]
+    fn it_classifies_error_kinds_into_loud_states() {
+        assert_eq!(state_for(ErrorKind::Network), State::Offline);
+        assert_eq!(state_for(ErrorKind::Parse), State::Malformed);
+        assert_eq!(state_for(ErrorKind::Descriptor), State::Malformed);
+        assert_eq!(state_for(ErrorKind::UnknownSource), State::Malformed);
     }
 
     #[test]
@@ -190,12 +283,54 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
+    fn it_does_not_inject_a_callout_for_a_recoverable_absence() {
+        // `no-model` is a still-seeding card, not an error: the
+        // embedder skins it from `data-state` (CSS placeholder). The
+        // display must not force a red callout into the host.
+        let host = host();
+        set(&host, State::NoModel);
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-model")
+        );
+        assert!(
+            host.query_selector("wa-callout").unwrap().is_none(),
+            "a recoverable absence must not inject a callout",
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_clears_a_prior_callout_when_recovering_to_a_quiet_state() {
+        // A loud failure injects a callout; a later recovery to a
+        // quiet state (e.g. the concept lands → no-model→no-entity, or
+        // straight to ready) must clear it so no red box latches.
+        let host = host();
+        set_error(&host, State::Offline, "Connection failed", "boom");
+        assert!(host.query_selector("wa-callout").unwrap().is_some());
+
+        set(&host, State::NoEntity);
+        assert!(
+            host.query_selector("wa-callout").unwrap().is_none(),
+            "recovering to a quiet state must remove the callout",
+        );
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-entity")
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
     fn it_renders_the_danger_callout_on_set_error() {
         let host = host();
-        set_error(&host, "Not found", "no entity matched");
+        set_error(&host, State::Malformed, "Not found", "no entity matched");
 
-        // `data-state` flips to "error".
-        assert_eq!(host.get_attribute("data-state").as_deref(), Some("error"));
+        // `data-state` flips to the loud state we passed.
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("malformed")
+        );
 
         // Exactly one callout, marked danger, carrying our sentinel.
         let callout = host
@@ -235,8 +370,8 @@ mod tests {
     #[dialog_common::test]
     fn it_replaces_a_prior_callout_when_set_error_runs_again() {
         let host = host();
-        set_error(&host, "Not found", "first");
-        set_error(&host, "Connection failed", "second");
+        set_error(&host, State::Malformed, "Not found", "first");
+        set_error(&host, State::Offline, "Connection failed", "second");
 
         // Only one callout should remain — the most recent.
         let count = host
@@ -258,11 +393,11 @@ mod tests {
     #[dialog_common::test]
     fn it_removes_the_callout_when_transitioning_away_from_error() {
         let host = host();
-        set_error(&host, "Not found", "boom");
+        set_error(&host, State::Offline, "Connection failed", "boom");
         assert!(host.query_selector("wa-callout").unwrap().is_some());
 
         set(&host, State::Loading);
-        // The callout is gone now that we're no longer in Error.
+        // The callout is gone now that we're no longer in a loud state.
         assert!(host.query_selector("wa-callout").unwrap().is_none());
         assert_eq!(host.get_attribute("data-state").as_deref(), Some("loading"));
     }

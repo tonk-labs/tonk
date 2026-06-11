@@ -6,9 +6,12 @@
 //! - If the `the:` identifier sits under `dom.event` (read), follow
 //!   the parsed path through the event object and coerce the
 //!   resulting JS value into a dialog `Value` shape per `as:`. A
-//!   path that fails to resolve (undefined/null step, type mismatch)
-//!   aborts the whole transaction — a partial assertion is never
-//!   posted.
+//!   *present but empty* leaf (a blank `<wa-input>` reads back `null`,
+//!   an empty text input reads `""`) is treated as "not provided" and
+//!   the field is omitted — an optional input left blank must not abort
+//!   the command. A path that genuinely fails to resolve (a missing
+//!   intermediate step or a value that won't coerce to `as:`) aborts
+//!   the whole transaction — a partial assertion is never posted.
 //! - If the `the:` identifier sits under `dom.event.do` (action),
 //!   call the named method on the event. Action attributes
 //!   contribute no parameter to the assertion.
@@ -92,13 +95,32 @@ pub fn build_transact_body(
                     .get("as")
                     .and_then(Value::as_str)
                     .unwrap_or("Text");
-                let value = read_path_and_coerce(event_js, binding_js, &path, as_type).ok_or_else(
-                    || ExtractError::UnresolvedField {
-                        field: field_name.clone(),
-                        identifier: identifier.to_owned(),
-                    },
-                )?;
-                parameters.insert(field_name.clone(), value);
+                match read_path_and_coerce(event_js, binding_js, &path, as_type) {
+                    ReadOutcome::Value(value) => {
+                        parameters.insert(field_name.clone(), value);
+                    }
+                    // The field exists on the form/event but is empty (a
+                    // blank `<wa-input>` reads back `null`, an empty text
+                    // input reads `""`). Treat it as "not provided" and
+                    // omit the parameter rather than aborting the whole
+                    // command — an optional input left blank (the
+                    // `space/create` form's `remote`) must still fire the
+                    // command (and its `preventDefault`), not fall through
+                    // to a native form submit. The worker decides whether
+                    // the missing parameter is acceptable.
+                    ReadOutcome::Empty => {}
+                    // The path itself didn't resolve (a missing property /
+                    // type mismatch — a descriptor typo, not a blank
+                    // input). That is a genuine binding failure: abort so
+                    // the caller falls through to the next ancestor and we
+                    // don't post a half-built transaction.
+                    ReadOutcome::Unresolved => {
+                        return Err(ExtractError::UnresolvedField {
+                            field: field_name.clone(),
+                            identifier: identifier.to_owned(),
+                        });
+                    }
+                }
             }
             Classification::Action(action) => {
                 pending_actions.push(action);
@@ -145,6 +167,21 @@ pub fn build_transact_body(
     Ok(json!({ "claims": [claim] }))
 }
 
+/// The result of reading a `dom.event` path for one field.
+enum ReadOutcome {
+    /// The path resolved and the leaf coerced to a term value.
+    Value(Value),
+    /// The path resolved to a *present but empty* leaf — a blank
+    /// `<wa-input>` (`value === null`) or an empty text input
+    /// (`value === ""`). The field is "not provided"; the caller omits
+    /// the parameter without aborting the command.
+    Empty,
+    /// The path didn't resolve (a missing intermediate property, a
+    /// missing leaf, or a value that wouldn't coerce to `as:`). A
+    /// genuine binding failure — the caller aborts and falls through.
+    Unresolved,
+}
+
 /// Read a JS event's property path and turn the resulting JS value
 /// into a JSON term value matching the field's `as:` type.
 ///
@@ -155,34 +192,59 @@ pub fn build_transact_body(
 /// where tonk-display installed its delegation listener, which is
 /// an implementation detail the template author shouldn't see.
 ///
-/// Returns `None` when:
-/// - the path doesn't resolve (any step is `undefined`/`null`/missing);
-/// - the value can't be coerced to the requested `as:` type.
+/// The leaf is the field's *value*, so a present-but-empty leaf
+/// (`null` from a blank `<wa-input>`, or `""`) is reported as
+/// [`ReadOutcome::Empty`] — "field left blank", not a hard failure —
+/// while a missing intermediate step or an uncoercible value is
+/// [`ReadOutcome::Unresolved`].
 fn read_path_and_coerce(
     event: &JsValue,
     binding: &JsValue,
     path: &EventPath,
     as_type: &str,
-) -> Option<Value> {
-    let mut segments = path.segments.iter();
-    let first = segments.next()?;
-    let mut current = if first == "currentTarget" {
-        binding.clone()
-    } else {
-        let next = Reflect::get(event, &JsValue::from_str(first)).ok()?;
+) -> ReadOutcome {
+    if path.segments.is_empty() {
+        return ReadOutcome::Unresolved;
+    }
+    let last_index = path.segments.len() - 1;
+    let mut current = JsValue::UNDEFINED;
+    for (index, segment) in path.segments.iter().enumerate() {
+        let next = if index == 0 && segment == "currentTarget" {
+            binding.clone()
+        } else if index == 0 {
+            match Reflect::get(event, &JsValue::from_str(segment)) {
+                Ok(v) => v,
+                Err(_) => return ReadOutcome::Unresolved,
+            }
+        } else {
+            match Reflect::get(&current, &JsValue::from_str(segment)) {
+                Ok(v) => v,
+                Err(_) => return ReadOutcome::Unresolved,
+            }
+        };
         if next.is_undefined() || next.is_null() {
-            return None;
-        }
-        next
-    };
-    for segment in segments {
-        let next = Reflect::get(&current, &JsValue::from_str(segment)).ok()?;
-        if next.is_undefined() || next.is_null() {
-            return None;
+            // The value leaf being null/undefined is a blank field —
+            // "not provided" — not a broken path. A null/undefined step
+            // before the leaf means the path itself didn't resolve.
+            return if index == last_index {
+                ReadOutcome::Empty
+            } else {
+                ReadOutcome::Unresolved
+            };
         }
         current = next;
     }
-    coerce(&current, as_type)
+    // The leaf resolved to a non-null value. An empty string is still a
+    // blank field (omit); anything else coerces.
+    if let Some(text) = current.as_string()
+        && text.is_empty()
+    {
+        return ReadOutcome::Empty;
+    }
+    match coerce(&current, as_type) {
+        Some(value) => ReadOutcome::Value(value),
+        None => ReadOutcome::Unresolved,
+    }
 }
 
 /// JS value → JSON-term value per `as:` type. Covers every variant
@@ -514,6 +576,89 @@ mod tests {
             }
             other => panic!("expected UnresolvedField, got {other:?}"),
         }
+    }
+
+    /// Put a property whose value is exactly JS `null` on the event,
+    /// mirroring a blank `<wa-input>` (`input.value === null`). The
+    /// helper sets `event.<name> = null` so a `dom.event/<name>` read
+    /// reaches a present-but-null leaf.
+    fn set_null_field(event: &Event, name: &str) {
+        let event_js: &JsValue = event.as_ref();
+        Reflect::set(event_js, &JsValue::from_str(name), &JsValue::NULL).unwrap();
+    }
+
+    /// True if `preventDefault` has been called on `event`.
+    fn default_prevented(event: &Event) -> bool {
+        event.default_prevented()
+    }
+
+    // A blank optional field — a `<wa-input>` left empty reads back
+    // `null` — must be OMITTED, not abort the whole command. This is the
+    // `space/create` form's `remote`: leaving it blank has to still fire
+    // the command (creating a local-only space) AND run its
+    // `preventDefault`, rather than failing to build and letting the form
+    // submit natively (the `?name=` reload bug).
+    #[dialog_common::test]
+    fn it_omits_a_blank_field_and_still_fires_prevent_default() {
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "name":   { "the": "dom.event/type", "as": "Text", "cardinality": "one" },
+                    "remote": { "the": "dom.event/remote", "as": "Text", "cardinality": "one" },
+                    "prevent": { "the": "dom.event.do/prevent-default" }
+                }
+            }"#,
+        );
+        let event = synthetic_event(&[]);
+        // `remote` is present on the event but null (blank input).
+        set_null_field(&event, "remote");
+        let binding = binding_element(&[]);
+
+        let body = build_transact_body(&descriptor, "space/create", &event, &binding)
+            .expect("a blank optional field must not abort the command");
+        let params = &body["claims"][0]["application"]["parameters"];
+        // `name` resolved (the event `type` is "click"); `remote` was
+        // blank, so it is absent — not a reason to fail the build.
+        assert_eq!(params["name"], json!("click"));
+        assert!(
+            params.get("remote").is_none(),
+            "a blank field is omitted from the parameters",
+        );
+        // The queued `preventDefault` fired even though `remote` was
+        // blank — so a real form submit would be stopped.
+        assert!(
+            default_prevented(&event),
+            "preventDefault must fire for a command with a blank optional field",
+        );
+    }
+
+    // An empty-string value (a plain `<input>` left empty reads `""`) is
+    // likewise treated as "not provided" and omitted.
+    #[dialog_common::test]
+    fn it_omits_an_empty_string_field() {
+        let descriptor = descriptor(
+            r#"{
+                "with": {
+                    "remote": { "the": "dom.event/remote", "as": "Text", "cardinality": "one" }
+                }
+            }"#,
+        );
+        let event = synthetic_event(&[]);
+        let event_js: &JsValue = event.as_ref();
+        Reflect::set(
+            event_js,
+            &JsValue::from_str("remote"),
+            &JsValue::from_str(""),
+        )
+        .unwrap();
+        let binding = binding_element(&[]);
+        let body = build_transact_body(&descriptor, "noop", &event, &binding)
+            .expect("an empty-string field must not abort the command");
+        let params = &body["claims"][0]["application"]["parameters"];
+        assert!(
+            params.get("remote").is_none(),
+            "an empty-string field is omitted",
+        );
     }
 
     #[dialog_common::test]

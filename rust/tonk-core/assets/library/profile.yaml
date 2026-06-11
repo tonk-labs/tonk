@@ -52,9 +52,13 @@ concept!: &space
 # does the work (record the replica, create + seed the repository, flip
 # the status). `name` reads from the form on submit:
 # `event.currentTarget.elements.name.value` — the `<wa-input name="name">`
-# inside `<form onsubmit=space/create>`. `prevent-default` stops the
-# page from reloading. The command is transient: it fires the handler
-# once and is swept before the durable commit.
+# inside `<form onsubmit=space/create>`. `prevent-default` stops the page
+# from reloading: `method="dialog"` does NOT work here because the form is
+# slotted into `<wa-dialog>` and the native `<dialog>` lives across the
+# shadow boundary, so the form has no native-dialog ancestor in its own
+# tree and the browser falls back to a GET submit. The command is
+# transient: it fires the handler once and is swept before the durable
+# commit.
 command!: &space/create
   description: A request to create a new space by the name typed into the form.
   with:
