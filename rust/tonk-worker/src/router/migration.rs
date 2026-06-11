@@ -108,7 +108,6 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),
-            name: Term::var("name"),
             subject: Term::var("subject"),
             profile: Term::from(ProfileEntity(profile_entity.clone())),
             kind: Term::var("kind"),

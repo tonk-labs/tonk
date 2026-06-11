@@ -592,6 +592,17 @@ tonk-repository.display-route,
     font-size: var(--wa-font-size-l);
     font-weight: var(--wa-font-weight-semibold);
 }
+/* The name comes from the space's own repo (a nested
+   `<tonk-display model=tonk:repository>`), which resolves
+   asynchronously and may not have synced yet. Until it reaches the
+   `ready` state, show a muted "Untitled" placeholder so the card never
+   reads as blank/broken. `:not([data-state="ready"])` also covers the
+   pre-mount window before the element sets any state. */
+.hub-card__name tonk-display:not([data-state="ready"])::after {
+    content: "Untitled";
+    color: var(--wa-color-text-quiet);
+    font-style: italic;
+}
 .hub-card__url {
     font-family: var(--wa-font-family-code);
     font-size: var(--wa-font-size-s);

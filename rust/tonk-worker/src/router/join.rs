@@ -158,11 +158,8 @@ pub async fn join(
     // The recipient's chosen name is ignored on this branch:
     // they can't relabel the replica via a join, and forcing a
     // 409 would lose the chain refresh we just did. The replica is
-    // mounted at the routing key (identity), not the stored label.
-    if find_replica_name_for_subject(&tonk, &subject)
-        .await?
-        .is_some()
-    {
+    // mounted at the routing key (identity), not a stored label.
+    if find_replica_for_subject(&tonk, &subject).await? {
         let repository = tonk
             .profile
             .repository(key.as_str())
@@ -237,13 +234,16 @@ pub async fn join(
     ))
 }
 
-/// Look up the local name of a replica with the given subject DID,
-/// scoped to the active profile. Returns `Ok(None)` when no
-/// replica matches.
-async fn find_replica_name_for_subject(
+/// Check whether the active profile already holds a replica for the
+/// given subject DID. Returns `Ok(true)` when one exists.
+///
+/// The replica is a name-less membership index, so this only tests
+/// existence — the recipient's chosen join name does not flow into it
+/// (the name lives in the synced repository's own `tonk/repository`).
+async fn find_replica_for_subject(
     tonk: &TonkState,
     subject: &Did,
-) -> Result<Option<String>, TonkWorkerError> {
+) -> Result<bool, TonkWorkerError> {
     let profile_meta = tonk
         .reactor
         .profile_repository()
@@ -259,7 +259,6 @@ async fn find_replica_name_for_subject(
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),
-            name: Term::var("name"),
             subject: Term::from(tonk_schema::domain::replica::Subject(subject.this())),
             profile: Term::from(tonk_schema::domain::replica::Profile(
                 tonk.profile.did().this(),
@@ -273,5 +272,5 @@ async fn find_replica_name_for_subject(
             TonkWorkerError::Internal(format!("replica query on profile meta failed: {e:?}"))
         })?;
 
-    Ok(rows.into_iter().next().map(|replica| replica.name.0))
+    Ok(!rows.is_empty())
 }

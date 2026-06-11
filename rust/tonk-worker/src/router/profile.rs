@@ -23,16 +23,16 @@ const META_BRANCH: &str = "meta";
 /// One space the profile owns, as listed by `GET /api/profile`.
 ///
 /// A repository's identity is its credential's `did:key` (`subject`);
-/// the routing/storage key is the DID suffix (`key`). The user-typed
-/// `label` is only a display name — two spaces may share it, so the UI
-/// must route by `key`, not `label`.
+/// the routing/storage key is the DID suffix (`key`). The membership
+/// index carries no display name: the space's name lives in its own
+/// `tonk/repository` concept on its content branch, so the UI resolves
+/// the label from the space's own repo (per-space `<tonk-display
+/// model=tonk:repository>`), not from this listing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpaceEntry {
     /// Routing/storage key — the `subject` DID suffix. The URL segment
     /// the UI links by.
     pub key: String,
-    /// User-typed display label (the replica's `name` attribute).
-    pub label: String,
     /// The space's identity DID.
     pub subject: Did,
 }
@@ -114,7 +114,6 @@ pub async fn get_profile(
         .query()
         .select(Query::<Replica> {
             this: Term::var("this"),
-            name: Term::var("name"),
             subject: Term::var("subject"),
             profile: Term::from(ProfileEntity(profile_did.this())),
             kind: Term::var("kind"),
@@ -128,10 +127,11 @@ pub async fn get_profile(
 
     // Build the space list — every row except the self-replica,
     // which has `subject == profile`. Each entry carries the routing
-    // key (the subject DID suffix, what the UI links by), the display
-    // label (the replica's `name`), and the identity DID. An
-    // unparseable subject is a single bad entry; log and skip it
-    // rather than failing the whole response.
+    // key (the subject DID suffix, what the UI links by) and the
+    // identity DID. The display name is not here: the Hub card resolves
+    // it from the space's own `tonk/repository` concept. An unparseable
+    // subject is a single bad entry; log and skip it rather than failing
+    // the whole response.
     let profile_entity = profile_did.this();
     let mut space = Vec::with_capacity(rows.len());
 
@@ -143,8 +143,8 @@ pub async fn get_profile(
             Ok(did) => did,
             Err(e) => {
                 log!(
-                    "Replica '{}' has an unparseable subject: {:?}",
-                    replica.name.0,
+                    "Replica subject {:?} is unparseable: {:?}",
+                    replica.subject.0,
                     e
                 );
                 continue;
@@ -152,7 +152,6 @@ pub async fn get_profile(
         };
         space.push(SpaceEntry {
             key: did.repo_key().to_owned(),
-            label: replica.name.0,
             subject: did,
         });
     }

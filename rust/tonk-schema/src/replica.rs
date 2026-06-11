@@ -46,23 +46,31 @@ use crate::prelude::*;
 ///
 /// # Constructing
 ///
-/// [`Replica::new`] takes the profile and subject DIDs plus a name
-/// and derives every field consistently:
+/// [`Replica::new`] takes the profile and subject DIDs and derives
+/// every field consistently:
 ///
 /// ```no_run
 /// use dialog_varsig::Did;
 /// use tonk_schema::Replica;
 /// # fn example(profile: Did, subject: Did) -> Replica {
-/// Replica::new(profile, subject, "home")
+/// Replica::new(profile, subject)
 /// # }
 /// ```
+///
+/// # No name
+///
+/// The replica is a membership *index* — it records that this profile
+/// has a view of this repository, not what the repository is called.
+/// The repository's display name lives in its own `tonk/repository`
+/// concept on its content branch, which syncs across devices; reading
+/// it from there keeps every device's view of the name current,
+/// whereas a profile-side cache only ever updated on the renaming
+/// device.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Replica {
     /// The replica's entity. Derived from `(profile, subject)` via
     /// [`Origin::this`].
     pub this: Entity,
-    /// Human-readable name for the repository on this replica.
-    pub name: Name,
     /// Reference to the repository this replica is a view of.
     pub subject: Subject,
     /// Reference to the profile that owns this replica.
@@ -144,31 +152,6 @@ impl SpaceStatus {
     }
 }
 
-/// A standalone `name` stamp for a replica entity.
-///
-/// Like [`SpaceStatus`] for the status, this stamps just the `name`
-/// attribute onto an existing replica entity (cardinality one, so a
-/// later assert supersedes) without re-asserting the whole [`Replica`].
-/// The rename provider uses it to mirror a repository's new name into
-/// the profile's replica index so the Hub listing updates.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SpaceName {
-    /// The replica entity being stamped.
-    pub this: Entity,
-    /// The replica's display name.
-    pub name: Name,
-}
-
-impl SpaceName {
-    /// A `name` stamp for the given replica entity.
-    pub fn new(this: Entity, name: impl Into<Name>) -> Self {
-        Self {
-            this,
-            name: name.into(),
-        }
-    }
-}
-
 /// Hash input for [`Replica::this`].
 ///
 /// The single-variant enum shape tags the CBOR encoding with the
@@ -181,15 +164,13 @@ enum This<'a> {
 }
 
 impl Replica {
-    /// Build a replica concept from a profile DID, a subject DID,
-    /// and a name.
+    /// Build a replica concept from a profile DID and a subject DID.
     ///
     /// Derives `this` from `(profile, subject)` and fills in the
     /// `subject` and `profile` attributes from the same DIDs so
-    /// every field is consistent with the entity hash. `name`
-    /// takes anything convertible into [`Name`] — e.g. a `&str`
-    /// — so callers don't have to wrap string literals.
-    pub fn new(profile: Did, subject: Did, name: impl Into<Name>) -> Self {
+    /// every field is consistent with the entity hash. The display
+    /// name is not stored here — see the type docs.
+    pub fn new(profile: Did, subject: Did) -> Self {
         let kind = if subject == profile {
             Self::profile_kind()
         } else {
@@ -202,7 +183,6 @@ impl Replica {
             }),
             subject: Subject(subject.this()),
             profile: Profile(profile.this()),
-            name: name.into(),
             kind,
         }
     }
@@ -285,39 +265,25 @@ mod tests {
     use super::*;
     use dialog_varsig::did;
 
-    fn named(tag: &str) -> Name {
-        Name(tag.into())
-    }
-
     #[test]
     fn same_origin_same_entity() {
-        let a = Replica::new(did!("test:p"), did!("test:r"), named("home"));
-        let b = Replica::new(did!("test:p"), did!("test:r"), named("home"));
+        let a = Replica::new(did!("test:p"), did!("test:r"));
+        let b = Replica::new(did!("test:p"), did!("test:r"));
         assert_eq!(a.this.to_string(), b.this.to_string());
     }
 
     #[test]
     fn different_profile_different_entity() {
-        let a = Replica::new(did!("test:p1"), did!("test:r"), named("home"));
-        let b = Replica::new(did!("test:p2"), did!("test:r"), named("home"));
+        let a = Replica::new(did!("test:p1"), did!("test:r"));
+        let b = Replica::new(did!("test:p2"), did!("test:r"));
         assert_ne!(a.this.to_string(), b.this.to_string());
-    }
-
-    #[test]
-    fn name_does_not_affect_entity() {
-        // The entity is derived from (profile, subject) alone, so
-        // renaming a replica does not produce a new entity — it
-        // produces a new name attribute on the existing one.
-        let a = Replica::new(did!("test:p"), did!("test:r"), named("home"));
-        let b = Replica::new(did!("test:p"), did!("test:r"), named("pictures"));
-        assert_eq!(a.this.to_string(), b.this.to_string());
     }
 
     #[test]
     fn subject_and_profile_reflect_inputs() {
         let profile = did!("test:profile-x");
         let subject = did!("test:repo-y");
-        let replica = Replica::new(profile.clone(), subject.clone(), named("n"));
+        let replica = Replica::new(profile.clone(), subject.clone());
         assert_eq!(replica.profile.0.to_string(), profile.as_str());
         assert_eq!(replica.subject.0.to_string(), subject.as_str());
     }

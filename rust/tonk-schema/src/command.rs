@@ -21,7 +21,6 @@ use dialog_capability::Command;
 use dialog_query::Concept;
 
 use crate::domain::command::Value as SpaceName;
-use crate::domain::command::rename::{Subject as RenameSubject, Value as RenameName};
 
 /// Request to create a new space (repository) by local name.
 ///
@@ -68,35 +67,6 @@ pub struct CreateSpace {
 /// can read the optional remote from the facts; the `Command` impl is
 /// kept for the decode/`Decode` machinery.
 impl Command for CreateSpace {
-    type Input = Self;
-    type Output = ();
-}
-
-/// Request to rename an existing repository.
-///
-/// Asserted transiently when the user edits the repository name in the
-/// banner and commits (blur/Enter). The notation event layer reads
-/// `subject` from the banner `<tonk-editable>`'s `data-subject` (the
-/// repository's subject DID) and `name` from its edited value. A
-/// standard-library rule writes the name into the repository's own
-/// `tonk/repository` concept; the worker's `Provider<RenameRepository>`
-/// additionally mirrors it into the profile's replica index so the Hub
-/// listing reflects the rename.
-///
-/// Both fields decode cleanly from their attributes, so this is a plain
-/// typed `Provider` command (unlike `CreateSpace`, which needs a bespoke
-/// handler to read an extra `remote` fact).
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RenameRepository {
-    /// The command entity (a fresh id per invocation).
-    pub this: Entity,
-    /// The repository's subject DID, from the banner's `data-subject`.
-    pub subject: RenameSubject,
-    /// The new display name, from the banner input's value.
-    pub name: RenameName,
-}
-
-impl Command for RenameRepository {
     type Input = Self;
     type Output = ();
 }

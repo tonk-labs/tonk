@@ -74,7 +74,8 @@ pub trait DidExt {
     /// `did:key:z6Mk…`; the key is the trailing multibase blob
     /// `z6Mk…`, which is what URLs, the reactor cache, and the
     /// operator storage path key on. The user-typed name is only a
-    /// display label, stored as a `Replica.name` attribute.
+    /// display label, stored in the repository's own `tonk/repository`
+    /// concept on its content branch.
     fn repo_key(&self) -> &str;
 }
 

@@ -288,6 +288,38 @@ view!:
       aria-label="Repository name"
     ></tonk-editable>
 
+# A read-only label view kind. Its `display` template lives under a
+# distinct attribute (`xyz.tonk.view/label`) so a model can carry both
+# the editable `tonk:view` banner above AND a plain-text label view
+# without the two colliding under the default `tonk:view` resolution.
+# `<tonk-display>` selects it explicitly with `view=tonk:view/label`.
+concept!: &view/label
+  this: tonk:view/label
+  description: A plain, read-only label view selected via `view=tonk:view/label`.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the label view
+      the: xyz.tonk.view/label
+      cardinality: one
+      as: text
+
+# The repository's name as plain, non-editable text. The Hub card
+# mounts this via `<tonk-display model=tonk:repository entity={subject}
+# view=tonk:view/label>` inside a per-space `<tonk-repository>` routing
+# context, so each card shows its own space's current name (read from
+# that space's `tonk/repository`, the cross-device source of truth)
+# rather than an editable banner. Falls back to nothing when unset.
+view/label!:
+  this: id:tonk:repository/label-view
+  model: tonk:repository
+  display: |
+    {name}
+
 # Tab close. Clicking a tab's close button fires the transient
 # `close-sheet` command. `sheet` is the closed sheet; `next` is the
 # neighbour the binder picked (by tab order) to fall back to when the

@@ -22,14 +22,6 @@ concept!: &space
   this: tonk:space
   description: A repository this profile can open.
   with:
-    name:
-      description: >
-        Display label of the space. A label only, not the address: two
-        spaces may share it. The `/space/{subject}` URL routes by the
-        subject DID below, not by this name.
-      the: xyz.tonk.replica/name
-      cardinality: one
-      as: text
     subject:
       description: >
         The repository's subject DID (its stable identity). The Hub card
@@ -110,8 +102,13 @@ concept!: &view/directory
 # linking to its `/space/{subject}` page. A space is identified by its
 # subject did:key; the route reads the routing key as the suffix after
 # the last `:`, so `{subject}` (a full did:key) resolves to that key.
-# `{name}` is only the display label. Rendered as a directory (no
-# entity) over the `space` model on the profile meta branch.
+# The card's name is NOT read from this profile-side record — it is read
+# from the listed space's OWN repository: a nested `<tonk-repository
+# name={subject}>` opens that space's routing context and a
+# `<tonk-display model=tonk:repository view=tonk:view/label>` inside it
+# shows the repo's current name (the cross-device source of truth).
+# Rendered as a directory (no entity) over the `space` model on the
+# profile meta branch.
 view/directory!:
   this: id:tonk:space/directory
   model: space
@@ -133,7 +130,7 @@ view/directory!:
       <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
-          <span class="hub-card__name">{name}</span>
+          <span class="hub-card__name"><tonk-repository name={subject}><tonk-display entity={subject} model=tonk:repository view=tonk:view/label></tonk-display></tonk-repository></span>
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>

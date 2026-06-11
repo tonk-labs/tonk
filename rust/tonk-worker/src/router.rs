@@ -413,15 +413,16 @@ pub mod tests {
             .await
             .unwrap();
         let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
-        // `name` is the routing key (the DID suffix); `label` is the
-        // user-typed display name.
+        // `name` is the routing key (the DID suffix). `label` reads from
+        // the repository's own `tonk/repository` name on its content
+        // branch; this branchless PUT seeds no content branch (and thus
+        // no name), so the label falls back to the routing key.
         assert_eq!(resp.name, resp.subject.repo_key());
-        assert_eq!(resp.label, "test-create");
+        assert_eq!(resp.label, resp.name);
         assert!(!resp.subject.as_str().is_empty());
 
         // The returned key is addressable; GET it back and confirm the
-        // display label round-trips from `Replica.name` (not just the
-        // create response) and the routing key is stable.
+        // routing key and the (key-fallback) label are stable.
         let response = app
             .oneshot(
                 Request::builder()
@@ -438,8 +439,8 @@ pub mod tests {
         let fetched: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
         assert_eq!(fetched.name, resp.name, "routing key is stable across GET");
         assert_eq!(
-            fetched.label, "test-create",
-            "display label persists as Replica.name and is read back on GET",
+            fetched.label, resp.name,
+            "label falls back to the routing key when no name is seeded",
         );
         assert_eq!(fetched.subject, resp.subject);
     }

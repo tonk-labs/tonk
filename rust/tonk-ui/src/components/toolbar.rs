@@ -54,16 +54,19 @@ pub fn TonkToolbar() -> impl IntoView {
     });
     let profile_active = Signal::derive(move || location.pathname.get() == "/profile");
 
-    // Turn the space list into a label-sorted list of tiles, carrying
-    // the routing key (the URL the tile links by), the display label,
-    // and the subject DID (drives the sigil). Sorting by label keeps the
-    // sidebar stable across reloads.
+    // Turn the space list into a stable-sorted list of tiles, carrying
+    // the routing key (the URL the tile links by) and the subject DID
+    // (drives the sigil). The membership index no longer carries a
+    // display name (it lives in each space's own `tonk/repository`), so
+    // the tile's aria-label and sort key fall back to the routing key.
+    // The visible tile is a sigil, not text, so this is invisible in the
+    // common case; surfacing the per-repo name here is a follow-up.
     let tiles = Signal::derive_local(move || {
         let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
         let mut spaces: Vec<(String, String, String)> = info
             .space
             .into_iter()
-            .map(|entry| (entry.key, entry.label, entry.subject.to_string()))
+            .map(|entry| (entry.key.clone(), entry.key, entry.subject.to_string()))
             .collect();
         spaces.sort_by(|a, b| a.1.cmp(&b.1));
         Some(spaces)

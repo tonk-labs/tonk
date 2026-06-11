@@ -18,44 +18,6 @@ use dialog_artifacts::Changes;
 use super::AppState;
 use crate::reactor::CommandRegistry;
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use dialog_varsig::Did;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tonk_common::log;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use tonk_schema::command::RenameRepository;
-
-/// Mirror a repository rename into the profile's replica index.
-///
-/// The standard-library `tonk/rename-repository` rule writes the new name
-/// into the repository's own `tonk/repository` concept; this provider
-/// additionally stamps it onto the profile-side replica so the Hub
-/// listing reflects the rename. The two fields decode cleanly from the
-/// command, so this is a plain typed `Provider` (no extra fact reading).
-///
-/// Best-effort: a malformed subject or a failed profile write is logged
-/// and dropped — the repo-side name (the source of truth in the banner)
-/// already changed, so the profile index simply lags rather than wedging.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-#[async_trait::async_trait(?Send)]
-impl dialog_capability::Provider<RenameRepository> for CommandEnv {
-    async fn execute(&self, command: RenameRepository) {
-        let Ok(subject) = command.subject.0.to_string().parse::<Did>() else {
-            log!(
-                "RenameRepository: subject {:?} is not a valid DID",
-                command.subject.0
-            );
-            return;
-        };
-        let tonk = self.state.read().await;
-        if let Err(error) =
-            super::repository::set_replica_name(&tonk, &subject, &command.name.0).await
-        {
-            log!("RenameRepository: profile update failed: {}", error);
-        }
-    }
-}
-
 /// The environment commands run against — a cheap handle (clone of
 /// [`AppState`]) that implements
 /// [`Provider<C>`](dialog_capability::Provider) for each command `C` the
@@ -101,15 +63,19 @@ impl CommandEnv {
 /// transient's facts — which a typed `Provider`, receiving only the
 /// decoded command, can't do.
 ///
+/// Repository rename needs no command here: the standard-library
+/// `tonk/rename-repository` rule writes the new name straight into the
+/// repository's own `tonk/repository` concept on its content branch,
+/// which syncs across devices and is the single source of truth the Hub
+/// and banner both read.
+///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
 pub fn command_registry() -> CommandRegistry {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
-        // Rename decodes cleanly into two fields, so it rides the typed
-        // `Provider<RenameRepository>` path rather than a bespoke handler.
-        registry.command::<RenameRepository>()
+        registry
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {

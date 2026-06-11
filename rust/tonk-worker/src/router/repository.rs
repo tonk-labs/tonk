@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
-use tonk_schema::{Branch as MetaBranch, Remote, Replica, SpaceStatus, TrackingBranch};
+use tonk_schema::{
+    Branch as MetaBranch, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+};
 
 use super::AppState;
 use crate::{Notification, RepositoryError, TonkWorkerError, broadcast, worker::TonkState};
@@ -148,9 +150,10 @@ pub struct RepositoryInfo {
     /// at). The URL segment routes resolve through this; identity, not
     /// label.
     pub name: String,
-    /// The user-typed display label, read from the meta `Replica.name`.
-    /// Distinct from `name`: two spaces may share a label, but each has
-    /// a unique routing key.
+    /// The user-typed display label, read from the repository's own
+    /// `tonk/repository` name on its content branch (the cross-device
+    /// source of truth). Distinct from `name`: two spaces may share a
+    /// label, but each has a unique routing key.
     pub label: String,
     /// The repository's own DID.
     pub subject: Did,
@@ -205,9 +208,9 @@ pub async fn put_repository(
     // delegation, remotes, branches, upstreams, meta facts. This
     // records the replica in the profile with `status: blank` (see
     // `record_replica_in_profile`), so the Hub card appears in its
-    // installing state right away. The display label is only the
-    // replica's `name`; the routing key is the new repository's DID
-    // suffix, derived from the returned handle.
+    // installing state right away. The display label is seeded into the
+    // repository's own `tonk/repository` concept; the routing key is the
+    // new repository's DID suffix, derived from the returned handle.
     let repository = create_repository(&tonk, &display_name, &configuration).await?;
     let subject = repository.did();
     let key = subject.repo_key().to_owned();
@@ -754,9 +757,9 @@ pub async fn create_repository(
     // 1. Generate the repository's credential up front so its
     // `did:key` is its stable identity. The repository's routing
     // and storage key is that DID's suffix (`did.repo_key()`); the
-    // user-typed `display_name` is only a label, recorded later as
-    // the replica's `name` attribute. Generating the signer first
-    // (rather than letting `.create()` mint one) is what lets the
+    // user-typed `display_name` is only a label, seeded later into the
+    // repository's own `tonk/repository` concept. Generating the signer
+    // first (rather than letting `.create()` mint one) is what lets the
     // name derive from the DID instead of the other way around.
     let signer = Ed25519Signer::generate()
         .await
@@ -800,8 +803,10 @@ pub async fn create_repository(
         .map_err(|e| RepositoryError::Internal(format!("Failed to save repo delegation: {}", e)))?;
 
     // 3-7. Wire up the meta branch and register the replica. The
-    // replica's `name` attribute carries the user-typed label; its
-    // identity (`subject`) is the repository DID.
+    // replica is a name-less membership index; its identity (`subject`)
+    // is the repository DID. The `display_name` is only threaded for log
+    // context — the name itself is seeded into the repository's own
+    // `tonk/repository` concept by the caller's seed step.
     record_repository_meta(tonk, &repository, display_name, configuration).await?;
 
     Ok(repository)
@@ -833,7 +838,7 @@ where
     C: Principal + Clone,
 {
     // The repository's routing/storage key is its DID suffix; the
-    // `display_name` is only the replica's `name` label.
+    // `display_name` is only used for log context here.
     let did = repository.did();
     let key = did.repo_key();
 
@@ -850,8 +855,10 @@ where
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
 
-    // Local replica of this repository
-    let replica = Replica::new(tonk.profile.did(), repository.did(), display_name);
+    // Local replica of this repository. The display name is not stored
+    // here — it lives in the repository's own `tonk/repository` concept
+    // on its content branch (seeded by `seed_repository_name`).
+    let replica = Replica::new(tonk.profile.did(), repository.did());
 
     let mut transaction = meta
         .transaction()
@@ -1021,7 +1028,7 @@ async fn record_replica_in_profile(
     display_name: &str,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
-    let replica = Replica::new(tonk.profile.did(), subject.clone(), display_name);
+    let replica = Replica::new(tonk.profile.did(), subject.clone());
     // Stamp the replica `blank`: the content branch has not been seeded
     // yet (seeding runs asynchronously after this response). The Hub
     // renders this as an installing card; `set_replica_status` flips it
@@ -1084,7 +1091,7 @@ async fn set_replica_status(
     subject: &Did,
     status: tonk_schema::domain::replica::Status,
 ) -> Result<(), RepositoryError> {
-    let entity = Replica::new(tonk.profile.did(), subject.clone(), "")
+    let entity = Replica::new(tonk.profile.did(), subject.clone())
         .this()
         .clone();
     let stamp = SpaceStatus::new(entity, status);
@@ -1111,70 +1118,20 @@ async fn set_replica_status(
     Ok(())
 }
 
-/// Update a replica's display [`Name`] in the profile index by stamping a
-/// [`SpaceName`] on its entity. `name` is cardinality-one, so the new
-/// value supersedes the prior one without re-asserting the whole
-/// [`Replica`]. Mirrors [`set_replica_status`]: the replica entity is
-/// re-derived from `(profile, subject)` (no read needed), and the write
-/// goes through the reactor so the Hub's subscription re-polls and the
-/// renamed card updates.
-///
-/// This is the profile-side half of a rename — the repository's own
-/// `tonk/repository` name is updated by a standard-library rule; this
-/// keeps the Hub listing in sync.
-///
-/// [`Name`]: tonk_schema::domain::replica::Name
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) async fn set_replica_name(
-    tonk: &TonkState,
-    subject: &Did,
-    name: &str,
-) -> Result<(), RepositoryError> {
-    let entity = Replica::new(tonk.profile.did(), subject.clone(), "")
-        .this()
-        .clone();
-    let stamp = tonk_schema::SpaceName::new(entity, name);
-
-    let revision = tonk
-        .reactor
-        .profile_repository()
-        .branch(META_BRANCH)
-        .transaction()
-        .assert(stamp)
-        .commit()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| RepositoryError::Internal(format!("Failed to set replica name: {}", e)))?;
-
-    broadcast(
-        "/api/profile",
-        &Notification {
-            branch: META_BRANCH.to_string(),
-            revision,
-        },
-    );
-
-    Ok(())
-}
-
 /// Bootstrap the profile repository's meta branch.
 ///
 /// Called on every worker startup. Asserts the profile's "self"
-/// replica record (profile DID == subject DID, labeled with the
-/// profile's name) and a [`MetaBranch`] concept for the meta
-/// branch itself.
+/// replica record (profile DID == subject DID) and a [`MetaBranch`]
+/// concept for the meta branch itself.
 ///
 /// A no-op when the profile has already been bootstrapped — both
 /// assertions are content-addressed (entity hashes depend only on
 /// `(profile, subject)` / `(replica, name)`), so re-asserting the
 /// same facts produces the same entities and attribute values and
 /// the dialog layer deduplicates.
-pub async fn bootstrap_profile_meta(
-    tonk: &TonkState,
-    profile_name: &str,
-) -> Result<(), RepositoryError> {
+pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryError> {
     let profile_did = tonk.profile.did();
-    let replica = Replica::new(profile_did.clone(), profile_did, profile_name);
+    let replica = Replica::new(profile_did.clone(), profile_did);
 
     // Write through the reactor's profile handle so the cached branch
     // state (which every read also goes through) advances on this
@@ -1284,6 +1241,63 @@ pub async fn get_profile_repository(
     Ok(Json(info))
 }
 
+/// The branch a repository's own `tonk/repository` name is seeded onto.
+/// Spaces have a single content branch (`main`); the seed writes the
+/// name there (see `seed_repository_name`).
+const CONTENT_BRANCH: &str = "main";
+
+/// Read a repository's display label from its own `tonk/repository`
+/// concept on its content branch, keyed by the subject DID.
+///
+/// This is the single source of truth for the name: it lives with the
+/// repository and syncs across devices, so a rename on any device is
+/// visible everywhere the content branch syncs. Falls back to the
+/// routing `key` when the content branch can't be opened or carries no
+/// name yet (a freshly created repo before its name is seeded).
+async fn repository_label<R>(tonk: &TonkState, repository: &Repository<R>, key: &str) -> String
+where
+    R: Principal + Clone,
+{
+    let content = match repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(content) => content,
+        Err(e) => {
+            log!(
+                "No '{}' branch for repository '{}' label: {}",
+                CONTENT_BRANCH,
+                key,
+                e
+            );
+            return key.to_string();
+        }
+    };
+
+    match content
+        .query()
+        .select(Query::<RepositoryName> {
+            this: Term::from(repository.did().this()),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows
+            .into_iter()
+            .next()
+            .map(|row| row.name.0)
+            .unwrap_or_else(|| key.to_string()),
+        Err(e) => {
+            log!("tonk/repository label query failed for '{}': {:?}", key, e);
+            key.to_string()
+        }
+    }
+}
+
 /// Construct [`RepositoryInfo`] for an open repository by
 /// reading the schema concepts off its `meta` branch.
 ///
@@ -1345,39 +1359,17 @@ where
     };
 
     // Derive the replica entity from `(profile, subject)` — the same
-    // hash `create_repository` used. The replica's `name` attribute
-    // carries the user-typed display label, which we read back below;
-    // its entity is independent of that label, so deriving it from
-    // `(profile, subject)` (with an empty label placeholder) is exact.
-    let replica = Replica::new(tonk.profile.did(), repository.did(), "");
+    // hash `create_repository` used. Used below to scope the remote and
+    // tracking-branch queries on the meta branch.
+    let replica = Replica::new(tonk.profile.did(), repository.did());
     let replica_entity = replica.this().clone();
 
-    // Read the display label off the meta branch. The routing `key`
-    // is the identity; the label is the user-typed name. Falls back to
-    // the key when no replica record is present (pre-meta repos).
-    let label = match meta
-        .query()
-        .select(Query::<Replica> {
-            this: Term::from(replica_entity.clone()),
-            name: Term::var("name"),
-            subject: Term::var("subject"),
-            profile: Term::var("profile"),
-            kind: Term::var("kind"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows
-            .into_iter()
-            .next()
-            .map(|replica| replica.name.0)
-            .unwrap_or_else(|| key.to_string()),
-        Err(e) => {
-            log!("Replica label query on meta failed for '{}': {:?}", key, e);
-            key.to_string()
-        }
-    };
+    // Read the display label from the repository's own `tonk/repository`
+    // concept on its content branch, keyed by the subject DID. The name
+    // lives with the repository (not in the profile's replica index), so
+    // it stays current on every device that syncs the content branch.
+    // Falls back to the routing `key` when no name has been seeded yet.
+    let label = repository_label(tonk, repository, key).await;
 
     // Pull every branch on the meta branch, local and remote.
     // Keyed by entity so the upstream-resolution step can look
@@ -1592,7 +1584,7 @@ where
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
 
-    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+    let replica = Replica::new(tonk.profile.did(), repository.did());
     let mut transaction = meta.transaction().assert(replica.clone());
 
     // Ensure each configured remote exists at the dialog layer, then
