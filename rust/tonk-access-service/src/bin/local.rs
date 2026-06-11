@@ -1,6 +1,6 @@
 // Runs the test access service standalone for local development/benchmarking.
 
-use tonk_access_service::helpers::{access_service, AccessServiceSettings};
+use tonk_access_service::helpers::{AccessServiceSettings, access_service};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

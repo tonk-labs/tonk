@@ -923,10 +923,7 @@ mod when_sharing_a_concept {
         // an absolute URL — tonk-ui composes the prefix using the
         // recipient's actual local name (which may differ from
         // `name=` when they already have the subject mounted).
-        assert_eq!(
-            pairs.get("then").map(String::as_str),
-            Some("concept/task"),
-        );
+        assert_eq!(pairs.get("then").map(String::as_str), Some("concept/task"),);
         Ok(())
     }
 
@@ -952,10 +949,7 @@ mod when_sharing_a_concept {
         // `then` is independent of the suggested `name=` — it
         // names a path under whichever local space the recipient
         // ends up in.
-        assert_eq!(
-            pairs.get("then").map(String::as_str),
-            Some("concept/task"),
-        );
+        assert_eq!(pairs.get("then").map(String::as_str), Some("concept/task"),);
         Ok(())
     }
 
@@ -1178,10 +1172,7 @@ mod when_sharing_a_display {
         // composes the URL); the CLI is where exactly-one-of is
         // enforced, so a neither-selector launcher isn't reachable
         // from `slide share display`.
-        assert_eq!(
-            pairs.get("then").map(String::as_str),
-            Some("buy-milk"),
-        );
+        assert_eq!(pairs.get("then").map(String::as_str), Some("buy-milk"),);
         Ok(())
     }
 
