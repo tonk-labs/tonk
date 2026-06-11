@@ -68,6 +68,14 @@ impl EntityExt for Entity {
 pub trait DidExt {
     /// Produce the `Entity` this DID identifies.
     fn this(&self) -> Entity;
+
+    /// The repository routing/storage key for this DID: the text after
+    /// its last `:`. A repository's identity is its credential's
+    /// `did:key:z6Mk…`; the key is the trailing multibase blob
+    /// `z6Mk…`, which is what URLs, the reactor cache, and the
+    /// operator storage path key on. The user-typed name is only a
+    /// display label, stored as a `Replica.name` attribute.
+    fn repo_key(&self) -> &str;
 }
 
 impl DidExt for Did {
@@ -75,6 +83,11 @@ impl DidExt for Did {
         self.as_str()
             .parse()
             .expect("DID string is always a valid Entity URI")
+    }
+
+    fn repo_key(&self) -> &str {
+        let uri = self.as_str();
+        uri.rsplit(':').next().unwrap_or(uri)
     }
 }
 
@@ -103,5 +116,11 @@ mod tests {
     fn did_this_preserves_uri() {
         let d = did!("key:z6MkTestEntity");
         assert_eq!(d.this().to_string(), d.as_str());
+    }
+
+    #[test]
+    fn repo_key_is_the_did_key_suffix() {
+        let d = did!("key:z6MkTestEntity");
+        assert_eq!(d.repo_key(), "z6MkTestEntity");
     }
 }

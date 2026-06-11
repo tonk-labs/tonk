@@ -1,8 +1,6 @@
 //! Profile route — reports the profile and the spaces (replicas)
 //! it owns.
 
-use std::collections::HashMap;
-
 use ::axum::{Json, extract::State};
 use axum_wasm_macros::wasm_compat;
 use dialog_query::{Output as _, Query, Term};
@@ -22,16 +20,32 @@ use crate::TonkWorkerError;
 /// a cross-module coupling for a one-character string.
 const META_BRANCH: &str = "meta";
 
+/// One space the profile owns, as listed by `GET /api/profile`.
+///
+/// A repository's identity is its credential's `did:key` (`subject`);
+/// the routing/storage key is the DID suffix (`key`). The user-typed
+/// `label` is only a display name — two spaces may share it, so the UI
+/// must route by `key`, not `label`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpaceEntry {
+    /// Routing/storage key — the `subject` DID suffix. The URL segment
+    /// the UI links by.
+    pub key: String,
+    /// User-typed display label (the replica's `name` attribute).
+    pub label: String,
+    /// The space's identity DID.
+    pub subject: Did,
+}
+
 /// Response body for `GET /api/profile`.
 ///
 /// `profile` describes the profile "as a repository" (see
 /// [`bootstrap_profile_meta`]) so the UI can render it the same
 /// way it renders any other space — populated by
 /// [`build_repository_info`], which reads the profile's meta
-/// branch and surfaces its branches and remotes. `space` is a
-/// flat `{ name -> subject DID }` map of every replica this
-/// profile owns — enough to populate the sidebar without per-repo
-/// round-trips.
+/// branch and surfaces its branches and remotes. `space` lists every
+/// replica this profile owns — enough to populate the sidebar without
+/// per-repo round-trips.
 ///
 /// [`bootstrap_profile_meta`]: super::repository::bootstrap_profile_meta
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -41,9 +55,9 @@ pub struct ProfileInfo {
     /// profile's own branches and remotes.
     pub profile: RepositoryInfo,
     /// Every replica owned by this profile except the profile's
-    /// own self-replica, keyed by local name.
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub space: HashMap<String, Did>,
+    /// own self-replica.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub space: Vec<SpaceEntry>,
 }
 
 /// Handler for `GET /api/profile`.
@@ -112,12 +126,14 @@ pub async fn get_profile(
             TonkWorkerError::Internal(format!("Replica query on profile meta failed: {:?}", e))
         })?;
 
-    // Build the space map — every row except the self-replica,
-    // which has `subject == profile`. An unparseable subject is
-    // a single bad entry; log and skip it rather than failing
-    // the whole response.
+    // Build the space list — every row except the self-replica,
+    // which has `subject == profile`. Each entry carries the routing
+    // key (the subject DID suffix, what the UI links by), the display
+    // label (the replica's `name`), and the identity DID. An
+    // unparseable subject is a single bad entry; log and skip it
+    // rather than failing the whole response.
     let profile_entity = profile_did.this();
-    let mut space = HashMap::with_capacity(rows.len());
+    let mut space = Vec::with_capacity(rows.len());
 
     for replica in rows {
         if replica.subject.0 == profile_entity {
@@ -134,7 +150,11 @@ pub async fn get_profile(
                 continue;
             }
         };
-        space.insert(replica.name.0, did);
+        space.push(SpaceEntry {
+            key: did.repo_key().to_owned(),
+            label: replica.name.0,
+            subject: did,
+        });
     }
 
     Ok(Json(ProfileInfo { profile, space }))

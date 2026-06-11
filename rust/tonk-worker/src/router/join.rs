@@ -148,50 +148,43 @@ pub async fn join(
             TonkWorkerError::Internal(format!("failed to persist delegation chain: {e}"))
         })?;
 
+    // The shared repository's DID is its identity; the routing/storage
+    // key is the DID suffix. The recipient's chosen `name` is only a
+    // display label.
+    let key = subject.repo_key().to_owned();
+
     // If the recipient already has a replica for this subject,
     // we're done — surface the existing replica as `Renewed`.
     // The recipient's chosen name is ignored on this branch:
     // they can't relabel the replica via a join, and forcing a
-    // 409 would lose the chain refresh we just did.
-    if let Some(existing_name) = find_replica_name_for_subject(&tonk, &subject).await? {
+    // 409 would lose the chain refresh we just did. The replica is
+    // mounted at the routing key (identity), not the stored label.
+    if find_replica_name_for_subject(&tonk, &subject)
+        .await?
+        .is_some()
+    {
         let repository = tonk
             .profile
-            .repository(existing_name.as_str())
+            .repository(key.as_str())
             .load()
             .perform(&tonk.operator)
             .await
             .map_err(|e| {
                 TonkWorkerError::Internal(format!(
-                    "replica '{existing_name}' present in profile meta but failed to load: {e}",
+                    "replica '{key}' present in profile meta but failed to load: {e}",
                 ))
             })?;
-        let info = build_repository_info(&tonk, &existing_name, &repository).await;
+        let info = build_repository_info(&tonk, &key, &repository).await;
         return Ok((
             StatusCode::OK,
             Json(JoinResponse::Renewed { repository: info }),
         ));
     }
 
-    // No existing replica → check for a name collision against
-    // an *unrelated* subject. A clash here is recoverable: the
-    // user re-tries with a different name.
-    if tonk
-        .profile
-        .repository(name)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .is_ok()
-    {
-        return Err(TonkWorkerError::Conflict(format!(
-            "A space named '{name}' already exists. Pick a different name.",
-        )));
-    }
-
     // Create a verifier-only credential keyed to the invited
-    // subject DID, then mount it as a local replica under
-    // `name`. Local DID == invited subject DID, so `Replica.this`
-    // and the sigil glyph converge across recipients.
+    // subject DID, then mount it as a local replica at the routing
+    // key (so path == identity). Local DID == invited subject DID, so
+    // `Replica.this` and the sigil glyph converge across recipients.
     let verifier: Ed25519Verifier = subject.to_string().parse().map_err(|e| {
         TonkWorkerError::Router(format!(
             "invite subject is not a valid Ed25519 did:key: {e:?}"
@@ -199,7 +192,7 @@ pub async fn join(
     })?;
     let credential = Credential::from(verifier);
 
-    let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(name));
+    let space_capability = Subject::from(tonk.profile.did()).attenuate(Space::new(&key));
     let space_credential = space_capability
         .create(credential)
         .perform(&tonk.operator)
@@ -235,9 +228,9 @@ pub async fn join(
 
     record_repository_meta(&tonk, &repository, name, &configuration).await?;
 
-    log!("Joined invite for subject {subject} as local replica '{name}'",);
+    log!("Joined invite for subject {subject} as local replica '{name}' (key {key})",);
 
-    let info = build_repository_info(&tonk, name, &repository).await;
+    let info = build_repository_info(&tonk, &key, &repository).await;
     Ok((
         StatusCode::CREATED,
         Json(JoinResponse::Joined { repository: info }),

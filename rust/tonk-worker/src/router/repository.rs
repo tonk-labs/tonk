@@ -1,8 +1,11 @@
-//! Repository create/update route.
+//! Repository create route.
 //!
-//! `PUT /api/repository/{repo}` always creates. If the repository already
-//! exists, it responds with `412 Precondition Failed` when the request
-//! carried `If-None-Match: *`, or `409 Conflict` otherwise.
+//! `PUT /api/repository/{repo}` always creates a fresh repository. The
+//! repository's identity is its credential's `did:key`; the `{repo}`
+//! path segment is only a display label. Every create mints a new
+//! identity, so there is never a create-time collision — two spaces may
+//! share a label. The response carries the new repository's routing key
+//! (the DID suffix), which the UI routes by.
 
 use std::collections::HashMap;
 
@@ -13,7 +16,7 @@ use ::axum::{
     http::{HeaderMap, StatusCode},
 };
 use axum_wasm_macros::wasm_compat;
-use dialog_credentials::SignerCredential;
+use dialog_credentials::{Ed25519Signer, SignerCredential};
 use dialog_query::{Output as _, Query, Term};
 use dialog_repository::{
     RemoteRepository, Repository, RepositoryExt as _, Revision, SiteAddress, Upstream,
@@ -23,6 +26,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use tokio::sync::oneshot;
 use tonk_common::log;
+use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{Branch as MetaBranch, Remote, Replica, SpaceStatus, TrackingBranch};
 
 use super::AppState;
@@ -140,8 +144,14 @@ impl RepositoryConfiguration {
 /// and per-branch revision state.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepositoryInfo {
-    /// The local repository name (the URL segment it's addressable at).
+    /// The repository's routing key (the DID suffix it's addressable
+    /// at). The URL segment routes resolve through this; identity, not
+    /// label.
     pub name: String,
+    /// The user-typed display label, read from the meta `Replica.name`.
+    /// Distinct from `name`: two spaces may share a label, but each has
+    /// a unique routing key.
+    pub label: String,
     /// The repository's own DID.
     pub subject: Did,
     /// The operator's DID (ephemeral session key).
@@ -161,27 +171,23 @@ pub struct RepositoryInfo {
 /// Create a repository with optional remote and branch configuration.
 ///
 /// Semantics:
-/// - Always creates — if the repository exists, fails with `412
-///   Precondition Failed` when `If-None-Match: *` was sent, or
-///   `409 Conflict` otherwise.
+/// - Always creates a fresh repository with a freshly minted identity.
+///   The `{repo}` path segment is the display label; the repository's
+///   routing key is its credential's DID suffix. There is no create-time
+///   collision — two spaces may share a label.
 /// - On success, delegates repository access to the current profile,
 ///   sets up any remotes from the body, creates each listed branch,
 ///   and wires up upstream tracking when specified.
-/// - Returns `201 Created` with a [`RepositoryInfo`] body.
+/// - Returns `201 Created` with a [`RepositoryInfo`] body whose `name`
+///   is the new routing key.
 #[wasm_compat]
 pub async fn put_repository(
     State(state): State<AppState>,
-    Path(name): Path<String>,
-    headers: HeaderMap,
+    Path(display_name): Path<String>,
+    _headers: HeaderMap,
     body_bytes: Bytes,
 ) -> Result<(StatusCode, Json<RepositoryInfo>), TonkWorkerError> {
-    log!("PUT /api/repository/{}", name);
-
-    let if_none_match_star = headers
-        .get("if-none-match")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim() == "*")
-        .unwrap_or(false);
+    log!("PUT /api/repository/{}", display_name);
 
     // Parse body manually so JSON errors return our structured
     // `TonkWorkerError::Router` (JSON body) rather than axum's
@@ -195,42 +201,19 @@ pub async fn put_repository(
 
     let tonk = state.write().await;
 
-    // 1. Check if the repo already exists before attempting to
-    // create. `.load()` returns Ok when the space is present; in
-    // that case the PUT is rejected with 412 (if the caller sent
-    // `If-None-Match: *`) or 409 (otherwise). Relying on
-    // `.create()`'s own error signalling isn't enough because
-    // it's possible for the space to exist while being
-    // inconsistent enough that `.create()` would either succeed
-    // (overwriting) or fail in a way we can't classify cleanly.
-    if tonk
-        .profile
-        .repository(&name)
-        .load()
-        .perform(&tonk.operator)
-        .await
-        .is_ok()
-    {
-        let message = format!("Repository '{}' already exists", name);
-        return Err(if if_none_match_star {
-            TonkWorkerError::PreconditionFailed(message)
-        } else {
-            TonkWorkerError::Conflict(message)
-        });
-    }
-
-    // 2. Create the repository and everything that comes with
-    // it — delegation, remotes, branches, upstreams, meta facts.
-    // This records the replica in the profile with `status: blank`
-    // (see `record_replica_in_profile`), so the Hub card appears in
-    // its installing state right away. The helper doesn't know about
-    // HTTP; its errors are mapped to the right status via
-    // `RepositoryError::into`.
-    let repository = create_repository(&tonk, &name, &configuration).await?;
+    // Create the repository and everything that comes with it —
+    // delegation, remotes, branches, upstreams, meta facts. This
+    // records the replica in the profile with `status: blank` (see
+    // `record_replica_in_profile`), so the Hub card appears in its
+    // installing state right away. The display label is only the
+    // replica's `name`; the routing key is the new repository's DID
+    // suffix, derived from the returned handle.
+    let repository = create_repository(&tonk, &display_name, &configuration).await?;
     let subject = repository.did();
-    let info = build_repository_info(&tonk, &name, &repository).await;
+    let key = subject.repo_key().to_owned();
+    let info = build_repository_info(&tonk, &key, &repository).await;
 
-    // 3. Seed asynchronously, then flip the replica to `initialized`.
+    // Seed asynchronously, then flip the replica to `initialized`.
     // Seeding the standard library is the slow part (~seconds of
     // prolly-tree commits); doing it inline would block this response
     // and starve the page's asset/Web Awesome loads on the single SW
@@ -243,7 +226,7 @@ pub async fn put_repository(
     // when `tonk` drops at the end of this scope) and re-acquires it.
     drop(tonk);
     let branches: Vec<String> = configuration.branch.keys().cloned().collect();
-    spawn_seed(state, name, subject, branches);
+    spawn_seed(state, display_name, key, subject, branches);
 
     Ok((StatusCode::CREATED, Json(info)))
 }
@@ -290,13 +273,15 @@ fn remote_from_facts(facts: &crate::reactor::EntityFacts) -> Option<String> {
 /// URL deserializes as `Value::Entity`, which a `String` field can't
 /// decode.
 ///
-/// The repository is **created-or-reused** (`create_space_inner` no-ops
-/// an existing one), then, if a remote was given, attached best-effort
-/// via [`enable_sync_inner`]. So the same handler serves both forms: the
-/// Hub "New space" form (new repo) and the topbar "Enable sync" form
-/// (existing repo) — both post the same `name`(+`remote`) shape, and the
-/// handler keys on the shared `name` attribute. A remote/auth failure
-/// leaves a working local space, retryable from the topbar.
+/// The repository is **always created** with a freshly minted identity
+/// (`create_space_inner` returns its routing key), then, if a remote was
+/// given, attached best-effort via [`enable_sync_inner`] to that key. So
+/// the same handler serves both forms: the Hub "New space" form and the
+/// topbar "Enable sync" form — both post the same `name`(+`remote`)
+/// shape, and the handler keys on the shared `name` attribute. The
+/// user-typed `name` is only a display label; two spaces may share it. A
+/// remote/auth failure leaves a working local space, retryable from the
+/// topbar.
 ///
 /// A custom handler (not a plain `Provider<CreateSpace>`) is required
 /// because the provider only receives the decoded command, never the
@@ -362,20 +347,24 @@ impl crate::reactor::CommandHandler for CreateSpaceHandler {
 
             // 1. Always create local-only first, so the space appears
             //    whether or not a remote was given (and never vanishes on
-            //    a remote failure).
-            if let Err(error) = create_space_inner(env.state(), &name).await {
-                log!("CreateSpace '{}' failed: {}", name, error);
-                return;
-            }
+            //    a remote failure). The create mints a fresh identity and
+            //    returns its routing key.
+            let key = match create_space_inner(env.state(), &name).await {
+                Ok(key) => key,
+                Err(error) => {
+                    log!("CreateSpace '{}' failed: {}", name, error);
+                    return;
+                }
+            };
 
-            // 2. If the form carried a remote, attach it best-effort. The
-            //    space already exists, so a failure here just leaves it
+            // 2. If the form carried a remote, attach it best-effort to
+            //    the identity just created. A failure here just leaves it
             //    local-only — retryable from the topbar's Enable sync.
             //    (`remote_from_facts` already dropped empty/blank URLs.)
             if let Some(remote) = remote
-                && let Err(error) = enable_sync_inner(env.state(), &name, &remote).await
+                && let Err(error) = enable_sync_inner(env.state(), &key, &remote).await
             {
-                log!("CreateSpace '{}': remote attach failed: {}", name, error);
+                log!("CreateSpace '{}': remote attach failed: {}", key, error);
             }
         })
     }
@@ -416,46 +405,36 @@ fn space_config(remote: &str) -> RepositoryConfiguration {
 
 /// Create a space local-only, split out so its `?` errors are logged
 /// once at the boundary. Mirrors [`put_repository`] minus the HTTP shell.
-/// An existing name is a no-op (logged), so the create handler can call
-/// this unconditionally for both the "New space" and "Enable sync" forms.
+/// Always creates a fresh repository with a minted identity; `name` is
+/// only its display label. Returns the new routing key (the DID suffix)
+/// so the caller can attach a remote to the identity it just created.
 ///
 /// A sync remote is never wired here — it would make a remote/auth
 /// failure abort the whole create, so the space never appears.
 /// [`CreateSpaceHandler`] attaches the remote separately, after this.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn create_space_inner(state: &AppState, name: &str) -> Result<(), RepositoryError> {
+async fn create_space_inner(state: &AppState, name: &str) -> Result<String, RepositoryError> {
     // A local-only `main`-branch space (the same config the button asks
     // for); a remote is attached afterwards by the handler.
     let configuration =
         RepositoryConfiguration::default().branch("main", BranchConfiguration::default());
 
-    let (subject, branches) = {
+    let (subject, key, branches) = {
         let tonk = state.write().await;
 
-        // Already exists → no-op. Without an HTTP caller there's no
-        // 409/412 to return; a duplicate command just does nothing.
-        if tonk
-            .profile
-            .repository(name)
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .is_ok()
-        {
-            log!("CreateSpace '{}': already exists, skipping", name);
-            return Ok(());
-        }
-
         // Create the repository (records the replica with status:blank).
+        // `name` is the display label; the identity is freshly minted.
         let repository = create_repository(&tonk, name, &configuration).await?;
         let subject = repository.did();
+        let key = subject.repo_key().to_owned();
         let branches: Vec<String> = configuration.branch.keys().cloned().collect();
-        (subject, branches)
+        (subject, key, branches)
     };
 
     // Seed + flip to initialized once the lock is released (seeding is
     // the slow part; holding the lock would stall the page).
-    seed_and_initialize(state, name, &subject, &branches).await
+    seed_and_initialize(state, name, &key, &subject, &branches).await?;
+    Ok(key)
 }
 
 /// Attach a sync remote to a space, idempotently, via
@@ -469,24 +448,24 @@ async fn create_space_inner(state: &AppState, name: &str) -> Result<(), Reposito
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn enable_sync_inner(
     state: &AppState,
-    name: &str,
+    key: &str,
     remote: &str,
 ) -> Result<(), RepositoryError> {
     if remote.trim().is_empty() {
         // Submitted with no URL — nothing to attach.
-        log!("enable sync '{}': empty remote, nothing to attach", name);
+        log!("enable sync '{}': empty remote, nothing to attach", key);
         return Ok(());
     }
     let configuration = space_config(remote);
 
     let tonk = state.write().await;
     // A missing repository is a no-op, not an error — defensive against a
-    // stale name (e.g. an enable-sync form whose hidden repo field didn't
+    // stale key (e.g. an enable-sync form whose hidden repo field didn't
     // populate). The create path always runs `create_space_inner` first,
     // so the repo is present by the time this is reached on that path.
     let repository = match tonk
         .profile
-        .repository(name)
+        .repository(key)
         .load()
         .perform(&tonk.operator)
         .await
@@ -495,14 +474,14 @@ async fn enable_sync_inner(
         Err(error) => {
             log!(
                 "enable sync '{}': repository not present, skipping ({})",
-                name,
+                key,
                 error
             );
             return Ok(());
         }
     };
 
-    ensure_remote_config(&tonk, &repository, name, &configuration).await
+    ensure_remote_config(&tonk, &repository, key, &configuration).await
 }
 
 /// Spawn the background seed + status flip for a freshly created
@@ -512,16 +491,30 @@ async fn enable_sync_inner(
 /// Native builds have no service-worker scope (and no `spawn_local`
 /// runtime here), so they no-op — the seed/status path is browser-only.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn spawn_seed(state: AppState, name: String, subject: Did, branches: Vec<String>) {
+fn spawn_seed(
+    state: AppState,
+    display_name: String,
+    key: String,
+    subject: Did,
+    branches: Vec<String>,
+) {
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = seed_and_initialize(&state, &name, &subject, &branches).await {
-            log!("Background seed for '{}' failed: {}", name, e);
+        if let Err(e) = seed_and_initialize(&state, &display_name, &key, &subject, &branches).await
+        {
+            log!("Background seed for '{}' failed: {}", key, e);
         }
     });
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-fn spawn_seed(_state: AppState, _name: String, _subject: Did, _branches: Vec<String>) {}
+fn spawn_seed(
+    _state: AppState,
+    _display_name: String,
+    _key: String,
+    _subject: Did,
+    _branches: Vec<String>,
+) {
+}
 
 /// Seed the standard library into every branch, then flip the
 /// replica's status to `initialized`. Runs in the background after
@@ -529,7 +522,8 @@ fn spawn_seed(_state: AppState, _name: String, _subject: Did, _branches: Vec<Str
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn seed_and_initialize(
     state: &AppState,
-    name: &str,
+    display_name: &str,
+    key: &str,
     subject: &Did,
     branches: &[String],
 ) -> Result<(), RepositoryError> {
@@ -539,12 +533,12 @@ async fn seed_and_initialize(
             .map_err(|e| RepositoryError::Internal(format!("fetch standard library: {e}")))?;
         let tonk = state.read().await;
         for branch_name in branches {
-            seed_standard_library(&tonk, name, branch_name, &library)
+            seed_standard_library(&tonk, key, branch_name, &library)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
                 "Seeded standard library on '{}' branch '{}'",
-                name,
+                key,
                 branch_name
             );
         }
@@ -554,21 +548,17 @@ async fn seed_and_initialize(
         // committed above. Every other repo gets the scaffold alone, so
         // its directory render has zero sheet instances and reads as
         // genuinely empty — the precondition for the launchpad view.
-        if name == DEFAULT_REPOSITORY_NAME {
+        if display_name == DEFAULT_REPOSITORY_NAME {
             let demo = fetch_standard_library(DEMO_LIBRARY_URL)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("fetch showcase demo: {e}")))?;
             for branch_name in branches {
-                seed_standard_library(&tonk, name, branch_name, &demo)
+                seed_standard_library(&tonk, key, branch_name, &demo)
                     .await
                     .map_err(|e| {
                         RepositoryError::Internal(format!("seed demo '{branch_name}': {e}"))
                     })?;
-                log!(
-                    "Seeded showcase demo on '{}' branch '{}'",
-                    name,
-                    branch_name
-                );
+                log!("Seeded showcase demo on '{}' branch '{}'", key, branch_name);
             }
         }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
@@ -577,7 +567,7 @@ async fn seed_and_initialize(
         let tonk = state.read().await;
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     }
-    log!("Repository '{}' initialized", name);
+    log!("Repository '{}' initialized", key);
     Ok(())
 }
 
@@ -596,9 +586,11 @@ const STANDARD_LIBRARY_URL: &str = "/library/core.yaml";
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const DEMO_LIBRARY_URL: &str = "/library/demo.yaml";
 
-/// The default repository created for a fresh profile. The showcase
-/// demo is seeded only here; every other repository gets the scaffold
-/// alone and renders empty until populated.
+/// The default display label for the repository created for a fresh
+/// profile. The showcase demo is seeded only when the create carries
+/// this label; every other repository gets the scaffold alone and
+/// renders empty until populated. This is a label, not an address —
+/// the repository's identity is still its minted DID.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const DEFAULT_REPOSITORY_NAME: &str = "home";
 
@@ -710,20 +702,31 @@ async fn seed_standard_library(
 /// assumes the name is free.
 pub async fn create_repository(
     tonk: &TonkState,
-    name: &str,
+    display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<Repository<SignerCredential>, RepositoryError> {
-    // 1. Create the repository. Any failure here is genuinely
-    // internal — we assume the caller has already confirmed the
-    // name is free.
+    // 1. Generate the repository's credential up front so its
+    // `did:key` is its stable identity. The repository's routing
+    // and storage key is that DID's suffix (`did.repo_key()`); the
+    // user-typed `display_name` is only a label, recorded later as
+    // the replica's `name` attribute. Generating the signer first
+    // (rather than letting `.create()` mint one) is what lets the
+    // name derive from the DID instead of the other way around.
+    let signer = Ed25519Signer::generate()
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("Failed to generate signer: {}", e)))?;
+    let did = signer.did();
+    let key = did.repo_key();
+
     let repository = tonk
         .profile
-        .repository(name)
+        .repository(key)
         .create()
+        .with_credential(signer)
         .perform(&tonk.operator)
         .await
         .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to create repository '{}': {}", name, e))
+            RepositoryError::Internal(format!("Failed to create repository '{}': {}", key, e))
         })?;
     log!("Repository created. DID: {}", repository.did());
 
@@ -750,8 +753,10 @@ pub async fn create_repository(
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to save repo delegation: {}", e)))?;
 
-    // 3-7. Wire up the meta branch and register the replica.
-    record_repository_meta(tonk, &repository, name, configuration).await?;
+    // 3-7. Wire up the meta branch and register the replica. The
+    // replica's `name` attribute carries the user-typed label; its
+    // identity (`subject`) is the repository DID.
+    record_repository_meta(tonk, &repository, display_name, configuration).await?;
 
     Ok(repository)
 }
@@ -775,12 +780,17 @@ pub async fn create_repository(
 pub async fn record_repository_meta<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
-    name: &str,
+    display_name: &str,
     configuration: &RepositoryConfiguration,
 ) -> Result<(), RepositoryError>
 where
     C: Principal + Clone,
 {
+    // The repository's routing/storage key is its DID suffix; the
+    // `display_name` is only the replica's `name` label.
+    let did = repository.did();
+    let key = did.repo_key();
+
     // 3. Open the meta branch and start the single transaction
     // that will carry every concept describing the repository.
     // Seed it with the replica record and the meta branch's own
@@ -795,7 +805,7 @@ where
         .map_err(|e| RepositoryError::Internal(format!("Failed to open meta branch: {}", e)))?;
 
     // Local replica of this repository
-    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+    let replica = Replica::new(tonk.profile.did(), repository.did(), display_name);
 
     let mut transaction = meta
         .transaction()
@@ -924,18 +934,18 @@ where
         .map_err(|e| {
             RepositoryError::Internal(format!(
                 "Failed to commit meta for repository '{}': {}",
-                name, e
+                key, e
             ))
         })?;
-    log!("Wrote meta facts for repository '{}'", name);
+    log!("Wrote meta facts for repository '{}'", key);
 
-    // Notify listeners of `/api/repository/{name}` that the repo's
+    // Notify listeners of `/api/repository/{key}` that the repo's
     // representation changed. The broadcast mirrors the endpoint
-    // the data is served from; UIs subscribed on that path pick up
-    // the change without a reload. Fires after the commit so
-    // listeners only see durable state.
+    // the data is served from (keyed by the DID suffix); UIs
+    // subscribed on that path pick up the change without a reload.
+    // Fires after the commit so listeners only see durable state.
     broadcast(
-        &format!("/api/repository/{name}"),
+        &format!("/api/repository/{key}"),
         &Notification {
             branch: META_BRANCH.to_string(),
             revision,
@@ -948,7 +958,7 @@ where
     // available. The per-repo meta is already durable; a failure
     // here leaves the repo working but missing from the index,
     // which is recoverable.
-    record_replica_in_profile(tonk, name, &repository.did()).await?;
+    record_replica_in_profile(tonk, display_name, &repository.did()).await?;
 
     Ok(())
 }
@@ -962,10 +972,10 @@ where
 /// `(profile, subject)` replica is a no-op.
 async fn record_replica_in_profile(
     tonk: &TonkState,
-    name: &str,
+    display_name: &str,
     subject: &Did,
 ) -> Result<(), RepositoryError> {
-    let replica = Replica::new(tonk.profile.did(), subject.clone(), name);
+    let replica = Replica::new(tonk.profile.did(), subject.clone(), display_name);
     // Stamp the replica `blank`: the content branch has not been seeded
     // yet (seeding runs asynchronously after this response). The Hub
     // renders this as an installing card; `set_replica_status` flips it
@@ -993,10 +1003,10 @@ async fn record_replica_in_profile(
         .map_err(|e| {
             RepositoryError::Internal(format!(
                 "Failed to record replica '{}' in profile meta: {}",
-                name, e
+                display_name, e
             ))
         })?;
-    log!("Recorded replica '{}' in profile meta", name);
+    log!("Recorded replica '{}' in profile meta", display_name);
 
     // The profile repo's representation — what `GET /api/profile`
     // returns — now includes this replica, so tell listeners of
@@ -1215,7 +1225,7 @@ pub async fn get_profile_repository(
 /// the UI can tell the repo is unpopulated.
 pub(super) async fn build_repository_info<R>(
     tonk: &TonkState,
-    name: &str,
+    key: &str,
     repository: &Repository<R>,
 ) -> RepositoryInfo
 where
@@ -1229,9 +1239,10 @@ where
     {
         Ok(meta) => meta,
         Err(e) => {
-            log!("No meta branch for repository '{}': {}", name, e);
+            log!("No meta branch for repository '{}': {}", key, e);
             return RepositoryInfo {
-                name: name.to_string(),
+                name: key.to_string(),
+                label: key.to_string(),
                 subject: repository.did(),
                 operator: tonk.operator.did(),
                 profile: tonk.profile.did(),
@@ -1241,14 +1252,40 @@ where
         }
     };
 
-    // Derive the replica entity the way `create_repository`
-    // did — `(profile, subject)` hashed into an entity. We
-    // don't query for `Replica` itself; nothing we return
-    // depends on its name or attributes, and filtering
-    // branches/remotes by `origin == replica.this()` is all we
-    // need.
-    let replica = Replica::new(tonk.profile.did(), repository.did(), name);
+    // Derive the replica entity from `(profile, subject)` — the same
+    // hash `create_repository` used. The replica's `name` attribute
+    // carries the user-typed display label, which we read back below;
+    // its entity is independent of that label, so deriving it from
+    // `(profile, subject)` (with an empty label placeholder) is exact.
+    let replica = Replica::new(tonk.profile.did(), repository.did(), "");
     let replica_entity = replica.this().clone();
+
+    // Read the display label off the meta branch. The routing `key`
+    // is the identity; the label is the user-typed name. Falls back to
+    // the key when no replica record is present (pre-meta repos).
+    let label = match meta
+        .query()
+        .select(Query::<Replica> {
+            this: Term::from(replica_entity.clone()),
+            name: Term::var("name"),
+            subject: Term::var("subject"),
+            profile: Term::var("profile"),
+            kind: Term::var("kind"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows
+            .into_iter()
+            .next()
+            .map(|replica| replica.name.0)
+            .unwrap_or_else(|| key.to_string()),
+        Err(e) => {
+            log!("Replica label query on meta failed for '{}': {:?}", key, e);
+            key.to_string()
+        }
+    };
 
     // Pull every branch on the meta branch, local and remote.
     // Keyed by entity so the upstream-resolution step can look
@@ -1266,7 +1303,7 @@ where
     {
         Ok(rows) => rows,
         Err(e) => {
-            log!("Branch query on meta failed for '{}': {:?}", name, e);
+            log!("Branch query on meta failed for '{}': {:?}", key, e);
             Vec::new()
         }
     };
@@ -1295,7 +1332,7 @@ where
     {
         Ok(rows) => rows,
         Err(e) => {
-            log!("Remote query on meta failed for '{}': {:?}", name, e);
+            log!("Remote query on meta failed for '{}': {:?}", key, e);
             Vec::new()
         }
     };
@@ -1322,7 +1359,7 @@ where
         Err(e) => {
             log!(
                 "Tracking-branch query on meta failed for '{}': {:?}",
-                name,
+                key,
                 e
             );
             Vec::new()
@@ -1370,7 +1407,7 @@ where
                 log!(
                     "Failed to open branch '{}' of '{}' for revision: {}",
                     branch.name.0,
-                    name,
+                    key,
                     e
                 );
                 None
@@ -1397,7 +1434,7 @@ where
                 log!(
                     "Failed to decode address for remote '{}' of '{}': {:?}",
                     remote.name.0,
-                    name,
+                    key,
                     e
                 );
                 continue;
@@ -1419,7 +1456,8 @@ where
     }
 
     RepositoryInfo {
-        name: name.to_string(),
+        name: key.to_string(),
+        label,
         subject: repository.did(),
         operator: tonk.operator.did(),
         profile: tonk.profile.did(),
@@ -1864,32 +1902,36 @@ mod tests {
     const CORE: &str = include_str!("../../../tonk-core/assets/library/core.yaml");
     const DEMO: &str = include_str!("../../../tonk-core/assets/library/demo.yaml");
 
-    /// Create a fresh repo and return its router + wrapped state. PUTs
-    /// a branchless `{}` so the worker seeds nothing — the test drives
-    /// seeding / attaching itself. The `main` branch is created on
-    /// first write. Tolerates `412` from IndexedDB state surviving a
-    /// prior run in the same browser session.
-    async fn fresh_repo(repo: &str) -> (Router, AppState) {
+    /// Create a fresh repo and return its router, wrapped state, and
+    /// minted routing key. PUTs a branchless `{}` so the worker seeds
+    /// nothing — the test drives seeding / attaching itself. The `main`
+    /// branch is created on first write. `label` is only a display
+    /// name; every create mints a fresh identity, so runs never collide.
+    async fn fresh_repo(label: &str) -> (Router, AppState, String) {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{repo}"))
+                    .uri(format!("/api/repository/{label}"))
                     .method("PUT")
                     .header("content-type", "application/json")
-                    .header("if-none-match", "*")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
         let status = response.status();
-        assert!(
-            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
-            "expected 201 or 412 from PUT /api/repository/{repo}, got {status}",
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "expected 201 from PUT /api/repository/{label}, got {status}",
         );
-        (app, state)
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        (app, state, info.name)
     }
 
     /// Seed a notation document into the repo's `main` branch.
@@ -1919,8 +1961,8 @@ mod tests {
     /// That empty render is the precondition for the launchpad.
     #[dialog_common::test]
     async fn it_seeds_scaffold_without_showcase_instances() {
-        let repo = "test-seed-scaffold-only";
-        let (_app, state) = fresh_repo(repo).await;
+        let (_app, state, repo) = fresh_repo("test-seed-scaffold-only").await;
+        let repo = repo.as_str();
         seed(&state, repo, CORE).await;
 
         assert_eq!(
@@ -1937,8 +1979,8 @@ mod tests {
     /// the split depends on.
     #[dialog_common::test]
     async fn it_seeds_showcase_on_top_of_scaffold() {
-        let repo = "test-seed-showcase";
-        let (_app, state) = fresh_repo(repo).await;
+        let (_app, state, repo) = fresh_repo("test-seed-showcase").await;
+        let repo = repo.as_str();
         seed(&state, repo, CORE).await;
         seed(&state, repo, DEMO).await;
 
@@ -1996,8 +2038,8 @@ mod tests {
     /// repo wires `origin` and points `main` at `origin/main`.
     #[dialog_common::test]
     async fn it_attaches_a_remote_and_tracks_main() {
-        let repo = "test-attach-remote";
-        let (app, _state) = fresh_repo(repo).await;
+        let (app, _state, repo) = fresh_repo("test-attach-remote").await;
+        let repo = repo.as_str();
 
         let info = attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -2023,8 +2065,8 @@ mod tests {
     /// `origin/main` (no duplicate-remote error, no reset).
     #[dialog_common::test]
     async fn it_attaches_remote_idempotently() {
-        let repo = "test-attach-remote-idempotent";
-        let (app, _state) = fresh_repo(repo).await;
+        let (app, _state, repo) = fresh_repo("test-attach-remote-idempotent").await;
+        let repo = repo.as_str();
         let config = origin_config("https://example.test/ucan/");
 
         attach(&app, repo, &config).await;
@@ -2046,8 +2088,8 @@ mod tests {
     /// and the invite carries no remote.
     #[dialog_common::test]
     async fn it_mints_an_invite_with_a_remote_after_attach() {
-        let repo = "test-attach-then-invite";
-        let (app, _state) = fresh_repo(repo).await;
+        let (app, _state, repo) = fresh_repo("test-attach-then-invite").await;
+        let repo = repo.as_str();
 
         attach(&app, repo, &origin_config("https://example.test/ucan/")).await;
 
@@ -2092,8 +2134,8 @@ mod tests {
     async fn it_reconciles_the_cached_branch_handle_after_attach() {
         use dialog_repository::Upstream;
 
-        let repo = "test-attach-refreshes-cache";
-        let (app, state) = fresh_repo(repo).await;
+        let (app, state, repo) = fresh_repo("test-attach-refreshes-cache").await;
+        let repo = repo.as_str();
 
         // Seed through the reactor so `main` is cached with no upstream —
         // the state real space creation leaves behind before sync is on.
@@ -2134,8 +2176,8 @@ mod tests {
         use dialog_query::{ConceptQuery, Query};
         use tonk_schema::meta::Name;
 
-        let repo = "test-attach-keeps-subscriptions";
-        let (app, state) = fresh_repo(repo).await;
+        let (app, state, repo) = fresh_repo("test-attach-keeps-subscriptions").await;
+        let repo = repo.as_str();
         seed(&state, repo, CORE).await;
 
         // Register a subscription on the cached `main` and note which

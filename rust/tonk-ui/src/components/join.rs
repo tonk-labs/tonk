@@ -45,7 +45,8 @@ enum JoinView {
     /// navigating. Renders a "joining…" affordance with the sigil
     /// of the destination space.
     AlreadyMember {
-        /// Local name of the existing replica we'll land in.
+        /// Routing key of the existing replica we'll land in (its
+        /// identity, what navigation routes by).
         name: String,
         /// Subject DID, for the sigil.
         subject: String,
@@ -229,18 +230,19 @@ pub fn TonkJoin() -> impl IntoView {
             Some(Err(e)) => return JoinView::InvalidInvite(format!("{e}")),
         };
 
-        // Reverse-lookup the subject in the profile's space map.
+        // Reverse-lookup the subject in the profile's space list.
         // If found, the recipient already has this space mounted
         // locally — they should land back in it (with a refreshed
-        // delegation chain) without re-naming anything.
+        // delegation chain) without re-naming anything. Navigation
+        // routes by the routing key (identity), not the label.
         let existing = profile_info
             .space
             .iter()
-            .find(|(_, did)| did.to_string() == subject)
-            .map(|(name, _)| name.clone());
+            .find(|entry| entry.subject.to_string() == subject)
+            .map(|entry| entry.key.clone());
 
         match existing {
-            Some(name) => JoinView::AlreadyMember { name, subject },
+            Some(key) => JoinView::AlreadyMember { name: key, subject },
             None => JoinView::NewMember { subject },
         }
     });
