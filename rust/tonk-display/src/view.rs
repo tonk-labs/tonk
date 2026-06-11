@@ -316,6 +316,22 @@ mod tests {
         assert!(html.contains("Alice"), "expected Alice in {html}");
     }
 
+    // A view whose entire template is a bare `{field}` text node, with no
+    // wrapping element, must still substitute the field — the Hub's
+    // repository-label view (`display: {name}`) is exactly this shape.
+    // The text node survives the snapshot, but its binding must also
+    // resolve and apply, or the card renders blank.
+    #[dialog_common::test]
+    fn it_renders_a_bare_text_node_template() {
+        let host = mount("{name}");
+        call_draw(&host, &detail("did:key:zX", &[("name", "home")]));
+        let html = host.inner_html();
+        assert!(
+            html.contains("home"),
+            "a bare `{{name}}` text template should render its value, got: {html:?}",
+        );
+    }
+
     #[dialog_common::test]
     fn it_reflects_the_latest_draw_payload() {
         let host = mount("<article><h1>{name}</h1></article>");

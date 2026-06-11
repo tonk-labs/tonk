@@ -1,62 +1,68 @@
-//! Shared parsing for the `{branch}@{label}:{key}` space segment.
+//! Shared parsing for the `{branch}@{label}:{id}` space segment.
 //!
 //! Every route's space segment is a single `:space` param that encodes a
-//! repository's routing key, an optional human-readable label, and an
-//! optional branch:
+//! repository's id, an optional human-readable label, and an optional
+//! branch:
 //!
-//! - `z6MkABC`            → key `z6MkABC`, branch `main` (the default)
-//! - `home:z6MkABC`       → key `z6MkABC`, branch `main`
-//! - `feat@home:z6MkABC`  → key `z6MkABC`, branch `feat`
+//! - `z6MkABC`            → key `did:key:z6MkABC`, branch `main`
+//! - `home:z6MkABC`       → key `did:key:z6MkABC`, branch `main`
+//! - `feat@home:z6MkABC`  → key `did:key:z6MkABC`, branch `feat`
 //!
-//! A repository's identity is its credential's `did:key`; the routing
-//! key is the DID suffix (the part after the last `:`). The optional
-//! `{label}:` prefix is a display name only and is ignored when routing.
-//!
-//! `@` separates an optional leading branch from the rest; within the
-//! rest, the key is everything after the LAST `:` (a bare segment with
-//! no `:` is itself the key). Branch names may contain `:` and `/` but
-//! not `@`, so the branch split is unambiguous, and the key is taken
-//! after the last `:` so a `did:key:z…` label segment still resolves to
-//! the trailing key. Centralizing the parse keeps the convention
-//! identical across the display, concept, board, layout, and
+//! A repository's identity is its credential's `did:key`. The URL
+//! carries only the trailing id (the multibase blob after `did:key:`)
+//! plus an optional cosmetic `{label}:` prefix, to keep URLs short; the
+//! routing key reconstructs the full `did:key:` + id, which is what
+//! names the database, the reactor cache, and the `<tonk-repository>`
+//! routing context. `@` separates an optional leading branch; within the
+//! rest, the id is everything after the LAST `:` (a bare segment with no
+//! `:` is itself the id). Branch names may contain `:` and `/` but not
+//! `@`, so the branch split is unambiguous. Centralizing the parse keeps
+//! the convention identical across the display, concept, board, and
 //! space-viewer routes.
 
 /// The default branch when the space segment names none.
 pub const DEFAULT_BRANCH: &str = "main";
 
-/// A parsed space segment: the repository routing key plus its branch.
+/// The `did:key:` prefix the URL id reconstructs into the full DID.
+const DID_KEY_PREFIX: &str = "did:key:";
+
+/// A parsed space segment: the repository routing key (its full
+/// `did:key`) plus its branch.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpaceRef {
-    /// Repository routing key — the part after the last `:` in the
-    /// post-`@` remainder (or the whole remainder when it has no `:`).
-    /// This is the repository's identity, not its display label.
+    /// Repository routing key — the full `did:key`, reconstructed from
+    /// the URL's trailing id. This is the repository's identity, not its
+    /// display label.
     pub name: String,
     /// Branch name (the part before `@`, or [`DEFAULT_BRANCH`]).
     pub branch: String,
 }
 
-/// Parse a `{branch}@{label}:{key}` (or bare `{key}`) space segment.
+/// Parse a `{branch}@{label}:{id}` (or bare `{id}`) space segment.
 ///
-/// A bare segment is the key on [`DEFAULT_BRANCH`]; a `branch@…` segment
+/// A bare segment is the id on [`DEFAULT_BRANCH`]; a `branch@…` segment
 /// pins the branch. Any `{label}:` prefix on the post-`@` remainder is a
-/// display label and is dropped — the routing key is everything after
-/// the last `:`. An empty key yields `None` — there is no repository to
-/// address.
+/// display label and is dropped — the id is everything after the last
+/// `:`. The routing key is `did:key:` + that id. An empty id yields
+/// `None` — there is no repository to address.
 pub fn parse_space(segment: &str) -> Option<SpaceRef> {
     let (branch, rest) = match segment.split_once('@') {
         Some((branch, rest)) => (branch.to_owned(), rest),
         None => (DEFAULT_BRANCH.to_owned(), segment),
     };
-    // The routing key is the trailing component after the last `:`; any
-    // leading `{label}:` (or `did:key:` prefix) is a display label only.
-    let name = match rest.rsplit_once(':') {
-        Some((_label, key)) => key.to_owned(),
-        None => rest.to_owned(),
+    // The id is the trailing component after the last `:`; any leading
+    // `{label}:` is a cosmetic display label.
+    let id = match rest.rsplit_once(':') {
+        Some((_label, id)) => id,
+        None => rest,
     };
-    if name.is_empty() {
+    if id.is_empty() {
         return None;
     }
-    Some(SpaceRef { name, branch })
+    Some(SpaceRef {
+        name: format!("{DID_KEY_PREFIX}{id}"),
+        branch,
+    })
 }
 
 #[cfg(test)]
@@ -64,33 +70,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_parses_a_bare_key_on_the_default_branch() {
+    fn it_reconstructs_the_did_from_a_bare_id_on_the_default_branch() {
         assert_eq!(
             parse_space("z6MkABC"),
             Some(SpaceRef {
-                name: "z6MkABC".into(),
+                name: "did:key:z6MkABC".into(),
                 branch: "main".into(),
             }),
         );
     }
 
     #[test]
-    fn it_drops_a_label_prefix_and_keeps_the_key() {
+    fn it_drops_a_label_prefix_and_reconstructs_the_did() {
         assert_eq!(
             parse_space("home:z6MkABC"),
             Some(SpaceRef {
-                name: "z6MkABC".into(),
+                name: "did:key:z6MkABC".into(),
                 branch: "main".into(),
             }),
         );
     }
 
     #[test]
-    fn it_parses_a_branch_at_label_key() {
+    fn it_parses_a_branch_at_label_id() {
         assert_eq!(
             parse_space("feat@home:z6MkABC"),
             Some(SpaceRef {
-                name: "z6MkABC".into(),
+                name: "did:key:z6MkABC".into(),
                 branch: "feat".into(),
             }),
         );
@@ -101,26 +107,27 @@ mod tests {
         assert_eq!(
             parse_space("feat/artifact@home:z6MkABC"),
             Some(SpaceRef {
-                name: "z6MkABC".into(),
+                name: "did:key:z6MkABC".into(),
                 branch: "feat/artifact".into(),
             }),
         );
     }
 
     #[test]
-    fn it_takes_the_key_after_the_last_colon_of_a_did() {
-        // A full `did:key:z…` label resolves to its trailing key.
+    fn it_takes_the_id_after_the_last_colon_of_a_full_did() {
+        // A full `did:key:z…` segment resolves to the same DID — its id
+        // is the trailing blob, which is reconstructed back to the DID.
         assert_eq!(
             parse_space("did:key:z6MkABC"),
             Some(SpaceRef {
-                name: "z6MkABC".into(),
+                name: "did:key:z6MkABC".into(),
                 branch: "main".into(),
             }),
         );
     }
 
     #[test]
-    fn it_rejects_an_empty_key() {
+    fn it_rejects_an_empty_id() {
         assert_eq!(parse_space(""), None);
         assert_eq!(parse_space("feat@"), None);
         assert_eq!(parse_space("home:"), None);

@@ -69,13 +69,14 @@ pub trait DidExt {
     /// Produce the `Entity` this DID identifies.
     fn this(&self) -> Entity;
 
-    /// The repository routing/storage key for this DID: the text after
-    /// its last `:`. A repository's identity is its credential's
-    /// `did:key:z6Mk…`; the key is the trailing multibase blob
-    /// `z6Mk…`, which is what URLs, the reactor cache, and the
-    /// operator storage path key on. The user-typed name is only a
-    /// display label, stored in the repository's own `tonk/repository`
-    /// concept on its content branch.
+    /// The repository routing/storage key for this DID: the full
+    /// `did:key:z6Mk…` string. A repository's identity is its
+    /// credential's DID, and that whole DID is what names the dialog
+    /// database (`profile.repository(did)`), routes its URLs
+    /// (`/space/{did}`, `/api/repository/{did}`), and keys the reactor
+    /// cache. One identifier, no suffix-stripping. The user-typed name
+    /// is only a display label, stored in the repository's own
+    /// `tonk/repository` concept on its content branch.
     fn repo_key(&self) -> &str;
 }
 
@@ -87,8 +88,7 @@ impl DidExt for Did {
     }
 
     fn repo_key(&self) -> &str {
-        let uri = self.as_str();
-        uri.rsplit(':').next().unwrap_or(uri)
+        self.as_str()
     }
 }
 
@@ -120,8 +120,8 @@ mod tests {
     }
 
     #[test]
-    fn repo_key_is_the_did_key_suffix() {
+    fn repo_key_is_the_full_did() {
         let d = did!("key:z6MkTestEntity");
-        assert_eq!(d.repo_key(), "z6MkTestEntity");
+        assert_eq!(d.repo_key(), "did:key:z6MkTestEntity");
     }
 }

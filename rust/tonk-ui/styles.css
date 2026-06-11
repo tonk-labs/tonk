@@ -591,6 +591,12 @@ tonk-repository.display-route,
     font-family: var(--wa-font-family-heading);
     font-size: var(--wa-font-size-l);
     font-weight: var(--wa-font-weight-semibold);
+    /* Reserve one line of height so the slot stays put whether the name
+       has resolved, is loading, or is empty — the card never reflows as
+       the async name arrives. */
+    display: block;
+    min-height: 1.4em;
+    line-height: 1.4;
 }
 /* The name comes from the space's own repo (a nested
    `<tonk-display model=tonk:repository>`), which resolves

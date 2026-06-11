@@ -1200,32 +1200,25 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
 
     if frame.is_empty() {
         let mut s = state.borrow_mut();
-        let directory = s.directory;
         s.last_frame = Vec::new();
-        // An empty frame means no rows matched. With a specified
-        // `entity` (single subject) that is a missing entity — a clear
-        // not-found error, so tear the host down. Without `entity` (a
-        // collection) it is simply zero instances: keep the mounted view
-        // and render the empty frame through it, so the template's chrome
-        // (e.g. a fallback region) stays put and the repeat clears its
-        // rows. The same slide then reconciles in place when an instance
-        // later lands — no teardown, no reload.
-        if directory {
-            let empty = serialize_conclusions(&[]);
-            for slide in s.slides.values() {
-                call_render(&slide.view_el, &empty);
-            }
-            drop(s);
-            state::set(host, State::Empty);
-        } else {
-            clear_host(host, &mut s);
-            drop(s);
-            fail(
-                host,
-                state,
-                ErrorDetail::new(ErrorKind::UnknownSource, "entity not found"),
-            );
+        // An empty frame means no rows matched — zero instances in a
+        // collection, or a single entity whose row has not landed yet
+        // (e.g. its concept was just seeded and is still syncing). Either
+        // way this is non-destructive: keep the mounted view and its
+        // subscription, render the empty frame through the slides so the
+        // template's chrome stays put and the repeat clears its rows, and
+        // signal `Empty` via `data-state`. The same slides reconcile in
+        // place when a row later lands — no teardown, no reload, no
+        // latched error. The embedder decides what an empty space reads
+        // as (a placeholder, nothing) off `data-state`; a single-entity
+        // display does NOT hard-fail on a missing entity, so a row that
+        // arrives after init still renders.
+        let empty = serialize_conclusions(&[]);
+        for slide in s.slides.values() {
+            call_render(&slide.view_el, &empty);
         }
+        drop(s);
+        state::set(host, State::Empty);
         return;
     }
 
