@@ -720,11 +720,14 @@ fn invoke_method(consumer: &Element, method: &str, payload: &JsValue, tag: Optio
 
 /// `tonk-evaluate` handler.
 ///
-/// Reads `detail.space`, `detail.branch`, `detail.document`.
-/// POSTs the raw asserted-notation text to the `/evaluate`
-/// endpoint. Resolves the parsed response into `detail.result`.
-/// Invalidates the query cache for the affected branch since an
-/// evaluate document can introduce or mutate concepts.
+/// Reads `detail.space`, `detail.branch`, `detail.document`, and
+/// optional `detail.transact` (default `true`). POSTs the raw
+/// asserted-notation text to the `/evaluate` endpoint. Resolves
+/// the parsed response into `detail.result`. A committing evaluate
+/// (`transact != false`) invalidates the query cache for the
+/// affected branch since the document can introduce or mutate
+/// concepts; a dry-run (`transact == false`) leaves the cache
+/// intact — it commits nothing.
 fn handle_evaluate(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     claim_event(ev);
     let detail = match ev.detail().dyn_into::<Object>() {
@@ -735,9 +738,15 @@ fn handle_evaluate(ev: &CustomEvent, state: &Rc<RefCell<HostState>>) {
     let space = get_string(&detail, "space");
     let branch = get_string(&detail, "branch");
     let profile = get_bool(&detail, "profile");
-    let url = evaluate_url(space.as_deref(), branch.as_deref(), profile);
+    // Absent `transact` defaults to a committing evaluate, matching
+    // the worker's own `?transact=` default.
+    let transact = match Reflect::get(&detail, &JsValue::from_str("transact")) {
+        Ok(v) if !v.is_undefined() && !v.is_null() => v.is_truthy(),
+        _ => true,
+    };
+    let url = evaluate_url(space.as_deref(), branch.as_deref(), profile, transact);
 
-    if !state.borrow().disposed {
+    if transact && !state.borrow().disposed {
         state
             .borrow_mut()
             .query_cache

@@ -83,9 +83,20 @@ pub async fn claim(consumer: &Element, request: &JsValue) -> Result<JsValue, Err
 
 /// Dispatch `tonk-evaluate` on `consumer` with the given raw
 /// asserted-notation text, await `detail.result`.
-pub async fn evaluate(consumer: &Element, document: &str) -> Result<JsValue, ErrorDetail> {
+///
+/// `transact` controls the worker's commit step (mirrors the
+/// `/evaluate?transact=` query). Pass `false` to project what the
+/// document *would* do — queries run, mutations are dropped — so a
+/// half-typed buffer can preview results without committing. Pass
+/// `true` for an explicit submit that should land.
+pub async fn evaluate(
+    consumer: &Element,
+    document: &str,
+    transact: bool,
+) -> Result<JsValue, ErrorDetail> {
     let detail = Object::new();
     Reflect::set(&detail, &"document".into(), &JsValue::from_str(document)).ok();
+    Reflect::set(&detail, &"transact".into(), &JsValue::from_bool(transact)).ok();
     let result_promise = dispatch_one_shot(consumer, events::EVALUATE, &detail)?;
     let result = JsFuture::from(result_promise)
         .await
