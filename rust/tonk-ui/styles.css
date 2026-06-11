@@ -299,6 +299,14 @@ tonk-repository.display-route,
     min-height: 100dvh;
 }
 
+.display-route > tonk-branch > .display-view-slot:has(.workspace) {
+    height: 100dvh;
+}
+.display-route .workspace {
+    height: 100dvh;
+    min-height: 0;
+}
+
 /* Tonk Hub page (`/`). A centered column: a header row with the
    "New repo" button and the "Repositories" title, then the space
    cards (the `space` directory view). The hub here owns its own
