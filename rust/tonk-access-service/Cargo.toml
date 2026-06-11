@@ -1,37 +1,18 @@
 [package]
 name = "tonk-access-service"
-description = "UCAN-authorized access to R2 storage"
-edition.workspace = true
 version.workspace = true
 authors.workspace = true
+edition.workspace = true
+description = "UCAN-authorized access to R2 storage"
 license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "tonk-access-local"
 path = "src/bin/local.rs"
 required-features = ["helpers"]
-
-[lib]
-crate-type = ["cdylib", "rlib"]
-
-[features]
-default = []
-# Enable integration tests that require local servers
-integration-tests = ["helpers"]
-# Enable test helpers (local access service server)
-helpers = [
-    "dep:anyhow",
-    "dep:hyper",
-    "dep:hyper-util",
-    "dep:tokio",
-    "dep:async-trait",
-    "dep:bytes",
-    "dep:http-body-util",
-    "dialog-storage/helpers",
-    "dialog-common/helpers",
-    "dialog-remote-s3/helpers",
-    "dialog-remote-ucan-s3/helpers",
-]
 
 [dependencies]
 # Cloudflare Workers
@@ -42,39 +23,40 @@ worker-macros = { workspace = true }
 dialog-remote-s3 = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
 
+dialog-capability = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
 # UCAN / identity
 dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
-dialog-credentials = { workspace = true }
-dialog-capability = { workspace = true }
-dialog-effects = { workspace = true }
 
 # Cryptography
 ed25519-dalek = { workspace = true }
 
 # Serialization
 serde = { workspace = true }
-serde_json = { workspace = true }
 serde_ipld_dagcbor = { workspace = true }
+serde_json = { workspace = true }
 
+getrandom = { workspace = true }
+getrandom_0_2 = { workspace = true }
 # Utilities
 thiserror = { workspace = true }
-getrandom_0_2 = { workspace = true }
-getrandom = { workspace = true }
 
 # Test helpers (optional, for integration testing)
 anyhow = { workspace = true, optional = true }
-hyper = { workspace = true, optional = true }
-hyper-util = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["macros", "rt-multi-thread", "signal"] }
 async-trait = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-http-body-util = { workspace = true, optional = true }
-dialog-storage = { workspace = true, optional = true }
 dialog-common = { workspace = true, optional = true }
+dialog-storage = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
+hyper-util = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
+anyhow = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true, features = ["helpers"] }
@@ -85,14 +67,35 @@ dialog-remote-ucan-s3 = { workspace = true, features = ["helpers"] }
 dialog-repository = { workspace = true, features = ["helpers"] }
 dialog-storage = { workspace = true, features = ["helpers"] }
 dialog-ucan-core = { workspace = true }
-anyhow = { workspace = true }
 futures-util = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal"], optional = true }
+
+[features]
+default = []
+# Enable test helpers (local access service server)
+helpers = [
+  "dep:anyhow",
+  "dep:async-trait",
+  "dep:bytes",
+  "dep:http-body-util",
+  "dep:hyper",
+  "dep:hyper-util",
+  "dep:tokio",
+  "dialog-common/helpers",
+  "dialog-remote-s3/helpers",
+  "dialog-remote-ucan-s3/helpers",
+  "dialog-storage/helpers",
+]
+# Enable integration tests that require local servers
+integration-tests = ["helpers"]
 
 [lints.rust]
 # The dialog_common::test macro uses cfg conditions that originate from the macro crate.
 # We need to tell check-cfg to expect these values.
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(dialog_test_native_integration)',
-    'cfg(dialog_test_wasm_integration)',
-    'cfg(feature, values("web-integration-tests"))',
+  "cfg(dialog_test_native_integration)",
+  "cfg(dialog_test_wasm_integration)",
+  'cfg(feature, values("web-integration-tests"))',
 ] }
