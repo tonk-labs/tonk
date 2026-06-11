@@ -144,6 +144,31 @@ impl SpaceStatus {
     }
 }
 
+/// A standalone `name` stamp for a replica entity.
+///
+/// Like [`SpaceStatus`] for the status, this stamps just the `name`
+/// attribute onto an existing replica entity (cardinality one, so a
+/// later assert supersedes) without re-asserting the whole [`Replica`].
+/// The rename provider uses it to mirror a repository's new name into
+/// the profile's replica index so the Hub listing updates.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SpaceName {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// The replica's display name.
+    pub name: Name,
+}
+
+impl SpaceName {
+    /// A `name` stamp for the given replica entity.
+    pub fn new(this: Entity, name: impl Into<Name>) -> Self {
+        Self {
+            this,
+            name: name.into(),
+        }
+    }
+}
+
 /// Hash input for [`Replica::this`].
 ///
 /// The single-variant enum shape tags the CBOR encoding with the

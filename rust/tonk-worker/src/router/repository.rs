@@ -1111,6 +1111,52 @@ async fn set_replica_status(
     Ok(())
 }
 
+/// Update a replica's display [`Name`] in the profile index by stamping a
+/// [`SpaceName`] on its entity. `name` is cardinality-one, so the new
+/// value supersedes the prior one without re-asserting the whole
+/// [`Replica`]. Mirrors [`set_replica_status`]: the replica entity is
+/// re-derived from `(profile, subject)` (no read needed), and the write
+/// goes through the reactor so the Hub's subscription re-polls and the
+/// renamed card updates.
+///
+/// This is the profile-side half of a rename — the repository's own
+/// `tonk/repository` name is updated by a standard-library rule; this
+/// keeps the Hub listing in sync.
+///
+/// [`Name`]: tonk_schema::domain::replica::Name
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) async fn set_replica_name(
+    tonk: &TonkState,
+    subject: &Did,
+    name: &str,
+) -> Result<(), RepositoryError> {
+    let entity = Replica::new(tonk.profile.did(), subject.clone(), "")
+        .this()
+        .clone();
+    let stamp = tonk_schema::SpaceName::new(entity, name);
+
+    let revision = tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .transaction()
+        .assert(stamp)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| RepositoryError::Internal(format!("Failed to set replica name: {}", e)))?;
+
+    broadcast(
+        "/api/profile",
+        &Notification {
+            branch: META_BRANCH.to_string(),
+            revision,
+        },
+    );
+
+    Ok(())
+}
+
 /// Bootstrap the profile repository's meta branch.
 ///
 /// Called on every worker startup. Asserts the profile's "self"

@@ -93,6 +93,28 @@ pub mod command {
         #[domain("dom.event.current-target.elements.remote")]
         pub struct Value(pub String);
     }
+
+    /// Fields of the `tonk/rename-repository` command, read from the
+    /// banner's `<tonk-editable>` on commit. `subject` comes from its
+    /// `data-subject` (the repository's subject DID), `name` from its
+    /// edited value. These mirror the `the:` paths the core-library
+    /// command declares, so the worker decodes the same concept the
+    /// banner asserts.
+    pub mod rename {
+        use super::super::{Attribute, Entity};
+
+        /// The repository's subject DID, read from the banner's
+        /// `event.currentTarget.dataset.subject`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Subject(pub Entity);
+
+        /// The new name, read from the banner's `event.currentTarget.value`.
+        /// Named `Value` because the attribute is `…current-target/value`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target")]
+        pub struct Value(pub String);
+    }
 }
 
 /// Attributes that live on [`Branch`] entities (and
