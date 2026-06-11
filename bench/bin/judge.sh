@@ -60,15 +60,21 @@ Respond with ONLY a JSON object, no markdown fences, matching:
 EOF
 }
 
-# If the API key is an op:// reference, resolve it now.
-RESOLVED_KEY="${ANTHROPIC_API_KEY:-}"
-if [[ "$RESOLVED_KEY" == op://* ]]; then
-  RESOLVED_KEY="$(op read "$RESOLVED_KEY")"
+# Auth: default to the claude CLI's logged-in (OAuth) session by
+# stripping ANTHROPIC_API_KEY; BENCH_USE_API_KEY=1 opts into the API
+# key, resolving an op:// reference via `op read`.
+KEY_ENV=(-u ANTHROPIC_API_KEY)
+if [ -n "${BENCH_USE_API_KEY:-}" ]; then
+  RESOLVED_KEY="${ANTHROPIC_API_KEY:-}"
+  if [[ "$RESOLVED_KEY" == op://* ]]; then
+    RESOLVED_KEY="$(op read "$RESOLVED_KEY")"
+  fi
+  KEY_ENV=(ANTHROPIC_API_KEY="$RESOLVED_KEY")
 fi
 
 run_judge() {
   ( cd "$RUN_DIR" && \
-    ANTHROPIC_API_KEY="$RESOLVED_KEY" \
+    env "${KEY_ENV[@]}" \
     timeout -k 30 "$JUDGE_TIMEOUT" claude -p "$(prompt)" \
       --allowedTools "Read" \
       --output-format json \

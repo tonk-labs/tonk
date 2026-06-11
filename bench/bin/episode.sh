@@ -23,18 +23,24 @@ date +%s > "$RUN_DIR/episode-start"
 # Write episode-end on any exit so an interrupted run still leaves a pair.
 trap 'date +%s > "$RUN_DIR/episode-end"' EXIT
 
-# If the API key is an op:// reference, resolve it now.
-# claude running headless can't access the keychain or op-agent the same way
-# the interactive shell does.
-RESOLVED_KEY="${ANTHROPIC_API_KEY:-}"
-if [[ "$RESOLVED_KEY" == op://* ]]; then
-  RESOLVED_KEY="$(op read "$RESOLVED_KEY")"
+# Auth: default to the claude CLI's logged-in (OAuth) session by
+# stripping ANTHROPIC_API_KEY from the child env. Set
+# BENCH_USE_API_KEY=1 to use the API key instead; an op:// reference
+# is resolved via `op read` (headless claude can't reach the op-agent
+# the way the interactive shell does).
+KEY_ENV=(-u ANTHROPIC_API_KEY)
+if [ -n "${BENCH_USE_API_KEY:-}" ]; then
+  RESOLVED_KEY="${ANTHROPIC_API_KEY:-}"
+  if [[ "$RESOLVED_KEY" == op://* ]]; then
+    RESOLVED_KEY="$(op read "$RESOLVED_KEY")"
+  fi
+  KEY_ENV=(ANTHROPIC_API_KEY="$RESOLVED_KEY")
 fi
 
 set +e
 ( cd "$SITE" && \
+  env "${KEY_ENV[@]}" \
   PATH="$ROOT/target/release:$PATH" \
-  ANTHROPIC_API_KEY="$RESOLVED_KEY" \
   timeout -k 30 "$EPISODE_TIMEOUT" claude -p "$(cat "$SCENARIO/task.md")" \
     --output-format stream-json --verbose \
     --allowedTools "Bash(slide:*),Read,Write,Edit,Glob,Grep" \

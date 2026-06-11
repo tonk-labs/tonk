@@ -105,7 +105,7 @@ while IFS= read -r line; do
     }
   else
     url="$BENCH_URL/space/$SPACE_NAME/$line"
-    name="$(printf '%02d-%s' "$n" "$(printf '%s' "$line" | tr '/?=&' '----')")"
+    name="$(printf '%02d-%s' "$n" "$(printf '%s' "$line" | tr '/?=&!:' '------')")"
   fi
   echo "shots: $url" >&2
   if "$B" goto "$url" && "$B" wait-render && "$B" shot "$RUN_DIR/shots/$name.png"; then

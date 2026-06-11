@@ -1,5 +1,5 @@
 home
-concept/habit
-concept/entry
+habit!tonk:view
+entry!tonk:view
 display:habits
 display:log

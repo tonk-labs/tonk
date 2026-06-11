@@ -111,10 +111,11 @@ from the judge.
   coreutils `timeout`.
 - `chromedriver` via `$CHROMEDRIVER` env var (set in the devshell).
 - Chrome at `/Applications/Google Chrome.app` (macOS default).
-- `claude` CLI on PATH.
-- `ANTHROPIC_API_KEY` — `op://` references are resolved via `op read` before
-  launching the headless claude subprocesses; requires an unlocked 1Password
-  session.
+- `claude` CLI on PATH, logged in. Episodes and the judge default to the
+  CLI's OAuth session (`ANTHROPIC_API_KEY` is stripped from their env). Set
+  `BENCH_USE_API_KEY=1` to bill against the API key instead; `op://`
+  references are then resolved via `op read`, which requires an unlocked
+  1Password session.
 - `slide` release binary — built automatically by `stack.sh start` via
   `cargo build --release -p slide` (no-ops when already up to date).
 
@@ -135,6 +136,12 @@ indicate a regression or a real improvement — look at the shots side by side.
 
 ## Known friction
 
+**slide-created concepts have no Name claim** — `<tonk-display>`'s bare
+`{model}/` directory route resolves names via the Name concept
+(`dialog.name/referent`); concepts asserted through slide only carry
+`dialog.meta/name`, so name-addressed directory URLs report "no concept
+matched". Checkpoints work around it with the `{model}!tonk:view` bang form.
+
 **`view` concept not seeded on fresh branches** (top item as of 2026-06-10,
 from-scratch score 3/10): a fresh slide branch has no built-in `view` concept,
 so any `view!:` assertion fails immediately. The agent wastes turns probing,
@@ -142,11 +149,16 @@ greps prior runs for a definition, and the copied definition may not register
 correctly. Fix: seed `tonk:view` on fresh branches, or document its canonical
 definition in `slide guide views` so the guide's examples work out of the box.
 
-**Route shapes** (post-#488): `/space/:space/concept/:source` renders
-`TonkConceptView`; `/space/:space/*subject` (`display:<model>!tonk:view`) renders
-`TonkDisplay`. The `*subject` wildcard is defined after the chromed parent route
-so it doesn't shadow `concept`/`view`/`layout`/`board` — Leptos 0.8 matches in
-definition order.
+**Route shapes**: the chromed routes are only `/space/:space/view/:entity` and
+`/space/:space/board/:board` (the dedicated `concept`/`layout` routes were
+removed upstream). Everything else falls to the `/space/:space/*subject`
+wildcard rendered by `<tonk-display>`. Checkpoint lines use the bang form
+`{model}!tonk:view` (e.g. `note!tonk:view`) — directory mode over the model
+with the default view. The bare `{model}/` form resolves the name through the
+Name concept (`dialog.name/referent`), which slide-created concepts don't
+currently get, so it reports "no concept matched" (known friction, below). The
+wildcard is defined after the chromed parent route so it doesn't shadow
+`view`/`board` — Leptos 0.8 matches in definition order.
 
 **Sync mechanism** — 20 s background tick in `sync_controller.rs`
 (`TICK_INTERVAL_MS`). `bridge.sh` fires an explicit
