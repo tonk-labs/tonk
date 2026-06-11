@@ -561,6 +561,21 @@ async fn seed_and_initialize(
                 log!("Seeded showcase demo on '{}' branch '{}'", key, branch_name);
             }
         }
+        // Assert the repository's own name into its db, keyed by the
+        // subject DID, so the repo is self-describing and the banner can
+        // read it from the content branch. The standard library's
+        // `tonk/initialize` rule seeds a default "Untitled" (it cannot
+        // know the user's label at seed time); this overrides it with the
+        // typed name, here where the subject and the label are both in
+        // hand. The rule's `unless` guard keeps the default from
+        // clobbering this on any re-seed.
+        for branch_name in branches {
+            seed_repository_name(&tonk, key, branch_name, subject, display_name)
+                .await
+                .map_err(|e| {
+                    RepositoryError::Internal(format!("seed name '{branch_name}': {e}"))
+                })?;
+        }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
         // Nothing to seed — the replica is immediately initialized.
@@ -664,6 +679,37 @@ async fn seed_standard_library(
         .map_err(|e| {
             TonkWorkerError::Internal(format!(
                 "failed to seed standard library on branch '{branch}': {e}"
+            ))
+        })
+}
+
+/// Assert the repository's own `tonk/repository` name into its db,
+/// keyed by the subject DID. Evaluated as a one-line notation document
+/// against the just-seeded standard library, which defines the
+/// `tonk/repository` concept the assertion instantiates.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn seed_repository_name(
+    tonk: &TonkState,
+    repo: &str,
+    branch: &str,
+    subject: &Did,
+    display_name: &str,
+) -> Result<(), TonkWorkerError> {
+    // `name` is a JSON string so any character in the user-typed label
+    // (quotes, colons, newlines) is carried verbatim rather than
+    // breaking the notation.
+    let name = serde_json::to_string(display_name)
+        .map_err(|e| TonkWorkerError::Internal(format!("encode repository name: {e}")))?;
+    let body = format!(
+        "tonk/repository!:\n  this: {subject}\n  name: {name}\n",
+        subject = subject.as_str(),
+    );
+    super::evaluate::evaluate_body(tonk, repo, branch, body, true)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "failed to seed repository name on branch '{branch}': {e}"
             ))
         })
 }

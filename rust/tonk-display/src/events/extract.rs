@@ -112,9 +112,9 @@ pub fn build_transact_body(
         }
     }
 
-    // Body is known-good; commit the side effects on the event.
+    // Body is known-good; commit the side effects.
     for action in &pending_actions {
-        apply_action(event_js, action);
+        apply_action(event_js, binding_js, action);
     }
 
     // The wrapper around the dialog descriptor: tonk's
@@ -273,12 +273,35 @@ fn js_to_bytes_array(value: &JsValue) -> Option<Value> {
 /// Apply a `dom.event.do` action to the event. Silently no-op when
 /// the method isn't present on the runtime event object (e.g. an
 /// older browser or a synthetic event lacking the method).
-fn apply_action(event: &JsValue, action: &EventAction) {
-    let Ok(method) = Reflect::get(event, &JsValue::from_str(&action.method)) else {
+/// Invoke `action.method` on the object reached by walking
+/// `action.path` from the event. An empty path targets the event
+/// itself (`event.preventDefault()`); a leading `currentTarget`
+/// resolves to `binding` (the authored element), mirroring the read
+/// path, so `dom.event.current-target.do/blur` blurs the input the
+/// concept was authored on. A path that doesn't resolve is a silent
+/// no-op, like a read that misses.
+fn apply_action(event: &JsValue, binding: &JsValue, action: &EventAction) {
+    let mut target = event.clone();
+    for (index, segment) in action.path.iter().enumerate() {
+        target = if index == 0 && segment == "currentTarget" {
+            binding.clone()
+        } else {
+            let Ok(next) = Reflect::get(&target, &JsValue::from_str(segment)) else {
+                return;
+            };
+            if next.is_undefined() || next.is_null() {
+                return;
+            }
+            next
+        };
+    }
+    let Ok(method) = Reflect::get(&target, &JsValue::from_str(&action.method)) else {
         return;
     };
     if let Some(func) = method.dyn_ref::<Function>() {
-        let _ = func.call0(event);
+        // `call0` sets `this` to `target`, so the method runs bound to
+        // the object it was read from (the event or the element).
+        let _ = func.call0(&target);
     }
 }
 

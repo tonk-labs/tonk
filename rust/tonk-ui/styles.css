@@ -378,6 +378,38 @@ tonk-repository.display-route,
 .workspace__title {
     font-weight: var(--wa-font-weight-semibold);
 }
+/* The repository-name banner is a `<tonk-editable>` (contenteditable)
+   styled to read as plain title text until focused. Borderless and
+   transparent so it sits in the topbar like the old static title; on
+   focus it reveals a subtle field affordance so the rename is
+   discoverable. The display → view wrappers are `display: contents` so
+   the editable is laid out by the `.workspace__title` span directly. */
+.workspace__title tonk-display,
+.workspace__title tonk-view {
+    display: contents;
+}
+.workspace__title-input {
+    display: inline-block;
+    font: inherit;
+    font-weight: var(--wa-font-weight-semibold);
+    color: inherit;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--wa-border-radius-s);
+    padding: var(--wa-space-3xs) var(--wa-space-2xs);
+    margin: calc(-1 * var(--wa-space-3xs)) calc(-1 * var(--wa-space-2xs));
+    min-width: 8ch;
+    white-space: nowrap;
+    cursor: text;
+}
+.workspace__title-input:hover {
+    border-color: var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
+}
+.workspace__title-input:focus {
+    outline: none;
+    border-color: var(--wa-color-brand-fill-loud, #0070f3);
+    background: var(--wa-color-surface-default, #fff);
+}
 /* The live sync chip (`<tonk-sync-state>` renders this span with one
    `is-*` modifier). Layout on the base class, colour on the modifier. */
 .workspace__sync {
