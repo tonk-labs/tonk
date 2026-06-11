@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export ROOT
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  run)      exec "$ROOT/bench/bin/run.sh" "$@" ;;
+  report)   exec "$ROOT/bench/bin/report.sh" "$@" ;;
+  baseline) exec "$ROOT/bench/bin/baseline.sh" "$@" ;;
+  *) echo "usage: bench {run <scenario> [--scripted] [--runs N]|report [N]|baseline <scenario> <run-dir>}" >&2; exit 2 ;;
+esac
