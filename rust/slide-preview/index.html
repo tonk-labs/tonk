@@ -4,8 +4,29 @@
         <meta charset="utf-8" />
         <title>slide preview harness</title>
         <link data-trunk rel="rust" />
+        <style>
+            body {
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                margin: 0;
+            }
+            #status {
+                margin: 0;
+                padding: 0.5rem 1rem;
+                background: #f4f4f5;
+                border-bottom: 1px solid #d4d4d8;
+                color: #52525b;
+                font-size: 0.85rem;
+            }
+            #preview {
+                padding: 1rem;
+            }
+        </style>
     </head>
     <body>
         <p id="status">slide preview harness — connecting to the daemon…</p>
+        <div id="preview"></div>
     </body>
 </html>

@@ -73,12 +73,16 @@ pub fn handle(text: &str) -> Result<String, JsValue> {
         .ok_or_else(|| JsValue::from_str("no window"))?
         .document()
         .ok_or_else(|| JsValue::from_str("no document"))?;
+
+    // Mount into a persistent, visible container so a human watching
+    // the page sees the latest render — the harness is a real
+    // renderer, not a headless one. Clearing it first drops the
+    // previous render.
+    let container = preview_container(&document)?;
+    container.set_inner_html("");
     let host = document.create_element("tonk-view")?;
     host.set_inner_html(template);
-    document
-        .body()
-        .ok_or_else(|| JsValue::from_str("no body"))?
-        .append_child(&host)?; // connected_callback snapshots the template
+    container.append_child(&host)?; // connected_callback snapshots the template
 
     let frame = js_sys::JSON::parse(&conclusions.to_string())?;
     let render = js_sys::Reflect::get(&host, &JsValue::from_str("render"))?;
@@ -88,7 +92,6 @@ pub fn handle(text: &str) -> Result<String, JsValue> {
     render.call1(&host, &frame)?;
 
     let html = host.inner_html();
-    host.remove();
 
     let row_count = conclusions.as_array().map(|a| a.len()).unwrap_or(0);
     Ok(serde_json::json!({
@@ -96,6 +99,22 @@ pub fn handle(text: &str) -> Result<String, JsValue> {
         "payload": { "html": html, "row_count": row_count },
     })
     .to_string())
+}
+
+/// The visible container the latest render is mounted into. Uses
+/// the `#preview` element from the page when present; falls back to
+/// creating one (so `handle` works in a bare test document too).
+fn preview_container(document: &web_sys::Document) -> Result<web_sys::Element, JsValue> {
+    if let Some(existing) = document.get_element_by_id("preview") {
+        return Ok(existing);
+    }
+    let container = document.create_element("div")?;
+    container.set_id("preview");
+    document
+        .body()
+        .ok_or_else(|| JsValue::from_str("no body"))?
+        .append_child(&container)?;
+    Ok(container)
 }
 
 fn set_status(text: &str) {
