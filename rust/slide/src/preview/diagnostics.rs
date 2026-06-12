@@ -45,10 +45,19 @@ pub enum Diagnostic {
 impl std::fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnboundField { field, suggestion: Some(s) } => {
-                write!(f, "unbound-field: {{{field}}} is not a model field — did you mean {{{s}}}?")
+            Self::UnboundField {
+                field,
+                suggestion: Some(s),
+            } => {
+                write!(
+                    f,
+                    "unbound-field: {{{field}}} is not a model field — did you mean {{{s}}}?"
+                )
             }
-            Self::UnboundField { field, suggestion: None } => {
+            Self::UnboundField {
+                field,
+                suggestion: None,
+            } => {
                 write!(f, "unbound-field: {{{field}}} is not a model field")
             }
             Self::EmptyResolve { field } => {
@@ -99,7 +108,10 @@ pub fn pre_render(
         if !descriptor_fields.contains(&field) {
             let suggestion = closest_field(&field, descriptor_fields);
             out.push(Diagnostic::UnboundField { field, suggestion });
-        } else if conclusions.iter().all(|c| is_empty_value(c.fields.get(&field))) {
+        } else if conclusions
+            .iter()
+            .all(|c| is_empty_value(c.fields.get(&field)))
+        {
             out.push(Diagnostic::EmptyResolve { field });
         }
     }
@@ -145,11 +157,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 /// the black-box symptom of the structural anchoring traps
 /// (single-occurrence bare text, surprising iteration root) without
 /// needing renderer internals.
-pub fn post_render(
-    template: &str,
-    conclusions: &[Conclusion],
-    html: &str,
-) -> Vec<Diagnostic> {
+pub fn post_render(template: &str, conclusions: &[Conclusion], html: &str) -> Vec<Diagnostic> {
     if conclusions.is_empty() {
         return Vec::new();
     }
@@ -161,7 +169,10 @@ pub fn post_render(
                 && !text.is_empty()
                 && !html.contains(&text)
             {
-                out.push(Diagnostic::ValueMissingFromOutput { field: field.clone(), value: text });
+                out.push(Diagnostic::ValueMissingFromOutput {
+                    field: field.clone(),
+                    value: text,
+                });
                 break; // one report per field is enough
             }
         }
@@ -194,7 +205,10 @@ mod tests {
         for (k, v) in fields {
             map.insert((*k).to_string(), Ipld::String((*v).to_string()));
         }
-        Conclusion { this: "did:key:zX".into(), fields: map }
+        Conclusion {
+            this: "did:key:zX".into(),
+            fields: map,
+        }
     }
 
     fn strings(v: &[&str]) -> Vec<String> {
@@ -251,7 +265,9 @@ mod tests {
             );
             assert_eq!(
                 diagnostics,
-                vec![Diagnostic::EmptyResolve { field: "nickname".into() }],
+                vec![Diagnostic::EmptyResolve {
+                    field: "nickname".into()
+                }],
             );
         }
 
@@ -304,7 +320,10 @@ mod tests {
         #[dialog_common::test]
         fn it_stays_quiet_on_an_empty_frame() {
             let diagnostics = post_render("<article>{name}</article>", &[], "<tonk-fallback>");
-            assert!(diagnostics.is_empty(), "empty frame already flagged pre-render");
+            assert!(
+                diagnostics.is_empty(),
+                "empty frame already flagged pre-render"
+            );
         }
     }
 }

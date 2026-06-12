@@ -7,7 +7,9 @@ use crate::preview::protocol::{CAPABILITY_RENDER_PREVIEW, RenderReply, RenderReq
 #[derive(Debug, thiserror::Error)]
 pub enum RenderClientError {
     /// The daemon socket did not answer at all.
-    #[error("could not reach the preview daemon at {url} — is `slide preview serve` running? ({source})")]
+    #[error(
+        "could not reach the preview daemon at {url} — is `slide preview serve` running? ({source})"
+    )]
     DaemonUnreachable {
         /// The URL that was tried.
         url: String,

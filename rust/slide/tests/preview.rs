@@ -26,7 +26,11 @@ mod when_projecting_an_entity_for_preview {
         )
         .await?;
 
-        assert_eq!(projection.conclusions.len(), 1, "one row for a pinned entity");
+        assert_eq!(
+            projection.conclusions.len(),
+            1,
+            "one row for a pinned entity"
+        );
         let fields = &projection.conclusions[0].fields;
         assert_eq!(
             fields.get("title"),
@@ -51,7 +55,10 @@ mod when_projecting_an_entity_for_preview {
             "t1",
         )
         .await;
-        assert!(result.is_err(), "unknown model must error, not render blank");
+        assert!(
+            result.is_err(),
+            "unknown model must error, not render blank"
+        );
         Ok(())
     }
 }

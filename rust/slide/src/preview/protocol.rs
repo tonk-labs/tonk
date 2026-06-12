@@ -69,7 +69,10 @@ mod tests {
     #[dialog_common::test]
     fn it_round_trips_a_render_request_with_conclusions() {
         let mut fields = std::collections::BTreeMap::new();
-        fields.insert("name".to_string(), ipld_core::ipld::Ipld::String("Alice".into()));
+        fields.insert(
+            "name".to_string(),
+            ipld_core::ipld::Ipld::String("Alice".into()),
+        );
         let request = RenderRequest {
             template: "<h1>{name}</h1>".into(),
             conclusions: vec![tonk_schema::conclusion::Conclusion {

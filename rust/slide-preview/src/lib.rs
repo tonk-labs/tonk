@@ -75,9 +75,9 @@ pub fn handle(text: &str) -> Result<String, JsValue> {
 
     let frame = js_sys::JSON::parse(&conclusions.to_string())?;
     let render = js_sys::Reflect::get(&host, &JsValue::from_str("render"))?;
-    let render: js_sys::Function = render
-        .dyn_into()
-        .map_err(|_| JsValue::from_str("<tonk-view> has no render method — registration failed?"))?;
+    let render: js_sys::Function = render.dyn_into().map_err(|_| {
+        JsValue::from_str("<tonk-view> has no render method — registration failed?")
+    })?;
     render.call1(&host, &frame)?;
 
     let html = host.inner_html();

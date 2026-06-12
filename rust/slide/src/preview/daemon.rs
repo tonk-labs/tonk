@@ -288,14 +288,19 @@ mod tests {
         async fn it_rejects_an_unknown_capability() {
             let daemon = Daemon::new();
             let result = daemon.dispatch("teleport", serde_json::json!({})).await;
-            assert!(matches!(result, Err(DispatchError::UnknownCapability(name)) if name == "teleport"));
+            assert!(
+                matches!(result, Err(DispatchError::UnknownCapability(name)) if name == "teleport")
+            );
         }
 
         #[dialog_common::test]
         async fn it_errors_when_no_page_is_connected() {
             let daemon = Daemon::new();
             let result = daemon
-                .dispatch("render-preview", serde_json::json!({"template": "<b>{x}</b>"}))
+                .dispatch(
+                    "render-preview",
+                    serde_json::json!({"template": "<b>{x}</b>"}),
+                )
                 .await;
             assert!(matches!(result, Err(DispatchError::NoPage)));
         }
@@ -322,7 +327,10 @@ mod tests {
             });
 
             let payload = daemon
-                .dispatch("render-preview", serde_json::json!({"template": "<b>{name}</b>"}))
+                .dispatch(
+                    "render-preview",
+                    serde_json::json!({"template": "<b>{name}</b>"}),
+                )
                 .await
                 .expect("dispatch resolves");
             assert_eq!(payload["html"], "<b>Alice</b>");
@@ -332,7 +340,9 @@ mod tests {
         async fn it_times_out_when_the_page_never_replies() {
             let daemon = Daemon::with_timeout(Duration::from_millis(50));
             let _page = daemon.attach_page().await; // connected but silent
-            let result = daemon.dispatch("render-preview", serde_json::json!({})).await;
+            let result = daemon
+                .dispatch("render-preview", serde_json::json!({}))
+                .await;
             assert!(matches!(result, Err(DispatchError::Timeout)));
         }
     }
