@@ -293,11 +293,12 @@ async fn open_meta(site: &SlideSite) -> Result<Branch, RemoteError> {
 }
 
 /// Build the `Replica` concept for the local site. Deterministic
-/// from `(profile DID, repo subject, REPO_NAME)` so callers can
-/// freely reconstruct it without round-tripping through the
-/// meta branch.
+/// from `(profile DID, repo subject)` so callers can freely
+/// reconstruct it without round-tripping through the meta branch.
+/// The name is no longer part of the replica's identity — it lives
+/// in the repository's own `tonk/repository` concept.
 fn local_replica(site: &SlideSite) -> Replica {
-    Replica::new(site.profile.did(), site.repository.did(), site::REPO_NAME)
+    Replica::new(site.profile.did(), site.repository.did())
 }
 
 /// Decode a stored `tonk_schema::domain::remote::Address` back
