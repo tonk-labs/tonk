@@ -16,6 +16,7 @@
 //! - [`schema`] — branch introspection: dump every named
 //!   attribute and concept as a re-submittable notation document.
 //! - [`migrate`] — copy a `.carry/` directory to `.tonk/`.
+//! - [`preview`] — daemon + browser-bridge template preview.
 //! - [`guide`] — the asserted-notation reference, baked in.
 
 pub mod auto_sync;
@@ -25,6 +26,7 @@ pub mod identity;
 pub mod invite;
 pub mod migrate;
 pub mod output;
+pub mod preview;
 pub mod remote;
 pub mod schema;
 pub mod share;

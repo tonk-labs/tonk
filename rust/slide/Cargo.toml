@@ -57,12 +57,14 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dirs = { workspace = true }
+ipld-core = { workspace = true }
 lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-std", "io-util"] }
+tonk-display = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
