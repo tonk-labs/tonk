@@ -28,7 +28,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    Branch as MetaBranch, Membership, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
 };
 
 use super::AppState;
@@ -847,10 +847,16 @@ where
     // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
+    // The opening profile is a member of this repository: the
+    // creator on the create path, the claimer on the join path.
+    // Content-derived entity, so re-opening is a no-op.
+    let membership = Membership::new(tonk.profile.did(), repository.did());
+
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH));
+        .assert(replica.branch(META_BRANCH))
+        .assert(membership);
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -2302,5 +2308,33 @@ mod tests {
             "the live subscription must survive the refresh",
         );
         drop(subscriber);
+    }
+
+    /// Creating a repository records its creator as a member on the
+    /// repo's meta branch.
+    #[dialog_common::test]
+    async fn it_records_the_founder_membership_on_create() {
+        let repo = "test-founder-membership";
+        let (_app, state) = fresh_repo(repo).await;
+
+        let memberships = crate::router::tests::meta_memberships(&state, repo).await;
+        let profile_entity = {
+            let guard = state.read().await;
+            use tonk_schema::prelude::DidExt as _;
+            guard.profile.did().this()
+        };
+        // `fresh_repo` tolerates 412 (IndexedDB state from a prior browser
+        // run), so the repo may already have a membership from a previous
+        // run.  Assert at least one row and that the founder's is present.
+        assert!(
+            memberships.len() >= 1,
+            "expected at least the founder membership, got {}",
+            memberships.len(),
+        );
+        assert!(
+            memberships.iter().any(|m| m.member.0 == profile_entity),
+            "founder membership must be present; got {:?}",
+            memberships,
+        );
     }
 }

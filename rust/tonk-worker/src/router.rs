@@ -321,6 +321,107 @@ pub mod tests {
         }
     }
 
+    /// Query all `Membership` rows on `repo`'s meta branch.
+    pub(crate) async fn meta_memberships(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::Membership> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let meta: Branch = repository
+            .branch("meta")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("meta branch opens");
+        meta.query()
+            .select(Query::<tonk_schema::Membership> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                member: Term::var("member"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("membership query")
+    }
+
+    /// Query all `Invitation` rows on `repo`'s meta branch.
+    #[allow(dead_code)]
+    pub(crate) async fn meta_invitations(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::Invitation> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let meta: Branch = repository
+            .branch("meta")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("meta branch opens");
+        meta.query()
+            .select(Query::<tonk_schema::Invitation> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                inviter: Term::var("inviter"),
+                audience: Term::var("audience"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("invitation query")
+    }
+
+    /// Query all `InvitedVia` rows on `repo`'s meta branch.
+    #[allow(dead_code)]
+    pub(crate) async fn meta_invited_via(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::InvitedVia> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let meta: Branch = repository
+            .branch("meta")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("meta branch opens");
+        meta.query()
+            .select(Query::<tonk_schema::InvitedVia> {
+                this: Term::var("this"),
+                invitation: Term::var("invitation"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("invited-via query")
+    }
+
     /// Creates a test repository via `PUT /api/repository/{label}` and
     /// returns its minted routing key.
     ///
