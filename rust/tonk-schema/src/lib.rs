@@ -72,6 +72,9 @@ pub use repository::*;
 pub mod membership;
 pub use membership::*;
 
+pub mod invitation;
+pub use invitation::*;
+
 pub mod command;
 
 pub mod branch;
