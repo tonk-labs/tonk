@@ -529,13 +529,39 @@ fn loud_state(err: &ErrorDetail) -> State {
     }
 }
 
-/// Empty the host's DOM and forget every mounted slide / chrome.
+/// Empty the host's rendered output and forget every mounted slide /
+/// chrome — but **preserve the embedder's state-slot children**
+/// (`[slot]`), which are authored input, not rendered output. Without
+/// this guard `set_inner_html("")` would delete the embedder's
+/// `slot="no-model"` etc. on a flow restart, so a later absence state
+/// couldn't find them and would fall back to the built-in callout even
+/// though the embedder provided content.
 fn clear_host(host: &Element, inner: &mut Inner) {
     inner.slides.clear();
     inner.carousel = None;
     inner.notation_source = None;
     inner.notation_item = None;
-    host.set_inner_html("");
+    remove_rendered_children(host);
+}
+
+/// Remove every direct child of `host` that the renderer mounted,
+/// keeping the embedder's authored `[slot]` children. Replaces a blanket
+/// `set_inner_html("")` so state-slot content survives a restart.
+fn remove_rendered_children(host: &Element) {
+    // Walk the element children once, collecting the rendered ones (no
+    // `slot` attribute) before removing — removing mid-walk would break
+    // the sibling chain.
+    let mut to_remove: Vec<Element> = Vec::new();
+    let mut cursor = host.first_element_child();
+    while let Some(child) = cursor {
+        cursor = child.next_element_sibling();
+        if !child.has_attribute("slot") {
+            to_remove.push(child);
+        }
+    }
+    for child in to_remove {
+        child.remove();
+    }
 }
 
 /// Bail if this flow's generation has been superseded or the
@@ -694,7 +720,17 @@ async fn start_downstream(
                     })?
                 }
                 Err(err) if err.kind == ErrorKind::UnknownSource => {
-                    state::set(host, State::NoView);
+                    let model = host.get_attribute("model").unwrap_or_default();
+                    state::set_absence(
+                        host,
+                        State::NoView,
+                        "View not found",
+                        &format!(
+                            r#"view:
+  this: {view_ref}
+  model: {model}"#
+                        ),
+                    );
                     return Ok(());
                 }
                 Err(err) => return Err(err),
@@ -880,8 +916,18 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
     let resolved = extract_phase1_conclusion(conclusions);
     let Some((model_entity, descriptor_json)) = resolved else {
         // The concept is not on the branch yet. Stay subscribed; the
-        // embedder skins `no-model` from `data-state` (no red box).
-        state::set(host, State::NoModel);
+        // embedder may skin `no-model` via a `slot="no-model"` child,
+        // otherwise the built-in fallback names the missing model.
+        let model = host.get_attribute("model").unwrap_or_default();
+        state::set_absence(
+            host,
+            State::NoModel,
+            "Model not found",
+            &format!(
+                r#"concept:
+  this: {model}"#
+            ),
+        );
         return;
     };
     let downstream_generation = {
@@ -1470,14 +1516,27 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
             call_render(&slide.view_el, &empty);
         }
         drop(s);
-        state::set(
-            host,
-            if directory {
-                State::Empty
-            } else {
-                State::NoEntity
-            },
-        );
+        if directory {
+            // Directory mode: a legitimate zero-instance collection that
+            // `<tonk-fallback>` keys its launchpad on. Not an absence to
+            // call out — the view's own chrome renders the empty state.
+            state::set(host, State::Empty);
+        } else {
+            // Single mode: the one entity's row is absent. The embedder
+            // may slot `no-entity`; otherwise show the instance query that
+            // matched nothing, as notation keyed by the model concept.
+            let model = host.get_attribute("model").unwrap_or_default();
+            let entity = host.get_attribute("entity").unwrap_or_default();
+            state::set_absence(
+                host,
+                State::NoEntity,
+                "Not found",
+                &format!(
+                    r#"{model}:
+  this: {entity}"#
+                ),
+            );
+        }
         return;
     }
 
@@ -1850,6 +1909,37 @@ mod tests {
         assert!(extract_phase1_conclusion(vec![row]).is_none());
     }
 
+    // `loud_state` classifies an error into the loud state that drives
+    // the danger callout. A network error carrying an HTTP 403 is
+    // `unauthorized` (a real wire signal — the worker formats access
+    // denials as `HTTP 403: …`); any other network error is `offline`;
+    // parse/descriptor errors are `malformed`.
+    #[dialog_common::test]
+    fn it_maps_a_403_network_error_to_unauthorized() {
+        let err = ErrorDetail::new(ErrorKind::Network, "HTTP 403: forbidden");
+        assert_eq!(loud_state(&err), State::Unauthorized);
+    }
+
+    #[dialog_common::test]
+    fn it_maps_a_non_403_network_error_to_offline() {
+        let err = ErrorDetail::new(ErrorKind::Network, "HTTP 500: boom");
+        assert_eq!(loud_state(&err), State::Offline);
+        let dropped = ErrorDetail::new(ErrorKind::Network, "connection reset");
+        assert_eq!(loud_state(&dropped), State::Offline);
+    }
+
+    #[dialog_common::test]
+    fn it_maps_parse_and_descriptor_errors_to_malformed() {
+        assert_eq!(
+            loud_state(&ErrorDetail::new(ErrorKind::Parse, "bad json")),
+            State::Malformed,
+        );
+        assert_eq!(
+            loud_state(&ErrorDetail::new(ErrorKind::Descriptor, "bad attr")),
+            State::Malformed,
+        );
+    }
+
     // --- Display hook: routing a `text/html` view to a portal ---
     //
     // Driven through the real `<tonk-display>` flow against a fake host
@@ -2051,6 +2141,24 @@ mod tests {
 
             fn subscribe_tags(&self) -> Vec<String> {
                 self.state.borrow().subscribe_tags.clone()
+            }
+
+            /// Deliver a transport `error` frame on the `tag`
+            /// subscription — drives the consumer's `__tonkError` path
+            /// (`on_error` → `fail`). `message` is read by `on_error` from
+            /// `detail.message`.
+            fn push_error(&self, tag: &str, message: &str) {
+                let consumer = self.state.borrow().subs.get(tag).cloned();
+                let Some(consumer) = consumer else { return };
+                let payload = Object::new();
+                let _ = Reflect::set(&payload, &"message".into(), &JsValue::from_str(message));
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &JsValue::from_str(tag));
+                if let Ok(error) = Reflect::get(&consumer, &"error".into())
+                    && let Ok(error) = error.dyn_into::<Function>()
+                {
+                    let _ = error.call2(&consumer, &payload, &opts);
+                }
             }
         }
 
@@ -2276,6 +2384,179 @@ mod tests {
             assert!(
                 display.query_selector("wa-callout").unwrap().is_none(),
                 "recovery leaves no latched callout behind",
+            );
+        }
+
+        // A bad `entity` attribute (not a URI) is an author error: `run`
+        // rejects it before opening any subscription, so the display goes
+        // `malformed` with a loud danger callout.
+        #[dialog_common::test]
+        async fn it_goes_malformed_on_a_bad_entity_attribute() {
+            let host = FakeHost::install(Vec::new());
+            // `entity` must be a URI (contain `:`); `oops` is not.
+            let display = mount_display(&host, "counter", "counter", "oops");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("malformed") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("malformed"),
+                "a non-URI entity attribute is a malformed author error",
+            );
+            let callout = display
+                .query_selector("wa-callout")
+                .unwrap()
+                .expect("malformed surfaces a danger callout");
+            assert_eq!(callout.get_attribute("variant").as_deref(), Some("danger"));
+        }
+
+        // A transport `error` frame on a live subscription drives the
+        // display to `offline` with a loud danger callout.
+        #[dialog_common::test]
+        async fn it_goes_offline_on_a_subscription_error() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_error("entity", "HTTP 500: upstream gone");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("offline") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("offline"),
+                "a transport error is `offline`",
+            );
+            assert_eq!(
+                display
+                    .query_selector("wa-callout")
+                    .unwrap()
+                    .expect("offline surfaces a callout")
+                    .get_attribute("variant")
+                    .as_deref(),
+                Some("danger"),
+            );
+        }
+
+        // An HTTP 403 on a subscription is access denial, not a transient
+        // transport failure: it drives `unauthorized`, not `offline`.
+        #[dialog_common::test]
+        async fn it_goes_unauthorized_on_a_403() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_error("entity", "HTTP 403: forbidden");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("unauthorized") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("unauthorized"),
+                "an HTTP 403 is `unauthorized`, not `offline`",
+            );
+        }
+
+        // An explicit `view=` whose concept is absent on the branch is the
+        // recoverable `no-view` state — a neutral fallback naming the
+        // missing view, NOT a loud error. The model resolves (auto-pushed
+        // frame); the view name + concept one-shots return empty, so the
+        // view resolve fails with `UnknownSource`.
+        #[dialog_common::test]
+        async fn it_goes_no_view_when_an_explicit_view_is_absent() {
+            // One-shot responses: the model name lookup resolves; the view
+            // name lookup + view concept lookup are left empty (default
+            // empty array), so the explicit view never resolves.
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "missing-view", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("no-view") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-view"),
+                "an absent explicit view is `no-view`",
+            );
+            let callout = display
+                .query_selector("wa-callout")
+                .unwrap()
+                .expect("no-view names the missing view");
+            assert_eq!(
+                callout.get_attribute("variant").as_deref(),
+                Some("neutral"),
+                "no-view is informative, not a loud error",
+            );
+        }
+
+        // When the model has no model-specific view but a `_:_` default
+        // view is seeded, the empty view frame falls back to it: the
+        // display renders the default presentation and reports
+        // `default-view` (observably distinct from `ready`).
+        #[dialog_common::test]
+        async fn it_renders_the_default_view_when_no_specific_view_exists() {
+            // The `_:_` fallback query is a one-shot answered here with a
+            // `display` template; everything else (model) is the
+            // auto-pushed frame.
+            let host = FakeHost::install_with_model(
+                vec![rows(&[(
+                    "did:key:zDefaultView",
+                    &[("display", "<p>{count}</p>")],
+                )])],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // The model-specific view subscription pushes an EMPTY frame —
+            // no view for this model — which triggers the `_:_` fallback.
+            host.push_frame("view", &rows(&[]));
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the `_:_` default view renders when no specific view exists",
+            );
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("default-view") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("default-view"),
+                "rendering through the `_:_` fallback reports `default-view`",
             );
         }
 

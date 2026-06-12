@@ -600,12 +600,12 @@ tonk-repository.display-route,
 }
 /* The name comes from the space's own repo (a nested
    `<tonk-display model=tonk:repository>`), which resolves
-   asynchronously and may not have synced yet. Until it reaches the
-   `ready` state, show a muted "Untitled" placeholder so the card never
-   reads as blank/broken. `:not([data-state="ready"])` also covers the
-   pre-mount window before the element sets any state. */
-.hub-card__name tonk-display:not([data-state="ready"])::after {
-    content: "Untitled";
+   asynchronously and may not have synced yet. The display projects the
+   `slot="<state>"` child matching its current `data-state`, so the
+   "Untitled" placeholder spans authored on the display show while it is
+   loading / no-model / no-entity and hide once it is `ready`. Style the
+   placeholder spans muted. */
+.hub-card__name .hub-card__untitled {
     color: var(--wa-color-text-quiet);
     font-style: italic;
 }
