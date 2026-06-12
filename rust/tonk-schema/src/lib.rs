@@ -69,6 +69,9 @@ pub use replica::*;
 pub mod repository;
 pub use repository::*;
 
+pub mod membership;
+pub use membership::*;
+
 pub mod command;
 
 pub mod branch;

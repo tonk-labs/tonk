@@ -133,6 +133,29 @@ pub mod branch {
     pub struct Upstream(pub Entity);
 }
 
+/// Attributes that live on [`Membership`] entities only.
+///
+/// [`Membership`]: crate::Membership
+pub mod membership {
+    use super::{Attribute, Entity};
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    pub struct Subject(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    pub struct Member(pub Entity);
+
+    /// The invitation a membership was claimed through — the
+    /// [`InvitedVia`] stamp's payload.
+    ///
+    /// [`InvitedVia`]: crate::InvitedVia
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    pub struct Invitation(pub Entity);
+}
+
 /// Attributes that live on [`Remote`] entities only.
 ///
 /// [`Remote`]: crate::Remote
