@@ -534,50 +534,50 @@ async fn seed_and_initialize(
         let library = fetch_standard_library(STANDARD_LIBRARY_URL)
             .await
             .map_err(|e| RepositoryError::Internal(format!("fetch standard library: {e}")))?;
+        // The showcase demo (the "Trip to Pistoia" sample) lands only in
+        // the default `home` repository, on top of the scaffold; every
+        // other repo gets the scaffold alone, so its directory render has
+        // zero sheet instances and reads as genuinely empty — the
+        // precondition for the launchpad view.
+        let demo = if display_name == DEFAULT_REPOSITORY_NAME {
+            Some(
+                fetch_standard_library(DEMO_LIBRARY_URL)
+                    .await
+                    .map_err(|e| RepositoryError::Internal(format!("fetch showcase demo: {e}")))?,
+            )
+        } else {
+            None
+        };
+
+        // Seed the whole scaffold in ONE commit per branch: the standard
+        // library, the showcase demo (home only), AND the repository's own
+        // name, concatenated into a single notation document evaluated
+        // once. Splitting these across commits made the name land a beat
+        // after the scaffold, so the Hub card briefly rendered the
+        // library's default "Untitled" before the real name arrived — a
+        // visible flash. Concatenating lets the rule engine saturate over
+        // the whole document at once: the explicit `tonk/repository` name
+        // is present when the library's default-name rule evaluates, so
+        // its `unless` guard suppresses "Untitled" and only the real name
+        // is ever committed.
+        let name_body = repository_name_body(subject, display_name)?;
         let tonk = state.read().await;
         for branch_name in branches {
-            seed_standard_library(&tonk, key, branch_name, &library)
+            let mut body = library.clone();
+            if let Some(demo) = &demo {
+                body.push('\n');
+                body.push_str(demo);
+            }
+            body.push('\n');
+            body.push_str(&name_body);
+            seed_standard_library(&tonk, key, branch_name, &body)
                 .await
                 .map_err(|e| RepositoryError::Internal(format!("seed '{branch_name}': {e}")))?;
             log!(
-                "Seeded standard library on '{}' branch '{}'",
+                "Seeded scaffold + name on '{}' branch '{}'",
                 key,
                 branch_name
             );
-        }
-        // The showcase demo (the "Trip to Pistoia" sample) lands only
-        // in the default `home` repository, on top of the scaffold. It
-        // resolves its bare concept references against the scaffold just
-        // committed above. Every other repo gets the scaffold alone, so
-        // its directory render has zero sheet instances and reads as
-        // genuinely empty — the precondition for the launchpad view.
-        if display_name == DEFAULT_REPOSITORY_NAME {
-            let demo = fetch_standard_library(DEMO_LIBRARY_URL)
-                .await
-                .map_err(|e| RepositoryError::Internal(format!("fetch showcase demo: {e}")))?;
-            for branch_name in branches {
-                seed_standard_library(&tonk, key, branch_name, &demo)
-                    .await
-                    .map_err(|e| {
-                        RepositoryError::Internal(format!("seed demo '{branch_name}': {e}"))
-                    })?;
-                log!("Seeded showcase demo on '{}' branch '{}'", key, branch_name);
-            }
-        }
-        // Assert the repository's own name into its db, keyed by the
-        // subject DID, so the repo is self-describing and the banner can
-        // read it from the content branch. The standard library's
-        // `tonk/initialize` rule seeds a default "Untitled" (it cannot
-        // know the user's label at seed time); this overrides it with the
-        // typed name, here where the subject and the label are both in
-        // hand. The rule's `unless` guard keeps the default from
-        // clobbering this on any re-seed.
-        for branch_name in branches {
-            seed_repository_name(&tonk, key, branch_name, subject, display_name)
-                .await
-                .map_err(|e| {
-                    RepositoryError::Internal(format!("seed name '{branch_name}': {e}"))
-                })?;
         }
         set_replica_status(&tonk, subject, Replica::initialized_status()).await?;
     } else {
@@ -686,35 +686,22 @@ async fn seed_standard_library(
         })
 }
 
-/// Assert the repository's own `tonk/repository` name into its db,
-/// keyed by the subject DID. Evaluated as a one-line notation document
-/// against the just-seeded standard library, which defines the
-/// `tonk/repository` concept the assertion instantiates.
+/// Build the notation document asserting the repository's own
+/// `tonk/repository` name, keyed by the subject DID. Concatenated into
+/// the scaffold seed body (see [`seed_and_initialize`]) so the name lands
+/// in the same commit as the library that defines the `tonk/repository`
+/// concept it instantiates — no separate commit, no "Untitled" flash.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn seed_repository_name(
-    tonk: &TonkState,
-    repo: &str,
-    branch: &str,
-    subject: &Did,
-    display_name: &str,
-) -> Result<(), TonkWorkerError> {
+fn repository_name_body(subject: &Did, display_name: &str) -> Result<String, RepositoryError> {
     // `name` is a JSON string so any character in the user-typed label
     // (quotes, colons, newlines) is carried verbatim rather than
     // breaking the notation.
     let name = serde_json::to_string(display_name)
-        .map_err(|e| TonkWorkerError::Internal(format!("encode repository name: {e}")))?;
-    let body = format!(
+        .map_err(|e| RepositoryError::Internal(format!("encode repository name: {e}")))?;
+    Ok(format!(
         "tonk/repository!:\n  this: {subject}\n  name: {name}\n",
         subject = subject.as_str(),
-    );
-    super::evaluate::evaluate_body(tonk, repo, branch, body, true)
-        .await
-        .map(|_| ())
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to seed repository name on branch '{branch}': {e}"
-            ))
-        })
+    ))
 }
 
 /// Build out a repository from a [`RepositoryConfiguration`].
@@ -857,7 +844,7 @@ where
 
     // Local replica of this repository. The display name is not stored
     // here — it lives in the repository's own `tonk/repository` concept
-    // on its content branch (seeded by `seed_repository_name`).
+    // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
     let mut transaction = meta
@@ -1243,7 +1230,7 @@ pub async fn get_profile_repository(
 
 /// The branch a repository's own `tonk/repository` name is seeded onto.
 /// Spaces have a single content branch (`main`); the seed writes the
-/// name there (see `seed_repository_name`).
+/// name there (see `repository_name_body`).
 const CONTENT_BRANCH: &str = "main";
 
 /// Read a repository's display label from its own `tonk/repository`

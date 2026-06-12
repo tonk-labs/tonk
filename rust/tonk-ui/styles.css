@@ -659,6 +659,14 @@ tonk-repository.display-route,
 .hub-card[data-status="tonk:blank"] .hub-card__status::before {
     content: "Installing\2026";
 }
+/* While installing, the name has nothing to show yet — the
+   "Installing…" label + progress line already say what's happening, so
+   suppress the "Untitled" placeholder rather than reading like the space
+   failed to get a name. Once `tonk:initialized`, the name resolves (or
+   falls back to "Untitled" if it is still syncing). */
+.hub-card[data-status="tonk:blank"] .hub-card__name .hub-card__untitled {
+    display: none;
+}
 /* The line is 35% of the card wide; it travels from just off the left
    edge to just off the right (its own width is 100% of `translateX`'s
    reference, so -100% hides it left and ~286% clears the right). */
