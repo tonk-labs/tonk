@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Trip Packing List</title>
+<style>
+  body { font-family: -apple-system, sans-serif; max-width: 480px; margin: 2rem auto; color: #1a1a2e; }
+  h1 { font-size: 1.4rem; }
+  .item { display: flex; align-items: center; gap: .5rem; padding: .4rem 0; border-bottom: 1px solid #eee; }
+  .item.done label { text-decoration: line-through; color: #999; }
+  .cat { font-size: .75rem; background: #e6f0ff; color: #2a5db0; border-radius: 8px; padding: .1rem .5rem; margin-left: auto; }
+  .count { color: #666; font-size: .85rem; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<h1>Trip Packing List</h1>
+<div id="list"></div>
+<p class="count" id="count"></p>
+<script>
+const items = [
+  { name: "Passport", category: "documents", packed: true },
+  { name: "Phone charger", category: "electronics", packed: true },
+  { name: "Hiking boots", category: "clothing", packed: false },
+  { name: "Rain jacket", category: "clothing", packed: false },
+  { name: "Travel insurance printout", category: "documents", packed: false },
+];
+const list = document.getElementById("list");
+for (const [i, item] of items.entries()) {
+  const div = document.createElement("div");
+  div.className = "item" + (item.packed ? " done" : "");
+  div.innerHTML = `<input type="checkbox" id="i${i}" ${item.packed ? "checked" : ""}>
+    <label for="i${i}">${item.name}</label><span class="cat">${item.category}</span>`;
+  div.querySelector("input").addEventListener("change", (e) => {
+    items[i].packed = e.target.checked;
+    div.classList.toggle("done", e.target.checked);
+    render();
+  });
+  list.appendChild(div);
+}
+function render() {
+  const packed = items.filter(x => x.packed).length;
+  document.getElementById("count").textContent = `${packed} of ${items.length} packed`;
+}
+render();
+</script>
+</body>
+</html>

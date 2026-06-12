@@ -6,14 +6,14 @@
 //! Three flavours, sharing a common skeleton:
 //!
 //! - [`share_concept`] points at tonk-ui's auto-rendered concept
-//!   route — `then=branch/main/concept/<name>`.
+//!   route — `then=concept/<name>` (maps to `/space/<name>/concept/<source>`).
 //! - [`share_view`] points at the iframe viewer route — the
 //!   target resolves to an entity URI carrying a `text/html`
-//!   claim, and `then=branch/main/view/<entity>`.
+//!   claim, and `then=view/<entity>` (maps to `/space/<name>/view/<entity>`).
 //! - [`share_display`] points at the `<tonk-display>` route —
-//!   `then=branch/main/display/<subject>?view=<view-name>`, the
-//!   declarative single-entity renderer. `<view-name>` is the
-//!   view's anchor name; the view carries its own `model`.
+//!   `then=<subject>?view=<view-name>` (maps to `/space/<name>/<subject>`
+//!   via the `*subject` wildcard). `<view-name>` is the view's anchor name;
+//!   the view carries its own `model`.
 //!
 //! The launcher URL extends the standard invite URL with two
 //! extra query parameters:
@@ -262,7 +262,8 @@ impl From<RemoteError> for ShareError {
 }
 
 /// Push the local repo, mint an audience-open invite over it,
-/// and produce a launcher URL pointing at a concept view.
+/// and produce a launcher URL pointing at the chromed concept view
+/// (`/space/<name>/concept/<concept_name>`).
 ///
 /// Pre-flight ordering matters: each step that can fail
 /// independently runs before the side-effecting ones (push, mint)
@@ -290,10 +291,11 @@ pub async fn share_concept(
 
     let remote_record = prepare_share(site, options.remote.as_deref()).await?;
     let space_name = effective_space_name(options.space_name.as_deref());
-    let then = format!(
-        "branch/{branch}/concept/{concept_name}",
-        branch = site::BRANCH_NAME,
-    );
+    // `then=` is a suffix under `/space/<name>/`; the concept route is
+    // `space/:space/concept/:source` so the suffix must start with
+    // `concept/`. No branch segment — the `{branch}@` prefix in the
+    // `{branch}@{name}` space segment defaults to `main` when omitted.
+    let then = format!("concept/{concept_name}");
     let url = mint_and_compose(
         site,
         options.ui_base.as_deref(),
@@ -347,7 +349,9 @@ pub async fn share_view(
 
     let remote_record = prepare_share(site, options.remote.as_deref()).await?;
     let space_name = effective_space_name(options.space_name.as_deref());
-    let then = format!("branch/{branch}/view/{entity}", branch = site::BRANCH_NAME,);
+    // `then=` is a suffix under `/space/<name>/`; the view route is
+    // `space/:space/view/:entity` so the suffix must start with `view/`.
+    let then = format!("view/{entity}");
     let url = mint_and_compose(
         site,
         options.ui_base.as_deref(),
@@ -452,11 +456,12 @@ pub async fn share_display(
 /// The `subject` is left verbatim as a path segment — `did:key:…`
 /// URIs need their `:` intact and bookmark names don't carry query
 /// delimiters.
+///
+/// The display route is `space/:space/*subject` — a wildcard that
+/// captures the remainder after the space prefix, so the suffix is
+/// just `{subject}` with no leading `display/` keyword segment.
 fn compose_display_then(subject: &str, view: Option<&str>, model: Option<&str>) -> String {
-    let mut path = format!(
-        "branch/{branch}/display/{subject}",
-        branch = site::BRANCH_NAME,
-    );
+    let mut path = subject.to_owned();
     let mut pairs = form_urlencoded::Serializer::new(String::new());
     let mut has_any = false;
     if let Some(view) = view {
