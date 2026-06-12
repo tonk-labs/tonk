@@ -140,6 +140,48 @@ fn levenshtein(a: &str, b: &str) -> usize {
     previous[b_chars.len()]
 }
 
+/// Post-render check: every referenced field whose value resolved
+/// non-empty must appear somewhere in the rendered HTML. A miss is
+/// the black-box symptom of the structural anchoring traps
+/// (single-occurrence bare text, surprising iteration root) without
+/// needing renderer internals.
+pub fn post_render(
+    template: &str,
+    conclusions: &[Conclusion],
+    html: &str,
+) -> Vec<Diagnostic> {
+    if conclusions.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for field in referenced_fields(template) {
+        for conclusion in conclusions {
+            if let Some(value) = conclusion.fields.get(&field)
+                && let Some(text) = display_value(value)
+                && !text.is_empty()
+                && !html.contains(&text)
+            {
+                out.push(Diagnostic::ValueMissingFromOutput { field: field.clone(), value: text });
+                break; // one report per field is enough
+            }
+        }
+    }
+    out
+}
+
+/// Stringify a scalar Ipld value the way the renderer would
+/// interpolate it. Non-scalar values are skipped (no containment
+/// check is meaningful for them).
+fn display_value(value: &Ipld) -> Option<String> {
+    match value {
+        Ipld::String(s) => Some(s.clone()),
+        Ipld::Integer(i) => Some(i.to_string()),
+        Ipld::Float(x) => Some(x.to_string()),
+        Ipld::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +269,42 @@ mod tests {
                 &[conclusion(&[("name", "Alice")])],
             );
             assert!(diagnostics.is_empty(), "got {diagnostics:?}");
+        }
+    }
+
+    mod when_analyzing_after_render {
+        use super::*;
+
+        #[dialog_common::test]
+        fn it_flags_a_resolved_value_missing_from_the_output() {
+            let diagnostics = post_render(
+                "<article>{name}</article>",
+                &[conclusion(&[("name", "Alice")])],
+                "<article></article>",
+            );
+            assert_eq!(
+                diagnostics,
+                vec![Diagnostic::ValueMissingFromOutput {
+                    field: "name".into(),
+                    value: "Alice".into(),
+                }],
+            );
+        }
+
+        #[dialog_common::test]
+        fn it_accepts_output_containing_every_resolved_value() {
+            let diagnostics = post_render(
+                "<article>{name}</article>",
+                &[conclusion(&[("name", "Alice")])],
+                "<article>Alice</article>",
+            );
+            assert!(diagnostics.is_empty(), "got {diagnostics:?}");
+        }
+
+        #[dialog_common::test]
+        fn it_stays_quiet_on_an_empty_frame() {
+            let diagnostics = post_render("<article>{name}</article>", &[], "<tonk-fallback>");
+            assert!(diagnostics.is_empty(), "empty frame already flagged pre-render");
         }
     }
 }
