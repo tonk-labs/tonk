@@ -17,6 +17,7 @@ use slide::eval::{self, EvalError, Source};
 use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
+use slide::preview;
 use slide::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
 use slide::share::{self, ShareDisplayOutcome, ShareOptions, ShareOutcome, ShareViewOutcome};
 use slide::sync::{self, SyncOutcome};
@@ -167,6 +168,13 @@ enum Command {
         #[command(subcommand)]
         command: ShareCommand,
     },
+
+    /// Preview daemon: render candidate templates with the real
+    /// browser renderer against live branch data.
+    Preview {
+        #[command(subcommand)]
+        command: PreviewCommand,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -293,6 +301,50 @@ enum RemoteCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum PreviewCommand {
+    /// Start the preview daemon. Open the printed URL in a browser
+    /// once; the page stays connected and renders every
+    /// `slide preview render` request.
+    #[command(after_help = "Examples:\n  slide preview serve --assets rust/slide-preview/dist")]
+    Serve {
+        /// Port to listen on (localhost only).
+        #[arg(long, default_value_t = 4774)]
+        port: u16,
+        /// Directory holding the built harness page (trunk build
+        /// output of the slide-preview crate).
+        #[arg(long, env = "SLIDE_PREVIEW_ASSETS", value_name = "DIR")]
+        assets: PathBuf,
+    },
+
+    /// Render a candidate template against an entity's live data
+    /// and print the real renderer's HTML plus diagnostics.
+    #[command(
+        after_help = "Examples:\n  slide preview render --model person --this alice --template card.html\n  cat card.html | slide preview render --model person --this alice"
+    )]
+    Render {
+        /// Model concept — bookmark name or entity URI.
+        #[arg(long, value_name = "CONCEPT")]
+        model: String,
+        /// Subject entity — bookmark name or entity URI.
+        #[arg(long = "this", value_name = "ENTITY")]
+        this: String,
+        /// Template file path, or `-` for stdin (default).
+        #[arg(long, value_name = "PATH", default_value = "-")]
+        template: String,
+        /// Branch to project from.
+        #[arg(long, value_name = "NAME", default_value = slide::site::BRANCH_NAME)]
+        branch: String,
+        /// Daemon port.
+        #[arg(long, default_value_t = 4774)]
+        port: u16,
+        /// Emit one JSON object (html, row_count, diagnostics)
+        /// instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Args, Debug)]
 #[command(
     after_help = "Examples:\n  slide eval -c 'person:'\n  slide eval ./doc.notation\n  cat doc.notation | slide eval -\n  slide eval -c 'person:' --format json\n  slide eval ./doc.notation --no-sync"
@@ -359,6 +411,7 @@ async fn main() {
         Command::Join { url } => claim_invite(url).await,
         Command::Remote { command } => remote_op(command).await,
         Command::Share { command } => share_op(command).await,
+        Command::Preview { command } => preview_op(command).await,
     };
     std::process::exit(exit.into_raw());
 }
@@ -959,6 +1012,127 @@ async fn print_schema() -> ExitCode {
             ExitCode::Success
         }
         Err(err) => print_error(err.to_string()),
+    }
+}
+
+async fn preview_op(command: PreviewCommand) -> ExitCode {
+    match command {
+        PreviewCommand::Serve { port, assets } => {
+            match preview::daemon::serve(port, assets).await {
+                Ok(()) => ExitCode::Success,
+                Err(err) => print_error(err.to_string()),
+            }
+        }
+        PreviewCommand::Render {
+            model,
+            this,
+            template,
+            branch,
+            port,
+            json,
+        } => preview_render(model, this, template, branch, port, json).await,
+    }
+}
+
+async fn preview_render(
+    model: String,
+    this: String,
+    template_source: String,
+    branch_name: String,
+    port: u16,
+    json: bool,
+) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    // `main` is the already-open branch; anything else is opened
+    // off the same repository.
+    let opened;
+    let branch = if branch_name == site::BRANCH_NAME {
+        &site.branch
+    } else {
+        opened = match site
+            .repository
+            .branch(&branch_name)
+            .open()
+            .perform(&site.operator)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => return print_error(format!("failed to open branch '{branch_name}': {e:?}")),
+        };
+        &opened
+    };
+
+    let template = match read_template(&template_source) {
+        Ok(t) => t,
+        Err(message) => return print_error(message),
+    };
+
+    let projection =
+        match preview::project::project_entity(branch, &site.operator, &model, &this).await {
+            Ok(p) => p,
+            Err(err) => return print_error(err.to_string()),
+        };
+
+    let mut diagnostics = preview::diagnostics::pre_render(
+        &template,
+        &projection.descriptor_fields,
+        &projection.conclusions,
+    );
+
+    let request = preview::protocol::RenderRequest {
+        template: template.clone(),
+        conclusions: projection.conclusions.clone(),
+    };
+    let reply = match preview::client::request_render(port, &request).await {
+        Ok(r) => r,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    diagnostics.extend(preview::diagnostics::post_render(
+        &template,
+        &projection.conclusions,
+        &reply.html,
+    ));
+
+    if json {
+        let out = serde_json::json!({
+            "html": reply.html,
+            "row_count": reply.row_count,
+            "diagnostics": diagnostics,
+        });
+        println!("{out}");
+    } else {
+        for diagnostic in &diagnostics {
+            eprintln!("warning: {diagnostic}");
+        }
+        println!("{}", reply.html);
+    }
+    ExitCode::Success
+}
+
+/// Read the candidate template from a file path or stdin (`-`).
+fn read_template(source: &str) -> Result<String, String> {
+    if source == "-" {
+        if std::io::stdin().is_terminal() {
+            return Err(
+                "no template supplied: pass --template <file> or pipe the template via stdin"
+                    .to_owned(),
+            );
+        }
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut buf)
+            .map_err(|e| format!("failed to read template from stdin: {e}"))?;
+        Ok(buf)
+    } else {
+        std::fs::read_to_string(source).map_err(|e| format!("failed to read {source}: {e}"))
     }
 }
 

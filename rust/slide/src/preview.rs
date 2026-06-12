@@ -8,7 +8,10 @@
 //!   conclusions `<tonk-display>` subscribes to.
 //! - [`daemon`] — capability-routed broker between CLI clients and
 //!   the connected browser harness page.
+//! - [`client`] — one-shot CLI client that posts a render request
+//!   to the daemon and decodes the reply.
 
+pub mod client;
 pub mod daemon;
 pub mod diagnostics;
 pub mod project;

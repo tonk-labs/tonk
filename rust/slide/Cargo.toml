@@ -47,7 +47,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true, features = ["http1", "json", "tokio", "ws"] }
-clap = { workspace = true }
+clap = { workspace = true, features = ["env"] }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-credentials = { workspace = true }
