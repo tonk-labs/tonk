@@ -69,11 +69,11 @@ enum Command {
     /// learn the syntax without repo access.
     // Topic list here is hand-rolled for help text; keep in sync with `guide::TOPICS`.
     #[command(
-        after_help = "Topics: notation, views, events, workspace, all\n\nExamples:\n  slide guide\n  slide guide notation\n  slide guide views\n  slide guide all"
+        after_help = "Topics: notation, views, preview, events, workspace, all\n\nExamples:\n  slide guide\n  slide guide notation\n  slide guide views\n  slide guide preview\n  slide guide all"
     )]
     Guide {
-        /// One of: notation, views, events, workspace, all. Omit for
-        /// the index.
+        /// One of: notation, views, preview, events, workspace, all.
+        /// Omit for the index.
         #[arg(value_name = "TOPIC")]
         topic: Option<String>,
     },
@@ -306,15 +306,19 @@ enum PreviewCommand {
     /// Start the preview daemon. Open the printed URL in a browser
     /// once; the page stays connected and renders every
     /// `slide preview render` request.
-    #[command(after_help = "Examples:\n  slide preview serve --assets rust/slide-preview/dist")]
+    #[command(
+        after_help = "Examples:\n  slide preview serve\n  slide preview serve --assets rust/slide-preview/dist"
+    )]
     Serve {
         /// Port to listen on (localhost only).
         #[arg(long, default_value_t = 4774)]
         port: u16,
-        /// Directory holding the built harness page (trunk build
-        /// output of the slide-preview crate).
+        /// Override the built-in harness page with a directory of
+        /// built harness files (a `trunk build` output of the
+        /// slide-preview crate). Omit to serve the harness embedded
+        /// in this binary.
         #[arg(long, env = "SLIDE_PREVIEW_ASSETS", value_name = "DIR")]
-        assets: PathBuf,
+        assets: Option<PathBuf>,
     },
 
     /// Render a candidate template against an entity's live data

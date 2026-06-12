@@ -18,6 +18,10 @@ pub const NOTATION: &str = include_str!("../../tonk-notation/guide.md");
 /// Display templates and view resolution (`slide guide views`).
 pub const VIEWS: &str = include_str!("guide-views.md");
 
+/// Previewing candidate templates with the real renderer
+/// (`slide guide preview`).
+pub const PREVIEW: &str = include_str!("guide-preview.md");
+
 /// Effects, rules, transients, DOM-event reactivity (`slide guide events`).
 pub const EVENTS: &str = include_str!("guide-events.md");
 
@@ -25,7 +29,7 @@ pub const EVENTS: &str = include_str!("guide-events.md");
 pub const WORKSPACE: &str = include_str!("guide-workspace.md");
 
 /// Valid topic names for `slide guide <topic>`, in display order.
-pub const TOPICS: &[&str] = &["notation", "views", "events", "workspace"];
+pub const TOPICS: &[&str] = &["notation", "views", "preview", "events", "workspace"];
 
 /// The full guide: every topic concatenated. Backs `slide guide all`.
 /// `concat!` needs literal `include_str!` calls, so the paths are
@@ -34,6 +38,8 @@ pub const GUIDE: &str = concat!(
     include_str!("../../tonk-notation/guide.md"),
     "\n",
     include_str!("guide-views.md"),
+    "\n",
+    include_str!("guide-preview.md"),
     "\n",
     include_str!("guide-events.md"),
     "\n",
@@ -46,6 +52,7 @@ pub fn topic(name: &str) -> Option<&'static str> {
     match name {
         "notation" => Some(NOTATION),
         "views" => Some(VIEWS),
+        "preview" => Some(PREVIEW),
         "events" => Some(EVENTS),
         "workspace" => Some(WORKSPACE),
         _ => None,

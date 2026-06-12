@@ -25,6 +25,8 @@ Run `slide guide <topic>` — e.g. `slide guide notation`:
                 `this:`, fields, blanks, joins, built-ins.
 - `views`     — display templates, `<tonk-display>`, and how a view
                 resolves from a model.
+- `preview`   — render a candidate template with the real renderer
+                against live data before committing it as a view.
 - `events`    — interactivity: effects, rules, transient concepts, and
                 `on<event>=<concept>` DOM bindings.
 - `workspace` — building sheets for the tonk-ui workspace shell

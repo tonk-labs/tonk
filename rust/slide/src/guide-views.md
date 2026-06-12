@@ -82,6 +82,10 @@ use `slide share display` for interactive, data-bound views.
 
 ---
 
+Before committing a template, render it with the real renderer against
+live data to catch silent `{field}` failures — see `slide guide
+preview`.
+
 For interactivity (clicks, forms) see `slide guide events`. Don't
 memorize built-ins — run `slide schema` / `slide concepts` /
 `slide views` to see what's on the branch.

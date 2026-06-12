@@ -338,9 +338,10 @@ mod when_serving_the_guide {
         // consts. Pin it to the concatenation so a renamed/moved topic
         // file updated in only one place fails here.
         let expected = format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             guide::NOTATION,
             guide::VIEWS,
+            guide::PREVIEW,
             guide::EVENTS,
             guide::WORKSPACE,
         );

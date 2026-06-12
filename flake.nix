@@ -250,7 +250,18 @@
           slide = buildCrate {
             pname = "slide";
             cargoExtraArgs = "--package slide";
+            # slide's build.rs embeds the preview harness page; point it
+            # at the prebuilt Trunk output so it never runs `trunk`
+            # inside slide's own (wasm-toolchain-less) sandbox.
+            SLIDE_PREVIEW_DIST = "${slide-preview}";
             fixupPhase = darwinBinaryFixup;
+          };
+
+          # The browser harness page for `slide preview`, built with
+          # Trunk and embedded into the `slide` binary (see above).
+          slide-preview = buildTrunkCrate {
+            pname = "slide-preview";
+            trunkConfig = "./rust/slide-preview/Trunk.toml";
           };
 
           tonk-ui = buildTrunkCrate {

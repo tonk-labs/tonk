@@ -10,7 +10,10 @@
 //!   the connected browser harness page.
 //! - [`client`] — one-shot CLI client that posts a render request
 //!   to the daemon and decodes the reply.
+//! - [`assets`] — the harness page, embedded into the binary so the
+//!   daemon serves it with no `--assets` flag.
 
+pub mod assets;
 pub mod client;
 pub mod daemon;
 pub mod diagnostics;

@@ -165,20 +165,28 @@ impl Default for Daemon {
     }
 }
 
-/// Shared router state: the broker plus the harness asset root.
+/// Where the harness page is served from: the assets embedded in the
+/// binary (the default), or an on-disk directory (a `--assets`
+/// override or a dev `trunk build` output).
+#[derive(Clone)]
+pub enum AssetSource {
+    /// Files baked in at build time (see [`crate::preview::assets`]).
+    Embedded,
+    /// A filesystem directory of built harness files.
+    Dir(Arc<PathBuf>),
+}
+
+/// Shared router state: the broker plus the harness asset source.
 #[derive(Clone)]
 struct AppState {
     daemon: Daemon,
-    assets: Arc<PathBuf>,
+    assets: AssetSource,
 }
 
 /// Build the daemon's HTTP surface: the page WebSocket, the
 /// capability endpoint, and harness asset serving.
-pub fn router(daemon: Daemon, assets: PathBuf) -> Router {
-    let state = AppState {
-        daemon,
-        assets: Arc::new(assets),
-    };
+pub fn router(daemon: Daemon, assets: AssetSource) -> Router {
+    let state = AppState { daemon, assets };
     Router::new()
         .route("/ws/page", get(ws_handler))
         .route("/capability/{name}", post(capability_handler))
@@ -188,13 +196,25 @@ pub fn router(daemon: Daemon, assets: PathBuf) -> Router {
 
 /// Bind on localhost and run until interrupted. Prints the URL the
 /// human opens once; the harness page connects back over `/ws/page`.
-pub async fn serve(port: u16, assets: PathBuf) -> anyhow::Result<()> {
+///
+/// `assets` is `None` to serve the embedded harness (the usual case),
+/// or `Some(dir)` to serve a `--assets` directory instead. Serving
+/// the embedded harness errors early if this build embedded none.
+pub async fn serve(port: u16, assets: Option<PathBuf>) -> anyhow::Result<()> {
+    let source = match assets {
+        Some(dir) => AssetSource::Dir(Arc::new(dir)),
+        None if crate::preview::assets::is_embedded() => AssetSource::Embedded,
+        None => anyhow::bail!(
+            "this build embedded no harness page; pass --assets <dir> pointing at the \
+             `trunk build` output of rust/slide-preview"
+        ),
+    };
     let daemon = Daemon::new();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let bound = listener.local_addr()?.port();
     println!("slide preview daemon listening on http://127.0.0.1:{bound}");
     println!("open that URL in a browser, then run `slide preview render ...`");
-    axum::serve(listener, router(daemon, assets)).await?;
+    axum::serve(listener, router(daemon, source)).await?;
     Ok(())
 }
 
@@ -246,20 +266,24 @@ async fn capability_handler(
     }
 }
 
-/// Serve harness assets from the assets directory. `/` maps to
-/// `index.html`; path traversal is rejected.
+/// Serve the harness page. `/` maps to `index.html`; path traversal is
+/// rejected. Reads from the embedded assets or the `--assets` dir per
+/// [`AssetSource`].
 async fn asset_handler(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
     let raw = uri.path().trim_start_matches('/');
     let relative = if raw.is_empty() { "index.html" } else { raw };
     if relative.contains("..") {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     }
-    let path = state.assets.join(relative);
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => ([(header::CONTENT_TYPE, content_type(relative))], bytes).into_response(),
-        Err(_) => (
+    let bytes = match &state.assets {
+        AssetSource::Embedded => crate::preview::assets::get(relative).map(<[u8]>::to_vec),
+        AssetSource::Dir(dir) => tokio::fs::read(dir.join(relative)).await.ok(),
+    };
+    match bytes {
+        Some(bytes) => ([(header::CONTENT_TYPE, content_type(relative))], bytes).into_response(),
+        None => (
             StatusCode::NOT_FOUND,
-            format!("{relative} not found — did you `trunk build` the harness and pass --assets?"),
+            format!("{relative} not found in the harness assets"),
         )
             .into_response(),
     }
@@ -356,7 +380,7 @@ mod tests {
                 .await
                 .expect("bind ephemeral port");
             let addr = listener.local_addr().expect("local addr");
-            let app = router(daemon, assets);
+            let app = router(daemon, AssetSource::Dir(Arc::new(assets)));
             tokio::spawn(async move {
                 axum::serve(listener, app).await.expect("serve");
             });

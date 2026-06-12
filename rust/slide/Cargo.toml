@@ -62,6 +62,7 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dirs = { workspace = true }
+include_dir = { workspace = true }
 ipld-core = { workspace = true }
 lsp-types = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
