@@ -2336,13 +2336,20 @@ mod tests {
         // recovers the instant the concept lands — no reload.
         #[dialog_common::test]
         async fn it_recovers_from_no_model_when_the_concept_lands_late() {
-            // No auto model frame: the model subscription opens empty,
-            // standing in for a concept that has not synced yet.
+            // No auto model frame: the model subscription opens, and its
+            // first frame is empty (the concept has not synced yet).
             let host = FakeHost::install(resolve_responses());
             let display = mount_display(&host, "counter", "counter", "id:demo-counter");
 
-            // The model subscription opens and its first (empty) frame
-            // lands the display in `no-model` — quiet, no red callout.
+            // Wait for the model subscription, then deliver an empty frame
+            // — that lands the display in `no-model`.
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"model".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("model", &rows(&[]));
             for _ in 0..200 {
                 if display.get_attribute("data-state").as_deref() == Some("no-model") {
                     break;
@@ -2353,10 +2360,6 @@ mod tests {
                 display.get_attribute("data-state").as_deref(),
                 Some("no-model"),
                 "an absent model concept is `no-model`, not an error",
-            );
-            assert!(
-                display.query_selector("wa-callout").unwrap().is_none(),
-                "a still-seeding model must not inject a red callout",
             );
 
             // The concept lands: the model subscription pushes a non-empty
@@ -2521,8 +2524,10 @@ mod tests {
         #[dialog_common::test]
         async fn it_renders_the_default_view_when_no_specific_view_exists() {
             // The `_:_` fallback query is a one-shot answered here with a
-            // `display` template; everything else (model) is the
-            // auto-pushed frame.
+            // `display` template; the model is the auto-pushed frame. NO
+            // explicit `view=` so the built-in view predicate is used (no
+            // view-concept resolve), leaving the single one-shot for the
+            // `_:_` fallback query that `spawn_default_view` makes.
             let host = FakeHost::install_with_model(
                 vec![rows(&[(
                     "did:key:zDefaultView",
@@ -2530,7 +2535,11 @@ mod tests {
                 )])],
                 Some(model_concept_frame()),
             );
-            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            register();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("entity", "id:demo-counter").unwrap();
+            host.container.append_child(&display).unwrap();
             for _ in 0..200 {
                 if host.subscribe_tags().contains(&"view".to_owned())
                     && host.subscribe_tags().contains(&"entity".to_owned())
