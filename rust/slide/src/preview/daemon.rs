@@ -6,10 +6,17 @@
 //! The HTTP/WS surface (`router`/`serve`) is thin glue over it.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use axum::Router;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Path as AxumPath, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::preview::protocol::{CAPABILITY_RENDER_PREVIEW, PageReply, PageRequest};
@@ -158,6 +165,116 @@ impl Default for Daemon {
     }
 }
 
+/// Shared router state: the broker plus the harness asset root.
+#[derive(Clone)]
+struct AppState {
+    daemon: Daemon,
+    assets: Arc<PathBuf>,
+}
+
+/// Build the daemon's HTTP surface: the page WebSocket, the
+/// capability endpoint, and harness asset serving.
+pub fn router(daemon: Daemon, assets: PathBuf) -> Router {
+    let state = AppState {
+        daemon,
+        assets: Arc::new(assets),
+    };
+    Router::new()
+        .route("/ws/page", get(ws_handler))
+        .route("/capability/{name}", post(capability_handler))
+        .fallback(get(asset_handler))
+        .with_state(state)
+}
+
+/// Bind on localhost and run until interrupted. Prints the URL the
+/// human opens once; the harness page connects back over `/ws/page`.
+pub async fn serve(port: u16, assets: PathBuf) -> anyhow::Result<()> {
+    let daemon = Daemon::new();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let bound = listener.local_addr()?.port();
+    println!("slide preview daemon listening on http://127.0.0.1:{bound}");
+    println!("open that URL in a browser, then run `slide preview render ...`");
+    axum::serve(listener, router(daemon, assets)).await?;
+    Ok(())
+}
+
+async fn ws_handler(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
+    upgrade.on_upgrade(move |socket| page_session(state.daemon, socket))
+}
+
+/// Pump the attached page: daemon-bound requests out, page replies
+/// in. Ends when either side closes.
+async fn page_session(daemon: Daemon, mut socket: WebSocket) {
+    let mut outbound = daemon.attach_page().await;
+    loop {
+        tokio::select! {
+            request = outbound.recv() => {
+                let Some(text) = request else { break };
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            inbound = socket.recv() => {
+                match inbound {
+                    Some(Ok(Message::Text(text))) => {
+                        let _ = daemon.handle_page_message(&text).await;
+                    }
+                    Some(Ok(_)) => {} // ignore pings/binary
+                    _ => break,
+                }
+            }
+        }
+    }
+}
+
+async fn capability_handler(
+    State(state): State<AppState>,
+    AxumPath(name): AxumPath<String>,
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> Response {
+    match state.daemon.dispatch(&name, payload).await {
+        Ok(reply) => axum::Json(reply).into_response(),
+        Err(e) => {
+            let status = match &e {
+                DispatchError::UnknownCapability(_) => StatusCode::NOT_FOUND,
+                DispatchError::NoPage => StatusCode::SERVICE_UNAVAILABLE,
+                DispatchError::PageGone => StatusCode::BAD_GATEWAY,
+                DispatchError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            };
+            (status, e.to_string()).into_response()
+        }
+    }
+}
+
+/// Serve harness assets from the assets directory. `/` maps to
+/// `index.html`; path traversal is rejected.
+async fn asset_handler(State(state): State<AppState>, uri: axum::http::Uri) -> Response {
+    let raw = uri.path().trim_start_matches('/');
+    let relative = if raw.is_empty() { "index.html" } else { raw };
+    if relative.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    }
+    let path = state.assets.join(relative);
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, content_type(relative))], bytes).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            format!("{relative} not found — did you `trunk build` the harness and pass --assets?"),
+        )
+            .into_response(),
+    }
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "application/javascript",
+        Some("wasm") => "application/wasm",
+        Some("css") => "text/css",
+        _ => "application/octet-stream",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +334,61 @@ mod tests {
             let _page = daemon.attach_page().await; // connected but silent
             let result = daemon.dispatch("render-preview", serde_json::json!({})).await;
             assert!(matches!(result, Err(DispatchError::Timeout)));
+        }
+    }
+
+    mod when_serving_http {
+        use super::*;
+
+        /// Bind the router on an ephemeral port; return its base URL.
+        async fn serve_for_test(daemon: Daemon, assets: std::path::PathBuf) -> String {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .expect("bind ephemeral port");
+            let addr = listener.local_addr().expect("local addr");
+            let app = router(daemon, assets);
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.expect("serve");
+            });
+            format!("http://{addr}")
+        }
+
+        #[dialog_common::test]
+        async fn it_returns_503_when_no_page_is_connected() {
+            let assets = tempfile::tempdir().expect("tempdir");
+            let base = serve_for_test(Daemon::new(), assets.path().to_path_buf()).await;
+            let response = reqwest::Client::new()
+                .post(format!("{base}/capability/render-preview"))
+                .json(&serde_json::json!({"template": "<b>{x}</b>", "conclusions": []}))
+                .send()
+                .await
+                .expect("request reaches the daemon");
+            assert_eq!(response.status(), 503);
+            let body = response.text().await.unwrap();
+            assert!(body.contains("open"), "actionable message, got: {body}");
+        }
+
+        #[dialog_common::test]
+        async fn it_returns_404_for_an_unknown_capability() {
+            let assets = tempfile::tempdir().expect("tempdir");
+            let base = serve_for_test(Daemon::new(), assets.path().to_path_buf()).await;
+            let response = reqwest::Client::new()
+                .post(format!("{base}/capability/teleport"))
+                .json(&serde_json::json!({}))
+                .send()
+                .await
+                .expect("request reaches the daemon");
+            assert_eq!(response.status(), 404);
+        }
+
+        #[dialog_common::test]
+        async fn it_serves_the_harness_index() {
+            let assets = tempfile::tempdir().expect("tempdir");
+            std::fs::write(assets.path().join("index.html"), "<html>harness</html>").unwrap();
+            let base = serve_for_test(Daemon::new(), assets.path().to_path_buf()).await;
+            let response = reqwest::get(format!("{base}/")).await.expect("get index");
+            assert_eq!(response.status(), 200);
+            assert!(response.text().await.unwrap().contains("harness"));
         }
     }
 }
