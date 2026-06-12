@@ -6,7 +6,10 @@
 //! - [`diagnostics`] — native template footgun analysis.
 //! - [`project`] — native live-data projection that reproduces the
 //!   conclusions `<tonk-display>` subscribes to.
+//! - [`daemon`] — capability-routed broker between CLI clients and
+//!   the connected browser harness page.
 
+pub mod daemon;
 pub mod diagnostics;
 pub mod project;
 pub mod protocol;
