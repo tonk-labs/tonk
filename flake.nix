@@ -219,12 +219,12 @@
         packages = rec {
           tests-native-debug = buildTestArchive {
             name = "native-debug";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests";
+            args = "--workspace --exclude tonk-ui --exclude slide-preview --exclude tonk-core --features integration-tests";
           };
 
           tests-native-release = buildTestArchive {
             name = "native-release";
-            args = "--workspace --exclude tonk-ui --exclude tonk-core --features integration-tests --release";
+            args = "--workspace --exclude tonk-ui --exclude slide-preview --exclude tonk-core --features integration-tests --release";
           };
 
           tests-web-debug = buildTestArchive {

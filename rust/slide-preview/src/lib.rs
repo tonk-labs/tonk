@@ -13,7 +13,14 @@ use web_sys::{MessageEvent, WebSocket};
 
 /// Register the tonk-display custom elements once. Idempotent —
 /// `tonk_display::register` guards re-registration itself.
+///
+/// `tonk_display::register` only exists on wasm (it touches the
+/// custom-element registry), so the call is gated. On native the
+/// crate still type-checks — matching how the workspace's other
+/// wasm crates pass `cargo clippy` — but it is never linked or
+/// run natively.
 pub fn ensure_registered() {
+    #[cfg(target_arch = "wasm32")]
     tonk_display::register();
 }
 
