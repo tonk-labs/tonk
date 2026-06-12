@@ -537,8 +537,8 @@ pub mod tests {
 
     /// Issue `POST /api/profile/join` and return status + parsed
     /// JSON body (or raw bytes when JSON parsing fails).
-    async fn post_join(app: &Router, url: &str, name: &str) -> (StatusCode, serde_json::Value) {
-        let body = serde_json::json!({ "url": url, "name": name }).to_string();
+    async fn post_join(app: &Router, url: &str) -> (StatusCode, serde_json::Value) {
+        let body = serde_json::json!({ "url": url }).to_string();
         let response = app
             .clone()
             .oneshot(
@@ -566,7 +566,7 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
 
         let (invite_url, subject_did) = synthesize_open_invite().await;
-        let (status, body) = post_join(&app, &invite_url, "fresh-join").await;
+        let (status, body) = post_join(&app, &invite_url).await;
 
         assert_eq!(
             status,
@@ -574,10 +574,12 @@ pub mod tests {
             "expected 201 Created on first join, got {status}: {body}",
         );
         assert_eq!(body["outcome"], "joined", "expected joined outcome: {body}");
-        // The repository identifier is the subject's routing key (the
-        // DID suffix); the chosen name is only the display label.
+        // The repository identifier is the subject's routing key (the DID
+        // suffix). Join no longer takes a local name — the display name
+        // comes from the shared content branch — so the label falls back
+        // to the routing key until that branch syncs.
         assert_eq!(body["repository"]["name"], subject_did.repo_key());
-        assert_eq!(body["repository"]["label"], "fresh-join");
+        assert_eq!(body["repository"]["label"], subject_did.repo_key());
         assert_eq!(body["repository"]["subject"], subject_did.to_string());
     }
 
@@ -589,7 +591,7 @@ pub mod tests {
         let (invite_url, subject_did) = synthesize_open_invite().await;
 
         // First join creates the replica under the subject's routing key.
-        let (first_status, first_body) = post_join(&app, &invite_url, "renew-original").await;
+        let (first_status, first_body) = post_join(&app, &invite_url).await;
         assert_eq!(
             first_status,
             StatusCode::CREATED,
@@ -597,11 +599,10 @@ pub mod tests {
         );
 
         // Second join of the *same invite URL* — same subject, the
-        // recipient already has it mounted. Worker should respond
-        // with a `renewed` outcome and return the existing replica
-        // (keyed by the subject's identity), regardless of the
-        // requested name.
-        let (second_status, second_body) = post_join(&app, &invite_url, "different-name").await;
+        // recipient already has it mounted. Worker should respond with a
+        // `renewed` outcome and return the existing replica, keyed by the
+        // subject's identity.
+        let (second_status, second_body) = post_join(&app, &invite_url).await;
         assert_eq!(
             second_status,
             StatusCode::OK,
@@ -623,7 +624,7 @@ pub mod tests {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
 
-        let (status, _body) = post_join(&app, "not-a-url", "doesnt-matter").await;
+        let (status, _body) = post_join(&app, "not-a-url").await;
         assert_eq!(
             status,
             StatusCode::BAD_REQUEST,
