@@ -1,0 +1,27 @@
+[package]
+name = "slide-preview"
+description = "Browser harness page for `slide preview` — renders candidate templates with the real <tonk-view> renderer and returns the HTML over WebSocket."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+js-sys = { workspace = true }
+serde_json = { workspace = true }
+tonk-display = { workspace = true }
+wasm-bindgen = { workspace = true }
+web-sys = { workspace = true, features = [
+    "Document",
+    "Element",
+    "Location",
+    "MessageEvent",
+    "Node",
+    "WebSocket",
+    "Window",
+    "console",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+wasm-bindgen-test = { workspace = true }
