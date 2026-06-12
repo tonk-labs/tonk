@@ -33,8 +33,9 @@ pub struct Invitation {
     pub this: Entity,
     /// Reference to the repository the invite grants access to.
     pub subject: Subject,
-    /// Reference to the minting profile (the leaf delegation's
-    /// issuer).
+    /// Reference to the minting profile — the leaf delegation's
+    /// issuer on the chain as minted, before any claim redelegation
+    /// extends it.
     pub inviter: Inviter,
     /// The chain's tail audience: the ephemeral key DID for open
     /// invites, the recipient DID for scoped ones.
@@ -68,6 +69,9 @@ impl Invitation {
             .expect("delegation chains are non-empty by construction");
         let inviter = leaf.issuer().clone();
         let audience = chain.audience().clone();
+        // The canonical CID string, not the raw bytes: it keeps the
+        // hash input human-inspectable and independent of `Cid`'s
+        // serde representation.
         let delegation = leaf_cid.to_string();
         Some(Self {
             this: Entity::of(&This::Invitation {
