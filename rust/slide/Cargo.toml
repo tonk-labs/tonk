@@ -29,6 +29,10 @@ path = "tests/notation.rs"
 name = "sync"
 path = "tests/sync.rs"
 
+[[test]]
+name = "preview"
+path = "tests/preview.rs"
+
 [features]
 integration-tests = []
 
