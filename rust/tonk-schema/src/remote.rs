@@ -63,7 +63,6 @@ enum This<'a> {
 /// let replica = Replica::new(
 ///     did!("test:profile"),
 ///     did!("test:repo"),
-///     "home",
 /// );
 /// let remote = Remote::new(
 ///     &replica,
@@ -132,7 +131,7 @@ mod tests {
     use dialog_varsig::did;
 
     fn replica() -> Replica {
-        Replica::new(did!("test:p"), did!("test:r"), "home")
+        Replica::new(did!("test:p"), did!("test:r"))
     }
 
     fn addr(bytes: &[u8]) -> Address {
@@ -176,8 +175,8 @@ mod tests {
 
     #[test]
     fn different_replica_different_entity() {
-        let r1 = Replica::new(did!("test:p1"), did!("test:r"), "home");
-        let r2 = Replica::new(did!("test:p2"), did!("test:r"), "home");
+        let r1 = Replica::new(did!("test:p1"), did!("test:r"));
+        let r2 = Replica::new(did!("test:p2"), did!("test:r"));
         let a = Remote::new(&r1, did!("test:repo"), addr(b"h"), "origin");
         let b = Remote::new(&r2, did!("test:repo"), addr(b"h"), "origin");
         assert_ne!(a.this, b.this);

@@ -378,7 +378,7 @@ mod tests {
     use tower::ServiceExt;
 
     use super::{EvaluateResponse, evaluate_body};
-    use crate::router::{AppState, api_router_with_state, tests::test_state};
+    use crate::router::{AppState, RepositoryInfo, api_router_with_state, tests::test_state};
 
     /// Create the test repository via `PUT /api/repository/{name}`,
     /// then hand back the wrapped [`AppState`] so tests can call
@@ -387,29 +387,33 @@ mod tests {
     /// creates them — so the repo must exist before the first
     /// `evaluate_body` call acquires a branch on it.
     ///
-    /// Tolerates `412 Precondition Failed`: IndexedDB survives the
-    /// single-process wasm test run, so a name reused by a prior
-    /// run is already present.
-    async fn state_with_repo(repo: &str) -> AppState {
+    /// `label` is only a display name; the repository is created with a
+    /// freshly minted identity and mounted at its routing key. Returns
+    /// the state plus that key so callers address the repo by identity.
+    async fn state_with_repo(label: &str) -> (AppState, String) {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{repo}"))
+                    .uri(format!("/api/repository/{label}"))
                     .method("PUT")
                     .header("content-type", "application/json")
-                    .header("if-none-match", "*")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
         let status = response.status();
-        assert!(
-            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
-            "expected 201 or 412 from PUT /api/repository/{repo}, got {status}",
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "expected 201 from PUT /api/repository/{label}, got {status}",
         );
-        state
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        (state, info.name)
     }
 
     /// Run a document through [`evaluate_body`] against the test
@@ -480,8 +484,8 @@ rule!:
     /// reached the branch.
     #[dialog_common::test]
     async fn it_commits_a_rule_only_document() {
-        let repo = "test-evaluate-rule-only";
-        let state = state_with_repo(repo).await;
+        let (state, repo) = state_with_repo("test-evaluate-rule-only").await;
+        let repo = repo.as_str();
 
         // First document: install the concepts the rule references.
         let concepts = evaluate(&state, repo, CONCEPTS, true).await;
@@ -510,8 +514,8 @@ rule!:
     /// `person-entered → person` browser scenario.
     #[dialog_common::test]
     async fn it_fires_a_rule_on_a_transient_instance() {
-        let repo = "test-evaluate-rule-fires";
-        let state = state_with_repo(repo).await;
+        let (state, repo) = state_with_repo("test-evaluate-rule-fires").await;
+        let repo = repo.as_str();
 
         evaluate(&state, repo, CONCEPTS, true).await;
         evaluate(&state, repo, RULE, true).await;
@@ -552,8 +556,8 @@ person-entered!:
     /// zero and the revision is unchanged.
     #[dialog_common::test]
     async fn it_does_not_commit_a_query_only_document() {
-        let repo = "test-evaluate-query-only";
-        let state = state_with_repo(repo).await;
+        let (state, repo) = state_with_repo("test-evaluate-query-only").await;
+        let repo = repo.as_str();
 
         // Install a concept so the query resolves.
         evaluate(&state, repo, CONCEPTS, true).await;

@@ -218,6 +218,108 @@ command!: &space/enable-sync
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# The repository's own name, stored in its content branch so the repo
+# is self-describing — the name travels with the repository rather than
+# living only in the joining profile's replica index. The banner reads
+# it via `<tonk-display model=tonk:repository entity={subject}>`;
+# `tonk/rename-repository` edits it. The concept is pinned to
+# `tonk:repository` so the display can resolve its view, but its
+# *instances* are keyed by the replica's `subject` DID (the entity the
+# name attaches to is the subject, there is no separate `subject`
+# field). The banner falls back to "Untitled" when unset.
+concept!: &tonk/repository
+  this: tonk:repository
+  description: A shared repository which is the subject of a tonk/replica.
+  with:
+    name:
+      description: The repository's display name.
+      the: xyz.tonk.repo/name
+      cardinality: one
+      as: text
+
+# Rename the current repository. The editable banner input dispatches
+# this on commit (blur/enter); `name` reads the input's value and
+# `subject` reads the repository identity stamped on the banner so the
+# rule below knows which repository to rename. The command is transient:
+# the rule fires once and the command is swept before the durable commit.
+command!: &tonk/rename-repository
+  description: Rename the repository.
+  with:
+    subject:
+      description: The repository's subject DID, stamped on the banner element.
+      the: dom.event.current-target.dataset/subject
+      as: entity
+    name:
+      description: The new name, read from the banner input's value on commit.
+      the: dom.event.current-target/value
+      as: text
+
+# Apply the rename: assert the new `tonk/repository` name against the
+# repository entity named by the command's `subject`. Binding `subject`
+# to `?this` makes the command's subject DID the head's entity directly,
+# so the (cardinality-one) name overwrites in place on that repository.
+rule!:
+  description: Renames the repository from a rename-repository command
+  assert!: tonk/repository
+  when:
+    - assert: tonk/rename-repository
+      where:
+        subject: ?this
+        name: ?name
+
+# The repository-name banner: a borderless text input that looks like
+# plain title text until focused. It shows the current `{name}` and
+# carries the repository's identity (`{this}` is the subject DID) on
+# `data-subject` so the `tonk/rename-repository` command can read it.
+# `onchange` fires on commit (blur or Enter), reading the new value from
+# `dom.event.current-target/value`; the rename rule above then writes it
+# back. The banner mounts this via `<tonk-display model=tonk:repository
+# entity={subject}>`, so a repo with no name yet (just the seeded
+# "Untitled") still renders an editable field.
+view!:
+  this: id:tonk:repository/name-view
+  model: tonk:repository
+  display: |
+    <tonk-editable
+      class="workspace__title-input"
+      value={name}
+      data-subject={this}
+      onchange=tonk/rename-repository
+      aria-label="Repository name"
+    ></tonk-editable>
+
+# A read-only label view kind. Its `display` template lives under a
+# distinct attribute (`xyz.tonk.view/label`) so a model can carry both
+# the editable `tonk:view` banner above AND a plain-text label view
+# without the two colliding under the default `tonk:view` resolution.
+# `<tonk-display>` selects it explicitly with `view=tonk:view/label`.
+concept!: &view/label
+  this: tonk:view/label
+  description: A plain, read-only label view selected via `view=tonk:view/label`.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the label view
+      the: xyz.tonk.view/label
+      cardinality: one
+      as: text
+
+# The repository's name as plain, non-editable text. The Hub card
+# mounts this via `<tonk-display model=tonk:repository entity={subject}
+# view=tonk:view/label>` inside a per-space `<tonk-repository>` routing
+# context, so each card shows its own space's current name (read from
+# that space's `tonk/repository`, the cross-device source of truth)
+# rather than an editable banner. Falls back to nothing when unset.
+view/label!:
+  this: id:tonk:repository/label-view
+  model: tonk:repository
+  display: |
+    {name}
+
 # Tab close. Clicking a tab's close button fires the transient
 # `close-sheet` command. `sheet` is the closed sheet; `next` is the
 # neighbour the binder picked (by tab order) to fall back to when the
@@ -283,7 +385,7 @@ rule!:
     - assert: workspace/close-sheet
       where: { sheet: ?sheet, next: ?active }
     - assert: tonk/replica
-      where: { this: ?this }
+      where: { this: ?this, subject: ?subject }
     - assert: tonk/binder
       where: { this: ?this, active: ?sheet }
 
@@ -907,6 +1009,7 @@ rule!:
     - assert: tonk/replica
       where:
         this: ?this
+        subject: ?subject
 
 
 
@@ -964,7 +1067,7 @@ view/directory!:
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
         <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
-        <span class="workspace__title"><tonk-repo-name></tonk-repo-name></span>
+        <span class="workspace__title"><tonk-display entity={subject} model=tonk:repository></tonk-display></span>
         <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
@@ -1371,11 +1474,11 @@ view/directory!:
       </tonk-sheet-binder>
     </div>
 
-command!: &tonk/binder-init
-  description: Initialize a binder for the replica
+command!: &tonk/initialize
+  description: Initialize a freshly created or joined replica
   with:
     reason:
-       description: Reason to initialize the binder
+       description: Reason to initialize the replica
        as: text
        the: xyz.tonk.init/reason
 
@@ -1386,6 +1489,14 @@ concept!: &tonk/binder
     active:
       description: Currently active sheet
       the: xyz.tonk.binder/active
+      as: entity
+    subject:
+      description: >
+        The repository's subject DID. The binder and the replica share
+        an entity, so the binder carries the replica's `subject` and the
+        shell view can read `{subject}` directly to mount the
+        repository-name banner — no bridge view needed.
+      the: dialog.origin/subject
       as: entity
 
 # Tab selection: when an `activate-sheet` command fires, point the
@@ -1399,7 +1510,7 @@ rule!:
     - assert: workspace/activate-sheet
       where: { sheet: ?active }
     - assert: tonk/replica
-      where: { this: ?this }
+      where: { this: ?this, subject: ?subject }
 
 # Sets active sheet of the binder to about:blank unless
 # it already has an active sheet. This ensures that every
@@ -1407,12 +1518,13 @@ rule!:
 rule!:
   assert!: tonk/binder
   when:
-    - assert: tonk/binder-init
+    - assert: tonk/initialize
       where:
          this: ?init
     - assert: tonk/replica
       where:
          this: ?this
+         subject: ?subject
     - assert: ==
       where:
         this: ?active
@@ -1422,5 +1534,23 @@ rule!:
       where:
         this: ?this
 
-tonk/binder-init!:
+rule!:
+  assert!: tonk/repository
+  when:
+    - assert: tonk/initialize
+      where:
+         this: ?init
+    - assert: tonk/replica
+      where:
+         subject: ?this
+    - assert: ==
+      where:
+        this: ?name
+        is: Untitled
+  unless:
+    - assert: tonk/repository
+      where:
+        this: ?this
+
+tonk/initialize!:
    reason: Initialize a new tonk repository

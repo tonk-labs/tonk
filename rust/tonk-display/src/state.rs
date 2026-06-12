@@ -15,17 +15,47 @@ use wasm_bindgen::JsCast;
 #[cfg(target_arch = "wasm32")]
 use web_sys::{Element, window};
 
-/// The four states authors can target from CSS.
+/// The lifecycle states authors can target from CSS via `data-state`.
+///
+/// Every non-`Ready` state stays subscribed: none is terminal. The
+/// display reports where it is; an embedder can skin any state with a
+/// light-DOM `slot="<state>"` child, which the display projects (showing
+/// the matching one, hiding the rest — see [`update_slot_children`]). For
+/// a state with no embedder slot, the display mounts a built-in fallback:
+/// a neutral, informative callout for the recoverable absences
+/// ([`State::NoModel`] / [`State::NoView`] / [`State::NoEntity`], via
+/// [`set_absence`]) and a loud danger callout for the broken states
+/// ([`State::Malformed`] / [`State::Offline`] / [`State::Unauthorized`],
+/// via [`set_error`]). See `plan/tonk-display-states.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
-    /// Resolving concept / view / entity; no DOM yet.
+    /// A resolve query is in flight; nothing known yet.
     Loading,
-    /// Entity rendered.
+    /// Row(s) rendered by a model-specific view.
     Ready,
-    /// Entity not found / stream emitted zero rows.
+    /// No model-specific view defined; the built-in `_:_` fallback
+    /// view is rendering. Rows render, but via the generic fallback.
+    DefaultView,
+    /// The `model` concept is not defined on the branch (yet). The
+    /// model subscription stays open and recovers when it lands.
+    NoModel,
+    /// Model resolved; an explicit `view` was requested but is not
+    /// defined and there is no `_:_` fallback to fall through to.
+    NoView,
+    /// Single mode: concept + view resolved, the entity **row** is
+    /// absent (not synced yet / retracted). Stays subscribed.
+    NoEntity,
+    /// Directory mode: the collection has **zero instances**. A
+    /// legitimate steady state (an empty repo), distinct from a missing
+    /// single row. `<tonk-fallback>` keys its launchpad on this.
     Empty,
-    /// Concept lookup, view lookup, or network failure.
-    Error,
+    /// A query returned 403 — no access to this repo/branch.
+    Unauthorized,
+    /// Transport failure / the service worker is unreachable.
+    Offline,
+    /// Author/protocol error — a bad `model`/`entity` attribute or a
+    /// decode failure. Recovers when the author fixes the attribute.
+    Malformed,
 }
 
 impl State {
@@ -35,9 +65,29 @@ impl State {
         match self {
             State::Loading => "loading",
             State::Ready => "ready",
+            State::DefaultView => "default-view",
+            State::NoModel => "no-model",
+            State::NoView => "no-view",
+            State::NoEntity => "no-entity",
             State::Empty => "empty",
-            State::Error => "error",
+            State::Unauthorized => "unauthorized",
+            State::Offline => "offline",
+            State::Malformed => "malformed",
         }
+    }
+
+    /// Whether this state is a *loud* failure — it drives a danger
+    /// callout via [`set_error`]. The recoverable absences
+    /// ([`State::NoModel`], [`State::NoView`], [`State::NoEntity`]) are
+    /// not loud: they get a neutral informative fallback via
+    /// [`set_absence`] (or the embedder's slot), so a still-seeding card
+    /// reads as a quiet placeholder rather than a red error.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn is_loud(self) -> bool {
+        matches!(
+            self,
+            State::Unauthorized | State::Offline | State::Malformed
+        )
     }
 }
 
@@ -54,6 +104,20 @@ pub fn error_title(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// Classify an upstream [`ErrorKind`] into the lifecycle [`State`] it
+/// should drive. A network failure is `Offline` (transport, recovers on
+/// reconnect); a bad descriptor / decode is `Malformed` (author or
+/// protocol error). `UnknownSource` here means a query result was
+/// well-formed but empty in a context the caller treats as a hard error
+/// — it maps to `Malformed` so the recoverable absences stay distinct
+/// (those set their state directly, not through the error path).
+pub fn state_for(kind: ErrorKind) -> State {
+    match kind {
+        ErrorKind::Network => State::Offline,
+        ErrorKind::Parse | ErrorKind::Descriptor | ErrorKind::UnknownSource => State::Malformed,
+    }
+}
+
 /// Sentinel `data-` attribute we tag the injected callout with so
 /// we can find and replace it on the next state transition without
 /// disturbing whatever else the renderer mounted.
@@ -63,27 +127,51 @@ const ERROR_CALLOUT_ATTR: &str = "data-tonk-display-error";
 /// Set `data-state` on `host`. Idempotent — safe to call repeatedly
 /// with the same state.
 ///
-/// Transitioning *away* from `Error` removes any callout we
-/// previously injected.
+/// Transitioning to any non-loud state removes a callout a prior loud
+/// state injected, so a recoverable absence (`no-model` / `no-entity`)
+/// or a recovery to `ready` never leaves a stale red box behind.
 #[cfg(target_arch = "wasm32")]
 pub fn set(host: &Element, state: State) {
     let _ = host.set_attribute("data-state", state.as_str());
-    if state != State::Error {
+    if !state.is_loud() {
         remove_error_callout(host);
     }
+    // Any state set through this path (rather than `set_absence`) clears a
+    // lingering absence fallback — e.g. recovery to `ready` /
+    // `default-view` after a `no-model`, so the informative callout does
+    // not sit beside the rendered content.
+    remove_absence_callout(host);
+    // Project the matching slot child for this state and hide the rest.
+    // `ready` / `default-view` render the view output, so no slot child
+    // shows; `loading` / `empty` may have their own slot child.
+    let project = match state {
+        State::Ready | State::DefaultView => None,
+        other => Some(other),
+    };
+    update_slot_children(host, project);
 }
 
-/// Transition the host to error state and surface a
+/// Transition the host to a loud error `state` and surface a
 /// `<wa-callout variant="danger">` inside the host with the given
 /// `title` + `message`. The shape matches Web Awesome's reference
 /// danger callout: icon in the `icon` slot, a bold title line, a
 /// `<br>`, then the message body. Replaces any existing callout
 /// from a prior error so the user always sees the most recent
 /// failure.
+///
+/// `state` is the classified loud state (`offline` / `unauthorized` /
+/// `malformed`) so `data-state` and the callout stay in step.
 #[cfg(target_arch = "wasm32")]
-pub fn set_error(host: &Element, title: &str, message: &str) {
-    let _ = host.set_attribute("data-state", State::Error.as_str());
+pub fn set_error(host: &Element, state: State, title: &str, message: &str) {
+    let _ = host.set_attribute("data-state", state.as_str());
     remove_error_callout(host);
+    remove_absence_callout(host);
+    // An embedder may slot the loud state too (`slot="offline"` etc.). If
+    // it did, show that child and skip the built-in danger callout;
+    // otherwise hide every slot child and inject the callout below.
+    if update_slot_children(host, Some(state)) {
+        return;
+    }
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
@@ -133,6 +221,194 @@ fn remove_error_callout(host: &Element) {
     }
 }
 
+/// Sentinel marking the built-in *absence* fallback callout, kept
+/// distinct from [`ERROR_CALLOUT_ATTR`] so an informative absence
+/// fallback and a loud error never clobber each other's sentinel.
+#[cfg(target_arch = "wasm32")]
+const ABSENCE_CALLOUT_ATTR: &str = "data-tonk-display-absence";
+
+/// Enter a recoverable-absence `state` (`no-model` / `no-view` /
+/// `no-entity`), naming what was missing: a prose `label` plus a
+/// `notation` snippet (e.g. `{ this: did:key:… }`) rendered as
+/// syntax-highlighted, monospace `<tonk-notation>`.
+///
+/// The embedder may handle the state itself by providing a light-DOM
+/// child with `slot="<state>"` (e.g. `<span slot="no-model">…</span>`).
+/// `<tonk-display>` is light-DOM (no shadow root), so a bare `slot=`
+/// attribute would otherwise render *always*; this fn drives the
+/// projection manually — it shows the child whose `slot` matches the
+/// current state and hides every other absence/loading slot child (see
+/// [`update_slot_children`]). When the host provides *no* slot for this
+/// state, a built-in `<wa-callout variant="neutral">` is mounted naming
+/// the missing concept, so a bare `<tonk-display>` (e.g. the display
+/// route) reads as an informative message rather than a blank element.
+///
+/// Neutral, not danger: a missing concept on a still-syncing branch is
+/// expected, not an error — it recovers when the definition lands. The
+/// loud `danger` callout stays reserved for [`set_error`]
+/// (offline/unauthorized/malformed).
+#[cfg(target_arch = "wasm32")]
+pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
+    let _ = host.set_attribute("data-state", state.as_str());
+    // A prior loud error must not linger under an absence.
+    remove_error_callout(host);
+    remove_absence_callout(host);
+
+    // Show the matching slot child (if any) and hide the rest. A present
+    // matching child is the embedder opting out of the built-in fallback.
+    let has_slot = update_slot_children(host, Some(state));
+    if has_slot {
+        return;
+    }
+
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(callout) = document.create_element("wa-callout") else {
+        return;
+    };
+    // A missing model/view concept is a config/authoring problem the
+    // display can't render around → `danger`. A missing *instance*
+    // (`no-entity`) is expected and recoverable (the concept + view
+    // resolved fine) → `neutral`. The variant carries the severity; the
+    // icon is the same info glyph for every absence.
+    let variant = match state {
+        State::NoModel | State::NoView => "danger",
+        _ => "neutral",
+    };
+    let _ = callout.set_attribute("variant", variant);
+    let _ = callout.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+    if let Ok(icon) = document.create_element("wa-icon") {
+        let _ = icon.set_attribute("slot", "icon");
+        let _ = icon.set_attribute("name", "circle-info");
+        let _ = callout.append_child(&icon);
+    }
+    // The callout is just the message strip — a short title like "Model
+    // not found". It carries no query detail itself.
+    let label_text = document.create_text_node(label);
+    let _ = callout.append_child(&label_text);
+    let _ = host.append_child(&callout);
+
+    // The query that matched nothing is a SEPARATE sibling, not part of
+    // the callout: a styleable `<div class="tonk-display-query">` whose
+    // visibility CSS owns (hidden by default, revealed on hover / focus /
+    // a dev toggle — the embedder decides). The query renders through
+    // `<tonk-notation>` (syntax-highlighted, monospace — the same renderer
+    // the app uses for entity dumps), which reads its source from a
+    // `<script type="text/tonk-notation">` child.
+    let notation_body: Option<Element> = match (
+        document.create_element("tonk-notation"),
+        document.create_element("script"),
+    ) {
+        (Ok(notation_el), Ok(script)) => {
+            let _ = script.set_attribute("type", "text/tonk-notation");
+            script.set_text_content(Some(notation));
+            let _ = notation_el.append_child(&script);
+            Some(notation_el)
+        }
+        _ => match document.create_element("code") {
+            Ok(code) => {
+                code.set_text_content(Some(notation));
+                Some(code)
+            }
+            Err(_) => None,
+        },
+    };
+    if let Some(body) = notation_body
+        && let Ok(query) = document.create_element("div")
+    {
+        let _ = query.set_attribute("class", "tonk-display-query");
+        // Same sentinel so `remove_absence_callout` clears the query
+        // sibling alongside the callout on the next transition.
+        let _ = query.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+        let _ = query.append_child(&body);
+        let _ = host.append_child(&query);
+    }
+}
+
+/// Project the host's `slot="…"` children manually (no shadow root):
+/// show the child whose `slot` equals `current`'s `data-state` value,
+/// hide every other slot child. Returns whether a child matching
+/// `current` was found (so the caller knows the embedder handled the
+/// state). `current = None` hides every slot child (used when entering a
+/// rendered state — `ready` / `default-view` — where the view output,
+/// not a slot, is the content).
+///
+/// Only `data-state`-named slots are touched, so this never disturbs a
+/// view template's own `slot=` usage for unrelated states.
+#[cfg(target_arch = "wasm32")]
+pub fn update_slot_children(host: &Element, current: Option<State>) -> bool {
+    let Ok(children) = host.query_selector_all("[slot]") else {
+        return false;
+    };
+    let target = current.map(State::as_str);
+    let mut matched = false;
+    for i in 0..children.length() {
+        let Some(node) = children.item(i) else {
+            continue;
+        };
+        let Some(el) = node.dyn_ref::<Element>() else {
+            continue;
+        };
+        // Only manage slots whose name is a lifecycle state; leave a view
+        // template's own slot children (e.g. Web Awesome part slots)
+        // untouched.
+        let Some(slot) = el.get_attribute("slot") else {
+            continue;
+        };
+        if !is_state_slot(&slot) {
+            continue;
+        }
+        // Direct children of the host only — a nested display's slots are
+        // that display's to manage.
+        if el.parent_element().as_ref() != Some(host) {
+            continue;
+        }
+        let show = target == Some(slot.as_str());
+        if show {
+            let _ = el.remove_attribute("hidden");
+            matched = true;
+        } else {
+            let _ = el.set_attribute("hidden", "");
+        }
+    }
+    matched
+}
+
+/// True if `slot` names a lifecycle [`State`] (so it is a slot
+/// `<tonk-display>` manages, not a view template's own slot).
+#[cfg(target_arch = "wasm32")]
+fn is_state_slot(slot: &str) -> bool {
+    matches!(
+        slot,
+        "loading"
+            | "ready"
+            | "default-view"
+            | "no-model"
+            | "no-view"
+            | "no-entity"
+            | "empty"
+            | "unauthorized"
+            | "offline"
+            | "malformed"
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn remove_absence_callout(host: &Element) {
+    let selector = format!("[{ABSENCE_CALLOUT_ATTR}]");
+    let Ok(found) = host.query_selector_all(&selector) else {
+        return;
+    };
+    for i in 0..found.length() {
+        if let Some(node) = found.item(i)
+            && let Some(el) = node.dyn_ref::<Element>()
+        {
+            el.remove();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,8 +426,37 @@ mod tests {
         // every loading/error skin downstream.
         assert_eq!(State::Loading.as_str(), "loading");
         assert_eq!(State::Ready.as_str(), "ready");
+        assert_eq!(State::DefaultView.as_str(), "default-view");
+        assert_eq!(State::NoModel.as_str(), "no-model");
+        assert_eq!(State::NoView.as_str(), "no-view");
+        assert_eq!(State::NoEntity.as_str(), "no-entity");
         assert_eq!(State::Empty.as_str(), "empty");
-        assert_eq!(State::Error.as_str(), "error");
+        assert_eq!(State::Unauthorized.as_str(), "unauthorized");
+        assert_eq!(State::Offline.as_str(), "offline");
+        assert_eq!(State::Malformed.as_str(), "malformed");
+    }
+
+    #[test]
+    fn it_keeps_recoverable_absences_quiet_and_breakage_loud() {
+        // The recoverable absences are skinned by embedder CSS off
+        // `data-state`, not a forced callout, so a still-seeding card
+        // never flashes a red box. The genuinely-broken states stay loud.
+        assert!(!State::Loading.is_loud());
+        assert!(!State::NoModel.is_loud());
+        assert!(!State::NoView.is_loud());
+        assert!(!State::NoEntity.is_loud());
+        assert!(!State::DefaultView.is_loud());
+        assert!(State::Malformed.is_loud());
+        assert!(State::Offline.is_loud());
+        assert!(State::Unauthorized.is_loud());
+    }
+
+    #[test]
+    fn it_classifies_error_kinds_into_loud_states() {
+        assert_eq!(state_for(ErrorKind::Network), State::Offline);
+        assert_eq!(state_for(ErrorKind::Parse), State::Malformed);
+        assert_eq!(state_for(ErrorKind::Descriptor), State::Malformed);
+        assert_eq!(state_for(ErrorKind::UnknownSource), State::Malformed);
     }
 
     #[test]
@@ -190,12 +495,220 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
+    fn it_does_not_inject_a_callout_for_a_recoverable_absence() {
+        // `no-model` is a still-seeding card, not an error: the
+        // embedder skins it from `data-state` (CSS placeholder). The
+        // display must not force a red callout into the host.
+        let host = host();
+        set(&host, State::NoModel);
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-model")
+        );
+        assert!(
+            host.query_selector("wa-callout").unwrap().is_none(),
+            "a recoverable absence must not inject a callout",
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_clears_a_prior_callout_when_recovering_to_a_quiet_state() {
+        // A loud failure injects a callout; a later recovery to a
+        // quiet state (e.g. the concept lands → no-model→no-entity, or
+        // straight to ready) must clear it so no red box latches.
+        let host = host();
+        set_error(&host, State::Offline, "Connection failed", "boom");
+        assert!(host.query_selector("wa-callout").unwrap().is_some());
+
+        set(&host, State::NoEntity);
+        assert!(
+            host.query_selector("wa-callout").unwrap().is_none(),
+            "recovering to a quiet state must remove the callout",
+        );
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-entity")
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_injects_a_danger_fallback_naming_the_missing_model() {
+        // A bare `<tonk-display>` (no slot child) with a missing model
+        // must NOT render blank — it shows a callout with the query that
+        // matched nothing. A missing model concept is a config error the
+        // display can't render around → `danger`.
+        let host = host();
+        set_absence(&host, State::NoModel, "Not found", "concept:\n  this: test");
+
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-model")
+        );
+        let callout = host
+            .query_selector("wa-callout")
+            .unwrap()
+            .expect("a bare absence must inject a fallback callout");
+        assert_eq!(
+            callout.get_attribute("variant").as_deref(),
+            Some("danger"),
+            "a missing model is a danger, not informative",
+        );
+        assert_eq!(
+            callout.text_content().unwrap().trim(),
+            "Not found",
+            "the callout strip carries just the message, not the query",
+        );
+        // The query is a SEPARATE sibling — a styleable `.tonk-display-query`
+        // wrapping `<tonk-notation>` — so CSS owns its visibility.
+        let query = host
+            .query_selector(".tonk-display-query")
+            .unwrap()
+            .expect("the query is a separate styleable sibling");
+        let script = query
+            .query_selector("tonk-notation script[type=\"text/tonk-notation\"]")
+            .unwrap()
+            .expect("notation source script present");
+        assert!(script.text_content().unwrap().contains("this: test"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_injects_a_danger_fallback_for_a_missing_view() {
+        // `no-view` (an explicit `view=` whose concept is absent) is also
+        // a config error → `danger`, naming the missing view query.
+        let host = host();
+        set_absence(
+            &host,
+            State::NoView,
+            "Not found",
+            "view:\n  this: tonk:view/x\n  model: person",
+        );
+        assert_eq!(host.get_attribute("data-state").as_deref(), Some("no-view"));
+        let callout = host
+            .query_selector("wa-callout")
+            .unwrap()
+            .expect("no-view injects a fallback callout");
+        assert_eq!(callout.get_attribute("variant").as_deref(), Some("danger"));
+        // The missing view is named in the separate query sibling.
+        let query = host
+            .query_selector(".tonk-display-query")
+            .unwrap()
+            .expect("no-view emits a query sibling");
+        assert!(
+            query.text_content().unwrap().contains("tonk:view/x"),
+            "names the missing view",
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_injects_a_neutral_fallback_for_a_missing_entity() {
+        // `no-entity` is expected and recoverable (concept + view
+        // resolved, the instance just isn't there) → `neutral`.
+        let host = host();
+        set_absence(
+            &host,
+            State::NoEntity,
+            "Not found",
+            "person:\n  this: did:key:zX",
+        );
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("no-entity")
+        );
+        let callout = host
+            .query_selector("wa-callout")
+            .unwrap()
+            .expect("no-entity injects a fallback callout");
+        assert_eq!(
+            callout.get_attribute("variant").as_deref(),
+            Some("neutral"),
+            "a missing instance is informative, not a danger",
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_shows_the_slot_child_and_suppresses_the_fallback() {
+        // When the embedder slots its own content for the state, the
+        // built-in fallback is suppressed and the slotted child shows.
+        let host = host();
+        let document = web_sys::window().unwrap().document().unwrap();
+        let mine = document.create_element("span").unwrap();
+        mine.set_attribute("slot", "no-model").unwrap();
+        mine.set_attribute("hidden", "").unwrap();
+        mine.set_text_content(Some("Untitled"));
+        host.append_child(&mine).unwrap();
+
+        set_absence(&host, State::NoModel, "No matching concept ", "{ this: x }");
+
+        assert!(
+            host.query_selector("wa-callout").unwrap().is_none(),
+            "a provided slot suppresses the built-in fallback",
+        );
+        assert!(
+            !mine.has_attribute("hidden"),
+            "the matching slot child is shown",
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
+    fn it_projects_only_the_matching_slot_child() {
+        // The display projects manually (light DOM, no shadow root): only
+        // the child whose `slot` matches the current state is visible.
+        let host = host();
+        let document = web_sys::window().unwrap().document().unwrap();
+        for state in ["no-model", "no-entity", "loading"] {
+            let s = document.create_element("span").unwrap();
+            s.set_attribute("slot", state).unwrap();
+            s.set_attribute("hidden", "").unwrap();
+            s.set_text_content(Some(state));
+            host.append_child(&s).unwrap();
+        }
+
+        set_absence(
+            &host,
+            State::NoEntity,
+            "Nothing found for ",
+            "x: { this: y }",
+        );
+
+        let shown = host
+            .query_selector("[slot=\"no-entity\"]")
+            .unwrap()
+            .unwrap();
+        assert!(!shown.has_attribute("hidden"), "matching slot is shown");
+        let other = host.query_selector("[slot=\"no-model\"]").unwrap().unwrap();
+        assert!(
+            other.has_attribute("hidden"),
+            "non-matching slot stays hidden",
+        );
+
+        // Recovery to `ready` hides every slot child.
+        set(&host, State::Ready);
+        assert!(
+            host.query_selector("[slot=\"no-entity\"]")
+                .unwrap()
+                .unwrap()
+                .has_attribute("hidden"),
+            "ready hides all slot children",
+        );
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[dialog_common::test]
     fn it_renders_the_danger_callout_on_set_error() {
         let host = host();
-        set_error(&host, "Not found", "no entity matched");
+        set_error(&host, State::Malformed, "Not found", "no entity matched");
 
-        // `data-state` flips to "error".
-        assert_eq!(host.get_attribute("data-state").as_deref(), Some("error"));
+        // `data-state` flips to the loud state we passed.
+        assert_eq!(
+            host.get_attribute("data-state").as_deref(),
+            Some("malformed")
+        );
 
         // Exactly one callout, marked danger, carrying our sentinel.
         let callout = host
@@ -235,8 +748,8 @@ mod tests {
     #[dialog_common::test]
     fn it_replaces_a_prior_callout_when_set_error_runs_again() {
         let host = host();
-        set_error(&host, "Not found", "first");
-        set_error(&host, "Connection failed", "second");
+        set_error(&host, State::Malformed, "Not found", "first");
+        set_error(&host, State::Offline, "Connection failed", "second");
 
         // Only one callout should remain — the most recent.
         let count = host
@@ -258,11 +771,11 @@ mod tests {
     #[dialog_common::test]
     fn it_removes_the_callout_when_transitioning_away_from_error() {
         let host = host();
-        set_error(&host, "Not found", "boom");
+        set_error(&host, State::Offline, "Connection failed", "boom");
         assert!(host.query_selector("wa-callout").unwrap().is_some());
 
         set(&host, State::Loading);
-        // The callout is gone now that we're no longer in Error.
+        // The callout is gone now that we're no longer in a loud state.
         assert!(host.query_selector("wa-callout").unwrap().is_none());
         assert_eq!(host.get_attribute("data-state").as_deref(), Some("loading"));
     }

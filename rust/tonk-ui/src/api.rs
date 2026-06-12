@@ -118,23 +118,71 @@ pub async fn profile_repository() -> Result<Option<RepositoryInfo>, TonkUiError>
     }
 }
 
-/// Ensures the default repository exists via
-/// `PUT /api/repository/{name}` with `If-None-Match: *`, and
-/// returns the hosting document's service-worker Client ID as
-/// reported by the worker in the `X-Tonk-Client-Id` response
-/// header.
+/// Ensures the profile has at least one space, then returns the
+/// hosting document's service-worker Client ID (the `X-Tonk-Client-Id`
+/// response header the worker stamps on every response).
 ///
-/// Succeeds whether the repo was just created (`201`) or
-/// already existed (`412`) — header access works on both, so
-/// the client id is available without touching the response
-/// body.
+/// Idempotency is keyed on profile *state*, not on a fixed repository
+/// address: a repository's identity is a freshly minted `did:key`, so
+/// there is no stable name to `If-None-Match` against. We `GET
+/// /api/profile` (which also carries the client-id header) and only
+/// create a space when the profile lists zero. The new space is created
+/// without a fixed identifier — the worker mints the routing key — and
+/// labeled [`DEFAULT_REPO`], a display name only.
 ///
-/// The body wires up an `origin` remote pointing at the UCAN access
-/// service (resolved against the current window origin) and sets
+/// The create body wires up an `origin` remote pointing at the UCAN
+/// access service (resolved against the current window origin) and sets
 /// the default branch to track `origin/{branch}`.
 pub async fn init() -> Result<String, TonkUiError> {
     tonk_host::ready::wait().await;
-    log!("Ensuring repository '{}' exists...", DEFAULT_REPO);
+    log!("Ensuring the profile has at least one space...");
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/api/profile", origin()))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "GET /api/profile returned {}: {}",
+            status, text
+        )));
+    }
+
+    // The client id rides on every worker response, including this GET.
+    let client_id = response
+        .headers()
+        .get("x-tonk-client-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            TonkUiError::ApiError(
+                "GET /api/profile response missing X-Tonk-Client-Id header".to_string(),
+            )
+        })?;
+
+    let profile = response
+        .json::<ProfileInfo>()
+        .await
+        .map_err(into_api_error)?;
+
+    // Profile already has a space → nothing to create. The user lands on
+    // the Hub and picks one.
+    if !profile.space.is_empty() {
+        log!(
+            "Profile already has {} space(s); skipping default create",
+            profile.space.len()
+        );
+        return Ok(client_id);
+    }
+
+    log!(
+        "Profile has no spaces; creating the default '{}'",
+        DEFAULT_REPO
+    );
 
     let service_url = format!("{}{}", origin(), ACCESS_SERVICE_PATH);
     // `RemoteConfiguration::new` accepts anything that converts
@@ -154,25 +202,17 @@ pub async fn init() -> Result<String, TonkUiError> {
             BranchConfiguration::default().upstream("origin", DEFAULT_BRANCH),
         );
 
+    // The path segment is only the display label; the worker mints the
+    // routing key and returns it in the `RepositoryInfo`.
     let response = reqwest::Client::new()
         .put(format!("{}/api/repository/{}", origin(), DEFAULT_REPO))
-        .header("If-None-Match", "*")
         .json(&configuration)
         .send()
         .await
         .map_err(into_api_error)?;
 
     match response.status() {
-        StatusCode::CREATED | StatusCode::PRECONDITION_FAILED => response
-            .headers()
-            .get("x-tonk-client-id")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
-            .ok_or_else(|| {
-                TonkUiError::ApiError(
-                    "PUT /api/repository response missing X-Tonk-Client-Id header".to_string(),
-                )
-            }),
+        StatusCode::CREATED => Ok(client_id),
         status => {
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
@@ -185,10 +225,10 @@ pub async fn init() -> Result<String, TonkUiError> {
 
 /// Fetches the profile record at `GET /api/profile`.
 ///
-/// Returns the profile's `RepositoryInfo` and a `{ name -> subject }`
-/// map of every space this profile owns. The sidebar uses this to
-/// render a tile per space without fetching each repository
-/// individually.
+/// Returns the profile's `RepositoryInfo` and a list of every space this
+/// profile owns (each with its routing key, display label, and subject
+/// DID). The sidebar uses this to render a tile per space without
+/// fetching each repository individually.
 pub async fn profile() -> Result<ProfileInfo, TonkUiError> {
     tonk_host::ready::wait().await;
     log!("Fetching profile...");
@@ -533,13 +573,12 @@ impl From<TonkUiError> for JoinError {
 /// explicit refetch.
 ///
 /// [`ProfileResource`]: crate::components::ProfileResource
-pub async fn join(url: &str, name: &str) -> Result<JoinResponse, JoinError> {
+pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
     tonk_host::ready::wait().await;
-    log!("Joining invite as '{}'...", name);
+    log!("Joining invite...");
 
     let body = JoinRequest {
         url: url.to_string(),
-        name: name.to_string(),
     };
 
     let response = reqwest::Client::new()

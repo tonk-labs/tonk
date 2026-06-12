@@ -20,15 +20,13 @@
 # `<tonk-repository profile>` so the user can pick which space to open.
 concept!: &space
   this: tonk:space
-  description: A repository this profile can open, by its local name.
+  description: A repository this profile can open.
   with:
-    name:
-      description: Local name of the space, used in its `/space/{name}` URL
-      the: xyz.tonk.replica/name
-      cardinality: one
-      as: text
     subject:
-      description: The repository's subject DID (stable identity)
+      description: >
+        The repository's subject DID (its stable identity). The Hub card
+        links to `/space/{subject}`; the route reads the routing key as
+        the suffix after the last `:`.
       the: xyz.tonk.replica/subject
       cardinality: one
       as: entity
@@ -54,9 +52,13 @@ concept!: &space
 # does the work (record the replica, create + seed the repository, flip
 # the status). `name` reads from the form on submit:
 # `event.currentTarget.elements.name.value` — the `<wa-input name="name">`
-# inside `<form onsubmit=space/create>`. `prevent-default` stops the
-# page from reloading. The command is transient: it fires the handler
-# once and is swept before the durable commit.
+# inside `<form onsubmit=space/create>`. `prevent-default` stops the page
+# from reloading: `method="dialog"` does NOT work here because the form is
+# slotted into `<wa-dialog>` and the native `<dialog>` lives across the
+# shadow boundary, so the form has no native-dialog ancestor in its own
+# tree and the browser falls back to a GET submit. The command is
+# transient: it fires the handler once and is swept before the durable
+# commit.
 command!: &space/create
   description: A request to create a new space by the name typed into the form.
   with:
@@ -101,8 +103,16 @@ concept!: &view/directory
       as: text
 
 # The Hub directory view: the picker shown at `/`. One card per space,
-# linking to its `/space/{name}` page. Rendered as a directory (no
-# entity) over the `space` model on the profile meta branch.
+# linking to its `/space/{subject}` page. A space is identified by its
+# subject did:key; the route reads the routing key as the suffix after
+# the last `:`, so `{subject}` (a full did:key) resolves to that key.
+# The card's name is NOT read from this profile-side record — it is read
+# from the listed space's OWN repository: a nested `<tonk-repository
+# name={subject}>` opens that space's routing context and a
+# `<tonk-display model=tonk:repository view=tonk:view/label>` inside it
+# shows the repo's current name (the cross-device source of truth).
+# Rendered as a directory (no entity) over the `space` model on the
+# profile meta branch.
 view/directory!:
   this: id:tonk:space/directory
   model: space
@@ -121,11 +131,11 @@ view/directory!:
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="space-create-form" data-dialog="close">Create</wa-button>
       </wa-dialog>
-      <a class="hub-card" href="/space/{name}" data-kind={kind} data-status={status} with={this}>
+      <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
-          <span class="hub-card__name">{name}</span>
-          <span class="hub-card__url">/space/{name}</span>
+          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-model" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
       </a>

@@ -334,15 +334,15 @@ mod integration_tests {
         Ok(())
     }
 
-    /// Land on `/join?...&name=<chosen>#<seed>` carrying an
-    /// audience-open invite, click Join, and verify the
-    /// recipient lands on `/space/<chosen>` with a banner whose
-    /// title attribute matches the invited subject DID.
+    /// Land on `/join?...#<seed>` carrying an audience-open invite and
+    /// verify the recipient **auto-joins** (no name form) and lands on
+    /// `/`, with a Hub card for the joined subject.
     ///
-    /// Sigils across users converge because the local replica's
-    /// DID equals the invited subject DID — the banner's `title`
-    /// attribute (which `repository_view` writes from
-    /// `info.subject`) is the cleanest invariant to assert.
+    /// The join no longer asks for a local name — a joined space's name
+    /// comes from the shared repository — so the recipient is dropped on
+    /// the Hub, where the new space's card is routed by the subject's
+    /// did:key. Sigils across users converge because the local replica's
+    /// DID equals the invited subject DID.
     #[dialog_common::test]
     async fn it_joins_an_open_invite_via_the_join_route(
         test_environment: TestEnvironment,
@@ -350,7 +350,6 @@ mod integration_tests {
         const SUBJECT_SEED: [u8; 32] = [11u8; 32];
         const ISSUER_SEED: [u8; 32] = [12u8; 32];
         const EPHEMERAL_SEED: [u8; 32] = [13u8; 32];
-        const LOCAL_NAME: &str = "shared-pictures";
 
         let subject_did = Ed25519Signer::import(&SUBJECT_SEED).await?.did();
         let ephemeral_did = Ed25519Signer::import(&EPHEMERAL_SEED).await?.did();
@@ -375,83 +374,44 @@ mod integration_tests {
         )
         .await?;
         let join_base = format!("{}join", test_environment.tonk_web);
-        let mut invite_url = invite.to_url(&join_base)?;
-        // Inviter's suggested name; the recipient's `/join` form
-        // pre-fills with this. Avoid `Url::query_pairs_mut`
-        // here because that re-orders existing params and we
-        // want to leave the rest of the invite URL untouched —
-        // appending is safe since we know `to_url` already
-        // emitted at least one query parameter.
-        invite_url.push_str(&format!("&name={}", LOCAL_NAME));
-        // The fragment in `to_url`'s output sits at the end of
-        // the URL string; the `&name=` we just spliced lands
-        // *before* the `#` because `to_url` reorders during
-        // round-trip. Sanity: re-parse to put the params/fragment
-        // back in the right slots.
-        let invite_url = url::Url::parse(&invite_url)?.to_string();
+        let invite_url = invite.to_url(&join_base)?;
 
         let driver = test_environment.driver().await?;
         driver.goto(&invite_url).await?;
 
-        // Click "Join" once the form is interactive.
-        // `wa-button` renders an internal anchor/button inside its
-        // shadow root — dispatch the click via JS for the same
-        // reason the profile-tile test does (the host element is
-        // not directly interactable from WebDriver).
-        driver
-            .query(By::Css(r#"wa-button[type="submit"]"#))
-            .first()
-            .await?;
-        driver
-            .execute(
-                r#"document.querySelector('wa-button[type="submit"]').click();"#,
-                vec![],
-            )
-            .await?;
-
-        // Wait for the redirect to land on `/space/<LOCAL_NAME>`.
-        // Polling on the URL avoids racing the post-claim
-        // navigation. The destination is the bare display route, so
-        // there's no banner or `<wa-page>` chrome to inspect once
-        // we arrive — the redirect itself is the load-bearing
-        // invariant (the local replica was created under the
-        // requested name with the subject's verifier credential).
+        // No form, no click: the page auto-joins, pulls, then redirects
+        // *into* the space — `/space/<subject-did>`. Polling on the URL
+        // avoids racing the post-claim navigation. The redirect is the
+        // load-bearing invariant: the local replica was created with the
+        // subject's verifier credential and routes by its did:key.
+        let expected = format!("/space/{subject}", subject = subject_did.as_str());
         let mut current_url = String::new();
-        let mut found = false;
+        let mut landed = false;
         for _ in 0..100 {
             current_url = driver
                 .current_url()
                 .await
                 .map(|u| u.to_string())
                 .unwrap_or_default();
-            if current_url.contains(&format!("/space/{}", LOCAL_NAME)) {
-                found = true;
+            if url::Url::parse(&current_url)
+                .map(|u| u.path() == expected)
+                .unwrap_or(false)
+            {
+                landed = true;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         assert!(
-            found,
-            "join never redirected to /space/{LOCAL_NAME}; last URL: {current_url}",
+            landed,
+            "join never redirected into the space at {expected}; last URL: {current_url}",
         );
 
-        // The bare display route mounts for the joined space,
-        // naming the local replica.
-        let repository = driver
+        // The bare display route mounts for the joined space.
+        driver
             .query(By::Css("tonk-repository.display-route"))
             .first()
             .await?;
-        let url = driver.current_url().await?;
-        assert_eq!(
-            url.path(),
-            format!("/space/{LOCAL_NAME}"),
-            "expected URL path to be /space/{LOCAL_NAME}, got: {url}",
-        );
-        assert_eq!(
-            repository.attr("name").await?.unwrap_or_default(),
-            LOCAL_NAME,
-            "expected the display route to name the joined replica",
-        );
 
         driver.quit().await?;
         Ok(())

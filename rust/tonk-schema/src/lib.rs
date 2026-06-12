@@ -66,6 +66,9 @@ pub use sync::*;
 pub mod replica;
 pub use replica::*;
 
+pub mod repository;
+pub use repository::*;
+
 pub mod command;
 
 pub mod branch;

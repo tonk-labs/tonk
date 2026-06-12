@@ -33,6 +33,7 @@ use tonk_host::consumer::{self as host_consumer, Subscription as HostSubscriptio
 use tonk_host::error::{ErrorDetail, ErrorKind};
 use tonk_host::install_depth_annotator;
 use tonk_schema::conclusion::Conclusion;
+use tonk_schema::query::Query;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
@@ -89,6 +90,38 @@ struct Inner {
     /// covers the cross-`Inner` race where a custom element
     /// detaches and re-attaches.
     generation: u64,
+    /// Cancels the phase-1 **model** subscription on disconnect /
+    /// attribute change. The model resolve is a live subscription (not
+    /// a one-shot) so a concept seeded *after* the element mounts
+    /// pushes a frame and the display recovers from `no-model` without
+    /// a reload. Each model frame (re)starts the downstream view +
+    /// entity flow via `handle_model_frame`.
+    model_sub: Option<HostSubscription>,
+    /// Bumped every time a model frame (re)starts the downstream flow.
+    /// A downstream async chain captures this at spawn and bails if a
+    /// newer model frame has superseded it, mirroring `generation` but
+    /// scoped to the model→downstream restart so a late model frame
+    /// doesn't race an in-flight downstream setup.
+    downstream_generation: u64,
+    /// The `(model_entity, descriptor_json)` the current downstream flow
+    /// was started for, recorded **synchronously** in `handle_model_frame`
+    /// before the async `start_downstream` spawns. The model subscription
+    /// re-pushes a frame on every branch revision (including unrelated
+    /// data writes); this lets the handler skip restarting the downstream
+    /// flow when the resolved concept is unchanged, so a plain write
+    /// updates the entity rows in place instead of tearing the whole host
+    /// down and remounting. Must be set here (not in `start_downstream`'s
+    /// tail) so back-to-back model frames during one write don't all see
+    /// a stale value and each trigger a remount.
+    ///
+    /// The descriptor is stored **parsed** (`serde_json::Value`), not as
+    /// the raw `source` string: the worker re-serializes the descriptor
+    /// with non-deterministic object-key ordering, so two byte-different
+    /// strings can describe the identical concept. Comparing parsed
+    /// values is order-independent, so an unrelated branch write (which
+    /// re-pushes the same concept with shuffled keys) no longer counts as
+    /// a change and the list is not torn down.
+    resolved_model: Option<(String, serde_json::Value)>,
     /// Cancels the view (or views-for-model) subscription on
     /// disconnect / attribute change. Dropping the handle calls
     /// the host's `cancel()` and dispatches `tonk-unsubscribe`.
@@ -170,6 +203,9 @@ impl Inner {
         Self {
             disposed: false,
             generation: 0,
+            model_sub: None,
+            downstream_generation: 0,
+            resolved_model: None,
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
@@ -192,8 +228,13 @@ impl Inner {
     fn abort_all(&mut self) {
         // Dropping the subscriptions cancels via the host and
         // dispatches `tonk-unsubscribe`.
+        self.model_sub.take();
         self.view_sub.take();
         self.entity_sub.take();
+        // Forget the resolved concept so a restart (attribute change /
+        // reconnect) re-resolves and remounts even if the new model
+        // happens to resolve to the same concept.
+        self.resolved_model = None;
         // Drop the delegate — its impl removes listeners from the
         // host on Drop.
         self.delegate.take();
@@ -387,6 +428,7 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
         }
     };
     match tag.as_deref() {
+        Some("model") => handle_model_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
         Some("entity") => handle_entity_frame(host, state, conclusions),
         _ => {
@@ -465,17 +507,61 @@ fn fail(host: &Element, state: &Rc<RefCell<Inner>>, err: ErrorDetail) {
         let mut inner = state.borrow_mut();
         clear_host(host, &mut inner);
     }
-    state::set_error(host, state::error_title(err.kind), &err.message);
+    state::set_error(
+        host,
+        loud_state(&err),
+        state::error_title(err.kind),
+        &err.message,
+    );
     dispatch_error(host, err);
 }
 
-/// Empty the host's DOM and forget every mounted slide / chrome.
+/// Classify an `ErrorDetail` into the loud state it drives. A network
+/// error is `offline` unless its message carries an HTTP 403 (the
+/// worker formats access denials as `HTTP 403: …`, see
+/// `tonk-host/src/http.rs`), in which case it is `unauthorized` — a
+/// real wire signal, not a guess.
+fn loud_state(err: &ErrorDetail) -> State {
+    if err.kind == ErrorKind::Network && err.message.contains("HTTP 403") {
+        State::Unauthorized
+    } else {
+        state::state_for(err.kind)
+    }
+}
+
+/// Empty the host's rendered output and forget every mounted slide /
+/// chrome — but **preserve the embedder's state-slot children**
+/// (`[slot]`), which are authored input, not rendered output. Without
+/// this guard `set_inner_html("")` would delete the embedder's
+/// `slot="no-model"` etc. on a flow restart, so a later absence state
+/// couldn't find them and would fall back to the built-in callout even
+/// though the embedder provided content.
 fn clear_host(host: &Element, inner: &mut Inner) {
     inner.slides.clear();
     inner.carousel = None;
     inner.notation_source = None;
     inner.notation_item = None;
-    host.set_inner_html("");
+    remove_rendered_children(host);
+}
+
+/// Remove every direct child of `host` that the renderer mounted,
+/// keeping the embedder's authored `[slot]` children. Replaces a blanket
+/// `set_inner_html("")` so state-slot content survives a restart.
+fn remove_rendered_children(host: &Element) {
+    // Walk the element children once, collecting the rendered ones (no
+    // `slot` attribute) before removing — removing mid-walk would break
+    // the sibling chain.
+    let mut to_remove: Vec<Element> = Vec::new();
+    let mut cursor = host.first_element_child();
+    while let Some(child) = cursor {
+        cursor = child.next_element_sibling();
+        if !child.has_attribute("slot") {
+            to_remove.push(child);
+        }
+    }
+    for child in to_remove {
+        child.remove();
+    }
 }
 
 /// Bail if this flow's generation has been superseded or the
@@ -493,6 +579,31 @@ fn check_generation(state: &Rc<RefCell<Inner>>, generation: u64) -> Result<(), E
     }
 }
 
+/// Like [`check_generation`] but for the downstream flow restarted by
+/// each model frame: bail if the element was disposed or a newer model
+/// frame bumped `downstream_generation` while this chain awaited.
+fn check_downstream(
+    state: &Rc<RefCell<Inner>>,
+    downstream_generation: u64,
+) -> Result<(), ErrorDetail> {
+    let s = state.borrow();
+    if s.disposed || s.downstream_generation != downstream_generation {
+        Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Phase 1: validate the attributes and open the **model**
+/// subscription. The model resolve is a live subscription (not a
+/// one-shot) so a concept seeded *after* the element mounts pushes a
+/// frame and the display leaves `no-model` without a reload. Each
+/// model frame routes to `handle_model_frame`, which (re)starts the
+/// downstream view + entity flow ([`start_downstream`]).
+///
+/// Attribute errors (bad `entity`, missing `model`, carousel) surface
+/// here as `malformed`; an *absent* model concept is not an error —
+/// it is the `no-model` steady state the subscription recovers from.
 async fn run(
     host: &Element,
     state: Rc<RefCell<Inner>>,
@@ -510,27 +621,12 @@ async fn run(
             "`entity` must be an entity URI (contain `:`)",
         ));
     }
-    let directory = entity.is_none();
 
     // The `view` attribute names a view *concept* (named or URI);
     // when omitted, the built-in `view` concept (`tonk:view`) is
     // used. The `model` attribute names the subject's model concept
     // and constrains which view row to render.
     let view = host.get_attribute("view").filter(|s| !s.is_empty());
-
-    // `model` is required: it both projects the subject's fields and
-    // constrains the view query.
-    let model = host
-        .get_attribute("model")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            ErrorDetail::new(
-                ErrorKind::Descriptor,
-                "<tonk-display> requires a `model` attribute",
-            )
-        })?;
-    let (model_entity, descriptor_json) = resolve_model(host, &model).await?;
-    check_generation(&state, generation)?;
 
     // `view="about:blank"` is the carousel sentinel: enumerate every
     // view defined for the model. This is the two-step flow from the
@@ -544,6 +640,57 @@ async fn run(
             "carousel view (view=\"about:blank\") is not implemented yet",
         ));
     }
+
+    // `model` is required: it both projects the subject's fields and
+    // constrains the view query.
+    let model = host
+        .get_attribute("model")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ErrorDetail::new(
+                ErrorKind::Descriptor,
+                "<tonk-display> requires a `model` attribute",
+            )
+        })?;
+
+    // Resolve the model name to its concept URI (one-shot — a bookmark
+    // name rarely lands late; an attribute change restarts the flow),
+    // then *subscribe* to its phase-1 concept query so a concept seeded
+    // after mount pushes a frame. The empty frame is `no-model`, not a
+    // hard error — `handle_model_frame` keeps the subscription and
+    // starts the downstream flow once the concept lands.
+    let model_q = resolve_model_query(host, &model).await?;
+    check_generation(&state, generation)?;
+    let model_body = to_body(&model_q)?;
+    let model_tag = JsValue::from_str("model");
+    let model_sub = host_consumer::subscribe(host, &model_body, Some(&model_tag))?;
+    {
+        let mut s = state.borrow_mut();
+        if s.generation != generation {
+            return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
+        }
+        s.model_sub = Some(model_sub);
+    }
+    Ok(())
+}
+
+/// Phase 2: with the model concept resolved (`model_entity` +
+/// `descriptor_json`), open the view + entity subscriptions. Invoked
+/// from `handle_model_frame` on every non-empty model frame, so a
+/// branch revision that (re)defines the model — or a view that lands
+/// later — re-runs this against the freshest descriptor. Tears down
+/// the prior view/entity subscriptions first and bumps
+/// `downstream_generation` so a stale chain bails.
+async fn start_downstream(
+    host: &Element,
+    state: Rc<RefCell<Inner>>,
+    model_entity: String,
+    descriptor_json: String,
+    downstream_generation: u64,
+) -> Result<(), ErrorDetail> {
+    let entity = host.get_attribute("entity").filter(|s| !s.is_empty());
+    let directory = entity.is_none();
+    let view = host.get_attribute("view").filter(|s| !s.is_empty());
 
     // Resolve the view *concept*'s descriptor — the query predicate.
     // When `view` is omitted, the built-in `view` concept's
@@ -560,11 +707,34 @@ async fn run(
         None if directory => directory_view_predicate(),
         None => view_predicate(),
         Some(view_ref) => {
-            let (_, view_descriptor_json) = resolve_model(host, view_ref).await?;
-            check_generation(&state, generation)?;
-            serde_json::from_str(&view_descriptor_json).map_err(|e| {
-                ErrorDetail::new(ErrorKind::Descriptor, format!("view descriptor: {e}"))
-            })?
+            // An explicit `view` whose concept is not on the branch is
+            // `no-view`, not a hard error: a recoverable absence the
+            // model subscription leaves once the view concept lands and
+            // the next model frame re-runs this. Other resolve failures
+            // still propagate.
+            match resolve_model(host, view_ref).await {
+                Ok((_, view_descriptor_json)) => {
+                    check_downstream(&state, downstream_generation)?;
+                    serde_json::from_str(&view_descriptor_json).map_err(|e| {
+                        ErrorDetail::new(ErrorKind::Descriptor, format!("view descriptor: {e}"))
+                    })?
+                }
+                Err(err) if err.kind == ErrorKind::UnknownSource => {
+                    let model = host.get_attribute("model").unwrap_or_default();
+                    state::set_absence(
+                        host,
+                        State::NoView,
+                        "View not found",
+                        &format!(
+                            r#"view:
+  this: {view_ref}
+  model: {model}"#
+                        ),
+                    );
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            }
         }
     };
     let view_q = view_by_model_query(&view_descriptor, &model_entity).map_err(|e| {
@@ -581,6 +751,16 @@ async fn run(
     .map_err(|e| ErrorDetail::new(ErrorKind::Descriptor, format!("entity query: {e}")))?;
     let entity_body = to_body(&entity_q)?;
 
+    // A fresh model frame re-runs the downstream flow: tear down the
+    // prior view/entity subscriptions and any mounted slide so we
+    // remount cleanly against the freshest descriptor.
+    {
+        let mut s = state.borrow_mut();
+        s.view_sub.take();
+        s.entity_sub.take();
+        clear_host(host, &mut s);
+    }
+
     // The view query is model-constrained, so it resolves to one
     // presentation. Mount in single mode.
     ensure_carousel(host, &state, true);
@@ -590,19 +770,17 @@ async fn run(
     // (or `handle_entity_frame`) by `opts.tag`.
     let view_tag = JsValue::from_str("view");
     let view_sub = host_consumer::subscribe(host, &view_body, Some(&view_tag))?;
-    if check_generation(&state, generation).is_err() {
-        return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
-    }
+    check_downstream(&state, downstream_generation)?;
 
     let entity_tag = JsValue::from_str("entity");
     let entity_sub = host_consumer::subscribe(host, &entity_body, Some(&entity_tag))?;
 
     {
         let mut s = state.borrow_mut();
-        // Final generation check — if a newer flow ran between
-        // opening the subscriptions, drop them so we don't orphan
-        // them (the newer flow's subscriptions are already stored).
-        if s.generation != generation {
+        // Final generation check — if a newer model frame restarted the
+        // downstream flow between opening the subscriptions, drop them
+        // so we don't orphan them (the newer flow's are already stored).
+        if s.downstream_generation != downstream_generation {
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
         s.view_sub = Some(view_sub);
@@ -654,7 +832,7 @@ fn ipld_str(value: Option<&Ipld>) -> Option<&str> {
 }
 
 /// Serialize a wire query to the JS body the host bridge expects.
-fn to_body(query: &tonk_schema::query::Query) -> Result<JsValue, ErrorDetail> {
+fn to_body(query: &Query) -> Result<JsValue, ErrorDetail> {
     serde_wasm_bindgen::to_value(query)
         .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("query body: {e}")))
 }
@@ -689,6 +867,20 @@ fn first_field(value: &JsValue, field: &str) -> Result<Option<String>, ErrorDeta
 /// `dialog.meta/name`, so a direct `name`-filtered Phase-1 would miss
 /// it. A value that is already a URI skips name resolution.
 async fn resolve_model(host: &Element, source: &str) -> Result<(String, String), ErrorDetail> {
+    let phase1_q = resolve_model_query(host, source).await?;
+    let result = host_consumer::query(host, &to_body(&phase1_q)?).await?;
+    extract_phase1(&result)
+}
+
+/// Build the phase-1 concept query for `source` *without executing it*.
+///
+/// Splits the front half of [`resolve_model`]: a bare bookmark name is
+/// resolved through the Name concept (`id:<name>` →
+/// `dialog.name/referent`) into a concept URI (a one-shot `query`),
+/// then `phase1_query` is built from the resolved `ParsedSource`. The
+/// caller decides whether to run it once or open a subscription on it —
+/// the model link subscribes so a late-seeded concept recovers.
+async fn resolve_model_query(host: &Element, source: &str) -> Result<Query, ErrorDetail> {
     let parsed: ParsedSource = parse_source(source);
     let parsed = if parsed.is_uri() {
         parsed
@@ -706,9 +898,104 @@ async fn resolve_model(host: &Element, source: &str) -> Result<(String, String),
             None => parsed,
         }
     };
-    let phase1_q = phase1_query(&parsed);
-    let result = host_consumer::query(host, &to_body(&phase1_q)?).await?;
-    extract_phase1(&result)
+    Ok(phase1_query(&parsed))
+}
+
+/// Route a `"model"` subscription frame. The model resolve is a live
+/// subscription, so this fires on every branch revision touching the
+/// concept-of-concepts view:
+///
+/// - **empty frame** → `no-model` (the concept is not on the branch
+///   *yet*). No teardown; the subscription stays open and recovers the
+///   instant the concept lands. This is the fix for the latched red box
+///   on a still-seeding fresh space.
+/// - **resolved row** → bump `downstream_generation` and (re)start the
+///   downstream view + entity flow against the freshest descriptor, so
+///   a model (re)definition or a late-landing view is picked up.
+fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+    let resolved = extract_phase1_conclusion(conclusions);
+    let Some((model_entity, descriptor_json)) = resolved else {
+        // The concept is not on the branch yet. Stay subscribed; the
+        // embedder may skin `no-model` via a `slot="no-model"` child,
+        // otherwise the built-in fallback names the missing model.
+        let model = host.get_attribute("model").unwrap_or_default();
+        state::set_absence(
+            host,
+            State::NoModel,
+            "Model not found",
+            &format!(
+                r#"concept:
+  this: {model}"#
+            ),
+        );
+        return;
+    };
+    let downstream_generation = {
+        let mut s = state.borrow_mut();
+        if s.disposed {
+            return;
+        }
+        // The model subscription re-pushes on every branch revision,
+        // including plain entity-data writes. Restart the downstream
+        // flow only when the *resolved concept* actually changed —
+        // otherwise an unrelated write would tear down and remount the
+        // view/entity subscriptions and wipe the rendered rows. The
+        // entity subscription already streams data updates in place.
+        //
+        // The comparison is against `resolved_model`, set synchronously
+        // here (not `start_downstream`'s async tail), so a burst of model
+        // frames during one write doesn't each see a stale value and
+        // remount.
+        //
+        // Compare the descriptor as a *parsed* value: the worker emits
+        // the same concept's `source` with non-deterministic key ordering
+        // between revisions, so a raw-string compare reports a spurious
+        // change on every unrelated write and tears the list down. Parsed
+        // equality is order-independent. A descriptor that fails to parse
+        // falls back to the raw string wrapped as a JSON string, so it
+        // still compares.
+        let next_descriptor = serde_json::from_str::<serde_json::Value>(&descriptor_json)
+            .unwrap_or_else(|_| serde_json::Value::String(descriptor_json.clone()));
+        let next = (model_entity.clone(), next_descriptor);
+        if s.resolved_model.as_ref() == Some(&next) {
+            return;
+        }
+        s.resolved_model = Some(next);
+        s.downstream_generation = s.downstream_generation.wrapping_add(1);
+        s.downstream_generation
+    };
+    let host = host.clone();
+    let state = state.clone();
+    spawn_local(async move {
+        if let Err(err) = start_downstream(
+            &host,
+            state.clone(),
+            model_entity,
+            descriptor_json,
+            downstream_generation,
+        )
+        .await
+        {
+            // Only surface if still current — a stale downstream chain's
+            // failure (a `check_downstream` "superseded", or a real
+            // error a newer model frame has since replaced) shouldn't
+            // overwrite a healthy newer flow's state. The generation
+            // guard covers both: a superseded chain fails the check.
+            if state.borrow().downstream_generation == downstream_generation {
+                fail(&host, &state, err);
+            }
+        }
+    });
+}
+
+/// Decode a phase-1 subscription frame (already-deserialized
+/// `Vec<Conclusion>`) into `(model_entity, descriptor_json)`. Returns
+/// `None` for an empty frame or a row missing the `source` descriptor —
+/// both are the `no-model` steady state, not a hard error.
+fn extract_phase1_conclusion(conclusions: Vec<Conclusion>) -> Option<(String, String)> {
+    let first = conclusions.into_iter().next()?;
+    let source = ipld_str(first.fields.get("source")).map(str::to_owned)?;
+    Some((first.this, source))
 }
 
 /// Key each incoming view-frame conclusion by its view entity
@@ -922,7 +1209,11 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
             }
             s.slides.insert("__default__".to_owned(), slide);
             s.default_slide = true;
-            state::set(&host, State::Ready);
+            // Rendered through the `_:_` default view, not a
+            // model-specific one — observably `default-view` so an
+            // embedder can tell "rendered the way I intended" from
+            // "rendered through the generic fallback".
+            state::set(&host, State::DefaultView);
         }
     });
 }
@@ -968,7 +1259,9 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
         },
     );
     s.default_slide = true;
-    state::set(host, State::Ready);
+    // The notation dump is the ultimate `_:_` fallback — also
+    // `default-view`, not a model-specific render.
+    state::set(host, State::DefaultView);
 }
 
 /// Diff a portal-mode view frame. Single-mode only, so at most one
@@ -1200,30 +1493,48 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
 
     if frame.is_empty() {
         let mut s = state.borrow_mut();
-        let directory = s.directory;
         s.last_frame = Vec::new();
-        // An empty frame means no rows matched. With a specified
-        // `entity` (single subject) that is a missing entity — a clear
-        // not-found error, so tear the host down. Without `entity` (a
-        // collection) it is simply zero instances: keep the mounted view
-        // and render the empty frame through it, so the template's chrome
-        // (e.g. a fallback region) stays put and the repeat clears its
-        // rows. The same slide then reconciles in place when an instance
-        // later lands — no teardown, no reload.
+        // An empty frame means no rows matched — zero instances in a
+        // collection, or a single entity whose row has not landed yet
+        // (e.g. its concept was just seeded and is still syncing). Either
+        // way this is non-destructive: keep the mounted view and its
+        // subscription, render the empty frame through the slides so the
+        // template's chrome stays put and the repeat clears its rows. The
+        // same slides reconcile in place when a row later lands — no
+        // teardown, no reload, no latched error. The embedder decides
+        // what an empty display reads as (a placeholder, nothing) off
+        // `data-state`; a single-entity display does NOT hard-fail on a
+        // missing entity, so a row that arrives after init still renders.
+        //
+        // Directory mode (`this` unbound) signals `empty` — a legitimate
+        // zero-instance collection that `<tonk-fallback>` keys its
+        // launchpad on. Single mode signals `no-entity` — that one row
+        // is absent.
+        let directory = s.directory;
+        let empty = serialize_conclusions(&[]);
+        for slide in s.slides.values() {
+            call_render(&slide.view_el, &empty);
+        }
+        drop(s);
         if directory {
-            let empty = serialize_conclusions(&[]);
-            for slide in s.slides.values() {
-                call_render(&slide.view_el, &empty);
-            }
-            drop(s);
+            // Directory mode: a legitimate zero-instance collection that
+            // `<tonk-fallback>` keys its launchpad on. Not an absence to
+            // call out — the view's own chrome renders the empty state.
             state::set(host, State::Empty);
         } else {
-            clear_host(host, &mut s);
-            drop(s);
-            fail(
+            // Single mode: the one entity's row is absent. The embedder
+            // may slot `no-entity`; otherwise show the instance query that
+            // matched nothing, as notation keyed by the model concept.
+            let model = host.get_attribute("model").unwrap_or_default();
+            let entity = host.get_attribute("entity").unwrap_or_default();
+            state::set_absence(
                 host,
-                state,
-                ErrorDetail::new(ErrorKind::UnknownSource, "entity not found"),
+                State::NoEntity,
+                "Not found",
+                &format!(
+                    r#"{model}:
+  this: {entity}"#
+                ),
             );
         }
         return;
@@ -1248,7 +1559,15 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
     }
     update_notation(host, &s, &first);
     if !s.slides.is_empty() || s.notation_source.is_some() {
-        state::set(host, State::Ready);
+        // A default (`_:_`) slide renders through the generic fallback,
+        // so the display is `default-view`, not `ready`. A frame with a
+        // model-specific slide is genuinely `ready`.
+        let rendered = if s.default_slide {
+            State::DefaultView
+        } else {
+            State::Ready
+        };
+        state::set(host, rendered);
     }
     dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
 }
@@ -1554,6 +1873,73 @@ mod tests {
         assert!(slide_keys(rows).is_empty());
     }
 
+    // An empty model frame is the `no-model` steady state, not an error:
+    // `extract_phase1_conclusion` returns `None` so the handler keeps the
+    // subscription and waits for the concept.
+    #[dialog_common::test]
+    fn it_reads_no_model_from_an_empty_phase1_frame() {
+        assert!(extract_phase1_conclusion(Vec::new()).is_none());
+    }
+
+    // A resolved phase-1 row yields the model entity + descriptor.
+    #[dialog_common::test]
+    fn it_reads_the_model_entity_and_descriptor_from_a_phase1_row() {
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "source".to_owned(),
+            Ipld::String("{\"with\":{}}".to_owned()),
+        );
+        let row = Conclusion {
+            this: "did:key:zModel".to_owned(),
+            fields,
+        };
+        let resolved = extract_phase1_conclusion(vec![row]).expect("a row resolves");
+        assert_eq!(resolved.0, "did:key:zModel");
+        assert_eq!(resolved.1, "{\"with\":{}}");
+    }
+
+    // A row missing the `source` descriptor is treated as unresolved
+    // (`no-model`), not a half-resolved model.
+    #[dialog_common::test]
+    fn it_treats_a_phase1_row_without_source_as_no_model() {
+        let row = Conclusion {
+            this: "did:key:zModel".to_owned(),
+            fields: BTreeMap::new(),
+        };
+        assert!(extract_phase1_conclusion(vec![row]).is_none());
+    }
+
+    // `loud_state` classifies an error into the loud state that drives
+    // the danger callout. A network error carrying an HTTP 403 is
+    // `unauthorized` (a real wire signal — the worker formats access
+    // denials as `HTTP 403: …`); any other network error is `offline`;
+    // parse/descriptor errors are `malformed`.
+    #[dialog_common::test]
+    fn it_maps_a_403_network_error_to_unauthorized() {
+        let err = ErrorDetail::new(ErrorKind::Network, "HTTP 403: forbidden");
+        assert_eq!(loud_state(&err), State::Unauthorized);
+    }
+
+    #[dialog_common::test]
+    fn it_maps_a_non_403_network_error_to_offline() {
+        let err = ErrorDetail::new(ErrorKind::Network, "HTTP 500: boom");
+        assert_eq!(loud_state(&err), State::Offline);
+        let dropped = ErrorDetail::new(ErrorKind::Network, "connection reset");
+        assert_eq!(loud_state(&dropped), State::Offline);
+    }
+
+    #[dialog_common::test]
+    fn it_maps_parse_and_descriptor_errors_to_malformed() {
+        assert_eq!(
+            loud_state(&ErrorDetail::new(ErrorKind::Parse, "bad json")),
+            State::Malformed,
+        );
+        assert_eq!(
+            loud_state(&ErrorDetail::new(ErrorKind::Descriptor, "bad attr")),
+            State::Malformed,
+        );
+    }
+
     // --- Display hook: routing a `text/html` view to a portal ---
     //
     // Driven through the real `<tonk-display>` flow against a fake host
@@ -1631,10 +2017,26 @@ mod tests {
             subs: BTreeMap<String, Element>,
             /// Tags of every subscription opened.
             subscribe_tags: Vec<String>,
+            /// The phase-1 model concept frame, auto-pushed the moment
+            /// the `"model"` subscription opens — the model resolve is a
+            /// live subscription now, not a one-shot. `None` makes the
+            /// model subscription stay empty (the `no-model` state).
+            model_frame: Option<JsValue>,
         }
 
         impl FakeHost {
             fn install(query_responses: Vec<JsValue>) -> FakeHost {
+                Self::install_with_model(query_responses, None)
+            }
+
+            /// Like [`install`] but with an explicit model concept frame
+            /// auto-pushed on the `"model"` subscription. `None` leaves
+            /// the model subscription empty so the display sits in
+            /// `no-model`.
+            fn install_with_model(
+                query_responses: Vec<JsValue>,
+                model_frame: Option<JsValue>,
+            ) -> FakeHost {
                 let container = document().create_element("div").unwrap();
                 document().body().unwrap().append_child(&container).unwrap();
                 let state = Rc::new(RefCell::new(FakeState {
@@ -1642,6 +2044,7 @@ mod tests {
                     answered: 0,
                     subs: BTreeMap::new(),
                     subscribe_tags: Vec::new(),
+                    model_frame,
                 }));
                 let mut listeners = Vec::new();
 
@@ -1681,15 +2084,34 @@ mod tests {
                                 .and_then(|v| v.as_string())
                                 .unwrap_or_default();
                             let consumer: Element = ev.target().unwrap().dyn_into().unwrap();
-                            {
+                            let model_frame = {
                                 let mut s = state.borrow_mut();
                                 s.subscribe_tags.push(tag.clone());
-                                s.subs.insert(tag, consumer);
-                            }
+                                s.subs.insert(tag.clone(), consumer.clone());
+                                // Auto-push the model concept frame as
+                                // soon as the model subscription opens, so
+                                // the downstream flow starts the way a live
+                                // host would on the first revision.
+                                if tag == "model" {
+                                    s.model_frame.clone()
+                                } else {
+                                    None
+                                }
+                            };
                             let sub = Object::new();
                             let noop = Function::new_no_args("");
                             let _ = Reflect::set(&sub, &"cancel".into(), &noop);
                             let _ = Reflect::set(&detail, &"subscription".into(), &sub);
+                            if let Some(frame) = model_frame {
+                                let opts = Object::new();
+                                let _ =
+                                    Reflect::set(&opts, &"tag".into(), &JsValue::from_str("model"));
+                                if let Ok(reset) = Reflect::get(&consumer, &"reset".into())
+                                    && let Ok(reset) = reset.dyn_into::<Function>()
+                                {
+                                    let _ = reset.call2(&consumer, &frame, &opts);
+                                }
+                            }
                         }) as Box<dyn FnMut(CustomEvent)>);
                     let _ = container.add_event_listener_with_callback(
                         "tonk-subscribe",
@@ -1720,6 +2142,24 @@ mod tests {
             fn subscribe_tags(&self) -> Vec<String> {
                 self.state.borrow().subscribe_tags.clone()
             }
+
+            /// Deliver a transport `error` frame on the `tag`
+            /// subscription — drives the consumer's `__tonkError` path
+            /// (`on_error` → `fail`). `message` is read by `on_error` from
+            /// `detail.message`.
+            fn push_error(&self, tag: &str, message: &str) {
+                let consumer = self.state.borrow().subs.get(tag).cloned();
+                let Some(consumer) = consumer else { return };
+                let payload = Object::new();
+                let _ = Reflect::set(&payload, &"message".into(), &JsValue::from_str(message));
+                let opts = Object::new();
+                let _ = Reflect::set(&opts, &"tag".into(), &JsValue::from_str(tag));
+                if let Ok(error) = Reflect::get(&consumer, &"error".into())
+                    && let Ok(error) = error.dyn_into::<Function>()
+                {
+                    let _ = error.call2(&consumer, &payload, &opts);
+                }
+            }
         }
 
         fn mount_display(host: &FakeHost, view: &str, model: &str, entity: &str) -> Element {
@@ -1748,17 +2188,39 @@ mod tests {
         fn name_row(entity: &str) -> JsValue {
             rows(&[("did:key:zName", &[("entity", entity)])])
         }
+        // The model concept resolves through a live `"model"`
+        // subscription now, so its phase-1 row is auto-pushed as the
+        // model frame (see `install_with_model`) rather than answered as
+        // a one-shot. The remaining one-shots are the model *name*
+        // lookup and the view name + concept lookups (the explicit
+        // `view=` resolve is still a one-shot inside `start_downstream`).
+        fn model_concept_frame() -> JsValue {
+            rows(&[(
+                "did:key:zModel",
+                &[(
+                    "source",
+                    r#"{"with":{"count":{"the":"counter/count","as":"UnsignedInteger","cardinality":"one"}}}"#,
+                )],
+            )])
+        }
+        /// The same concept descriptor as [`model_concept_frame`] but
+        /// with the object keys in a *different order* — what the worker
+        /// actually emits between revisions (its descriptor serialization
+        /// is not key-order-stable). Byte-different, semantically
+        /// identical: the model-frame guard must treat it as unchanged.
+        fn model_concept_frame_reordered() -> JsValue {
+            rows(&[(
+                "did:key:zModel",
+                &[(
+                    "source",
+                    r#"{"with":{"count":{"cardinality":"one","as":"UnsignedInteger","the":"counter/count"}}}"#,
+                )],
+            )])
+        }
         fn resolve_responses() -> Vec<JsValue> {
             vec![
                 // model name `counter` → did:key:zModel
                 name_row("did:key:zModel"),
-                rows(&[(
-                    "did:key:zModel",
-                    &[(
-                        "source",
-                        r#"{"with":{"count":{"the":"counter/count","as":"UnsignedInteger","cardinality":"one"}}}"#,
-                    )],
-                )]),
                 // view name `counter` → did:key:zViewConcept
                 name_row("did:key:zViewConcept"),
                 rows(&[(
@@ -1773,12 +2235,14 @@ mod tests {
 
         #[dialog_common::test]
         async fn it_mounts_a_portal_for_a_text_html_view_frame() {
-            let host = FakeHost::install(resolve_responses());
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
             let display = mount_display(&host, "counter", "counter", "id:demo-counter");
 
-            // Wait for the flow to open its subscriptions.
+            // Wait for the flow to open its subscriptions (model, then
+            // view + entity once the model frame resolves).
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -1821,21 +2285,24 @@ mod tests {
                 display.query_selector("tonk-view").unwrap().is_none(),
                 "a portal view renders no inline <tonk-view>",
             );
-            // Both subscriptions open; the entity sub just no-ops against
-            // the portal (a `<tonk-portal>` exposes no `draw`).
+            // The model subscription opens first, then the view + entity
+            // subs once the model frame resolves; the entity sub just
+            // no-ops against the portal (a `<tonk-portal>` exposes no
+            // `draw`).
             assert_eq!(
                 host.subscribe_tags(),
-                vec!["view".to_owned(), "entity".to_owned()],
+                vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
             );
         }
 
         #[dialog_common::test]
         async fn it_renders_inline_and_subscribes_to_the_entity_when_no_type() {
-            let host = FakeHost::install(resolve_responses());
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
             let display = mount_display(&host, "counter", "counter", "id:demo-counter");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -1857,8 +2324,307 @@ mod tests {
             tags.sort();
             assert_eq!(
                 tags,
-                vec!["entity".to_owned(), "view".to_owned()],
-                "inline mode opens both the view and entity subscriptions",
+                vec!["entity".to_owned(), "model".to_owned(), "view".to_owned()],
+                "inline mode opens the model, view, and entity subscriptions",
+            );
+        }
+
+        // The fix for the latched red box on a still-seeding space: when
+        // the model concept is not on the branch yet, the model resolve
+        // is an *empty subscription frame*, not a hard error. The display
+        // sits in `no-model` with no callout, stays subscribed, and
+        // recovers the instant the concept lands — no reload.
+        #[dialog_common::test]
+        async fn it_recovers_from_no_model_when_the_concept_lands_late() {
+            // No auto model frame: the model subscription opens, and its
+            // first frame is empty (the concept has not synced yet).
+            let host = FakeHost::install(resolve_responses());
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+
+            // Wait for the model subscription, then deliver an empty frame
+            // — that lands the display in `no-model`.
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"model".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame("model", &rows(&[]));
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("no-model") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-model"),
+                "an absent model concept is `no-model`, not an error",
+            );
+
+            // The concept lands: the model subscription pushes a non-empty
+            // frame, the downstream view + entity subs open, and a view +
+            // entity frame render the row live.
+            host.push_frame("model", &model_concept_frame());
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "view",
+                &rows(&[("did:key:zView", &[("display", "<p>{count}</p>")])]),
+            );
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "7")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the display recovers and renders once the concept lands",
+            );
+            assert!(
+                display.query_selector("wa-callout").unwrap().is_none(),
+                "recovery leaves no latched callout behind",
+            );
+        }
+
+        // A bad `entity` attribute (not a URI) is an author error: `run`
+        // rejects it before opening any subscription, so the display goes
+        // `malformed` with a loud danger callout.
+        #[dialog_common::test]
+        async fn it_goes_malformed_on_a_bad_entity_attribute() {
+            let host = FakeHost::install(Vec::new());
+            // `entity` must be a URI (contain `:`); `oops` is not.
+            let display = mount_display(&host, "counter", "counter", "oops");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("malformed") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("malformed"),
+                "a non-URI entity attribute is a malformed author error",
+            );
+            let callout = display
+                .query_selector("wa-callout")
+                .unwrap()
+                .expect("malformed surfaces a danger callout");
+            assert_eq!(callout.get_attribute("variant").as_deref(), Some("danger"));
+        }
+
+        // A transport `error` frame on a live subscription drives the
+        // display to `offline` with a loud danger callout.
+        #[dialog_common::test]
+        async fn it_goes_offline_on_a_subscription_error() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_error("entity", "HTTP 500: upstream gone");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("offline") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("offline"),
+                "a transport error is `offline`",
+            );
+            assert_eq!(
+                display
+                    .query_selector("wa-callout")
+                    .unwrap()
+                    .expect("offline surfaces a callout")
+                    .get_attribute("variant")
+                    .as_deref(),
+                Some("danger"),
+            );
+        }
+
+        // An HTTP 403 on a subscription is access denial, not a transient
+        // transport failure: it drives `unauthorized`, not `offline`.
+        #[dialog_common::test]
+        async fn it_goes_unauthorized_on_a_403() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"entity".to_owned()) {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_error("entity", "HTTP 403: forbidden");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("unauthorized") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("unauthorized"),
+                "an HTTP 403 is `unauthorized`, not `offline`",
+            );
+        }
+
+        // An explicit `view=` whose concept is absent on the branch is the
+        // recoverable `no-view` state — a danger fallback naming the
+        // missing view (a missing view concept is a config error, like a
+        // missing model). The model resolves (auto-pushed frame); the view
+        // name + concept one-shots return empty, so the view resolve fails
+        // with `UnknownSource`.
+        #[dialog_common::test]
+        async fn it_goes_no_view_when_an_explicit_view_is_absent() {
+            // One-shot responses: the model name lookup resolves; the view
+            // name lookup + view concept lookup are left empty (default
+            // empty array), so the explicit view never resolves.
+            let host = FakeHost::install_with_model(
+                vec![name_row("did:key:zModel")],
+                Some(model_concept_frame()),
+            );
+            let display = mount_display(&host, "missing-view", "counter", "id:demo-counter");
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("no-view") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("no-view"),
+                "an absent explicit view is `no-view`",
+            );
+            let callout = display
+                .query_selector("wa-callout")
+                .unwrap()
+                .expect("no-view names the missing view");
+            assert_eq!(
+                callout.get_attribute("variant").as_deref(),
+                Some("danger"),
+                "a missing view concept is a danger, like a missing model",
+            );
+        }
+
+        // When the model has no model-specific view but a `_:_` default
+        // view is seeded, the empty view frame falls back to it: the
+        // display renders the default presentation and reports
+        // `default-view` (observably distinct from `ready`).
+        #[dialog_common::test]
+        async fn it_renders_the_default_view_when_no_specific_view_exists() {
+            // One-shots in dispatch order: the bare model name `counter`
+            // resolves through the Name concept first, THEN the `_:_`
+            // fallback query `spawn_default_view` makes returns a `display`
+            // template. The model concept itself is the auto-pushed frame,
+            // and NO explicit `view=` is set so the built-in view predicate
+            // is used (no extra view-concept resolve one-shot).
+            let host = FakeHost::install_with_model(
+                vec![
+                    name_row("did:key:zModel"),
+                    rows(&[("did:key:zDefaultView", &[("display", "<p>{count}</p>")])]),
+                ],
+                Some(model_concept_frame()),
+            );
+            register();
+            let display = document().create_element("tonk-display").unwrap();
+            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("entity", "id:demo-counter").unwrap();
+            host.container.append_child(&display).unwrap();
+            for _ in 0..200 {
+                if host.subscribe_tags().contains(&"view".to_owned())
+                    && host.subscribe_tags().contains(&"entity".to_owned())
+                {
+                    break;
+                }
+                sleep(5).await;
+            }
+            // The model-specific view subscription pushes an EMPTY frame —
+            // no view for this model — which triggers the `_:_` fallback.
+            host.push_frame("view", &rows(&[]));
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "9")])]));
+
+            assert!(
+                await_selector(&display, "tonk-view").await.is_some(),
+                "the `_:_` default view renders when no specific view exists",
+            );
+            for _ in 0..200 {
+                if display.get_attribute("data-state").as_deref() == Some("default-view") {
+                    break;
+                }
+                sleep(5).await;
+            }
+            assert_eq!(
+                display.get_attribute("data-state").as_deref(),
+                Some("default-view"),
+                "rendering through the `_:_` fallback reports `default-view`",
+            );
+        }
+
+        // The model subscription re-pushes on EVERY branch revision,
+        // including unrelated data writes. An identical model frame must
+        // NOT restart the downstream flow — that would `clear_host` and
+        // remount, wiping the rendered rows (the Hub list flashing empty
+        // while a new space is added). A repeat model frame is a no-op;
+        // data updates flow through the entity subscription in place.
+        #[dialog_common::test]
+        async fn it_does_not_remount_on_a_repeat_model_frame() {
+            let host =
+                FakeHost::install_with_model(resolve_responses(), Some(model_concept_frame()));
+            let display = mount_display(&host, "counter", "counter", "id:demo-counter");
+
+            for _ in 0..200 {
+                if host.subscribe_tags().len() >= 3 {
+                    break;
+                }
+                sleep(5).await;
+            }
+            host.push_frame(
+                "view",
+                &rows(&[("did:key:zView", &[("display", "<p>{count}</p>")])]),
+            );
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "1")])]));
+            let view = await_selector(&display, "tonk-view")
+                .await
+                .expect("renders the row");
+
+            // A second model frame arrives (an unrelated write revised
+            // the branch). It carries the SAME concept but with the
+            // descriptor's keys in a different order — exactly what the
+            // worker emits, since its descriptor serialization is not
+            // key-order-stable. The guard must treat it as unchanged: the
+            // mounted <tonk-view> survives, no remount, no wiped list.
+            let subs_before = host.subscribe_tags().len();
+            host.push_frame("model", &model_concept_frame_reordered());
+            sleep(50).await;
+
+            assert!(
+                view.is_connected(),
+                "a key-reordered repeat model frame must not tear down the mounted view",
+            );
+            assert_eq!(
+                host.subscribe_tags().len(),
+                subs_before,
+                "a key-reordered repeat model frame must not reopen the view/entity subscriptions",
+            );
+
+            // A later entity frame still updates the existing slide in
+            // place — the subscription was never torn down.
+            host.push_frame("entity", &rows(&[("id:demo-counter", &[("count", "2")])]));
+            sleep(50).await;
+            assert!(
+                view.is_connected(),
+                "the same view keeps rendering data updates in place",
             );
         }
 
@@ -1869,16 +2635,26 @@ mod tests {
         // needs no branch lookup, so two query responses suffice: the
         // model name lookup and the concept row.
         fn directory_resolve_responses() -> Vec<JsValue> {
-            vec![
-                name_row("did:key:zModel"),
-                rows(&[(
-                    "did:key:zModel",
-                    &[(
-                        "source",
-                        r#"{"with":{"title":{"the":"item/title","as":"Text","cardinality":"one"}}}"#,
-                    )],
-                )]),
-            ]
+            vec![name_row("did:key:zModel")]
+        }
+        // The directory model concept, auto-pushed on the `"model"`
+        // subscription (the built-in directory view predicate needs no
+        // branch lookup, so only the model name lookup remains a
+        // one-shot).
+        fn directory_model_frame() -> JsValue {
+            rows(&[(
+                "did:key:zModel",
+                &[(
+                    "source",
+                    r#"{"with":{"title":{"the":"item/title","as":"Text","cardinality":"one"}}}"#,
+                )],
+            )])
+        }
+        fn install_directory() -> FakeHost {
+            FakeHost::install_with_model(
+                directory_resolve_responses(),
+                Some(directory_model_frame()),
+            )
         }
 
         fn mount_directory(host: &FakeHost, model: &str) -> Element {
@@ -1897,11 +2673,11 @@ mod tests {
         // stayed blank until a refresh.
         #[dialog_common::test]
         async fn it_renders_an_instance_that_lands_after_an_empty_directory_frame() {
-            let host = FakeHost::install(directory_resolve_responses());
+            let host = install_directory();
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -1942,11 +2718,11 @@ mod tests {
         // empty repo, rather than staying blank until the first instance.
         #[dialog_common::test]
         async fn it_renders_the_fallback_chrome_when_empty_before_the_view_arrives() {
-            let host = FakeHost::install(directory_resolve_responses());
+            let host = install_directory();
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -1984,11 +2760,11 @@ mod tests {
         // position-dependent.)
         #[dialog_common::test]
         async fn it_keeps_a_static_sibling_after_the_repeat_element() {
-            let host = FakeHost::install(directory_resolve_responses());
+            let host = install_directory();
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -2028,11 +2804,11 @@ mod tests {
         // churn drop chrome that follows it.
         #[dialog_common::test]
         async fn it_keeps_a_static_sibling_after_a_repeat_custom_element() {
-            let host = FakeHost::install(directory_resolve_responses());
+            let host = install_directory();
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -2068,7 +2844,7 @@ mod tests {
         // active: `<tonk-sheet-binder active={dom.host/data-active}>`.
         #[dialog_common::test]
         async fn it_projects_a_host_attribute_set_before_the_frame_into_chrome() {
-            let host = FakeHost::install(directory_resolve_responses());
+            let host = install_directory();
             let display = mount_directory(&host, "item");
             // The host carries `data-active` from the start, mirroring the
             // shell threading it in before the directory view resolves.
@@ -2077,7 +2853,7 @@ mod tests {
                 .unwrap();
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
@@ -2115,11 +2891,11 @@ mod tests {
         // reflected without a reload.
         #[dialog_common::test]
         async fn it_reprojects_a_host_attribute_change_into_chrome_in_place() {
-            let host = FakeHost::install(directory_resolve_responses());
+            let host = install_directory();
             let display = mount_directory(&host, "item");
 
             for _ in 0..200 {
-                if host.subscribe_tags().len() >= 2 {
+                if host.subscribe_tags().len() >= 3 {
                     break;
                 }
                 sleep(5).await;
