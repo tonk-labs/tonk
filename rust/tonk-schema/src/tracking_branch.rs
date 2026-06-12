@@ -115,7 +115,7 @@ mod tests {
     use dialog_varsig::did;
 
     fn setup() -> (Branch, Branch) {
-        let replica = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let replica = Replica::new(did!("test:p"), did!("test:r"));
         let remote = Remote::new(
             &replica,
             did!("test:repo"),

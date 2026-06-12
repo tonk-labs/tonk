@@ -43,7 +43,7 @@ pub use lsp::LspHub;
 mod lsp_env;
 
 mod profile;
-pub use profile::ProfileInfo;
+pub use profile::{ProfileInfo, SpaceEntry};
 
 mod evaluate;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
@@ -264,6 +264,7 @@ pub mod tests {
     use dialog_ucan_core::{DelegationBuilder, DelegationChain, subject::Subject as UcanSubject};
     use dialog_varsig::Principal as _;
     use tonk_invite::{Invite, InviteAudience};
+    use tonk_schema::prelude::DidExt as _;
 
     use crate::worker::DefaultSpace;
 
@@ -275,11 +276,10 @@ pub mod tests {
     /// Creates a test state with the default storage backend.
     ///
     /// The state has a profile and operator but *no* repository —
-    /// tests that need one call [`put_repo`] with a name that is
-    /// unique across the suite. IndexedDB persists across the
-    /// single-process wasm test run and isn't partitioned by
-    /// profile for space names, so shared repo names would cause
-    /// order-dependent 201-vs-412 flips between tests.
+    /// tests that need one call [`put_repo`] with a display label and
+    /// use the minted routing key it returns. Every create mints a
+    /// fresh identity, so repeated runs never collide even when they
+    /// share a label.
     pub async fn test_state() -> TonkState {
         crate::patch_idb_versionchange();
         let storage = Storage::<DefaultSpace>::default();
@@ -307,33 +307,38 @@ pub mod tests {
         }
     }
 
-    /// Creates a test repository via `PUT /api/repository/{name}`.
+    /// Creates a test repository via `PUT /api/repository/{label}` and
+    /// returns its minted routing key.
     ///
-    /// Each test calls this with its own repo name so runs are
-    /// independent. Tolerates `412 Precondition Failed` in case the
-    /// same name was used by a prior run within the same browser
-    /// session (IndexedDB state survives).
-    async fn put_repo(app: &Router, name: &str) {
+    /// `label` is only a display name now — the repository's identity is
+    /// a freshly minted `did:key`, and the routing key returned here (the
+    /// DID suffix from the 201 `RepositoryInfo`) is what every subsequent
+    /// request must address. Each PUT always creates, so runs are
+    /// independent without name juggling.
+    async fn put_repo(app: &Router, label: &str) -> String {
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}", name))
+                    .uri(format!("/api/repository/{}", label))
                     .method("PUT")
                     .header("content-type", "application/json")
-                    .header("if-none-match", "*")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
         let status = response.status();
-        assert!(
-            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
-            "expected 201 or 412 from PUT /api/repository/{}, got {}",
-            name,
+        assert_eq!(
             status,
+            StatusCode::CREATED,
+            "expected 201 from PUT /api/repository/{label}, got {status}",
         );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let info: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        info.name
     }
 
     #[dialog_common::test]
@@ -387,83 +392,73 @@ pub mod tests {
     async fn it_creates_repository() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
-        let repo = "test-create";
 
+        // The PUT path segment is only a display label; the response
+        // identifier is the freshly minted routing key (the DID suffix),
+        // which is what subsequent requests address.
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{}", repo))
+                    .uri("/api/repository/test-create")
                     .method("PUT")
                     .header("content-type", "application/json")
-                    .header("if-none-match", "*")
                     .body(Body::from("{}"))
                     .unwrap(),
             )
             .await
             .unwrap();
-        // Accept 412 on reruns — IndexedDB persists across wasm test sessions.
-        let status = response.status();
-        assert!(
-            status == StatusCode::CREATED || status == StatusCode::PRECONDITION_FAILED,
-            "expected 201 or 412, got {}",
-            status,
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        // `name` is the routing key (the DID suffix). `label` reads from
+        // the repository's own `tonk/repository` name on its content
+        // branch; this branchless PUT seeds no content branch (and thus
+        // no name), so the label falls back to the routing key.
+        assert_eq!(resp.name, resp.subject.repo_key());
+        assert_eq!(resp.label, resp.name);
+        assert!(!resp.subject.as_str().is_empty());
+
+        // The returned key is addressable; GET it back and confirm the
+        // routing key and the (key-fallback) label are stable.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{}", resp.name))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let fetched: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
+        assert_eq!(fetched.name, resp.name, "routing key is stable across GET");
+        assert_eq!(
+            fetched.label, resp.name,
+            "label falls back to the routing key when no name is seeded",
         );
-        if status == StatusCode::CREATED {
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let resp: super::RepositoryInfo = serde_json::from_slice(&body).unwrap();
-            assert_eq!(resp.name, repo);
-            assert!(!resp.subject.as_str().is_empty());
-        }
+        assert_eq!(fetched.subject, resp.subject);
     }
 
     #[dialog_common::test]
-    async fn it_returns_precondition_failed_when_repo_exists() {
+    async fn it_mints_a_fresh_key_for_each_create_under_the_same_label() {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
-        let repo = "test-precondition";
 
-        put_repo(&app, repo).await;
-
-        // Second PUT with If-None-Match: * should fail with 412.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}", repo))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .header("if-none-match", "*")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
-    }
-
-    #[dialog_common::test]
-    async fn it_returns_conflict_when_repo_exists_without_precondition() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-        let repo = "test-conflict";
-
-        put_repo(&app, repo).await;
-
-        // Second PUT without If-None-Match should fail with 409.
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{}", repo))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CONFLICT);
+        // Two PUTs to the same label both succeed (no collision) and
+        // mint distinct routing keys — identity is the minted DID, the
+        // label is only a display name.
+        let first = put_repo(&app, "duplicate-label").await;
+        let second = put_repo(&app, "duplicate-label").await;
+        assert_ne!(
+            first, second,
+            "each create must mint a distinct routing key",
+        );
     }
 
     #[dialog_common::test]
@@ -473,7 +468,8 @@ pub mod tests {
         let repo = "test-invite-route";
 
         // Create the repo first so the invite handler can load it.
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let response = app
             .oneshot(
@@ -541,8 +537,8 @@ pub mod tests {
 
     /// Issue `POST /api/profile/join` and return status + parsed
     /// JSON body (or raw bytes when JSON parsing fails).
-    async fn post_join(app: &Router, url: &str, name: &str) -> (StatusCode, serde_json::Value) {
-        let body = serde_json::json!({ "url": url, "name": name }).to_string();
+    async fn post_join(app: &Router, url: &str) -> (StatusCode, serde_json::Value) {
+        let body = serde_json::json!({ "url": url }).to_string();
         let response = app
             .clone()
             .oneshot(
@@ -570,7 +566,7 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
 
         let (invite_url, subject_did) = synthesize_open_invite().await;
-        let (status, body) = post_join(&app, &invite_url, "fresh-join").await;
+        let (status, body) = post_join(&app, &invite_url).await;
 
         assert_eq!(
             status,
@@ -578,7 +574,12 @@ pub mod tests {
             "expected 201 Created on first join, got {status}: {body}",
         );
         assert_eq!(body["outcome"], "joined", "expected joined outcome: {body}");
-        assert_eq!(body["repository"]["name"], "fresh-join");
+        // The repository identifier is the subject's routing key (the DID
+        // suffix). Join no longer takes a local name — the display name
+        // comes from the shared content branch — so the label falls back
+        // to the routing key until that branch syncs.
+        assert_eq!(body["repository"]["name"], subject_did.repo_key());
+        assert_eq!(body["repository"]["label"], subject_did.repo_key());
         assert_eq!(body["repository"]["subject"], subject_did.to_string());
     }
 
@@ -587,10 +588,10 @@ pub mod tests {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
 
-        let (invite_url, _subject_did) = synthesize_open_invite().await;
+        let (invite_url, subject_did) = synthesize_open_invite().await;
 
-        // First join creates the replica under "renew-original".
-        let (first_status, first_body) = post_join(&app, &invite_url, "renew-original").await;
+        // First join creates the replica under the subject's routing key.
+        let (first_status, first_body) = post_join(&app, &invite_url).await;
         assert_eq!(
             first_status,
             StatusCode::CREATED,
@@ -598,10 +599,10 @@ pub mod tests {
         );
 
         // Second join of the *same invite URL* — same subject, the
-        // recipient already has it mounted. Worker should respond
-        // with a `renewed` outcome and return the existing replica
-        // ("renew-original"), regardless of the requested name.
-        let (second_status, second_body) = post_join(&app, &invite_url, "different-name").await;
+        // recipient already has it mounted. Worker should respond with a
+        // `renewed` outcome and return the existing replica, keyed by the
+        // subject's identity.
+        let (second_status, second_body) = post_join(&app, &invite_url).await;
         assert_eq!(
             second_status,
             StatusCode::OK,
@@ -612,28 +613,9 @@ pub mod tests {
             "expected renewed outcome: {second_body}",
         );
         assert_eq!(
-            second_body["repository"]["name"], "renew-original",
-            "renewed should return the existing replica name, not the requested one",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_rejects_unrelated_name_collision_on_join() {
-        let state = test_state().await;
-        let (app, _lsp) = api_router(state);
-
-        // Pre-existing space named "claimed-name" — created via
-        // a regular PUT, with a different subject than the invite
-        // we'll try to redeem.
-        put_repo(&app, "claimed-name").await;
-
-        let (invite_url, _subject_did) = synthesize_open_invite().await;
-        let (status, body) = post_join(&app, &invite_url, "claimed-name").await;
-
-        assert_eq!(
-            status,
-            StatusCode::CONFLICT,
-            "expected 409 Conflict for name collision, got {status}: {body}",
+            second_body["repository"]["name"],
+            subject_did.repo_key(),
+            "renewed should return the existing replica keyed by its identity",
         );
     }
 
@@ -642,7 +624,7 @@ pub mod tests {
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
 
-        let (status, _body) = post_join(&app, "not-a-url", "doesnt-matter").await;
+        let (status, _body) = post_join(&app, "not-a-url").await;
         assert_eq!(
             status,
             StatusCode::BAD_REQUEST,
@@ -656,7 +638,8 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-info";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let response = app
             .oneshot(
@@ -683,7 +666,8 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-claims";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Assert a fact
         let response = app
@@ -732,7 +716,8 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-sync";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // First assert a fact so the branch has data
         let response = app
@@ -777,7 +762,8 @@ pub mod tests {
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
         let repo = "test-bgsync-noupstream";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // No branch has an upstream, so the worker-side sweep selects
         // nothing and runs the `/sync` route zero times — a clean
@@ -808,7 +794,8 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-sync-status";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Land a commit so the branch has a local revision — the
         // status route should still report `no-upstream` (none is
@@ -859,14 +846,15 @@ pub mod tests {
     /// same pattern the slide sync tests use — so the status route's
     /// fetch + classify path has somewhere local to read from.
     /// Returns the router for driving the HTTP surface.
-    async fn repo_with_sibling_upstream(repo: &str) -> Router {
+    async fn repo_with_sibling_upstream(label: &str) -> (Router, String) {
         use std::sync::Arc;
         use tokio::sync::RwLock;
 
         let tonk = test_state().await;
         let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
-        put_repo(&app, repo).await;
+        let repo = put_repo(&app, label).await;
+        let repo = repo.as_str();
 
         let guard = app_state.read().await;
         let repo_state = guard
@@ -894,7 +882,8 @@ pub mod tests {
             .perform(&guard.operator)
             .await
             .expect("set main's upstream to the sibling");
-        app
+        drop(guard);
+        (app, repo.to_owned())
     }
 
     /// Land a commit on `main` by asserting one marker fact. Each
@@ -966,16 +955,15 @@ pub mod tests {
 
     #[dialog_common::test]
     async fn it_reports_synced_status_after_pushing_to_the_upstream() {
-        let repo = "test-sync-status-synced";
-        let app = repo_with_sibling_upstream(repo).await;
+        let (app, repo) = repo_with_sibling_upstream("test-sync-status-synced").await;
 
-        commit_marker(&app, repo, "synced-probe").await;
-        push_main(&app, repo).await;
+        commit_marker(&app, &repo, "synced-probe").await;
+        push_main(&app, &repo).await;
 
         // Both heads now populated and equal — exercises the route's
         // fetch + classify path and the both-revisions-present JSON
         // shape, not just the no-upstream early return.
-        let status = get_main_status(&app, repo).await;
+        let status = get_main_status(&app, &repo).await;
         assert_eq!(status.state, tonk_schema::SyncState::Synced);
         let local = status.local.expect("local head present");
         let remote = status.remote.expect("remote head present after push");
@@ -984,16 +972,15 @@ pub mod tests {
 
     #[dialog_common::test]
     async fn it_reports_ahead_status_when_local_leads_the_upstream() {
-        let repo = "test-sync-status-ahead";
-        let app = repo_with_sibling_upstream(repo).await;
+        let (app, repo) = repo_with_sibling_upstream("test-sync-status-ahead").await;
 
         // Establish a shared base on the upstream, then advance main
         // one commit past it.
-        commit_marker(&app, repo, "base").await;
-        push_main(&app, repo).await;
-        commit_marker(&app, repo, "ahead-probe").await;
+        commit_marker(&app, &repo, "base").await;
+        push_main(&app, &repo).await;
+        commit_marker(&app, &repo, "ahead-probe").await;
 
-        let status = get_main_status(&app, repo).await;
+        let status = get_main_status(&app, &repo).await;
         assert_eq!(status.state, tonk_schema::SyncState::Ahead);
         assert!(status.local.is_some(), "local head present");
         assert!(
@@ -1008,7 +995,8 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-inspect";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Commit some data first so the branch exists
         let response = app
@@ -1054,7 +1042,8 @@ pub mod tests {
         let (app, _lsp) = api_router(state);
         let repo = "test-transact-multi";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let body = "\
 attribute!: &person-name
@@ -1113,7 +1102,8 @@ concept!: &person
         let (app, _lsp) = api_router(state);
         let repo = "test-transact-single";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let body = "\
 attribute!: &person-name
@@ -1163,7 +1153,8 @@ attribute!: &person-name
         let (app, _lsp) = api_router(state);
         let repo = "test-transact-malformed";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // YAML with an indentation error — saphyr rejects it.
         let body = "person!:\n  name: Alice\n bad-indent: 1\n";
@@ -1192,7 +1183,8 @@ attribute!: &person-name
         let (app, _lsp) = api_router(state);
         let repo = "test-transact-cross";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // First transaction: define `person-name` only.
         let first = "\
@@ -1268,7 +1260,8 @@ concept!: &person
         let (app, _lsp) = api_router(state);
         let repo = "test-retract-concept";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Define schema + assert an Alice with a bookmark
         // binding so we know her entity.
@@ -1364,7 +1357,8 @@ person!: &alice
         let (app, _lsp) = api_router(state);
         let repo = "test-anon-query";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Define a `person` concept and assert one Alice so the
         // query has something to match.
@@ -1471,7 +1465,8 @@ person!: &alice
         let (app, _lsp) = api_router(state);
         let repo = "test-supersede";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Setup: schema + Alice with age 28.
         let setup = "\
@@ -1645,7 +1640,8 @@ person!:
         let (app, _lsp) = api_router(state);
         let repo = "test-rebind-bookmark";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let setup = "\
 attribute!: &person-name
@@ -1716,7 +1712,8 @@ person:
         let (app, _lsp) = api_router(state);
         let repo = "test-anon-head";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let setup = "\
 attribute!: &person-name
@@ -1772,7 +1769,8 @@ concept!: &person
         let (app, _lsp) = api_router(state);
         let repo = "test-var-intro";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let setup = "\
 attribute!: &person-name
@@ -1834,7 +1832,8 @@ person!:
         let (app, _lsp) = api_router(state);
         let repo = "test-many";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let setup = "\
 attribute!: &tagged-name
@@ -1894,7 +1893,8 @@ tagged!: &dave
         let (app, _lsp) = api_router(state);
         let repo = "test-retract-uri";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let setup = "\
 attribute!: &person-name
@@ -1954,7 +1954,8 @@ person!: &erin
         let (app, _lsp) = api_router(state);
         let repo = "test-retract-var";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let setup = "\
 attribute!: &person-name
@@ -2008,7 +2009,8 @@ person!:
         let (app, _lsp) = api_router(state);
         let repo = "test-join";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Two concepts that overlap on a `name` field via
         // different attribute namespaces. We'll query for
@@ -2214,7 +2216,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-query";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
         let body = post_query(&app, repo, "main").await;
@@ -2236,7 +2239,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-sse";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
         let snapshot = subscribe_first_event(&app, repo, "main").await;
@@ -2256,7 +2260,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-shared";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
         let first = subscribe_first_event(&app, repo, "main").await;
@@ -2275,7 +2280,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-malformed";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let response = app
             .clone()
@@ -2300,7 +2306,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-broadcast";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let mut body = open_subscription(&app, repo, "main").await;
@@ -2336,7 +2343,8 @@ attribute!: &{name}
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-noop-repoll";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let mut body = open_subscription(&app, repo, "main").await;
@@ -2383,7 +2391,8 @@ attribute!: &{name}
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-prune";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         // Subscribe and read the first frame so the subscriber is
@@ -2432,7 +2441,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-reactor-projection";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let body = post_query(&app, repo, "main").await;
@@ -2475,7 +2485,8 @@ attribute!: &{name}
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-pull";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let mut body = open_subscription(&app, repo, "main").await;
@@ -2547,7 +2558,8 @@ attribute!: &{name}
         let (app, _lsp) = crate::api_router_from_state(app_state.clone());
 
         let repo = "test-reactor-shutdown-releases";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
         seed_named_attribute(&app, repo, "person-name", "xyz.tonk.person/name").await;
 
         let mut body = open_subscription(&app, repo, "main").await;
@@ -2588,7 +2600,8 @@ attribute!: &{name}
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-no-commit-transact-false";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let body = "\
 attribute!: &person-name
@@ -2647,7 +2660,8 @@ attribute!: &person-name
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-analyze-error-shape";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // `name: x` is a head with a non-mapping body — the
         // parser rejects it.
@@ -2697,7 +2711,8 @@ attribute!: &person-name
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-implicit-query-label";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // First seed `person-name` and `person-age` attributes
         // so `person:` resolves; then assert `person!: …` on
@@ -2782,7 +2797,8 @@ person!:
         let state = test_state().await;
         let (app, _lsp) = api_router(state);
         let repo = "test-blank-field-render";
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         // Seed person concept + an instance.
         let seed = "\
@@ -2877,7 +2893,8 @@ person:
         let (app, _lsp) = api_router(state);
         let repo = "test-transact-empty";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let body = "{\"claims\":[]}";
         let response = app
@@ -2913,7 +2930,8 @@ person:
         let (app, _lsp) = api_router(state);
         let repo = "test-transact-bad-body";
 
-        put_repo(&app, repo).await;
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
 
         let body = "not json at all";
         let response = app

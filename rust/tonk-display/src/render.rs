@@ -232,6 +232,7 @@ impl Renderer {
             document,
             &self.plan.repeat,
             &mut scope.repeat,
+            &scope.root,
             &self.template,
             frame,
         );
@@ -318,23 +319,64 @@ fn update_repeat(
     document: &Document,
     plan: &RepeatPlan,
     mounted: &mut MountedRepeat,
+    scope_root: &Node,
     template: &DocumentFragment,
     frame: &[Conclusion],
 ) {
     let Some(parent) = mounted.anchor.parent_node() else {
         // No anchor in the DOM — the whole-fragment (`None`) path, which
-        // tracks a single lead row. Reconcile it in place against the
-        // lead conclusion; there is nothing to add/remove.
-        if let (Some((_, row)), Some(lead)) = (mounted.rows.iter_mut().next(), frame.first()) {
-            update_nodes(
-                document,
-                &plan.body,
-                &mut row.body,
-                &row.root,
-                template,
-                lead,
-                &BTreeMap::new(),
-            );
+        // tracks a single lead row over the host's own nodes.
+        let Some(lead) = frame.first() else {
+            // Frame went empty: clear the tracked row's bound nodes so a
+            // stale value doesn't linger, but keep the row entry — the
+            // host nodes stay mounted to receive the next frame.
+            if let Some((_, row)) = mounted.rows.iter_mut().next() {
+                update_nodes(
+                    document,
+                    &plan.body,
+                    &mut row.body,
+                    &row.root,
+                    template,
+                    &empty_conclusion(),
+                    &BTreeMap::new(),
+                );
+            }
+            return;
+        };
+        match mounted.rows.iter_mut().next() {
+            // Already tracking a row — reconcile it against the lead.
+            Some((_, row)) => {
+                update_nodes(
+                    document,
+                    &plan.body,
+                    &mut row.body,
+                    &row.root,
+                    template,
+                    lead,
+                    &BTreeMap::new(),
+                );
+            }
+            // First non-empty frame after an empty one: no row was
+            // mounted yet (the initial frame had no lead), so build the
+            // body bindings over the host's nodes now and record the row.
+            None => {
+                let body = build_mounted_nodes(
+                    document,
+                    &plan.body,
+                    scope_root,
+                    template,
+                    &[],
+                    lead,
+                    &BTreeMap::new(),
+                );
+                mounted.rows.insert(
+                    lead.this.clone(),
+                    MountedRow {
+                        root: scope_root.clone(),
+                        body,
+                    },
+                );
+            }
         }
         return;
     };

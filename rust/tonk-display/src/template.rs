@@ -686,14 +686,22 @@ mod dom {
             });
         }
 
-        // No <template> — move the first element child (and its
-        // siblings, all of them) into a fresh fragment.
+        // No <template> — move the host's child nodes into a fresh
+        // fragment. Keep element nodes and *content-bearing* text nodes
+        // (so a bare `{name}` text template renders), dropping only
+        // whitespace-only text (the indentation between elements) and
+        // comments — neither is part of the row.
         let fragment: DocumentFragment = document.create_document_fragment();
         let mut node = host.first_child();
         while let Some(current) = node {
             let next = current.next_sibling();
-            // Skip whitespace-only text and comments.
-            let keep = current.node_type() == Node::ELEMENT_NODE;
+            let keep = match current.node_type() {
+                Node::ELEMENT_NODE => true,
+                Node::TEXT_NODE => current
+                    .text_content()
+                    .is_some_and(|text| !text.trim().is_empty()),
+                _ => false,
+            };
             let _ = host.remove_child(&current);
             if keep {
                 let _ = fragment.append_child(&current);
@@ -1283,6 +1291,42 @@ mod dom {
                     .unwrap_or_default()
                     .contains("display: grid"),
                 "stylesheet content should survive verbatim",
+            );
+        }
+
+        // A view whose whole template is a bare `{field}` text node (no
+        // wrapping element) must still snapshot and bind — the no-template
+        // path keeps content-bearing text nodes, dropping only whitespace.
+        #[dialog_common::test]
+        fn it_snapshots_a_bare_text_node_template() {
+            let host = host_with("{name}\n");
+            let snapshot = snapshot_template(&host).expect("bare text node snapshots");
+            assert!(
+                snapshot.fragment.has_child_nodes(),
+                "the `{{name}}` text node should survive the snapshot",
+            );
+            let plan = extract_plan(&snapshot.fragment);
+            // `{name}` is a subject field with no `{this}`, so the fragment
+            // root repeats and the single text binding lives in the body.
+            assert_eq!(
+                plan.repeat.body.len(),
+                1,
+                "expected one binding (the name text), got {:?}",
+                plan.repeat.body,
+            );
+        }
+
+        // Whitespace-only text between elements is still dropped, so a
+        // template's indentation never becomes a stray empty row binding.
+        #[dialog_common::test]
+        fn it_drops_whitespace_only_text_between_elements() {
+            let host = host_with("\n  <span>{title}</span>\n  ");
+            let snapshot = snapshot_template(&host).expect("snapshot");
+            // Only the `<span>` survives; the two whitespace text nodes go.
+            assert_eq!(
+                snapshot.fragment.child_nodes().length(),
+                1,
+                "whitespace-only text nodes should be dropped",
             );
         }
     }

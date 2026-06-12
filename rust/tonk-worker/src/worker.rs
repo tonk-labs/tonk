@@ -485,7 +485,7 @@ impl TonkServiceWorker {
             bridges: Default::default(),
             commands: crate::router::command_registry(),
         };
-        bootstrap_profile_meta(&state, PROFILE_NAME)
+        bootstrap_profile_meta(&state)
             .await
             .map_err(|e| JsError::new(&format!("Failed to bootstrap profile meta: {}", e)))?;
 

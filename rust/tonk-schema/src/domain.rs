@@ -95,6 +95,19 @@ pub mod command {
     }
 }
 
+/// Attributes that live on a repository's own `tonk/repository`
+/// concept — the repository's self-describing name, stored on its
+/// content branch and keyed by the subject DID.
+///
+/// [`RepositoryName`]: crate::RepositoryName
+pub mod repo {
+    use super::Attribute;
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.repo")]
+    pub struct Name(pub String);
+}
+
 /// Attributes that live on [`Branch`] entities (and
 /// [`TrackingBranch`], which extends `Branch`).
 ///

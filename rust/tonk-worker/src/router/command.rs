@@ -63,6 +63,12 @@ impl CommandEnv {
 /// transient's facts — which a typed `Provider`, receiving only the
 /// decoded command, can't do.
 ///
+/// Repository rename needs no command here: the standard-library
+/// `tonk/rename-repository` rule writes the new name straight into the
+/// repository's own `tonk/repository` concept on its content branch,
+/// which syncs across devices and is the single source of truth the Hub
+/// and banner both read.
+///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
 pub fn command_registry() -> CommandRegistry {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

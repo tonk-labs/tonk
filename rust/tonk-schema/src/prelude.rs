@@ -68,6 +68,16 @@ impl EntityExt for Entity {
 pub trait DidExt {
     /// Produce the `Entity` this DID identifies.
     fn this(&self) -> Entity;
+
+    /// The repository routing/storage key for this DID: the full
+    /// `did:key:z6Mk…` string. A repository's identity is its
+    /// credential's DID, and that whole DID is what names the dialog
+    /// database (`profile.repository(did)`), routes its URLs
+    /// (`/space/{did}`, `/api/repository/{did}`), and keys the reactor
+    /// cache. One identifier, no suffix-stripping. The user-typed name
+    /// is only a display label, stored in the repository's own
+    /// `tonk/repository` concept on its content branch.
+    fn repo_key(&self) -> &str;
 }
 
 impl DidExt for Did {
@@ -75,6 +85,10 @@ impl DidExt for Did {
         self.as_str()
             .parse()
             .expect("DID string is always a valid Entity URI")
+    }
+
+    fn repo_key(&self) -> &str {
+        self.as_str()
     }
 }
 
@@ -103,5 +117,11 @@ mod tests {
     fn did_this_preserves_uri() {
         let d = did!("key:z6MkTestEntity");
         assert_eq!(d.this().to_string(), d.as_str());
+    }
+
+    #[test]
+    fn repo_key_is_the_full_did() {
+        let d = did!("key:z6MkTestEntity");
+        assert_eq!(d.repo_key(), "did:key:z6MkTestEntity");
     }
 }

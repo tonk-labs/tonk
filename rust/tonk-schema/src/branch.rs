@@ -62,7 +62,6 @@ enum This<'a> {
 /// let replica = Replica::new(
 ///     did!("test:profile"),
 ///     did!("test:repo"),
-///     "home",
 /// );
 /// let main = Branch::new(&replica, "main");
 /// ```
@@ -117,7 +116,7 @@ mod tests {
 
     #[test]
     fn same_replica_same_name_same_entity() {
-        let r = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let r = Replica::new(did!("test:p"), did!("test:r"));
         let a = Branch::new(&r, "main");
         let b = Branch::new(&r, "main");
         assert_eq!(a.this, b.this);
@@ -125,7 +124,7 @@ mod tests {
 
     #[test]
     fn different_name_different_entity() {
-        let r = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let r = Replica::new(did!("test:p"), did!("test:r"));
         let a = Branch::new(&r, "main");
         let b = Branch::new(&r, "meta");
         assert_ne!(a.this, b.this);
@@ -133,8 +132,8 @@ mod tests {
 
     #[test]
     fn different_replica_different_entity() {
-        let r1 = Replica::new(did!("test:p1"), did!("test:r"), "home");
-        let r2 = Replica::new(did!("test:p2"), did!("test:r"), "home");
+        let r1 = Replica::new(did!("test:p1"), did!("test:r"));
+        let r2 = Replica::new(did!("test:p2"), did!("test:r"));
         let a = Branch::new(&r1, "main");
         let b = Branch::new(&r2, "main");
         assert_ne!(a.this, b.this);
@@ -142,8 +141,8 @@ mod tests {
 
     #[test]
     fn different_repo_different_entity() {
-        let r1 = Replica::new(did!("test:p"), did!("test:r1"), "home");
-        let r2 = Replica::new(did!("test:p"), did!("test:r2"), "home");
+        let r1 = Replica::new(did!("test:p"), did!("test:r1"));
+        let r2 = Replica::new(did!("test:p"), did!("test:r2"));
         let a = Branch::new(&r1, "main");
         let b = Branch::new(&r2, "main");
         assert_ne!(a.this, b.this);
@@ -151,20 +150,9 @@ mod tests {
 
     #[test]
     fn attributes_reflect_replica() {
-        let r = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let r = Replica::new(did!("test:p"), did!("test:r"));
         let b = Branch::new(&r, "main");
         assert_eq!(b.origin.0, r.this);
-    }
-
-    #[test]
-    fn replica_name_does_not_affect_branch_entity() {
-        // The replica's display name is not part of Replica.this, so
-        // renaming the replica doesn't change the branch entity.
-        let home = Replica::new(did!("test:p"), did!("test:r"), "home");
-        let pics = Replica::new(did!("test:p"), did!("test:r"), "pictures");
-        let a = Branch::new(&home, "main");
-        let b = Branch::new(&pics, "main");
-        assert_eq!(a.this, b.this);
     }
 
     #[test]
@@ -174,7 +162,7 @@ mod tests {
         // entities because the origin entities themselves differ.
         use crate::Remote;
         use crate::domain::remote::Address;
-        let replica = Replica::new(did!("test:p"), did!("test:r"), "home");
+        let replica = Replica::new(did!("test:p"), did!("test:r"));
         let remote = Remote::new(
             &replica,
             did!("test:repo"),
