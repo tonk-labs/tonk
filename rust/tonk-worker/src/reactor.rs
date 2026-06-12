@@ -26,6 +26,8 @@ mod branch;
 mod command;
 mod env;
 mod error;
+mod export;
+mod import;
 mod pull;
 mod push;
 mod repository;
@@ -41,6 +43,8 @@ pub use env::{
     BranchOpenProvider, CommitProvider, LoadProvider, PullProvider, PushProvider, SelectProvider,
 };
 pub use error::ReactorError;
+pub use export::{Export, ExportError};
+pub use import::{Import, ImportError};
 pub use pull::Pull;
 pub use push::Push;
 pub use repository::{RepositoryReference, RepositoryState};

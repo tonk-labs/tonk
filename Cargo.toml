@@ -141,6 +141,7 @@ dialog-artifacts = { git = "https://github.com/dialog-db/dialog-db.git", branch 
 dialog-capability = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-common = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-credentials = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
+dialog-csv = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-effects = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-operator = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }

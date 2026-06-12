@@ -1177,6 +1177,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-csv"
+version = "0.1.0"
+source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fswitch-to-search-tree#1bf3f48cbcc0139f24289f6f581c77cf8ebf6375"
+dependencies = [
+ "async-trait",
+ "base58",
+ "csv-async",
+ "dialog-artifacts",
+ "futures-util",
+ "getrandom 0.2.17",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "dialog-effects"
 version = "0.1.0"
 source = "git+https://github.com/dialog-db/dialog-db.git?branch=feat%2Fswitch-to-search-tree#1bf3f48cbcc0139f24289f6f581c77cf8ebf6375"
@@ -4337,6 +4352,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-csv",
  "dialog-effects",
  "dialog-operator",
  "dialog-query",
@@ -5188,6 +5204,7 @@ dependencies = [
  "dialog-capability",
  "dialog-common",
  "dialog-credentials",
+ "dialog-csv",
  "dialog-effects",
  "dialog-operator",
  "dialog-query",

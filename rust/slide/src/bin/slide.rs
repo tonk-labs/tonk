@@ -20,6 +20,7 @@ use slide::output::Format;
 use slide::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
 use slide::share::{self, ShareDisplayOutcome, ShareOptions, ShareOutcome, ShareViewOutcome};
 use slide::sync::{self, SyncOutcome};
+use slide::transfer;
 use slide::views::{self, ViewSummary};
 use slide::{ExitCode, guide, identity, schema, site};
 
@@ -111,6 +112,24 @@ enum Command {
         /// filesystem; copy + delete fallback otherwise.
         #[arg(long = "move")]
         do_move: bool,
+    },
+
+    /// Export the local main branch's artifacts as CSV. Writes to
+    /// stdout unless `--out <file>` is given.
+    #[command(after_help = "Examples:\n  slide export\n  slide export --out data.csv")]
+    Export {
+        /// Write the CSV to this file instead of stdout.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+
+    /// Import artifacts from a CSV file, committing each row as an
+    /// assertion on the local main branch.
+    #[command(after_help = "Examples:\n  slide import data.csv")]
+    Import {
+        /// The CSV file to read (`the,of,as,is,cause` columns).
+        #[arg(value_name = "PATH")]
+        file: PathBuf,
     },
 
     /// Push the local main branch to its upstream.
@@ -352,6 +371,8 @@ async fn main() {
         Command::Concepts => print_concepts().await,
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
+        Command::Export { out } => export_op(out).await,
+        Command::Import { file } => import_op(file).await,
         Command::Push => sync_op(SyncOp::Push).await,
         Command::Pull => sync_op(SyncOp::Pull).await,
         Command::Status => status_op().await,
@@ -506,6 +527,65 @@ async fn sync_op(op: SyncOp) -> ExitCode {
     match result {
         Ok(outcome) => {
             print_sync_outcome(op, &outcome);
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+async fn export_op(out: Option<PathBuf>) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    let destination = match &out {
+        Some(path) => transfer::Destination::File(path.clone()),
+        None => transfer::Destination::Stdout,
+    };
+
+    match transfer::export(&site, destination).await {
+        Ok(bytes) => {
+            // The CSV may be on stdout, so status goes to stderr.
+            if let Some(path) = out {
+                eprintln!("exported {bytes} bytes to {}", path.display());
+            } else {
+                eprintln!("exported {bytes} bytes");
+            }
+            ExitCode::Success
+        }
+        Err(err) => {
+            eprintln!("error: {err}");
+            err.exit_code()
+        }
+    }
+}
+
+async fn import_op(file: PathBuf) -> ExitCode {
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match transfer::import(&site, &file).await {
+        Ok(revision) => {
+            println!(
+                "imported {} -> revision {}.{}",
+                file.display(),
+                revision.period,
+                revision.moment,
+            );
             ExitCode::Success
         }
         Err(err) => {
