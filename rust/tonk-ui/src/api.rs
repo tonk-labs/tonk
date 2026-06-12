@@ -573,13 +573,12 @@ impl From<TonkUiError> for JoinError {
 /// explicit refetch.
 ///
 /// [`ProfileResource`]: crate::components::ProfileResource
-pub async fn join(url: &str, name: &str) -> Result<JoinResponse, JoinError> {
+pub async fn join(url: &str) -> Result<JoinResponse, JoinError> {
     tonk_host::ready::wait().await;
-    log!("Joining invite as '{}'...", name);
+    log!("Joining invite...");
 
     let body = JoinRequest {
         url: url.to_string(),
-        name: name.to_string(),
     };
 
     let response = reqwest::Client::new()

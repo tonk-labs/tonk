@@ -5,12 +5,14 @@
 //! subject exists. Two outcomes:
 //!
 //! - **Joined** — there was no replica for this subject; one was
-//!   created with the recipient's chosen name. 201 Created.
+//!   created, keyed by the subject DID. The name is not chosen here:
+//!   it lives in the shared repository's content branch and arrives
+//!   over the pull the recipient triggers by querying the repo. 201
+//!   Created.
 //! - **Renewed** — the recipient already had a replica for this
 //!   subject. The chain was still saved (so the recipient picks
 //!   up any new access this invite carries — e.g. an extension of
-//!   an expiring delegation), but no replica was created and the
-//!   recipient's chosen name is ignored. 200 OK.
+//!   an expiring delegation), but no replica was created. 200 OK.
 //!
 //! Both branches return a [`RepositoryInfo`] for the replica the
 //! recipient ends up at, so the UI navigates to
@@ -45,7 +47,7 @@ use tonk_schema::{Replica, prelude::DidExt as _};
 use super::AppState;
 use super::repository::{
     BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
-    UpstreamConfiguration, build_repository_info, record_repository_meta,
+    UpstreamConfiguration, build_repository_info, mark_replica_initialized, record_repository_meta,
 };
 use crate::{TonkWorkerError, worker::TonkState};
 
@@ -69,11 +71,6 @@ pub struct JoinRequest {
     /// caller must read `window.location.href` client-side and
     /// forward the complete string.
     pub url: String,
-    /// Local name to register a fresh replica under. Used only
-    /// when the recipient does not already have a replica for
-    /// this subject; ignored on the [`JoinResponse::Renewed`]
-    /// path.
-    pub name: String,
 }
 
 /// Body of a successful `POST /api/profile/join` response.
@@ -110,13 +107,6 @@ pub async fn join(
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
     log!("POST /api/profile/join");
 
-    let name = body.name.trim();
-    if name.is_empty() {
-        return Err(TonkWorkerError::Router(
-            "name must be non-empty".to_string(),
-        ));
-    }
-
     let tonk = state.write().await;
 
     // Parse the invite first — the subject DID drives the
@@ -149,16 +139,14 @@ pub async fn join(
         })?;
 
     // The shared repository's DID is its identity; the routing/storage
-    // key is the DID suffix. The recipient's chosen `name` is only a
-    // display label.
+    // key is the DID suffix. There is no local display name — it lives in
+    // the repository's own content branch.
     let key = subject.repo_key().to_owned();
 
-    // If the recipient already has a replica for this subject,
-    // we're done — surface the existing replica as `Renewed`.
-    // The recipient's chosen name is ignored on this branch:
-    // they can't relabel the replica via a join, and forcing a
-    // 409 would lose the chain refresh we just did. The replica is
-    // mounted at the routing key (identity), not a stored label.
+    // If the recipient already has a replica for this subject, we're done
+    // — surface the existing replica as `Renewed`. The chain refresh we
+    // just did is kept; the replica is mounted at the routing key
+    // (identity), not a stored label.
     if find_replica_for_subject(&tonk, &subject).await? {
         let repository = tonk
             .profile
@@ -196,7 +184,7 @@ pub async fn join(
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!(
-                "failed to create local replica '{name}' for invited subject: {e}",
+                "failed to create local replica '{key}' for invited subject: {e}",
             ))
         })?;
     let repository = Repository::from(space_credential);
@@ -223,9 +211,21 @@ pub async fn join(
         configuration = configuration.branch(DEFAULT_BRANCH, BranchConfiguration::default());
     }
 
-    record_repository_meta(&tonk, &repository, name, &configuration).await?;
+    // No display name to seed: a joined repo's name lives in the shared
+    // content branch and arrives over the pull the Hub triggers when it
+    // queries the repo for its name. `record_repository_meta` only uses
+    // this for log context + the home-demo check (never matched here), so
+    // the routing key stands in.
+    record_repository_meta(&tonk, &repository, &key, &configuration).await?;
 
-    log!("Joined invite for subject {subject} as local replica '{name}' (key {key})",);
+    // `record_repository_meta` stamps the replica `blank` (the create
+    // path's "still seeding" state). A joined replica has no local seed
+    // step — its content arrives over the pull the recipient triggers —
+    // so flip it straight to `initialized`, otherwise its Hub card is
+    // stuck on "Installing…" forever.
+    mark_replica_initialized(&tonk, &subject).await?;
+
+    log!("Joined invite for subject {subject} as local replica (key {key})");
 
     let info = build_repository_info(&tonk, &key, &repository).await;
     Ok((

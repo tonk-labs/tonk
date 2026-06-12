@@ -1071,8 +1071,7 @@ async fn record_replica_in_profile(
 /// The replica entity is re-derived from `(profile, subject)` — the
 /// same hash `Replica::new` uses — so no read is needed to find it.
 ///
-/// Only called from the background seed path, which is SW-only.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+/// Called from the background seed path and the join handler.
 async fn set_replica_status(
     tonk: &TonkState,
     subject: &Did,
@@ -1103,6 +1102,18 @@ async fn set_replica_status(
     );
 
     Ok(())
+}
+
+/// Mark a replica `initialized` — its card settles from "Installing…" to
+/// the resolved name. Used by the join path: a joined replica has no
+/// local seed step (its content arrives over the pull), so it would
+/// otherwise sit at the `blank` status `record_repository_meta` stamps,
+/// stuck on an installing card forever.
+pub(super) async fn mark_replica_initialized(
+    tonk: &TonkState,
+    subject: &Did,
+) -> Result<(), RepositoryError> {
+    set_replica_status(tonk, subject, Replica::initialized_status()).await
 }
 
 /// Bootstrap the profile repository's meta branch.

@@ -1,15 +1,8 @@
-use leptos::{
-    ev::{Event, SubmitEvent},
-    logging::log,
-    prelude::*,
-    task::spawn_local,
-    web_sys,
-};
+use leptos::{logging::log, prelude::*, task::spawn_local};
 use leptos_router::{NavigateOptions, hooks::use_navigate};
 use tonk_invite::{Invite, InviteAudience};
 use tonk_worker::JoinResponse;
 use url::Url;
-use wasm_bindgen::JsCast;
 
 use crate::{
     api::{self, JoinError},
@@ -19,9 +12,10 @@ use crate::{
 
 /// Lifecycle of a `/join` page load.
 ///
-/// The component computes this once after parsing the invite +
-/// reading the profile, then either fast-paths through (already-
-/// have-it) or hands the user a form to confirm a fresh name.
+/// The component computes this once after parsing the invite + reading
+/// the profile, then auto-joins (no name to confirm — a joined space's
+/// name comes from the shared repository), landing an existing member
+/// back in the space and a fresh member on `/`.
 #[derive(Clone, Debug)]
 enum JoinView {
     /// Invite parse + profile load haven't both completed yet.
@@ -40,34 +34,14 @@ enum JoinView {
         /// they can't redeem it.
         subject: String,
     },
-    /// The invited subject is already mounted locally — auto-
-    /// submitting `/api/profile/join` to refresh the chain, then
-    /// navigating. Renders a "joining…" affordance with the sigil
-    /// of the destination space.
-    AlreadyMember {
-        /// Routing key of the existing replica we'll land in (its
-        /// identity, what navigation routes by).
-        name: String,
-        /// Subject DID, for the sigil.
-        subject: String,
-    },
-    /// Fresh subject — no replica yet. Render the form with the
-    /// sigil so the recipient can confirm what they're joining.
-    NewMember {
+    /// A redeemable invite (the recipient either already has the subject
+    /// or is joining it fresh — they behave the same now). Auto-joins,
+    /// waits for the pull, then redirects into the space. Renders a
+    /// "Joining…" affordance with the sigil while that happens.
+    Member {
         /// Subject DID, for the sigil + a hint of what they're joining.
         subject: String,
     },
-}
-
-/// Suggested name extracted from a `?name=...` query param on the
-/// current URL. Returns `None` when the param is missing or empty.
-fn suggested_name_from_url(href: &str) -> Option<String> {
-    Url::parse(href)
-        .ok()?
-        .query_pairs()
-        .find(|(key, _)| key == "name")
-        .map(|(_, value)| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 /// Post-claim navigation suffix extracted from a `?then=...`
@@ -130,13 +104,11 @@ fn did_sigil_value(did: &str) -> Option<String> {
     })
 }
 
-/// `/join` view. Parses the invite client-side, decides whether the
-/// recipient already has the invited subject, and either:
-/// - fast-paths through `/api/profile/join` and navigates (the
-///   recipient already has the space — they get the chain refresh
-///   silently), or
-/// - renders a form so they can confirm a local name (fresh
-///   subject — they're joining for the first time).
+/// `/join` view. Parses the invite client-side, then auto-joins via
+/// `/api/profile/join` and navigates — an existing member back into the
+/// space (chain refreshed), a fresh member to `/` where the new space's
+/// card resolves its name by pulling the shared content branch. There is
+/// no name form: the name is the repository's, not a local label.
 ///
 /// The full URL (including any `#fragment`, which carries the
 /// ephemeral seed for audience-open invites) is read from
@@ -160,18 +132,15 @@ pub fn TonkJoin() -> impl IntoView {
     // the invite and must not be lost as we re-render.
     let invite_url = window().location().href().unwrap_or_else(|_| String::new());
 
-    let suggested = suggested_name_from_url(&invite_url).unwrap_or_default();
     // Optional post-claim navigation suffix. Lets the inviter
-    // (e.g. `slide share concept`) drop the recipient on a
-    // specific page within the joined space — e.g. a concept
-    // view — instead of the default space root. The value is a
-    // path suffix under `/space/<name>/`; the actual local
-    // name (resolved post-claim) gets prefixed at navigation
-    // time. Absent or malformed values fall through.
+    // (e.g. `slide share concept`) drop an already-member recipient on a
+    // specific page within the joined space — e.g. a concept view —
+    // instead of the default space root. The value is a path suffix under
+    // `/space/<key>/`; the routing key gets prefixed at navigation time.
+    // Absent or malformed values fall through. (A fresh member always
+    // lands on `/`, so the suffix does not apply there.)
     let then_suffix = then_suffix_from_url(&invite_url);
-    let name = RwSignal::new(suggested);
     let error = RwSignal::new(Option::<String>::None);
-    let submitting = RwSignal::new(false);
 
     // Parse + validate the invite asynchronously (Invite::parse_url
     // does the seed-audience check for open invites). Holds:
@@ -230,28 +199,29 @@ pub fn TonkJoin() -> impl IntoView {
             Some(Err(e)) => return JoinView::InvalidInvite(format!("{e}")),
         };
 
-        // Reverse-lookup the subject in the profile's space list.
-        // If found, the recipient already has this space mounted
-        // locally — they should land back in it (with a refreshed
-        // delegation chain) without re-naming anything. Navigation
-        // routes by the routing key (identity), not the label.
-        let existing = profile_info
-            .space
-            .iter()
-            .find(|entry| entry.subject.to_string() == subject)
-            .map(|entry| entry.key.clone());
-
-        match existing {
-            Some(key) => JoinView::AlreadyMember { name: key, subject },
-            None => JoinView::NewMember { subject },
-        }
+        // Whether the recipient already has this subject or is joining it
+        // fresh no longer changes the flow — both auto-join and redirect
+        // into the space, routed by the subject's did:key. The worker's
+        // join handler is idempotent (it renews an existing chain or
+        // creates a fresh replica), so the UI need not branch here. The
+        // `profile_info` read above still gates on the profile being
+        // loaded (and the scoped-audience check).
+        let _ = &profile_info;
+        JoinView::Member { subject }
     });
 
-    // Fast-path the `AlreadyMember` case: as soon as the view
-    // resolves to it, fire `/api/profile/join` (chain save +
-    // `Renewed` outcome) and navigate to the existing space.
-    // Tracked separately so we don't double-fire if `join_view`
-    // re-derives.
+    // Auto-join as soon as the view resolves to either `AlreadyMember`
+    // or `NewMember`: there is no longer a name to confirm — a joined
+    // space's name comes from the shared repository's own content branch,
+    // not a locally-chosen label. Fire `/api/profile/join` (claim + chain
+    // save) and navigate.
+    //
+    // An already-member lands back in the space (honouring any `then=`
+    // deep-link). A fresh member lands on `/`: the Hub lists the new
+    // replica and its name card queries the repo, which pulls the content
+    // branch and resolves the name in place — no install screen needed.
+    //
+    // Tracked separately so we don't double-fire if `join_view` re-derives.
     let auto_joined = RwSignal::new(false);
     {
         let navigate = navigate.clone();
@@ -261,39 +231,46 @@ pub fn TonkJoin() -> impl IntoView {
             if auto_joined.get() {
                 return;
             }
-            let JoinView::AlreadyMember { name, .. } = join_view.get() else {
+            // Only fire for a redeemable invite. The "Joining…" card stays
+            // on screen while the claim + pull run, then we redirect *into*
+            // the space (never a half-installed Hub card).
+            if !matches!(join_view.get(), JoinView::Member { .. }) {
                 return;
-            };
+            }
             auto_joined.set(true);
 
             let url = invite_url.clone();
-            let target = name.clone();
             let navigate = navigate.clone();
             let then_suffix = then_suffix.clone();
             spawn_local(async move {
-                match api::join(&url, &target).await {
+                match api::join(&url).await {
                     Ok(response) => {
-                        let outcome = match &response {
-                            JoinResponse::Joined { .. } => "joined",
-                            JoinResponse::Renewed { .. } => "renewed",
+                        // The response carries the joined repository's
+                        // routing key — authoritative for both outcomes.
+                        let (key, outcome) = match &response {
+                            JoinResponse::Joined { repository } => {
+                                (repository.name.clone(), "joined")
+                            }
+                            JoinResponse::Renewed { repository } => {
+                                (repository.name.clone(), "renewed")
+                            }
                         };
                         last_join_outcome.set(Some(outcome));
                         profile_resource.refetch();
-                        refresh_after_join(&target).await;
-                        let destination = compose_destination(&target, then_suffix.as_deref());
-                        navigate(&destination, NavigateOptions::default());
+                        // Pull the content branch so the space has data and
+                        // its concepts (names, views) resolve on arrival —
+                        // we wait for this before redirecting so the user
+                        // lands on a ready space, not a still-syncing one.
+                        refresh_after_join(&key).await;
+                        let dest = compose_destination(&key, then_suffix.as_deref());
+                        navigate(&dest, NavigateOptions::default());
                     }
                     Err(e) => {
-                        // The chain save failed (network, 5xx, or
-                        // even a name collision somehow). Surface
-                        // it inline so the user has visibility
-                        // even though the auto-path swallowed the
-                        // explicit form.
                         let message = match e {
-                            JoinError::NameTaken => format!(
-                                "Name '{}' is taken — please refresh and try again.",
-                                target,
-                            ),
+                            JoinError::NameTaken => {
+                                "This space is already being added — refresh and try again."
+                                    .to_string()
+                            }
                             JoinError::Other(err) => format!("{err}"),
                         };
                         error.set(Some(message));
@@ -304,82 +281,10 @@ pub fn TonkJoin() -> impl IntoView {
         });
     }
 
-    let on_input = move |event: Event| {
-        let value = event
-            .target()
-            .and_then(|target| target.dyn_into::<web_sys::HtmlElement>().ok())
-            .and_then(|el| {
-                js_sys::Reflect::get(&el, &wasm_bindgen::JsValue::from_str("value"))
-                    .ok()
-                    .and_then(|v| v.as_string())
-            })
-            .unwrap_or_default();
-        name.set(value);
-    };
-
     let on_cancel = {
         let navigate = navigate.clone();
         move |_| {
             navigate("/", NavigateOptions::default());
-        }
-    };
-
-    let submit = {
-        let navigate = navigate.clone();
-        let invite_url = invite_url.clone();
-        let then_suffix = then_suffix.clone();
-        move |event: SubmitEvent| {
-            event.prevent_default();
-
-            // Only valid in the `NewMember` branch — the form
-            // doesn't render in any other state, but a stray
-            // Enter on the input could still fire here.
-            if !matches!(join_view.get(), JoinView::NewMember { .. }) {
-                return;
-            }
-
-            let requested = name.get().trim().to_string();
-            if requested.is_empty() {
-                error.set(Some("Name can't be empty".to_string()));
-                return;
-            }
-
-            error.set(None);
-            submitting.set(true);
-            let navigate = navigate.clone();
-            let url = invite_url.clone();
-            let then_suffix = then_suffix.clone();
-            spawn_local(async move {
-                match api::join(&url, &requested).await {
-                    Ok(response) => {
-                        submitting.set(false);
-                        profile_resource.refetch();
-                        let (target_name, outcome) = match &response {
-                            JoinResponse::Joined { repository } => {
-                                (repository.name.clone(), "joined")
-                            }
-                            JoinResponse::Renewed { repository } => {
-                                (repository.name.clone(), "renewed")
-                            }
-                        };
-                        last_join_outcome.set(Some(outcome));
-                        refresh_after_join(&target_name).await;
-                        let destination = compose_destination(&target_name, then_suffix.as_deref());
-                        navigate(&destination, NavigateOptions::default());
-                    }
-                    Err(JoinError::NameTaken) => {
-                        submitting.set(false);
-                        error.set(Some(format!(
-                            "A space named '{}' already exists. Pick a different name.",
-                            requested
-                        )));
-                    }
-                    Err(JoinError::Other(e)) => {
-                        submitting.set(false);
-                        error.set(Some(format!("{e}")));
-                    }
-                }
-            });
         }
     };
 
@@ -388,11 +293,7 @@ pub fn TonkJoin() -> impl IntoView {
             <wa-card class="join-card">
                 { move || render_body(
                     join_view.get(),
-                    name,
                     error,
-                    submitting,
-                    on_input,
-                    submit.clone(),
                     on_cancel.clone(),
                 ) }
             </wa-card>
@@ -402,33 +303,23 @@ pub fn TonkJoin() -> impl IntoView {
 
 /// Render the card body for the current [`JoinView`] state.
 ///
-/// Pulled into a standalone function so each branch is locally
-/// readable; the closures it takes are the same ones the
-/// component sets up, threaded through.
-#[allow(clippy::too_many_arguments)]
-fn render_body<I, S, C>(
-    state: JoinView,
-    name: RwSignal<String>,
-    error: RwSignal<Option<String>>,
-    submitting: RwSignal<bool>,
-    on_input: I,
-    submit: S,
-    on_cancel: C,
-) -> impl IntoView
+/// Pulled into a standalone function so each branch is locally readable.
+/// There is no form any more — both `AlreadyMember` and `NewMember`
+/// auto-join (the name comes from the shared repo, not a typed label), so
+/// every actionable branch just shows a "Joining…" affordance.
+fn render_body<C>(state: JoinView, error: RwSignal<Option<String>>, on_cancel: C) -> impl IntoView
 where
-    I: Fn(Event) + 'static + Clone,
-    S: Fn(SubmitEvent) + 'static + Clone,
     C: Fn(leptos::ev::MouseEvent) + 'static + Clone,
 {
-    use leptos::either::EitherOf5;
+    use leptos::either::EitherOf4;
     match state {
-        JoinView::Loading => EitherOf5::A(view! {
+        JoinView::Loading => EitherOf4::A(view! {
             <div slot="header">
                 <h1>"Joining…"</h1>
             </div>
             <wa-spinner></wa-spinner>
         }),
-        JoinView::InvalidInvite(message) => EitherOf5::B(view! {
+        JoinView::InvalidInvite(message) => EitherOf4::B(view! {
             <div slot="header">
                 <h1>"Invite link is invalid"</h1>
             </div>
@@ -445,7 +336,7 @@ where
         }),
         JoinView::AudienceMismatch { audience, subject } => {
             let sigil_value = did_sigil_value(&subject);
-            EitherOf5::C(view! {
+            EitherOf4::C(view! {
                 <div slot="header">
                     <h1>"This invite is for someone else"</h1>
                 </div>
@@ -463,15 +354,20 @@ where
                 </div>
             })
         }
-        JoinView::AlreadyMember { name: _, subject } => {
+        JoinView::Member { subject } => {
+            // No form: the join is automatic and the name comes from the
+            // shared repository. Show a "Joining…" affordance; the effect
+            // claims the invite, pulls the content branch, then redirects
+            // into the now-ready space.
             let sigil_value = did_sigil_value(&subject);
-            EitherOf5::D(view! {
+            let _ = on_cancel;
+            EitherOf4::D(view! {
                 <div slot="header">
                     <h1>"Joining…"</h1>
                 </div>
                 <div class="join-target wa-stack wa-gap-s wa-align-items-center">
                     <tonk-sigil value=sigil_value></tonk-sigil>
-                    <p>"You're already a member of this space — taking you there now."</p>
+                    <p>"Adding this space — taking you there now."</p>
                     { move || error.get().map(|message| view! {
                         <wa-callout variant="danger">
                             <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
@@ -481,64 +377,12 @@ where
                 </div>
             })
         }
-        JoinView::NewMember { subject } => {
-            let sigil_value = did_sigil_value(&subject);
-            let subject_for_title = subject.clone();
-            EitherOf5::E(view! {
-                <div slot="header">
-                    <h1>"Join space"</h1>
-                    <p class="join-subtitle">
-                        "Pick a local name for this space. The inviter's "
-                        "suggestion is filled in below; you can rename "
-                        "it before joining."
-                    </p>
-                </div>
-                <form on:submit=submit>
-                    <div class="wa-stack wa-gap-s">
-                        <div class="join-target wa-cluster wa-gap-s wa-align-items-center">
-                            <tonk-sigil value=sigil_value></tonk-sigil>
-                            <code class="join-subject" title=subject_for_title>{ subject }</code>
-                        </div>
-                        <wa-input
-                            name="space-name"
-                            label="Local name"
-                            placeholder="e.g. team-foo"
-                            autocomplete="off"
-                            autofocus
-                            required
-                            prop:value=move || name.get()
-                            on:input=on_input
-                        ></wa-input>
-                        { move || error.get().map(|message| view! {
-                            <wa-callout variant="danger">
-                                <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
-                                { message }
-                            </wa-callout>
-                        }) }
-                    </div>
-                    <div slot="footer" class="join-actions">
-                        <wa-button
-                            type="button"
-                            variant="neutral"
-                            appearance="plain"
-                            on:click=on_cancel
-                        >"Cancel"</wa-button>
-                        <wa-button
-                            type="submit"
-                            variant="primary"
-                            prop:loading=move || submitting.get()
-                            prop:disabled=move || submitting.get()
-                        >"Join"</wa-button>
-                    </div>
-                </form>
-            })
-        }
     }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::{compose_destination, suggested_name_from_url, then_suffix_from_url};
+    use super::{compose_destination, then_suffix_from_url};
 
     #[test]
     fn it_extracts_a_then_suffix_from_a_well_formed_url() {
@@ -565,10 +409,9 @@ mod tests {
     }
 
     #[test]
-    fn it_keeps_then_and_name_independent() {
-        // Both parameters can coexist and are read independently.
-        let url = "https://ui.example.test/join?name=tasks&access=abc&then=concept/task";
-        assert_eq!(suggested_name_from_url(url).as_deref(), Some("tasks"));
+    fn it_reads_then_alongside_other_params() {
+        // `then=` is read independently of any other query params.
+        let url = "https://ui.example.test/join?access=abc&then=concept/task";
         assert_eq!(then_suffix_from_url(url).as_deref(), Some("concept/task"));
     }
 
