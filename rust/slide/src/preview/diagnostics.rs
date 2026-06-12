@@ -167,7 +167,7 @@ pub fn post_render(template: &str, conclusions: &[Conclusion], html: &str) -> Ve
             if let Some(value) = conclusion.fields.get(&field)
                 && let Some(text) = display_value(value)
                 && !text.is_empty()
-                && !html.contains(&text)
+                && !appears_in_html(&text, html)
             {
                 out.push(Diagnostic::ValueMissingFromOutput {
                     field: field.clone(),
@@ -175,6 +175,32 @@ pub fn post_render(template: &str, conclusions: &[Conclusion], html: &str) -> Ve
                 });
                 break; // one report per field is enough
             }
+        }
+    }
+    out
+}
+
+/// Whether a resolved value shows up in the rendered HTML. The
+/// real renderer interpolates via `set_text_content`/`setAttribute`,
+/// so the `inner_html()` readback escapes `&`, `<`, `>`, and `"` —
+/// a raw `Tom & Jerry` reads back as `Tom &amp; Jerry`. Accept
+/// either the raw value or its HTML-escaped form so the check
+/// doesn't cry wolf on ordinary punctuation.
+fn appears_in_html(value: &str, html: &str) -> bool {
+    html.contains(value) || html.contains(&html_escape(value))
+}
+
+/// Escape the characters the HTML serializer escapes when reading
+/// back interpolated content (`&`, `<`, `>`, `"`).
+fn html_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            other => out.push(other),
         }
     }
     out
@@ -313,6 +339,19 @@ mod tests {
                 "<article>{name}</article>",
                 &[conclusion(&[("name", "Alice")])],
                 "<article>Alice</article>",
+            );
+            assert!(diagnostics.is_empty(), "got {diagnostics:?}");
+        }
+
+        #[dialog_common::test]
+        fn it_accepts_a_value_the_renderer_html_escaped() {
+            // The real renderer interpolates via set_text_content, so
+            // an ampersand reads back as `&amp;`. The raw value must
+            // not be reported missing.
+            let diagnostics = post_render(
+                "<article>{name}</article>",
+                &[conclusion(&[("name", "Tom & Jerry")])],
+                "<article>Tom &amp; Jerry</article>",
             );
             assert!(diagnostics.is_empty(), "got {diagnostics:?}");
         }
