@@ -222,15 +222,27 @@ fn read_path_and_coerce(
                 Err(_) => return ReadOutcome::Unresolved,
             }
         };
-        if next.is_undefined() || next.is_null() {
-            // The value leaf being null/undefined is a blank field —
-            // "not provided" — not a broken path. A null/undefined step
-            // before the leaf means the path itself didn't resolve.
-            return if index == last_index {
-                ReadOutcome::Empty
-            } else {
-                ReadOutcome::Unresolved
-            };
+        // An intermediate step that is null/undefined means the path
+        // itself didn't resolve — the binding doesn't apply, fall through.
+        if index < last_index && (next.is_undefined() || next.is_null()) {
+            return ReadOutcome::Unresolved;
+        }
+        // At the leaf, distinguish "property absent" from "property
+        // present but empty":
+        // - `undefined` → the property does not exist on the object (e.g.
+        //   a `dataset.subject` attribute the element doesn't carry). The
+        //   binding can't be filled → `Unresolved` so the caller falls
+        //   through to the next ancestor.
+        // - `null` → the property exists but holds no value (a blank
+        //   `<wa-input>` reads `value === null`). The field is "left
+        //   blank" → `Empty`, omitted without aborting the command.
+        if index == last_index {
+            if next.is_undefined() {
+                return ReadOutcome::Unresolved;
+            }
+            if next.is_null() {
+                return ReadOutcome::Empty;
+            }
         }
         current = next;
     }
@@ -609,7 +621,11 @@ mod tests {
                 }
             }"#,
         );
-        let event = synthetic_event(&[]);
+        // A *cancelable* click so `preventDefault` actually flips
+        // `defaultPrevented` (a non-cancelable event ignores it).
+        let init = web_sys::EventInit::new();
+        init.set_cancelable(true);
+        let event = web_sys::Event::new_with_event_init_dict("click", &init).expect("event");
         // `remote` is present on the event but null (blank input).
         set_null_field(&event, "remote");
         let binding = binding_element(&[]);

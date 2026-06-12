@@ -2523,16 +2523,17 @@ mod tests {
         // `default-view` (observably distinct from `ready`).
         #[dialog_common::test]
         async fn it_renders_the_default_view_when_no_specific_view_exists() {
-            // The `_:_` fallback query is a one-shot answered here with a
-            // `display` template; the model is the auto-pushed frame. NO
-            // explicit `view=` so the built-in view predicate is used (no
-            // view-concept resolve), leaving the single one-shot for the
-            // `_:_` fallback query that `spawn_default_view` makes.
+            // One-shots in dispatch order: the bare model name `counter`
+            // resolves through the Name concept first, THEN the `_:_`
+            // fallback query `spawn_default_view` makes returns a `display`
+            // template. The model concept itself is the auto-pushed frame,
+            // and NO explicit `view=` is set so the built-in view predicate
+            // is used (no extra view-concept resolve one-shot).
             let host = FakeHost::install_with_model(
-                vec![rows(&[(
-                    "did:key:zDefaultView",
-                    &[("display", "<p>{count}</p>")],
-                )])],
+                vec![
+                    name_row("did:key:zModel"),
+                    rows(&[("did:key:zDefaultView", &[("display", "<p>{count}</p>")])]),
+                ],
                 Some(model_concept_frame()),
             );
             register();
