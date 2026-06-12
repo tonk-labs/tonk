@@ -2477,10 +2477,11 @@ mod tests {
         }
 
         // An explicit `view=` whose concept is absent on the branch is the
-        // recoverable `no-view` state — a neutral fallback naming the
-        // missing view, NOT a loud error. The model resolves (auto-pushed
-        // frame); the view name + concept one-shots return empty, so the
-        // view resolve fails with `UnknownSource`.
+        // recoverable `no-view` state — a danger fallback naming the
+        // missing view (a missing view concept is a config error, like a
+        // missing model). The model resolves (auto-pushed frame); the view
+        // name + concept one-shots return empty, so the view resolve fails
+        // with `UnknownSource`.
         #[dialog_common::test]
         async fn it_goes_no_view_when_an_explicit_view_is_absent() {
             // One-shot responses: the model name lookup resolves; the view
@@ -2508,8 +2509,8 @@ mod tests {
                 .expect("no-view names the missing view");
             assert_eq!(
                 callout.get_attribute("variant").as_deref(),
-                Some("neutral"),
-                "no-view is informative, not a loud error",
+                Some("danger"),
+                "a missing view concept is a danger, like a missing model",
             );
         }
 
