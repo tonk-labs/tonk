@@ -29,6 +29,10 @@ path = "tests/notation.rs"
 name = "sync"
 path = "tests/sync.rs"
 
+[[test]]
+name = "transfer"
+path = "tests/transfer.rs"
+
 [features]
 integration-tests = []
 
@@ -46,6 +50,7 @@ clap = { workspace = true }
 dialog-artifacts = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-credentials = { workspace = true }
+dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }
 dialog-operator = { workspace = true }
 dialog-query = { workspace = true }

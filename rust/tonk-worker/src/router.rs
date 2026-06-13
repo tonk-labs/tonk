@@ -54,6 +54,9 @@ pub use query::QueryPath;
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
+mod transfer;
+pub use transfer::ImportResponse;
+
 pub mod bridge;
 pub use bridge::BridgeRegistry;
 
@@ -187,6 +190,17 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/evaluate",
             post(evaluate::evaluate),
+        )
+        // CSV export / import — stream the branch's artifacts out as
+        // `text/csv`, or commit a CSV body's rows as assertions. See
+        // `router/transfer.rs`.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/export",
+            get(transfer::export),
+        )
+        .route(
+            "/api/repository/{repo}/branch/{branch}/import",
+            post(transfer::import),
         )
         // Structured-mutation route — see `plan/transact-endpoint.md`.
         // Bypasses tonk-notation: accepts a typed
