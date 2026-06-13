@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>dialog-arboretum demo</title>
+    <style>
+      body {
+        margin: 0;
+        background: #1a1a1a;
+        color: #ddd;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #2a2a2a;
+      }
+      h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      p {
+        margin: 4px 0 0;
+        color: #888;
+        font-size: 13px;
+      }
+      main {
+        padding: 16px 24px;
+        max-width: 900px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>&lt;dialog-arboretum&gt;</h1>
+      <p>Mock data — no worker. Click ▸ to expand the tree down to leaf entries and their decoded keys.</p>
+    </header>
+    <main>
+      <dialog-arboretum id="tree"></dialog-arboretum>
+    </main>
+
+    <script type="module">
+      import "./assets/dialog-arboretum.js";
+
+      // A small synthetic tree: a branch root with two children
+      // (one branch, one leaf), the inner branch holding two leaves.
+      const node = (hash, kind, size, count, at) => ({ hash, kind, size, count, at });
+
+      const NODES = {
+        "#root": node("#root", "branch", 208, 2),
+        "#b1": node("#b1", "branch", 5220, 2, 0),
+        "#l0": node("#l0", "leaf", 150536, 7, 1),
+        "#l1": node("#l1", "leaf", 22276, 4, 0),
+        "#l2": node("#l2", "leaf", 4416, 2, 1),
+      };
+      const CHILDREN = {
+        "#root": [NODES["#b1"], NODES["#l0"]],
+        "#b1": [NODES["#l1"], NODES["#l2"]],
+      };
+      const ENTRY = (key, at, attribute, entity) => ({
+        key, at, state: "added", attribute, entity, valueType: 3,
+      });
+      const ENTRIES = {
+        "#l0": [
+          ENTRY("#k0", 0, "dialog.attribute/id", "#E29V8dSYfpb7"),
+          ENTRY("#k1", 1, "dialog.attribute/type", "#E29V8dSYfpb7"),
+        ],
+        "#l1": [ENTRY("#k2", 0, "dialog.name/referent", "#ELHfyWRQdVtC")],
+        "#l2": [ENTRY("#k3", 0, "dialog.meta/description", "#E29V8dSYfpb7")],
+      };
+      const KEYS = {
+        "#k0": { key: "#k0", tag: "entity", entity: "#E29V8dSYfpb7J6uzqZ", attribute: "#dialogAttributeId", valueType: 3, valueRef: "#xyzTonkTaskDone" },
+        "#k1": { key: "#k1", tag: "entity", entity: "#E29V8dSYfpb7J6uzqZ", attribute: "#dialogAttributeType", valueType: 3, valueRef: "#Boolean" },
+        "#k2": { key: "#k2", tag: "attribute", entity: "#ELHfyWRQdVtCtBS3", attribute: "#dialogNameReferent", valueType: 3, valueRef: "#idTaskTitle" },
+        "#k3": { key: "#k3", tag: "entity", entity: "#E29V8dSYfpb7J6uzqZ", attribute: "#dialogMetaDescription", valueType: 3, valueRef: "#taskDoneFlag" },
+      };
+
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      const loader = {
+        async root() {
+          await wait(80);
+          return NODES["#root"];
+        },
+        async children(hash) {
+          await wait(120);
+          return CHILDREN[hash] ?? [];
+        },
+        async entries(hash) {
+          await wait(120);
+          return ENTRIES[hash] ?? [];
+        },
+        async decodeKey(key) {
+          await wait(60);
+          return KEYS[key];
+        },
+      };
+
+      document.getElementById("tree").loader = loader;
+    </script>
+  </body>
+</html>
