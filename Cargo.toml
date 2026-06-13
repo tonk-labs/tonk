@@ -148,6 +148,7 @@ dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", branch = "f
 dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }
 dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", branch = "feat/switch-to-search-tree" }

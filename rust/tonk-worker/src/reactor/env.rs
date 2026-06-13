@@ -26,6 +26,13 @@ impl<T> LoadProvider for T where T: Provider<Load> + ConditionalSync + 'static {
 pub trait BranchOpenProvider: Provider<Resolve> + ConditionalSync + 'static {}
 impl<T> BranchOpenProvider for T where T: Provider<Resolve> + ConditionalSync + 'static {}
 
+/// Bound needed for raw content-addressed block access — a
+/// `LocalIndex` over the branch archive, reading tree nodes by
+/// hash. `Put` is part of the `StorageBackend` bound even though
+/// tree introspection only reads.
+pub trait GetPutProvider: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
+impl<T> GetPutProvider for T where T: Provider<Get> + Provider<Put> + ConditionalSync + 'static {}
+
 /// Bound needed to run a query (`branch.query().select(q).perform`).
 pub trait SelectProvider:
     Provider<Get>

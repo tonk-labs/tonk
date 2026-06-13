@@ -95,13 +95,35 @@ async fn query_on_branch<'a>(
         .map_err(|e| TonkWorkerError::Router(format!("failed to read body: {e}")))?
         .to_bytes();
     let wire: Query = serde_json::from_slice(&bytes)
-        .map_err(|e| TonkWorkerError::Router(format!("invalid ConceptQuery body: {e}")))?;
-    let query = wire.into();
+        .map_err(|e| TonkWorkerError::Router(format!("invalid query body: {e}")))?;
 
     let want_stream = headers
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|s| s.contains("text/event-stream"));
+
+    // A formula query (string predicate) is resolved by the worker
+    // rather than dialog's planner — the `tree/*` introspection
+    // family. One-shot only for now.
+    let query = match wire.into_concept_query() {
+        Ok(query) => query,
+        Err(wire) => {
+            if want_stream {
+                return Err(TonkWorkerError::Router(
+                    "formula queries do not support subscriptions yet".into(),
+                ));
+            }
+            let session = branch
+                .acquire(&tonk.operator)
+                .await
+                .map_err(reactor_to_error)?;
+            let conclusions =
+                crate::reactor::resolve_formula(session.handle(), &tonk.operator, &wire)
+                    .await
+                    .map_err(|e| TonkWorkerError::Router(e.to_string()))?;
+            return Ok(Json(conclusions).into_response());
+        }
+    };
 
     if want_stream {
         let subscriber = branch

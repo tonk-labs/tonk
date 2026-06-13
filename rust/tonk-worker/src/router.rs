@@ -2170,6 +2170,84 @@ attribute!: &{name}
         serde_json::from_slice(&body).expect("query response is JSON")
     }
 
+    /// Run a one-shot `/query` with a formula predicate (a bare
+    /// string), returning the parsed JSON body and HTTP status.
+    async fn post_formula_query(
+        app: &Router,
+        repo: &str,
+        branch: &str,
+        formula: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let wire = serde_json::json!({ "predicate": formula, "terms": {} });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/{branch}/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(wire.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// A `tree/node` formula query walks the branch's index tree:
+    /// it reads and decodes the root node, returning a `Conclusion`
+    /// whose `this` is the node hash and whose fields describe the
+    /// node (kind, byte size, child/entry count).
+    #[dialog_common::test]
+    async fn it_resolves_a_tree_node_formula() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-formula";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let (status, body) = post_formula_query(&app, repo, "main", "tree/node").await;
+        assert_eq!(status, StatusCode::OK, "formula query OK: {body}");
+        let arr = body.as_array().expect("array of conclusions");
+        assert_eq!(arr.len(), 1, "a seeded branch has a root node: {body}");
+        let row = &arr[0];
+        assert!(
+            row["this"].as_str().is_some_and(|s| s.starts_with('#')),
+            "this is a base58 node hash: {row}"
+        );
+        let kind = row["fields"]["kind"].as_str().unwrap_or("");
+        assert!(kind == "branch" || kind == "leaf", "kind set: {row}");
+        assert!(
+            row["fields"]["size"].as_i64().is_some_and(|n| n > 0),
+            "node has a byte size: {row}"
+        );
+        assert!(
+            row["fields"]["count"].as_i64().is_some(),
+            "node has a child/entry count: {row}"
+        );
+    }
+
+    /// An unknown formula name is a 4xx, not a panic or a concept
+    /// fall-through.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_formula() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-formula-unknown";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let (status, _body) = post_formula_query(&app, repo, "main", "tree/bogus").await;
+        assert_ne!(status, StatusCode::OK, "unknown formula must not be OK");
+    }
+
     /// Open an SSE subscription and return the open body so the
     /// caller can read frames as they arrive.
     async fn open_subscription(app: &Router, repo: &str, branch: &str) -> Body {
