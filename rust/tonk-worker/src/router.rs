@@ -428,7 +428,7 @@ pub mod tests {
     /// DID suffix from the 201 `RepositoryInfo`) is what every subsequent
     /// request must address. Each PUT always creates, so runs are
     /// independent without name juggling.
-    async fn put_repo(app: &Router, label: &str) -> String {
+    pub(crate) async fn put_repo(app: &Router, label: &str) -> String {
         let response = app
             .clone()
             .oneshot(

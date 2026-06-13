@@ -2314,27 +2314,17 @@ mod tests {
     /// repo's meta branch.
     #[dialog_common::test]
     async fn it_records_the_founder_membership_on_create() {
-        let repo = "test-founder-membership";
-        let (_app, state) = fresh_repo(repo).await;
+        let (_app, state, key) = fresh_repo("test-founder-membership").await;
 
-        let memberships = crate::router::tests::meta_memberships(&state, repo).await;
+        let memberships = crate::router::tests::meta_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             use tonk_schema::prelude::DidExt as _;
             guard.profile.did().this()
         };
-        // `fresh_repo` tolerates 412 (IndexedDB state from a prior browser
-        // run), so the repo may already have a membership from a previous
-        // run.  Assert at least one row and that the founder's is present.
-        assert!(
-            memberships.len() >= 1,
-            "expected at least the founder membership, got {}",
-            memberships.len(),
-        );
-        assert!(
-            memberships.iter().any(|m| m.member.0 == profile_entity),
-            "founder membership must be present; got {:?}",
-            memberships,
-        );
+        // Every create mints a fresh routing key, so the repo is brand
+        // new: exactly the founder's membership.
+        assert_eq!(memberships.len(), 1, "exactly the founder membership");
+        assert_eq!(memberships[0].member.0, profile_entity);
     }
 }

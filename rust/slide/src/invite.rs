@@ -255,10 +255,18 @@ pub async fn claim(
 
     // Roster facts on the joined repo's meta branch: the invitation
     // (idempotent if the minter recorded it; self-healing otherwise),
-    // this profile's membership, and the provenance stamp. A fresh
-    // site has no prior stamp to preserve.
+    // this profile's membership, and — unless this is a self-claim —
+    // the provenance stamp. A fresh site has no prior stamp, so no
+    // first-wins check is needed; but the slide profile is shared
+    // across this machine's sites, so a member claiming their own
+    // invite would otherwise stamp their own founder membership.
+    // Mirror the worker's self-invite skip: provenance answers "how
+    // did this member first get in", and that is meaningless when the
+    // inviter is the claimer.
+    use tonk_schema::prelude::DidExt as _;
     let membership = Membership::new(joined.profile.did(), subject.clone());
     let invitation_entity = invitation.this().clone();
+    let self_invite = invitation.inviter.0 == joined.profile.did().this();
     let meta = joined
         .repository
         .branch(META_BRANCH)
@@ -266,13 +274,17 @@ pub async fn claim(
         .perform(&joined.operator)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
-    meta.transaction()
+    let mut transaction = meta
+        .transaction()
         .assert(invitation)
-        .assert(membership.clone())
-        .assert(InvitedVia::new(
+        .assert(membership.clone());
+    if !self_invite {
+        transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
             invitation_entity,
-        ))
+        ));
+    }
+    transaction
         .commit()
         .perform(&joined.operator)
         .await

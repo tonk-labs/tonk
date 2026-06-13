@@ -364,14 +364,19 @@ mod tests {
     use tonk_schema::prelude::DidExt as _;
 
     use crate::router::api_router_with_state;
-    use crate::router::tests::{meta_invitations, meta_invited_via, meta_memberships, test_state};
+    use crate::router::tests::{
+        meta_invitations, meta_invited_via, meta_memberships, put_repo, test_state,
+    };
 
     /// Hand-craft an audience-open invite URL for a synthetic
     /// repository subject. The subject signer doubles as root issuer.
-    /// Distinct tag bytes give distinct subjects/ephemerals.
-    async fn handcrafted_invite_url(subject_tag: u8, ephemeral_tag: u8) -> String {
+    /// Distinct tag bytes give distinct subjects/ephemerals. Returns
+    /// the URL plus the subject's routing key (the repo the join
+    /// mounts the claimer's replica under).
+    async fn handcrafted_invite_url(subject_tag: u8, ephemeral_tag: u8) -> (String, String) {
         let subject_signer = Ed25519Signer::import(&[subject_tag; 32]).await.unwrap();
         let subject = subject_signer.did();
+        let key = subject.repo_key().to_owned();
         let ephemeral_seed = [ephemeral_tag; 32];
         let ephemeral = Ed25519Signer::import(&ephemeral_seed).await.unwrap();
         let delegation = DelegationBuilder::new()
@@ -392,11 +397,11 @@ mod tests {
         )
         .await
         .unwrap();
-        invite.to_url("https://hub.tonk.xyz/join").unwrap()
+        (invite.to_url("https://hub.tonk.xyz/join").unwrap(), key)
     }
 
-    async fn post_join(app: &axum::Router, url: &str, name: &str) -> StatusCode {
-        let body = serde_json::json!({ "url": url, "name": name }).to_string();
+    async fn post_join(app: &axum::Router, url: &str) -> StatusCode {
+        let body = serde_json::json!({ "url": url }).to_string();
         let response = app
             .clone()
             .oneshot(
@@ -418,28 +423,28 @@ mod tests {
     #[dialog_common::test]
     async fn it_records_membership_and_provenance_on_join() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
-        let url = handcrafted_invite_url(10, 11).await;
+        let (url, key) = handcrafted_invite_url(10, 11).await;
         let expected = {
             let parsed = Invite::parse_url(&url).await.unwrap();
             Invitation::from_chain(&parsed.chain).unwrap()
         };
 
-        assert_eq!(post_join(&app, &url, "joined-a").await, StatusCode::CREATED);
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
 
-        let memberships = meta_memberships(&state, "joined-a").await;
+        let memberships = meta_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
         };
         assert!(memberships.iter().any(|m| m.member.0 == profile_entity));
 
-        let invitations = meta_invitations(&state, "joined-a").await;
+        let invitations = meta_invitations(&state, &key).await;
         assert!(
             invitations.iter().any(|i| i.this == expected.this),
             "invitation self-healed from the URL",
         );
 
-        let stamps = meta_invited_via(&state, "joined-a").await;
+        let stamps = meta_invited_via(&state, &key).await;
         let membership_entity = memberships
             .iter()
             .find(|m| m.member.0 == profile_entity)
@@ -459,23 +464,36 @@ mod tests {
     async fn it_does_not_overwrite_provenance_on_a_renewed_join() {
         let (app, state, _lsp) = api_router_with_state(test_state().await);
         // Same subject signer (tag 20), two different ephemerals.
-        let url_a = handcrafted_invite_url(20, 21).await;
-        let url_b = handcrafted_invite_url(20, 22).await;
+        let (url_a, key) = handcrafted_invite_url(20, 21).await;
+        let (url_b, _) = handcrafted_invite_url(20, 22).await;
         let expected_a = {
             let parsed = Invite::parse_url(&url_a).await.unwrap();
             Invitation::from_chain(&parsed.chain).unwrap()
         };
+        let expected_b = {
+            let parsed = Invite::parse_url(&url_b).await.unwrap();
+            Invitation::from_chain(&parsed.chain).unwrap()
+        };
 
-        assert_eq!(
-            post_join(&app, &url_a, "joined-b").await,
-            StatusCode::CREATED
+        assert_eq!(post_join(&app, &url_a).await, StatusCode::CREATED);
+        assert_eq!(post_join(&app, &url_b).await, StatusCode::OK);
+
+        // The Renewed path still records the second invitation, even
+        // though it leaves provenance pinned to the first.
+        let invitations = meta_invitations(&state, &key).await;
+        assert!(
+            invitations.iter().any(|i| i.this == expected_a.this),
+            "first invitation recorded",
         );
-        assert_eq!(post_join(&app, &url_b, "ignored").await, StatusCode::OK);
+        assert!(
+            invitations.iter().any(|i| i.this == expected_b.this),
+            "renewed join records the second invitation too",
+        );
 
-        let stamps = meta_invited_via(&state, "joined-b").await;
+        let stamps = meta_invited_via(&state, &key).await;
         // Exactly one stamp for this membership, still pointing at the
         // first invitation.
-        let memberships = meta_memberships(&state, "joined-b").await;
+        let memberships = meta_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
@@ -498,32 +516,15 @@ mod tests {
     /// provenance stamp — self-invites are not provenance.
     #[dialog_common::test]
     async fn it_skips_provenance_for_self_claims() {
-        let repo = "test-self-claim";
         let (app, state, _lsp) = api_router_with_state(test_state().await);
 
-        // Create own repo, mint own invite.
-        let create = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}"))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .header("if-none-match", "*")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(
-            create.status() == StatusCode::CREATED
-                || create.status() == StatusCode::PRECONDITION_FAILED
-        );
+        // Create own repo (addressed by its routing key), mint own invite.
+        let key = put_repo(&app, "test-self-claim").await;
         let minted_resp = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{repo}/invite"))
+                    .uri(format!("/api/repository/{key}/invite"))
                     .method("POST")
                     .header("content-type", "application/json")
                     .body(Body::from("{}"))
@@ -538,13 +539,10 @@ mod tests {
         let minted: crate::router::CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
 
         // Claiming own invite hits the Renewed path.
-        assert_eq!(
-            post_join(&app, minted.url().as_str(), "ignored").await,
-            StatusCode::OK
-        );
+        assert_eq!(post_join(&app, minted.url().as_str()).await, StatusCode::OK);
 
         // The claimer's own membership exists, but no stamp on it.
-        let memberships = meta_memberships(&state, repo).await;
+        let memberships = meta_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
@@ -555,7 +553,7 @@ mod tests {
             .expect("founder membership present")
             .this()
             .clone();
-        let stamps = meta_invited_via(&state, repo).await;
+        let stamps = meta_invited_via(&state, &key).await;
         assert!(
             !stamps.iter().any(|s| s.this == membership_entity),
             "self-claims must not stamp provenance",

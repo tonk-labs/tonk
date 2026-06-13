@@ -301,7 +301,7 @@ mod tests {
     use tonk_schema::Invitation;
     use tonk_schema::prelude::DidExt as _;
 
-    use crate::router::tests::{meta_invitations, test_state};
+    use crate::router::tests::{meta_invitations, put_repo, test_state};
     use crate::router::{CreateInviteResponse, api_router_with_state};
 
     /// Minting an invite records an `Invitation` on the repo's meta
@@ -309,34 +309,17 @@ mod tests {
     /// URL, and whose inviter is the minting profile.
     #[dialog_common::test]
     async fn it_records_the_invitation_on_mint() {
-        let repo = "test-mint-invitation";
         let (app, state, _lsp) = api_router_with_state(test_state().await);
 
-        // Create the repo.
-        let response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/api/repository/{repo}"))
-                    .method("PUT")
-                    .header("content-type", "application/json")
-                    .header("if-none-match", "*")
-                    .body(Body::from("{}"))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(
-            response.status() == StatusCode::CREATED
-                || response.status() == StatusCode::PRECONDITION_FAILED
-        );
+        // Create the repo; address it by the minted routing key.
+        let key = put_repo(&app, "test-mint-invitation").await;
 
         // Mint an open invite.
         let response = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/repository/{repo}/invite"))
+                    .uri(format!("/api/repository/{key}/invite"))
                     .method("POST")
                     .header("content-type", "application/json")
                     .body(Body::from("{}"))
@@ -354,23 +337,14 @@ mod tests {
         let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
         let expected = Invitation::from_chain(&parsed.chain).unwrap();
 
-        let invitations = meta_invitations(&state, repo).await;
-        // `fresh`-style repos may carry state from a prior browser run;
-        // assert the expected invitation is present rather than an exact
-        // count.
-        assert!(
-            invitations.iter().any(|i| i.this == expected.this),
-            "minted invitation must be recorded on the repo meta",
-        );
+        let invitations = meta_invitations(&state, &key).await;
+        assert_eq!(invitations.len(), 1, "exactly the minted invitation");
+        assert_eq!(invitations[0].this, expected.this);
 
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
         };
-        let recorded = invitations
-            .iter()
-            .find(|i| i.this == expected.this)
-            .expect("recorded invitation present");
-        assert_eq!(recorded.inviter.0, profile_entity);
+        assert_eq!(invitations[0].inviter.0, profile_entity);
     }
 }

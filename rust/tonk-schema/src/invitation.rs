@@ -136,8 +136,7 @@ mod tests {
     async fn it_derives_the_same_entity_from_minted_and_reparsed_chains() {
         let subject = signer(&SUBJECT_SEED).await.did();
         let chain = minted_chain(&subject).await;
-        let reparsed =
-            DelegationChain::try_from(chain.to_bytes().unwrap().as_slice()).unwrap();
+        let reparsed = DelegationChain::try_from(chain.to_bytes().unwrap().as_slice()).unwrap();
 
         let minted = Invitation::from_chain(&chain).unwrap();
         let claimed = Invitation::from_chain(&reparsed).unwrap();
