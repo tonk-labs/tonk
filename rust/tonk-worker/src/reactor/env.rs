@@ -12,7 +12,7 @@
 
 use dialog_capability::{Fork, Provider};
 use dialog_common::ConditionalSync;
-use dialog_effects::archive::{Get, Put};
+use dialog_effects::archive::{Get, Import, Put};
 use dialog_effects::authority::Identify;
 use dialog_effects::memory::{Publish, Resolve};
 use dialog_effects::space::Load;
@@ -54,6 +54,7 @@ impl<T> SelectProvider for T where
 pub trait CommitProvider:
     Provider<Get>
     + Provider<Put>
+    + Provider<Import>
     + Provider<Resolve>
     + Provider<Publish>
     + Provider<Identify>
@@ -66,6 +67,7 @@ pub trait CommitProvider:
 impl<T> CommitProvider for T where
     T: Provider<Get>
         + Provider<Put>
+        + Provider<Import>
         + Provider<Resolve>
         + Provider<Publish>
         + Provider<Identify>
@@ -80,6 +82,7 @@ impl<T> CommitProvider for T where
 pub trait PullProvider:
     Provider<Get>
     + Provider<Put>
+    + Provider<Import>
     + Provider<Resolve>
     + Provider<Publish>
     + Provider<Identify>
@@ -92,6 +95,7 @@ pub trait PullProvider:
 impl<T> PullProvider for T where
     T: Provider<Get>
         + Provider<Put>
+        + Provider<Import>
         + Provider<Resolve>
         + Provider<Publish>
         + Provider<Identify>
