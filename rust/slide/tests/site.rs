@@ -185,6 +185,97 @@ mod when_claiming_an_invite_with_a_remote {
     }
 }
 
+mod when_recording_roster_facts {
+    use anyhow::Result;
+    use dialog_query::{Output as _, Query, Term};
+    use slide::invite;
+    use slide::site::{SITE_DIRNAME, SlideSite};
+    use tonk_invite::Invite;
+    use tonk_schema::prelude::DidExt as _;
+    use tonk_schema::{Invitation, InvitedVia, Membership};
+
+    use crate::common;
+
+    /// The mint records an invitation on the inviter's copy of the
+    /// repo meta; the claim records the membership + provenance on
+    /// the claimer's copy. Both reference the same content-derived
+    /// invitation entity.
+    #[dialog_common::test]
+    async fn it_records_roster_facts_on_mint_and_claim() -> Result<()> {
+        let inviter = common::TestSite::new().await?;
+        let invite_outcome = invite::mint(&inviter.site, None, None).await?;
+        let parsed = Invite::parse_url(&invite_outcome.url).await?;
+        let expected =
+            Invitation::from_chain(&parsed.chain).expect("invite chains have a specific subject");
+
+        // Inviter side: invitation recorded at mint.
+        let inviter_meta = inviter
+            .site
+            .repository
+            .branch(slide::remote::META_BRANCH)
+            .open()
+            .perform(&inviter.site.operator)
+            .await?;
+        let invitations: Vec<Invitation> = inviter_meta
+            .query()
+            .select(Query::<Invitation> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                inviter: Term::var("inviter"),
+                audience: Term::var("audience"),
+            })
+            .perform(&inviter.site.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(invitations.len(), 1);
+        assert_eq!(invitations[0].this, expected.this);
+
+        // Claim into a fresh site.
+        let claimer_tmp = tempfile::tempdir()?;
+        let claimer_parent = claimer_tmp.path().canonicalize()?;
+        let claimer_config = common::isolated_config(&claimer_parent)?;
+        invite::claim(&claimer_parent, &invite_outcome.url, claimer_config.clone()).await?;
+        let joined =
+            SlideSite::open_with(&claimer_parent.join(SITE_DIRNAME), claimer_config).await?;
+
+        // Claimer side: membership + stamp referencing the same
+        // invitation entity.
+        let claimer_meta = joined
+            .repository
+            .branch(slide::remote::META_BRANCH)
+            .open()
+            .perform(&joined.operator)
+            .await?;
+        let memberships: Vec<Membership> = claimer_meta
+            .query()
+            .select(Query::<Membership> {
+                this: Term::var("this"),
+                subject: Term::var("subject"),
+                member: Term::var("member"),
+            })
+            .perform(&joined.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0].member.0, joined.profile.did().this());
+
+        let stamps: Vec<InvitedVia> = claimer_meta
+            .query()
+            .select(Query::<InvitedVia> {
+                this: Term::var("this"),
+                invitation: Term::var("invitation"),
+            })
+            .perform(&joined.operator)
+            .try_vec()
+            .await?;
+        assert_eq!(stamps.len(), 1);
+        assert_eq!(stamps[0].this, *memberships[0].this());
+        assert_eq!(stamps[0].invitation.0, expected.this);
+
+        Ok(())
+    }
+}
+
 mod when_minting_and_claiming_an_invite {
     use anyhow::Result;
     use slide::invite::{self, InviteError};

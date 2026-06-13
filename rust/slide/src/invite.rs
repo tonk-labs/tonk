@@ -21,10 +21,11 @@ use dialog_ucan::UcanDelegation;
 use dialog_varsig::{Did, Principal};
 use thiserror::Error;
 use tonk_invite::{Invite, InviteAudience};
+use tonk_schema::{Invitation, InvitedVia, Membership};
 use url::Url;
 
 use crate::ExitCode;
-use crate::remote::{self, DEFAULT_REMOTE};
+use crate::remote::{self, DEFAULT_REMOTE, META_BRANCH};
 use crate::site::{self, SITE_DIRNAME, SiteConfig, SlideSite};
 
 /// Default base URL for minted invites. Mirrors
@@ -139,6 +140,24 @@ pub async fn mint(
         .to_url(base_url.unwrap_or(DEFAULT_BASE_URL))
         .map_err(|e| InviteError::Io(format!("failed to serialize invite URL: {e}")))?;
 
+    // Record the invitation on the repo's meta branch — the durable,
+    // secret-free half of the invite (the seed stays in the URL).
+    let invitation = Invitation::from_chain(&invite.chain)
+        .expect("Invite invariant: chain has a specific subject");
+    let meta = site
+        .repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
+    meta.transaction()
+        .assert(invitation)
+        .commit()
+        .perform(&site.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to record invitation: {e}")))?;
+
     Ok(InviteOutcome {
         url,
         subject: site.repository.did(),
@@ -182,6 +201,8 @@ pub async fn claim(
     let invite = Invite::parse_url(invite_url)
         .await
         .map_err(|e| InviteError::InvalidInvite(e.to_string()))?;
+    let invitation = Invitation::from_chain(&invite.chain)
+        .expect("Invite invariant: chain has a specific subject");
 
     std::fs::create_dir_all(&root)
         .map_err(|e| InviteError::Io(format!("failed to create {}: {e}", root.display())))?;
@@ -231,6 +252,31 @@ pub async fn claim(
     let joined = SlideSite::open_with(&root, config)
         .await
         .map_err(|e| InviteError::Io(format!("failed to open joined site: {e}")))?;
+
+    // Roster facts on the joined repo's meta branch: the invitation
+    // (idempotent if the minter recorded it; self-healing otherwise),
+    // this profile's membership, and the provenance stamp. A fresh
+    // site has no prior stamp to preserve.
+    let membership = Membership::new(joined.profile.did(), subject.clone());
+    let invitation_entity = invitation.this().clone();
+    let meta = joined
+        .repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&joined.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to open meta branch: {e}")))?;
+    meta.transaction()
+        .assert(invitation)
+        .assert(membership.clone())
+        .assert(InvitedVia::new(
+            membership.this().clone(),
+            invitation_entity,
+        ))
+        .commit()
+        .perform(&joined.operator)
+        .await
+        .map_err(|e| InviteError::Io(format!("failed to record membership: {e}")))?;
 
     // Wire the embedded remote (if any) onto the freshly
     // bootstrapped site. Match the worker's `DEFAULT_REMOTE` so
