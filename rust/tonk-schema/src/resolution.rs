@@ -383,7 +383,9 @@ mod tests {
         transient: bool,
     ) -> anyhow::Result<Entity>
     where
-        Env: QueryEnv + dialog_capability::Provider<dialog_effects::memory::Publish>,
+        Env: QueryEnv
+            + dialog_capability::Provider<dialog_effects::memory::Publish>
+            + dialog_capability::Provider<dialog_effects::archive::Import>,
     {
         let txn = branch.transaction();
         let mut txn = txn;

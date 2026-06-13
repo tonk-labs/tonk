@@ -9,8 +9,14 @@ use std::sync::Arc;
 
 use dialog_query::ConceptQuery;
 
+use dialog_artifacts::Exporter;
+use dialog_common::ConditionalSend;
+use dialog_repository::Importer;
+
 use crate::reactor::env::{BranchOpenProvider, LoadProvider};
 use crate::reactor::error::ReactorError;
+use crate::reactor::export::Export;
+use crate::reactor::import::Import;
 use crate::reactor::pull::Pull;
 use crate::reactor::push::Push;
 use crate::reactor::subscribe::Subscribe;
@@ -94,5 +100,19 @@ impl<'a> BranchReference<'a> {
     /// branch state.
     pub fn push(self) -> Push<'a> {
         Push::new(self)
+    }
+
+    /// Stream every artifact on the branch into `exporter`. Chain
+    /// `.perform(&op)`. Read-only — no re-poll.
+    pub fn export<E: Exporter>(self, exporter: E) -> Export<'a, E> {
+        Export::new(self, exporter)
+    }
+
+    /// Commit every artifact `importer` yields as an assertion, in
+    /// one transaction. Chain `.perform(&op)`. Re-polls every
+    /// subscription on the branch so changed results fan out, the
+    /// same way a transaction commit does.
+    pub fn import<I: Importer + Unpin + ConditionalSend>(self, importer: I) -> Import<'a, I> {
+        Import::new(self, importer)
     }
 }
