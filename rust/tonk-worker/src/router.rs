@@ -355,7 +355,6 @@ pub mod tests {
     }
 
     /// Query all `Invitation` rows on `repo`'s meta branch.
-    #[allow(dead_code)]
     pub(crate) async fn meta_invitations(
         state: &super::AppState,
         repo: &str,
