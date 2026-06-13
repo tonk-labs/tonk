@@ -2222,7 +2222,7 @@ attribute!: &{name}
             "this is a base58 node hash: {row}"
         );
         let kind = row["fields"]["kind"].as_str().unwrap_or("");
-        assert!(kind == "branch" || kind == "leaf", "kind set: {row}");
+        assert!(kind == "index" || kind == "segment", "kind set: {row}");
         assert!(
             row["fields"]["size"].as_i64().is_some_and(|n| n > 0),
             "node has a byte size: {row}"
@@ -2295,7 +2295,7 @@ attribute!: &{name}
         let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
         let root = &root_body.as_array().expect("array")[0];
         let root_hash = root["this"].as_str().expect("root hash").to_string();
-        let root_is_branch = root["fields"]["kind"] == "branch";
+        let root_is_index = root["fields"]["kind"] == "index";
 
         let (status, body) = post_formula_query_with(
             &app,
@@ -2308,8 +2308,8 @@ attribute!: &{name}
         assert_eq!(status, StatusCode::OK, "tree/child OK: {body}");
         let rows = body.as_array().expect("array of children");
 
-        if root_is_branch {
-            assert!(!rows.is_empty(), "a branch root has children: {body}");
+        if root_is_index {
+            assert!(!rows.is_empty(), "an index root has children: {body}");
             for (i, row) in rows.iter().enumerate() {
                 assert!(
                     row["fields"]["child"]
@@ -2320,10 +2320,13 @@ attribute!: &{name}
                 assert_eq!(row["this"], row["fields"]["child"], "this == child: {row}");
                 assert_eq!(row["fields"]["at"], i as i64, "sibling position: {row}");
                 let kind = row["fields"]["kind"].as_str().unwrap_or("");
-                assert!(kind == "branch" || kind == "leaf", "child kind set: {row}");
+                assert!(
+                    kind == "index" || kind == "segment",
+                    "child kind set: {row}"
+                );
             }
         } else {
-            assert!(rows.is_empty(), "a leaf root has no children: {body}");
+            assert!(rows.is_empty(), "a segment root has no children: {body}");
         }
     }
 
@@ -2340,7 +2343,7 @@ attribute!: &{name}
         let repo = key.as_str();
         seed_named_entity(&app, repo).await;
 
-        // Descend from the root to the first leaf.
+        // Descend from the root to the first segment.
         let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
         let mut hash = root_body.as_array().unwrap()[0]["this"]
             .as_str()
@@ -2351,7 +2354,7 @@ attribute!: &{name}
             .unwrap()
             .to_string();
         let mut guard = 0;
-        while kind == "branch" && guard < 32 {
+        while kind == "index" && guard < 32 {
             guard += 1;
             let (_, kids) = post_formula_query_with(
                 &app,
@@ -2365,9 +2368,9 @@ attribute!: &{name}
             hash = first["fields"]["child"].as_str().unwrap().to_string();
             kind = first["fields"]["kind"].as_str().unwrap().to_string();
         }
-        assert_eq!(kind, "leaf", "descended to a leaf");
+        assert_eq!(kind, "segment", "descended to a segment");
 
-        // Read the leaf's entries.
+        // Read the segment's entries.
         let (status, entries) = post_formula_query_with(
             &app,
             repo,
@@ -2378,7 +2381,7 @@ attribute!: &{name}
         .await;
         assert_eq!(status, StatusCode::OK, "tree/entry OK: {entries}");
         let entries = entries.as_array().expect("entries");
-        assert!(!entries.is_empty(), "leaf has entries: {entries:?}");
+        assert!(!entries.is_empty(), "segment has entries: {entries:?}");
         let entry = &entries[0];
         assert!(
             entry["fields"]["key"]

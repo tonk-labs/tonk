@@ -5137,6 +5137,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-tree"
+version = "0.1.0"
+dependencies = [
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-ui"
 version = "0.1.0"
 dependencies = [
@@ -5177,6 +5185,7 @@ dependencies = [
  "tonk-notation",
  "tonk-portal",
  "tonk-sigil",
+ "tonk-tree",
  "tonk-worker",
  "tonk-workspace",
  "url",

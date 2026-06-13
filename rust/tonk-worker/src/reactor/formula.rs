@@ -16,11 +16,13 @@
 use std::collections::BTreeMap;
 
 use base58::{FromBase58, ToBase58};
-use dialog_artifacts::{Datum, KeyBytes, State, Value};
+use dialog_artifacts::{Datum, KeyBytes, State, Value, ValueDataType};
 use dialog_common::Blake3Hash as NodeHash;
 use dialog_query::Term;
 use dialog_repository::{Branch, LocalIndex, RepositoryArchiveExt};
-use dialog_search_tree::{ArchivedNodeBody, Buffer, DialogSearchTreeError, Node, into_owned};
+use dialog_search_tree::{
+    ArchivedNodeBody, Buffer, DialogSearchTreeError, Distribution, Geometric, Node, into_owned,
+};
 use dialog_storage::{Blake3Hash, StorageBackend};
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
@@ -76,7 +78,7 @@ pub async fn resolve_formula<Env: GetPutProvider>(
             None => Ok(vec![]), // empty tree — no root node
         },
 
-        // Children of a branch node. `hash` is required (no node-hash
+        // Children of an index node. `hash` is required (no node-hash
         // index to scan from). One self-contained row per child.
         "tree/child" => {
             let Some(hash) = node_input(branch, query, "hash", name)? else {
@@ -85,7 +87,7 @@ pub async fn resolve_formula<Env: GetPutProvider>(
             child_rows(branch, env, hash).await
         }
 
-        // Entries of a leaf node. `hash` is required. One row per
+        // Entries of a segment node. `hash` is required. One row per
         // stored entry, carrying the key and its decoded datum.
         "tree/entry" => {
             let Some(hash) = node_input(branch, query, "hash", name)? else {
@@ -162,17 +164,28 @@ async fn read_node<Env: GetPutProvider>(
     Ok(TreeNode::new(Buffer::from(bytes)))
 }
 
-/// The scalar fields describing a node: kind, byte size, child/entry
-/// count, leaf flag. Shared by `tree/node` and `tree/child` so a child
-/// row carries the child's own node fields (no join needed).
+/// The scalar fields describing a node: `kind` (`index` for a node of
+/// child links, `segment` for a node of entries), byte size, child/entry
+/// count, and the node's upper-bound key (`bound`, as a `#<base58>` of
+/// the raw 162 key bytes — the inspector slices it into tag-colored
+/// segments client-side). Shared by `tree/node` and `tree/child` so a
+/// child row carries the child's own node fields.
 fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> {
     let body = node
         .body()
         .map_err(|e: DialogSearchTreeError| FormulaError::Decode(e.to_string()))?;
 
-    let (kind, count, is_leaf) = match body {
-        ArchivedNodeBody::Index(index) => ("branch", index.links.len(), false),
-        ArchivedNodeBody::Segment(segment) => ("leaf", segment.entries.len(), true),
+    let (kind, count, upper_bound) = match body {
+        ArchivedNodeBody::Index(index) => (
+            "index",
+            index.links.len(),
+            index.links.last().map(|link| &link.upper_bound),
+        ),
+        ArchivedNodeBody::Segment(segment) => (
+            "segment",
+            segment.entries.len(),
+            segment.entries.last().map(|entry| &entry.key),
+        ),
     };
     let size = node.buffer().as_ref().len();
 
@@ -180,7 +193,18 @@ fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> 
     fields.insert("kind".into(), Ipld::String(kind.into()));
     fields.insert("size".into(), Ipld::Integer(size as i128));
     fields.insert("count".into(), Ipld::Integer(count as i128));
-    fields.insert("leaf".into(), Ipld::Bool(is_leaf));
+    if let Some(archived_key) = upper_bound {
+        let key: KeyBytes =
+            into_owned(archived_key).map_err(|e| FormulaError::Decode(e.to_string()))?;
+        fields.insert(
+            "bound".into(),
+            Ipld::String(format!("#{}", key.to_base58())),
+        );
+        // The node's rank — the boundary level its upper-bound key
+        // falls on (geometric over the key's hash). Higher rank ⇒
+        // higher in the tree; it's what determines the tree's shape.
+        fields.insert("rank".into(), Ipld::Integer(Geometric::rank(&key) as i128));
+    }
     Ok(fields)
 }
 
@@ -197,7 +221,7 @@ async fn node_row<Env: GetPutProvider>(
     })
 }
 
-/// One `tree/child` conclusion per child of the branch node at `hash`.
+/// One `tree/child` conclusion per child of the index node at `hash`.
 ///
 /// Each row is self-contained: it names the child (`child` field + the
 /// row's `this`), its sibling position (`at`), and the child's own node
@@ -214,7 +238,7 @@ async fn child_rows<Env: GetPutProvider>(
         .map_err(|e: DialogSearchTreeError| FormulaError::Decode(e.to_string()))?;
 
     let ArchivedNodeBody::Index(index) = body else {
-        return Ok(vec![]); // a leaf has no children
+        return Ok(vec![]); // a segment has no children
     };
 
     // Collect child hashes first so we can drop the borrow on `parent`
@@ -239,13 +263,13 @@ async fn child_rows<Env: GetPutProvider>(
     Ok(rows)
 }
 
-/// One `tree/entry` conclusion per entry in the leaf node at `hash`.
+/// One `tree/entry` conclusion per entry in the segment node at `hash`.
 ///
 /// Each row carries the entry's composite key (base58 of its 162 bytes,
 /// for now — `tree/key` decomposes it into components), its position in
 /// the leaf (`at`), the asserted/retracted `state`, and, for an
 /// asserted entry, the decoded datum's `entity` / `attribute` /
-/// `value-type`. A branch node has no entries and yields no rows.
+/// `value-type`. An index node has no entries and yields no rows.
 async fn entry_rows<Env: GetPutProvider>(
     branch: &Branch,
     env: &Env,
@@ -257,7 +281,7 @@ async fn entry_rows<Env: GetPutProvider>(
         .map_err(|e: DialogSearchTreeError| FormulaError::Decode(e.to_string()))?;
 
     let ArchivedNodeBody::Segment(segment) = body else {
-        return Ok(vec![]); // a branch has no entries
+        return Ok(vec![]); // an index has no entries
     };
 
     let mut rows = Vec::with_capacity(segment.entries.len());
@@ -270,16 +294,24 @@ async fn entry_rows<Env: GetPutProvider>(
         let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
         fields.insert("key".into(), Ipld::String(format!("#{}", key.to_base58())));
         fields.insert("at".into(), Ipld::Integer(at as i128));
-        match state {
-            State::Added(datum) => {
-                fields.insert("state".into(), Ipld::String("added".into()));
-                fields.insert("entity".into(), Ipld::String(datum.entity));
-                fields.insert("attribute".into(), Ipld::String(datum.attribute));
-                fields.insert("value-type".into(), Ipld::Integer(datum.value_type as i128));
+        fields.insert("rank".into(), Ipld::Integer(Geometric::rank(&key) as i128));
+
+        // A segment holds asserted facts; a retraction is a tombstone.
+        // Surface the datum's own columns — entity, attribute, value
+        // type (by name), and the decoded value — not the Added/Removed
+        // wrapper as a column.
+        if let State::Added(datum) = state {
+            fields.insert("entity".into(), Ipld::String(datum.entity));
+            fields.insert("attribute".into(), Ipld::String(datum.attribute));
+            let value_type = ValueDataType::from(datum.value_type);
+            fields.insert("type".into(), Ipld::String(value_type.to_string()));
+            if let Ok(value) = Value::try_from((value_type, datum.value))
+                && let Some(ipld) = value_to_ipld(&value)
+            {
+                fields.insert("value".into(), ipld);
             }
-            State::Removed => {
-                fields.insert("state".into(), Ipld::String("removed".into()));
-            }
+        } else {
+            fields.insert("retracted".into(), Ipld::Bool(true));
         }
 
         rows.push(Conclusion {
@@ -288,6 +320,26 @@ async fn entry_rows<Env: GetPutProvider>(
         });
     }
     Ok(rows)
+}
+
+/// Convert a decoded [`Value`] to [`Ipld`] for the wire. Mirrors
+/// `tonk_core::conclusion`'s handling: `u128` is special-cased since
+/// `ipld_core`'s serde path rejects it.
+fn value_to_ipld(value: &Value) -> Option<Ipld> {
+    Some(match value {
+        Value::Bytes(b) => Ipld::Bytes(b.clone()),
+        Value::Entity(e) => Ipld::String(e.to_string()),
+        Value::Boolean(b) => Ipld::Bool(*b),
+        Value::String(s) => Ipld::String(s.clone()),
+        Value::Symbol(s) => Ipld::String(s.to_string()),
+        Value::UnsignedInt(u) => match i128::try_from(*u) {
+            Ok(i) => Ipld::Integer(i),
+            Err(_) => Ipld::String(u.to_string()),
+        },
+        Value::SignedInt(i) => Ipld::Integer(*i),
+        Value::Float(f) => Ipld::Float(*f),
+        Value::Record(b) => Ipld::Bytes(b.clone()),
+    })
 }
 
 /// Composite index-key layout (bytes), per dialog-artifacts/src/key.rs:

@@ -25,6 +25,8 @@ async fn main() {
     // matches the `copy-dir` target in `index.html` — both must
     // change together if the deployment layout shifts.
     tonk_code::install("/tonk-code/tonk-code.js");
+    // Inject the `<tonk-tree>` index-tree inspector bundle.
+    tonk_tree::install("/tonk-tree/tonk-tree.js");
 
     // Dev-only hot reload client. `debug_assertions` is on under
     // `trunk serve` (debug profile) and off for `trunk build

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Bundles `src-js/index.ts` (the <dialog-arboretum> custom element)
-// into `assets/dialog-arboretum.js` — a single self-contained,
+// Bundles `src-js/index.ts` (the <tonk-tree> custom element)
+// into `assets/tonk-tree.js` — a single self-contained,
 // dependency-free ES module that registers the element.
 //
 // Usage:
@@ -22,7 +22,7 @@ const watch = process.argv.includes("--watch");
 /** @type {import('esbuild').BuildOptions} */
 const options = {
   entryPoints: [resolve(root, "src-js/index.ts")],
-  outfile: resolve(outdir, "dialog-arboretum.js"),
+  outfile: resolve(outdir, "tonk-tree.js"),
   bundle: true,
   format: "esm",
   target: "es2022",
@@ -33,8 +33,8 @@ const options = {
 if (watch) {
   const ctx = await context(options);
   await ctx.watch();
-  console.log("dialog-arboretum: watching…");
+  console.log("tonk-tree: watching…");
 } else {
   await build(options);
-  console.log("dialog-arboretum: built assets/dialog-arboretum.js");
+  console.log("tonk-tree: built assets/tonk-tree.js");
 }

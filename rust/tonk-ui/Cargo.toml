@@ -43,6 +43,7 @@ bs58 = { workspace = true }
 tonk-board = { workspace = true }
 tonk-workspace = { workspace = true }
 tonk-code = { workspace = true, features = ["web"] }
+tonk-tree = { workspace = true, features = ["web"] }
 tonk-display = { workspace = true }
 tonk-host = { workspace = true }
 tonk-invite = { workspace = true }

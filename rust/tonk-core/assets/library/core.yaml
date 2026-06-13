@@ -1554,3 +1554,33 @@ rule!:
 
 tonk/initialize!:
    reason: Initialize a new tonk repository
+
+# ============================================================
+# Tree inspector — `<tonk-tree>` over the branch's search-tree
+# index. Visit `/space/{repo}/dialog:diagnose` to explore the
+# dialog-search-tree state under the DB: index/segment nodes,
+# their keys (color-coded components, shared prefixes dimmed),
+# byte sizes, and entries. The view renders `<tonk-tree>`, which
+# resolves its repository from the `<tonk-repository>` routing
+# ancestor and drives itself from the worker's `tree/*` query
+# formulas — no entity needed (it inspects the whole branch).
+# ============================================================
+concept!: &diagnose
+  this: dialog:diagnose
+  description: Marker model for the search-tree inspector view.
+  with:
+    name:
+      description: A label for the inspector (unused; satisfies the concept shape).
+      the: dialog.diagnose/name
+      cardinality: one
+      as: text
+
+# A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
+# URL carries no entity, so `<tonk-display>` resolves a `view/directory`
+# for the model. The inspector needs no entity — it renders the whole
+# branch's tree — so the directory view is the right kind.
+view/directory!:
+  this: id:dialog:diagnose/view
+  model: dialog:diagnose
+  display: |
+    <tonk-tree></tonk-tree>

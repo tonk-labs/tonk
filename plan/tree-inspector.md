@@ -221,44 +221,121 @@ Today the wire carries one predicate per request, so the client (or view)
 issues one request per level — `tree/child` per expand. Carrying a
 multi-premise body is a later extension; the operator semantics hold.
 
-## The visualizer: `dialog-arboretum`
+## The visualizer: composable components in the diagnose style
 
-Framework-agnostic custom element, no tonk dependency, fed by the operator
-results. Three nested visuals, each reusable:
+Model the inspector after `dialog-diagnose`, both its **state
+decomposition** and its **multi-pane composition**, but with a tonk
+twist: the UI state is itself a dialog concept.
 
-1. `<tonk-key>` — one key as the colored component bar (Tag · Entity ·
-   Attribute · ValueType · ValueRef) with human-readable resolution
-   beneath. The index-key diagram, parameterized.
-2. **Node as a key-range** — start/end key bars (varying components
-   highlighted) + a size bar. Turns an opaque block into a labeled span.
-3. **Tree outline** — `wa-tree` hosts the collapsible branch → child →
-   leaf structure; each row is a node's range-bar + size-bar; expanding a
-   leaf lists entries as `<tonk-key>`s. Lazy: a row loads children via
-   `tree/child` on first expand.
+### Borrow diagnose's state shape (verified, dialog-diagnose/src/state)
 
-Size bars run through every row so the byte-distribution half is always
-visible. Optional later: a D3 treemap (node area = bytes) for a pure
-size-weighted view.
+Diagnose splits its state cleanly, and we mirror the split:
 
-## The embed: a `tonk-display` view
+- A **store** (`DiagnoseStore`) — the data/cache layer: nodes by hash,
+  child→parent parentage, async loads, each node a `Promise<TreeNode>`
+  (Resolved | Pending) so views render a loading state. Ours loads from
+  the `tree/*` formulas instead of an in-memory `Artifacts`.
+- A **tree state** (`TreeState`) — navigation: `root`, `selected_node`,
+  `expanded: Set<hash>`, with depth-first `select_next` /
+  `select_previous` / expand-collapse walking the store.
+- A **tab** (`DiagnoseTab`) — which pane is active.
+- Widgets read `(store, state)` and render; navigation mutates `state`.
 
-Resolves the current repo/branch and the root hash, mounts
-`<dialog-arboretum>`, and answers its lazy expansions by issuing tree-
-predicate queries. The view owns tonk wiring; the component owns
-rendering, keeping `dialog-arboretum` liftable into dialog-db or elsewhere.
+Diagnose keeps this state as plain Rust structs. We go one step further.
+
+### The tonk twist: UI state *is* a concept
+
+`core.yaml` defines concepts (`space`, `artifact`, `view`, …) that serve
+as the `model` a `<tonk-display>` view renders. We define one for the
+**inspector's own UI state** — `tonk:tree-inspector` — with fields
+mirroring diagnose's `TreeState`:
+
+- `selected` — cardinality-one entity, the current node hash.
+- `expanded` — cardinality-many, the expanded node set.
+- `tab` — which visualization is active.
+
+The inspector is then a `<tonk-display model="tonk:tree-inspector">`
+view, and **navigation is data mutation**: clicking a node fires an
+event that a `command!` captures (exactly the `workspace/activate-sheet`
+pattern — `dom.event.detail/node` → an inductive rule points `selected`
+at it, replacing the prior, command swept post-cycle). Expand/collapse
+add/remove from `expanded`. The view re-renders through the normal
+commit → subscribe → frame loop. UI state becomes inspectable,
+persistable, even shareable, and reuses the whole concept/view/display
+machinery.
+
+The node *data* (structure, sizes, keys) still comes from the `tree/*`
+formula queries — that is the read side. The *UI state* (selection,
+expansion, tab) is concept facts — the write side.
+
+### Composable visualization components
+
+Each visualization is its own web component over the shared store +
+state, so they compose (a selection in one updates the state; all
+react). Built incrementally:
+
+- `<dialog-tree-outline>` — the navigable outline on `wa-tree`
+  (`<wa-tree>` / `<wa-tree-item lazy>` give expand/collapse, keyboard
+  nav, selection, lazy-load for free). Row content: hash, kind, size bar.
+- `<dialog-node-inspector>` — the selected node's detail: its
+  upper-bound key as **tag-colored raw byte segments** (no labels — the
+  colors are the segmentation, exactly as diagnose's `NodeInspector`
+  slices entity/attribute/value keys differently by tag), plus a leaf's
+  entries.
+- `<dialog-tree-map>` (later) — a D3 treemap, node area = byte size, for
+  the perf lens (the 150 KB node dominates the canvas).
+- `<dialog-tree-graph>` (later) — a D3 node-link diagram.
+
+`dialog-arboretum` is the package; the embedder assembles whichever
+components it wants over one store + state.
 
 ## Phasing
 
-1. **Resolver** — tonk-worker recognizes a string `predicate`, routes to a
-   tree resolver that walks via the diagnose decode and emits
-   `Conclusion`s for `tree/node` / `tree/child` / `tree/entry` /
-   `tree/key`. Verify by querying a seeded branch. Tests like
-   `transfer`/`evaluate` (wasm).
-2. **`<tonk-key>`** — the key-component bar against sample data.
-3. **Outline** — `wa-tree` + range/size bars + lazy expand via
-   `tree/child`; leaf → entries. Wrap as `dialog-arboretum`.
-4. **Embed** — the `tonk-display` view.
-5. **(Optional)** — D3 treemap size overlay.
+1. **Resolver** — DONE. tonk-worker resolves string `tree/*` predicates.
+2. **State concept** — define `tonk:tree-inspector` + the select /
+   expand / collapse commands and inductive rules in notation; verify a
+   `<tonk-display>` resolves and mutates it.
+3. **Store + tree-state + Promise** — the shared JS core mirroring
+   diagnose's split, loading from `tree/*` queries.
+4. **`<dialog-tree-outline>` + `<dialog-node-inspector>`** — the first
+   two components (wa-tree outline + tag-colored key-byte inspector).
+5. **Embed** — the `<tonk-display>` view wiring the state concept to the
+   components.
+6. **(Later)** — `<dialog-tree-map>` / `<dialog-tree-graph>` (D3).
+
+## State persistence (decided)
+
+Driver: **a reload lands in the same state, storing as little as
+possible.** Persist only what cannot be recomputed:
+
+- `selected` and `expanded` go in the `tonk:tree-inspector` concept
+  (selection + the open node set — enough to restore exactly the view).
+- `tab` if/when there are multiple visualizations.
+- Everything else (node data, parentage, scroll, hover) is recomputed
+  from `tree/*` queries on load — a transient JS cache, never stored.
+
+Node hashes serialize as `entity:<base58>` Entity URIs, so `selected` /
+`expanded` are `as: entity` fields.
+
+**A persisted hash is a permanent bookmarked cursor, not a stale
+pointer.** The tree is content-addressed and append-only (no GC —
+verified: the storage never deletes, `flush` only adds). So when a branch
+commits and moves to a new revision's root, the old root and every node
+under it *still exist in storage and remain fully navigable*. A
+persisted `selected`/`expanded` hash therefore never breaks across
+commits — it keeps addressing the exact (now historical) tree it pointed
+at. Reload, and commit, both land you back on the same bookmarked node.
+
+This makes two roots worth distinguishing in the UI:
+
+- the **live root** — the current revision's tree (`branch.revision().tree`),
+  which moves forward on every commit; and
+- the **bookmarked cursor** — the node the user pinned to explore, an
+  immutable address into whatever tree (current or historical) holds it.
+
+So the inspector can surface "the branch advanced to a new root" while
+keeping your exploration cursor put. The cursor is independent of the
+live root; following the live root is a separate, explicit affordance.
 
 ## Open questions
 
