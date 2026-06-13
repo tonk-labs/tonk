@@ -192,13 +192,10 @@ async fn evaluate_on_branch<'a>(
     let text = std::str::from_utf8(&body)
         .map_err(|e| TonkWorkerError::Router(format!("body is not valid UTF-8: {e}")))?;
 
-    let t_parse = web_time::Instant::now();
     let parsed = parse(text);
     let syntax = surface_parse_diagnostics(parsed)?;
-    let parse_ms = t_parse.elapsed().as_millis();
 
-    let exprs = syntax.expressions.len();
-    log!("Evaluating {exprs} expression(s)");
+    log!("Evaluating {} expression(s)", syntax.expressions.len());
 
     let session = tonk_branch
         .acquire(&tonk_state.operator)
@@ -207,13 +204,11 @@ async fn evaluate_on_branch<'a>(
     let branch = session.handle();
     let revision_before = branch.revision();
 
-    let t_eval = web_time::Instant::now();
     let evaluated = syntax
         .evaluate(branch.transaction())
         .perform(&tonk_state.operator)
         .await
         .map_err(map_evaluate_error)?;
-    let eval_ms = t_eval.elapsed().as_millis();
 
     // Compute the post-evaluation matches before any commit
     // decision: the txn's overlay already reflects every mutation
@@ -229,26 +224,12 @@ async fn evaluate_on_branch<'a>(
     // `Statement::InstallEffect`, so a document with any planned
     // statement is the single commit signal.
     let response = if query.transact && evaluated.analysis.analysis.has_statements() {
-        let t_commit = web_time::Instant::now();
         let revision_after = evaluated
             .txn
             .commit()
             .perform(&tonk_state.operator)
             .await
             .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("commit: {e}"))))?;
-        let commit_ms = t_commit.elapsed().as_millis();
-        let timing = format!(
-            "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | commit {commit_ms}ms"
-        );
-        log!("{timing}");
-        // Tee timing onto a BroadcastChannel so a page (or DevTools
-        // listener) can read seed numbers without the SW console — the
-        // seed runs background in the SW, so its logs never reach the
-        // page console.
-        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        if let Ok(channel) = web_sys::BroadcastChannel::new("tonk-timing") {
-            let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&timing));
-        }
         // Re-poll subscriptions so SSE clients see the new state.
         // The chain commits via dialog directly; the reactor's
         // subscription registry is the worker's responsibility.
