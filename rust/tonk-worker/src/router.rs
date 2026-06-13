@@ -389,7 +389,6 @@ pub mod tests {
     }
 
     /// Query all `InvitedVia` rows on `repo`'s meta branch.
-    #[allow(dead_code)]
     pub(crate) async fn meta_invited_via(
         state: &super::AppState,
         repo: &str,
