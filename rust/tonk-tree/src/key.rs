@@ -13,6 +13,10 @@ pub struct Component {
     pub part: Part,
     pub text: String,
     pub full: String,
+    /// The byte range this component occupies in the 162-byte key. Used to
+    /// locate the routing pivot (the first byte that diverges from the
+    /// previous sibling) within the chip.
+    pub bytes: std::ops::Range<usize>,
 }
 
 /// Which part of the composite key a segment is. Each maps to a CSS class
@@ -182,14 +186,17 @@ pub fn components(key: &str) -> Vec<Component> {
             part: Part::Unknown,
             text: key.into(),
             full: key.into(),
+            bytes: 0..0,
         }];
     };
     if bytes.len() < 162 {
+        let n = bytes.len();
         return vec![Component {
             label: "key".into(),
             part: Part::Unknown,
             text: hex(&bytes),
             full: key.into(),
+            bytes: 0..n,
         }];
     }
 
@@ -207,12 +214,14 @@ pub fn components(key: &str) -> Vec<Component> {
         part: Part::Entity,
         text: trunc(&entity, 10, 4),
         full: entity,
+        bytes: l.entity..l.entity + 64,
     };
     let attribute_seg = Component {
         label: "Attribute".into(),
         part: Part::Attribute,
         text: trunc(&attribute, 10, 4),
         full: attribute,
+        bytes: l.attribute..l.attribute + 64,
     };
     // The value-type chip: its content is the type byte; the human type
     // name is in the tooltip. It shares the value background so it reads as
@@ -222,12 +231,14 @@ pub fn components(key: &str) -> Vec<Component> {
         part: Part::ValueType,
         text: type_byte.to_string(),
         full: format!("{type_byte} ({})", type_name(type_byte)),
+        bytes: l.value_type..l.value_type + 1,
     };
     let value_seg = Component {
         label: "Value".into(),
         part: Part::ValueRef,
         text: trunc(&value_ref, 10, 4),
         full: value_ref,
+        bytes: l.value_ref..l.value_ref + 32,
     };
     // The index-type chip is neutral (mode-inverse background via
     // `seg-index-type`); its content is the tag byte (0/1/2).
@@ -236,6 +247,7 @@ pub fn components(key: &str) -> Vec<Component> {
         part: Part::Unknown,
         text: tag.to_string(),
         full: format!("{tag} ({})", tag_of(tag)),
+        bytes: 0..1,
     };
 
     match tag {
@@ -245,18 +257,40 @@ pub fn components(key: &str) -> Vec<Component> {
     }
 }
 
-/// How many leading components of `key` are identical to `prev` (the
-/// previous sibling). Those are the shared prefix — front coding dims
-/// them so only the divergent tail stands out.
-pub fn shared_prefix_len(key: &str, prev: Option<&str>) -> usize {
-    let Some(prev) = prev else { return 0 };
-    let a = components(key);
-    let b = components(prev);
-    let mut n = 0;
-    while n < a.len() && n < b.len() && a[n].full == b[n].full {
-        n += 1;
+/// The routing pivot: the index of the last byte that must stay bright for
+/// this bound to be distinguishable from *both* its neighbors. A row's
+/// bright prefix has to show where it diverges from the previous sibling
+/// (proving it sorts after) AND from the next sibling (proving it sorts
+/// before) — otherwise two adjacent rows sharing a long prefix (e.g. several
+/// `concept:` keys) would all cut at byte 0 and look identical. So the pivot
+/// is the *max* of the two divergence points.
+///
+/// `prev` is the previous sibling's bound (or the all-zero minimum key for a
+/// first child); `next` is the next sibling's bound, if any.
+pub fn pivot_byte(key: &str, prev: Option<&str>, next: Option<&str>) -> Option<usize> {
+    let a = decode(key)?;
+    // First byte where `a` diverges from `other`; `None` if `other` is a
+    // prefix of (or equal to) `a` over the shared length.
+    let diverge = |other: &[u8]| -> Option<usize> {
+        let n = a.len().min(other.len());
+        (0..n).find(|&i| a[i] != other[i])
+    };
+
+    // Lower edge: previous sibling, or the all-zero minimum key.
+    let lower = match prev {
+        Some(p) => decode(p)?,
+        None => vec![0u8; a.len()],
+    };
+    let from_prev = diverge(&lower);
+    let from_next = next.and_then(decode).and_then(|n| diverge(&n));
+
+    match (from_prev, from_next) {
+        (Some(p), Some(n)) => Some(p.max(n)),
+        (Some(p), None) => Some(p),
+        (None, Some(n)) => Some(n),
+        // Identical to both over the shared length — keep it all bright.
+        (None, None) => Some(a.len()),
     }
-    n
 }
 
 /// Format a fact value so its type is legible from the value itself

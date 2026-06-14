@@ -11,7 +11,7 @@ use web_sys::{Element, Event};
 use crate::dom::{ElExt, clear, el};
 use crate::key;
 use crate::model::{Kind, TreeEntry};
-use crate::web::{Shared, append_key, human_size};
+use crate::web::{Shared, append_key_full, human_size};
 
 fn pane(state: &Shared) -> Element {
     state
@@ -74,7 +74,7 @@ pub fn render(state: &Shared) {
     if let Some(bound) = &node.bound {
         let _ = body.append_child(&kv("upper key", ""));
         let keyrow = el("div").class("keybytes");
-        append_key(&keyrow, bound, None);
+        append_key_full(&keyrow, bound);
         let _ = body.append_child(&keyrow);
     }
 
@@ -215,7 +215,7 @@ fn entry_detail(entry: &TreeEntry) -> Element {
         let _ = box_.append_child(&kv("value", &key::format_value(v, t)));
     }
     let keyrow = el("div").class("keybytes");
-    append_key(&keyrow, &entry.key, None);
+    append_key_full(&keyrow, &entry.key);
     let _ = box_.append_child(&el("div").class("k").text("key"));
     let _ = box_.append_child(&keyrow);
     box_

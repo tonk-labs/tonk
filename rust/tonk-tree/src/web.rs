@@ -220,22 +220,25 @@ fn render_outline(state: &Shared) {
     clear(&tree);
     let root = state.borrow().root.clone();
     if let Some(root) = root {
-        let item = build_item(state, &root, None);
+        let item = build_item(state, &root, None, None);
         let _ = tree.append_child(&item);
     }
 }
 
-/// Build a `<wa-tree-item>` for a node. `prev` is the previous sibling's
-/// bound key, for front-coding the row's key.
-fn build_item(state: &Shared, hash: &str, prev: Option<String>) -> Element {
+/// Build a `<wa-tree-item>` for a node. `prev`/`next` are the neighboring
+/// siblings' bound keys, for front-coding the row's key.
+fn build_item(state: &Shared, hash: &str, prev: Option<String>, next: Option<String>) -> Element {
     let node = state.borrow().nodes.get(hash).cloned();
     let item = el("wa-tree-item").attr("data-hash", hash);
 
     if let Some(node) = &node {
-        let _ = item.append_child(&build_row(state, node, prev.as_deref()));
+        let _ = item.append_child(&build_row(state, node, prev.as_deref(), next.as_deref()));
         if node.kind == Kind::Index && node.count > 0 {
             item.set_attribute("lazy", "").ok();
-            attach_lazy(state, &item, hash);
+            // The parent's lower bound (`prev`) is the first child's lower
+            // bound too, so its pivot is measured against the parent's left
+            // edge rather than treated as all-bright.
+            attach_lazy(state, &item, hash, prev);
         }
     }
     item
@@ -244,13 +247,13 @@ fn build_item(state: &Shared, hash: &str, prev: Option<String>) -> Element {
 /// Render one node row: front-coded key, count, size bar, remote. Whether a
 /// node is an index or a segment reads from its unfold arrow (index nodes
 /// have children), so no kind icon is drawn.
-fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>) -> Element {
+fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&str>) -> Element {
     let row = el("span").class(if node.cached { "row" } else { "row remote" });
 
-    // The key, front-coded against the previous sibling.
+    // The key, front-coded against the neighboring siblings.
     let keystr = el("span").class("keystr").attr("title", &node.hash);
     if let Some(bound) = &node.bound {
-        append_key(&keystr, bound, prev);
+        append_key(&keystr, bound, prev, next);
     } else {
         keystr.set_text_content(Some(&short(&node.hash, 8)));
     }
@@ -303,28 +306,85 @@ fn next_seg_id() -> String {
     })
 }
 
-/// Append a key's component segments to `parent`. Every segment is a chip
-/// whose background color comes from its component class (`seg-entity`,
-/// `seg-value`, …) — no inline styles. The first segment is the index-type
-/// chip. Leading segments shared with the previous sibling are dimmed
-/// (front coding). Each chip carries a `wa-tooltip` (anchored by id) naming
-/// the part.
-pub fn append_key(parent: &Element, key_str: &str, prev: Option<&str>) {
+/// Append a key's component segments to `parent` for the outline. Each
+/// segment is a colored chip with a `wa-tooltip` naming the part; the first
+/// is the index-type chip.
+///
+/// Dimming follows the *routing pivot* — the byte through which this bound
+/// must stay bright to be distinguishable from both its `prev` and `next`
+/// siblings. Bytes up to and including the pivot decide where a lookup
+/// branches, so they stay bright; the tail past the pivot is dimmed. The
+/// chip containing the pivot shows the hex bright through the pivot digit
+/// then a short dim tail.
+pub fn append_key(parent: &Element, key_str: &str, prev: Option<&str>, next: Option<&str>) {
     let comps = key::components(key_str);
-    let shared = key::shared_prefix_len(key_str, prev);
+    let pivot = key::pivot_byte(key_str, prev, next);
     for (i, c) in comps.iter().enumerate() {
+        let mut base = format!("key-seg {}", c.part.class());
+        if i == 0 {
+            base.push_str(" seg-index-type");
+        }
+
+        // `emit` appends one pill (chip) with the part's tooltip. A chip is
+        // its own background, so dimming a chip dims its background too.
+        let emit = |text: &str, dim: bool| {
+            let id = next_seg_id();
+            let cls = if dim {
+                format!("{base} dim")
+            } else {
+                base.clone()
+            };
+            let chip = el("span")
+                .attr("id", &id)
+                .child(&el("span").class("seg-text").text(text));
+            chip.set_class_name(&cls);
+            let _ = parent.append_child(&chip);
+            let _ = parent.append_child(&el("wa-tooltip").attr("for", &id).text(&c.label));
+        };
+
+        match pivot {
+            // Chip lies entirely past the pivot → one dim pill, kept short.
+            Some(p) if c.bytes.start > p => emit(&c.text, true),
+            // Chip straddles the pivot → a bright pill through the pivot
+            // byte and a separate dim pill for the short tail, so the tail's
+            // background dims with its text (the rest is routing noise).
+            Some(p) if c.bytes.end > p + 1 && p + 1 > c.bytes.start => {
+                let bright_chars = (p + 1 - c.bytes.start) * 2;
+                let full: Vec<char> = c.full.chars().collect();
+                let head: String = full.iter().take(bright_chars).collect();
+                let rest = full.len() - bright_chars;
+                let tail: String = if rest > 6 {
+                    let t: String = full.iter().skip(full.len() - 4).collect();
+                    format!("…{t}")
+                } else {
+                    full.iter().skip(bright_chars).collect()
+                };
+                emit(&head, false);
+                if !tail.is_empty() {
+                    emit(&tail, true);
+                }
+            }
+            // Chip is at or before the pivot, or no pivot → bright, truncated.
+            _ => emit(&c.text, false),
+        }
+    }
+}
+
+/// Append a key's segments in full (the inspector pane): every chip shows
+/// its complete hex, nothing dimmed or truncated, so the row may wrap.
+pub fn append_key_full(parent: &Element, key_str: &str) {
+    for (i, c) in key::components(key_str).iter().enumerate() {
         let mut cls = format!("key-seg {}", c.part.class());
         if i == 0 {
             cls.push_str(" seg-index-type");
         }
-        if i < shared {
-            cls.push_str(" shared");
-        }
-
+        // Single-byte chips (index type, value type) show just the byte;
+        // the multi-byte parts show their full hex.
+        let text = if c.bytes.len() <= 1 { &c.text } else { &c.full };
         let id = next_seg_id();
         let chip = el("span")
             .attr("id", &id)
-            .child(&el("span").class("seg-text").text(&c.text));
+            .child(&el("span").class("seg-text").text(text));
         chip.set_class_name(&cls);
         let _ = parent.append_child(&chip);
 
@@ -334,7 +394,9 @@ pub fn append_key(parent: &Element, key_str: &str, prev: Option<&str>) {
 }
 
 /// Wire `wa-lazy-load` on a branch item to load + append its children.
-fn attach_lazy(state: &Shared, item: &Element, hash: &str) {
+/// `parent_lower` is the parent's lower bound — the first child's lower
+/// bound, used to measure its routing pivot.
+fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<String>) {
     let state = state.clone();
     let hash = hash.to_owned();
     let item_c = item.clone();
@@ -343,6 +405,7 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str) {
         let state = state.clone();
         let hash = hash.clone();
         let item = item_c.clone();
+        let parent_lower = parent_lower.clone();
         spawn_local(async move {
             let loader = state.borrow().loader.clone();
             let kids = loader.children(&hash).await;
@@ -357,12 +420,25 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str) {
                         }
                         s.children.insert(hash.clone(), hashes.clone());
                     }
-                    // Front-code each child against the previous sibling.
-                    let mut prev: Option<String> = None;
-                    for h in &hashes {
-                        let child = build_item(&state, h, prev.clone());
+                    // Each child's pivot is measured against both its
+                    // neighbors: the previous sibling (the first child uses
+                    // the parent's lower bound) and the next sibling.
+                    let bounds: Vec<Option<String>> = {
+                        let s = state.borrow();
+                        hashes
+                            .iter()
+                            .map(|h| s.nodes.get(h).and_then(|n| n.bound.clone()))
+                            .collect()
+                    };
+                    for (idx, h) in hashes.iter().enumerate() {
+                        let prev = if idx == 0 {
+                            parent_lower.clone()
+                        } else {
+                            bounds[idx - 1].clone()
+                        };
+                        let next = bounds.get(idx + 1).cloned().flatten();
+                        let child = build_item(&state, h, prev, next);
                         let _ = item.append_child(&child);
-                        prev = state.borrow().nodes.get(h).and_then(|n| n.bound.clone());
                     }
                     item.remove_attribute("lazy").ok();
                     // A newly-grown max-size could rescale bars, but we
@@ -476,21 +552,19 @@ const STYLE: &str = r#"
 .row { display: inline-flex; align-items: center; gap: var(--wa-space-s, 8px); width: 100%; }
 .row.remote { opacity: 0.5; }
 .keystr { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
-/* Every key segment is a solid chip: its background comes from the
-   component class below; text is mode-inverse (black on light, white on
-   dark) so it reads on any of the Bauhaus backgrounds. */
-.key-seg { font-weight: var(--wa-font-weight-semibold, 600); padding: 0 5px;
-  border-radius: var(--wa-border-radius-s, 2px); color: light-dark(#000, #fff);
+/* In the outline, key segments are colored TEXT (no background fill) so
+   the row stays compact. The component class sets the color. */
+.key-seg { font-weight: var(--wa-font-weight-semibold, 600);
   display: inline-flex; align-items: center; }
-.key-seg.seg-entity { background: var(--tonk-circle, #3d6da8); }
-.key-seg.seg-attribute { background: var(--tonk-triangle, #c89a2b); }
-.key-seg.seg-value { background: var(--tonk-square, #b94a3d); }
-.key-seg.seg-vtype { background: var(--tonk-square, #b94a3d); }
-.key-seg.seg-unknown { background: var(--tonk-closure, #7a7268); }
-/* The index-type chip is neutral: a mode-inverse background (black in
-   light, white in dark) with the opposite text color. */
-.key-seg.seg-index-type { background: light-dark(#000, #fff); color: light-dark(#fff, #000); }
-.key-seg.shared { opacity: 0.35; font-weight: var(--wa-font-weight-normal, 400); }
+.key-seg.seg-entity { color: var(--tonk-circle, #3d6da8); }
+.key-seg.seg-attribute { color: var(--tonk-triangle, #c89a2b); }
+.key-seg.seg-value { color: var(--tonk-square, #b94a3d); }
+.key-seg.seg-vtype { color: var(--tonk-square, #b94a3d); }
+.key-seg.seg-unknown { color: var(--tonk-closure, #7a7268); }
+/* The index-type segment is neutral (the page's normal text color). */
+.key-seg.seg-index-type { color: var(--wa-color-text-normal); }
+/* Past the routing pivot: dim the segment — text and color. */
+.key-seg.dim { opacity: 0.6; font-weight: var(--wa-font-weight-normal, 400); }
 .count { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-xs, 11px); flex: none; }
 .sizewrap { display: inline-flex; align-items: center; gap: var(--wa-space-xs, 6px); margin-left: auto; flex: none; }
 .sizebar { height: 7px; background: var(--tonk-closure, #7a7268); border-radius: var(--wa-border-radius-s, 2px); min-width: 2px; }
@@ -507,7 +581,23 @@ const STYLE: &str = r#"
 .inspector .kv .k { color: var(--wa-color-text-quiet); min-width: 64px; }
 .inspector .kv .v { word-break: break-all; }
 .inspector .sizebar { display: inline-block; vertical-align: middle; margin-left: 6px; }
-.keybytes { margin: 4px 0 6px; line-height: 1.7; }
+/* Inspector key: full hex as solid chips (background fill, mode-inverse
+   text), flowing as inline text so a long part wraps mid-chip and the next
+   part follows immediately. box-decoration-break paints both line fragments
+   of a wrapped chip. */
+.keybytes { margin: 4px 0 6px; line-height: 2; }
+.keybytes .key-seg { display: inline; white-space: normal; word-break: break-all;
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+  color: light-dark(#000, #fff); border-radius: var(--wa-border-radius-s, 2px);
+  padding: 1px 4px; margin-right: 3px; }
+.keybytes .key-seg.seg-entity { background: var(--tonk-circle, #3d6da8); color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-attribute { background: var(--tonk-triangle, #c89a2b); color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-value { background: var(--tonk-square, #b94a3d); color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-vtype { background: var(--tonk-square, #b94a3d); color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-unknown { background: var(--tonk-closure, #7a7268); color: light-dark(#000, #fff); }
+.keybytes .key-seg.seg-index-type { background: light-dark(#000, #fff);
+  color: light-dark(#fff, #000); }
+.keybytes .key-seg .seg-text { white-space: normal; word-break: break-all; }
 .entries { margin-top: var(--wa-space-m, 12px); }
 .entries .k { color: var(--wa-color-text-quiet); }
 table { width: 100%; border-collapse: collapse; font-size: var(--wa-font-size-xs, 12px); }
@@ -520,9 +610,10 @@ tr.entry.removed td { color: var(--wa-color-text-quiet); }
 /* Columns + value types reuse the app's Bauhaus code palette so the
    inspector reads like the notation editor / query tree. */
 .col-attr { color: var(--tonk-triangle, #c89a2b); }
-.col-ent { color: var(--tonk-circle, #3d6da8); }
+/* Entities are underlined wherever they appear (URIs), so the entity
+   column matches `.val-entity`. */
+.col-ent { color: var(--tonk-circle, #3d6da8); text-decoration: underline; }
 .val-entity { color: var(--tonk-circle, #3d6da8); text-decoration: underline; }
-.val-text { color: var(--tonk-square, #b94a3d); }
 /* Numbers/bool/bytes stay neutral so they never read as entities (blue). */
 .val-boolean, .val-unsignedint, .val-signedint, .val-float,
 .val-bytes, .val-record { color: var(--tonk-closure, #7a7268); }
