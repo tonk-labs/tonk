@@ -5140,7 +5140,12 @@ dependencies = [
 name = "tonk-tree"
 version = "0.1.0"
 dependencies = [
+ "custom-elements",
+ "js-sys",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
 ]
 

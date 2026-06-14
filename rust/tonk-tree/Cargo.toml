@@ -1,22 +1,48 @@
 [package]
 name = "tonk-tree"
-description = "Ships the <tonk-tree> tree-inspector web component bundle and an install() entry point."
+description = "<tonk-tree> custom element — inspects the dialog-search-tree index behind a branch."
 version.workspace = true
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
-web = ["dep:wasm-bindgen", "dep:web-sys"]
+web = []
 
 [dependencies]
-wasm-bindgen = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true, features = [
+custom-elements = { workspace = true }
+js-sys = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "console",
+    "CustomElementRegistry",
     "Document",
+    "DomTokenList",
     "Element",
+    "Event",
+    "EventTarget",
+    "Headers",
     "HtmlElement",
-    "HtmlHeadElement",
-    "HtmlScriptElement",
+    "Location",
     "Node",
+    "Request",
+    "RequestInit",
+    "RequestMode",
+    "Response",
+    "ShadowRoot",
+    "ShadowRootInit",
+    "ShadowRootMode",
     "Window",
+] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
 ] }

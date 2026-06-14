@@ -1,19 +1,17 @@
-//! `<tonk-tree>` — a tree inspector for a dialog index tree,
-//! packaged as a browser-native custom element. The element is
-//! implemented in TypeScript (see `src-js/`) and bundled by
-//! `scripts/build.mjs` into `assets/tonk-tree.js`. This crate's
-//! job is to ship that bundle as a Trunk asset and provide an
-//! [`install`] entry point that injects the `<script type="module">`
-//! tag, exactly like `tonk-code`.
+//! `<tonk-tree>` — a custom element that inspects the
+//! **dialog-search-tree** index behind a branch, in the style of
+//! `dialog-diagnose`. A pure-Rust web component like the other tonk
+//! elements (`tonk-display`, `tonk-board`, `tonk-sigil`): it resolves
+//! its repository from the `<tonk-repository>` routing ancestor, queries
+//! the worker's `tree/*` formulas, and renders a `<wa-tree>` outline of
+//! index/segment nodes plus a node inspector.
 //!
-//! Why a JS bundle (and not a Rust-side `CustomElement` like
-//! `tonk-inspector`)? The inspector builds on Web Awesome's `<wa-tree>`
-//! and is wholly DOM/JS — reaching it from `wasm-bindgen` would forfeit
-//! the native authoring ergonomics for no gain. Bundling on the JS side
-//! keeps it framework-agnostic and liftable into dialog-db.
+//! Visit `/space/{repo}/dialog:diagnose` in the app to use it.
 
-#[cfg(feature = "web")]
+mod dom;
+mod inspector;
+mod key;
+mod model;
 mod web;
 
-#[cfg(feature = "web")]
-pub use web::install;
+pub use web::register;

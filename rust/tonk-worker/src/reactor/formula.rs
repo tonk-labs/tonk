@@ -196,10 +196,7 @@ fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> 
     if let Some(archived_key) = upper_bound {
         let key: KeyBytes =
             into_owned(archived_key).map_err(|e| FormulaError::Decode(e.to_string()))?;
-        fields.insert(
-            "bound".into(),
-            Ipld::String(format!("#{}", key.to_base58())),
-        );
+        fields.insert("bound".into(), Ipld::String(key_hex(&key)));
         // The node's rank — the boundary level its upper-bound key
         // falls on (geometric over the key's hash). Higher rank ⇒
         // higher in the tree; it's what determines the tree's shape.
@@ -292,7 +289,7 @@ async fn entry_rows<Env: GetPutProvider>(
             into_owned(&entry.value).map_err(|e| FormulaError::Decode(e.to_string()))?;
 
         let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
-        fields.insert("key".into(), Ipld::String(format!("#{}", key.to_base58())));
+        fields.insert("key".into(), Ipld::String(key_hex(&key)));
         fields.insert("at".into(), Ipld::Integer(at as i128));
         fields.insert("rank".into(), Ipld::Integer(Geometric::rank(&key) as i128));
 
@@ -315,7 +312,7 @@ async fn entry_rows<Env: GetPutProvider>(
         }
 
         rows.push(Conclusion {
-            this: format!("#{}", key.to_base58()),
+            this: key_hex(&key),
             fields,
         });
     }
@@ -360,10 +357,12 @@ fn key_input(query: &Query, param: &str, formula: &str) -> Result<Option<KeyByte
     };
     match query.terms.get(param) {
         Some(Term::Constant(Value::String(s))) => {
-            let raw = s.strip_prefix('#').unwrap_or(s);
-            let bytes = raw
-                .from_base58()
-                .map_err(|e| bad(format!("invalid base58 key {s:?}: {e:?}")))?;
+            let raw = s.strip_prefix("0x").unwrap_or(s);
+            let bytes = (0..raw.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&raw[i..i + 2], 16))
+                .collect::<Result<Vec<u8>, _>>()
+                .map_err(|e| bad(format!("invalid hex key {s:?}: {e}")))?;
             let key: KeyBytes = bytes
                 .try_into()
                 .map_err(|v: Vec<u8>| bad(format!("key is {} bytes, want {KEY_LEN}", v.len())))?;
@@ -404,7 +403,7 @@ fn key_row(key: KeyBytes) -> Conclusion {
     );
 
     Conclusion {
-        this: format!("#{}", key.to_base58()),
+        this: key_hex(&key),
         fields,
     }
 }
@@ -412,4 +411,17 @@ fn key_row(key: KeyBytes) -> Conclusion {
 /// Format a node hash as the `#<base58>` string used across `tree/*`.
 fn to_base58(hash: &Blake3Hash) -> String {
     format!("#{}", hash.to_base58())
+}
+
+/// Encode a composite key as a `0x`-prefixed hex string. Keys are 162
+/// bytes — too long for the `base58` crate's fixed decode buffer — so
+/// they travel as hex, which the client decodes without a length cap.
+/// (Node hashes are 32 bytes and stay base58.)
+fn key_hex(key: &KeyBytes) -> String {
+    let mut s = String::with_capacity(2 + key.len() * 2);
+    s.push_str("0x");
+    for b in key.iter() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }

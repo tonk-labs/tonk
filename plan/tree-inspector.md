@@ -221,6 +221,50 @@ Today the wire carries one predicate per request, so the client (or view)
 issues one request per level — `tree/child` per expand. Carrying a
 multi-premise body is a later extension; the operator semantics hold.
 
+## Rebuild: pure-Rust `<tonk-tree>` element (decided)
+
+The first cut was a JS/TS bundle (the `tonk-code` pattern). Correction:
+`<tonk-tree>` must be a **pure-Rust web component** like every other tonk
+element (`tonk-display`, `tonk-board`, `tonk-sigil`) — no JS/TS at all.
+(`tonk-code` bundles JS only because CodeMirror is JS; `tonk-inspector`
+embeds CodeMirror; neither is the model here.)
+
+Shape: a `custom_elements::CustomElement` named `tonk-tree` that resolves
+its repo from the `<tonk-repository>` routing ancestor, queries the
+worker's `tree/*` formulas with `reqwest` (same path `api.rs` uses, which
+reaches the SW-intercepted `/api`), and builds the DOM directly with
+`web_sys` — creating `<wa-tree>` / `<wa-tree-item>` / `<wa-icon>` (no JS
+glue; `wa-*` are registered by the app's Web Awesome loader). The TS
+`Store` / `TreeState` / key-decoding / outline / inspector all port to
+Rust. Delete the `tonk-tree` JS entirely.
+
+### Visual spec (from review)
+
+- **Front-coding fix.** Dim the leading key components shared with the
+  **previous sibling** (adjacent in sort order — where divergence is
+  meaningful), NOT the parent's upper-bound (which shares nothing
+  meaningful and made the dimming look random). Dimming = "same as the
+  row above, look at the bright tail."
+- **Key component colors.** Each component is color-coded: tag (by index
+  kind), entity, attribute, value-type, value. The **first segment (tag)**
+  gets a *filled* treatment — background in the index kind's color, black
+  foreground (attribute index → yellow bg, entity → teal, value → cyan/
+  pink) — so the index kind reads at a glance. Entity and value get their
+  own colors too, not left plain.
+- **Inspector entries table: drop the Type column; encode type in the
+  value's formatting** so the type is legible from the value itself:
+  - entity → underlined (it is a URI)
+  - attribute / symbol → as-is
+  - string → quoted (`"…"`)
+  - float → always a decimal point (`5.0`)
+  - signed int → explicit sign (`-1`, `+3`)
+  - unsigned int → plain digits
+  - bytes → hex
+- **Truncate long values** in the table; **clicking a fact unfolds a
+  detail view** (type name, full unpacked value, byte size, cause).
+- **Right panel hashes are shown in full** (not truncated) — there is
+  room and they are the identifier.
+
 ## The visualizer: composable components in the diagnose style
 
 Model the inspector after `dialog-diagnose`, both its **state
