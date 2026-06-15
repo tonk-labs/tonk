@@ -515,7 +515,11 @@ mod tests {
             build_repository_info(&tonk, &key, &repository).await
         };
 
-        let me = info.members.iter().find(|m| m.is_self).expect("self present");
+        let me = info
+            .members
+            .iter()
+            .find(|m| m.is_self)
+            .expect("self present");
         assert_eq!(
             me.invited_by.as_deref(),
             Some(expected.inviter.0.to_string().as_str()),

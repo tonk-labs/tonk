@@ -9,7 +9,6 @@ use wasm_bindgen::JsCast;
 use crate::{
     api,
     components::{HostId, InviteSpace},
-    did,
     error::TonkUiError,
 };
 
@@ -416,7 +415,7 @@ pub(super) fn RemoteCard(
         Some(did) => did.to_string(),
         None => local_subject,
     };
-    let sigil_value = did_sigil_value(&remote_subject);
+    let sigil_value = tonk_sigil::did_sigil_value(&remote_subject);
     let title_attr = remote_subject;
 
     view! {
@@ -1599,16 +1598,6 @@ fn revision_badge(revision: Option<Revision>) -> impl IntoView {
             </wa-badge>
         }),
     }
-}
-
-/// Sigil hex string for a DID, suitable for `<tonk-sigil value=...>`.
-/// Same helper used by `super::join` so a space's sigil is
-/// consistent across the join page and the space view.
-fn did_sigil_value(did: &str) -> Option<String> {
-    did::did_key_prefix(did).map(|bytes| {
-        let n = u32::from_be_bytes(bytes);
-        format!("0x{n:08x}")
-    })
 }
 
 /// Address-summary helper kept around in case we surface it on

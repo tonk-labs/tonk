@@ -7,7 +7,6 @@ use url::Url;
 use crate::{
     api::{self, JoinError},
     components::{LastJoinOutcome, ProfileResource},
-    did,
 };
 
 /// Lifecycle of a `/join` page load.
@@ -92,16 +91,6 @@ async fn refresh_after_join(repo: &str) {
     if let Err(e) = api::pull(repo, "main").await {
         log!("post-join pull on '{}' failed (continuing): {:?}", repo, e);
     }
-}
-
-/// Sigil hex string for a DID, suitable for `<tonk-sigil value=...>`.
-/// Matches the helper used in [`super::space`] so a space's sigil
-/// is consistent across the join page and the space view.
-fn did_sigil_value(did: &str) -> Option<String> {
-    did::did_key_prefix(did).map(|bytes| {
-        let n = u32::from_be_bytes(bytes);
-        format!("0x{n:08x}")
-    })
 }
 
 /// `/join` view. Parses the invite client-side, then auto-joins via
@@ -335,7 +324,7 @@ where
             >"Back"</wa-button>
         }),
         JoinView::AudienceMismatch { audience, subject } => {
-            let sigil_value = did_sigil_value(&subject);
+            let sigil_value = tonk_sigil::did_sigil_value(&subject);
             EitherOf4::C(view! {
                 <div slot="header">
                     <h1>"This invite is for someone else"</h1>
@@ -359,7 +348,7 @@ where
             // shared repository. Show a "Joining…" affordance; the effect
             // claims the invite, pulls the content branch, then redirects
             // into the now-ready space.
-            let sigil_value = did_sigil_value(&subject);
+            let sigil_value = tonk_sigil::did_sigil_value(&subject);
             let _ = on_cancel;
             EitherOf4::D(view! {
                 <div slot="header">

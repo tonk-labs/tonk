@@ -20,9 +20,6 @@ pub mod sync_controller;
 /// message as a reactive signal.
 pub mod watch;
 
-/// DID parsing helpers.
-pub mod did;
-
 /// Error types for the Tonk UI.
 pub mod error;
 

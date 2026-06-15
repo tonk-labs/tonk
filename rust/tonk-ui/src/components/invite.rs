@@ -2,18 +2,7 @@ use leptos::{ev::Event, prelude::*, task::spawn_local};
 use tonk_invite::Invite;
 use wasm_bindgen::JsCast;
 
-use crate::{api, components::InviteSpace, did};
-
-/// Sigil hex string for a DID, suitable for `<tonk-sigil
-/// value=...>`. Same shape used by the join page and space
-/// view — the four leading bytes of the did:key form a u32 we
-/// hex-encode.
-fn sigil_value_for_did(did: &str) -> Option<String> {
-    did::did_key_prefix(did).map(|bytes| {
-        let n = u32::from_be_bytes(bytes);
-        format!("0x{n:08x}")
-    })
-}
+use crate::{api, components::InviteSpace};
 
 /// Modal dialog showing a freshly minted invite URL.
 ///
@@ -134,7 +123,7 @@ pub fn TonkInviteDialog() -> impl IntoView {
             <div class="invite-body">
                 <tonk-sigil
                     class="invite-body-sigil"
-                    value=move || subject.get().and_then(|s| sigil_value_for_did(&s))
+                    value=move || subject.get().and_then(|s| tonk_sigil::did_sigil_value(&s))
                 ></tonk-sigil>
                 <div class="invite-body-stack wa-stack wa-gap-s">
                     <p class="invite-body-caption">"anyone with this link can join & edit"</p>
