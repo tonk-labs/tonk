@@ -250,6 +250,15 @@ fn build_item(state: &Shared, hash: &str, prev: Option<String>, next: Option<Str
 fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&str>) -> Element {
     let row = el("span").class(if node.cached { "row" } else { "row remote" });
 
+    // A node dot, D3 indented-tree style: a filled disc for a segment
+    // (leaf), a hollow ring for an index (branch).
+    let dot_class = if node.kind == Kind::Index {
+        "dot dot-branch"
+    } else {
+        "dot dot-leaf"
+    };
+    let _ = row.append_child(&el("span").class(dot_class));
+
     // The key, front-coded against the neighboring siblings.
     let keystr = el("span").class("keystr").attr("title", &node.hash);
     if let Some(bound) = &node.bound {
@@ -549,9 +558,19 @@ const STYLE: &str = r#"
 }
 .pane { overflow: auto; padding: var(--wa-space-m, 12px); }
 .pane.left { border-right: 1px solid var(--wa-color-border-quiet); }
+/* Indented-tree connector lines, scoped to this element's wa-tree (the
+   variables are read by wa-tree-item's built-in `.children::before`). */
+wa-tree { --indent-guide-width: 1px; --indent-guide-style: solid;
+  --indent-guide-color: var(--wa-color-border-normal, #555); --indent-guide-offset: 0px; }
 .row { display: inline-flex; align-items: center; gap: var(--wa-space-s, 8px); width: 100%; }
 .row.remote { opacity: 0.5; }
-.keystr { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; }
+/* D3-indented-tree node dot: a filled disc for a leaf (segment), a hollow
+   ring for a branch (index). Sits just before the key. */
+.dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.dot-leaf { background: var(--wa-color-text-quiet); }
+.dot-branch { background: transparent; border: 1.5px solid var(--wa-color-text-quiet); }
+.keystr { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px;
+  flex: 1 1 auto; min-width: 0; }
 /* In the outline, key segments are colored TEXT (no background fill) so
    the row stays compact. The component class sets the color. */
 .key-seg { font-weight: var(--wa-font-weight-semibold, 600);
@@ -565,8 +584,13 @@ const STYLE: &str = r#"
 .key-seg.seg-index-type { color: var(--wa-color-text-normal); }
 /* Past the routing pivot: dim the segment — text and color. */
 .key-seg.dim { opacity: 0.6; font-weight: var(--wa-font-weight-normal, 400); }
-.count { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-xs, 11px); flex: none; }
-.sizewrap { display: inline-flex; align-items: center; gap: var(--wa-space-xs, 6px); margin-left: auto; flex: none; }
+/* count and size are fixed-width right-aligned columns so they line up
+   across rows regardless of the key's width or the row's indent depth
+   (the columns hug the right edge of the pane, D3 value-column style). */
+.count { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-xs, 11px);
+  flex: none; width: 84px; text-align: right; white-space: nowrap; }
+.sizewrap { display: inline-flex; align-items: center; justify-content: flex-end;
+  gap: var(--wa-space-xs, 6px); flex: none; }
 .sizebar { height: 7px; background: var(--tonk-closure, #7a7268); border-radius: var(--wa-border-radius-s, 2px); min-width: 2px; }
 .row.remote .sizebar { background: var(--wa-color-neutral-fill-loud, #666); }
 .sizenum { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-xs, 11px); width: 56px; text-align: right; }
