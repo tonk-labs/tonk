@@ -232,25 +232,27 @@ fn build_item(state: &Shared, hash: &str, prev: Option<String>, next: Option<Str
     let item = el("wa-tree-item").attr("data-hash", hash);
 
     if let Some(node) = &node {
-        // Replace wa-tree's expand/collapse chevron with our dot, so the
-        // dot itself is the toggle. The dot encodes locality: filled when
-        // cached locally, a hollow ring when not yet fetched.
-        let has_children = node.kind == Kind::Index && node.count > 0;
-        if has_children {
+        // Expandable when it is a cached index with children, or any node we
+        // have not fetched yet (we do not know its kind until pulled — the
+        // same lazy expansion pulls it from the remote). The expand toggle is
+        // our dot, which also encodes locality: filled when cached locally, a
+        // hollow ring when not yet fetched.
+        let expandable = (node.kind == Kind::Index && node.count > 0) || !node.cached;
+        if expandable {
             let _ = item.append_child(&dot(node.cached, "").attr("slot", "expand-icon"));
             let _ = item.append_child(&dot(node.cached, "").attr("slot", "collapse-icon"));
         }
 
         let _ = item.append_child(&build_row(state, node, prev.as_deref(), next.as_deref()));
 
-        if !has_children {
+        if !expandable {
             // Leaf dot: a direct child of the item (not the row), absolutely
             // positioned at the connector anchor so it tracks `--indent` and
             // lines up with the elbow — an in-flow dot in the row does not.
             let _ = item.append_child(&dot(node.cached, "dot-leaf"));
         }
 
-        if has_children {
+        if expandable {
             item.set_attribute("lazy", "").ok();
             // The parent's lower bound (`prev`) is the first child's lower
             // bound too, so its pivot is measured against the parent's left

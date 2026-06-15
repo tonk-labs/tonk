@@ -19,7 +19,9 @@ use base58::{FromBase58, ToBase58};
 use dialog_artifacts::{Datum, KeyBytes, State, Value, ValueDataType};
 use dialog_common::Blake3Hash as NodeHash;
 use dialog_query::Term;
-use dialog_repository::{Branch, LocalIndex, RepositoryArchiveExt};
+use dialog_repository::{
+    Branch, LocalIndex, NetworkedIndex, RepositoryArchiveExt, RepositoryMemoryExt, Upstream,
+};
 use dialog_search_tree::{
     ArchivedNodeBody, Buffer, DialogSearchTreeError, Distribution, Geometric, Node, into_owned,
 };
@@ -27,7 +29,7 @@ use dialog_storage::{Blake3Hash, StorageBackend};
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
 
-use crate::reactor::{Conclusion, GetPutProvider, Query};
+use crate::reactor::{Conclusion, Query, SelectProvider};
 
 /// A decoded tree node, instantiated for the artifact key/value types.
 type TreeNode = Node<KeyBytes, State<Datum>>;
@@ -63,7 +65,7 @@ pub enum FormulaError {
 }
 
 /// Resolve a formula [`Query`] against `branch`, returning its rows.
-pub async fn resolve_formula<Env: GetPutProvider>(
+pub async fn resolve_formula<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     query: &Query,
@@ -149,22 +151,45 @@ fn root_hash(branch: &Branch) -> Option<Blake3Hash> {
     (hash != [0u8; 32]).then_some(hash)
 }
 
-/// Read and decode one node from the live archive.
-async fn read_node<Env: GetPutProvider>(
+/// Read and decode one node, falling back to the remote when the block is
+/// not cached locally — so expanding a not-yet-fetched node transparently
+/// pulls it (and caches it) the same way a normal lazy expansion does.
+async fn read_node<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<TreeNode, FormulaError> {
-    try_read_node(branch, env, hash)
-        .await?
-        .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))
+    let index = NetworkedIndex::new(env, branch.archive().index(), remote(branch, env).await);
+    let bytes = index
+        .get(&hash)
+        .await
+        .map_err(|e| FormulaError::Read(e.to_string()))?
+        .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))?;
+    Ok(TreeNode::new(Buffer::from(bytes)))
+}
+
+/// Load the branch's upstream remote, if it tracks one, so a networked read
+/// can fall back to it. A failure to load (e.g. no credentials) is non-fatal
+/// — the local archive alone may still satisfy the read. Mirrors
+/// dialog-repository's `Select::perform`.
+async fn remote<Env: SelectProvider>(
+    branch: &Branch,
+    env: &Env,
+) -> Option<dialog_repository::RemoteRepository> {
+    match branch.upstream() {
+        Some(Upstream::Remote { remote: name, .. }) => {
+            branch.subject().remote(name).load().perform(env).await.ok()
+        }
+        _ => None,
+    }
 }
 
 /// Read a node from the *local* archive only (no remote fallback), returning
-/// `None` when the block is not cached locally. This is how the inspector
-/// tells a locally-present node from one that would have to be fetched: the
-/// `LocalIndex` reads the local catalog directly, so a miss means remote.
-async fn try_read_node<Env: GetPutProvider>(
+/// `None` when the block is not cached. This is what the dot's locality
+/// reflects (a local hit is cached, a miss would have to be fetched) and lets
+/// `tree/child` list a not-cached child from the parent's link without
+/// pulling it — the pull happens only when that child is expanded.
+async fn read_local<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
@@ -219,7 +244,7 @@ fn node_fields(node: &TreeNode) -> Result<BTreeMap<String, Ipld>, FormulaError> 
 }
 
 /// One `tree/node` conclusion for the node at `hash`.
-async fn node_row<Env: GetPutProvider>(
+async fn node_row<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
@@ -237,7 +262,7 @@ async fn node_row<Env: GetPutProvider>(
 /// row's `this`), its sibling position (`at`), and the child's own node
 /// fields (kind/size/count/leaf), read from the child block. A leaf
 /// node has no children and yields no rows.
-async fn child_rows<Env: GetPutProvider>(
+async fn child_rows<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
@@ -271,7 +296,7 @@ async fn child_rows<Env: GetPutProvider>(
         // would have to be fetched). A cached child carries its full node
         // fields; a remote one carries only what the parent's link knows —
         // its bound key and rank — and is flagged `cached: false`.
-        let mut fields = match try_read_node(branch, env, child).await? {
+        let mut fields = match read_local(branch, env, child).await? {
             Some(node) => {
                 let mut fields = node_fields(&node)?;
                 fields.insert("cached".into(), Ipld::Bool(true));
@@ -305,7 +330,7 @@ async fn child_rows<Env: GetPutProvider>(
 /// the leaf (`at`), the asserted/retracted `state`, and, for an
 /// asserted entry, the decoded datum's `entity` / `attribute` /
 /// `value-type`. An index node has no entries and yields no rows.
-async fn entry_rows<Env: GetPutProvider>(
+async fn entry_rows<Env: SelectProvider>(
     branch: &Branch,
     env: &Env,
     hash: Blake3Hash,
