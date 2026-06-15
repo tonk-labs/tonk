@@ -232,8 +232,25 @@ fn build_item(state: &Shared, hash: &str, prev: Option<String>, next: Option<Str
     let item = el("wa-tree-item").attr("data-hash", hash);
 
     if let Some(node) = &node {
+        // Replace wa-tree's expand/collapse chevron with our dot, so the
+        // dot itself is the toggle. The dot encodes locality: filled when
+        // cached locally, a hollow ring when not yet fetched.
+        let has_children = node.kind == Kind::Index && node.count > 0;
+        if has_children {
+            let _ = item.append_child(&dot(node.cached, "").attr("slot", "expand-icon"));
+            let _ = item.append_child(&dot(node.cached, "").attr("slot", "collapse-icon"));
+        }
+
         let _ = item.append_child(&build_row(state, node, prev.as_deref(), next.as_deref()));
-        if node.kind == Kind::Index && node.count > 0 {
+
+        if !has_children {
+            // Leaf dot: a direct child of the item (not the row), absolutely
+            // positioned at the connector anchor so it tracks `--indent` and
+            // lines up with the elbow — an in-flow dot in the row does not.
+            let _ = item.append_child(&dot(node.cached, "dot-leaf"));
+        }
+
+        if has_children {
             item.set_attribute("lazy", "").ok();
             // The parent's lower bound (`prev`) is the first child's lower
             // bound too, so its pivot is measured against the parent's left
@@ -244,20 +261,19 @@ fn build_item(state: &Shared, hash: &str, prev: Option<String>, next: Option<Str
     item
 }
 
-/// Render one node row: front-coded key, count, size bar, remote. Whether a
-/// node is an index or a segment reads from its unfold arrow (index nodes
-/// have children), so no kind icon is drawn.
+/// A node dot: a filled disc when the node is cached locally, a hollow ring
+/// when it is not yet fetched. `extra` adds positioning classes.
+fn dot(cached: bool, extra: &str) -> Element {
+    let locality = if cached { "dot-local" } else { "dot-remote" };
+    let cls = format!("dot {locality} {extra}");
+    el("span").class(cls.trim_end())
+}
+
+/// Render one node row: front-coded key, count, size bar, remote. A branch
+/// node's dot lives in the expand-icon slot (it toggles); a leaf's dot is a
+/// separate positioned element on the item (see `build_item`).
 fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&str>) -> Element {
     let row = el("span").class(if node.cached { "row" } else { "row remote" });
-
-    // A node dot, D3 indented-tree style: a filled disc for a segment
-    // (leaf), a hollow ring for an index (branch).
-    let dot_class = if node.kind == Kind::Index {
-        "dot dot-branch"
-    } else {
-        "dot dot-leaf"
-    };
-    let _ = row.append_child(&el("span").class(dot_class));
 
     // The key, front-coded against the neighboring siblings.
     let keystr = el("span").class("keystr").attr("title", &node.hash);
@@ -558,17 +574,67 @@ const STYLE: &str = r#"
 }
 .pane { overflow: auto; padding: var(--wa-space-m, 12px); }
 .pane.left { border-right: 1px solid var(--wa-color-border-quiet); }
-/* Indented-tree connector lines, scoped to this element's wa-tree (the
-   variables are read by wa-tree-item's built-in `.children::before`). */
-wa-tree { --indent-guide-width: 1px; --indent-guide-style: solid;
-  --indent-guide-color: var(--wa-color-border-normal, #555); --indent-guide-offset: 0px; }
+/* D3-style indented-tree connectors, scoped to this element's wa-tree.
+   wa-tree's built-in vertical spine runs the full height of a subtree
+   (past the last child, to nowhere), so it is disabled and the spine is
+   drawn per-child instead: a continuous vertical line that each child's
+   horizontal elbow forks off of. The vertical spans the whole row for
+   every child so it runs unbroken through each elbow point; the last child
+   stops its vertical at its own dot, terminating the spine cleanly. The
+   dot center sits at (0.1875em + --indent + 1em) from the item's content
+   box; the spine is one level (2em) left of the dot, so the elbow spans 2em
+   to meet the dot exactly. Lines use the quiet text grey, like the labels. */
+wa-tree { --indent-guide-color: transparent; }
+wa-tree-item { position: relative;
+  /* The selected row is marked by wa-tree's brand accent bar alone — drop
+     its fill and the loud blue focus ring; the focused row gets a quiet
+     fill on its own row instead (below). */
+  --wa-color-neutral-fill-quiet: transparent;
+  --wa-focus-ring: 0 0 0 0 transparent; }
+/* Focused (keyboard-navigated) row: a quiet translucent fill spanning the
+   full row width like wa-tree's native highlight. Painted on the host (which
+   is full width, unlike the inset label) as a sized gradient band so it is
+   only the node's own row tall and does not bleed into the subtree below. */
+wa-tree-item:focus-visible, wa-tree-item:focus {
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--wa-color-text-normal) 10%, transparent),
+    color-mix(in srgb, var(--wa-color-text-normal) 10%, transparent));
+  background-repeat: no-repeat; background-size: 100% 2em; background-position: 0 0; }
+/* z-index keeps the lines above a focused row's fill so they stay crisp. */
+wa-tree-item::before, wa-tree-item::after {
+  content: ''; position: absolute; z-index: 3;
+  inset-inline-start: calc(0.1875em + var(--indent) - 1em);
+  border-color: var(--wa-color-border-normal, #43454d); }
+/* Horizontal elbow forking off the spine, reaching the node's dot.
+   (width/style only — a `border-top` shorthand would reset the color set
+   above to currentColor, turning the line bright.) */
+wa-tree-item::before { top: 1em; width: 2em; border-top-width: 1px; border-top-style: solid; }
+/* Continuous vertical spine. It starts 1em above this row's top so it
+   reaches up to the parent's dot (which sits 1em into the parent row, just
+   above the first child) — otherwise the spine would float a row below the
+   parent. The last child stops its spine at its own dot. */
+wa-tree-item::after { top: -1em; bottom: 0; width: 0;
+  border-inline-start-width: 1px; border-inline-start-style: solid; }
+wa-tree-item:last-child::after { bottom: auto; height: 2em; }
+/* The root has no parent spine. */
+wa-tree > wa-tree-item::before, wa-tree > wa-tree-item::after { display: none; }
 .row { display: inline-flex; align-items: center; gap: var(--wa-space-s, 8px); width: 100%; }
 .row.remote { opacity: 0.5; }
-/* D3-indented-tree node dot: a filled disc for a leaf (segment), a hollow
-   ring for a branch (index). Sits just before the key. */
-.dot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
-.dot-leaf { background: var(--wa-color-text-quiet); }
-.dot-branch { background: transparent; border: 1.5px solid var(--wa-color-text-quiet); }
+/* The node dot replaces wa-tree's expand chevron and encodes locality:
+   a filled disc when cached locally, a hollow ring when not yet fetched.
+   A branch dot sits in the expand-icon slot (and is the toggle); a leaf dot
+   is absolutely positioned on the item at the connector anchor. */
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; }
+.dot-local { background: var(--wa-color-border-normal, #43454d); border: 1.5px solid var(--wa-color-border-normal, #43454d); }
+.dot-remote { background: transparent; border: 1.5px solid var(--wa-color-border-normal, #43454d); }
+/* A branch dot lives in the 2em-wide expand slot; keep it from inheriting
+   the chevron's rotate-on-expand. */
+[slot="expand-icon"].dot, [slot="collapse-icon"].dot { rotate: none !important; }
+/* A leaf dot: placed at the same anchor as the elbow end
+   (0.1875em + --indent + 1em), so it lines up with the connectors. */
+wa-tree-item > .dot-leaf { position: absolute; z-index: 4;
+  inset-inline-start: calc(0.1875em + var(--indent) + 1em); top: 1em;
+  transform: translate(-50%, -50%); }
 .keystr { white-space: nowrap; display: inline-flex; align-items: center; gap: 3px;
   flex: 1 1 auto; min-width: 0; }
 /* In the outline, key segments are colored TEXT (no background fill) so
