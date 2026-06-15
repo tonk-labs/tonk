@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::Invite;
-use tonk_schema::{Invitation, InvitedVia, Membership, Replica, prelude::DidExt as _};
+use tonk_schema::{Invitation, InvitedVia, MemberName, Membership, Replica, prelude::DidExt as _};
 
 use super::AppState;
 use super::repository::{
@@ -287,10 +287,12 @@ where
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
+    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
     let mut transaction = meta
         .transaction()
         .assert(invitation.clone())
-        .assert(membership.clone());
+        .assert(membership.clone())
+        .assert(member_name);
     if !already_stamped && !self_invite {
         transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
@@ -456,6 +458,35 @@ mod tests {
             .find(|s| s.this == membership_entity)
             .expect("provenance stamp present");
         assert_eq!(stamp.invitation.0, expected.this);
+    }
+
+    /// Claiming an invite names the claimer on the repo meta.
+    #[dialog_common::test]
+    async fn it_records_the_claimer_name_on_join() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(30, 31).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let memberships = meta_memberships(&state, &key).await;
+        let names = crate::router::tests::meta_member_names(&state, &key).await;
+        let profile_entity = {
+            let guard = state.read().await;
+            guard.profile.did().this()
+        };
+        let membership_entity = memberships
+            .iter()
+            .find(|m| m.member.0 == profile_entity)
+            .expect("claimer membership present")
+            .this()
+            .clone();
+        assert_eq!(names.len(), 1, "one name row per membership entity");
+        assert!(
+            names
+                .iter()
+                .any(|n| n.this == membership_entity && !n.name.0.is_empty()),
+            "the claimer is named on their membership",
+        );
     }
 
     /// A second claim against the same subject (Renewed) records the

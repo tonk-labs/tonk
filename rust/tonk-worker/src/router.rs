@@ -420,6 +420,38 @@ pub mod tests {
             .expect("invited-via query")
     }
 
+    /// Query all `MemberName` rows on `repo`'s meta branch.
+    pub(crate) async fn meta_member_names(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::MemberName> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let meta: Branch = repository
+            .branch("meta")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("meta branch opens");
+        meta.query()
+            .select(Query::<tonk_schema::MemberName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("member-name query")
+    }
+
     /// Creates a test repository via `PUT /api/repository/{label}` and
     /// returns its minted routing key.
     ///

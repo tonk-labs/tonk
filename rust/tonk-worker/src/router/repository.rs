@@ -28,7 +28,8 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Membership, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    Branch as MetaBranch, MemberName, Membership, Remote, Replica, RepositoryName, SpaceStatus,
+    TrackingBranch,
 };
 
 use super::AppState;
@@ -849,14 +850,18 @@ where
 
     // The opening profile is a member of this repository: the
     // creator on the create path, the claimer on the join path.
-    // Content-derived entity, so re-opening is a no-op.
+    // Content-derived entity, so re-opening is a no-op. The member
+    // also names themselves with the name their profile was opened under.
     let membership = Membership::new(tonk.profile.did(), repository.did());
+    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+    // Content-derived; re-asserting on the join path is a no-op.
 
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
         .assert(replica.branch(META_BRANCH))
-        .assert(membership);
+        .assert(membership)
+        .assert(member_name);
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -2326,5 +2331,17 @@ mod tests {
         // new: exactly the founder's membership.
         assert_eq!(memberships.len(), 1, "exactly the founder membership");
         assert_eq!(memberships[0].member.0, profile_entity);
+    }
+
+    /// Creating a repository names the creator on the meta branch.
+    #[dialog_common::test]
+    async fn it_records_the_founder_name_on_create() {
+        let (_app, state, key) = fresh_repo("test-founder-name").await;
+
+        let names = crate::router::tests::meta_member_names(&state, &key).await;
+        let memberships = crate::router::tests::meta_memberships(&state, &key).await;
+        assert_eq!(names.len(), 1, "exactly the founder's name");
+        assert_eq!(names[0].this, memberships[0].this);
+        assert!(!names[0].name.0.is_empty(), "a non-empty display name");
     }
 }
