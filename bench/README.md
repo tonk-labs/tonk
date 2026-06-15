@@ -78,9 +78,10 @@ workspace pointing at the local stack. Bounded by `EPISODE_TIMEOUT` (default
 1200 s). Transcript captured as streaming JSON for metrics.
 
 **Browser** — headless Chrome via chromedriver/WebDriver-over-curl
-(`bench/bin/browser.sh`). The only UI interaction is the join-form submit in
-`bridge.sh`: fill `wa-input[name="space-name"]`, call `form.requestSubmit()`,
-poll until landed off `/join`.
+(`bench/bin/browser.sh`). The only UI interaction is navigating to the minted
+invite in `bridge.sh`: the join component auto-joins (claims the invite and
+JS-navigates to `/space/<repository-DID>` with no form), so the bridge just
+polls until the URL lands off `/join`, then fires the data pull.
 
 **Checkpoints** (`scenarios/<name>/checkpoints` file):
 
@@ -179,6 +180,15 @@ is not supported by the analyzer; use a content attribute instead.
 **`--max-turns` unsupported** — the installed `claude` CLI has no `--max-turns`
 flag. Episodes are bounded by `EPISODE_TIMEOUT` via `timeout(1)` from coreutils.
 
-**`SPACE_NAME` is fixed to `bench`** — per-run S3 state is scoped by the
-in-process `LocalS3` instance (fresh per run), so a unique space name per run
-is unnecessary. All harness scripts default to `SPACE_NAME=bench`.
+**`SPACE_NAME` is the repository DID** — the tonk-ui addresses a space by the
+repository's subject DID (`did:key:…`), which the auto-join flow returns as
+`repository.name` and the route parser reconstructs from the URL segment
+(`did:key` is a droppable label; the id is re-prefixed). `site.sh setup`
+captures the DID from `slide init` into `$RUN_DIR/space.did`, and `run.sh`
+exports it as `SPACE_NAME` for both the bridge pull
+(`/api/repository/<DID>/…`) and the checkpoint shot URLs
+(`/space/<DID>/…`). A hardcoded name like `bench` resolves to
+`did:key:bench`, which doesn't exist — every view then 404s with
+`Credential not found: key/self`. (Historical: the harness used to fill a
+join form with a chosen name; the product removed that form in favor of
+auto-join, so the harness now follows the DID.)

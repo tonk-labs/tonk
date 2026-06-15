@@ -30,13 +30,24 @@ for i in $(seq 1 "$RUNS"); do
   export RUN_DIR SCENARIO SCENARIO_NAME
   export BENCH_PORT="${BENCH_PORT:-8787}"
   export BENCH_URL="http://127.0.0.1:$BENCH_PORT"
-  export SPACE_NAME="${SPACE_NAME:-bench}"
   echo "run: $RUN_DIR" >&2
 
   trap cleanup EXIT
 
   "$ROOT/bench/bin/stack.sh" start
   "$ROOT/bench/bin/site.sh" setup
+
+  # The space is addressed by the repository's DID (auto-join returns it
+  # as repository.name); site.sh setup stashed it in space.did. Both the
+  # bridge pull and the checkpoint shots must use this, not a name.
+  if [ -s "$RUN_DIR/space.did" ]; then
+    SPACE_NAME="$(cat "$RUN_DIR/space.did")"
+  else
+    echo "run: no space.did from site setup; falling back to SPACE_NAME=${SPACE_NAME:-bench}" >&2
+    SPACE_NAME="${SPACE_NAME:-bench}"
+  fi
+  export SPACE_NAME
+  echo "run: space addressed as $SPACE_NAME" >&2
 
   episode_status=0
   if [ "$SCRIPTED" = 1 ]; then
