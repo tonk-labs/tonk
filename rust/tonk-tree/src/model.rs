@@ -132,6 +132,13 @@ impl Loader {
         Ok(rows.first().map(Self::to_node))
     }
 
+    /// Re-read one node by hash. Used after a node is fetched (on expand) to
+    /// pick up its now-cached fields (kind/size/count and cached: true).
+    pub async fn node(&self, hash: &str) -> Result<Option<TreeNode>, String> {
+        let rows = self.query("tree/node", json!({ "hash": hash })).await?;
+        Ok(rows.first().map(Self::to_node))
+    }
+
     pub async fn children(&self, hash: &str) -> Result<Vec<TreeNode>, String> {
         let rows = self.query("tree/child", json!({ "hash": hash })).await?;
         Ok(rows.iter().map(Self::to_node).collect())

@@ -468,6 +468,11 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<
                         let _ = item.append_child(&child);
                     }
                     item.remove_attribute("lazy").ok();
+                    // Expanding pulled the node from the remote (if it was not
+                    // cached), so re-read its own fields — now cached, with a
+                    // real kind/size/count — and refresh its row: the dot
+                    // fills, the cloud drops, the stats update.
+                    refresh_row(&state, &item, &hash).await;
                     // A newly-grown max-size could rescale bars, but we
                     // leave existing bars as-is to avoid a full re-render.
                 }
@@ -480,6 +485,38 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<
     });
     let _ = item.add_event_listener_with_callback("wa-lazy-load", cb.as_ref().unchecked_ref());
     cb.forget();
+}
+
+/// Re-read a node by hash and rebuild its row + dot in place. Called after a
+/// node is expanded (and thus fetched), so a previously-remote node picks up
+/// its now-cached state: a filled dot, no cloud, real size/count.
+async fn refresh_row(state: &Shared, item: &Element, hash: &str) {
+    let loader = state.borrow().loader.clone();
+    let Ok(Some(node)) = loader.node(hash).await else {
+        return;
+    };
+    {
+        let mut s = state.borrow_mut();
+        s.nodes.insert(node.hash.clone(), node.clone());
+    }
+    // Swap the existing row for a fresh one (updated stats, no cloud).
+    if let Some(old) = item.query_selector(":scope > .row").ok().flatten() {
+        let row = build_row(state, &node, None, None);
+        let _ = item.replace_child(&row, &old);
+    }
+    // Fill the locality dots now that the node is cached — whether it lives
+    // in the expand slot (a branch) or inline (a leaf).
+    if node.cached {
+        for slot in ["expand-icon", "collapse-icon"] {
+            let sel = format!(":scope > [slot=\"{slot}\"].dot");
+            if let Some(old) = item.query_selector(&sel).ok().flatten() {
+                let _ = item.replace_child(&dot(true, "").attr("slot", slot), &old);
+            }
+        }
+        if let Some(old) = item.query_selector(":scope > .dot-leaf").ok().flatten() {
+            let _ = item.replace_child(&dot(true, "dot-leaf"), &old);
+        }
+    }
 }
 
 /// Install a selection listener on the wa-tree (once, in render_shell's
