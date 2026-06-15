@@ -138,5 +138,6 @@ view/directory!:
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
+        <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-sync-badge></tonk-sync-badge></tonk-branch></tonk-repository></tonk-host></span>
       </a>
     </div>
