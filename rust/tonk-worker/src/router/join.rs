@@ -366,6 +366,7 @@ mod tests {
     use tonk_schema::prelude::DidExt as _;
 
     use crate::router::api_router_with_state;
+    use crate::router::repository::build_repository_info;
     use crate::router::tests::{
         meta_invitations, meta_invited_via, meta_memberships, put_repo, test_state,
     };
@@ -486,6 +487,39 @@ mod tests {
                 .iter()
                 .any(|n| n.this == membership_entity && !n.name.0.is_empty()),
             "the claimer is named on their membership",
+        );
+    }
+
+    /// A claimer's member entry records the inviter via provenance.
+    #[dialog_common::test]
+    async fn it_reports_provenance_in_members() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(40, 41).await;
+        let expected = {
+            let parsed = Invite::parse_url(&url).await.unwrap();
+            Invitation::from_chain(&parsed.chain).unwrap()
+        };
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let info = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            build_repository_info(&tonk, &key, &repository).await
+        };
+
+        let me = info.members.iter().find(|m| m.is_self).expect("self present");
+        assert_eq!(
+            me.invited_by.as_deref(),
+            Some(expected.inviter.0.to_string().as_str()),
+            "claimer records the invitation's inviter as provenance",
         );
     }
 

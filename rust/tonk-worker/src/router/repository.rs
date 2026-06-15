@@ -28,8 +28,8 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, MemberName, Membership, Remote, Replica, RepositoryName, SpaceStatus,
-    TrackingBranch,
+    Branch as MetaBranch, Invitation, InvitedVia, MemberName, Membership, Remote, Replica,
+    RepositoryName, SpaceStatus, TrackingBranch,
 };
 
 use super::AppState;
@@ -139,6 +139,25 @@ impl RepositoryConfiguration {
     }
 }
 
+/// One member of a repository, assembled from the roster facts on
+/// the meta branch. `did` is the member profile's did:key URI (the
+/// meta entity, used directly as a `<tonk-sigil>` seed). `invited_by`
+/// is the inviter's did:key, which the UI resolves to a name against
+/// the member list; `None` for the founder and self-invites.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemberInfo {
+    /// The member profile's did:key URI.
+    pub did: String,
+    /// The member's published display name, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Whether this member is the active profile.
+    pub is_self: bool,
+    /// The inviter's did:key, when provenance was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<String>,
+}
+
 /// Read-side view of a repository.
 ///
 /// Returned by `GET /api/repository/{repo}` and `PUT
@@ -170,6 +189,9 @@ pub struct RepositoryInfo {
     /// remote that `main.upstream` points at is included.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub remote: HashMap<String, RemoteConfiguration>,
+    /// The repository's members, read from the meta branch roster.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<MemberInfo>,
 }
 
 /// Create a repository with optional remote and branch configuration.
@@ -1312,7 +1334,7 @@ where
 ///
 /// The meta branch is the source of truth for which branches and
 /// remotes belong to the repository. Opening the repository's
-/// meta branch, running three queries, and joining the results
+/// meta branch, running four queries, and joining the results
 /// gives the full picture without having to probe individual
 /// dialog-repository objects.
 ///
@@ -1328,6 +1350,9 @@ where
 /// - **Tracking branches (on replica)** — `TrackingBranch`
 ///   concepts that link local branches to their upstream remote
 ///   branches.
+/// - **Roster** — `Membership` rows (who belongs), joined with
+///   `MemberName` (published display names) and `InvitedVia` →
+///   `Invitation` (who invited whom), assembled into `members`.
 ///
 /// Revisions still come from the dialog layer: for each local
 /// branch, we open it and read `.revision()`. That's a handful
@@ -1363,6 +1388,7 @@ where
                 profile: tonk.profile.did(),
                 branch: HashMap::new(),
                 remote: HashMap::new(),
+                members: Vec::new(),
             };
         }
     };
@@ -1548,6 +1574,117 @@ where
         );
     }
 
+    // Pull the roster. `Membership` is the spine — one row per
+    // member; `MemberName`, `InvitedVia`, and `Invitation` are joined
+    // in below to attach the display name and inviter provenance.
+    let memberships: Vec<Membership> = match meta
+        .query()
+        .select(Query::<Membership> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            member: Term::var("member"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("Membership query on meta failed for '{}': {:?}", key, e);
+            Vec::new()
+        }
+    };
+    let member_names: Vec<MemberName> = match meta
+        .query()
+        .select(Query::<MemberName> {
+            this: Term::var("this"),
+            name: Term::var("name"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("MemberName query on meta failed for '{}': {:?}", key, e);
+            Vec::new()
+        }
+    };
+    let invited_via: Vec<InvitedVia> = match meta
+        .query()
+        .select(Query::<InvitedVia> {
+            this: Term::var("this"),
+            invitation: Term::var("invitation"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("InvitedVia query on meta failed for '{}': {:?}", key, e);
+            Vec::new()
+        }
+    };
+    let invitations: Vec<Invitation> = match meta
+        .query()
+        .select(Query::<Invitation> {
+            this: Term::var("this"),
+            subject: Term::var("subject"),
+            inviter: Term::var("inviter"),
+            audience: Term::var("audience"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            log!("Invitation query on meta failed for '{}': {:?}", key, e);
+            Vec::new()
+        }
+    };
+
+    // membership entity -> display name
+    let names_by_membership: HashMap<_, _> = member_names
+        .iter()
+        .map(|n| (n.this.clone(), n.name.0.clone()))
+        .collect();
+    // invitation entity -> inviter did:key
+    let inviter_by_invitation: HashMap<_, _> = invitations
+        .iter()
+        .map(|i| (i.this.clone(), i.inviter.0.to_string()))
+        .collect();
+    // membership entity -> inviter did:key, via the provenance stamp
+    let inviter_by_membership: HashMap<_, _> = invited_via
+        .iter()
+        .filter_map(|v| {
+            inviter_by_invitation
+                .get(&v.invitation.0)
+                .map(|inviter| (v.this.clone(), inviter.clone()))
+        })
+        .collect();
+
+    let self_entity = tonk.profile.did().this();
+    let mut members: Vec<MemberInfo> = memberships
+        .iter()
+        .map(|m| MemberInfo {
+            did: m.member.0.to_string(),
+            name: names_by_membership.get(&m.this).cloned(),
+            is_self: m.member.0 == self_entity,
+            invited_by: inviter_by_membership.get(&m.this).cloned(),
+        })
+        .collect();
+    // Deterministic order: self first, then named members
+    // alphabetically, unnamed last, did as the stable tiebreak.
+    members.sort_by(|a, b| {
+        b.is_self
+            .cmp(&a.is_self)
+            .then_with(|| a.name.is_none().cmp(&b.name.is_none()))
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.did.cmp(&b.did))
+    });
+
     RepositoryInfo {
         name: key.to_string(),
         label,
@@ -1556,6 +1693,7 @@ where
         profile: tonk.profile.did(),
         branch: branches,
         remote: remotes,
+        members,
     }
 }
 
@@ -2025,6 +2163,32 @@ mod tests {
             .unwrap();
         let info: RepositoryInfo = serde_json::from_slice(&body).unwrap();
         (app, state, info.name)
+    }
+
+    /// A freshly created repo reports exactly its founder as a member,
+    /// named, marked `is_self`, with no inviter.
+    #[dialog_common::test]
+    async fn it_reports_the_founder_in_members() {
+        let (_app, state, key) = fresh_repo("test-members-founder").await;
+
+        let info = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            super::build_repository_info(&tonk, &key, &repository).await
+        };
+
+        assert_eq!(info.members.len(), 1, "exactly the founder");
+        let founder = &info.members[0];
+        assert!(founder.is_self, "founder is the active profile");
+        assert!(founder.invited_by.is_none(), "founder has no inviter");
+        assert!(founder.name.is_some(), "founder is named");
     }
 
     /// Seed a notation document into the repo's `main` branch.
