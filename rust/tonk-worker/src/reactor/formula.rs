@@ -155,13 +155,26 @@ async fn read_node<Env: GetPutProvider>(
     env: &Env,
     hash: Blake3Hash,
 ) -> Result<TreeNode, FormulaError> {
+    try_read_node(branch, env, hash)
+        .await?
+        .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))
+}
+
+/// Read a node from the *local* archive only (no remote fallback), returning
+/// `None` when the block is not cached locally. This is how the inspector
+/// tells a locally-present node from one that would have to be fetched: the
+/// `LocalIndex` reads the local catalog directly, so a miss means remote.
+async fn try_read_node<Env: GetPutProvider>(
+    branch: &Branch,
+    env: &Env,
+    hash: Blake3Hash,
+) -> Result<Option<TreeNode>, FormulaError> {
     let index = LocalIndex::new(env, branch.archive().index());
     let bytes = index
         .get(&hash)
         .await
-        .map_err(|e| FormulaError::Read(e.to_string()))?
-        .ok_or_else(|| FormulaError::Read(format!("node {} not found", to_base58(&hash))))?;
-    Ok(TreeNode::new(Buffer::from(bytes)))
+        .map_err(|e| FormulaError::Read(e.to_string()))?;
+    Ok(bytes.map(|b| TreeNode::new(Buffer::from(b))))
 }
 
 /// The scalar fields describing a node: `kind` (`index` for a node of
@@ -238,18 +251,43 @@ async fn child_rows<Env: GetPutProvider>(
         return Ok(vec![]); // a segment has no children
     };
 
-    // Collect child hashes first so we can drop the borrow on `parent`
-    // before the awaits that read each child.
-    let children: Vec<Blake3Hash> = index
+    // Collect each child's hash and upper-bound key up front so we can drop
+    // the borrow on `parent` before the awaits that read each child. The
+    // link carries the bound, so a not-cached child can still show its key.
+    let children: Vec<(Blake3Hash, KeyBytes)> = index
         .links
         .iter()
-        .map(|link| *<&NodeHash>::from(&link.node).as_bytes())
-        .collect();
+        .map(|link| {
+            let hash = *<&NodeHash>::from(&link.node).as_bytes();
+            let bound: KeyBytes =
+                into_owned(&link.upper_bound).map_err(|e| FormulaError::Decode(e.to_string()))?;
+            Ok((hash, bound))
+        })
+        .collect::<Result<_, FormulaError>>()?;
 
     let mut rows = Vec::with_capacity(children.len());
-    for (at, child) in children.into_iter().enumerate() {
-        let node = read_node(branch, env, child).await?;
-        let mut fields = node_fields(&node)?;
+    for (at, (child, bound)) in children.into_iter().enumerate() {
+        // Local-only read: a hit is cached, a miss is remote (the block
+        // would have to be fetched). A cached child carries its full node
+        // fields; a remote one carries only what the parent's link knows —
+        // its bound key and rank — and is flagged `cached: false`.
+        let mut fields = match try_read_node(branch, env, child).await? {
+            Some(node) => {
+                let mut fields = node_fields(&node)?;
+                fields.insert("cached".into(), Ipld::Bool(true));
+                fields
+            }
+            None => {
+                let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+                fields.insert("cached".into(), Ipld::Bool(false));
+                fields.insert("bound".into(), Ipld::String(key_hex(&bound)));
+                fields.insert(
+                    "rank".into(),
+                    Ipld::Integer(Geometric::rank(&bound) as i128),
+                );
+                fields
+            }
+        };
         fields.insert("child".into(), Ipld::String(to_base58(&child)));
         fields.insert("at".into(), Ipld::Integer(at as i128));
         rows.push(Conclusion {
