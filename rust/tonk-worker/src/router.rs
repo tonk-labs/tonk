@@ -21,7 +21,7 @@ pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatus
 
 mod repository;
 pub use repository::{
-    BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration, bootstrap_profile_meta,
 };
 

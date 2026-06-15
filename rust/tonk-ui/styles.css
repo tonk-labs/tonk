@@ -1465,6 +1465,30 @@ h6 {
     font-size: var(--wa-font-size-s);
     font-weight: 600;
 }
+.member-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-xs);
+}
+.member-row {
+    display: flex;
+    align-items: center;
+    gap: var(--wa-space-s);
+}
+.member-sigil {
+    width: 1.5rem;
+    height: 1.5rem;
+    flex: none;
+}
+.member-row__text {
+    display: flex;
+    align-items: baseline;
+    gap: var(--wa-space-xs);
+}
+.member-invited-by {
+    color: var(--wa-color-text-quiet);
+    font-size: var(--wa-font-size-s);
+}
 
 /* Sidebar uses wa-page's standard `navigation` slot. wa-page
    handles everything: rail-style column on desktop, drawer +
