@@ -504,17 +504,28 @@ async fn refresh_row(state: &Shared, item: &Element, hash: &str) {
         let row = build_row(state, &node, None, None);
         let _ = item.replace_child(&row, &old);
     }
-    // Fill the locality dots now that the node is cached — whether it lives
-    // in the expand slot (a branch) or inline (a leaf).
-    if node.cached {
-        for slot in ["expand-icon", "collapse-icon"] {
-            let sel = format!(":scope > [slot=\"{slot}\"].dot");
-            if let Some(old) = item.query_selector(&sel).ok().flatten() {
+
+    // A node has exactly one locality dot: slotted in the expand area if it
+    // is expandable, inline otherwise. Now that the node is fetched we know
+    // which it is, so fill the right dot and drop the other kind (a node
+    // first built remote carries the opposite one).
+    let expandable = (node.kind == Kind::Index && node.count > 0) || !node.cached;
+    let fill = node.cached;
+    for slot in ["expand-icon", "collapse-icon"] {
+        let sel = format!(":scope > [slot=\"{slot}\"].dot");
+        if let Some(old) = item.query_selector(&sel).ok().flatten() {
+            if expandable && fill {
                 let _ = item.replace_child(&dot(true, "").attr("slot", slot), &old);
+            } else if !expandable {
+                old.remove();
             }
         }
-        if let Some(old) = item.query_selector(":scope > .dot-leaf").ok().flatten() {
+    }
+    if let Some(old) = item.query_selector(":scope > .dot-leaf").ok().flatten() {
+        if !expandable && fill {
             let _ = item.replace_child(&dot(true, "dot-leaf"), &old);
+        } else if expandable {
+            old.remove();
         }
     }
 }
