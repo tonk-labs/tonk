@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::domain::membership::{Invitation, Member, Subject};
+use crate::domain::membership::{Invitation, Member, Name, Subject};
 use crate::prelude::*;
 
 /// A membership — a profile is a member of a repository.
@@ -94,6 +94,31 @@ impl InvitedVia {
     }
 }
 
+/// A member's self-asserted display name for this repository. A
+/// standalone fact on the membership entity, mirroring [`InvitedVia`]
+/// — the base [`Membership`] query stays uniform whether or not a
+/// name was written. Last-wins (cardinality-one): a member may rename,
+/// and the current value displays. Written by the member's own worker
+/// alongside the membership, so the space meta needs no cross-repo
+/// profile lookup to render a roster.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemberName {
+    /// The membership entity being named.
+    pub this: Entity,
+    /// The member's display name.
+    pub name: Name,
+}
+
+impl MemberName {
+    /// Name `membership` with `name`.
+    pub fn new(membership: Entity, name: String) -> Self {
+        Self {
+            this: membership,
+            name: Name(name),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +165,13 @@ mod tests {
         let stamp = InvitedVia::new(membership.this().clone(), invitation_entity.clone());
         assert_eq!(stamp.this, *membership.this());
         assert_eq!(stamp.invitation.0, invitation_entity);
+    }
+
+    #[dialog_common::test]
+    fn it_stamps_the_membership_with_a_name() {
+        let membership = Membership::new(did!("test:m"), did!("test:r"));
+        let stamp = MemberName::new(membership.this().clone(), "Alice".to_string());
+        assert_eq!(stamp.this, *membership.this());
+        assert_eq!(stamp.name.0, "Alice");
     }
 }

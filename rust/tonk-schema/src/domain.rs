@@ -154,6 +154,14 @@ pub mod membership {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.membership")]
     pub struct Invitation(pub Entity);
+
+    /// A member's self-asserted display name for the repository —
+    /// the [`MemberName`] stamp's payload.
+    ///
+    /// [`MemberName`]: crate::MemberName
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    pub struct Name(pub String);
 }
 
 /// Attributes that live on [`Invitation`] entities only.
