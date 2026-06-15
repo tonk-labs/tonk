@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Element, Event, HtmlElement};
 
@@ -467,7 +467,7 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<
                         let child = build_item(&state, h, prev, next);
                         let _ = item.append_child(&child);
                     }
-                    item.remove_attribute("lazy").ok();
+                    finish_loading(&item);
                     // Expanding pulled the node from the remote (if it was not
                     // cached), so re-read its own fields — now cached, with a
                     // real kind/size/count — and refresh its row: the dot
@@ -478,13 +478,22 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<
                 }
                 Err(e) => {
                     web_sys::console::error_1(&format!("tree/child: {e}").into());
-                    item.remove_attribute("lazy").ok();
+                    finish_loading(&item);
                 }
             }
         });
     });
     let _ = item.add_event_listener_with_callback("wa-lazy-load", cb.as_ref().unchecked_ref());
     cb.forget();
+}
+
+/// Clear a lazy item's loading state once its children resolved. Removing
+/// the `lazy` attribute alone leaves wa-tree-item's `loading` property set
+/// (its spinner spins forever) when the load returned nothing — a fetched
+/// leaf has no children — so the property is reset explicitly.
+fn finish_loading(item: &Element) {
+    let _ = item.remove_attribute("lazy");
+    let _ = js_sys::Reflect::set(item.as_ref(), &"loading".into(), &JsValue::FALSE);
 }
 
 /// Re-read a node by hash and rebuild its row + dot in place. Called after a
