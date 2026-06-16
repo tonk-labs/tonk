@@ -566,6 +566,9 @@ tonk-repository.display-route,
     border-radius: var(--wa-border-radius-m);
     background: transparent;
     overflow: hidden;
+    /* Anchor for the absolutely-positioned sync badge (and the blank
+       card's progress overlay below). */
+    position: relative;
 }
 .hub-card:hover {
     border-color: var(--wa-color-brand-fill-loud);
@@ -636,6 +639,58 @@ tonk-repository.display-route,
     font-family: var(--wa-font-family-code);
     font-size: var(--wa-font-size-s);
     color: var(--wa-color-text-quiet);
+}
+
+/* Read-only sync status badge (`<tonk-sync-badge>`), pinned to the
+   card's top-right corner — clear of the space name and the long,
+   wrapping `/space/...` URL below it. Aligned with the name row's top
+   so it reads as a header-row status. Hidden by default and shown only
+   for real, initialized repositories: the profile self-card never lists
+   (its whole card is hidden above) and a `tonk:blank` space is still
+   seeding, so neither has a meaningful sync state to show. */
+.hub-card__sync {
+    display: none;
+    position: absolute;
+    inset-block-start: var(--wa-space-m);
+    inset-inline-end: var(--wa-space-l);
+}
+.hub-card[data-kind="tonk:repository"]:not([data-status="tonk:blank"]) .hub-card__sync {
+    display: flex;
+    align-items: center;
+}
+.hub-card__sync .sync-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+    font-family: var(--wa-font-family-code);
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-text-quiet);
+    white-space: nowrap;
+}
+.hub-card__sync .sync-badge::before {
+    content: "";
+    inline-size: 7px;
+    block-size: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+}
+.hub-card__sync .sync-badge.is-synced {
+    color: var(--wa-color-success-on-quiet);
+}
+.hub-card__sync .sync-badge.is-synced::before {
+    background: var(--wa-color-success-fill-loud);
+}
+.hub-card__sync .sync-badge.is-syncing {
+    color: var(--wa-color-warning-on-quiet);
+}
+.hub-card__sync .sync-badge.is-syncing::before {
+    background: var(--wa-color-warning-fill-loud);
+}
+/* Paused and offline are both inert, neutral states. */
+.hub-card__sync .sync-badge.is-paused::before,
+.hub-card__sync .sync-badge.is-offline::before {
+    background: var(--wa-color-neutral-fill-loud);
 }
 .hub-card[data-status="tonk:blank"] {
     pointer-events: none;

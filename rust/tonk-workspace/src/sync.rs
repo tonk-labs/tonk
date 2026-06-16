@@ -320,7 +320,7 @@ mod dom {
 
         fn connected_callback(&mut self, this: &HtmlElement) {
             refresh_state(this);
-            install_state_listeners(this, &self.refresh, &self.committed);
+            install_state_listeners(this, &self.refresh, &self.committed, refresh_state);
             install_toggle_click(this, &self.click);
             install_trigger_click(this, &self.trigger);
         }
@@ -399,6 +399,38 @@ mod dom {
         });
     }
 
+    /// Resolve repo+branch and repaint the read-only badge. The
+    /// read-only twin of [`refresh_state`]: same state priority, but it
+    /// never offers the enable-sync trigger — a no-upstream or
+    /// unreachable branch reads as `offline` (its `state_chip`). With no
+    /// repository ancestor there is nothing to show, so the host clears.
+    fn refresh_badge(this: &HtmlElement) {
+        let Some(repo) = repo_from_ancestor(this) else {
+            this.set_inner_html("");
+            return;
+        };
+        // Optimistic: show `paused` immediately so the badge is present
+        // without waiting on the network. The fetch below may override
+        // it with `offline`.
+        if !is_enabled(&repo) {
+            paint_badge(this, PAUSED_CHIP);
+        }
+        let branch = branch_from_ancestor(this);
+        let host = this.clone();
+        spawn_local(async move {
+            match fetch_sync_status(&repo, &branch).await {
+                // Unreachable remote: there *is* an upstream we can't
+                // reach. No upstream at all also reads `offline` via its
+                // chip below — the badge never offers an enable affordance.
+                None => paint_badge(&host, OFFLINE_CHIP),
+                Some(state) if is_enabled(&repo) => {
+                    paint_badge(&host, state_chip(state));
+                }
+                Some(_) => paint_badge(&host, PAUSED_CHIP),
+            }
+        });
+    }
+
     /// Paint the pill button: set its `is-*` modifier + label and the
     /// `title`/`aria-label`. The title is supplied by the caller — a
     /// toggle hint for the actionable states (`RUNNING_LABEL` /
@@ -414,6 +446,44 @@ mod dom {
             let _ = button.set_attribute("title", title);
             let _ = button.set_attribute("aria-label", title);
         }
+    }
+
+    // ---- `<tonk-sync-badge>` --------------------------------------
+
+    /// CSS class for the read-only status badge (with an `is-*` state
+    /// modifier), styled by the consuming app — e.g. the `tonk-ui` Hub
+    /// cards. Distinct from the interactive pill's [`STATE_CHIP`].
+    const BADGE_CHIP: &str = "sync-badge";
+
+    /// Paint the read-only status badge: set its `is-*` modifier and
+    /// label on a non-interactive `<span>`. Unlike [`paint`], there is no
+    /// pause/resume toggle and no enable-sync trigger — a no-upstream or
+    /// unreachable branch reads as `offline` via its chip. The status
+    /// rides on the `title`/`aria-label` so the dot-and-label badge is
+    /// legible to assistive tech.
+    fn paint_badge(host: &HtmlElement, chip: (&'static str, &'static str)) {
+        let (label, class) = chip;
+        if let Some(span) = ensure_badge_span(host) {
+            let _ = span.set_attribute("class", &format!("{BADGE_CHIP} {class}"));
+            span.set_text_content(Some(label));
+            let _ = span.set_attribute("title", &format!("Sync status: {label}"));
+            let _ = span.set_attribute("aria-label", &format!("Sync status: {label}"));
+        }
+    }
+
+    /// Find or create the badge `<span>` as the element's only child. A
+    /// plain span, not a button: the badge is a status indicator the
+    /// surrounding card link owns the click for.
+    fn ensure_badge_span(host: &HtmlElement) -> Option<Element> {
+        if let Ok(Some(existing)) = host.query_selector(&format!(":scope > .{BADGE_CHIP}")) {
+            return Some(existing);
+        }
+        let document = window()?.document()?;
+        let span = document.create_element("span").ok()?;
+        let _ = span.set_attribute("class", BADGE_CHIP);
+        let _ = span.set_attribute("part", "badge");
+        let _ = host.append_child(&span);
+        Some(span)
     }
 
     /// Reveal the "Enable sync" trigger for a no-upstream branch,
@@ -507,13 +577,16 @@ mod dom {
         );
     }
 
-    /// Install the chip's window listeners: `tonk:status-refresh`
-    /// (ignored unless its `detail` repo matches this element's) and
-    /// `tonk:committed` (always). Both re-fetch and repaint.
+    /// Install the window listeners shared by the pill and the badge:
+    /// `tonk:status-refresh` (ignored unless its `detail` repo matches
+    /// this element's) and `tonk:committed` (always). Both re-fetch and
+    /// repaint through the caller's `refresh` function — `refresh_state`
+    /// for the interactive pill, `refresh_badge` for the read-only badge.
     fn install_state_listeners(
         this: &HtmlElement,
         refresh_slot: &Listener,
         committed_slot: &Listener,
+        refresh: fn(&HtmlElement),
     ) {
         let Some(win) = window() else {
             return;
@@ -527,7 +600,7 @@ mod dom {
             if let (Some(this_repo), Some(event_repo)) = (repo_from_ancestor(&host), event_repo)
                 && this_repo == event_repo
             {
-                refresh_state(&host);
+                refresh(&host);
             }
         }) as Box<dyn FnMut(Event)>);
         let _ = win.add_event_listener_with_callback(
@@ -538,7 +611,7 @@ mod dom {
 
         let host = this.clone();
         let committed_listener = Closure::wrap(Box::new(move |_event: Event| {
-            refresh_state(&host);
+            refresh(&host);
         }) as Box<dyn FnMut(Event)>);
         let _ = win.add_event_listener_with_callback(
             COMMITTED_EVENT,
@@ -547,13 +620,61 @@ mod dom {
         *committed_slot.borrow_mut() = Some(committed_listener);
     }
 
-    /// Register the element. Idempotent.
+    /// Per-element state for `<tonk-sync-badge>` — the read-only status
+    /// indicator. It carries only the window listeners (no click toggle
+    /// or enable-sync trigger): the surrounding context owns the click.
+    #[derive(Default)]
+    pub(crate) struct TonkSyncBadge {
+        refresh: Listener,
+        committed: Listener,
+    }
+
+    impl CustomElement for TonkSyncBadge {
+        fn shadow() -> bool {
+            false
+        }
+
+        fn observed_attributes() -> &'static [&'static str] {
+            &[]
+        }
+
+        fn inject_children(&mut self, _this: &HtmlElement) {}
+
+        fn connected_callback(&mut self, this: &HtmlElement) {
+            refresh_badge(this);
+            install_state_listeners(this, &self.refresh, &self.committed, refresh_badge);
+        }
+
+        fn disconnected_callback(&mut self, _this: &HtmlElement) {
+            if let Some(win) = window() {
+                if let Some(listener) = self.refresh.borrow().as_ref() {
+                    let _ = win.remove_event_listener_with_callback(
+                        STATUS_REFRESH_EVENT,
+                        listener.as_ref().unchecked_ref(),
+                    );
+                }
+                if let Some(listener) = self.committed.borrow().as_ref() {
+                    let _ = win.remove_event_listener_with_callback(
+                        COMMITTED_EVENT,
+                        listener.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+            self.refresh.borrow_mut().take();
+            self.committed.borrow_mut().take();
+        }
+    }
+
+    /// Register the elements. Idempotent.
     pub(crate) fn register() {
         let Some(elements) = window().map(|w| w.custom_elements()) else {
             return;
         };
         if elements.get("tonk-sync-state").is_undefined() {
             TonkSyncState::define("tonk-sync-state");
+        }
+        if elements.get("tonk-sync-badge").is_undefined() {
+            TonkSyncBadge::define("tonk-sync-badge");
         }
     }
 
@@ -673,6 +794,90 @@ mod dom {
             paint(host_el, state_chip(SyncState::NoUpstream), OFFLINE_LABEL);
             assert_eq!(button.text_content().as_deref(), Some("offline"));
             assert_eq!(button.class_name(), "workspace__sync is-offline");
+
+            host.remove();
+        }
+
+        #[dialog_common::test]
+        async fn it_paints_a_read_only_badge_that_does_not_toggle_on_click() {
+            register();
+            let document = window().unwrap().document().unwrap();
+            let body = document.body().unwrap();
+            let storage = window().unwrap().local_storage().unwrap().unwrap();
+            let key = "tonk:auto-sync:badgetest";
+            // Start paused so the badge paints synchronously on connect —
+            // the running branch would await a status fetch that never
+            // resolves in this DOM-only test (no service worker).
+            storage.set_item(key, "off").unwrap();
+
+            let repo = document.create_element("tonk-repository").unwrap();
+            repo.set_attribute("name", "badgetest").unwrap();
+            let badge = document.create_element("tonk-sync-badge").unwrap();
+            repo.append_child(&badge).unwrap();
+            body.append_child(&repo).unwrap();
+
+            let span = badge
+                .query_selector(".sync-badge")
+                .unwrap()
+                .expect("badge injected on connect");
+            assert_eq!(span.text_content().as_deref(), Some("paused"));
+            assert_eq!(span.class_name(), "sync-badge is-paused");
+
+            // Read-only: clicking the badge must NOT flip the preference
+            // (the surrounding card link owns the click). The pill toggles
+            // here; the badge must not.
+            span.dyn_ref::<HtmlElement>().unwrap().click();
+            badge.dyn_ref::<HtmlElement>().unwrap().click();
+            assert_eq!(
+                storage.get_item(key).unwrap().as_deref(),
+                Some("off"),
+                "the read-only badge must not toggle the auto-sync preference",
+            );
+            assert_eq!(span.text_content().as_deref(), Some("paused"));
+
+            repo.remove();
+            let _ = storage.remove_item(key);
+        }
+
+        #[dialog_common::test]
+        async fn it_paints_each_state_on_the_read_only_badge() {
+            let document = window().unwrap().document().unwrap();
+            let body = document.body().unwrap();
+            let host = document.create_element("tonk-sync-badge").unwrap();
+            body.append_child(&host).unwrap();
+            let host_el = host.dyn_ref::<HtmlElement>().unwrap();
+
+            // Synced → a non-interactive "synced" span (read-only: a
+            // `<span>`, never the pill's `<button>`).
+            paint_badge(host_el, state_chip(SyncState::Synced));
+            let span = host
+                .query_selector(".sync-badge")
+                .unwrap()
+                .expect("badge painted for a concrete state");
+            assert_eq!(
+                span.tag_name().to_lowercase(),
+                "span",
+                "the read-only badge must be a span, not an interactive button",
+            );
+            assert_eq!(span.text_content().as_deref(), Some("synced"));
+            assert_eq!(span.class_name(), "sync-badge is-synced");
+
+            // Any drift collapses to the single "syncing…" state.
+            paint_badge(host_el, state_chip(SyncState::Behind));
+            assert_eq!(span.text_content().as_deref(), Some("syncing…"));
+            assert_eq!(span.class_name(), "sync-badge is-syncing");
+
+            // The paused preference paints the muted "paused" badge.
+            paint_badge(host_el, PAUSED_CHIP);
+            assert_eq!(span.text_content().as_deref(), Some("paused"));
+            assert_eq!(span.class_name(), "sync-badge is-paused");
+
+            // No upstream → "offline" (same badge as an unreachable
+            // remote); the read-only badge never offers an enable-sync
+            // trigger.
+            paint_badge(host_el, state_chip(SyncState::NoUpstream));
+            assert_eq!(span.text_content().as_deref(), Some("offline"));
+            assert_eq!(span.class_name(), "sync-badge is-offline");
 
             host.remove();
         }
