@@ -433,6 +433,9 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<
         let hash = hash.clone();
         let item = item_c.clone();
         let parent_lower = parent_lower.clone();
+        // Mark the item loading so its dot spins (our loader) while the
+        // children — possibly a network fetch — are in flight.
+        let _ = item.set_attribute("data-loading", "");
         spawn_local(async move {
             let loader = state.borrow().loader.clone();
             let kids = loader.children(&hash).await;
@@ -493,6 +496,7 @@ fn attach_lazy(state: &Shared, item: &Element, hash: &str, parent_lower: Option<
 /// leaf has no children — so the property is reset explicitly.
 fn finish_loading(item: &Element) {
     let _ = item.remove_attribute("lazy");
+    let _ = item.remove_attribute("data-loading");
     let _ = js_sys::Reflect::set(item.as_ref(), &"loading".into(), &JsValue::FALSE);
 }
 
@@ -544,26 +548,24 @@ async fn refresh_row(state: &Shared, item: &Element, hash: &str) {
         .collect();
     let leaf = item.query_selector(":scope > .dot-leaf").ok().flatten();
 
-    if expandable {
-        // Keep / fill the slotted dots; a stray leaf dot (node was first a
-        // leaf) is removed.
-        slotted.iter().for_each(set_locality);
-        if let Some(l) = leaf {
-            l.remove();
-        }
-    } else {
-        // A leaf: no expand toggle. Drop the lazy contract and collapse so
-        // wa-tree stops drawing an expand button, remove the slotted dots,
-        // and ensure a single inline leaf dot.
+    // In both cases keep a dot in the expand-icon/collapse-icon slots: a
+    // filled slotted dot suppresses wa-tree's default chevron (its fallback
+    // when the slot is empty), so a fetched leaf does not show an arrow.
+    slotted.iter().for_each(set_locality);
+    if let Some(l) = leaf {
+        // Migrate any inline leaf dot back into the slot so there is exactly
+        // one marker and no chevron.
+        l.remove();
+    }
+    if slotted.is_empty() {
+        let _ = item.append_child(&dot(node.cached, "").attr("slot", "expand-icon"));
+        let _ = item.append_child(&dot(node.cached, "").attr("slot", "collapse-icon"));
+    }
+    if !expandable {
+        // A leaf has nothing to expand: drop the lazy contract and collapse
+        // so the (now dotted) toggle does not reveal an empty group.
         let _ = item.remove_attribute("lazy");
         let _ = js_sys::Reflect::set(item.as_ref(), &"expanded".into(), &JsValue::FALSE);
-        slotted.iter().for_each(|s| s.remove());
-        match leaf {
-            Some(l) => set_locality(&l),
-            None => {
-                let _ = item.append_child(&dot(node.cached, "dot-leaf"));
-            }
-        }
     }
 }
 
@@ -691,11 +693,14 @@ wa-tree-item:focus-visible, wa-tree-item:focus {
 wa-tree-item::before, wa-tree-item::after {
   content: ''; position: absolute; z-index: 3;
   inset-inline-start: calc(0.1875em + var(--indent) - 1em);
-  border-color: var(--wa-color-border-normal, #43454d); }
+  border-color: var(--wa-color-border-loud, #565861); }
 /* Horizontal elbow forking off the spine, reaching the node's dot.
    (width/style only — a `border-top` shorthand would reset the color set
    above to currentColor, turning the line bright.) */
-wa-tree-item::before { top: 1em; width: 2em; border-top-width: 1px; border-top-style: solid; }
+/* The elbow stops at the dot's left edge (the dot radius, ~4px, short of
+   its center) so the line never runs under the circle. */
+wa-tree-item::before { top: 1em; width: calc(2em - 4px);
+  border-top-width: 1px; border-top-style: solid; }
 /* Continuous vertical spine. It starts 1em above this row's top so it
    reaches up to the parent's dot (which sits 1em into the parent row, just
    above the first child) — otherwise the spine would float a row below the
@@ -711,12 +716,28 @@ wa-tree > wa-tree-item::before, wa-tree > wa-tree-item::after { display: none; }
    a filled disc when cached locally, a hollow ring when not yet fetched.
    A branch dot sits in the expand-icon slot (and is the toggle); a leaf dot
    is absolutely positioned on the item at the connector anchor. */
-.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box; }
-.dot-local { background: var(--wa-color-border-normal, #43454d); border: 1.5px solid var(--wa-color-border-normal, #43454d); }
-.dot-remote { background: transparent; border: 1.5px solid var(--wa-color-border-normal, #43454d); }
+/* An opaque (pane-colored) disc sits behind every dot so the connector
+   lines never show through its center — important for the hollow (remote)
+   ring and the loading arc, whose centers are otherwise transparent. */
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box;
+  background: var(--wa-color-surface-default, #101113); }
+.dot-local { background: var(--wa-color-border-loud, #565861); border: 1.5px solid var(--wa-color-border-loud, #565861); }
+.dot-remote { border: 1.5px solid var(--wa-color-border-loud, #565861); }
 /* A branch dot lives in the 2em-wide expand slot; keep it from inheriting
    the chevron's rotate-on-expand. */
 [slot="expand-icon"].dot, [slot="collapse-icon"].dot { rotate: none !important; }
+/* While a node loads (a network fetch on expand), a higher-contrast arc
+   spins *over* its dot — same size, overlapping, one side open — so the
+   base dot stays put and the arc reads as a loader. wa-tree's own spinner
+   is hidden so this is the only indicator. */
+@keyframes tonk-dot-spin { to { rotate: 360deg; } }
+dialog-tree-outline wa-tree-item[data-loading] .dot { position: relative; }
+dialog-tree-outline wa-tree-item[data-loading] .dot::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  border: 1.5px solid var(--wa-color-text-quiet, #94959b);
+  border-top-color: transparent;
+  animation: tonk-dot-spin 0.7s linear infinite; }
+dialog-tree-outline wa-tree-item::part(spinner) { display: none; }
 /* A leaf dot: placed at the same anchor as the elbow end
    (0.1875em + --indent + 1em), so it lines up with the connectors. */
 wa-tree-item > .dot-leaf { position: absolute; z-index: 4;
