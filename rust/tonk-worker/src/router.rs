@@ -321,8 +321,8 @@ pub mod tests {
         }
     }
 
-    /// Query all `Membership` rows on `repo`'s meta branch.
-    pub(crate) async fn meta_memberships(
+    /// Query all `Membership` rows on `repo`'s content branch.
+    pub(crate) async fn content_memberships(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::Membership> {
@@ -336,13 +336,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let content: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::Membership> {
                 this: Term::var("this"),
                 subject: Term::var("subject"),
@@ -354,8 +355,8 @@ pub mod tests {
             .expect("membership query")
     }
 
-    /// Query all `Invitation` rows on `repo`'s meta branch.
-    pub(crate) async fn meta_invitations(
+    /// Query all `Invitation` rows on `repo`'s content branch.
+    pub(crate) async fn content_invitations(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::Invitation> {
@@ -369,13 +370,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let content: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::Invitation> {
                 this: Term::var("this"),
                 subject: Term::var("subject"),
@@ -388,8 +390,8 @@ pub mod tests {
             .expect("invitation query")
     }
 
-    /// Query all `InvitedVia` rows on `repo`'s meta branch.
-    pub(crate) async fn meta_invited_via(
+    /// Query all `InvitedVia` rows on `repo`'s content branch.
+    pub(crate) async fn content_invited_via(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::InvitedVia> {
@@ -403,13 +405,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let content: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::InvitedVia> {
                 this: Term::var("this"),
                 invitation: Term::var("invitation"),
@@ -420,8 +423,8 @@ pub mod tests {
             .expect("invited-via query")
     }
 
-    /// Query all `MemberName` rows on `repo`'s meta branch.
-    pub(crate) async fn meta_member_names(
+    /// Query all `MemberName` rows on `repo`'s content branch.
+    pub(crate) async fn content_member_names(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::MemberName> {
@@ -435,13 +438,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let content: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::MemberName> {
                 this: Term::var("this"),
                 name: Term::var("name"),

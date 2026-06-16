@@ -189,7 +189,7 @@ pub struct RepositoryInfo {
     /// remote that `main.upstream` points at is included.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub remote: HashMap<String, RemoteConfiguration>,
-    /// The repository's members, read from the meta branch roster.
+    /// The repository's members, read from the synced content branch.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<MemberInfo>,
 }
@@ -870,20 +870,10 @@ where
     // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
-    // The opening profile is a member of this repository: the
-    // creator on the create path, the claimer on the join path.
-    // Content-derived entity, so re-opening is a no-op. The member
-    // also names themselves with the name their profile was opened under.
-    let membership = Membership::new(tonk.profile.did(), repository.did());
-    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
-    // Content-derived; re-asserting on the join path is a no-op.
-
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
-        .assert(membership)
-        .assert(member_name);
+        .assert(replica.branch(META_BRANCH));
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -1025,6 +1015,13 @@ where
         },
     );
 
+    // Record the opening profile's membership on the content branch.
+    // Roster facts must live on `main` (which syncs across replicas),
+    // not on the local-only meta branch — otherwise each replica only
+    // ever sees its own membership and the roster never converges. The
+    // branch loop above has already opened `main`, so it is present.
+    record_membership_on_content(tonk, repository).await?;
+
     // 7. Record this replica in the profile repository's meta
     // branch so the profile keeps an index of every replica it
     // owns. Separate transaction — cross-repo atomicity isn't
@@ -1032,6 +1029,52 @@ where
     // here leaves the repo working but missing from the index,
     // which is recoverable.
     record_replica_in_profile(tonk, display_name, &repository.did()).await?;
+
+    Ok(())
+}
+
+/// Assert the opening profile's [`Membership`] + [`MemberName`] on the
+/// repository's content branch.
+///
+/// The roster lives on the content branch (`main`) because that branch
+/// syncs across replicas; the meta branch is local-only, so a roster
+/// written there never converges. Runs on every path
+/// [`record_repository_meta`] serves: on create it is the founder's
+/// only membership write; on join the claim path
+/// (`record_claim_on_content`) also records the claimer's membership,
+/// so this re-asserts idempotently. The membership entity is
+/// content-derived from `(profile, subject)`, so the repeat is a no-op.
+async fn record_membership_on_content<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+) -> Result<(), RepositoryError>
+where
+    C: Principal + Clone,
+{
+    let content = repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to open content branch for roster: {}", e))
+        })?;
+
+    // The opening profile is a member of this repository. The member
+    // also names themselves with the name their profile was opened under.
+    let membership = Membership::new(tonk.profile.did(), repository.did());
+    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+
+    content
+        .transaction()
+        .assert(membership)
+        .assert(member_name)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to record membership on content: {}", e))
+        })?;
 
     Ok(())
 }
@@ -1353,6 +1396,8 @@ where
 /// - **Roster** — `Membership` rows (who belongs), joined with
 ///   `MemberName` (published display names) and `InvitedVia` →
 ///   `Invitation` (who invited whom), assembled into `members`.
+///   These are read from the *content* branch, not meta: the roster
+///   lives there so it syncs across replicas.
 ///
 /// Revisions still come from the dialog layer: for each local
 /// branch, we open it and read `.revision()`. That's a handful
@@ -1574,74 +1619,99 @@ where
         );
     }
 
-    // Pull the roster. `Membership` is the spine — one row per
-    // member; `MemberName`, `InvitedVia`, and `Invitation` are joined
-    // in below to attach the display name and inviter provenance.
-    let memberships: Vec<Membership> = match meta
-        .query()
-        .select(Query::<Membership> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            member: Term::var("member"),
-        })
+    // Pull the roster from the content branch — it lives there (not on
+    // meta) so it syncs across replicas. If the content branch can't be
+    // opened, leave the roster empty, consistent with the per-query
+    // log-and-empty-vec fallbacks below.
+    let (memberships, member_names, invited_via, invitations) = match repository
+        .branch(CONTENT_BRANCH)
+        .open()
         .perform(&tonk.operator)
-        .try_vec()
         .await
     {
-        Ok(rows) => rows,
-        Err(e) => {
-            log!("Membership query on meta failed for '{}': {:?}", key, e);
-            Vec::new()
+        Ok(content) => {
+            // `Membership` is the spine — one row per member;
+            // `MemberName`, `InvitedVia`, and `Invitation` are joined in
+            // below to attach the display name and inviter provenance.
+            let memberships: Vec<Membership> = match content
+                .query()
+                .select(Query::<Membership> {
+                    this: Term::var("this"),
+                    subject: Term::from(repository.did().this()),
+                    member: Term::var("member"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    log!("Membership query on content failed for '{}': {:?}", key, e);
+                    Vec::new()
+                }
+            };
+            // `MemberName`/`InvitedVia` carry no subject; they are scoped
+            // implicitly by the join below on the membership entity, which
+            // the subject-scoped `Membership` query already filtered.
+            let member_names: Vec<MemberName> = match content
+                .query()
+                .select(Query::<MemberName> {
+                    this: Term::var("this"),
+                    name: Term::var("name"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    log!("MemberName query on content failed for '{}': {:?}", key, e);
+                    Vec::new()
+                }
+            };
+            let invited_via: Vec<InvitedVia> = match content
+                .query()
+                .select(Query::<InvitedVia> {
+                    this: Term::var("this"),
+                    invitation: Term::var("invitation"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    log!("InvitedVia query on content failed for '{}': {:?}", key, e);
+                    Vec::new()
+                }
+            };
+            let invitations: Vec<Invitation> = match content
+                .query()
+                .select(Query::<Invitation> {
+                    this: Term::var("this"),
+                    subject: Term::from(repository.did().this()),
+                    inviter: Term::var("inviter"),
+                    audience: Term::var("audience"),
+                })
+                .perform(&tonk.operator)
+                .try_vec()
+                .await
+            {
+                Ok(rows) => rows,
+                Err(e) => {
+                    log!("Invitation query on content failed for '{}': {:?}", key, e);
+                    Vec::new()
+                }
+            };
+            (memberships, member_names, invited_via, invitations)
         }
-    };
-    let member_names: Vec<MemberName> = match meta
-        .query()
-        .select(Query::<MemberName> {
-            this: Term::var("this"),
-            name: Term::var("name"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
         Err(e) => {
-            log!("MemberName query on meta failed for '{}': {:?}", key, e);
-            Vec::new()
-        }
-    };
-    let invited_via: Vec<InvitedVia> = match meta
-        .query()
-        .select(Query::<InvitedVia> {
-            this: Term::var("this"),
-            invitation: Term::var("invitation"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            log!("InvitedVia query on meta failed for '{}': {:?}", key, e);
-            Vec::new()
-        }
-    };
-    let invitations: Vec<Invitation> = match meta
-        .query()
-        .select(Query::<Invitation> {
-            this: Term::var("this"),
-            subject: Term::var("subject"),
-            inviter: Term::var("inviter"),
-            audience: Term::var("audience"),
-        })
-        .perform(&tonk.operator)
-        .try_vec()
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            log!("Invitation query on meta failed for '{}': {:?}", key, e);
-            Vec::new()
+            log!(
+                "No content branch for repository '{}' roster: {}",
+                key,
+                e
+            );
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         }
     };
 
@@ -2480,12 +2550,12 @@ mod tests {
     }
 
     /// Creating a repository records its creator as a member on the
-    /// repo's meta branch.
+    /// repo's content branch.
     #[dialog_common::test]
     async fn it_records_the_founder_membership_on_create() {
         let (_app, state, key) = fresh_repo("test-founder-membership").await;
 
-        let memberships = crate::router::tests::meta_memberships(&state, &key).await;
+        let memberships = crate::router::tests::content_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             use tonk_schema::prelude::DidExt as _;
@@ -2497,13 +2567,13 @@ mod tests {
         assert_eq!(memberships[0].member.0, profile_entity);
     }
 
-    /// Creating a repository names the creator on the meta branch.
+    /// Creating a repository names the creator on the content branch.
     #[dialog_common::test]
     async fn it_records_the_founder_name_on_create() {
         let (_app, state, key) = fresh_repo("test-founder-name").await;
 
-        let names = crate::router::tests::meta_member_names(&state, &key).await;
-        let memberships = crate::router::tests::meta_memberships(&state, &key).await;
+        let names = crate::router::tests::content_member_names(&state, &key).await;
+        let memberships = crate::router::tests::content_memberships(&state, &key).await;
         assert_eq!(names.len(), 1, "exactly the founder's name");
         assert_eq!(names[0].this, memberships[0].this);
         assert!(!names[0].name.0.is_empty(), "a non-empty display name");
