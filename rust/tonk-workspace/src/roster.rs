@@ -72,10 +72,14 @@ mod tests {
 // repo from the `<tonk-repository>` ancestor, hold no app policy.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod element {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use custom_elements::CustomElement;
     use wasm_bindgen::JsCast;
+    use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::{JsFuture, spawn_local};
-    use web_sys::{HtmlElement, Request, RequestInit, Response, window};
+    use web_sys::{CustomEvent, Event, HtmlElement, Request, RequestInit, Response, window};
 
     use super::{RosterMember, members_from_repository_info};
     use crate::ancestors::repo_from_ancestor;
@@ -85,6 +89,18 @@ mod element {
 
     /// CSS class for an individual `<tonk-sigil>` avatar.
     const AVATAR_CLASS: &str = "workspace__roster-avatar";
+
+    /// Window event the sync controller dispatches to ask the roster to
+    /// re-read its members. Repo name rides in `detail`.
+    const STATUS_REFRESH_EVENT: &str = "tonk:status-refresh";
+
+    /// Window event a local commit dispatches; the roster re-reads on it
+    /// so a fresh write reflects immediately.
+    const COMMITTED_EVENT: &str = "tonk:committed";
+
+    /// A retained listener closure, kept alive for the element's
+    /// lifetime so the listener stays valid; dropped on disconnect.
+    type Listener = Rc<RefCell<Option<Closure<dyn FnMut(Event)>>>>;
 
     /// Fetch the repository info for `repo` and return its members, or
     /// `None` on any failure. Gated on service-worker readiness so a
@@ -142,10 +158,65 @@ mod element {
         host.set_inner_html(&html);
     }
 
-    /// `<tonk-roster>`. Stateless: it resolves its repo on connect,
-    /// fetches the roster, and paints. No listeners to retain.
+    /// Resolve the repo from the `<tonk-repository>` ancestor, fetch the
+    /// roster, and repaint. A no-op with no repository ancestor.
+    fn refresh(this: &HtmlElement) {
+        let host = this.clone();
+        let Some(repo) = repo_from_ancestor(&host) else {
+            return;
+        };
+        spawn_local(async move {
+            if let Some(members) = fetch_members(&repo).await {
+                render(&host, &members);
+            }
+        });
+    }
+
+    /// Install the roster's window listeners: `tonk:status-refresh`
+    /// (ignored unless its `detail` repo matches this element's) and
+    /// `tonk:committed` (always). Both re-fetch and repaint.
+    fn install_listeners(this: &HtmlElement, refresh_slot: &Listener, committed_slot: &Listener) {
+        let Some(win) = window() else {
+            return;
+        };
+
+        let host = this.clone();
+        let refresh_listener = Closure::wrap(Box::new(move |event: Event| {
+            let event_repo = event
+                .dyn_ref::<CustomEvent>()
+                .and_then(|e| e.detail().as_string());
+            if let (Some(this_repo), Some(event_repo)) = (repo_from_ancestor(&host), event_repo)
+                && this_repo == event_repo
+            {
+                refresh(&host);
+            }
+        }) as Box<dyn FnMut(Event)>);
+        let _ = win.add_event_listener_with_callback(
+            STATUS_REFRESH_EVENT,
+            refresh_listener.as_ref().unchecked_ref(),
+        );
+        *refresh_slot.borrow_mut() = Some(refresh_listener);
+
+        let host = this.clone();
+        let committed_listener = Closure::wrap(Box::new(move |_event: Event| {
+            refresh(&host);
+        }) as Box<dyn FnMut(Event)>);
+        let _ = win.add_event_listener_with_callback(
+            COMMITTED_EVENT,
+            committed_listener.as_ref().unchecked_ref(),
+        );
+        *committed_slot.borrow_mut() = Some(committed_listener);
+    }
+
+    /// `<tonk-roster>`. Resolves its repo on connect, fetches the
+    /// roster, and paints — then re-paints whenever the sync controller
+    /// fires `tonk:status-refresh` / `tonk:committed`, so a member who
+    /// joins on another device appears without a manual reload.
     #[derive(Default)]
-    pub(crate) struct TonkRoster;
+    pub(crate) struct TonkRoster {
+        refresh: Listener,
+        committed: Listener,
+    }
 
     impl CustomElement for TonkRoster {
         fn shadow() -> bool {
@@ -162,18 +233,28 @@ mod element {
         fn inject_children(&mut self, _this: &HtmlElement) {}
 
         fn connected_callback(&mut self, this: &HtmlElement) {
-            let host = this.clone();
-            let Some(repo) = repo_from_ancestor(&host) else {
-                return;
-            };
-            spawn_local(async move {
-                if let Some(members) = fetch_members(&repo).await {
-                    render(&host, &members);
-                }
-            });
+            refresh(this);
+            install_listeners(this, &self.refresh, &self.committed);
         }
 
-        fn disconnected_callback(&mut self, _this: &HtmlElement) {}
+        fn disconnected_callback(&mut self, _this: &HtmlElement) {
+            if let Some(win) = window() {
+                if let Some(listener) = self.refresh.borrow().as_ref() {
+                    let _ = win.remove_event_listener_with_callback(
+                        STATUS_REFRESH_EVENT,
+                        listener.as_ref().unchecked_ref(),
+                    );
+                }
+                if let Some(listener) = self.committed.borrow().as_ref() {
+                    let _ = win.remove_event_listener_with_callback(
+                        COMMITTED_EVENT,
+                        listener.as_ref().unchecked_ref(),
+                    );
+                }
+            }
+            self.refresh.borrow_mut().take();
+            self.committed.borrow_mut().take();
+        }
     }
 
     /// Register `<tonk-roster>`. Idempotent.
