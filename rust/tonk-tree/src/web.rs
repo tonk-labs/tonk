@@ -730,6 +730,10 @@ wa-tree > wa-tree-item::before, wa-tree > wa-tree-item::after { display: none; }
    spins in its place. The base border is dropped so there is no second
    ring; wa-tree's own spinner is hidden. */
 @keyframes tonk-dot-spin { to { rotate: 360deg; } }
+/* wa-tree reveals BOTH the expand- and collapse-icon slots during its
+   loading state, so our two slotted dots would both show (a stacked
+   figure-8). Show the spinner on the expand-icon dot only. */
+dialog-tree-outline wa-tree-item[data-loading] [slot="collapse-icon"].dot { display: none; }
 dialog-tree-outline wa-tree-item[data-loading] .dot { border-color: transparent; }
 dialog-tree-outline wa-tree-item[data-loading] .dot::after {
   content: ''; position: absolute; top: 50%; left: 50%;
