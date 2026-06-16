@@ -185,6 +185,14 @@ fn render_shell(state: &Shared) {
 
     let outline_pane = el("div").class("pane left");
     let outline = el("dialog-tree-outline").class("outline");
+    // Column header — one place for the value labels instead of repeating
+    // units on every row. It aligns with the row columns because the rows now
+    // fill the full width (see the `::part(label)` rule).
+    let header = el("div").class("col-header");
+    let _ = header.append_child(&el("span").class("keystr").text("node"));
+    let _ = header.append_child(&el("span").class("col size").text("size"));
+    let _ = header.append_child(&el("span").class("col count").text("count"));
+    let _ = outline.append_child(&header);
     let tree = el("wa-tree").attr("selection", "single");
     let _ = outline.append_child(&tree);
     let _ = outline_pane.append_child(&outline);
@@ -706,6 +714,10 @@ wa-tree-item::after { top: -1em; bottom: 0; width: 0;
 wa-tree-item:last-child::after { bottom: auto; height: 2em; }
 /* The root has no parent spine. */
 wa-tree > wa-tree-item::before, wa-tree > wa-tree-item::after { display: none; }
+/* Make the label fill the item's full width (it is content-sized by default)
+   so every row — whatever its indent — shares the same right edge. The value
+   columns then right-pack to a common column, aligned across all depths. */
+wa-tree-item::part(label) { flex: 1 1 auto; min-width: 0; }
 .row { display: inline-flex; align-items: center; gap: var(--wa-space-s, 8px); width: 100%; }
 .row.remote { opacity: 0.5; }
 /* The node dot replaces wa-tree's expand chevron and encodes locality:
@@ -773,6 +785,14 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
   display: inline-flex; align-items: center; justify-content: flex-end;
   gap: var(--wa-space-xs, 6px); }
 .col.count { width: 48px; }
+/* Column header: same column widths as the rows, so the labels sit over
+   their values. The key cell flexes like a row's, indented to clear the
+   tree's dot gutter. */
+.col-header { display: flex; align-items: center; gap: var(--wa-space-s, 8px);
+  padding: 0 0 4px; margin-bottom: 4px;
+  color: var(--wa-color-text-quiet); border-bottom: 1px solid var(--wa-color-border-quiet);
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.85em; opacity: 0.8; }
+.col-header .keystr { flex: 1 1 auto; padding-left: 1.4em; }
 .sizebar { height: 7px; background: var(--tonk-closure, #7a7268); border-radius: var(--wa-border-radius-s, 2px); min-width: 2px; }
 .row.remote .sizebar { background: var(--wa-color-neutral-fill-loud, #666); }
 .sizenum { width: 48px; text-align: right; }
