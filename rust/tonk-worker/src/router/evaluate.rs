@@ -219,10 +219,12 @@ async fn evaluate_on_branch<'a>(
     // decision: the txn's overlay already reflects every mutation
     // and induce-pass derivation, so this is the same answer a
     // post-commit branch query would give.
+    let t_matches = web_time::Instant::now();
     let matches_after = evaluated
         .matches_after(&tonk_state.operator)
         .await
         .map_err(map_evaluate_error)?;
+    let matches_ms = t_matches.elapsed().as_millis();
 
     // A document commits when it writes anything. `rule!:` is a
     // mutation (the `!` says so) and the analyzer lifts it into a
@@ -237,8 +239,14 @@ async fn evaluate_on_branch<'a>(
             .await
             .map_err(|e| map_evaluate_error(EvaluateError::Query(format!("commit: {e}"))))?;
         let commit_ms = t_commit.elapsed().as_millis();
+        // Re-poll subscriptions so SSE clients see the new state.
+        // The chain commits via dialog directly; the reactor's
+        // subscription registry is the worker's responsibility.
+        let t_poll = web_time::Instant::now();
+        session.poll(&tonk_state.operator).await;
+        let poll_ms = t_poll.elapsed().as_millis();
         let timing = format!(
-            "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | commit {commit_ms}ms"
+            "evaluate timing: {exprs} exprs | parse {parse_ms}ms | analyze+eval {eval_ms}ms | matches {matches_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
         );
         log!("{timing}");
         // Tee timing onto a BroadcastChannel so a page (or DevTools
@@ -249,10 +257,6 @@ async fn evaluate_on_branch<'a>(
         if let Ok(channel) = web_sys::BroadcastChannel::new("tonk-timing") {
             let _ = channel.post_message(&wasm_bindgen::JsValue::from_str(&timing));
         }
-        // Re-poll subscriptions so SSE clients see the new state.
-        // The chain commits via dialog directly; the reactor's
-        // subscription registry is the worker's responsibility.
-        session.poll(&tonk_state.operator).await;
         EvaluateResponse {
             revision_before,
             revision_after: Some(revision_after),

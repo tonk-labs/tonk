@@ -161,6 +161,7 @@ impl Commit<'_> {
         let cached = self.branch.acquire(env).await?;
         let branch = cached.handle();
 
+        let t_induce = web_time::Instant::now();
         let txn = branch
             .transaction()
             .integrate(self.changes)
@@ -168,9 +169,19 @@ impl Commit<'_> {
             .induce(self.transients)
             .perform(env)
             .await?;
+        let induce_ms = t_induce.elapsed().as_millis();
 
+        let t_commit = web_time::Instant::now();
         let revision = txn.commit().perform(env).await?;
+        let commit_ms = t_commit.elapsed().as_millis();
+
+        let t_poll = web_time::Instant::now();
         cached.poll(env).await;
+        let poll_ms = t_poll.elapsed().as_millis();
+
+        tonk_common::log!(
+            "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
+        );
         Ok(revision)
     }
 }
