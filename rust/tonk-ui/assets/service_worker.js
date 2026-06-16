@@ -135,17 +135,41 @@ self.onfetch = event => {
 // worker's `onmessage` stashes the port against the client id and
 // routes per-envelope dispatch from there.
 //
-// One synchronous early-out: a `{type:"claim"}` message asks the
-// SW to take control of every client in scope. The page sends
-// this on cold-start when it lands on a SW that was activated in
-// a previous session — `onactivate` doesn't refire, so without
-// this nudge the page would stay uncontrolled (and every /api/*
-// fetch would land on the static-asset server as a 405). The
-// claim raises `controllerchange` on the page side, which the
-// shell's `serviceWorkerActivates()` Promise awaits.
+// Two synchronous early-outs handled here:
+//   - `{type:"claim"}` asks the SW to take control of every client
+//     in scope. The page sends this on cold-start when it lands on
+//     a SW that was activated in a previous session — `onactivate`
+//     doesn't refire, so without this nudge the page would stay
+//     uncontrolled (and every /api/* fetch would land on the
+//     static-asset server as a 405). The claim raises
+//     `controllerchange` on the page side, which the shell's
+//     `serviceWorkerActivates()` Promise awaits.
+//   - `register-fs-handle` / `unregister-fs-handle` carry FS Access
+//     API directory handles supplied by the page. They're forwarded
+//     to the wasm worker, which stashes them in `dialog-remote-fs`'s
+//     thread-local registry so later sync invocations targeting an
+//     `FsAddress` with the same id can resolve them. Browsers don't
+//     persist FS-Access permission across sessions, so the page
+//     re-registers after each user gesture that re-grants access.
 self.onmessage = event => {
-    if (event.data && event.data.type === "claim") {
+    const data = event.data;
+    if (data && data.type === "claim") {
         event.waitUntil?.(self.clients.claim());
+        return;
+    }
+    if (data && (data.type === "register-fs-handle" || data.type === "unregister-fs-handle")) {
+        event.waitUntil?.((async () => {
+            try {
+                const worker = await activateWorker();
+                if (data.type === "register-fs-handle") {
+                    worker.registerFsHandle(data.id, data.handle);
+                } else {
+                    worker.unregisterFsHandle(data.id);
+                }
+            } catch (err) {
+                log("Failed to handle message:", data.type, err);
+            }
+        })());
         return;
     }
     event.waitUntil?.(

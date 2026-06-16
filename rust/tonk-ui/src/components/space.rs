@@ -1633,6 +1633,10 @@ fn summarize_address(address: &SiteAddress) -> RemoteAddressSummary {
             url: addr.endpoint().to_string(),
             details: Some(format!("{} · {}", addr.bucket(), addr.region())),
         },
+        SiteAddress::Fs(addr) => RemoteAddressSummary {
+            url: format!("disk:{}", addr.id()),
+            details: None,
+        },
     }
 }
 

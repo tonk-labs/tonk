@@ -34,6 +34,9 @@ pub use sync::{
 // depending on `tonk-schema` directly.
 pub use tonk_schema::SyncState;
 
+mod fs_upstream;
+pub use fs_upstream::{FsUpstreamPath, FsUpstreamResponse};
+
 mod identify;
 pub use identify::IdentifyResponse;
 
@@ -169,6 +172,14 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
         .route(
             "/api/repository/{repo}/branch/{branch}/sync/status",
             get(sync::sync_status),
+        )
+        // FS-remote upstream wiring. Idempotently configures the
+        // repo's "fs" remote to point at the named vault and sets the
+        // local branch's upstream to track it. Subsequent /sync calls
+        // dispatch to the FS provider in dialog-remote-fs.
+        .route(
+            "/api/repository/{repo}/branch/{branch}/upstream/fs/{vault_id}",
+            post(fs_upstream::set_fs_upstream),
         )
         // Claim operations
         .route(

@@ -7,7 +7,8 @@ use url::Url;
 use crate::{
     api::{self, JoinError},
     components::{LastJoinOutcome, ProfileResource},
-    did,
+    did, fs_access,
+    vaults::{VaultEntry, VaultRegistry},
 };
 
 /// Lifecycle of a `/join` page load.
@@ -41,6 +42,14 @@ enum JoinView {
     Member {
         /// Subject DID, for the sigil + a hint of what they're joining.
         subject: String,
+    },
+    /// A registered local-disk vault already holds this subject —
+    /// fast-path past the cloud join into an FS-upstream sync.
+    OnDisk {
+        /// Subject DID, for the sigil.
+        subject: String,
+        /// The registered vault to sync from.
+        vault: VaultEntry,
     },
 }
 
@@ -94,6 +103,49 @@ async fn refresh_after_join(repo: &str) {
     }
 }
 
+/// Sync via an already-registered FS vault.
+///
+/// Re-prompts for FS-Access permission (browsers reset that per
+/// session), hands the handle to the worker, saves the delegation
+/// chain via `/api/profile/join`, wires the branch's upstream at the
+/// vault, and pulls once so the recipient lands on fresh data. The
+/// joined space's name comes from the shared repository, so there is
+/// no local name to pass.
+///
+/// Returns `(target_name, outcome_label)` on success.
+async fn sync_from_disk_join(
+    invite_url: &str,
+    vault_id: &str,
+    handle: &web_sys::FileSystemDirectoryHandle,
+) -> Result<(String, &'static str), String> {
+    match fs_access::request_readwrite_permission(handle).await {
+        Ok(web_sys::PermissionState::Granted) => {}
+        Ok(_) => return Err("Permission was not granted.".into()),
+        Err(e) => return Err(format!("Permission request failed: {e}")),
+    }
+    fs_access::register_handle_with_worker(vault_id, handle)
+        .map_err(|e| format!("Could not hand vault to service worker: {e}"))?;
+
+    let response = api::join(invite_url).await.map_err(|e| match e {
+        JoinError::NameTaken => {
+            "This space is already being added — refresh and try again.".to_string()
+        }
+        JoinError::Other(err) => format!("{err}"),
+    })?;
+    let (target_name, outcome) = match response {
+        JoinResponse::Joined { repository } => (repository.name, "joined"),
+        JoinResponse::Renewed { repository } => (repository.name, "renewed"),
+    };
+
+    if let Err(e) = api::set_fs_upstream(&target_name, "main", vault_id).await {
+        return Err(format!("Could not wire FS upstream: {e}"));
+    }
+    if let Err(e) = api::pull(&target_name, "main").await {
+        log!("post-join FS pull on '{}' failed (continuing): {e:?}", target_name);
+    }
+    Ok((target_name, outcome))
+}
+
 /// Sigil hex string for a DID, suitable for `<tonk-sigil value=...>`.
 /// Matches the helper used in [`super::space`] so a space's sigil
 /// is consistent across the join page and the space view.
@@ -109,6 +161,11 @@ fn did_sigil_value(did: &str) -> Option<String> {
 /// space (chain refreshed), a fresh member to `/` where the new space's
 /// card resolves its name by pulling the shared content branch. There is
 /// no name form: the name is the repository's, not a local label.
+///
+/// One exception to the auto-join: if a registered local-disk vault
+/// already holds the subject, we surface a "Sync from disk" affordance
+/// instead and reconcile through `dialog-remote-fs` rather than the
+/// cloud.
 ///
 /// The full URL (including any `#fragment`, which carries the
 /// ephemeral seed for audience-open invites) is read from
@@ -158,6 +215,42 @@ pub fn TonkJoin() -> impl IntoView {
         });
     }
 
+    // Once the invite parses we look the subject up in the per-
+    // browser-profile vault registry. The outer `Option` tracks
+    // whether the lookup has completed; the inner `Option` is the
+    // match (if any). Held in a local-storage signal because
+    // `VaultEntry` carries a `FileSystemDirectoryHandle` — `!Send`.
+    let disk_match: RwSignal<Option<Option<VaultEntry>>, LocalStorage> = RwSignal::new_local(None);
+    let lookup_started = RwSignal::new(false);
+    Effect::new(move |_: Option<()>| {
+        // Re-fires whenever `parsed_invite` updates. Only kick off
+        // the IDB lookup once the invite has actually parsed
+        // successfully, and de-dup against the initial None tick.
+        if lookup_started.get_untracked() {
+            return;
+        }
+        let Some(Ok(invite)) = parsed_invite.get() else {
+            return;
+        };
+        lookup_started.set(true);
+        let subject = invite.subject().to_string();
+        spawn_local(async move {
+            match VaultRegistry::open().await {
+                Ok(registry) => match registry.find_by_subject(&subject).await {
+                    Ok(found) => disk_match.set(Some(found)),
+                    Err(e) => {
+                        log!("vault-registry lookup failed: {e}");
+                        disk_match.set(Some(None));
+                    }
+                },
+                Err(e) => {
+                    log!("vault-registry open failed: {e}");
+                    disk_match.set(Some(None));
+                }
+            }
+        });
+    });
+
     // Derive the lifecycle view from (parsed invite, profile).
     let join_view = Signal::derive_local(move || {
         let parsed = match parsed_invite.get() {
@@ -199,27 +292,34 @@ pub fn TonkJoin() -> impl IntoView {
             Some(Err(e)) => return JoinView::InvalidInvite(format!("{e}")),
         };
 
-        // Whether the recipient already has this subject or is joining it
-        // fresh no longer changes the flow — both auto-join and redirect
-        // into the space, routed by the subject's did:key. The worker's
-        // join handler is idempotent (it renews an existing chain or
-        // creates a fresh replica), so the UI need not branch here. The
+        // Prefer a registered local-disk vault when one already holds
+        // this subject: wait for that lookup to settle, then take the
+        // FS fast-path. Otherwise the worker's join handler is
+        // idempotent (it renews an existing chain or creates a fresh
+        // replica), so the cloud flow is the same whether or not the
+        // recipient already has the subject — no further branching. The
         // `profile_info` read above still gates on the profile being
         // loaded (and the scoped-audience check).
         let _ = &profile_info;
-        JoinView::Member { subject }
+        match disk_match.get() {
+            None => JoinView::Loading,
+            Some(Some(vault)) => JoinView::OnDisk { subject, vault },
+            Some(None) => JoinView::Member { subject },
+        }
     });
 
-    // Auto-join as soon as the view resolves to either `AlreadyMember`
-    // or `NewMember`: there is no longer a name to confirm — a joined
-    // space's name comes from the shared repository's own content branch,
-    // not a locally-chosen label. Fire `/api/profile/join` (claim + chain
-    // save) and navigate.
+    // Auto-join as soon as the view resolves to `Member`: there is no
+    // longer a name to confirm — a joined space's name comes from the
+    // shared repository's own content branch, not a locally-chosen
+    // label. Fire `/api/profile/join` (claim + chain save) and navigate.
     //
     // An already-member lands back in the space (honouring any `then=`
     // deep-link). A fresh member lands on `/`: the Hub lists the new
     // replica and its name card queries the repo, which pulls the content
     // branch and resolves the name in place — no install screen needed.
+    //
+    // The `OnDisk` state is deliberately excluded: it waits for the user
+    // to grant FS-Access permission via the "Sync from disk" button.
     //
     // Tracked separately so we don't double-fire if `join_view` re-derives.
     let auto_joined = RwSignal::new(false);
@@ -288,13 +388,50 @@ pub fn TonkJoin() -> impl IntoView {
         }
     };
 
+    // Tracks the in-flight "Sync from disk" action so its button can
+    // show a spinner and disable while the FS round-trip runs.
+    let submitting = RwSignal::new(false);
+
+    // Click handler for the `OnDisk` fast-path: re-prompt for permission
+    // on the registered handle, save the delegation chain, wire the
+    // branch upstream at the FS vault, pull once, then navigate.
+    let on_disk_sync = {
+        let navigate = navigate.clone();
+        let invite_url = invite_url.clone();
+        let then_suffix = then_suffix.clone();
+        move |vault: VaultEntry| {
+            error.set(None);
+            submitting.set(true);
+
+            let navigate = navigate.clone();
+            let invite_url = invite_url.clone();
+            let then_suffix = then_suffix.clone();
+            spawn_local(async move {
+                let outcome = sync_from_disk_join(&invite_url, &vault.id, &vault.handle).await;
+                submitting.set(false);
+                match outcome {
+                    Ok((target_name, join_outcome)) => {
+                        last_join_outcome.set(Some(join_outcome));
+                        profile_resource.refetch();
+                        let destination =
+                            compose_destination(&target_name, then_suffix.as_deref());
+                        navigate(&destination, NavigateOptions::default());
+                    }
+                    Err(message) => error.set(Some(message)),
+                }
+            });
+        }
+    };
+
     view! {
         <main class="join-view">
             <wa-card class="join-card">
                 { move || render_body(
                     join_view.get(),
                     error,
+                    submitting,
                     on_cancel.clone(),
+                    on_disk_sync.clone(),
                 ) }
             </wa-card>
         </main>
@@ -304,22 +441,30 @@ pub fn TonkJoin() -> impl IntoView {
 /// Render the card body for the current [`JoinView`] state.
 ///
 /// Pulled into a standalone function so each branch is locally readable.
-/// There is no form any more — both `AlreadyMember` and `NewMember`
-/// auto-join (the name comes from the shared repo, not a typed label), so
-/// every actionable branch just shows a "Joining…" affordance.
-fn render_body<C>(state: JoinView, error: RwSignal<Option<String>>, on_cancel: C) -> impl IntoView
+/// The cloud-join branches auto-join (the name comes from the shared
+/// repo, not a typed label) and just show a "Joining…" affordance; the
+/// `OnDisk` branch surfaces a "Sync from disk" CTA wired to
+/// `on_disk_sync`.
+fn render_body<C, D>(
+    state: JoinView,
+    error: RwSignal<Option<String>>,
+    submitting: RwSignal<bool>,
+    on_cancel: C,
+    on_disk_sync: D,
+) -> impl IntoView
 where
     C: Fn(leptos::ev::MouseEvent) + 'static + Clone,
+    D: Fn(VaultEntry) + 'static + Clone,
 {
-    use leptos::either::EitherOf4;
+    use leptos::either::EitherOf5;
     match state {
-        JoinView::Loading => EitherOf4::A(view! {
+        JoinView::Loading => EitherOf5::A(view! {
             <div slot="header">
                 <h1>"Joining…"</h1>
             </div>
             <wa-spinner></wa-spinner>
         }),
-        JoinView::InvalidInvite(message) => EitherOf4::B(view! {
+        JoinView::InvalidInvite(message) => EitherOf5::B(view! {
             <div slot="header">
                 <h1>"Invite link is invalid"</h1>
             </div>
@@ -336,7 +481,7 @@ where
         }),
         JoinView::AudienceMismatch { audience, subject } => {
             let sigil_value = did_sigil_value(&subject);
-            EitherOf4::C(view! {
+            EitherOf5::C(view! {
                 <div slot="header">
                     <h1>"This invite is for someone else"</h1>
                 </div>
@@ -360,8 +505,8 @@ where
             // claims the invite, pulls the content branch, then redirects
             // into the now-ready space.
             let sigil_value = did_sigil_value(&subject);
-            let _ = on_cancel;
-            EitherOf4::D(view! {
+            let _ = &on_cancel;
+            EitherOf5::D(view! {
                 <div slot="header">
                     <h1>"Joining…"</h1>
                 </div>
@@ -374,6 +519,48 @@ where
                             { message }
                         </wa-callout>
                     }) }
+                </div>
+            })
+        }
+        JoinView::OnDisk { subject, vault } => {
+            let sigil_value = did_sigil_value(&subject);
+            let display_name = vault.display_name.clone();
+            EitherOf5::E(view! {
+                <div slot="header">
+                    <h1>"Sync from disk"</h1>
+                    <p class="join-subtitle">
+                        "We found a registered vault on this device that matches "
+                        "this invite. Open it to sync without the cloud."
+                    </p>
+                </div>
+                <div class="join-target wa-stack wa-gap-s wa-align-items-center">
+                    <tonk-sigil value=sigil_value></tonk-sigil>
+                    <p>"Vault: "<strong>{ display_name }</strong></p>
+                    { move || error.get().map(|message| view! {
+                        <wa-callout variant="danger">
+                            <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+                            { message }
+                        </wa-callout>
+                    }) }
+                </div>
+                <div slot="footer" class="join-actions">
+                    <wa-button
+                        type="button"
+                        variant="neutral"
+                        appearance="plain"
+                        on:click=on_cancel
+                    >"Cancel"</wa-button>
+                    <wa-button
+                        type="button"
+                        variant="primary"
+                        prop:loading=move || submitting.get()
+                        prop:disabled=move || submitting.get()
+                        on:click={
+                            let on_disk_sync = on_disk_sync.clone();
+                            let vault = vault.clone();
+                            move |_| on_disk_sync(vault.clone())
+                        }
+                    >"Sync from disk"</wa-button>
                 </div>
             })
         }

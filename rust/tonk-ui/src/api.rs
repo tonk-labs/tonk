@@ -4,8 +4,8 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker::{
     BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
-    IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
-    RepositoryConfiguration, RepositoryInfo, SyncResponse, SyncStatusResponse,
+    FsUpstreamResponse, IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse,
+    RemoteConfiguration, RepositoryConfiguration, RepositoryInfo, SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -498,6 +498,51 @@ pub async fn sync_status(repo: &str, branch: &str) -> Result<SyncStatusResponse,
     }
     response
         .json::<SyncStatusResponse>()
+        .await
+        .map_err(into_api_error)
+}
+
+/// Idempotently configure a branch to track a local FS-backed vault
+/// as its upstream.
+///
+/// `POST /api/repository/{repo}/branch/{branch}/upstream/fs/{vault_id}`.
+/// After a successful return, the existing `/sync` routes for this
+/// branch dispatch through `dialog-remote-fs` — provided the
+/// corresponding handle has already been registered with the worker
+/// (see [`crate::fs_access::register_handle_with_worker`]).
+pub async fn set_fs_upstream(
+    repo: &str,
+    branch: &str,
+    vault_id: &str,
+) -> Result<FsUpstreamResponse, TonkUiError> {
+    log!(
+        "Setting FS upstream repo='{}' branch='{}' vault='{}'",
+        repo,
+        branch,
+        vault_id
+    );
+    let response = reqwest::Client::new()
+        .post(format!(
+            "{}/api/repository/{}/branch/{}/upstream/fs/{}",
+            origin(),
+            repo,
+            branch,
+            vault_id,
+        ))
+        .send()
+        .await
+        .map_err(into_api_error)?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(TonkUiError::ApiError(format!(
+            "POST /api/repository/{}/branch/{}/upstream/fs/{} returned {}: {}",
+            repo, branch, vault_id, status, text
+        )));
+    }
+    response
+        .json::<FsUpstreamResponse>()
         .await
         .map_err(into_api_error)
 }

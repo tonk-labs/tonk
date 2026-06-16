@@ -53,6 +53,7 @@ pub fn TonkToolbar() -> impl IntoView {
         crate::components::route::parse_space(&decoded).map(|space_ref| space_ref.name)
     });
     let profile_active = Signal::derive(move || location.pathname.get() == "/profile");
+    let vaults_active = Signal::derive(move || location.pathname.get() == "/vaults");
 
     // Turn the space list into a stable-sorted list of tiles, carrying
     // the routing key (the URL the tile links by) and the subject DID
@@ -148,6 +149,15 @@ pub fn TonkToolbar() -> impl IntoView {
             </wa-button>
         </div>
 
+        <wa-button
+            slot="navigation-footer"
+            class="sidebar-space sidebar-space--vaults"
+            class:is-active=move || vaults_active.get()
+            href="/vaults"
+            aria-label="Vaults on disk"
+        >
+            <wa-icon name="hard-drive" label="Vaults on disk"></wa-icon>
+        </wa-button>
         <wa-button
             slot="navigation-footer"
             class="sidebar-space sidebar-space--profile"

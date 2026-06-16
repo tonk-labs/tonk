@@ -19,4 +19,17 @@ pub enum TonkUiError {
         /// Source range in the submitted document, when known.
         range: Option<lsp_types::Range>,
     },
+
+    /// Catch-all for errors that don't fit the API or analyzer
+    /// shapes (FS Access API failures, missing browser globals,
+    /// malformed stored state, etc.).
+    #[error("{0}")]
+    Other(String),
+}
+
+impl TonkUiError {
+    /// Convenience constructor for the [`TonkUiError::Other`] catch-all.
+    pub fn other(message: impl Into<String>) -> Self {
+        TonkUiError::Other(message.into())
+    }
 }
