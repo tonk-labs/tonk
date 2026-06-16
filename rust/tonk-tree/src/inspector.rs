@@ -1,0 +1,237 @@
+//! The node inspector pane: the selected node's detail (full hash, size,
+//! count, storage, upper key) and, for a segment, its entries table.
+//! Values are formatted so their type is legible; clicking a fact row
+//! unfolds a detail view.
+
+use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen_futures::spawn_local;
+use web_sys::{Element, Event};
+
+use crate::dom::{ElExt, clear, el};
+use crate::key;
+use crate::model::{Kind, TreeEntry};
+use crate::web::{Shared, append_key_full, human_size};
+
+fn pane(state: &Shared) -> Element {
+    state
+        .borrow()
+        .shadow
+        .query_selector(".inspector")
+        .unwrap()
+        .unwrap()
+}
+
+/// Render the inspector for the current selection.
+pub fn render(state: &Shared) {
+    let body = pane(state);
+    clear(&body);
+
+    let (hash, node) = {
+        let s = state.borrow();
+        let hash = s.selected.clone();
+        let node = hash.as_ref().and_then(|h| s.nodes.get(h).cloned());
+        (hash, node)
+    };
+
+    let Some(hash) = hash else {
+        let _ = body.append_child(&el("div").class("empty").text("no node selected"));
+        return;
+    };
+    let Some(node) = node else {
+        let _ = body.append_child(&el("div").class("status").text("loading…"));
+        return;
+    };
+
+    let title = if node.kind == Kind::Index {
+        "Index node"
+    } else {
+        "Segment node"
+    };
+    let _ = body.append_child(&el("h2").text(title));
+
+    // Full hash — not truncated; it's the identifier.
+    let _ = body.append_child(&kv("hash", hash.strip_prefix('#').unwrap_or(&hash)));
+    let _ = body.append_child(&size_kv(state, node.size));
+    let count_label = if node.kind == Kind::Index {
+        "children"
+    } else {
+        "entries"
+    };
+    let _ = body.append_child(&kv(count_label, &node.count.to_string()));
+    if let Some(rank) = node.rank {
+        let _ = body.append_child(&kv("rank", &rank.to_string()));
+    }
+    let _ = body.append_child(&kv(
+        "storage",
+        if node.cached {
+            "local"
+        } else {
+            "remote (fetched on demand)"
+        },
+    ));
+
+    if let Some(bound) = &node.bound {
+        let _ = body.append_child(&kv("upper key", ""));
+        let keyrow = el("div").class("keybytes");
+        append_key_full(&keyrow, bound);
+        let _ = body.append_child(&keyrow);
+    }
+
+    if node.kind == Kind::Segment {
+        render_entries(state, &body, &hash);
+    }
+}
+
+fn kv(k: &str, v: &str) -> Element {
+    el("div")
+        .class("kv")
+        .child(&el("span").class("k").text(k))
+        .child(&el("span").class("v").text(v))
+}
+
+fn size_kv(state: &Shared, size: u64) -> Element {
+    let row = kv("size", &human_size(size));
+    let max = state.borrow().max_size.max(1);
+    let w = (80.0 * (size as f64 / max as f64)).max(2.0).round() as u64;
+    let bar = el("span").class("sizebar").style(&format!("width: {w}px"));
+    let _ = row.append_child(&bar);
+    row
+}
+
+fn render_entries(state: &Shared, body: &Element, hash: &str) {
+    let box_ = el("div").class("entries");
+    let _ = box_.append_child(&el("div").class("status").text("loading entries…"));
+    let _ = body.append_child(&box_);
+
+    let state = state.clone();
+    let hash = hash.to_owned();
+    spawn_local(async move {
+        let loader = state.borrow().loader.clone();
+        let entries = loader.entries(&hash).await;
+        // Bail if the selection moved on.
+        if state.borrow().selected.as_deref() != Some(hash.as_str()) {
+            return;
+        }
+        match entries {
+            Ok(entries) => {
+                clear(&box_);
+                let _ = box_.append_child(
+                    &el("div")
+                        .class("k")
+                        .text(&format!("{} entries", entries.len())),
+                );
+                let _ = box_.append_child(&entry_table(&entries));
+            }
+            Err(e) => {
+                clear(&box_);
+                let _ = box_.append_child(&el("div").class("err").text(&e));
+            }
+        }
+    });
+}
+
+/// A table of the segment's entries: Entity · Attribute · Value, the
+/// value formatted so its type reads from the text. A row click unfolds
+/// a detail view with the type name, full value, and key bytes.
+fn entry_table(entries: &[TreeEntry]) -> Element {
+    let table = el("table");
+    let thead = el("thead");
+    let hr = el("tr");
+    for h in ["Entity", "Attribute", "Value"] {
+        let _ = hr.append_child(&el("th").text(h));
+    }
+    let _ = thead.append_child(&hr);
+    let _ = table.append_child(&thead);
+
+    let tbody = el("tbody");
+    for entry in entries {
+        let tr = el("tr").class(if entry.retracted {
+            "entry removed"
+        } else {
+            "entry"
+        });
+
+        let ent = el("td").class("col-ent");
+        if let Some(e) = &entry.entity {
+            ent.set_text_content(Some(&short(e, 14)));
+        }
+        let _ = tr.append_child(&ent);
+
+        let attr = el("td")
+            .class("col-attr")
+            .text(entry.attribute.as_deref().unwrap_or(""));
+        let _ = tr.append_child(&attr);
+
+        let val_td = el("td").class("col-val");
+        if entry.retracted {
+            val_td.set_text_content(Some("(retracted)"));
+        } else if let (Some(v), Some(t)) = (&entry.value, &entry.type_name) {
+            let formatted = key::format_value(v, t);
+            // Color the value by type so entity / string / number parse
+            // at a glance; entities also underlined (they are URIs).
+            let span = el("span")
+                .class(&format!("val val-{}", t.to_lowercase()))
+                .text(&trunc(&formatted, 40));
+            let _ = val_td.append_child(&span);
+        }
+        let _ = tr.append_child(&val_td);
+
+        // Detail row, hidden until the entry is clicked.
+        let detail = el("tr").class("detail").attr("hidden", "");
+        let dtd = el("td").attr("colspan", "3");
+        let _ = dtd.append_child(&entry_detail(entry));
+        let _ = detail.append_child(&dtd);
+
+        let detail_c = detail.clone();
+        let cb = Closure::<dyn FnMut(Event)>::new(move |_e: Event| {
+            if detail_c.has_attribute("hidden") {
+                let _ = detail_c.remove_attribute("hidden");
+            } else {
+                let _ = detail_c.set_attribute("hidden", "");
+            }
+        });
+        let _ = tr.add_event_listener_with_callback("click", cb.as_ref().unchecked_ref());
+        cb.forget();
+
+        let _ = tbody.append_child(&tr);
+        let _ = tbody.append_child(&detail);
+    }
+    let _ = table.append_child(&tbody);
+    table
+}
+
+/// The unfolded detail for one entry: type, full value, key bytes.
+fn entry_detail(entry: &TreeEntry) -> Element {
+    let box_ = el("div").class("entry-detail");
+    if let Some(t) = &entry.type_name {
+        let _ = box_.append_child(&kv("type", t));
+    }
+    if let Some(e) = &entry.entity {
+        let _ = box_.append_child(&kv("entity", e.strip_prefix('#').unwrap_or(e)));
+    }
+    if let Some(v) = &entry.value {
+        let t = entry.type_name.as_deref().unwrap_or("");
+        let _ = box_.append_child(&kv("value", &key::format_value(v, t)));
+    }
+    let keyrow = el("div").class("keybytes");
+    append_key_full(&keyrow, &entry.key);
+    let _ = box_.append_child(&el("div").class("k").text("key"));
+    let _ = box_.append_child(&keyrow);
+    box_
+}
+
+fn short(s: &str, n: usize) -> String {
+    let raw = s.strip_prefix('#').unwrap_or(s);
+    raw.chars().take(n).collect()
+}
+
+fn trunc(s: &str, n: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > n {
+        let h: String = chars[..n].iter().collect();
+        format!("{h}…")
+    } else {
+        s.to_owned()
+    }
+}

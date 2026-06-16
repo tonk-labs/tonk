@@ -2170,6 +2170,257 @@ attribute!: &{name}
         serde_json::from_slice(&body).expect("query response is JSON")
     }
 
+    /// Run a one-shot `/query` with a formula predicate (a bare
+    /// string), returning the parsed JSON body and HTTP status.
+    async fn post_formula_query(
+        app: &Router,
+        repo: &str,
+        branch: &str,
+        formula: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let wire = serde_json::json!({ "predicate": formula, "terms": {} });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/{branch}/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(wire.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// A `tree/node` formula query walks the branch's index tree:
+    /// it reads and decodes the root node, returning a `Conclusion`
+    /// whose `this` is the node hash and whose fields describe the
+    /// node (kind, byte size, child/entry count).
+    #[dialog_common::test]
+    async fn it_resolves_a_tree_node_formula() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-formula";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let (status, body) = post_formula_query(&app, repo, "main", "tree/node").await;
+        assert_eq!(status, StatusCode::OK, "formula query OK: {body}");
+        let arr = body.as_array().expect("array of conclusions");
+        assert_eq!(arr.len(), 1, "a seeded branch has a root node: {body}");
+        let row = &arr[0];
+        assert!(
+            row["this"].as_str().is_some_and(|s| s.starts_with('#')),
+            "this is a base58 node hash: {row}"
+        );
+        let kind = row["fields"]["kind"].as_str().unwrap_or("");
+        assert!(kind == "index" || kind == "segment", "kind set: {row}");
+        assert!(
+            row["fields"]["size"].as_i64().is_some_and(|n| n > 0),
+            "node has a byte size: {row}"
+        );
+        assert!(
+            row["fields"]["count"].as_i64().is_some(),
+            "node has a child/entry count: {row}"
+        );
+    }
+
+    /// An unknown formula name is a 4xx, not a panic or a concept
+    /// fall-through.
+    #[dialog_common::test]
+    async fn it_rejects_an_unknown_formula() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-formula-unknown";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        let (status, _body) = post_formula_query(&app, repo, "main", "tree/bogus").await;
+        assert_ne!(status, StatusCode::OK, "unknown formula must not be OK");
+    }
+
+    /// Run a one-shot formula `/query` with explicit `terms`.
+    async fn post_formula_query_with(
+        app: &Router,
+        repo: &str,
+        branch: &str,
+        formula: &str,
+        terms: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let wire = serde_json::json!({ "predicate": formula, "terms": terms });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/{branch}/query"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(wire.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// `tree/child` walks one level down: given the root node's hash,
+    /// it returns one self-contained row per child — each carrying the
+    /// child's own hash, sibling position, and node fields. (If the
+    /// root is itself a leaf, there are no children and zero rows; the
+    /// query still succeeds.)
+    #[dialog_common::test]
+    async fn it_resolves_tree_children_of_the_root() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-formula-child";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Find the root and its kind.
+        let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
+        let root = &root_body.as_array().expect("array")[0];
+        let root_hash = root["this"].as_str().expect("root hash").to_string();
+        let root_is_index = root["fields"]["kind"] == "index";
+
+        let (status, body) = post_formula_query_with(
+            &app,
+            repo,
+            "main",
+            "tree/child",
+            serde_json::json!({ "hash": root_hash }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "tree/child OK: {body}");
+        let rows = body.as_array().expect("array of children");
+
+        if root_is_index {
+            assert!(!rows.is_empty(), "an index root has children: {body}");
+            for (i, row) in rows.iter().enumerate() {
+                assert!(
+                    row["fields"]["child"]
+                        .as_str()
+                        .is_some_and(|s| s.starts_with('#')),
+                    "child hash present: {row}"
+                );
+                assert_eq!(row["this"], row["fields"]["child"], "this == child: {row}");
+                assert_eq!(row["fields"]["at"], i as i64, "sibling position: {row}");
+                let kind = row["fields"]["kind"].as_str().unwrap_or("");
+                assert!(
+                    kind == "index" || kind == "segment",
+                    "child kind set: {row}"
+                );
+            }
+        } else {
+            assert!(rows.is_empty(), "a segment root has no children: {body}");
+        }
+    }
+
+    /// A full walk: root → (descend branches to) a leaf → its entries
+    /// → decode one entry's key into components. Exercises tree/node,
+    /// tree/child, tree/entry, and tree/key chained by feeding each
+    /// row's hash into the next query.
+    #[dialog_common::test]
+    async fn it_walks_to_a_leaf_and_decodes_an_entry_key() {
+        let state = test_state().await;
+        let (app, _lsp) = api_router(state);
+        let repo = "test-reactor-formula-walk";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Descend from the root to the first segment.
+        let (_, root_body) = post_formula_query(&app, repo, "main", "tree/node").await;
+        let mut hash = root_body.as_array().unwrap()[0]["this"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut kind = root_body.as_array().unwrap()[0]["fields"]["kind"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut guard = 0;
+        while kind == "index" && guard < 32 {
+            guard += 1;
+            let (_, kids) = post_formula_query_with(
+                &app,
+                repo,
+                "main",
+                "tree/child",
+                serde_json::json!({ "hash": hash }),
+            )
+            .await;
+            let first = &kids.as_array().expect("children")[0];
+            hash = first["fields"]["child"].as_str().unwrap().to_string();
+            kind = first["fields"]["kind"].as_str().unwrap().to_string();
+        }
+        assert_eq!(kind, "segment", "descended to a segment");
+
+        // Read the segment's entries.
+        let (status, entries) = post_formula_query_with(
+            &app,
+            repo,
+            "main",
+            "tree/entry",
+            serde_json::json!({ "hash": hash }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "tree/entry OK: {entries}");
+        let entries = entries.as_array().expect("entries");
+        assert!(!entries.is_empty(), "segment has entries: {entries:?}");
+        let entry = &entries[0];
+        assert!(
+            entry["fields"]["key"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("0x")),
+            "entry carries a hex key: {entry}"
+        );
+        assert!(
+            entry["fields"]["attribute"].as_str().is_some(),
+            "entry carries its decoded datum: {entry}"
+        );
+
+        // Decode that entry's key into components.
+        let entry_key = entry["fields"]["key"].as_str().unwrap().to_string();
+        let (status, decoded) = post_formula_query_with(
+            &app,
+            repo,
+            "main",
+            "tree/key",
+            serde_json::json!({ "key": entry_key }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "tree/key OK: {decoded}");
+        let row = &decoded.as_array().expect("one row")[0];
+        let tag = row["fields"]["tag"].as_str().unwrap_or("");
+        assert!(
+            matches!(tag, "entity" | "attribute" | "value"),
+            "key tag named: {row}"
+        );
+        assert!(
+            row["fields"]["entity"].as_str().is_some(),
+            "entity component present: {row}"
+        );
+        assert!(
+            row["fields"]["value-type"].as_i64().is_some(),
+            "value-type component present: {row}"
+        );
+    }
+
     /// Open an SSE subscription and return the open body so the
     /// caller can read frames as they arrive.
     async fn open_subscription(app: &Router, repo: &str, branch: &str) -> Body {

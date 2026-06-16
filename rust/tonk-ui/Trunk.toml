@@ -38,6 +38,7 @@ watch = [
     "../tonk-display",
     "../tonk-host",
     "../tonk-code/assets",
+    "../tonk-tree/src",
 ]
 
 # Proxy for /ucan/ is configured via dev:web command.

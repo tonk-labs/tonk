@@ -25,6 +25,8 @@ async fn main() {
     // matches the `copy-dir` target in `index.html` — both must
     // change together if the deployment layout shifts.
     tonk_code::install("/tonk-code/tonk-code.js");
+    // The `<tonk-tree>` search-tree inspector — a pure-Rust element.
+    tonk_tree::register();
 
     // Dev-only hot reload client. `debug_assertions` is on under
     // `trunk serve` (debug profile) and off for `trunk build

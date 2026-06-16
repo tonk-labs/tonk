@@ -5137,6 +5137,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-tree"
+version = "0.1.0"
+dependencies = [
+ "custom-elements",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-ui"
 version = "0.1.0"
 dependencies = [
@@ -5177,6 +5190,7 @@ dependencies = [
  "tonk-notation",
  "tonk-portal",
  "tonk-sigil",
+ "tonk-tree",
  "tonk-worker",
  "tonk-workspace",
  "url",
@@ -5210,6 +5224,7 @@ dependencies = [
  "dialog-query",
  "dialog-remote-ucan-s3",
  "dialog-repository",
+ "dialog-search-tree",
  "dialog-storage",
  "dialog-ucan",
  "dialog-ucan-core",
@@ -5218,6 +5233,7 @@ dependencies = [
  "getrandom 0.3.4",
  "getrandom 0.4.1",
  "http-body-util",
+ "ipld-core",
  "js-sys",
  "lsp-types",
  "parking_lot",

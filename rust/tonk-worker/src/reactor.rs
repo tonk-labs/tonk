@@ -27,6 +27,7 @@ mod command;
 mod env;
 mod error;
 mod export;
+mod formula;
 mod import;
 mod pull;
 mod push;
@@ -40,10 +41,12 @@ pub use command::{
     CommandHandler, CommandRegistry, Decode, EntityFacts, Env, RunFuture, TypedCommand,
 };
 pub use env::{
-    BranchOpenProvider, CommitProvider, LoadProvider, PullProvider, PushProvider, SelectProvider,
+    BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,
+    SelectProvider,
 };
 pub use error::ReactorError;
 pub use export::{Export, ExportError};
+pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
 pub use pull::Pull;
 pub use push::Push;

@@ -234,7 +234,20 @@ async fn handle_query(
             return;
         }
     };
-    let query: dialog_query::ConceptQuery = wire.into();
+    let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
+        Ok(q) => q,
+        Err(_) => {
+            send_error(
+                &state,
+                &client,
+                "query-error",
+                &id,
+                "formula queries are not supported on the bridge",
+            )
+            .await;
+            return;
+        }
+    };
 
     // Run the one-shot path — same as `router::query::query` does
     // when the request did not ask for a stream.
@@ -417,7 +430,20 @@ async fn handle_subscribe(
             return;
         }
     };
-    let query: dialog_query::ConceptQuery = wire.into();
+    let query: dialog_query::ConceptQuery = match wire.into_concept_query() {
+        Ok(q) => q,
+        Err(_) => {
+            send_error(
+                &state,
+                &client,
+                "subscribe-error",
+                &id,
+                "formula queries are not supported on the bridge",
+            )
+            .await;
+            return;
+        }
+    };
 
     // Bail early if this id is already pumping.
     {

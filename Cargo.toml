@@ -5,6 +5,7 @@ members = [
     "rust/tonk-analyzer",
     "rust/tonk-board",
     "rust/tonk-code",
+    "rust/tonk-tree",
     "rust/tonk-common",
     "rust/tonk-core",
     "rust/tonk-display",
@@ -35,6 +36,7 @@ tonk-access-service = { path = "./rust/tonk-access-service" }
 tonk-analyzer = { path = "./rust/tonk-analyzer" }
 tonk-board = { path = "./rust/tonk-board" }
 tonk-code = { path = "./rust/tonk-code" }
+tonk-tree = { path = "./rust/tonk-tree" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
 tonk-display = { path = "./rust/tonk-display" }
@@ -148,6 +150,7 @@ dialog-query = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk
 dialog-remote-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }
 dialog-remote-ucan-s3 = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }
 dialog-repository = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }
+dialog-search-tree = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }
 dialog-storage = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }
 dialog-ucan = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }
 dialog-ucan-core = { git = "https://github.com/dialog-db/dialog-db.git", tag = "tonk-2026-06-12" }

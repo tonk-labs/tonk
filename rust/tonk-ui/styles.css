@@ -1916,11 +1916,27 @@ tonk-notation,
        further down map roles onto the palette so reassigning a
        role (e.g. point variables at red instead of blue) is a
        one-line change. */
-    --tonk-bauhaus-yellow: #c89a2b; /* muted ochre */
-    --tonk-bauhaus-red: #b94a3d; /* muted brick */
-    --tonk-bauhaus-blue: #3d6da8; /* muted slate-blue */
-    --tonk-bauhaus-grey: #7a7268; /* warm neutral */
-    --tonk-bauhaus-alarm: #a8302a; /* hotter than the brick red */
+    /* The Bauhaus palette, named by Kandinsky's color→shape pairing so
+       the vocabulary carries the meaning, not just the hue:
+         - triangle (yellow) → sharp, active, structural, eye-catching
+         - square   (red)    → grounded, literal, material substance
+         - circle   (blue)   → abstract, calm, receding
+         - closure  (black)  → terminal/neutral ground (Kandinsky's
+                                musical "closure")
+       Roles below map onto these, so re-pointing a role at a different
+       shape is a one-line change. */
+    --tonk-triangle: #c89a2b; /* muted ochre */
+    --tonk-square: #b94a3d; /* muted brick */
+    --tonk-circle: #3d6da8; /* muted slate-blue */
+    --tonk-closure: #7a7268; /* warm neutral ground */
+    --tonk-alarm: #a8302a; /* hotter than the square red */
+
+    /* Color-named aliases (legacy; prefer the shape names above). */
+    --tonk-bauhaus-yellow: var(--tonk-triangle);
+    --tonk-bauhaus-red: var(--tonk-square);
+    --tonk-bauhaus-blue: var(--tonk-circle);
+    --tonk-bauhaus-grey: var(--tonk-closure);
+    --tonk-bauhaus-alarm: var(--tonk-alarm);
 
     /* Code-role assignments. The Bauhaus school's own logic for
        the primaries:

@@ -33,12 +33,14 @@ dialog-operator = { workspace = true }
 dialog-query = { workspace = true }
 dialog-remote-ucan-s3 = { workspace = true }
 dialog-repository = { workspace = true }
+dialog-search-tree = { workspace = true }
 dialog-storage = { workspace = true }
 dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 futures-util = { workspace = true }
 http-body-util = { workspace = true }
+ipld-core = { workspace = true }
 js-sys = { workspace = true }
 lsp-types = { workspace = true }
 rand = { workspace = true }
