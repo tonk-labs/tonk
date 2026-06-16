@@ -459,6 +459,20 @@ tonk-repository.display-route,
 .workspace__sync.is-diverged::before {
     background: var(--wa-color-danger-fill-loud);
 }
+/* The member roster (`<tonk-roster>` renders this cluster): one
+   `<tonk-sigil>` avatar per repo member, overlapped into a row. */
+.workspace__roster {
+    display: inline-flex;
+    align-items: center;
+}
+.workspace__roster-avatar {
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-inline-end: -0.35rem;
+}
+.workspace__roster-avatar:last-child {
+    margin-inline-end: 0;
+}
 .workspace__spacer {
     flex: 1;
 }

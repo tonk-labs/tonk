@@ -1071,6 +1071,7 @@ view/directory!:
         <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
+          <tonk-roster></tonk-roster>
           <tonk-share></tonk-share>
         </span>
       </div>
