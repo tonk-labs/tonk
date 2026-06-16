@@ -286,28 +286,21 @@ fn build_row(state: &Shared, node: &TreeNode, prev: Option<&str>, next: Option<&
     }
     let _ = row.append_child(&keystr);
 
-    let noun = if node.kind == Kind::Index {
-        "children"
-    } else {
-        "entries"
-    };
-    let _ = row.append_child(
-        &el("span")
-            .class("count")
-            .text(&format!("{} {noun}", node.count)),
-    );
-
-    // Size bar.
+    // Size column: a proportional bar plus the byte count, in a fixed-width
+    // right-aligned cell so the values line up down the right edge.
     let max = state.borrow().max_size.max(1);
     let frac = (node.size as f64 / max as f64).clamp(0.02, 1.0);
-    let sizewrap = el("span").class("sizewrap");
+    let sizewrap = el("span").class("col size");
     let bar = el("span")
         .class("sizebar")
-        .style(&format!("width: calc(120px * {frac})"));
+        .style(&format!("width: calc(70px * {frac})"));
     let num = el("span").class("sizenum").text(&human_size(node.size));
     let _ = sizewrap.append_child(&bar);
     let _ = sizewrap.append_child(&num);
     let _ = row.append_child(&sizewrap);
+
+    // Count column: the child/entry count as a bare number in its own cell.
+    let _ = row.append_child(&el("span").class("col count").text(&node.count.to_string()));
 
     if !node.cached {
         let _ = row.append_child(
@@ -663,6 +656,10 @@ const STYLE: &str = r#"
 }
 .pane { overflow: auto; padding: var(--wa-space-m, 12px); }
 .pane.left { border-right: 1px solid var(--wa-color-border-quiet); }
+/* The outline runs at a smaller, denser size — closer to a D3 indented
+   tree. The connectors are sized in `em`, so they tighten with it. The
+   inspector pane keeps the host's normal size. */
+dialog-tree-outline { font-size: var(--wa-font-size-xs, 11px); }
 /* D3-style indented-tree connectors, scoped to this element's wa-tree.
    wa-tree's built-in vertical spine runs the full height of a subtree
    (past the last child, to nowhere), so it is disabled and the spine is
@@ -766,17 +763,20 @@ wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
 .key-seg.seg-index-type { color: var(--wa-color-text-normal); }
 /* Past the routing pivot: dim the segment — text and color. */
 .key-seg.dim { opacity: 0.6; font-weight: var(--wa-font-weight-normal, 400); }
-/* count and size are fixed-width right-aligned columns so they line up
-   across rows regardless of the key's width or the row's indent depth
-   (the columns hug the right edge of the pane, D3 value-column style). */
-.count { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-xs, 11px);
-  flex: none; width: 84px; text-align: right; white-space: nowrap; }
-.sizewrap { display: inline-flex; align-items: center; justify-content: flex-end;
-  gap: var(--wa-space-xs, 6px); flex: none; }
+/* Value columns (size, count): fixed-width right-aligned cells anchored to
+   the pane's right edge, so they line up across rows regardless of the key's
+   width or indent depth — D3 indented-tree style. The key flexes; the first
+   column gets a margin so it sits a comfortable distance from the key. */
+.col { flex: none; color: var(--wa-color-text-quiet); white-space: nowrap;
+  text-align: right; }
+.col.size { width: 120px; margin-left: var(--wa-space-l, 24px);
+  display: inline-flex; align-items: center; justify-content: flex-end;
+  gap: var(--wa-space-xs, 6px); }
+.col.count { width: 48px; }
 .sizebar { height: 7px; background: var(--tonk-closure, #7a7268); border-radius: var(--wa-border-radius-s, 2px); min-width: 2px; }
 .row.remote .sizebar { background: var(--wa-color-neutral-fill-loud, #666); }
-.sizenum { color: var(--wa-color-text-quiet); font-size: var(--wa-font-size-xs, 11px); width: 56px; text-align: right; }
-.remote-icon { color: var(--tonk-circle, #3d6da8); flex: none; }
+.sizenum { width: 48px; text-align: right; }
+.remote-icon { color: var(--wa-color-text-quiet, #94959b); flex: none; }
 .status, .err { color: var(--wa-color-text-quiet); font-style: italic; padding: 4px 0; }
 .err { color: var(--tonk-alarm, #a8302a); }
 
