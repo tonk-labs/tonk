@@ -2,7 +2,7 @@ use leptos::{either::Either, prelude::*};
 
 use crate::components::{
     ProfileResource,
-    space::{BranchOwner, BranchRow, RemoteCard},
+    space::{BranchRow, RemoteCard},
 };
 
 /// Profile view, rendered at `/profile`.
@@ -44,7 +44,7 @@ pub fn TonkProfile() -> impl IntoView {
 }
 
 /// Layout for the profile-as-repository: banner with the profile
-/// name, branches list, remotes list. Mirrors `render_space_view`
+/// name, branches list, remotes list. Mirrors the space banner
 /// minus the share button (you don't share a profile the way you
 /// share a space).
 fn render_profile(info: tonk_worker::RepositoryInfo) -> impl IntoView {
@@ -67,7 +67,6 @@ fn render_profile(info: tonk_worker::RepositoryInfo) -> impl IntoView {
                 <BranchRow
                     name=name
                     config=config
-                    owner=BranchOwner::Profile
                     force_open=force_open_solo
                 />
             }

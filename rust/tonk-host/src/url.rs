@@ -36,9 +36,22 @@ pub(crate) fn transact_url(space: Option<&str>, branch: Option<&str>, profile: b
     endpoint(space, branch, profile, "transact")
 }
 
-/// Build the `/evaluate` URL for `tonk-evaluate`.
-pub(crate) fn evaluate_url(space: Option<&str>, branch: Option<&str>, profile: bool) -> String {
-    endpoint(space, branch, profile, "evaluate")
+/// Build the `/evaluate` URL for `tonk-evaluate`. When `transact`
+/// is `false` the `?transact=false` query is appended so the
+/// worker runs queries + planning but drops the commit — the
+/// dry-run an editor uses to preview a half-typed buffer.
+pub(crate) fn evaluate_url(
+    space: Option<&str>,
+    branch: Option<&str>,
+    profile: bool,
+    transact: bool,
+) -> String {
+    let url = endpoint(space, branch, profile, "evaluate");
+    if transact {
+        url
+    } else {
+        format!("{url}?transact=false")
+    }
 }
 
 fn endpoint(space: Option<&str>, branch: Option<&str>, profile: bool, route: &str) -> String {
