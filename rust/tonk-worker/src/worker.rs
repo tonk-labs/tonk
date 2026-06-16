@@ -177,9 +177,14 @@ async fn handle_via_router(
         request.extensions_mut().insert(ClientId(client_id.clone()));
     }
 
+    // Clone the router out of the lock and release the guard before
+    // dispatching: `Router` is cheap to clone (its routes are `Arc`-shared)
+    // and `Service::call` runs on the owned clone, so concurrent requests
+    // aren't serialized behind one global lock. Holding the lock across
+    // `.call().await` would queue every request behind the slowest one (e.g. a
+    // network-bound `sync/status`).
+    let mut router = router.lock().await.clone();
     let mut response = router
-        .lock()
-        .await
         .call(request)
         .await
         .expect_throw("Failed to handle API request");

@@ -296,7 +296,10 @@ pub async fn sync_status(
     State(state): State<AppState>,
     Path(params): Path<SyncPath>,
 ) -> Result<Json<SyncStatusResponse>, TonkWorkerError> {
-    let tonk_state = state.write().await;
+    // Read-only: status acquires a branch and does a remote fetch but never
+    // mutates `TonkState`. A read lock lets concurrent queries proceed instead
+    // of blocking on the (network-bound) status request.
+    let tonk_state = state.read().await;
 
     let session = tonk_state
         .reactor
