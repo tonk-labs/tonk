@@ -566,6 +566,9 @@ tonk-repository.display-route,
     border-radius: var(--wa-border-radius-m);
     background: transparent;
     overflow: hidden;
+    /* Anchor for the absolutely-positioned sync badge (and the blank
+       card's progress overlay below). */
+    position: relative;
 }
 .hub-card:hover {
     border-color: var(--wa-color-brand-fill-loud);
@@ -637,6 +640,58 @@ tonk-repository.display-route,
     font-size: var(--wa-font-size-s);
     color: var(--wa-color-text-quiet);
 }
+
+/* Read-only sync status badge (`<tonk-sync-badge>`), pinned to the
+   card's top-right corner — clear of the space name and the long,
+   wrapping `/space/...` URL below it. Aligned with the name row's top
+   so it reads as a header-row status. Hidden by default and shown only
+   for real, initialized repositories: the profile self-card never lists
+   (its whole card is hidden above) and a `tonk:blank` space is still
+   seeding, so neither has a meaningful sync state to show. */
+.hub-card__sync {
+    display: none;
+    position: absolute;
+    inset-block-start: var(--wa-space-m);
+    inset-inline-end: var(--wa-space-l);
+}
+.hub-card[data-kind="tonk:repository"]:not([data-status="tonk:blank"]) .hub-card__sync {
+    display: flex;
+    align-items: center;
+}
+.hub-card__sync .sync-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-xs);
+    font-family: var(--wa-font-family-code);
+    font-size: var(--wa-font-size-s);
+    color: var(--wa-color-text-quiet);
+    white-space: nowrap;
+}
+.hub-card__sync .sync-badge::before {
+    content: "";
+    inline-size: 7px;
+    block-size: 7px;
+    border-radius: 50%;
+    background: currentColor;
+    flex: none;
+}
+.hub-card__sync .sync-badge.is-synced {
+    color: var(--wa-color-success-on-quiet);
+}
+.hub-card__sync .sync-badge.is-synced::before {
+    background: var(--wa-color-success-fill-loud);
+}
+.hub-card__sync .sync-badge.is-syncing {
+    color: var(--wa-color-warning-on-quiet);
+}
+.hub-card__sync .sync-badge.is-syncing::before {
+    background: var(--wa-color-warning-fill-loud);
+}
+/* Paused and offline are both inert, neutral states. */
+.hub-card__sync .sync-badge.is-paused::before,
+.hub-card__sync .sync-badge.is-offline::before {
+    background: var(--wa-color-neutral-fill-loud);
+}
 .hub-card[data-status="tonk:blank"] {
     pointer-events: none;
     position: relative;
@@ -685,6 +740,262 @@ tonk-repository.display-route,
     100% {
         transform: translateX(286%);
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* Ghost loading skins.
+
+   `<tonk-display>` reflects its lifecycle onto the host as
+   `data-state` (loading / ready / empty / error — see
+   `tonk-display/src/state.rs`); these rules skin the `loading` phase
+   so a slow load-in (resolving views, first subscription frame, a
+   freshly invite-claimed repo still syncing) paints a ghost of the
+   incoming layout instead of a blank page. Everything here is
+   pseudo-element-only: while loading the host has no children, so
+   the ghosts can't collide with real content, and the moment the
+   state flips off `loading` every rule stops matching.
+
+   Two shared animations: `ghost-appear` holds the ghost invisible
+   for a beat so a fast load never flashes a skeleton, then fades it
+   in; `ghost-pulse` is the gentle idle breathing. The pulse rides on
+   the container (host opacity composites the whole ghost), so each
+   pseudo-element doesn't need its own animation. */
+@keyframes ghost-appear {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+@keyframes ghost-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.45;
+    }
+}
+.display-route > tonk-branch > .display-view-slot:empty,
+.display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"]),
+.workspace-directory > tonk-display[data-state="loading"],
+.workspace__binder > tonk-display[data-state="loading"],
+.workspace__binder tonk-sheet > tonk-display[data-state="loading"] {
+    animation:
+        ghost-pulse 2s ease-in-out 0.4s infinite,
+        ghost-appear 0.25s ease-out 0.15s backwards;
+}
+@media (prefers-reduced-motion: reduce) {
+    .display-route > tonk-branch > .display-view-slot:empty,
+    .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"]),
+    .workspace-directory > tonk-display[data-state="loading"],
+    .workspace__binder > tonk-display[data-state="loading"],
+    .workspace__binder tonk-sheet > tonk-display[data-state="loading"] {
+        /* Keep the anti-flash fade-in; drop the idle pulse. */
+        animation: ghost-appear 0.25s ease-out 0.15s backwards;
+    }
+}
+
+/* Space page ghost (`/space/{name}`): the route's own display is
+   still loading (or the mount slot hasn't mounted it yet — the
+   `:empty` arm), so nothing of the workspace exists. Sketch its
+   three bands: topbar (host ::before), sheet canvas (host ::after),
+   and the bottom tab strip (slot ::after — the host only has two
+   pseudo-elements, and the slot is the route's own flex column, so
+   its ::after lands after the display exactly where the strip goes).
+   The slot/host are already flex columns via the `.display-route`
+   layout rules above. The Hub wraps the same `.display-route` chain;
+   its higher-specificity rules below repaint all of these as cards. */
+.display-route > tonk-branch > .display-view-slot:empty::before,
+.display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::before {
+    content: "";
+    flex: none;
+    height: 52px;
+    box-sizing: border-box;
+    background-color: var(--wa-color-surface-raised);
+    border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    /* Topbar chips: brand, crumb, title on the left; sync chip on
+       the right. One gradient layer per chip. */
+    background-image:
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
+    background-repeat: no-repeat;
+    background-size:
+        2.75rem 1rem,
+        5rem 0.8rem,
+        7rem 0.9rem,
+        5rem 1.4rem;
+    background-position:
+        var(--wa-space-l) 50%,
+        6rem 50%,
+        12.5rem 50%,
+        right var(--wa-space-l) center;
+}
+.display-route > tonk-branch > .display-view-slot:empty::after,
+.display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::after,
+.workspace-directory > tonk-display[data-state="loading"]::before,
+.workspace__binder:not(:has(tonk-sheet)) > tonk-display[data-state="loading"]:first-of-type::before {
+    /* The sheet-canvas ghost: the bordered card frame with its
+       header strip and a couple of content lines. Shared by the
+       page-level ghost (::after), the sheets-directory ghost (the
+       topbar is already real there), and the first sheet panel's
+       ghost while its `<tonk-sheet>` hasn't mounted. */
+    content: "";
+    flex: 1 1 auto;
+    min-height: 0;
+    margin: var(--wa-space-l);
+    box-sizing: border-box;
+    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    /* Content lines use the `normal` fill — the `quiet` one is a
+       near-match for the page's paper background and disappears. */
+    background-image:
+        linear-gradient(var(--wa-color-surface-raised), var(--wa-color-surface-raised)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
+    background-repeat: no-repeat;
+    background-size:
+        100% 2.4rem,
+        14rem 0.8rem,
+        18rem 0.8rem;
+    background-position:
+        0 0,
+        var(--wa-space-l) 4.2rem,
+        var(--wa-space-l) 5.8rem;
+}
+.display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::after,
+.workspace-directory > tonk-display[data-state="loading"]::after {
+    /* The bottom tab strip ghost: the strip's raised band with two
+       tab-label bars and the small "+" square. The canvas ghost's
+       own margin supplies the gap above, matching the real panel
+       padding. */
+    content: "";
+    flex: none;
+    height: 48px;
+    box-sizing: border-box;
+    background-color: var(--wa-color-surface-raised);
+    border-top: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    background-image:
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
+    background-repeat: no-repeat;
+    background-size:
+        5.5rem 1rem,
+        5.5rem 1rem,
+        1.25rem 1.25rem;
+    background-position:
+        var(--wa-space-l) 50%,
+        9rem 50%,
+        16.5rem 50%;
+}
+
+/* Sheet panels mid-load. The workspace view mounts each sheet
+   through a `<tonk-display>` wrapper which the view's own stylesheet
+   hides until its `<tonk-sheet>` exists; while every panel is still
+   loading that leaves the binder bare and (worse) flags it empty, so
+   the "create your first artifact" launchpad flashes over data that
+   is seconds from landing. Suppress the launchpad while any panel is
+   loading, and let exactly one loading panel through to paint the
+   canvas ghost (the `::before` shared above). */
+.workspace__binder:has(> tonk-display[data-state="loading"]) > [slot="empty"] {
+    display: none;
+}
+.workspace__binder:not(:has(tonk-sheet)) > tonk-display[data-state="loading"]:first-of-type {
+    display: flex;
+}
+.workspace__binder:not(:has(tonk-sheet)) > tonk-display[data-state="loading"]:first-of-type::before {
+    margin: 0;
+}
+
+/* A mounted sheet whose content display is still loading: ghost
+   text lines inside the card body, under the (real) projected
+   header. */
+.workspace__binder tonk-sheet > tonk-display[data-state="loading"]::before {
+    content: "";
+    display: block;
+    height: 7rem;
+    margin: var(--wa-space-l);
+    background-image:
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
+    background-repeat: no-repeat;
+    background-size:
+        16rem 0.8rem,
+        22rem 0.8rem,
+        12rem 0.8rem;
+    background-position:
+        0 0,
+        0 1.6rem,
+        0 3.2rem;
+}
+
+/* Hub ghost (`/`): repaint the generic space-page ghost above as the
+   repo list — a header row (slot ::before) and three ghost cards
+   (host ::before / ::after plus slot ::after). Selectors spell out
+   the full `.hub-route .display-route …` chain to outweigh the
+   generic page-ghost rules, the same way the Hub's min-height
+   overrides do. */
+.hub-route .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::before {
+    content: "";
+    flex: none;
+    height: 2.4rem;
+    margin-block-end: var(--wa-space-xl);
+    border: none;
+    background-color: transparent;
+    /* Page title bar on the left, "New space" button block on the
+       right — matching `.hub-header`. */
+    background-image:
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
+    background-repeat: no-repeat;
+    background-size:
+        9rem 2rem,
+        7.5rem 2.4rem;
+    background-position:
+        0 50%,
+        100% 50%;
+}
+.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"] {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wa-space-m);
+}
+.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::before,
+.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::after,
+.hub-route .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::after {
+    /* One ghost repo card: the sigil swatch on the left, name and
+       URL bars to its right — matching `.hub-card` geometry. */
+    content: "";
+    flex: none;
+    height: 5.75rem;
+    margin: 0;
+    box-sizing: border-box;
+    border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+    border-radius: var(--wa-border-radius-m);
+    background-color: transparent;
+    background-image:
+        linear-gradient(var(--wa-color-surface-lowered), var(--wa-color-surface-lowered)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal)),
+        linear-gradient(var(--wa-color-neutral-fill-normal), var(--wa-color-neutral-fill-normal));
+    background-repeat: no-repeat;
+    background-size:
+        8.5rem 100%,
+        11rem 1.1rem,
+        16rem 0.8rem;
+    background-position:
+        0 0,
+        calc(8.5rem + var(--wa-space-l)) 1.5rem,
+        calc(8.5rem + var(--wa-space-l)) 3.3rem;
+}
+/* The slot has no flex gap (the header spaces itself with a margin),
+   so the third card — the slot's ::after, laid out right after the
+   display's two — carries the card gap itself. */
+.hub-route .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::after {
+    margin-block-start: var(--wa-space-m);
 }
 
 /* When a view or notation slide lives inside the carousel

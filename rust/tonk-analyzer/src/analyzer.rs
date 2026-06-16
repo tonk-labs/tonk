@@ -732,12 +732,16 @@ mod tests {
     /// covers the commit path the test fixtures use to assert
     /// concept facts onto the branch.
     trait FixtureEnv:
-        tonk_schema::concept::QueryEnv + dialog_query::Provider<dialog_effects::memory::Publish>
+        tonk_schema::concept::QueryEnv
+        + dialog_query::Provider<dialog_effects::memory::Publish>
+        + dialog_query::Provider<dialog_effects::archive::Import>
     {
     }
 
     impl<T> FixtureEnv for T where
-        T: tonk_schema::concept::QueryEnv + dialog_query::Provider<dialog_effects::memory::Publish>
+        T: tonk_schema::concept::QueryEnv
+            + dialog_query::Provider<dialog_effects::memory::Publish>
+            + dialog_query::Provider<dialog_effects::archive::Import>
     {
     }
 
