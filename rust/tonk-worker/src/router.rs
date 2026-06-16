@@ -2386,12 +2386,12 @@ attribute!: &{name}
         assert!(
             entry["fields"]["key"]
                 .as_str()
-                .is_some_and(|s| s.starts_with('#')),
-            "entry carries a key: {entry}"
+                .is_some_and(|s| s.starts_with("0x")),
+            "entry carries a hex key: {entry}"
         );
         assert!(
-            entry["fields"]["state"].as_str().is_some(),
-            "entry carries a state: {entry}"
+            entry["fields"]["attribute"].as_str().is_some(),
+            "entry carries its decoded datum: {entry}"
         );
 
         // Decode that entry's key into components.
