@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dialog_repository::Repository;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 use crate::reactor::BranchState;
 
@@ -17,7 +17,7 @@ pub struct RepositoryState {
     /// to skip the repository load when opening another branch
     /// under the same repo.
     repository: Arc<Repository>,
-    branches: Mutex<HashMap<String, Arc<BranchState>>>,
+    branches: RwLock<HashMap<String, Arc<BranchState>>>,
 }
 
 impl RepositoryState {
@@ -25,7 +25,7 @@ impl RepositoryState {
     pub fn new(repository: Arc<Repository>) -> Self {
         Self {
             repository,
-            branches: Mutex::new(HashMap::new()),
+            branches: RwLock::new(HashMap::new()),
         }
     }
 
@@ -37,7 +37,7 @@ impl RepositoryState {
     /// Borrow the branch cache so the chain's
     /// `BranchReference::acquire` can run lookup-and-open
     /// directly.
-    pub fn branches(&self) -> &Mutex<HashMap<String, Arc<BranchState>>> {
+    pub fn branches(&self) -> &RwLock<HashMap<String, Arc<BranchState>>> {
         &self.branches
     }
 }

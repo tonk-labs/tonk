@@ -48,7 +48,7 @@ impl<'a> BranchReference<'a> {
         let repository = self.repository.acquire(env).await?;
 
         // Fast path: branch already cached.
-        if let Some(state) = repository.branches().lock().get(name) {
+        if let Some(state) = repository.branches().read().get(name) {
             return Ok(BranchSession {
                 state: Arc::clone(state),
             });
@@ -68,7 +68,7 @@ impl<'a> BranchReference<'a> {
                 reason: e.to_string(),
             })?;
 
-        let mut branches = repository.branches().lock();
+        let mut branches = repository.branches().write();
         let entry = branches
             .entry(name.to_owned())
             .or_insert_with(|| Arc::new(BranchState::new(branch)));

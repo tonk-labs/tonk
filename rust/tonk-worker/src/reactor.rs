@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dialog_operator::Profile;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 
 mod branch;
 mod command;
@@ -63,12 +63,12 @@ pub use transaction::{Commit, TransactionBuilder};
 /// The worker's reactive layer. Owned by `TonkState`.
 pub struct TonkReactor {
     profile: Profile,
-    repos: Mutex<HashMap<String, Arc<RepositoryState>>>,
+    repos: RwLock<HashMap<String, Arc<RepositoryState>>>,
     /// Cached `RepositoryState` for the profile-as-repository.
     /// Lazily populated on first `profile_repository().acquire()`
     /// call; lives outside `repos` because the profile is a
     /// singleton with no name in the routing namespace.
-    profile_repo: Mutex<Option<Arc<RepositoryState>>>,
+    profile_repo: RwLock<Option<Arc<RepositoryState>>>,
 }
 
 impl TonkReactor {
@@ -78,8 +78,8 @@ impl TonkReactor {
     pub fn new(profile: Profile) -> Self {
         Self {
             profile,
-            repos: Mutex::new(HashMap::new()),
-            profile_repo: Mutex::new(None),
+            repos: RwLock::new(HashMap::new()),
+            profile_repo: RwLock::new(None),
         }
     }
 
@@ -98,7 +98,7 @@ impl TonkReactor {
     /// holds the state.
     pub fn shutdown(&self) {
         let repos = {
-            let mut map = self.repos.lock();
+            let mut map = self.repos.write();
             std::mem::take(&mut *map)
         };
         // The profile-as-repository lives in its own slot, not in
@@ -106,10 +106,10 @@ impl TonkReactor {
         // (`/api/profile/branch/meta/query` SSE), so it must be drained
         // too — otherwise that one stream stays open and pins the
         // outgoing worker in `waiting` on every update.
-        let profile = self.profile_repo.lock().take();
+        let profile = self.profile_repo.write().take();
         for repo in repos.into_values().chain(profile) {
             let branches = {
-                let mut map = repo.branches().lock();
+                let mut map = repo.branches().write();
                 std::mem::take(&mut *map)
             };
             for (_, branch) in branches {
@@ -145,12 +145,12 @@ impl TonkReactor {
         Env: BranchOpenProvider,
     {
         // Only a cached repository can hold a stale cached branch.
-        let Some(repo_state) = self.repos.lock().get(repo).map(Arc::clone) else {
+        let Some(repo_state) = self.repos.read().get(repo).map(Arc::clone) else {
             return Ok(());
         };
         // An uncached branch opens fresh on next acquire — already
         // current, nothing to reconcile.
-        if !repo_state.branches().lock().contains_key(branch) {
+        if !repo_state.branches().read().contains_key(branch) {
             return Ok(());
         }
 
@@ -172,7 +172,7 @@ impl TonkReactor {
 
         // Swap under the branches lock so a concurrent subscribe can't
         // land on the discarded state between the adopt and the insert.
-        let mut branches = repo_state.branches().lock();
+        let mut branches = repo_state.branches().write();
         if let Some(old) = branches.get(branch) {
             fresh.adopt_subscriptions_from(old);
         }
@@ -200,7 +200,7 @@ impl TonkReactor {
     /// (`RepositoryReference::acquire`, `BranchReference::acquire`)
     /// can run their lookup-and-open logic directly without
     /// indirecting through helper methods.
-    pub fn repos(&self) -> &Mutex<HashMap<String, Arc<RepositoryState>>> {
+    pub fn repos(&self) -> &RwLock<HashMap<String, Arc<RepositoryState>>> {
         &self.repos
     }
 
@@ -208,14 +208,14 @@ impl TonkReactor {
     /// Used by `RepositoryReference::Profile::acquire` for the
     /// fast-path branch.
     pub fn profile_repo_state(&self) -> Option<Arc<RepositoryState>> {
-        self.profile_repo.lock().clone()
+        self.profile_repo.read().clone()
     }
 
     /// Install the profile-as-repository state into the cache.
     /// Returns the resident value — if another caller raced and
     /// installed first, theirs wins (state is fungible).
     pub fn set_profile_repo_state(&self, state: Arc<RepositoryState>) -> Arc<RepositoryState> {
-        let mut slot = self.profile_repo.lock();
+        let mut slot = self.profile_repo.write();
         if let Some(existing) = slot.clone() {
             existing
         } else {
