@@ -77,7 +77,7 @@ impl<'a> RepositoryReference<'a> {
         match self {
             Self::Named { name, .. } => {
                 // Fast path: cached.
-                if let Some(entry) = reactor.repos().lock().get(*name) {
+                if let Some(entry) = reactor.repos().read().get(*name) {
                     return Ok(Arc::clone(entry));
                 }
 
@@ -95,7 +95,7 @@ impl<'a> RepositoryReference<'a> {
 
                 // Insert under the lock — another caller may have
                 // raced; their entry wins.
-                let mut repos = reactor.repos().lock();
+                let mut repos = reactor.repos().write();
                 let entry = repos
                     .entry((*name).to_owned())
                     .or_insert_with(|| Arc::new(RepositoryState::new(Arc::new(repository))));

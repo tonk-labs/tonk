@@ -23,7 +23,8 @@ use dialog_repository::{
     Branch, LocalIndex, NetworkedIndex, RepositoryArchiveExt, RepositoryMemoryExt, Upstream,
 };
 use dialog_search_tree::{
-    ArchivedNodeBody, Buffer, DialogSearchTreeError, Distribution, Geometric, Node, into_owned,
+    ArchivedNodeBody, Buffer, DialogSearchTreeError, Distribution, Geometric, PersistentNode,
+    into_owned,
 };
 use dialog_storage::{Blake3Hash, StorageBackend};
 use ipld_core::ipld::Ipld;
@@ -32,7 +33,7 @@ use thiserror::Error;
 use crate::reactor::{Conclusion, Query, SelectProvider};
 
 /// A decoded tree node, instantiated for the artifact key/value types.
-type TreeNode = Node<KeyBytes, State<Datum>>;
+type TreeNode = PersistentNode<KeyBytes, State<Datum>>;
 
 /// Failure modes for [`resolve_formula`].
 #[derive(Debug, Error)]
