@@ -191,15 +191,17 @@ pub async fn create_invite(
     // failure here fails the mint; the claim path can self-heal a missing
     // record, but a mint that can't write its own repo's content branch
     // is broken enough to surface.
+    //
+    // Route through the *reactor's* cached `main` handle (keyed by the
+    // routing key, the `{repo}` param) rather than a fresh
+    // `repository.branch().open()`: background sync pulls/publishes through
+    // the reactor's cached handle, so a commit on a separate handle leaves
+    // it pinned at a stale head and the next pull's CAS fails forever.
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let content = repository
+    tonk.reactor
+        .repository(&repo_name)
         .branch(CONTENT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to open content branch: {e}")))?;
-    content
         .transaction()
         .assert(invitation)
         .commit()

@@ -1020,7 +1020,7 @@ where
     // not on the local-only meta branch — otherwise each replica only
     // ever sees its own membership and the roster never converges. The
     // branch loop above has already opened `main`, so it is present.
-    record_membership_on_content(tonk, repository).await?;
+    record_membership_on_content(tonk, repository, key).await?;
 
     // 7. Record this replica in the profile repository's meta
     // branch so the profile keeps an index of every replica it
@@ -1047,25 +1047,26 @@ where
 async fn record_membership_on_content<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
+    key: &str,
 ) -> Result<(), RepositoryError>
 where
     C: Principal + Clone,
 {
-    let content = repository
-        .branch(CONTENT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("Failed to open content branch for roster: {}", e))
-        })?;
-
     // The opening profile is a member of this repository. The member
     // also names themselves with the name their profile was opened under.
     let membership = Membership::new(tonk.profile.did(), repository.did());
     let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
 
-    content
+    // Write through the *reactor's* cached content-branch handle, not a
+    // fresh `repository.branch().open()`. Background sync pulls/publishes
+    // through the reactor's cached `main` handle; a commit through a
+    // separate handle leaves that cached handle pinned at its old head, so
+    // a later pull compares against a stale base version and the CAS fails
+    // forever (`VersionMismatch`), wedging all `main` sync. Going through
+    // the reactor advances the cached handle and re-polls its subscriptions.
+    tonk.reactor
+        .repository(key)
+        .branch(CONTENT_BRANCH)
         .transaction()
         .assert(membership)
         .assert(member_name)

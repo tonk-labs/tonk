@@ -166,7 +166,7 @@ pub async fn join(
                     "replica '{key}' present in profile meta but failed to load: {e}",
                 ))
             })?;
-        record_claim_on_content(&tonk, &repository, &invitation).await?;
+        record_claim_on_content(&tonk, &repository, &key, &invitation).await?;
         let info = build_repository_info(&tonk, &key, &repository).await;
         return Ok((
             StatusCode::OK,
@@ -225,7 +225,7 @@ pub async fn join(
     // this for log context + the home-demo check (never matched here), so
     // the routing key stands in.
     record_repository_meta(&tonk, &repository, &key, &configuration).await?;
-    record_claim_on_content(&tonk, &repository, &invitation).await?;
+    record_claim_on_content(&tonk, &repository, &key, &invitation).await?;
 
     // `record_repository_meta` stamps the replica `blank` (the create
     // path's "still seeding" state). A joined replica has no local seed
@@ -261,6 +261,7 @@ pub async fn join(
 async fn record_claim_on_content<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
+    key: &str,
     invitation: &Invitation,
 ) -> Result<(), TonkWorkerError>
 where
@@ -268,17 +269,26 @@ where
 {
     let membership = Membership::new(tonk.profile.did(), repository.did());
 
-    let content = repository
+    // Route both the read and the write through the *reactor's* cached
+    // `main` handle (keyed by the routing key) rather than a fresh
+    // `repository.branch().open()`. Background sync pulls/publishes through
+    // the reactor's cached handle; a commit on a separate handle leaves it
+    // pinned at a stale head, so a later pull's CAS fails forever
+    // (`VersionMismatch`), wedging all `main` sync. Going through the
+    // reactor advances the cached handle and re-polls its subscriptions.
+    let session = tonk
+        .reactor
+        .repository(key)
         .branch(DEFAULT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+        .acquire(&tonk.operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to open repo content branch: {e}"))
         })?;
 
     // First-wins: look for any existing stamp on this membership.
-    let stamps: Vec<InvitedVia> = content
+    let stamps: Vec<InvitedVia> = session
+        .handle()
         .query()
         .select(Query::<InvitedVia> {
             this: Term::var("this"),
@@ -294,7 +304,10 @@ where
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
     let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
-    let mut transaction = content
+    let mut transaction = tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
         .transaction()
         .assert(invitation.clone())
         .assert(membership.clone())
