@@ -514,28 +514,35 @@ async fn refresh_row(state: &Shared, item: &Element, hash: &str) {
         let _ = item.replace_child(&row, &old);
     }
 
-    // A node has exactly one locality dot: slotted in the expand area if it
-    // is expandable, inline otherwise. Now that the node is fetched we know
-    // which it is, so fill the right dot and drop the other kind (a node
-    // first built remote carries the opposite one).
-    let expandable = (node.kind == Kind::Index && node.count > 0) || !node.cached;
-    let fill = node.cached;
-    for slot in ["expand-icon", "collapse-icon"] {
-        let sel = format!(":scope > [slot=\"{slot}\"].dot");
-        if let Some(old) = item.query_selector(&sel).ok().flatten() {
-            if expandable && fill {
-                let _ = item.replace_child(&dot(true, "").attr("slot", slot), &old);
-            } else if !expandable {
-                old.remove();
-            }
-        }
-    }
-    if let Some(old) = item.query_selector(":scope > .dot-leaf").ok().flatten() {
-        if !expandable && fill {
-            let _ = item.replace_child(&dot(true, "dot-leaf"), &old);
-        } else if expandable {
+    // Now that the node is fetched we know whether it is expandable (a
+    // cached index with children) or a leaf. Reconcile the markers: a node
+    // first built remote was made expandable on spec, so a fetched leaf must
+    // shed its expand machinery (slotted dots, lazy attribute, expanded
+    // state) and gain an inline leaf dot — otherwise it keeps a dead arrow.
+    let expandable = node.kind == Kind::Index && node.count > 0;
+    let cached = node.cached;
+
+    // Clear the existing locality dots (slotted and inline) so we can place
+    // exactly the right one.
+    for sel in [
+        ":scope > [slot=\"expand-icon\"].dot",
+        ":scope > [slot=\"collapse-icon\"].dot",
+        ":scope > .dot-leaf",
+    ] {
+        if let Some(old) = item.query_selector(sel).ok().flatten() {
             old.remove();
         }
+    }
+
+    if expandable {
+        let _ = item.append_child(&dot(cached, "").attr("slot", "expand-icon"));
+        let _ = item.append_child(&dot(cached, "").attr("slot", "collapse-icon"));
+    } else {
+        // A leaf: no expand toggle. Collapse it and drop the lazy contract so
+        // wa-tree stops drawing an expand button, then add the inline dot.
+        let _ = item.remove_attribute("lazy");
+        let _ = js_sys::Reflect::set(item.as_ref(), &"expanded".into(), &JsValue::FALSE);
+        let _ = item.append_child(&dot(cached, "dot-leaf"));
     }
 }
 
