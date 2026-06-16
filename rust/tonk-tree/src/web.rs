@@ -514,35 +514,56 @@ async fn refresh_row(state: &Shared, item: &Element, hash: &str) {
         let _ = item.replace_child(&row, &old);
     }
 
-    // Now that the node is fetched we know whether it is expandable (a
-    // cached index with children) or a leaf. Reconcile the markers: a node
-    // first built remote was made expandable on spec, so a fetched leaf must
-    // shed its expand machinery (slotted dots, lazy attribute, expanded
-    // state) and gain an inline leaf dot — otherwise it keeps a dead arrow.
+    // Now that the node is fetched we know whether it is expandable (a cached
+    // index with children) or a leaf. Update the locality dots *in place* —
+    // flipping their filled/hollow class — rather than removing and
+    // re-appending, which would briefly detach the dot (a floating dot on a
+    // line) and reorder it after the children.
     let expandable = node.kind == Kind::Index && node.count > 0;
-    let cached = node.cached;
+    let want_remote = !node.cached;
+    let set_locality = |el: &Element| {
+        let cls = el.class_name();
+        let base = cls.replace(" dot-remote", "").replace(" dot-local", "");
+        el.set_class_name(&format!(
+            "{base} {}",
+            if want_remote {
+                "dot-remote"
+            } else {
+                "dot-local"
+            }
+        ));
+    };
 
-    // Clear the existing locality dots (slotted and inline) so we can place
-    // exactly the right one.
-    for sel in [
-        ":scope > [slot=\"expand-icon\"].dot",
-        ":scope > [slot=\"collapse-icon\"].dot",
-        ":scope > .dot-leaf",
-    ] {
-        if let Some(old) = item.query_selector(sel).ok().flatten() {
-            old.remove();
-        }
-    }
+    let slotted: Vec<Element> = ["expand-icon", "collapse-icon"]
+        .into_iter()
+        .filter_map(|s| {
+            item.query_selector(&format!(":scope > [slot=\"{s}\"].dot"))
+                .ok()
+                .flatten()
+        })
+        .collect();
+    let leaf = item.query_selector(":scope > .dot-leaf").ok().flatten();
 
     if expandable {
-        let _ = item.append_child(&dot(cached, "").attr("slot", "expand-icon"));
-        let _ = item.append_child(&dot(cached, "").attr("slot", "collapse-icon"));
+        // Keep / fill the slotted dots; a stray leaf dot (node was first a
+        // leaf) is removed.
+        slotted.iter().for_each(set_locality);
+        if let Some(l) = leaf {
+            l.remove();
+        }
     } else {
-        // A leaf: no expand toggle. Collapse it and drop the lazy contract so
-        // wa-tree stops drawing an expand button, then add the inline dot.
+        // A leaf: no expand toggle. Drop the lazy contract and collapse so
+        // wa-tree stops drawing an expand button, remove the slotted dots,
+        // and ensure a single inline leaf dot.
         let _ = item.remove_attribute("lazy");
         let _ = js_sys::Reflect::set(item.as_ref(), &"expanded".into(), &JsValue::FALSE);
-        let _ = item.append_child(&dot(cached, "dot-leaf"));
+        slotted.iter().for_each(|s| s.remove());
+        match leaf {
+            Some(l) => set_locality(&l),
+            None => {
+                let _ = item.append_child(&dot(node.cached, "dot-leaf"));
+            }
+        }
     }
 }
 
