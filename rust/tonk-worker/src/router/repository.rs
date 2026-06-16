@@ -1707,11 +1707,7 @@ where
             (memberships, member_names, invited_via, invitations)
         }
         Err(e) => {
-            log!(
-                "No content branch for repository '{}' roster: {}",
-                key,
-                e
-            );
+            log!("No content branch for repository '{}' roster: {}", key, e);
             (Vec::new(), Vec::new(), Vec::new(), Vec::new())
         }
     };
