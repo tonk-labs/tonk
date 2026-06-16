@@ -694,11 +694,11 @@ wa-tree-item::before, wa-tree-item::after {
   content: ''; position: absolute; z-index: 3;
   inset-inline-start: calc(0.1875em + var(--indent) - 1em);
   border-color: var(--wa-color-border-loud, #565861); }
-/* Horizontal elbow forking off the spine, reaching the node's dot center.
+/* Horizontal elbow forking off the spine. It stops at the dot's left edge
+   (~5px short of the center) so the line never enters the circle.
    (width/style only — a `border-top` shorthand would reset the color set
-   above to currentColor, turning the line bright.) The dot sits above the
-   lines (z-index) with an opaque fill, so the elbow ends *under* the dot. */
-wa-tree-item::before { top: 1em; width: 2em;
+   above to currentColor, turning the line bright.) */
+wa-tree-item::before { top: 1em; width: calc(2em - 5px);
   border-top-width: 1px; border-top-style: solid; }
 /* Continuous vertical spine. It starts 1em above this row's top so it
    reaches up to the parent's dot (which sits 1em into the parent row, just
@@ -715,32 +715,33 @@ wa-tree > wa-tree-item::before, wa-tree > wa-tree-item::after { display: none; }
    a filled disc when cached locally, a hollow ring when not yet fetched.
    A branch dot sits in the expand-icon slot (and is the toggle); a leaf dot
    is absolutely positioned on the item at the connector anchor. */
-/* The dot sits above the connector lines (z-index > the lines' 3) with an
-   opaque (pane-colored) fill, so the lines pass *under* it and never show
-   through its center — including the hollow (remote) ring. */
+/* The dot sits above the connector lines (z-index > the lines' 3); the
+   elbow stops at its edge and the spine is one level left, so no line
+   enters the circle and no opaque fill is needed. */
 .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; box-sizing: border-box;
-  position: relative; z-index: 5; background: var(--wa-color-surface-default, #101113); }
+  position: relative; z-index: 5; }
 .dot-local { background: var(--wa-color-border-loud, #565861); border: 1.5px solid var(--wa-color-border-loud, #565861); }
-.dot-remote { border: 1.5px solid var(--wa-color-border-loud, #565861); }
+.dot-remote { background: transparent; border: 1.5px solid var(--wa-color-border-loud, #565861); }
 /* A branch dot lives in the 2em-wide expand slot; keep it from inheriting
    the chevron's rotate-on-expand. */
 [slot="expand-icon"].dot, [slot="collapse-icon"].dot { rotate: none !important; }
-/* While a node loads (a network fetch on expand), a higher-contrast arc
-   spins *over* its dot — same size, overlapping, one side open — so the
-   base dot stays put and the arc reads as a loader. wa-tree's own spinner
-   is hidden so this is the only indicator. */
+/* While a node loads (a network fetch on expand) the dot goes hollow and a
+   single higher-contrast arc — exactly the dot's size, one side open —
+   spins in its place. The base border is dropped so there is no second
+   ring; wa-tree's own spinner is hidden. */
 @keyframes tonk-dot-spin { to { rotate: 360deg; } }
-/* During load the base dot goes hollow (no fill, just the pane disc behind)
-   and a higher-contrast arc, the same size, spins over it. */
-dialog-tree-outline wa-tree-item[data-loading] .dot {
-  background: var(--wa-color-surface-default, #101113);
-  border-color: var(--wa-color-border-loud, #565861); }
+dialog-tree-outline wa-tree-item[data-loading] .dot { border-color: transparent; }
 dialog-tree-outline wa-tree-item[data-loading] .dot::after {
-  content: ''; position: absolute; inset: 0; border-radius: 50%; box-sizing: border-box;
+  content: ''; position: absolute; top: 50%; left: 50%;
+  width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; box-sizing: border-box;
   border: 1.5px solid var(--wa-color-text-quiet, #94959b);
   border-top-color: transparent;
   animation: tonk-dot-spin 0.7s linear infinite; }
 dialog-tree-outline wa-tree-item::part(spinner) { display: none; }
+/* A loading node has no children yet: hide its elbow so nothing enters the
+   spinner, and stop its downward spine at the dot. */
+dialog-tree-outline wa-tree-item[data-loading]::before { opacity: 0; }
+dialog-tree-outline wa-tree-item[data-loading]::after { bottom: auto; height: 1em; }
 /* A leaf dot: placed at the same anchor as the elbow end
    (0.1875em + --indent + 1em), so it lines up with the connectors. */
 wa-tree-item > .dot-leaf { position: absolute; z-index: 5;
