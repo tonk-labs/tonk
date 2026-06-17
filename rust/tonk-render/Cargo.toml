@@ -7,6 +7,7 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+ipld-core = { workspace = true }
 tl = { workspace = true }
 tonk-template = { workspace = true }
 

@@ -11,10 +11,14 @@
 
 pub mod collect;
 pub mod parse;
+pub mod render;
+pub mod serialize;
 pub mod tree;
 
 pub use collect::collect_bindings;
 pub use parse::parse_fragment;
+pub use render::{Conclusion, render, render_nodes};
+pub use serialize::serialize_nodes;
 pub use tree::{Element, Node};
 
 #[cfg(test)]
