@@ -1,140 +1,188 @@
 //! Parse an HTML template string into the owned [`Node`] tree.
 //!
-//! `tl` produces a borrowed `VDom`; we walk it once and build our
-//! own owned tree so the rest of the renderer is `tl`-free and the
-//! tree is mutable (the binding collector splits text nodes in
-//! place).
+//! Built on `html5gum`, a spec-compliant HTML tokenizer. We drive it
+//! with a small custom callback that preserves attribute source order
+//! (the default emitter sorts attributes into a `BTreeMap`), then
+//! assemble the token stream into the owned, mutable [`Node`] tree the
+//! rest of the renderer walks. `html5gum` tokenizes correctly where the
+//! previous parser did not: unquoted attribute values containing `/`,
+//! runs of bare boolean attributes, and `<style>`/`<script>` raw-text
+//! bodies. A residual tree-construction pass ([`normalize`]) still
+//! applies the insertion-mode rules a bare tokenizer doesn't (implicit
+//! `<tbody>`, `<li>`/`<p>` auto-closing).
 
-use tl::{Node as TlNode, Parser, VDom};
+use html5gum::Tokenizer;
+use html5gum::emitters::callback::{Callback, CallbackEmitter, CallbackEvent};
 
 use crate::tree::{Element, Node, is_void_tag};
+
+/// One token, with attributes kept in source order (a `Vec`, not the
+/// default emitter's sorted `BTreeMap`).
+enum RawToken {
+    /// A start tag: name, ordered attributes, and the self-closing flag.
+    Start {
+        name: String,
+        attrs: Vec<(String, String)>,
+        self_closing: bool,
+    },
+    /// An end tag.
+    End { name: String },
+    /// A run of text.
+    Text(String),
+    /// A comment's inner text.
+    Comment(String),
+}
+
+/// Collects tokenizer events into [`RawToken`]s with ordered attributes.
+#[derive(Default)]
+struct OrderedCallback {
+    tag_name: String,
+    attrs: Vec<(String, String)>,
+}
+
+impl Callback<RawToken> for OrderedCallback {
+    fn handle_event(&mut self, event: CallbackEvent<'_>) -> Option<RawToken> {
+        match event {
+            CallbackEvent::OpenStartTag { name } => {
+                self.tag_name = utf8(name);
+                self.attrs.clear();
+                None
+            }
+            CallbackEvent::AttributeName { name } => {
+                // A new attribute begins; ignore a duplicate name (WHATWG
+                // keeps the first) by skipping if already present.
+                let name = utf8(name);
+                if !self.attrs.iter().any(|(k, _)| k == &name) {
+                    self.attrs.push((name, String::new()));
+                }
+                None
+            }
+            CallbackEvent::AttributeValue { value } => {
+                if let Some(last) = self.attrs.last_mut() {
+                    last.1.push_str(&utf8(value));
+                }
+                None
+            }
+            CallbackEvent::CloseStartTag { self_closing } => Some(RawToken::Start {
+                name: std::mem::take(&mut self.tag_name),
+                attrs: std::mem::take(&mut self.attrs),
+                self_closing,
+            }),
+            CallbackEvent::EndTag { name } => Some(RawToken::End { name: utf8(name) }),
+            CallbackEvent::String { value } => Some(RawToken::Text(utf8(value))),
+            CallbackEvent::Comment { value } => Some(RawToken::Comment(utf8(value))),
+            // Doctype / errors are not meaningful in a view template.
+            _ => None,
+        }
+    }
+}
+
+fn utf8(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
 
 /// Parse `html` into a list of top-level [`Node`]s (a fragment can
 /// have multiple roots).
 ///
-/// `tl` is a lenient, non-spec parser; its tree does not always match
-/// the browser's HTML tree construction. Since binding paths are
-/// child-index paths shared with the browser planner, the tree must
-/// match the browser DOM. [`normalize`] applies the two
-/// tree-construction rules that bite real templates: tag-omission
-/// auto-closing (`<li>`/`<p>`/table cells that `tl` nests but the
-/// browser makes siblings) and the implicit `<tbody>` around table
-/// rows.
+/// `html5gum` is a tokenizer, so we build the tree here: an open-element
+/// stack turns the start/end token stream into nesting. Void elements
+/// (`<br>`, `<img>`, …) and self-closing tags never push a scope.
+/// [`normalize`] then applies the tree-construction rules a tokenizer
+/// leaves to the DOM builder.
 pub fn parse_fragment(html: &str) -> Vec<Node> {
-    let prepared = quote_brace_attributes(html);
-    let dom = match tl::parse(&prepared, tl::ParserOptions::default()) {
-        Ok(dom) => dom,
-        Err(_) => return Vec::new(),
-    };
-    let parser = dom.parser();
-    let mut roots = convert_children(&dom, parser);
+    let mut emitter = CallbackEmitter::new(OrderedCallback::default());
+    // Switch the tokenizer into RAWTEXT/RCDATA for `<style>`, `<script>`,
+    // `<title>`, etc. so their bodies are taken verbatim (the HTML spec
+    // drives this from tree construction; a bare tokenizer needs telling).
+    emitter.naively_switch_states(true);
+    let tokenizer = Tokenizer::new_with_emitter(html, emitter);
+
+    // The open-element stack: each frame is an element under
+    // construction plus the siblings accumulated so far at the fragment
+    // root level (frame 0).
+    let mut roots: Vec<Node> = Vec::new();
+    let mut stack: Vec<Element> = Vec::new();
+
+    for token in tokenizer.flatten() {
+        match token {
+            RawToken::Start {
+                name,
+                attrs,
+                self_closing,
+            } => {
+                let name = name.to_ascii_lowercase();
+                let attrs = lowercase_attr_names(attrs);
+                let void = is_void_tag(&name);
+                let element = Element {
+                    tag: name,
+                    attrs,
+                    children: Vec::new(),
+                    void,
+                };
+                if void || self_closing {
+                    // No scope: attach immediately.
+                    push_node(&mut roots, &mut stack, Node::Element(element));
+                } else {
+                    stack.push(element);
+                }
+            }
+            RawToken::End { name } => {
+                let name = name.to_ascii_lowercase();
+                close_tag(&mut roots, &mut stack, &name);
+            }
+            RawToken::Text(text) => {
+                push_node(&mut roots, &mut stack, Node::Text(text));
+            }
+            RawToken::Comment(text) => {
+                push_node(&mut roots, &mut stack, Node::Comment(text));
+            }
+        }
+    }
+
+    // Close any still-open elements (unbalanced template), innermost
+    // first, so their accumulated children are preserved.
+    while let Some(element) = stack.pop() {
+        push_node(&mut roots, &mut stack, Node::Element(element));
+    }
+
     normalize(&mut roots);
     roots
 }
 
-/// Quote unquoted attribute values that contain a `{field}`
-/// placeholder, e.g. `data-x={a/b}` -> `data-x="{a/b}"`. The browser's
-/// HTML parser accepts an unquoted `{...}` value as a single attribute
-/// value, but `tl` mis-tokenizes on the interior `/` and `}`. Rewriting
-/// to the quoted form (which both parsers agree on) keeps `tl`'s tree
-/// matching the browser DOM. Only `=` immediately followed by `{` is
-/// touched; already-quoted values and ordinary unquoted values are left
-/// alone.
-fn quote_brace_attributes(html: &str) -> String {
-    let mut out = String::with_capacity(html.len() + 8);
-    let chars: Vec<char> = html.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        // Look for `={` (an unquoted attribute value starting with a
-        // brace). Require the char before `=` to be attribute-name-ish
-        // so we don't disturb a stray `=` in text or quoted content.
-        let is_eq_brace = chars[i] == '=' && chars.get(i + 1) == Some(&'{');
-        let prev_ok = i > 0 && {
-            let p = chars[i - 1];
-            p.is_ascii_alphanumeric() || p == '-' || p == '_' || p == ':'
-        };
-        if is_eq_brace && prev_ok {
-            out.push_str("=\"");
-            i += 1; // skip '='
-            while i < chars.len() {
-                out.push(chars[i]);
-                let close = chars[i] == '}';
-                i += 1;
-                if close {
-                    break;
-                }
-            }
-            out.push('"');
-            continue;
-        }
-        out.push(chars[i]);
-        i += 1;
+/// Append `node` to the current open element's children, or to the
+/// fragment roots when the stack is empty.
+fn push_node(roots: &mut Vec<Node>, stack: &mut [Element], node: Node) {
+    match stack.last_mut() {
+        Some(parent) => parent.children.push(node),
+        None => roots.push(node),
     }
-    out
 }
 
-/// Convert the VDom's top-level children into owned nodes.
-fn convert_children(dom: &VDom, parser: &Parser) -> Vec<Node> {
-    dom.children()
-        .iter()
-        .filter_map(|h| convert_node(h.get(parser)?, parser))
+/// Close the nearest open element matching `name`. If no match is on
+/// the stack the end tag is stray and ignored (matching lenient HTML).
+fn close_tag(roots: &mut Vec<Node>, stack: &mut Vec<Element>, name: &str) {
+    let Some(idx) = stack.iter().rposition(|el| el.tag == name) else {
+        return;
+    };
+    // Pop everything down to and including the match, nesting each
+    // popped element into its parent so implicitly-closed elements keep
+    // their children.
+    while stack.len() > idx {
+        let element = stack.pop().expect("stack non-empty above idx");
+        push_node(roots, stack, Node::Element(element));
+    }
+}
+
+fn lowercase_attr_names(attrs: Vec<(String, String)>) -> Vec<(String, String)> {
+    attrs
+        .into_iter()
+        .map(|(k, v)| (k.to_ascii_lowercase(), v))
         .collect()
 }
 
-/// Convert one `tl` node (and its subtree) into an owned [`Node`].
-/// Comments are kept (they hold an index slot in the DOM, so the
-/// binding paths must account for them).
-fn convert_node(node: &TlNode, parser: &Parser) -> Option<Node> {
-    match node {
-        TlNode::Tag(tag) => {
-            // Lowercase tag + attribute names to match how the browser
-            // normalizes HTML names in the DOM (so void/raw-text checks
-            // and attribute comparisons agree regardless of source case).
-            let name = tag.name().as_utf8_str().to_ascii_lowercase();
-            let attrs = tag
-                .attributes()
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.to_ascii_lowercase(),
-                        v.map(|v| v.to_string()).unwrap_or_default(),
-                    )
-                })
-                .collect();
-            let void = is_void_tag(&name);
-            let children = if void {
-                Vec::new()
-            } else {
-                tag.children()
-                    .top()
-                    .iter()
-                    .filter_map(|h| convert_node(h.get(parser)?, parser))
-                    .collect()
-            };
-            Some(Node::Element(Element {
-                tag: name,
-                attrs,
-                children,
-                void,
-            }))
-        }
-        TlNode::Raw(bytes) => Some(Node::Text(bytes.as_utf8_str().to_string())),
-        TlNode::Comment(bytes) => {
-            // `tl` hands back the raw `<!-- ... -->`; strip the
-            // delimiters to store just the inner text.
-            let raw = bytes.as_utf8_str();
-            let inner = raw
-                .strip_prefix("<!--")
-                .and_then(|s| s.strip_suffix("-->"))
-                .unwrap_or(&raw)
-                .to_string();
-            Some(Node::Comment(inner))
-        }
-    }
-}
-
 /// Recursively reshape `nodes` to match the browser's HTML tree
-/// construction for the cases `tl` gets wrong.
+/// construction (the insertion-mode rules a bare tokenizer leaves to
+/// the DOM builder): implicit `<tbody>`, `<li>`/`<p>` auto-closing.
 fn normalize(nodes: &mut [Node]) {
     for node in nodes.iter_mut() {
         if let Node::Element(el) = node {
@@ -380,10 +428,87 @@ mod quote_tests {
         assert_eq!(a.attrs, vec![("data-x".to_string(), "{v}".to_string())]);
     }
 
+    /// The attributes of the first top-level element, for comparison
+    /// against the browser DOM.
+    fn first_attrs(html: &str) -> Vec<(String, String)> {
+        match parse_fragment(html).into_iter().next() {
+            Some(Node::Element(el)) => el.attrs,
+            other => panic!("expected a leading element, got {other:?}"),
+        }
+    }
+
+    // Regression: real `tonk/binder`-style templates use unquoted
+    // attribute values containing `/` and `:`, bare boolean attributes,
+    // and self-closing custom elements. `tl` mis-tokenizes all of
+    // these; the browser DOM is the reference.
+
     #[test]
-    fn it_quotes_only_brace_values_not_plain_unquoted() {
-        // A plain unquoted value (no brace) is left for tl to handle.
-        let out = quote_brace_attributes("<a href=foo data-x={v}>z</a>");
-        assert_eq!(out, "<a href=foo data-x=\"{v}\">z</a>");
+    fn it_keeps_consecutive_bare_boolean_attributes() {
+        // Browser: autofocus="" required="" (tl drops the first char of
+        // every bare attribute after the first: `required` -> `equired`).
+        assert_eq!(
+            first_attrs(r#"<wa-input name="remote" autofocus required></wa-input>"#),
+            vec![
+                ("name".to_string(), "remote".to_string()),
+                ("autofocus".to_string(), String::new()),
+                ("required".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn it_keeps_an_unquoted_value_with_a_slash() {
+        // Browser: <form onsubmit="space/enable-sync"> with the <input>
+        // as a child (tl destroys the tag on the unquoted `/`).
+        let r = parse_fragment(r#"<form onsubmit=space/enable-sync><input name="x"></form>"#);
+        let Node::Element(form) = &r[0] else {
+            panic!("expected <form>, got {r:?}");
+        };
+        assert_eq!(form.tag, "form");
+        assert_eq!(
+            form.attrs,
+            vec![("onsubmit".to_string(), "space/enable-sync".to_string())]
+        );
+        assert!(
+            matches!(&form.children[0], Node::Element(i) if i.tag == "input"),
+            "the <input> is a child of <form>: {:?}",
+            form.children
+        );
+    }
+
+    #[test]
+    fn it_keeps_an_unquoted_value_with_a_colon() {
+        // Browser: model="tonk:repository".
+        assert_eq!(
+            first_attrs("<tonk-display entity={subject} model=tonk:repository></tonk-display>"),
+            vec![
+                ("entity".to_string(), "{subject}".to_string()),
+                ("model".to_string(), "tonk:repository".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn it_parses_a_self_closing_custom_element_with_unquoted_values() {
+        // Browser: <tonk-display model="workspace/sheet" data-active="{active}">
+        // (the trailing /> is ignored for a non-void element).
+        assert_eq!(
+            first_attrs("<tonk-display model=workspace/sheet data-active={active} />"),
+            vec![
+                ("model".to_string(), "workspace/sheet".to_string()),
+                ("data-active".to_string(), "{active}".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn it_leaves_a_quoted_value_alone() {
+        assert_eq!(
+            first_attrs(r#"<a href="foo" data-x="{v}">z</a>"#),
+            vec![
+                ("href".to_string(), "foo".to_string()),
+                ("data-x".to_string(), "{v}".to_string()),
+            ]
+        );
     }
 }

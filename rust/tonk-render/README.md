@@ -14,7 +14,7 @@ markup the browser component produces, headlessly.
 use tonk_render::{parse_fragment, collect_bindings, render, Conclusion};
 use tonk_template::{this_repeat_root, split_plan};
 
-let mut roots = parse_fragment(template_html);       // tl -> owned Node tree
+let mut roots = parse_fragment(template_html);       // html5gum -> owned Node tree
 let bindings  = collect_bindings(&mut roots);        // split text nodes, collect paths
 let plan      = split_plan(bindings.clone(), this_repeat_root(&bindings));
 let html      = render(&roots, &plan, &conclusions); // plan + rows -> HTML string
@@ -38,13 +38,15 @@ let html      = render(&roots, &plan, &conclusions); // plan + rows -> HTML stri
 browser-only artifacts (the `<tonk-view>` host wrapper and the
 `<!--tonk-repeat-->` / `<!--tonk-iter:FIELD-->` insertion anchors).
 
-Parity holds for well-formed, lowercase templates with literal-string fields.
-Known divergences are tracked in `plan/ssr-review.md`: parser tree construction
-for tables (implicit `<tbody>`) and tag-omitted markup (`<li>`/`<p>`), and
-attribute-value dispatch for non-string / boolean fields. Author templates
-well-formed and lowercase until those are addressed.
+Parsing is spec-compliant (`html5gum`, the WHATWG tokenizer), so unquoted
+attribute values, boolean attributes, attribute order, `<style>`/`<script>`
+raw text, and entity decoding all match the browser. A residual tree-
+construction pass covers the insertion-mode rules a tokenizer leaves to the DOM
+builder (implicit `<tbody>`, `<li>`/`<p>` auto-closing); pathological misnested
+formatting and table foster-parenting are not reconstructed (authored view
+templates don't hit those).
 
 ## Dependencies
 
-`tl` (parsing) + `tonk-template` (the shared planner). DOM-free and
+`html5gum` (parsing) + `tonk-template` (the shared planner). DOM-free and
 dialog-free.

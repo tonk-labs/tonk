@@ -116,7 +116,7 @@ proc-macro2 = "1"
 tempfile = "3"
 thirtyfour = "0.36"
 thiserror = "2"
-tl = "0.7"
+html5gum = "0.7"
 tokio = "1"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
