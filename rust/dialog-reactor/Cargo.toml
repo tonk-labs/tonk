@@ -24,12 +24,11 @@ parking_lot = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonk-common = { workspace = true }
 tonk-evaluator = { workspace = true }
 tonk-schema = { workspace = true }
 web-time = { workspace = true }
 
-# `tonk_common::log!` expands to `web_sys::console::log_1` on wasm,
+# `dialog_common::log!` expands to `web_sys::console::log_1` on wasm,
 # so the macro's call sites here need web-sys with the console
 # feature available at that target.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

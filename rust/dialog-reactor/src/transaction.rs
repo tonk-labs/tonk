@@ -179,7 +179,7 @@ impl Commit<'_> {
         cached.poll(env).await;
         let poll_ms = t_poll.elapsed().as_millis();
 
-        tonk_common::log!(
+        dialog_common::log!(
             "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
         );
         Ok(revision)

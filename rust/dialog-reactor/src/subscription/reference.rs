@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_common::Blake3Hash;
+use dialog_common::log;
 use dialog_query::Output as _;
-use tonk_common::log;
 
 use crate::BranchState;
 use crate::Conclusion;
