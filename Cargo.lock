@@ -5188,11 +5188,14 @@ dependencies = [
 name = "tonk-template"
 version = "0.1.0"
 dependencies = [
+ "dialog-common",
  "indexmap",
  "ipld-core",
  "serde_ipld_dagjson",
  "serde_json",
+ "tokio",
  "tonk-schema",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

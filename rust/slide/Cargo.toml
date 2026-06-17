@@ -33,6 +33,10 @@ path = "tests/sync.rs"
 name = "transfer"
 path = "tests/transfer.rs"
 
+[[test]]
+name = "render"
+path = "tests/render.rs"
+
 [features]
 integration-tests = []
 
