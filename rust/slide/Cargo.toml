@@ -63,6 +63,7 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dirs = { workspace = true }
+ipld-core = { workspace = true }
 lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
@@ -72,7 +73,9 @@ tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "io-s
 tonk-evaluator = { workspace = true }
 tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
+tonk-render = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-template = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

@@ -4394,6 +4394,7 @@ dependencies = [
  "dialog-varsig",
  "dirs",
  "futures-util",
+ "ipld-core",
  "lsp-types",
  "rand 0.9.2",
  "serde",
@@ -4405,7 +4406,9 @@ dependencies = [
  "tonk-evaluator",
  "tonk-invite",
  "tonk-notation",
+ "tonk-render",
  "tonk-schema",
+ "tonk-template",
  "url",
  "wasm-bindgen-test",
 ]

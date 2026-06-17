@@ -18,6 +18,7 @@ use slide::invite::{self, ClaimOutcome, InviteOutcome};
 use slide::migrate::{self, Mode as MigrateMode};
 use slide::output::Format;
 use slide::remote::{self, AddOutcome, RemoteRecord, UpstreamOutcome};
+use slide::render::{self, RenderRoute};
 use slide::share::{self, ShareDisplayOutcome, ShareOptions, ShareOutcome, ShareViewOutcome};
 use slide::sync::{self, SyncOutcome};
 use slide::transfer;
@@ -119,6 +120,23 @@ enum Command {
     #[command(after_help = "Examples:\n  slide export\n  slide export --out data.csv")]
     Export {
         /// Write the CSV to this file instead of stdout.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+    },
+
+    /// Render a `<tonk-display>` view to HTML, headlessly.
+    ///
+    /// Route grammar: `/{model}` (directory), `/{entity}@{model}`
+    /// (one entity), `/{entity}@{model}!{view}` (explicit view).
+    /// Writes HTML to stdout unless `--out <file>` is given.
+    #[command(
+        after_help = "Examples:\n  slide render person\n  slide render alice@person\n  slide render alice@person!card --out alice.html"
+    )]
+    Render {
+        /// The render route (e.g. `alice@person!card`).
+        #[arg(value_name = "ROUTE")]
+        route: String,
+        /// Write the HTML to this file instead of stdout.
         #[arg(long, value_name = "PATH")]
         out: Option<PathBuf>,
     },
@@ -372,6 +390,7 @@ async fn main() {
         Command::Views => print_views().await,
         Command::Migrate { from, do_move } => migrate(from, do_move).await,
         Command::Export { out } => export_op(out).await,
+        Command::Render { route, out } => render_op(route, out).await,
         Command::Import { file } => import_op(file).await,
         Command::Push => sync_op(SyncOp::Push).await,
         Command::Pull => sync_op(SyncOp::Pull).await,
@@ -565,6 +584,38 @@ async fn export_op(out: Option<PathBuf>) -> ExitCode {
             eprintln!("error: {err}");
             err.exit_code()
         }
+    }
+}
+
+async fn render_op(route: String, out: Option<PathBuf>) -> ExitCode {
+    let parsed = match RenderRoute::parse(&route) {
+        Ok(r) => r,
+        Err(err) => return print_error(err.to_string()),
+    };
+    let cwd = match std::env::current_dir() {
+        Ok(p) => p,
+        Err(e) => return print_error(format!("could not determine current directory: {e}")),
+    };
+    let site = match site::SlideSite::discover_and_open(&cwd).await {
+        Ok(s) => s,
+        Err(err) => return print_error(err.to_string()),
+    };
+
+    match render::render(&site, &parsed).await {
+        Ok(html) => match &out {
+            Some(path) => match std::fs::write(path, &html) {
+                Ok(()) => {
+                    eprintln!("rendered {} bytes to {}", html.len(), path.display());
+                    ExitCode::Success
+                }
+                Err(e) => print_error(format!("could not write {}: {e}", path.display())),
+            },
+            None => {
+                println!("{html}");
+                ExitCode::Success
+            }
+        },
+        Err(err) => print_error(err.to_string()),
     }
 }
 
