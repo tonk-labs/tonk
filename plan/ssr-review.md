@@ -1,5 +1,34 @@
 # SSR critical review — findings
 
+## Resolution status: ALL ADDRESSED
+
+Every finding below was fixed or, where inherent to headless SSR,
+documented. Summary of the fixes (commits on `feat/ssr-render`):
+- Parser tree construction: normalization pass inserts implicit
+  `<tbody>` and un-nests tag-omitted `<li>`/`<p>`/cells; unquoted
+  `={...}` attribute values are quoted before `tl`. Verified against the
+  real browser DOM.
+- Serialization: `<style>`/`<script>` content emitted verbatim; entity-
+  aware escaping (no double-encode); tag/attr names lowercased.
+- Attribute dispatch: boolean presence/absence, absent-field omission,
+  non-string property semantics — all matched to the browser via Chrome
+  goldens.
+- slide render: `dom.host/*` injection, `_:_` default-view fallback,
+  pinned-concept model name resolution, empty-attr nested-route guard,
+  visited-set cycle guard.
+- Tests: 7 slide render integration tests; restored wasm coverage for
+  the moved resolve/fold tests; new attribute/parse/serialize compat +
+  unit tests. Docs: READMEs + `slide render` in the guides.
+- Inherent to SSR (documented, not "fixed"): a `text/html` portal is
+  emitted as `<iframe srcdoc>` but its live data-fetch can't run
+  headlessly. The property-vs-attribute case for custom elements that
+  reflect a matching property can't be detected without a DOM; SSR
+  writes the attribute (correct for standard attributes/elements).
+
+The original findings, for the record:
+
+
+
 Review of the `feat/ssr-render` work (tonk-template / tonk-render /
 `slide render`). Empirically verified findings, grouped by severity. The
 headline correction: the "byte-identical to the browser" claim holds only for
