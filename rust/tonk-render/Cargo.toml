@@ -8,6 +8,7 @@ edition.workspace = true
 
 [dependencies]
 tl = { workspace = true }
+tonk-template = { workspace = true }
 
 [dev-dependencies]
 tl = { workspace = true }
