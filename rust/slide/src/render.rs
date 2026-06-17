@@ -9,6 +9,8 @@
 //! `type` is `text/html` (portal mode) is emitted as an isolated
 //! `<iframe srcdoc>`.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Result, anyhow};
 use ipld_core::ipld::Ipld;
 use tonk_schema::conclusion::Conclusion as SchemaConclusion;
@@ -75,17 +77,44 @@ impl RenderRoute {
 
 /// Render `route` against `site` and return the HTML string.
 pub async fn render(site: &SlideSite, route: &RenderRoute) -> Result<String> {
-    render_at_depth(site, route, 0).await
+    let mut visited = Vec::new();
+    render_guarded(site, route, 0, &mut visited).await
 }
 
-/// Render with a recursion depth guard.
-async fn render_at_depth(site: &SlideSite, route: &RenderRoute, depth: usize) -> Result<String> {
+/// Render with both a depth backstop and a `(model, entity, view)`
+/// visited-set: the depth cap catches runaway recursion, while the
+/// visited-set distinguishes a genuine cycle (a view that nests
+/// itself with the same parameters) from legitimately deep but finite
+/// nesting.
+async fn render_guarded(
+    site: &SlideSite,
+    route: &RenderRoute,
+    depth: usize,
+    visited: &mut Vec<RenderRoute>,
+) -> Result<String> {
     if depth >= MAX_DEPTH {
         return Err(anyhow!(
             "render recursion exceeded {MAX_DEPTH} levels (cycle in nested views?)"
         ));
     }
+    if visited.contains(route) {
+        return Err(anyhow!(
+            "render cycle: `{}` nests itself with the same parameters",
+            route.model
+        ));
+    }
+    visited.push(route.clone());
+    let out = render_at_depth(site, route, depth, visited).await;
+    visited.pop();
+    out
+}
 
+async fn render_at_depth(
+    site: &SlideSite,
+    route: &RenderRoute,
+    depth: usize,
+    visited: &mut Vec<RenderRoute>,
+) -> Result<String> {
     // 1. Resolve the model concept to its entity URI + descriptor.
     let (model_entity, descriptor_json) = resolve_model(site, &route.model).await?;
 
@@ -111,7 +140,7 @@ async fn render_at_depth(site: &SlideSite, route: &RenderRoute, depth: usize) ->
     let view = resolve_view(site, &view_descriptor, &model_entity).await?;
     let Some(view) = view else {
         return Err(anyhow!(
-            "no view found for model `{}` (looked up `display` by model)",
+            "no view found for model `{}` (no model-specific view and no `_:_` default)",
             route.model
         ));
     };
@@ -130,18 +159,42 @@ async fn render_at_depth(site: &SlideSite, route: &RenderRoute, depth: usize) ->
     };
     let folded = select_rows(rows);
 
-    // 6. Parse the template, collect bindings, plan, and render.
+    // 6. Parse the template, collect bindings, plan, and render. Inject
+    //    the host attributes (model/entity/view) as `dom.host/*` fields
+    //    so a nested `<tonk-display model={dom.host/model}>` resolves,
+    //    matching the browser's `with_host_attributes`.
     let mut roots = tonk_render::parse_fragment(&view.display);
     let bindings = tonk_render::collect_bindings(&mut roots);
     let repeat_root = this_repeat_root(&bindings);
     let _ = build_plan_nodes(bindings.clone());
     let plan = split_plan(bindings, repeat_root);
-    let conclusions: Vec<tonk_render::Conclusion> =
-        folded.iter().map(to_render_conclusion).collect();
+    let host_fields = host_fields(route);
+    let conclusions: Vec<tonk_render::Conclusion> = folded
+        .iter()
+        .map(|c| to_render_conclusion(c, &host_fields))
+        .collect();
     let html = tonk_render::render(&roots, &plan, &conclusions);
 
     // 7. Recursively render any nested <tonk-display> in the output.
-    expand_nested(site, html, depth).await
+    expand_nested(site, html, depth, visited).await
+}
+
+/// The host attributes a `<tonk-display>` would carry, as
+/// `dom.host/<attr>` fields, so templates that reference
+/// `{dom.host/model}` (the directory -> detail idiom) resolve.
+fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
+    let mut fields = BTreeMap::new();
+    fields.insert(
+        "dom.host/model".to_string(),
+        Ipld::String(route.model.clone()),
+    );
+    if let Some(entity) = &route.entity {
+        fields.insert("dom.host/entity".to_string(), Ipld::String(entity.clone()));
+    }
+    if let Some(view) = &route.view {
+        fields.insert("dom.host/view".to_string(), Ipld::String(view.clone()));
+    }
+    fields
 }
 
 /// View resolution result: the `display` template and whether the
@@ -152,9 +205,25 @@ struct ResolvedView {
 }
 
 /// Resolve a model/view concept name (or URI) to `(entity_uri,
-/// descriptor_json)` via the Phase-1 concept query.
+/// descriptor_json)`. Mirrors the browser's `resolve_model_query`: a
+/// non-URI source is first resolved through the Name concept (so a
+/// pinned concept addressed by its bookmark name, e.g. `workspace` ->
+/// `tonk:workspace`, resolves), then a Phase-1 concept lookup runs
+/// against the resolved URI. An unresolved name falls through to the
+/// Phase-1 name lookup, which reports a clean "no concept matched".
 async fn resolve_model(site: &SlideSite, name_or_uri: &str) -> Result<(String, String)> {
-    let parsed = parse_source(name_or_uri);
+    let mut parsed = parse_source(name_or_uri);
+    if !parsed.is_uri() {
+        // Try the Name concept first; on a hit, query Phase-1 by URI.
+        if let Ok(rows) = run_query(site, name_query(&parsed.name_or_uri)).await
+            && let Some(uri) = rows
+                .into_iter()
+                .next()
+                .and_then(|r| ipld_string(r.fields.get("entity")))
+        {
+            parsed.name_or_uri = uri;
+        }
+    }
     let rows = run_query(site, phase1_query(&parsed)).await?;
     let row = rows
         .into_iter()
@@ -175,9 +244,30 @@ async fn resolve_name(site: &SlideSite, name: &str) -> Result<String> {
     ipld_string(row.fields.get("entity")).ok_or_else(|| anyhow!("name `{name}` has no referent"))
 }
 
+/// The model the built-in default view is keyed under. When a
+/// model-specific view is absent the browser re-queries the view
+/// concept constrained to this sentinel; we mirror that.
+const DEFAULT_MODEL: &str = "_:_";
+
 /// Resolve the view template by querying the view concept constrained
-/// to the model.
+/// to the model. Falls back to the `_:_` default-model view when the
+/// model has no specific one, matching the browser's
+/// `spawn_default_view`. Returns `None` only when neither exists.
 async fn resolve_view(
+    site: &SlideSite,
+    view_descriptor: &serde_json::Value,
+    model_entity: &str,
+) -> Result<Option<ResolvedView>> {
+    if let Some(view) = query_view(site, view_descriptor, model_entity).await? {
+        return Ok(Some(view));
+    }
+    // No model-specific view: try the `_:_` default.
+    query_view(site, view_descriptor, DEFAULT_MODEL).await
+}
+
+/// Run the view-by-model query for one model value and read the first
+/// row's `display` + `type`.
+async fn query_view(
     site: &SlideSite,
     view_descriptor: &serde_json::Value,
     model_entity: &str,
@@ -215,14 +305,19 @@ async fn run_query(
 /// `html`. Each nested element carries `model` / `entity` / `view`
 /// attributes (already substituted by the parent render), which we
 /// turn into a child route.
-async fn expand_nested(site: &SlideSite, html: String, depth: usize) -> Result<String> {
+async fn expand_nested(
+    site: &SlideSite,
+    html: String,
+    depth: usize,
+    visited: &mut Vec<RenderRoute>,
+) -> Result<String> {
     if !html.contains("<tonk-display") {
         return Ok(html);
     }
     // Re-parse the rendered output, walk it, and replace each
     // <tonk-display> element's contents with its recursive render.
     let mut roots = tonk_render::parse_fragment(&html);
-    expand_nested_nodes(site, &mut roots, depth).await?;
+    expand_nested_nodes(site, &mut roots, depth, visited).await?;
     Ok(tonk_render::serialize_nodes(&roots))
 }
 
@@ -231,6 +326,7 @@ fn expand_nested_nodes<'a>(
     site: &'a SlideSite,
     nodes: &'a mut [tonk_render::Node],
     depth: usize,
+    visited: &'a mut Vec<RenderRoute>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
     Box::pin(async move {
         for node in nodes.iter_mut() {
@@ -239,11 +335,11 @@ fn expand_nested_nodes<'a>(
             };
             if el.tag == "tonk-display" {
                 if let Some(route) = route_from_attrs(&el.attrs) {
-                    let inner = render_at_depth(site, &route, depth + 1).await?;
+                    let inner = render_guarded(site, &route, depth + 1, visited).await?;
                     el.children = tonk_render::parse_fragment(&inner);
                 }
             } else {
-                expand_nested_nodes(site, &mut el.children, depth).await?;
+                expand_nested_nodes(site, &mut el.children, depth, visited).await?;
             }
         }
         Ok(())
@@ -251,9 +347,20 @@ fn expand_nested_nodes<'a>(
 }
 
 /// Build a child route from a nested `<tonk-display>`'s attributes.
-/// Requires a `model`; `entity` and `view` are optional.
+/// Requires a non-empty `model`; `entity` and `view` are optional. A
+/// missing or empty `model` (e.g. a `{dom.host/model}` that resolved
+/// to nothing) yields `None` so the nested display is left as-is
+/// rather than triggering a bogus "no concept matched" on an empty
+/// name. Empty `entity`/`view` attributes are likewise treated as
+/// absent.
 fn route_from_attrs(attrs: &[(String, String)]) -> Option<RenderRoute> {
-    let get = |k: &str| attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let get = |k: &str| {
+        attrs
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.clone())
+            .filter(|v| !v.is_empty())
+    };
     let model = get("model")?;
     Some(RenderRoute {
         model,
@@ -276,12 +383,18 @@ fn escape_attr(s: &str) -> String {
     s.replace('&', "&amp;").replace('"', "&quot;")
 }
 
-/// Convert a schema conclusion to a `tonk_render` conclusion. They
-/// are structurally identical; this is the crate boundary hop.
-fn to_render_conclusion(c: &SchemaConclusion) -> tonk_render::Conclusion {
+/// Convert a schema conclusion to a `tonk_render` conclusion, merging
+/// in the `dom.host/*` host fields. The conclusion's own fields win on
+/// a name clash (host fields only fill names the row doesn't define).
+fn to_render_conclusion(
+    c: &SchemaConclusion,
+    host_fields: &BTreeMap<String, Ipld>,
+) -> tonk_render::Conclusion {
+    let mut fields = host_fields.clone();
+    fields.extend(c.fields.iter().map(|(k, v)| (k.clone(), v.clone())));
     tonk_render::Conclusion {
         this: c.this.clone(),
-        fields: c.fields.clone(),
+        fields,
     }
 }
 

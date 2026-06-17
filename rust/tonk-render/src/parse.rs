@@ -21,7 +21,8 @@ use crate::tree::{Element, Node, is_void_tag};
 /// browser makes siblings) and the implicit `<tbody>` around table
 /// rows.
 pub fn parse_fragment(html: &str) -> Vec<Node> {
-    let dom = match tl::parse(html, tl::ParserOptions::default()) {
+    let prepared = quote_brace_attributes(html);
+    let dom = match tl::parse(&prepared, tl::ParserOptions::default()) {
         Ok(dom) => dom,
         Err(_) => return Vec::new(),
     };
@@ -29,6 +30,47 @@ pub fn parse_fragment(html: &str) -> Vec<Node> {
     let mut roots = convert_children(&dom, parser);
     normalize(&mut roots);
     roots
+}
+
+/// Quote unquoted attribute values that contain a `{field}`
+/// placeholder, e.g. `data-x={a/b}` -> `data-x="{a/b}"`. The browser's
+/// HTML parser accepts an unquoted `{...}` value as a single attribute
+/// value, but `tl` mis-tokenizes on the interior `/` and `}`. Rewriting
+/// to the quoted form (which both parsers agree on) keeps `tl`'s tree
+/// matching the browser DOM. Only `=` immediately followed by `{` is
+/// touched; already-quoted values and ordinary unquoted values are left
+/// alone.
+fn quote_brace_attributes(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 8);
+    let chars: Vec<char> = html.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // Look for `={` (an unquoted attribute value starting with a
+        // brace). Require the char before `=` to be attribute-name-ish
+        // so we don't disturb a stray `=` in text or quoted content.
+        let is_eq_brace = chars[i] == '=' && chars.get(i + 1) == Some(&'{');
+        let prev_ok = i > 0 && {
+            let p = chars[i - 1];
+            p.is_ascii_alphanumeric() || p == '-' || p == '_' || p == ':'
+        };
+        if is_eq_brace && prev_ok {
+            out.push_str("=\"");
+            i += 1; // skip '='
+            while i < chars.len() {
+                out.push(chars[i]);
+                let close = chars[i] == '}';
+                i += 1;
+                if close {
+                    break;
+                }
+            }
+            out.push('"');
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
 }
 
 /// Convert the VDom's top-level children into owned nodes.
@@ -306,5 +348,42 @@ mod tests {
                 "        [0] #text(\"x\")".to_string(),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod quote_tests {
+    use super::*;
+
+    #[test]
+    fn it_parses_unquoted_brace_attribute_like_the_browser() {
+        // Browser: <article data-model="{dom.host/model}"><h2>x</h2></article>
+        let r = parse_fragment("<article data-model={dom.host/model}><h2>x</h2></article>");
+        let Node::Element(article) = &r[0] else {
+            panic!("expected <article>, got {r:?}");
+        };
+        assert_eq!(article.tag, "article");
+        assert_eq!(
+            article.attrs,
+            vec![("data-model".to_string(), "{dom.host/model}".to_string())]
+        );
+        // <h2> is a child of <article>, not mis-parsed into it.
+        assert!(matches!(&article.children[0], Node::Element(h) if h.tag == "h2"));
+    }
+
+    #[test]
+    fn it_leaves_a_quoted_brace_attribute_alone() {
+        let r = parse_fragment(r#"<a data-x="{v}">y</a>"#);
+        let Node::Element(a) = &r[0] else {
+            panic!("expected <a>");
+        };
+        assert_eq!(a.attrs, vec![("data-x".to_string(), "{v}".to_string())]);
+    }
+
+    #[test]
+    fn it_quotes_only_brace_values_not_plain_unquoted() {
+        // A plain unquoted value (no brace) is left for tl to handle.
+        let out = quote_brace_attributes("<a href=foo data-x={v}>z</a>");
+        assert_eq!(out, "<a href=foo data-x=\"{v}\">z</a>");
     }
 }
