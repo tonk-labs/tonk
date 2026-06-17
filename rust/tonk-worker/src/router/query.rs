@@ -17,7 +17,6 @@ use ::axum::extract::{Path, Request, State};
 use ::axum::http::{HeaderMap, StatusCode, header};
 use ::axum::response::{IntoResponse, Response};
 use axum_wasm_macros::wasm_compat;
-use dialog_query::Output as _;
 use http_body_util::BodyExt as _;
 use serde::Deserialize;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -148,22 +147,11 @@ async fn query_on_branch<'a>(
             .body(Body::from_stream(body_stream))
             .expect("response builder failed"))
     } else {
-        let session = branch
-            .acquire(&tonk.operator)
+        let wire: Vec<Conclusion> = branch
+            .query(query)
+            .perform(&tonk.operator)
             .await
             .map_err(reactor_to_error)?;
-        let terms = query.terms.clone();
-        let conclusions = session
-            .handle()
-            .select(tonk_schema::concept::QueryPlan::from(query))
-            .perform(&tonk.operator)
-            .try_vec()
-            .await
-            .map_err(|e| reactor_to_error(ReactorError::QueryFailed(e)))?;
-        let wire: Vec<Conclusion> = conclusions
-            .iter()
-            .map(|c| Conclusion::project(c, &terms))
-            .collect();
         Ok(Json(wire).into_response())
     }
 }

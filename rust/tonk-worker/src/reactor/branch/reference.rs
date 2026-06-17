@@ -19,6 +19,7 @@ use crate::reactor::export::Export;
 use crate::reactor::import::Import;
 use crate::reactor::pull::Pull;
 use crate::reactor::push::Push;
+use crate::reactor::query::QueryEffect;
 use crate::reactor::subscribe::Subscribe;
 use crate::reactor::transaction::TransactionBuilder;
 use crate::reactor::{BranchSession, BranchState, RepositoryReference};
@@ -81,6 +82,13 @@ impl<'a> BranchReference<'a> {
     /// Open or attach to a standing subscription for `query`.
     pub fn subscribe(self, query: ConceptQuery) -> Subscribe<'a> {
         Subscribe::new(self, query)
+    }
+
+    /// Read `query` once and return the projected conclusions. The
+    /// non-streaming counterpart to [`Self::subscribe`] — no
+    /// subscriber is registered on the branch.
+    pub fn query(self, query: ConceptQuery) -> QueryEffect<'a> {
+        QueryEffect::new(self, query)
     }
 
     /// Begin a transaction. Chain `.assert(…)` / `.retract(…)`,
