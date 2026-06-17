@@ -700,6 +700,30 @@ pub fn render_segments_with_shadow(
     out
 }
 
+/// Resolve a binding's single `{field}` reference to its underlying
+/// Ipld value. Returns `None` when the binding has multiple segments
+/// or any literal text (then the rendered string is the only
+/// well-defined value, and typed dispatch isn't possible). `{this}`
+/// resolves to `row_this`.
+pub fn single_field_value(
+    binding: &Binding,
+    row_this: &str,
+    row_fields: &BTreeMap<String, Ipld>,
+    shadow: &BTreeMap<String, Ipld>,
+) -> Option<Ipld> {
+    let segments = match &binding.kind {
+        BindingKind::Text { segments } => segments,
+        BindingKind::Attribute { segments, .. } => segments,
+    };
+    let [Segment::Field(name)] = segments.as_slice() else {
+        return None;
+    };
+    if name == "this" {
+        return Some(Ipld::String(row_this.to_string()));
+    }
+    shadow.get(name).or_else(|| row_fields.get(name)).cloned()
+}
+
 fn push_ipld_value(out: &mut String, v: &Ipld) {
     match v {
         Ipld::String(s) => out.push_str(s),

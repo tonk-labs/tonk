@@ -20,7 +20,8 @@ use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
 use tonk_template::{
-    Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, render_segments_with_shadow,
+    Binding, BindingKind, BindingPlan, PlanNode, RepeatPlan, Segment, render_segments_with_shadow,
+    single_field_value,
 };
 
 use crate::serialize::serialize_nodes;
@@ -115,8 +116,9 @@ fn apply_nodes(
         match node {
             PlanNode::Binding(b) => {
                 let rendered = render_binding(b, member, shadow);
+                let value = single_field_value(b, &member.this, &member.fields, shadow);
                 if let Some(target) = navigate_mut(nodes, &b.path) {
-                    write_binding(target, b, rendered);
+                    write_binding(target, b, rendered, value.as_ref());
                 }
             }
             PlanNode::Iteration { field, path, body } => {
@@ -142,8 +144,9 @@ fn apply_to_root(
         match node {
             PlanNode::Binding(b) => {
                 let rendered = render_binding(b, member, shadow);
+                let value = single_field_value(b, &member.this, &member.fields, shadow);
                 if let Some(target) = navigate_node_mut(root, &b.path) {
-                    write_binding(target, b, rendered);
+                    write_binding(target, b, rendered, value.as_ref());
                 }
             }
             PlanNode::Iteration { field, path, body } => {
@@ -160,12 +163,72 @@ fn apply_to_root(
     }
 }
 
-/// Write a rendered value to a target node as text or an attribute.
-fn write_binding(target: &mut Node, binding: &Binding, rendered: String) {
-    match &binding.kind {
-        BindingKind::Text { .. } => set_text(target, rendered),
-        BindingKind::Attribute { attr_name, .. } => set_attr(target, attr_name, rendered),
+/// Write a rendered value to a target node. Text bindings replace the
+/// node's text content. Attribute bindings follow the browser's
+/// `apply_attribute_binding` dispatch, restricted to what is
+/// HTML-observable in a serialized string:
+///
+/// - **absent single `{field}`** (not `this`): omit the attribute (a
+///   missing field is "unset", not `name=""`).
+/// - **forced attr (`html:`) + `Bool(true)`**: `name=""`; **`Bool(false)`**:
+///   omit; otherwise `name=<rendered>`.
+/// - **non-forced single-field non-string value** (number/bool/list/map):
+///   the browser assigns a JS *property* and leaves the HTML attribute at
+///   its template literal (e.g. `data-n="{count}"`), so SSR leaves it
+///   untouched.
+/// - **string single-field or multi-segment**: `name=<rendered>`.
+///   (The browser may assign a property instead when the name matches a
+///   property on a custom element — undetectable headlessly; SSR writes the
+///   attribute, which is correct for standard attributes and elements.)
+fn write_binding(target: &mut Node, binding: &Binding, rendered: String, value: Option<&Ipld>) {
+    let (attr_name, force_attribute, segments) = match &binding.kind {
+        BindingKind::Text { .. } => {
+            set_text(target, rendered);
+            return;
+        }
+        BindingKind::Attribute {
+            attr_name,
+            force_attribute,
+            segments,
+        } => (attr_name, *force_attribute, segments),
+    };
+
+    let absent_single_field =
+        value.is_none() && matches!(segments.as_slice(), [Segment::Field(name)] if name != "this");
+
+    if force_attribute {
+        if absent_single_field {
+            remove_attr(target, attr_name);
+        } else if let Some(Ipld::Bool(b)) = value {
+            if *b {
+                set_attr(target, attr_name, String::new());
+            } else {
+                remove_attr(target, attr_name);
+            }
+        } else {
+            set_attr(target, attr_name, rendered);
+        }
+        return;
     }
+
+    if absent_single_field {
+        remove_attr(target, attr_name);
+        return;
+    }
+
+    // A single-field non-string value (number/bool/list/map): the
+    // browser assigns a JS *property* via Reflect.set and leaves the
+    // HTML attribute untouched — so the serialized markup keeps the
+    // template's original literal value (e.g. `data-n="{count}"`),
+    // unless the name happens to reflect (which we can't detect
+    // headlessly). Leave the parsed attribute as-is to match.
+    if let Some(v) = value
+        && !matches!(v, Ipld::String(_))
+    {
+        return;
+    }
+
+    set_attr(target, attr_name, rendered);
 }
 
 /// Clone the subtree at `parent[idx]` once per value of `field` (with
@@ -243,6 +306,16 @@ fn set_text(node: &mut Node, value: String) {
 fn set_attr(node: &mut Node, name: &str, value: String) {
     if let Node::Element(el) = node {
         upsert_attr(&mut el.attrs, name, value);
+    }
+}
+
+/// Remove an attribute (the binding resolved to "unset"). A template
+/// attribute like `active={field}` exists in the parsed tree as
+/// `active="{field}"`; when the field is absent the browser removes it,
+/// so drop any pre-existing entry of that name.
+fn remove_attr(node: &mut Node, name: &str) {
+    if let Node::Element(el) = node {
+        el.attrs.retain(|(k, _)| k != name);
     }
 }
 

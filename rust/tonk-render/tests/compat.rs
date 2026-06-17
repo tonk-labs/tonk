@@ -114,3 +114,55 @@ fn it_matches_the_browser_for_an_empty_frame() {
     let out = render_template(LIST, &[]);
     assert_eq!(out, normalize_golden(golden));
 }
+
+fn b(v: bool) -> Ipld {
+    Ipld::Bool(v)
+}
+
+#[test]
+fn it_matches_the_browser_for_a_forced_boolean_true() {
+    // html:hidden={flag} with flag=true -> hidden="" (empty bool attr).
+    let golden = "<tonk-view><ul><li data-id=\"a\" hidden=\"\" with=\"a\">x</li><!--tonk-repeat--></ul></tonk-view>";
+    let out = render_template(
+        "<ul><li data-id={this} html:hidden={flag}>x</li></ul>",
+        &[row("a", &[("flag", b(true))])],
+    );
+    assert_eq!(out, normalize_golden(golden));
+}
+
+#[test]
+fn it_matches_the_browser_for_a_forced_boolean_false() {
+    // flag=false -> the attribute is omitted entirely.
+    let golden =
+        "<tonk-view><ul><li data-id=\"a\" with=\"a\">x</li><!--tonk-repeat--></ul></tonk-view>";
+    let out = render_template(
+        "<ul><li data-id={this} html:hidden={flag}>x</li></ul>",
+        &[row("a", &[("flag", b(false))])],
+    );
+    assert_eq!(out, normalize_golden(golden));
+}
+
+#[test]
+fn it_matches_the_browser_for_an_absent_attribute_field() {
+    // title={missing} with no such field -> attribute omitted (not title="").
+    let golden =
+        "<tonk-view><ul><li data-id=\"a\" with=\"a\">x</li><!--tonk-repeat--></ul></tonk-view>";
+    let out = render_template(
+        "<ul><li data-id={this} title={missing}>x</li></ul>",
+        &[row("a", &[])],
+    );
+    assert_eq!(out, normalize_golden(golden));
+}
+
+#[test]
+fn it_matches_the_browser_for_a_non_string_attribute_value() {
+    // data-n={count} with count=3 (a number): the browser assigns a JS
+    // property and leaves the HTML attribute as the literal template
+    // value `{count}` — SSR matches by leaving the attribute untouched.
+    let golden = "<tonk-view><ul><li data-id=\"a\" data-n=\"{count}\" with=\"a\">x</li><!--tonk-repeat--></ul></tonk-view>";
+    let out = render_template(
+        "<ul><li data-id={this} data-n={count}>x</li></ul>",
+        &[row("a", &[("count", Ipld::Integer(3))])],
+    );
+    assert_eq!(out, normalize_golden(golden));
+}

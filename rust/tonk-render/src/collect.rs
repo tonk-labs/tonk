@@ -113,8 +113,16 @@ fn collect_element_attrs(node: &mut Node, path: &[usize], out: &mut Vec<Binding>
         }
         let (attr_name, force_attribute) = match name.strip_prefix("html:") {
             Some(stripped) => {
-                el.attrs.retain(|(k, _)| k != &name);
-                (stripped.to_string(), true)
+                // Rename the `html:`-prefixed source attribute to its
+                // stripped name IN PLACE (rather than removing it), so the
+                // forced attribute keeps its original position in the
+                // element's attribute list. The renderer then updates that
+                // same slot, matching the browser's serialized order.
+                let stripped = stripped.to_string();
+                if let Some(slot) = el.attrs.iter_mut().find(|(k, _)| k == &name) {
+                    slot.0 = stripped.clone();
+                }
+                (stripped, true)
             }
             None => (name, false),
         };
