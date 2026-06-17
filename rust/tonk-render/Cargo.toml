@@ -12,7 +12,9 @@ tl = { workspace = true }
 tonk-template = { workspace = true }
 
 [dev-dependencies]
+ipld-core = { workspace = true }
 tl = { workspace = true }
+tonk-template = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
