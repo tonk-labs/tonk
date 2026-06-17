@@ -266,16 +266,21 @@ fn mount_repeat(
             {
                 let _ = parent.insert_before(&anchor, Some(&repeat_el));
                 let _: Result<Node, _> = parent.remove_child(&repeat_el);
+                // All rows land before the same anchor in frame order, so
+                // stage them in a fragment and insert the whole run with one
+                // `insertBefore` instead of one reflow per row.
+                let batch = document.create_document_fragment();
                 for member in frame {
                     let key = member.this.clone();
                     if rows.contains_key(&key) {
                         continue;
                     }
                     if let Some(row) = build_repeat_row(document, plan, template, member) {
-                        let _ = parent.insert_before(&row.root, Some(&anchor));
+                        let _ = batch.append_child(&row.root);
                         rows.insert(key, row);
                     }
                 }
+                let _ = parent.insert_before(&batch, Some(&anchor));
             }
         }
         None => {
@@ -419,9 +424,22 @@ fn update_repeat(
     }
 
     // Walk incoming in sorted-key order: reuse + recurse, or clone +
-    // insert at the sorted position.
+    // insert at the sorted position. New rows landing before the same
+    // successor form an adjacent run; stage each run in a fragment and
+    // insert it with one `insertBefore` instead of one per row. The
+    // successor of a new key is an *existing* row (or the trailing
+    // anchor), never one of this run's own rows, since we walk ascending
+    // and a row already inserted into `mounted.rows` keeps its DOM slot —
+    // so the batched roots stay detached until the run flushes.
+    let mut batch: Option<(Node, DocumentFragment)> = None;
+    let flush = |parent: &Node, batch: &mut Option<(Node, DocumentFragment)>| {
+        if let Some((anchor, fragment)) = batch.take() {
+            let _ = parent.insert_before(&fragment, Some(&anchor));
+        }
+    };
     for (key, member) in incoming {
         if let Some(row) = mounted.rows.get_mut(&key) {
+            flush(&parent, &mut batch);
             update_nodes(
                 document,
                 &plan.body,
@@ -439,10 +457,17 @@ fn update_repeat(
                 .next()
                 .map(|(_, row)| row.root.clone())
                 .unwrap_or_else(|| mounted.anchor.clone());
-            let _ = parent.insert_before(&new_row.root, Some(&next_anchor));
+            // Flush the open run if this row targets a different anchor.
+            if batch.as_ref().is_some_and(|(a, _)| a != &next_anchor) {
+                flush(&parent, &mut batch);
+            }
+            let (_, fragment) =
+                batch.get_or_insert_with(|| (next_anchor, document.create_document_fragment()));
+            let _ = fragment.append_child(&new_row.root);
             mounted.rows.insert(key, new_row);
         }
     }
+    flush(&parent, &mut batch);
 }
 
 /// Clone one repeat row from the pristine template and render its body
@@ -585,6 +610,9 @@ fn build_mounted_node(
                     .cloned();
                 let keyed = collect_keyed_values(raw_value, &member.this);
 
+                // Same anchor for every row, so stage the run in a fragment
+                // and insert it once rather than reflowing per value.
+                let batch = document.create_document_fragment();
                 for (key, value) in keyed {
                     if rows.contains_key(&key) {
                         continue;
@@ -598,10 +626,11 @@ fn build_mounted_node(
                         member,
                         shadow,
                     ) {
-                        let _ = parent.insert_before(&row.root, Some(&anchor));
+                        let _ = batch.append_child(&row.root);
                         rows.insert(key, row);
                     }
                 }
+                let _ = parent.insert_before(&batch, Some(&anchor));
             }
 
             MountedNode::Iteration {
@@ -735,8 +764,17 @@ fn update_iteration(
         }
     }
 
+    // Adjacent new rows sharing a successor flush as one fragment; see the
+    // matching note in `update_repeat`.
+    let mut batch: Option<(Node, DocumentFragment)> = None;
+    let flush = |parent: &Node, batch: &mut Option<(Node, DocumentFragment)>| {
+        if let Some((anchor, fragment)) = batch.take() {
+            let _ = parent.insert_before(&fragment, Some(&anchor));
+        }
+    };
     for (key, value) in incoming {
         if let Some(row) = rows.get_mut(&key) {
+            flush(&parent, &mut batch);
             let mut nested_shadow = shadow.clone();
             nested_shadow.insert(field.to_owned(), value.clone());
             update_nodes(
@@ -762,10 +800,16 @@ fn update_iteration(
                 .next()
                 .map(|(_, row)| row.root.clone())
                 .unwrap_or_else(|| anchor.clone());
-            let _ = parent.insert_before(&new_row.root, Some(&next_anchor));
+            if batch.as_ref().is_some_and(|(a, _)| a != &next_anchor) {
+                flush(&parent, &mut batch);
+            }
+            let (_, fragment) =
+                batch.get_or_insert_with(|| (next_anchor, document.create_document_fragment()));
+            let _ = fragment.append_child(&new_row.root);
             rows.insert(key, new_row);
         }
     }
+    flush(&parent, &mut batch);
 }
 
 /// Clone a subject-field iteration root from the pristine template and
@@ -862,5 +906,211 @@ fn collect_keyed_values(value: Option<Ipld>, entity_key: &str) -> Vec<(String, I
         None | Some(Ipld::Null) => Vec::new(),
         Some(Ipld::List(items)) => items.into_iter().map(|v| (key_for(&v), v)).collect(),
         Some(v) => vec![(entity_key.to_owned(), v)],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::template::snapshot_template;
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    use web_sys::window;
+
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    /// Build a `Renderer` whose template is `template_html`, mounted on a
+    /// detached `<tonk-view>` host so each test is isolated.
+    fn renderer(template_html: &str) -> (Renderer, Element) {
+        let document = window().expect("window").document().expect("doc");
+        let host = document.create_element("tonk-view").expect("create host");
+        host.set_inner_html(template_html);
+        let snapshot = snapshot_template(&host).expect("snapshot");
+        (Renderer::from_snapshot(snapshot), host)
+    }
+
+    /// One conclusion with string fields.
+    fn row(this: &str, fields: &[(&str, &str)]) -> Conclusion {
+        let mut map: BTreeMap<String, Ipld> = BTreeMap::new();
+        for (k, v) in fields {
+            map.insert((*k).to_owned(), Ipld::String((*v).to_owned()));
+        }
+        Conclusion {
+            this: this.to_owned(),
+            fields: map,
+        }
+    }
+
+    /// The trimmed text of every `<li>` under the host, in DOM order. The
+    /// renderer's output order is what a fragment-batched insert must keep
+    /// identical to a row-by-row insert.
+    fn li_texts(host: &Element) -> Vec<String> {
+        let lis = host.query_selector_all("li").expect("query li");
+        (0..lis.length())
+            .filter_map(|i| lis.item(i))
+            .filter_map(|n| n.text_content())
+            .map(|t| t.trim().to_owned())
+            .collect()
+    }
+
+    /// `with=` attribute of every `<li>`, in DOM order — confirms each row
+    /// is keyed to the right subject after batched inserts.
+    fn li_withs(host: &Element) -> Vec<String> {
+        let lis = host.query_selector_all("li").expect("query li");
+        (0..lis.length())
+            .filter_map(|i| lis.item(i))
+            .filter_map(|n| n.dyn_into::<Element>().ok())
+            .filter_map(|e| e.get_attribute("with"))
+            .collect()
+    }
+
+    // `data-id={this}` lifts the per-conclusion repeat root to the `<li>`, so
+    // the frame renders one `<li>` per subject (without a `{this}` reference
+    // the body would render once as chrome over the lead conclusion).
+    const LIST: &str = "<ul><li data-id={this}>{name}</li></ul>";
+
+    #[dialog_common::test]
+    fn it_mounts_every_row_in_frame_order() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[
+            row("a", &[("name", "Ann")]),
+            row("b", &[("name", "Bo")]),
+            row("c", &[("name", "Cy")]),
+        ]);
+        // BTreeMap keys rows lexicographically by subject, so DOM order is
+        // a < b < c regardless of frame order.
+        assert_eq!(li_texts(&host), vec!["Ann", "Bo", "Cy"]);
+        assert_eq!(li_withs(&host), vec!["a", "b", "c"]);
+    }
+
+    #[dialog_common::test]
+    fn it_mounts_rows_in_frame_order_not_sorted() {
+        // The initial mount inserts rows in frame iteration order (the
+        // batched fragment must preserve that), unlike the update path which
+        // reconciles against the sorted `rows` map.
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[
+            row("c", &[("name", "Cy")]),
+            row("a", &[("name", "Ann")]),
+            row("b", &[("name", "Bo")]),
+        ]);
+        assert_eq!(li_withs(&host), vec!["c", "a", "b"]);
+        assert_eq!(li_texts(&host), vec!["Cy", "Ann", "Bo"]);
+    }
+
+    #[dialog_common::test]
+    fn it_appends_a_run_of_new_rows_after_the_existing_ones() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("a", &[("name", "Ann")])]);
+        // Three new rows all sort after "a" → one adjacent run, batched
+        // before the trailing anchor.
+        r.apply(&[
+            row("a", &[("name", "Ann")]),
+            row("b", &[("name", "Bo")]),
+            row("c", &[("name", "Cy")]),
+            row("d", &[("name", "Di")]),
+        ]);
+        assert_eq!(li_withs(&host), vec!["a", "b", "c", "d"]);
+        assert_eq!(li_texts(&host), vec!["Ann", "Bo", "Cy", "Di"]);
+    }
+
+    #[dialog_common::test]
+    fn it_inserts_a_run_of_new_rows_between_existing_ones() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("a", &[("name", "Ann")]), row("z", &[("name", "Zoe")])]);
+        // "m" and "n" both sort between "a" and "z" → an adjacent run that
+        // must land before "z", not at the end.
+        r.apply(&[
+            row("a", &[("name", "Ann")]),
+            row("m", &[("name", "Mo")]),
+            row("n", &[("name", "Ned")]),
+            row("z", &[("name", "Zoe")]),
+        ]);
+        assert_eq!(li_withs(&host), vec!["a", "m", "n", "z"]);
+        assert_eq!(li_texts(&host), vec!["Ann", "Mo", "Ned", "Zoe"]);
+    }
+
+    #[dialog_common::test]
+    fn it_keeps_order_when_new_runs_are_split_by_a_surviving_row() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("a", &[("name", "Ann")]), row("m", &[("name", "Mo")])]);
+        // New rows on both sides of the surviving "m": "b","c" (run before
+        // "m") and "x","y" (run before the anchor). Two separate runs, two
+        // separate anchors — the flush-on-anchor-change path.
+        r.apply(&[
+            row("a", &[("name", "Ann")]),
+            row("b", &[("name", "Bo")]),
+            row("c", &[("name", "Cy")]),
+            row("m", &[("name", "Mo")]),
+            row("x", &[("name", "Xi")]),
+            row("y", &[("name", "Yo")]),
+        ]);
+        assert_eq!(li_withs(&host), vec!["a", "b", "c", "m", "x", "y"]);
+        assert_eq!(li_texts(&host), vec!["Ann", "Bo", "Cy", "Mo", "Xi", "Yo"]);
+    }
+
+    #[dialog_common::test]
+    fn it_removes_vanished_rows_and_keeps_the_rest_ordered() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[
+            row("a", &[("name", "Ann")]),
+            row("b", &[("name", "Bo")]),
+            row("c", &[("name", "Cy")]),
+        ]);
+        r.apply(&[row("a", &[("name", "Ann")]), row("c", &[("name", "Cy")])]);
+        assert_eq!(li_withs(&host), vec!["a", "c"]);
+        assert_eq!(li_texts(&host), vec!["Ann", "Cy"]);
+    }
+
+    #[dialog_common::test]
+    fn it_updates_surviving_rows_in_place_while_inserting_new_ones() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("a", &[("name", "Ann")]), row("c", &[("name", "Cy")])]);
+        // "a" survives with a changed value, "b" is a fresh row inserted
+        // between, "c" survives unchanged.
+        r.apply(&[
+            row("a", &[("name", "Annie")]),
+            row("b", &[("name", "Bo")]),
+            row("c", &[("name", "Cy")]),
+        ]);
+        assert_eq!(li_withs(&host), vec!["a", "b", "c"]);
+        assert_eq!(li_texts(&host), vec!["Annie", "Bo", "Cy"]);
+    }
+
+    #[dialog_common::test]
+    fn it_renders_an_empty_frame_with_no_rows() {
+        let (mut r, host) = renderer(LIST);
+        r.apply(&[row("a", &[("name", "Ann")])]);
+        r.apply(&[]);
+        assert!(li_texts(&host).is_empty());
+    }
+
+    #[dialog_common::test]
+    fn it_iterates_many_valued_fields_within_a_row() {
+        // One conclusion whose `tags` field is many-valued: `subject={tags}`
+        // lifts the iteration root to the `<span>`, so each value gets its own
+        // span. The batched insert must still emit all values in order.
+        let (mut r, host) =
+            renderer("<ul><li data-id={this}><span subject={tags}>{tags}</span></li></ul>");
+        let mut fields: BTreeMap<String, Ipld> = BTreeMap::new();
+        fields.insert(
+            "tags".into(),
+            Ipld::List(vec![
+                Ipld::String("x".into()),
+                Ipld::String("y".into()),
+                Ipld::String("z".into()),
+            ]),
+        );
+        r.apply(&[Conclusion {
+            this: "a".into(),
+            fields,
+        }]);
+        let spans = host.query_selector_all("span").expect("query span");
+        let texts: Vec<String> = (0..spans.length())
+            .filter_map(|i| spans.item(i))
+            .filter_map(|n| n.text_content())
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect();
+        assert_eq!(texts, vec!["x", "y", "z"]);
     }
 }
