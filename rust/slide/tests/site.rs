@@ -385,21 +385,27 @@ mod when_syncing_with_an_upstream {
         Ok(())
     }
 
-    #[dialog_common::test]
-    async fn it_reports_nothing_to_push_when_main_is_empty() -> Result<()> {
-        let test = common::TestSite::new().await?;
-        wire_local_upstream(&test).await?;
-
-        // No assertion against main — its revision is None.
-        let outcome = sync::push(&test.site).await?;
-        assert!(!outcome.advanced);
-        Ok(())
-    }
+    // (Removed `it_reports_nothing_to_push_when_main_is_empty`: `slide
+    // init` now seeds the standard library, so main is never empty.
+    // No-op sync is covered by
+    // `it_reports_already_up_to_date_after_a_round_trip`.)
 
     #[dialog_common::test]
     async fn it_pulls_upstream_claims_into_main() -> Result<()> {
         let test = common::TestSite::new().await?;
-        let upstream = wire_local_upstream(&test).await?;
+        wire_local_upstream(&test).await?;
+
+        // Push main's standard-library seed up first so the upstream
+        // shares main's base; the pull then fast-forwards cleanly.
+        sync::push(&test.site).await?;
+        // Re-load the upstream handle so it reflects the pushed seed.
+        let upstream = test
+            .site
+            .repository
+            .branch("upstream")
+            .load()
+            .perform(&test.site.operator)
+            .await?;
 
         // Seed the upstream with a fact main hasn't seen.
         commit_fact(

@@ -20,6 +20,14 @@ use dialog_reactor::{BranchSession, Reactor, ReactorError};
 use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 
+/// The standard-library notation document seeded into a freshly
+/// created repository: the built-in concepts, views, commands, and
+/// rules. Embedded at compile time (`include_str!`, not a runtime
+/// file read) so it travels with the binary and with test archives.
+/// This is the same `core.yaml` the worker fetches and lowers at
+/// repository creation.
+const STANDARD_LIBRARY: &str = include_str!("../../tonk-core/assets/library/core.yaml");
+
 /// Name of the dialog repository slide uses inside `.tonk/`.
 pub const REPO_NAME: &str = "main";
 
@@ -138,27 +146,55 @@ impl SlideSite {
         // repo. Without that root chain `profile.access().claim`
         // fails with "no delegation chain found" the moment we
         // try to mint an invite.
-        let repository = match profile
+        let (repository, fresh) = match profile
             .repository(REPO_NAME)
             .load()
             .perform(&operator)
             .await
         {
-            Ok(repository) => repository,
-            Err(_) => bootstrap_repository(&profile, &operator)
-                .await
-                .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
+            Ok(repository) => (repository, false),
+            Err(_) => (
+                bootstrap_repository(&profile, &operator)
+                    .await
+                    .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
+                true,
+            ),
         };
 
         let reactor = Reactor::new(profile.clone());
 
-        Ok(Self {
+        let site = Self {
             root,
             profile,
             operator,
             repository,
             reactor,
-        })
+        };
+
+        // Seed the standard library into a freshly-created repo, the
+        // same way the worker does at repository creation (it fetches
+        // and lowers `/library/core.yaml`). Without this, a slide-only
+        // repo lacks the built-in concepts (`tonk:view`, etc.) that
+        // `slide render` / `<tonk-display>` resolve against.
+        if fresh {
+            site.seed_standard_library().await?;
+        }
+
+        Ok(site)
+    }
+
+    /// Lower the standard library (`tonk-core/assets/library/core.yaml`)
+    /// into the main branch via the evaluate pipeline, committing the
+    /// built-in concepts/views/rules in one pass.
+    async fn seed_standard_library(&self) -> Result<()> {
+        crate::eval::run_against_site(
+            self,
+            crate::eval::Source::Inline(STANDARD_LIBRARY.to_string()),
+            crate::eval::Options::default(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| anyhow::anyhow!("failed to seed standard library: {e}"))
     }
 
     /// Acquire the `main` branch through the reactor, returning a

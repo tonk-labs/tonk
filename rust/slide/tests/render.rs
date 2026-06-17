@@ -11,41 +11,9 @@ use slide::render::{self, RenderRoute};
 
 use crate::common::TestSite;
 
-/// Seed the built-in `tonk:view` concept (`{model, display}`),
-/// normally fetched from the standard library at repo creation but
-/// absent on a fresh slide-only site.
-const VIEW_CONCEPT: &str = r#"concept!: &view
-  this: tonk:view
-  description: "A display template (model, display)"
-  with:
-    model:
-      description: "concept this view renders"
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: "HTML template"
-      the: xyz.tonk.view/display
-      cardinality: one
-      as: text
-"#;
-
-/// Seed the built-in directory view concept.
-const DIRECTORY_VIEW_CONCEPT: &str = r#"concept!: &view-directory
-  this: tonk:view/directory
-  description: "A directory view"
-  with:
-    model:
-      description: "concept this view renders"
-      the: xyz.tonk.view/model
-      cardinality: one
-      as: entity
-    display:
-      description: "HTML template"
-      the: xyz.tonk.view/directory
-      cardinality: one
-      as: text
-"#;
+// `slide init` seeds the standard library (`tonk:view`,
+// `tonk:view/directory`, etc.), so these tests rely on the built-in
+// view concepts being present rather than seeding them by hand.
 
 const PERSON_CONCEPT: &str = r#"attribute!: &person-name
   description: "person name"
@@ -59,11 +27,11 @@ concept!: &person
     name: person-name
 "#;
 
-/// A site with `tonk:view`, the `person` concept, and a `person-card`
-/// detail view. Tests add instances / extra views as needed.
+/// A site (with the built-in standard library) plus the `person`
+/// concept and a `person-card` detail view. Tests add instances /
+/// extra views as needed.
 async fn seeded() -> Result<TestSite> {
     let test = TestSite::new().await?;
-    test.eval_inline(VIEW_CONCEPT).await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline(
         r#"view!: &person-card
@@ -73,6 +41,20 @@ async fn seeded() -> Result<TestSite> {
     )
     .await?;
     Ok(test)
+}
+
+#[dialog_common::test]
+async fn it_seeds_the_standard_library_on_init() -> Result<()> {
+    // A fresh site has the built-in `view` concept without any manual
+    // seeding — proof that `slide init` lowered core.yaml.
+    let test = TestSite::new().await?;
+    let concepts = slide::schema::list_concepts(&test.site).await?;
+    assert!(
+        concepts.iter().any(|c| c.name == "view"),
+        "the built-in `view` concept should be seeded at init: {:?}",
+        concepts.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+    Ok(())
 }
 
 #[dialog_common::test]
@@ -93,7 +75,6 @@ async fn it_renders_one_entity_through_its_view() -> Result<()> {
 #[dialog_common::test]
 async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
     let test = TestSite::new().await?;
-    test.eval_inline(VIEW_CONCEPT).await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     // A view that reads {dom.host/model} into an attribute.
     test.eval_inline(
@@ -118,12 +99,12 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
 #[dialog_common::test]
 async fn it_renders_a_directory_of_every_instance() -> Result<()> {
     let test = TestSite::new().await?;
-    test.eval_inline(DIRECTORY_VIEW_CONCEPT).await?;
     test.eval_inline(PERSON_CONCEPT).await?;
-    // A directory view: an instance of the `view/directory` concept
-    // (anchor `&view-directory`), addressed by that concept's name.
+    // A person-specific directory view (the built-in `view/directory`
+    // concept, keyed to `model: person`). Overrides the stdlib's `_:_`
+    // default carousel so the test asserts this exact template.
     test.eval_inline(
-        r#"view-directory!: &people
+        r#"view/directory!: &people
   model: person
   display: "<ul><li data-id=\"{this}\">{name}</li></ul>"
 "#,
@@ -148,7 +129,6 @@ async fn it_renders_a_directory_of_every_instance() -> Result<()> {
 #[dialog_common::test]
 async fn it_errors_when_no_view_exists_for_the_model() -> Result<()> {
     let test = TestSite::new().await?;
-    test.eval_inline(VIEW_CONCEPT).await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline("person!: &alice\n  name: Alice\n").await?;
     // No view declared for `person` and no `_:_` default seeded.
@@ -164,7 +144,6 @@ async fn it_errors_when_no_view_exists_for_the_model() -> Result<()> {
 #[dialog_common::test]
 async fn it_falls_back_to_the_default_model_view() -> Result<()> {
     let test = TestSite::new().await?;
-    test.eval_inline(VIEW_CONCEPT).await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     // A view keyed to the `_:_` default model rather than `person`.
     test.eval_inline(
