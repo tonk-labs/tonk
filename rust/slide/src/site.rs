@@ -16,7 +16,8 @@ use anyhow::{Context, Result};
 use dialog_capability::Subject;
 use dialog_effects::storage::Directory;
 use dialog_operator::{Operator, Profile};
-use dialog_repository::{Branch, Repository, RepositoryExt as _};
+use dialog_reactor::{BranchSession, Reactor, ReactorError};
+use dialog_repository::{Repository, RepositoryExt as _};
 use dialog_storage::provider::storage::{NativeSpace, Storage};
 
 /// Name of the dialog repository slide uses inside `.tonk/`.
@@ -36,8 +37,16 @@ const OPERATOR_CONTEXT: &[u8] = b"slide";
 /// Name of the `.tonk/` sub-directory holding repository data.
 pub const SITE_DIRNAME: &str = ".tonk";
 
-/// An opened slide site — profile + operator + repository +
-/// branch, all wired up against the on-disk `.tonk/` directory.
+/// An opened slide site: profile, operator, repository, and a
+/// reactor, all wired up against the on-disk `.tonk/` directory.
+///
+/// Branch access goes through the [`Reactor`] rather than a raw
+/// `Branch` handle, so slide shares the worker's reactive layer:
+/// the first [`Self::branch`] acquire opens and caches the branch
+/// (with its warm content-addressed node cache), and later
+/// acquires reuse it. Slide opens no subscriptions, so the
+/// reactor's broadcast machinery is dormant; it is used purely
+/// for the cached handle and the uniform query/commit surface.
 pub struct SlideSite {
     /// Absolute path to the `.tonk/` directory backing this site.
     pub root: PathBuf,
@@ -49,8 +58,9 @@ pub struct SlideSite {
     /// commits flow through the operator's authority chain, so the
     /// repo handle itself doesn't need to carry a signer.
     pub repository: Repository,
-    /// The opened `main` branch.
-    pub branch: Branch,
+    /// Reactive layer over the repository's branches. Owns the
+    /// cached branch handles slide reads and writes through.
+    pub reactor: Reactor,
 }
 
 impl SlideSite {
@@ -100,19 +110,14 @@ impl SlideSite {
                 )
             })?;
 
-        let branch = repository
-            .branch(BRANCH_NAME)
-            .open()
-            .perform(&operator)
-            .await
-            .with_context(|| format!("failed to open branch '{BRANCH_NAME}'"))?;
+        let reactor = Reactor::new(profile.clone());
 
         Ok(Self {
             root,
             profile,
             operator,
             repository,
-            branch,
+            reactor,
         })
     }
 
@@ -145,20 +150,30 @@ impl SlideSite {
                 .with_context(|| format!("failed to bootstrap repository '{REPO_NAME}'"))?,
         };
 
-        let branch = repository
-            .branch(BRANCH_NAME)
-            .open()
-            .perform(&operator)
-            .await
-            .with_context(|| format!("failed to open branch '{BRANCH_NAME}'"))?;
+        let reactor = Reactor::new(profile.clone());
 
         Ok(Self {
             root,
             profile,
             operator,
             repository,
-            branch,
+            reactor,
         })
+    }
+
+    /// Acquire the `main` branch through the reactor, returning a
+    /// [`BranchSession`] whose `handle()` is the cached dialog
+    /// `Branch`. The first call opens the branch; later calls reuse
+    /// the cached handle and its warm node cache.
+    ///
+    /// Hold the returned session for as long as you use its
+    /// `handle()`: the handle borrows from the session.
+    pub async fn branch(&self) -> Result<BranchSession, ReactorError> {
+        self.reactor
+            .repository(REPO_NAME)
+            .branch(BRANCH_NAME)
+            .acquire(&self.operator)
+            .await
     }
 }
 

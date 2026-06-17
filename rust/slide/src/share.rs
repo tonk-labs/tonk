@@ -524,7 +524,11 @@ async fn prepare_share(
     explicit_remote: Option<&str>,
 ) -> Result<RemoteRecord, ShareError> {
     let remote_record = resolve_remote(site, explicit_remote).await?;
-    if site.branch.upstream().is_none() {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| ShareError::Io(format!("acquire branch: {e}")))?;
+    if session.handle().upstream().is_none() {
         return Err(ShareError::UpstreamNotConfigured {
             branch: site::BRANCH_NAME.to_owned(),
         });

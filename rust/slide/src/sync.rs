@@ -75,9 +75,13 @@ impl SyncError {
 /// `outcome.advanced` to learn whether anything actually went
 /// over the wire.
 pub async fn push(site: &SlideSite) -> Result<SyncOutcome, SyncError> {
-    let before = site.branch.revision();
-    let upstream_after = site
-        .branch
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+    let branch = session.handle();
+    let before = branch.revision();
+    let upstream_after = branch
         .push()
         .perform(&site.operator)
         .await
@@ -91,14 +95,18 @@ pub async fn push(site: &SlideSite) -> Result<SyncOutcome, SyncError> {
 
 /// Pull from the site's upstream into the main branch.
 pub async fn pull(site: &SlideSite) -> Result<SyncOutcome, SyncError> {
-    let before = site.branch.revision();
-    let merged = site
-        .branch
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+    let branch = session.handle();
+    let before = branch.revision();
+    let merged = branch
         .pull()
         .perform(&site.operator)
         .await
         .map_err(map_pull_error)?;
-    let after = site.branch.revision();
+    let after = branch.revision();
     Ok(SyncOutcome {
         before,
         after,
@@ -117,12 +125,16 @@ pub async fn pull(site: &SlideSite) -> Result<SyncOutcome, SyncError> {
 /// [`SyncState::NoUpstream`] — not an error — so `slide status`
 /// always has something to print.
 pub async fn status(site: &SlideSite) -> Result<SyncState, SyncError> {
-    let local = site.branch.revision();
-    if site.branch.upstream().is_none() {
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| SyncError::Io(format!("acquire branch: {e}")))?;
+    let branch = session.handle();
+    let local = branch.revision();
+    if branch.upstream().is_none() {
         return Ok(SyncState::NoUpstream);
     }
-    let remote = site
-        .branch
+    let remote = branch
         .fetch()
         .perform(&site.operator)
         .await

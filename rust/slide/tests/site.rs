@@ -87,7 +87,8 @@ mod when_managing_remotes {
         assert_eq!(outcome.remote_branch, "main");
 
         // Dialog now reports an upstream on the local main.
-        assert!(test.site.branch.upstream().is_some());
+        let session = test.site.branch().await?;
+        assert!(session.handle().upstream().is_some());
         Ok(())
     }
 
@@ -158,7 +159,8 @@ mod when_claiming_an_invite_with_a_remote {
         // Subject is the inviter's DID — slide holds delegated
         // authority on the inviter's repo.
         assert_eq!(listed[0].subject, inviter.site.repository.did());
-        assert!(joined.branch.upstream().is_some());
+        let session = joined.branch().await?;
+        assert!(session.handle().upstream().is_some());
         Ok(())
     }
 
@@ -313,8 +315,9 @@ mod when_syncing_with_an_upstream {
             .open()
             .perform(&test.site.operator)
             .await?;
-        test.site
-            .branch
+        let session = test.site.branch().await?;
+        session
+            .handle()
             .set_upstream(&upstream)
             .perform(&test.site.operator)
             .await?;
@@ -350,9 +353,9 @@ mod when_syncing_with_an_upstream {
         wire_local_upstream(&test).await?;
         test.eval_inline(ATTRIBUTE_DECL).await?;
 
-        let local_tree = test
-            .site
-            .branch
+        let session = test.site.branch().await?;
+        let local_tree = session
+            .handle()
             .revision()
             .expect("main should have committed claims")
             .tree;
@@ -484,7 +487,9 @@ mod when_authoring_an_html_view {
             .parse()
             .map_err(|e| anyhow!("text/html should be a valid attribute URI: {e:?}"))?;
         let the_term: attribute::The = the.into();
-        site.branch
+        let session = site.branch().await?;
+        session
+            .handle()
             .query()
             .select(AttributeQuery::new(
                 Term::from(the_term),
@@ -705,8 +710,9 @@ mod when_sharing_a_view {
             .open()
             .perform(&test.site.operator)
             .await?;
-        test.site
-            .branch
+        let session = test.site.branch().await?;
+        session
+            .handle()
             .set_upstream(&upstream)
             .perform(&test.site.operator)
             .await?;
@@ -858,8 +864,9 @@ mod when_sharing_a_concept {
             .open()
             .perform(&test.site.operator)
             .await?;
-        test.site
-            .branch
+        let session = test.site.branch().await?;
+        session
+            .handle()
             .set_upstream(&upstream)
             .perform(&test.site.operator)
             .await?;
@@ -1095,8 +1102,9 @@ mod when_sharing_a_display {
             .open()
             .perform(&test.site.operator)
             .await?;
-        test.site
-            .branch
+        let session = test.site.branch().await?;
+        session
+            .handle()
             .set_upstream(&upstream)
             .perform(&test.site.operator)
             .await?;

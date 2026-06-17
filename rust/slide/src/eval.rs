@@ -135,9 +135,15 @@ pub async fn run_against_site(
     let text = source.read().await?;
     let syntax = parse_or_diagnose(&label, &text)?;
 
-    let revision_before = site.branch.revision();
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| EvalError::Io(format!("acquire branch: {e}")))?;
+    let branch = session.handle();
+
+    let revision_before = branch.revision();
     let evaluated = syntax
-        .evaluate(site.branch.transaction())
+        .evaluate(branch.transaction())
         .perform(&site.operator)
         .await
         .map_err(map_evaluate_error)?;
@@ -163,6 +169,10 @@ pub async fn run_against_site(
             .perform(&site.operator)
             .await
             .map_err(|e| EvalError::Io(format!("commit failed: {e}")))?;
+        // Re-poll the branch's subscriptions so the reactor's
+        // commit contract holds. Slide opens none, so this is a
+        // no-op today, kept for parity with the worker's path.
+        session.poll(&site.operator).await;
         (
             EvaluateResponse {
                 revision_before,

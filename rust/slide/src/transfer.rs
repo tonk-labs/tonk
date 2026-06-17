@@ -56,7 +56,12 @@ pub async fn export(site: &SlideSite, destination: Destination) -> Result<usize,
     // Buffer in memory: the dialog exporter wants an `AsyncWrite`,
     // and we want a byte count + a single flush to the real sink.
     let mut buf: Vec<u8> = Vec::new();
-    site.branch
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| std::io::Error::other(format!("acquire branch: {e}")))?;
+    session
+        .handle()
         .export(CsvExporter::from(&mut buf))
         .perform(&site.operator)
         .await
@@ -84,7 +89,12 @@ pub async fn export(site: &SlideSite, destination: Destination) -> Result<usize,
 pub async fn import(site: &SlideSite, path: &PathBuf) -> Result<Revision, TransferError> {
     let file = tokio::fs::File::open(path).await?;
     let importer = CsvImporter::from(file);
-    site.branch
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| std::io::Error::other(format!("acquire branch: {e}")))?;
+    session
+        .handle()
         .import(importer)
         .perform(&site.operator)
         .await

@@ -23,8 +23,9 @@ async fn wire_sibling_upstream(test: &TestSite) -> Result<()> {
         .open()
         .perform(&test.site.operator)
         .await?;
-    test.site
-        .branch
+    let session = test.site.branch().await?;
+    session
+        .handle()
         .set_upstream(&upstream)
         .perform(&test.site.operator)
         .await?;
@@ -66,7 +67,8 @@ mod when_evaluating_with_an_upstream {
         let pushed = upstream_revision(&test)
             .await?
             .expect("auto-sync should have pushed the commit");
-        let local = test.site.branch.revision().expect("eval committed locally");
+        let session = test.site.branch().await?;
+        let local = session.handle().revision().expect("eval committed locally");
         assert_eq!(
             pushed.tree, local.tree,
             "the upstream head matches the local head after auto-push"

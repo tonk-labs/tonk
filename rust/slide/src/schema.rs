@@ -205,8 +205,9 @@ async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, Strin
         .parse()
         .context("dialog.name/referent should be a valid attribute URI")?;
     let the_term: attribute::The = name_attr.into();
-    let claims: Vec<dialog_query::Claim> = site
-        .branch
+    let session = site.branch().await?;
+    let claims: Vec<dialog_query::Claim> = session
+        .handle()
         .query()
         .select(AttributeQuery::new(
             Term::from(the_term),
@@ -418,9 +419,11 @@ async fn run_query(site: &SlideSite, doc: &str) -> Result<EvaluateResponse> {
                 .collect::<Vec<_>>()
         ));
     }
-    let revision = site.branch.revision();
+    let session = site.branch().await?;
+    let branch = session.handle();
+    let revision = branch.revision();
     let evaluated = syntax
-        .evaluate(site.branch.transaction())
+        .evaluate(branch.transaction())
         .perform(&site.operator)
         .await
         .map_err(|e| anyhow!("slide-schema query failed: {e}"))?;
