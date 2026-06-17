@@ -22,6 +22,7 @@ serde_ipld_dagjson = { workspace = true }
 tonk-host = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-schema = { workspace = true }
+tonk-template = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [

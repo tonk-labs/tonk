@@ -1,0 +1,20 @@
+[package]
+name = "tonk-render"
+description = "Headless (no-DOM) rendering of tonk-display view templates to HTML strings."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+tl = { workspace = true }
+
+[dev-dependencies]
+tl = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
