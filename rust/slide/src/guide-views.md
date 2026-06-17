@@ -69,9 +69,16 @@ browser, no service worker. The route is the shorthand:
 It writes HTML to stdout, or to a file with `--out`. It resolves
 `{dom.host/model}`, falls back to the `_:_` default view when a model
 has no specific one, and renders nested `<tonk-display>` recursively.
-A `type: text/html` (portal) view is emitted as an `<iframe srcdoc>`;
-because there's no live runtime, a portal's own data-fetch doesn't run
-under SSR.
+
+A `type: text/html` (portal) view is **not** a template: its `display`
+is an author-written HTML document that runs its own JS against the
+`window.tonk` bridge to query whatever it needs. The browser loads it
+verbatim in a sandboxed iframe (placeholders like `{name}` are left
+untouched — they are not interpolated). `slide render` mirrors this by
+emitting the `display` verbatim inside `<iframe srcdoc>`; it does not
+prepend the `window.tonk` bridge bootstrap, which can't function
+headlessly (no service worker, no message channel), so a portal's own
+data queries don't run under SSR.
 
 ## Escape hatch: raw `text/html` views
 

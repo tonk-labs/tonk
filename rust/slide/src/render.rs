@@ -370,7 +370,18 @@ fn route_from_attrs(attrs: &[(String, String)]) -> Option<RenderRoute> {
 }
 
 /// Wrap a portal view's HTML document in an isolated, sandboxed
-/// `<iframe srcdoc>`, matching the browser's iframe isolation.
+/// `<iframe srcdoc>`.
+///
+/// A `text/html` portal `display` is NOT a template: it is an
+/// author-written document that runs its own JS against the
+/// `window.tonk` bridge to fetch what it needs. The browser loads it
+/// verbatim (no `{field}` interpolation) and prepends a bridge
+/// bootstrap script. We inline the same verbatim content but omit the
+/// bootstrap, which can't function headlessly (no service worker, no
+/// message-channel peer) — so the portal's own queries don't run under
+/// SSR. Inlining the content verbatim is the faithful match to the
+/// browser's `content` attribute; substituting placeholders would
+/// diverge from it.
 fn render_portal(document: &str) -> String {
     format!(
         "<iframe sandbox=\"allow-scripts\" srcdoc=\"{}\"></iframe>",

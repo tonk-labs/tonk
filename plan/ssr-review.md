@@ -19,9 +19,15 @@ documented. Summary of the fixes (commits on `feat/ssr-render`):
 - Tests: 7 slide render integration tests; restored wasm coverage for
   the moved resolve/fold tests; new attribute/parse/serialize compat +
   unit tests. Docs: READMEs + `slide render` in the guides.
-- Inherent to SSR (documented, not "fixed"): a `text/html` portal is
-  emitted as `<iframe srcdoc>` but its live data-fetch can't run
-  headlessly. The property-vs-attribute case for custom elements that
+- Inherent to SSR (documented, not "fixed"): a `text/html` portal's
+  `display` is an author-written HTML *document* (not a template) that
+  runs its own JS against the `window.tonk` bridge — the browser loads
+  it verbatim with no `{field}` interpolation. SSR inlines the same
+  verbatim content into `<iframe srcdoc>` (the faithful match) but omits
+  the bridge bootstrap, which can't function headlessly, so the
+  portal's own queries don't run. (Finding 12 below originally
+  mischaracterized this as inlining "the template"; portals are not
+  substituted in the browser either.) The property-vs-attribute case for custom elements that
   reflect a matching property can't be detected without a DOM; SSR
   writes the attribute (correct for standard attributes/elements).
 
