@@ -1,6 +1,6 @@
 # tonk-tree
 
-`<tonk-tree>` — a web component that visualizes and inspects the
+`<tonk-tree>`: a web component that visualizes and inspects the
 **dialog-search-tree** index that backs a branch, in the style of
 `dialog-diagnose`. Like `tonk-code`, the element is implemented in
 TypeScript (`src-js/`), bundled by `scripts/build.mjs` into
@@ -22,7 +22,7 @@ Web Awesome's `<wa-tree>` (whose modules the WA auto-loader can't see
 inside a shadow root), builds a `WorkerTreeLoader` against the worker's
 `tree/*` query formulas, and renders a `<dialog-tree-outline>` +
 `<dialog-node-inspector>` over a shared `Store` / `TreeState`. Those two
-inner views are framework-agnostic — they bind to a `TreeLoader` and know
+inner views are framework-agnostic: they bind to a `TreeLoader` and know
 nothing about tonk.
 
 See `plan/tree-inspector.md` for the full design.

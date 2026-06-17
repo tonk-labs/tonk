@@ -5,8 +5,8 @@ Evaluation of analyzed Tonk notation documents against a repository.
 This crate sits at the top of the Tonk dependency graph
 (`tonk-evaluator → tonk-analyzer → tonk-schema → tonk-core`). It takes the
 analysis tree the analyzer produces from an asserted-notation document, drives it
-against a branch — running the synthesized queries, staging mutations, firing
-installed effects — and hands the caller a transaction ready to commit.
+against a branch (running the synthesized queries, staging mutations, firing
+installed effects), and hands the caller a transaction ready to commit.
 
 ## The evaluate pipeline
 
@@ -21,13 +21,13 @@ let compiled  = syntax.compile(source).perform(env).await?;          // -> Compi
 let evaluated = syntax.evaluate(branch.transaction()).perform(env).await?; // -> Evaluated (changes staged)
 ```
 
-- **`analyze`** takes a [`Source`] (anything `Into<Source>` — a `&Branch` or
+- **`analyze`** takes a [`Source`] (anything `Into<Source>`, such as a `&Branch` or
   `&Transaction`) and yields an `Analysis`. Read-only.
 - **`compile`** runs `analyze` under the hood and yields a `Compiled` handle over
   the resolved document's runnable operations.
 - **`evaluate`** opens a transaction, compiles, runs the operations, and yields an
   `Evaluated` holding the transaction with the document's changes staged. It does
-  **not** commit — committing is the caller's choice.
+  **not** commit; committing is the caller's choice.
 
 ## Effects (the induce fixpoint)
 
@@ -38,10 +38,12 @@ which mirrors dialog's `Branch::commit(...)` chain pattern:
 ```rust
 use tonk_evaluator::effects::TransactionExt;
 
-let txn = branch.transaction()
+let txn = branch
+    .transaction()
     .assert(changes)
     .induce(transients)          // run the rule fixpoint over the overlay
-    .perform(env).await?;
+    .perform(env)
+    .await?;
 let revision = txn.commit().perform(env).await?;
 ```
 
@@ -53,12 +55,12 @@ post-induction transaction. All reads go through `Transaction::query`, so no
 
 ## Modules
 
-- [`evaluate`](src/evaluate.rs) — the analyze → compile → evaluate chain
+- [`evaluate`](src/evaluate.rs): the analyze → compile → evaluate chain
   (`SyntaxAnalyzeExt` / `SyntaxCompileExt` / `SyntaxEvaluateExt`, `Compiled`,
   `Evaluated`).
-- [`effects`](src/effects.rs) — `TransactionExt::induce` and the inductive-rule
+- [`effects`](src/effects.rs): `TransactionExt::induce` and the inductive-rule
   fixpoint (`Induce`, `InduceError`).
-- [`effect_query`](src/effect_query.rs) — effect storage, lookup, and
+- [`effect_query`](src/effect_query.rs): effect storage, lookup, and
   install-time validation (loading effects back from a branch, the V1
   transient-trigger requirement, writing effects into a transaction).
 

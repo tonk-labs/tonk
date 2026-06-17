@@ -2,12 +2,11 @@
 
 A reactive layer over [dialog](https://github.com/dialog-db/dialog-db) branches.
 It caches repository and branch handles, runs queries (one-shot and live), commits
-transactions, and fans changed query results out to subscribers — all without
-binding to any particular host (service worker, CLI, server).
+transactions, and fans changed query results out to subscribers
 
 The [`Reactor`] sits between an application and the raw dialog repository/branch
 API. Effects are described as chains and executed with `.perform(&env)`, matching
-dialog's command/perform pattern: the reactor itself owns no operator — every
+dialog's command/perform pattern: the reactor itself owns no operator and instead each
 effect takes one at perform time.
 
 ```rust
@@ -17,18 +16,22 @@ let reactor = Reactor::new(profile);
 
 // One-shot read (no subscription registered):
 let rows = reactor
-    .repository("main").branch("main")
+    .repository("main")
+    .branch("main")
     .query(concept_query)
-    .perform(&operator).await?;
+    .perform(&operator)
+    .await?;
 
 // Mutate; every subscription on the branch re-evaluates and
 // broadcasts changed results automatically:
 reactor
-    .repository("main").branch("main")
+    .repository("main")
+    .branch("main")
     .transaction()
     .assert(changes)
     .commit()
-    .perform(&operator).await?;
+    .perform(&operator)
+    .await?;
 ```
 
 ## What it provides
@@ -54,15 +57,7 @@ reactor
 
 ## Design
 
-See [`reactor-spec.md`](./reactor-spec.md) for the full rationale — the chain
+See [`reactor-spec.md`](./reactor-spec.md) for the full rationale: the chain
 model, the subscription/broadcast lifecycle, and the caching invariants.
 
-## Consumers
-
-- `tonk-worker` — the service-worker HTTP shell; routes mutate and query branches
-  through the reactor and stream subscription frames over SSE.
-- `slide` — the headless CLI; uses the reactor as its single branch-access layer.
-
-This crate is destined to move into the dialog-db repository; it deliberately
-depends only on `dialog-*` crates plus `tonk-schema`/`tonk-common`/`tonk-evaluator`
-and carries no HTTP, DOM, or wasm-bindgen coupling.
+> This crate eventually should move into the dialog-db repository hence it `dialog-` prefix.

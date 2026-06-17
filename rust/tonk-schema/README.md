@@ -3,7 +3,7 @@
 Typed schema for the facts stored on a repository's `meta` branch.
 
 Every Tonk repository has a `meta` branch alongside its content branches. The
-meta branch is a normal dialog-db branch — it syncs like any other — but its
+meta branch is a normal dialog-db branch (it syncs like any other), but its
 artifacts describe the repository's *own* configuration: the replicas that hold
 it, the branches it has, the remotes it tracks, and so on. This crate defines the
 [`dialog_query::Concept`]s and [`dialog_query::Attribute`]s that make up that
@@ -16,12 +16,12 @@ dependency graph.
 
 ## Entity identity
 
-Entities are identified as `did:key:z6Mk<base58>` URIs — the format dialog-db uses
+Entities are identified as `did:key:z6Mk<base58>` URIs, the format dialog-db uses
 everywhere. The base58 bytes come from one of two sources:
 
-- **Intrinsic** — real cryptographic key material (profile DIDs, repository
+- **Intrinsic**: real cryptographic key material (profile DIDs, repository
   subject DIDs). The entity is whoever holds the keypair.
-- **Content-derived** — the blake3 hash of a CBOR encoding of the entity's
+- **Content-derived**: the blake3 hash of a CBOR encoding of the entity's
   defining inputs. Two parties independently describing "the same thing" converge
   on the same entity, so the resulting artifacts merge cleanly when the meta
   branch syncs across devices. Import [`prelude::EntityExt`] and call
@@ -32,26 +32,26 @@ produced, not how they're formatted.
 
 ## What's here
 
-- **Meta-branch concepts** — the repository's self-description:
+- **Meta-branch concepts**: the repository's self-description:
   [`Replica`](src/replica.rs), [`Branch`](src/branch.rs),
   [`Remote`](src/remote.rs), [`RepositoryName`](src/repository.rs),
   [`tracking_branch`](src/tracking_branch.rs).
-- **User-schema definitions** — [`concept`](src/concept.rs) (user-defined
+- **User-schema definitions**: [`concept`](src/concept.rs) (user-defined
   concepts and the attributes naming their fields; concepts are identified
   structurally, by their field set) and [`resolution`](src/resolution.rs) (chain
   handles that reconstruct schema definitions from a source).
-- **Rules** — [`rule`](src/rule.rs) (the rule-of-rules `Statement` adapter) and
+- **Rules**: [`rule`](src/rule.rs) (the rule-of-rules `Statement` adapter) and
   [`rule_query`](src/rule_query.rs) (surfacing installed rules as concept rows).
-- **Built-ins** — [`builtin`](src/builtin.rs), the registry of concepts that are
+- **Built-ins**: [`builtin`](src/builtin.rs), the registry of concepts that are
   resolvable everywhere rather than stored as branch facts.
-- **Wire / transact** — [`query`](src/query.rs) and
+- **Wire / transact**: [`query`](src/query.rs) and
   [`query_source`](src/query_source.rs) (the on-the-wire `/query` body shape) and
-  [`transact`](src/transact.rs) (the analyzer-IR types — `Application`,
-  `Statement`, `Planner` — which live here because they reference schema-aware
+  [`transact`](src/transact.rs) (the analyzer-IR types `Application`,
+  `Statement`, and `Planner`, which live here because they reference schema-aware
   types like `rule::Rule`).
-- **Sync state** — [`sync`](src/sync.rs), a pure, I/O-free classification of a
+- **Sync state**: [`sync`](src/sync.rs), a pure, I/O-free classification of a
   branch's local head against its upstream.
-- **Re-exports** — the wire-shape primitives `claim` / `conclusion` / `effect` /
+- **Re-exports**: the wire-shape primitives `claim` / `conclusion` / `effect` /
   `meta` from [`tonk_core`].
 
 ## Conventions
