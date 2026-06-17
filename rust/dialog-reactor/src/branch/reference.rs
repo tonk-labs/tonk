@@ -13,15 +13,16 @@ use dialog_artifacts::Exporter;
 use dialog_common::ConditionalSend;
 use dialog_repository::Importer;
 
-use crate::reactor::env::{BranchOpenProvider, LoadProvider};
-use crate::reactor::error::ReactorError;
-use crate::reactor::export::Export;
-use crate::reactor::import::Import;
-use crate::reactor::pull::Pull;
-use crate::reactor::push::Push;
-use crate::reactor::subscribe::Subscribe;
-use crate::reactor::transaction::TransactionBuilder;
-use crate::reactor::{BranchSession, BranchState, RepositoryReference};
+use crate::env::{BranchOpenProvider, LoadProvider};
+use crate::error::ReactorError;
+use crate::export::Export;
+use crate::import::Import;
+use crate::pull::Pull;
+use crate::push::Push;
+use crate::query::QueryEffect;
+use crate::subscribe::Subscribe;
+use crate::transaction::TransactionBuilder;
+use crate::{BranchSession, BranchState, RepositoryReference};
 
 /// Names a branch within a repository. Acquire the underlying
 /// handle with [`Self::acquire`] or chain to a leaf effect.
@@ -81,6 +82,13 @@ impl<'a> BranchReference<'a> {
     /// Open or attach to a standing subscription for `query`.
     pub fn subscribe(self, query: ConceptQuery) -> Subscribe<'a> {
         Subscribe::new(self, query)
+    }
+
+    /// Read `query` once and return the projected conclusions. The
+    /// non-streaming counterpart to [`Self::subscribe`] — no
+    /// subscriber is registered on the branch.
+    pub fn query(self, query: ConceptQuery) -> QueryEffect<'a> {
+        QueryEffect::new(self, query)
     }
 
     /// Begin a transaction. Chain `.assert(…)` / `.retract(…)`,

@@ -123,15 +123,6 @@ where
     }
 }
 
-/// The environment a command runs against — the [`Provider`] the
-/// dispatcher calls `execute` on. Supplied at dispatch time (the
-/// registry can't bake it in: it lives *inside* the state, an `Arc`
-/// cycle). In practice the worker's `CommandEnv` wrapping `AppState`;
-/// the alias keeps this module from naming the worker type directly.
-///
-/// [`Provider`]: dialog_capability::Provider
-pub type Env = crate::router::CommandEnv;
-
 /// A `'static` boxed future for one command's execution, `Send` only
 /// off wasm — matches the reactor's
 /// [`ConditionalSync`](dialog_common::ConditionalSync) convention so a
@@ -150,13 +141,17 @@ pub type RunFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 's
 /// command *type*. The concrete command `C` is erased behind this
 /// object; the registry interacts only through the methods here.
 ///
-/// `ConditionalSync` (Send + Sync off wasm, nothing on wasm) keeps a
-/// `Box<dyn CommandHandler>` — and therefore [`TonkState`] /
-/// [`AppState`] — `Send + Sync` on native, which axum requires.
+/// Generic over `Env` — the environment a command runs against, the
+/// [`Provider`](dialog_capability::Provider) the dispatcher calls
+/// `execute` on. The env is supplied at dispatch time (the registry
+/// can't bake it in: it lives *inside* the consumer's state, an `Arc`
+/// cycle). The worker instantiates `Env = CommandEnv` wrapping its
+/// `AppState`.
 ///
-/// [`TonkState`]: crate::worker::TonkState
-/// [`AppState`]: crate::router::AppState
-pub trait CommandHandler: ConditionalSync {
+/// `ConditionalSync` (Send + Sync off wasm, nothing on wasm) keeps a
+/// `Box<dyn CommandHandler<Env>>` — and therefore the consumer's
+/// state — `Send + Sync` on native, which axum requires.
+pub trait CommandHandler<Env>: ConditionalSync {
     /// Attribute names whose presence on a transient entity makes this
     /// command a candidate. Drives the reverse index.
     fn trigger_attributes(&self) -> &[String];
@@ -171,7 +166,7 @@ pub trait CommandHandler: ConditionalSync {
     /// clone, so it is `'static` and can run detached past the
     /// triggering commit — the dispatcher releases the state lock
     /// before awaiting it. A no-op future when the facts don't decode.
-    /// Boxed so the trait stays dyn-safe for `Box<dyn CommandHandler>`.
+    /// Boxed so the trait stays dyn-safe for `Box<dyn CommandHandler<Env>>`.
     fn run(&self, facts: &EntityFacts, env: &Env) -> RunFuture;
 }
 
@@ -182,9 +177,10 @@ fn facts_entity(facts: &EntityFacts) -> Option<Entity> {
     facts.first().map(|artifact| artifact.of.clone())
 }
 
-/// A registry entry for the command type `C`. Holds no handler — the
-/// behaviour is the [`Provider<C>`](dialog_capability::Provider) impl on
-/// [`Env`]. Erases `C` behind [`CommandHandler`]: `matches` is the
+/// A registry entry for the command type `C`, run against env `Env`.
+/// Holds no handler — the behaviour is the
+/// [`Provider<C>`](dialog_capability::Provider) impl on `Env`. Erases
+/// `C` (and `Env`) behind [`CommandHandler<Env>`]: `matches` is the
 /// derived decode of `C`, `trigger_attributes` comes off `C`'s
 /// descriptor, and `run` decodes then calls `Env::execute`.
 ///
@@ -192,12 +188,12 @@ fn facts_entity(facts: &EntityFacts) -> Option<Entity> {
 /// the capability to run it. That bound on [`Self::new`] is the
 /// (compile-time) capability gate; the UCAN-style runtime gate layers on
 /// top of it later.
-pub struct TypedCommand<C> {
+pub struct TypedCommand<C, Env> {
     attributes: Vec<String>,
-    _command: std::marker::PhantomData<fn() -> C>,
+    _command: std::marker::PhantomData<fn() -> (C, Env)>,
 }
 
-impl<C> TypedCommand<C>
+impl<C, Env> TypedCommand<C, Env>
 where
     C: Decode + Command<Input = C> + 'static,
     Env: Provider<C>,
@@ -213,7 +209,7 @@ where
     }
 }
 
-impl<C> Default for TypedCommand<C>
+impl<C, Env> Default for TypedCommand<C, Env>
 where
     C: Decode + Command<Input = C> + 'static,
     Env: Provider<C>,
@@ -223,7 +219,7 @@ where
     }
 }
 
-impl<C> CommandHandler for TypedCommand<C>
+impl<C, Env> CommandHandler<Env> for TypedCommand<C, Env>
 where
     C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
     Env: Provider<C> + Clone + ConditionalSync + 'static,
@@ -257,17 +253,25 @@ where
 /// attribute name to the handlers it can fire. Mirrors the
 /// `dialog.effect/on` index the induce loop walks, but over
 /// registered Rust handlers instead of installed `rule!:` effects.
-#[derive(Default)]
-pub struct CommandRegistry {
+pub struct CommandRegistry<Env> {
     /// Registered handlers, owned. Indices into this vec are the
     /// values in [`Self::by_attribute`].
-    handlers: Vec<Box<dyn CommandHandler>>,
+    handlers: Vec<Box<dyn CommandHandler<Env>>>,
     /// `attribute name → handler indices`. A transient touching this
     /// attribute makes every listed handler a candidate.
     by_attribute: HashMap<String, Vec<usize>>,
 }
 
-impl CommandRegistry {
+impl<Env> Default for CommandRegistry<Env> {
+    fn default() -> Self {
+        Self {
+            handlers: Vec::new(),
+            by_attribute: HashMap::new(),
+        }
+    }
+}
+
+impl<Env> CommandRegistry<Env> {
     /// An empty registry.
     pub fn new() -> Self {
         Self::default()
@@ -289,13 +293,13 @@ impl CommandRegistry {
         C: Decode + Command<Input = C, Output = ()> + ConditionalSync + 'static,
         Env: Provider<C> + Clone + ConditionalSync + 'static,
     {
-        self.register(Box::new(TypedCommand::<C>::new()));
+        self.register(Box::new(TypedCommand::<C, Env>::new()));
         self
     }
 
     /// Register a boxed handler, indexing it by each of its trigger
     /// attribute names. Prefer [`Self::command`] for typed handlers.
-    pub fn register(&mut self, handler: Box<dyn CommandHandler>) {
+    pub fn register(&mut self, handler: Box<dyn CommandHandler<Env>>) {
         let index = self.handlers.len();
         for name in handler.trigger_attributes() {
             self.by_attribute
@@ -324,7 +328,7 @@ impl CommandRegistry {
     pub fn match_transients<'a>(
         &'a self,
         transients: &Changes,
-    ) -> Vec<(&'a dyn CommandHandler, EntityFacts)> {
+    ) -> Vec<(&'a dyn CommandHandler<Env>, EntityFacts)> {
         let by_entity = group_by_entity(transients.clone());
 
         let mut fired = Vec::new();
@@ -377,6 +381,11 @@ fn group_by_entity(changes: Changes) -> HashMap<dialog_artifacts::Entity, Entity
 #[cfg(test)]
 mod tests {
     #![allow(missing_docs)]
+
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     use super::*;
     use dialog_artifacts::{Statement, Value};
@@ -597,6 +606,12 @@ mod tests {
     // the "all matches fire" / "candidate but doesn't decode" edges
     // without a real `Provider` env (which lives at the router layer).
 
+    // A trivial env for the registry/match tests. The matching path
+    // never touches the env (only `run` does, which these tests don't
+    // call), so a unit type is enough to pin the `Env` parameter.
+    #[derive(Clone)]
+    struct TestEnv;
+
     struct StubHandler {
         attributes: Vec<String>,
         // Decode succeeds only when the entity carries this attribute.
@@ -604,7 +619,7 @@ mod tests {
     }
 
     impl StubHandler {
-        fn boxed(attribute: &str) -> Box<dyn CommandHandler> {
+        fn boxed(attribute: &str) -> Box<dyn CommandHandler<TestEnv>> {
             Box::new(StubHandler {
                 attributes: vec![attribute.to_string()],
                 decode_on: attribute.to_string(),
@@ -612,14 +627,14 @@ mod tests {
         }
     }
 
-    impl CommandHandler for StubHandler {
+    impl CommandHandler<TestEnv> for StubHandler {
         fn trigger_attributes(&self) -> &[String] {
             &self.attributes
         }
         fn matches(&self, facts: &EntityFacts) -> bool {
             facts.iter().any(|a| a.the.to_string() == self.decode_on)
         }
-        fn run(&self, _facts: &EntityFacts, _env: &Env) -> RunFuture {
+        fn run(&self, _facts: &EntityFacts, _env: &TestEnv) -> RunFuture {
             Box::pin(async {})
         }
     }

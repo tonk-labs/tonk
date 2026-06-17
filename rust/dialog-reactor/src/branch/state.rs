@@ -11,9 +11,9 @@ use dialog_repository::Branch;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
-use crate::reactor::env::SelectProvider;
-use crate::reactor::error::ReactorError;
-use crate::reactor::subscription::{
+use crate::env::SelectProvider;
+use crate::error::ReactorError;
+use crate::subscription::{
     QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
 };
 

@@ -181,7 +181,12 @@ pub async fn set_upstream(
             ))
         })?;
 
-    site.branch
+    let session = site
+        .branch()
+        .await
+        .map_err(|e| RemoteError::Io(format!("failed to acquire branch: {e}")))?;
+    session
+        .handle()
         .set_upstream(&upstream_branch)
         .perform(&site.operator)
         .await

@@ -3,8 +3,9 @@ use dialog_repository::{CommitError, PullError, PushError};
 use thiserror::Error;
 use tonk_evaluator::effects::InduceError;
 
-/// Errors surfaced by the reactor's chain effects. Routes map
-/// these into the existing [`crate::TonkWorkerError`] envelope.
+/// Errors surfaced by the reactor's chain effects. Consumers map
+/// these into their own error envelope (e.g. the worker's
+/// `TonkWorkerError`).
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum ReactorError {

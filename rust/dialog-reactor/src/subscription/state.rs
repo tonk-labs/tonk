@@ -6,7 +6,7 @@ use dialog_common::Blake3Hash;
 use dialog_query::ConceptQuery;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::reactor::Query;
+use crate::Query;
 
 /// Identity of a subscription within one branch — blake3 over a
 /// deterministic serialization of the [`ConceptQuery`]. Wraps
@@ -48,7 +48,7 @@ pub enum Status {
 /// the sender side of the subscriber's channel plus the
 /// per-subscriber delivery status. Internal-only — the
 /// public-facing handle a subscriber receives is the
-/// [`crate::reactor::Subscriber`] returned by
+/// [`crate::Subscriber`] returned by
 /// `BranchState::subscribe`.
 pub struct SubscriberSession {
     /// Sender into the subscriber's mpsc channel.

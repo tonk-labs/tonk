@@ -10,10 +10,10 @@ use std::sync::Arc;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
 
-use crate::reactor::BranchState;
-use crate::reactor::env::SelectProvider;
-use crate::reactor::error::ReactorError;
-use crate::reactor::subscription::{QueryHash, Subscriber, SubscriptionReference};
+use crate::BranchState;
+use crate::env::SelectProvider;
+use crate::error::ReactorError;
+use crate::subscription::{QueryHash, Subscriber, SubscriptionReference};
 
 /// Resolved branch handle paired with the cache entry that owns
 /// the subscriptions registered against it.

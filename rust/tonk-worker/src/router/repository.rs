@@ -309,7 +309,7 @@ impl CreateSpaceHandler {
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-impl crate::reactor::CommandHandler for CreateSpaceHandler {
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHandler {
     fn trigger_attributes(&self) -> &[String] {
         &self.attributes
     }
@@ -326,7 +326,7 @@ impl crate::reactor::CommandHandler for CreateSpaceHandler {
     fn run(
         &self,
         facts: &crate::reactor::EntityFacts,
-        env: &crate::reactor::Env,
+        env: &crate::router::CommandEnv,
     ) -> crate::reactor::RunFuture {
         use crate::reactor::Decode as _;
 

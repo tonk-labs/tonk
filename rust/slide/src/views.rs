@@ -78,8 +78,9 @@ pub async fn list(site: &SlideSite) -> Result<Vec<ViewSummary>> {
 pub async fn entity_has_text_html(site: &SlideSite, entity: &Entity) -> Result<bool> {
     let the = text_html_attribute()?;
     let the_term: attribute::The = the.into();
-    let rows: Vec<dialog_query::Claim> = site
-        .branch
+    let session = site.branch().await?;
+    let rows: Vec<dialog_query::Claim> = session
+        .handle()
         .query()
         .select(AttributeQuery::new(
             Term::from(the_term),
@@ -104,8 +105,9 @@ pub async fn entity_has_text_html(site: &SlideSite, entity: &Entity) -> Result<b
 async fn enumerate_view_claims(site: &SlideSite) -> Result<Vec<(Entity, usize)>> {
     let the = text_html_attribute()?;
     let the_term: attribute::The = the.into();
-    let rows: Vec<dialog_query::Claim> = site
-        .branch
+    let session = site.branch().await?;
+    let rows: Vec<dialog_query::Claim> = session
+        .handle()
         .query()
         .select(AttributeQuery::new(
             Term::from(the_term),
@@ -160,8 +162,9 @@ async fn name_claims_by_entity(site: &SlideSite) -> Result<HashMap<Entity, Strin
         .parse()
         .context("dialog.name/referent should be a valid attribute URI")?;
     let the_term: attribute::The = name_attr.into();
-    let claims: Vec<dialog_query::Claim> = site
-        .branch
+    let session = site.branch().await?;
+    let claims: Vec<dialog_query::Claim> = session
+        .handle()
         .query()
         .select(AttributeQuery::new(
             Term::from(the_term),
@@ -199,7 +202,8 @@ fn name_from_id_entity(entity: &Entity) -> Option<String> {
 /// `tonk_schema::concept::lookup_named_entity`, the canonical
 /// name→entity helper.
 pub async fn entity_for_name(site: &SlideSite, name: &str) -> Result<Option<Entity>> {
-    tonk_schema::concept::lookup_named_entity(name, &site.branch, &site.operator)
+    let session = site.branch().await?;
+    tonk_schema::concept::lookup_named_entity(name, session.handle(), &site.operator)
         .await
         .map_err(|e| anyhow!("name lookup failed for {name}: {e:?}"))
 }

@@ -12,19 +12,19 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dialog_common::Blake3Hash;
+use dialog_common::log;
 use dialog_query::Output as _;
-use tonk_common::log;
 
-use crate::reactor::BranchState;
-use crate::reactor::Conclusion;
-use crate::reactor::env::SelectProvider;
+use crate::BranchState;
+use crate::Conclusion;
+use crate::env::SelectProvider;
 
 use super::state::{QueryHash, Status};
 
 /// Names a subscription within a branch. Built from
 /// [`BranchSession::subscription`].
 ///
-/// [`BranchSession::subscription`]: crate::reactor::BranchSession::subscription
+/// [`BranchSession::subscription`]: crate::BranchSession::subscription
 #[derive(Clone)]
 pub struct SubscriptionReference<'a> {
     /// The branch state that owns the subscription map.

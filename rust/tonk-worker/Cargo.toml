@@ -26,6 +26,7 @@ console_error_panic_hook = { workspace = true }
 dialog-capability = { workspace = true }
 dialog-common = { workspace = true }
 dialog-artifacts = { workspace = true }
+dialog-reactor = { workspace = true }
 dialog-credentials = { workspace = true }
 dialog-csv = { workspace = true }
 dialog-effects = { workspace = true }

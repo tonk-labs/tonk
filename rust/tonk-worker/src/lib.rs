@@ -75,8 +75,8 @@ mod cache;
 mod r#async;
 pub use r#async::*;
 
-mod reactor;
-pub use reactor::*;
+pub use dialog_reactor as reactor;
+pub use dialog_reactor::*;
 
 #[cfg(any(test, feature = "helpers"))]
 pub mod helpers;

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use dialog_repository::Repository;
 use parking_lot::RwLock;
 
-use crate::reactor::BranchState;
+use crate::BranchState;
 
 /// Cached repository handle plus its branches.
 pub struct RepositoryState {

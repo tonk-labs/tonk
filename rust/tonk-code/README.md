@@ -1,6 +1,6 @@
 # tonk-code
 
-`<tonk-code>` — a CodeMirror 6-backed code editor packaged as a
+`<tonk-code>`: a CodeMirror 6-backed code editor packaged as a
 custom element, plus a tiny Rust shim that injects the bundle's
 loader script into the page.
 
@@ -10,7 +10,7 @@ loader script into the page.
 | --- | --- |
 | `src/` | Rust crate. The `web` feature exposes [`install`] which appends `<script type="module">` for the bundle. |
 | `src-js/index.ts` | Custom element implementation (registers `tonk-code`). |
-| `src-js/lang/*.ts` | One file per language pack — bundled as a separate ESM chunk and loaded on demand. |
+| `src-js/lang/*.ts` | One file per language pack, bundled as a separate ESM chunk and loaded on demand. |
 | `scripts/build.mjs` | esbuild driver. Produces `assets/tonk-code.js` plus per-language chunks and a shared CodeMirror runtime chunk. |
 | `assets/` | Build output. **Committed** to source control so consumers (and CI) don't need a Node toolchain to build the Rust workspace. |
 
@@ -52,8 +52,8 @@ Events:
 
 | Name | `detail` |
 | --- | --- |
-| `change` | `{ value: string, doc: Text }` — fires on user edits only. |
-| `ready` | `{ view: EditorView }` — fires once after mount. |
+| `change` | `{ value: string, doc: Text }` (fires on user edits only). |
+| `ready` | `{ view: EditorView }` (fires once after mount). |
 
 ## Adding a language
 
@@ -65,5 +65,5 @@ Events:
    ```
 3. Append `{ id: "<id>", entry: "src-js/lang/<id>.ts" }` to the
    `languages` list in `scripts/build.mjs`.
-4. `npm run build` — a new `assets/tonk-code-lang-<id>.js` lands.
+4. `npm run build`, and a new `assets/tonk-code-lang-<id>.js` lands.
 5. Use it: `<tonk-code mode="<id>"></tonk-code>`.

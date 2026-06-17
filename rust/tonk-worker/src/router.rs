@@ -309,7 +309,7 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
-        let reactor = crate::TonkReactor::new(profile.clone());
+        let reactor = crate::Reactor::new(profile.clone());
         TonkState {
             profile,
             operator,
@@ -2496,6 +2496,54 @@ attribute!: &{name}
         }
     }
 
+    /// The reactor's one-shot [`query`](crate::reactor::QueryEffect)
+    /// effect — what the non-streaming `/query` arm and headless
+    /// callers (e.g. `slide render`) use — returns the same
+    /// projected conclusions the HTTP route does, without opening a
+    /// subscription.
+    #[dialog_common::test]
+    async fn it_reads_one_shot_via_the_reactor_query_effect() {
+        use dialog_query::{ConceptQuery, Query as ConceptPattern};
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use tonk_schema::meta::Name;
+
+        let tonk = test_state().await;
+        let app_state: crate::router::AppState = Arc::new(RwLock::new(tonk));
+        let (app, _lsp) = crate::api_router_from_state(app_state.clone());
+
+        let repo = "test-reactor-query-effect";
+        let key = put_repo(&app, repo).await;
+        let repo = key.as_str();
+        seed_named_entity(&app, repo).await;
+
+        // Read directly through the reactor effect.
+        let query = ConceptQuery::from(ConceptPattern::<Name>::default());
+        let conclusions = {
+            let guard = app_state.read().await;
+            guard
+                .reactor
+                .repository(repo)
+                .branch("main")
+                .query(query)
+                .perform(&guard.operator)
+                .await
+                .expect("one-shot query")
+        };
+        assert!(
+            !conclusions.is_empty(),
+            "expected at least one named entity after seeding"
+        );
+
+        // The effect agrees with the HTTP one-shot route.
+        let via_route = post_query(&app, repo, "main").await;
+        let via_effect = serde_json::to_value(&conclusions).expect("conclusions serialize");
+        assert_eq!(
+            via_effect, via_route,
+            "reactor query effect matches the one-shot route"
+        );
+    }
+
     /// SSE `/query` opens a stream whose first event is the
     /// current snapshot — the same payload the one-shot route
     /// returns inline.
@@ -2805,7 +2853,7 @@ attribute!: &{name}
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    /// `TonkReactor::shutdown` must drop every active subscriber's
+    /// `Reactor::shutdown` must drop every active subscriber's
     /// `mpsc::Sender` so the SSE response body finishes and the SW
     /// can release in-flight fetches.
     ///

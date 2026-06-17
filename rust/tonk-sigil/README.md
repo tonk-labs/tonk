@@ -2,7 +2,7 @@
 
 Generate 32-bit visual identifiers ("sigils") as SVG. Ports the rendering
 logic of [`urbit/sigil-js`](https://github.com/urbit/sigil-js) to Rust, but
-treats the input as arbitrary 32 bits — no Urbit identity semantics, no
+treats the input as arbitrary 32 bits, with no Urbit identity semantics and no
 Feistel scrambling.
 
 Every 32-bit value maps to a deterministic 2×2 tile of glyphs. Useful for
@@ -33,7 +33,7 @@ let prefix: [u8; 4] = hash.as_bytes()[..4].try_into().unwrap();
 Sigil::from(prefix);
 ```
 
-Anything wider than 32 bits is your problem to truncate — this crate has no
+Anything wider than 32 bits is your problem to truncate; this crate has no
 opinion on how. The recommended pattern is "take the first 4 bytes of
 whatever identifier you already have."
 
@@ -47,11 +47,11 @@ Sigil::from(0xdeadbeef_u32)
 ```
 
 `fill` accepts any CSS color value (`"black"`, `"#fff"`, `"rgb(1,2,3)"`,
-`"var(--my-color)"`, …). Sigils are single-color — interior holes and
+`"var(--my-color)"`, …). Sigils are single-color: interior holes and
 contrast lines are true SVG cutouts via a `<mask>`, so the glyph is
 transparent wherever it isn't the fill color.
 
-The rendered SVG has no intrinsic pixel size — it scales to fill its
+The rendered SVG has no intrinsic pixel size; it scales to fill its
 parent container. Size the element from CSS:
 
 ```css
@@ -61,7 +61,7 @@ tonk-sigil { width: 2rem; height: 2rem; display: inline-block; }
 ### Theming with CSS
 
 The sprite's fill references `var(--sigil-fg, currentColor)`. Either set
-`--sigil-fg` on any ancestor, or just use `color:` directly — the default
+`--sigil-fg` on any ancestor, or just use `color:` directly: the default
 `currentColor` fallback means sigils inherit surrounding text color:
 
 ```css
@@ -111,13 +111,13 @@ Resolution rules, in order:
 3. Empty element with no `value` renders as if the input were zero.
 
 The element observes `value`, `fill`, and `sprite` and re-renders on
-change. Text content is preserved across re-renders — the
+change. Text content is preserved across re-renders: the
 sigil is inserted as a child `<span data-sigil>` rather than replacing
 the element's contents.
 
 ## Serving the sprite sheet
 
-The crate ships `assets/sigils.svg` — you need to serve this file at the
+The crate ships `assets/sigils.svg`, which you need to serve at the
 URL your sigils reference (default `/sigils.svg`). With Trunk, the simplest
 setup is to copy it into your app's asset directory and add:
 
@@ -147,7 +147,7 @@ repo; you do not need to run it during normal builds.
 - **Input is bytes, not strings.** No `@p` parsing, no Urbit ID format.
 - **No Feistel obfuscation.** If you pass the same bytes twice, you get
   the same sigil. (Sigil-js intentionally scrambled the input to hide
-  parent-child identity relationships — not relevant here.)
+  parent-child identity relationships, which is not relevant here.)
 - **Sprite sheet instead of inline SVG.** The 275KB of glyph path data
   lives in a separate file that browsers can cache. The crate itself is
   tiny; the rendered SVG is short.

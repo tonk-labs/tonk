@@ -315,7 +315,7 @@ pub struct TonkState {
     /// query subscriptions registered against them. Routes that
     /// mutate a branch flow through `reactor.repository(r).branch(b)`
     /// so subscription broadcasts happen automatically.
-    pub reactor: crate::TonkReactor,
+    pub reactor: crate::Reactor,
     /// View-iframe bindings keyed by service-worker Client ID.
     /// Behind its own interior lock so binding registration /
     /// lookup doesn't contend with profile/operator access on
@@ -328,7 +328,7 @@ pub struct TonkState {
     /// Registered command handlers — the typed-Rust effects fired by
     /// transient command concepts after a commit. Consulted by the
     /// transact path's post-commit dispatch.
-    pub commands: crate::reactor::CommandRegistry,
+    pub commands: crate::reactor::CommandRegistry<crate::router::CommandEnv>,
 }
 
 // SAFETY: Web browsers run Wasm in a single thread only. The interior types
@@ -480,7 +480,7 @@ impl TonkServiceWorker {
 
         // 4. Build state and bootstrap the profile repo's meta
         // branch. Idempotent — safe to run on every worker boot.
-        let reactor = crate::TonkReactor::new(profile.clone());
+        let reactor = crate::Reactor::new(profile.clone());
         let state = TonkState {
             profile,
             operator,

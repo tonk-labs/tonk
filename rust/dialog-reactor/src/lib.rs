@@ -1,7 +1,7 @@
-//! [`TonkReactor`] — the worker's reactive layer over branches.
+//! [`Reactor`] — a reactive layer over dialog branches.
 //!
 //! See `reactor-spec.md` next to the crate's `Cargo.toml` for the
-//! full design rationale. The short version: routes mutate
+//! full design rationale. The short version: consumers mutate
 //! branches through a chain (`reactor.repository(r).branch(b)
 //! .transaction().assert(…).commit().perform(&op).await?`); the
 //! leaf effect's `perform` re-evaluates every subscription on the
@@ -31,15 +31,14 @@ mod formula;
 mod import;
 mod pull;
 mod push;
+mod query;
 mod repository;
 mod subscribe;
 mod subscription;
 mod transaction;
 
 pub use branch::{BranchReference, BranchSession, BranchState};
-pub use command::{
-    CommandHandler, CommandRegistry, Decode, EntityFacts, Env, RunFuture, TypedCommand,
-};
+pub use command::{CommandHandler, CommandRegistry, Decode, EntityFacts, RunFuture, TypedCommand};
 pub use env::{
     BranchOpenProvider, CommitProvider, GetPutProvider, LoadProvider, PullProvider, PushProvider,
     SelectProvider,
@@ -50,6 +49,7 @@ pub use formula::{FormulaError, resolve_formula};
 pub use import::{Import, ImportError};
 pub use pull::Pull;
 pub use push::Push;
+pub use query::QueryEffect;
 pub use repository::{RepositoryReference, RepositoryState};
 pub use subscribe::Subscribe;
 pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
@@ -60,8 +60,9 @@ pub use tonk_schema::conclusion::Conclusion;
 pub use tonk_schema::query::Query;
 pub use transaction::{Commit, TransactionBuilder};
 
-/// The worker's reactive layer. Owned by `TonkState`.
-pub struct TonkReactor {
+/// A reactive layer over dialog branches. Owned by the consumer's
+/// application state (e.g. the worker's `TonkState`).
+pub struct Reactor {
     profile: Profile,
     repos: RwLock<HashMap<String, Arc<RepositoryState>>>,
     /// Cached `RepositoryState` for the profile-as-repository.
@@ -71,7 +72,7 @@ pub struct TonkReactor {
     profile_repo: RwLock<Option<Arc<RepositoryState>>>,
 }
 
-impl TonkReactor {
+impl Reactor {
     /// Construct a reactor over the given profile. The reactor
     /// doesn't own an operator — every effect takes one at
     /// `perform` time, matching dialog's command/perform pattern.
@@ -89,7 +90,7 @@ impl TonkReactor {
     ///
     /// Walking the cache and explicitly dropping subscriber
     /// senders is the load-bearing step: the
-    /// [`BranchState`](crate::reactor::BranchState) `Arc`s are
+    /// [`BranchState`](crate::BranchState) `Arc`s are
     /// shared with `SubscriptionPoll` futures still holding a
     /// reference, so removing the cache entry alone isn't enough.
     /// Clearing each branch's subscriber map drops every
