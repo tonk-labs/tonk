@@ -404,12 +404,8 @@ impl From<serde_json::Error> for Phase2Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-    #[cfg(target_arch = "wasm32")]
-    wasm_bindgen_test_configure!(run_in_browser);
 
-    #[dialog_common::test]
+    #[test]
     fn the_view_predicate_has_no_name_field() {
         let p = view_predicate();
         let with = p.get("with").and_then(|v| v.as_object()).expect("with");
@@ -421,7 +417,7 @@ mod tests {
         );
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_builds_an_entity_query_pinning_this() {
         let descriptor = r#"{"with":{
             "message": { "the": "greeting/message", "as": "Text", "cardinality": "one" }
@@ -434,7 +430,7 @@ mod tests {
         );
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_projects_every_descriptor_field_in_the_entity_query() {
         let descriptor = r#"{"with":{
             "message":   { "the": "greeting/message",   "as": "Text", "cardinality": "one" },
@@ -445,14 +441,14 @@ mod tests {
         assert!(q.terms.contains("recipient"));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_distinguishes_uri_from_bookmark() {
         assert!(looks_like_uri("did:key:zAlice"));
         assert!(looks_like_uri("concept:abc"));
         assert!(!looks_like_uri("greeting"));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_builds_a_view_by_model_query_constraining_model() {
         // The view concept is the predicate; `model` is pinned to
         // the subject's model entity and `display` flows back.
@@ -473,7 +469,7 @@ mod tests {
         assert!(!q.terms.contains("type"));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_projects_type_when_the_view_concept_declares_it() {
         // A custom view concept that adds a `type` field gets `type`
         // projected so the render-mode fork can read it.
@@ -492,7 +488,7 @@ mod tests {
         );
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_parses_a_bare_name() {
         let parsed = parse_source("person");
         assert_eq!(parsed.name_or_uri, "person");
@@ -500,21 +496,21 @@ mod tests {
         assert!(!parsed.is_uri());
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_parses_a_uri() {
         let parsed = parse_source("did:key:zPerson");
         assert_eq!(parsed.name_or_uri, "did:key:zPerson");
         assert!(parsed.is_uri());
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_parses_a_name_with_one_filter() {
         let parsed = parse_source("person?name=Alice");
         assert_eq!(parsed.name_or_uri, "person");
         assert_eq!(parsed.filters.get("name"), Some(&"Alice".to_string()));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_parses_a_filter_with_projection_marker() {
         // The bare `&age` is ignored — projection is implicit.
         let parsed = parse_source("person?name=Alice&age");
@@ -522,19 +518,19 @@ mod tests {
         assert_eq!(parsed.filters.get("name"), Some(&"Alice".to_string()));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_decodes_percent_encoded_filter_values() {
         let parsed = parse_source("person?name=Alice%20B");
         assert_eq!(parsed.filters.get("name"), Some(&"Alice B".to_string()));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_decodes_plus_as_space() {
         let parsed = parse_source("person?name=Alice+B");
         assert_eq!(parsed.filters.get("name"), Some(&"Alice B".to_string()));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_builds_a_phase1_query_filtered_by_name() {
         let parsed = parse_source("person");
         let q = phase1_query(&parsed);
@@ -544,7 +540,7 @@ mod tests {
         assert_eq!(value, json!("person"));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_builds_a_phase1_query_filtered_by_uri() {
         let parsed = parse_source("did:key:zPerson");
         let q = phase1_query(&parsed);
@@ -553,7 +549,7 @@ mod tests {
         assert_eq!(value, json!("did:key:zPerson"));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_resolves_a_name_through_the_name_concept() {
         // A bare name resolves via the Name concept: `id:<name>`'s
         // `dialog.name/referent`. This is what lets `workspace` (a
@@ -583,7 +579,7 @@ mod tests {
         );
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_builds_a_phase2_query_projecting_every_field() {
         let descriptor = r#"{"with":{
             "name": { "the": "person/name", "as": "Text",   "cardinality": "one" },
@@ -596,7 +592,7 @@ mod tests {
         assert!(q.terms.contains("age"));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_builds_a_phase2_query_constraining_filtered_fields() {
         let descriptor = r#"{"with":{
             "name": { "the": "person/name", "as": "Text", "cardinality": "one" }
@@ -626,28 +622,28 @@ mod tests {
     // An integer-typed field filtered via `?f=5` must constrain on
     // the number `5`, not the string `"5"` — otherwise it never
     // matches the stored integer value.
-    #[dialog_common::test]
+    #[test]
     fn it_coerces_an_unsigned_integer_filter_to_a_number() {
         assert_eq!(filtered_term("UnsignedInteger", "5"), json!(5));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_coerces_a_signed_integer_filter_to_a_number() {
         assert_eq!(filtered_term("SignedInteger", "-5"), json!(-5));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_coerces_a_float_filter_to_a_number() {
         assert_eq!(filtered_term("Float", "3.5"), json!(3.5));
     }
 
-    #[dialog_common::test]
+    #[test]
     fn it_coerces_a_boolean_filter_to_a_bool() {
         assert_eq!(filtered_term("Boolean", "true"), json!(true));
     }
 
     // Text/Entity/etc. stay strings, as before.
-    #[dialog_common::test]
+    #[test]
     fn it_keeps_a_text_filter_as_a_string() {
         assert_eq!(filtered_term("Text", "5"), json!("5"));
     }
@@ -656,7 +652,7 @@ mod tests {
     // than coerced to a string constant that could never match the
     // stored integer — that would render a blank result the user
     // couldn't distinguish from a genuinely empty set.
-    #[dialog_common::test]
+    #[test]
     fn it_rejects_an_unparseable_unsigned_integer_filter() {
         let err = filtered_query("UnsignedInteger", "lots").expect_err("should reject");
         assert!(
@@ -668,7 +664,7 @@ mod tests {
 
     // A negative value can't be an `UnsignedInteger`; it's rejected,
     // not silently kept as a string.
-    #[dialog_common::test]
+    #[test]
     fn it_rejects_a_negative_value_for_an_unsigned_integer_filter() {
         let err = filtered_query("UnsignedInteger", "-5").expect_err("should reject");
         assert!(matches!(err, Phase2Error::Filter { .. }), "got {err:?}");
@@ -676,7 +672,7 @@ mod tests {
 
     // `inf`/`NaN` parse as `f64` but `serde_json` can't represent
     // them; rejecting avoids a silent `null` constant.
-    #[dialog_common::test]
+    #[test]
     fn it_rejects_a_non_finite_float_filter() {
         for raw in ["inf", "NaN", "-inf"] {
             let err = filtered_query("Float", raw).expect_err("should reject");
@@ -689,7 +685,7 @@ mod tests {
 
     // Boolean coercion is exact: only `true`/`false`. Anything else
     // (`True`, `1`, `yes`) is rejected.
-    #[dialog_common::test]
+    #[test]
     fn it_rejects_a_non_boolean_value_for_a_boolean_filter() {
         for raw in ["True", "1", "yes"] {
             let err = filtered_query("Boolean", raw).expect_err("should reject");

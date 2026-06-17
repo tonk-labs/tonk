@@ -14,7 +14,10 @@
 #![warn(missing_docs)]
 
 pub mod events;
-pub mod resolve;
+/// Wire-query builders for the resolution pipeline, re-exported from
+/// the shared [`tonk_template`] crate so `crate::resolve::*` paths
+/// keep resolving.
+pub use tonk_template::resolve;
 // Notation-template machinery (segment parsing, chrome/repeat
 // binding plan, field substitution) folded in from the retired
 // `tonk-concept` crate. The pure planning fns are
@@ -25,14 +28,16 @@ pub mod template;
 
 // `notation_tokens` and `notation_format` are the tokenizer and
 // Conclusion-to-source formatter driving the wasm-only `notation`
-// element and `<tonk-display>`'s carousel inspector slide. `fold`
-// is the multi-row → single-conclusion collapser that handles
-// cardinality-many fields. All three are target-independent so
-// their tests run under `cargo test`, but their non-test consumers
-// live behind the wasm cfg — gate them so a plain `cargo build`
-// for the host doesn't flag every internal helper dead.
-#[cfg(any(target_arch = "wasm32", test))]
-mod fold;
+// element and `<tonk-display>`'s carousel inspector slide. They are
+// target-independent so their tests run under `cargo test`, but
+// their non-test consumers live behind the wasm cfg — gate them so a
+// plain `cargo build` for the host doesn't flag every internal
+// helper dead.
+//
+// `fold` (the multi-row → single-conclusion collapser for
+// cardinality-many fields) moved to the shared `tonk_template` crate;
+// re-export it so `crate::fold::*` paths keep resolving.
+pub use tonk_template::fold;
 /// Conclusion-to-source notation formatter. `format` turns an
 /// entity (`this` URI + projected `fields`) into a `head!:`
 /// assertion document — the text `<tonk-notation>` renders.

@@ -17,10 +17,19 @@
 //!
 //! [`render_segments`] does the per-row string substitution and is
 //! shared the same way.
+//!
+//! It also carries the DOM-free pieces of the `<tonk-display>`
+//! resolution pipeline that both the browser component and headless
+//! renderers share: the wire-query builders ([`resolve`]) and the
+//! row folding ([`fold`]) that turns flat query rows into the folded
+//! conclusions the renderer consumes.
 
 use std::collections::BTreeMap;
 
 use ipld_core::ipld::Ipld;
+
+pub mod fold;
+pub mod resolve;
 
 /// One chunk of an interpolated string.
 #[derive(Debug, Clone, PartialEq, Eq)]

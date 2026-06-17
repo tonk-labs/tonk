@@ -5134,7 +5134,9 @@ dependencies = [
 name = "tonk-render"
 version = "0.1.0"
 dependencies = [
+ "ipld-core",
  "tl",
+ "tonk-template",
 ]
 
 [[package]]
@@ -5183,8 +5185,12 @@ dependencies = [
 name = "tonk-template"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "ipld-core",
+ "serde",
  "serde_ipld_dagjson",
+ "serde_json",
+ "tonk-schema",
 ]
 
 [[package]]
