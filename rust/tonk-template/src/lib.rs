@@ -8,12 +8,15 @@
 //! **chrome** plus the per-conclusion **repeat** body, with
 //! cardinality-many fields lowered to [`PlanNode::Iteration`].
 //!
-//! It is pure std-only Rust (no DOM, no `tl`, no target gates), so
-//! both the browser renderer (`tonk-display`, walking a real
-//! `DocumentFragment`) and the headless renderer (`tonk-render`,
-//! walking a parsed `tl` tree) collect bindings their own way and
-//! share this one planner. Same template, same plan, by
-//! construction.
+//! The planner is DOM-free and target-agnostic (no `web-sys`, no
+//! `tl`, no target gates), so both the browser renderer
+//! (`tonk-display`, walking a real `DocumentFragment`) and the
+//! headless renderer (`tonk-render`, walking a parsed `tl` tree)
+//! collect bindings their own way and share this one planner: same
+//! template, same plan, by construction. (The [`resolve`] and
+//! [`fold`] modules, also shared, depend on `tonk-schema`'s wire
+//! types — `Query` / `Conclusion` — so the crate as a whole is not
+//! dependency-light, only DOM- and target-free.)
 //!
 //! [`render_segments`] does the per-row string substitution and is
 //! shared the same way.

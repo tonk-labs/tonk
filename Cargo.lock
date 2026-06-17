@@ -5190,7 +5190,6 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "ipld-core",
- "serde",
  "serde_ipld_dagjson",
  "serde_json",
  "tonk-schema",

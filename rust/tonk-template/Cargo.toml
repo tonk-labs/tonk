@@ -9,7 +9,6 @@ edition.workspace = true
 [dependencies]
 indexmap = { workspace = true }
 ipld-core = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 serde_ipld_dagjson = { workspace = true }
 serde_json = { workspace = true }
 tonk-schema = { workspace = true }

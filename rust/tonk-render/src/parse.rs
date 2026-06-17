@@ -34,11 +34,19 @@ fn convert_children(dom: &VDom, parser: &Parser) -> Vec<Node> {
 fn convert_node(node: &TlNode, parser: &Parser) -> Option<Node> {
     match node {
         TlNode::Tag(tag) => {
-            let name = tag.name().as_utf8_str().to_string();
+            // Lowercase tag + attribute names to match how the browser
+            // normalizes HTML names in the DOM (so void/raw-text checks
+            // and attribute comparisons agree regardless of source case).
+            let name = tag.name().as_utf8_str().to_ascii_lowercase();
             let attrs = tag
                 .attributes()
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.map(|v| v.to_string()).unwrap_or_default()))
+                .map(|(k, v)| {
+                    (
+                        k.to_ascii_lowercase(),
+                        v.map(|v| v.to_string()).unwrap_or_default(),
+                    )
+                })
                 .collect();
             let void = is_void_tag(&name);
             let children = if void {
