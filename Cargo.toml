@@ -8,6 +8,7 @@ members = [
     "rust/tonk-tree",
     "rust/tonk-common",
     "rust/tonk-core",
+    "rust/dialog-reactor",
     "rust/tonk-display",
     "rust/tonk-evaluator",
     "rust/tonk-host",
@@ -39,6 +40,7 @@ tonk-code = { path = "./rust/tonk-code" }
 tonk-tree = { path = "./rust/tonk-tree" }
 tonk-common = { path = "./rust/tonk-common" }
 tonk-core = { path = "./rust/tonk-core" }
+dialog-reactor = { path = "./rust/dialog-reactor" }
 tonk-display = { path = "./rust/tonk-display" }
 tonk-evaluator = { path = "./rust/tonk-evaluator" }
 tonk-host = { path = "./rust/tonk-host" }

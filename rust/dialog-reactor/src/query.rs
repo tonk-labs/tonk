@@ -1,6 +1,6 @@
 //! [`Query`](QueryEffect) — one-shot read against a branch.
 //!
-//! The non-streaming counterpart to [`Subscribe`](crate::reactor::Subscribe):
+//! The non-streaming counterpart to [`Subscribe`](crate::Subscribe):
 //! acquire the (node-cache-warm) branch session, run the select once,
 //! and return the projected [`Conclusion`]s. No subscriber is
 //! registered, so nothing lingers on the branch after the read.

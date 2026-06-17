@@ -309,7 +309,7 @@ pub mod tests {
             .await
             .expect("Failed to build test operator");
 
-        let reactor = crate::TonkReactor::new(profile.clone());
+        let reactor = crate::Reactor::new(profile.clone());
         TonkState {
             profile,
             operator,
@@ -2853,7 +2853,7 @@ attribute!: &{name}
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    /// `TonkReactor::shutdown` must drop every active subscriber's
+    /// `Reactor::shutdown` must drop every active subscriber's
     /// `mpsc::Sender` so the SSE response body finishes and the SW
     /// can release in-flight fetches.
     ///

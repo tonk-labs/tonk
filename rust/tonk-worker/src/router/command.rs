@@ -70,7 +70,7 @@ impl CommandEnv {
 /// and banner both read.
 ///
 /// [`CreateSpaceHandler`]: super::repository::CreateSpaceHandler
-pub fn command_registry() -> CommandRegistry {
+pub fn command_registry() -> CommandRegistry<CommandEnv> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
         let mut registry = CommandRegistry::new();
@@ -218,9 +218,12 @@ mod tests {
         }
 
         fn one_match<'a>(
-            registry: &'a CommandRegistry,
+            registry: &'a CommandRegistry<CommandEnv>,
             changes: &Changes,
-        ) -> (&'a dyn crate::reactor::CommandHandler, EntityFacts) {
+        ) -> (
+            &'a dyn crate::reactor::CommandHandler<CommandEnv>,
+            EntityFacts,
+        ) {
             let mut fired = registry.match_transients(changes);
             assert_eq!(fired.len(), 1, "expected exactly one matched command");
             fired.pop().unwrap()

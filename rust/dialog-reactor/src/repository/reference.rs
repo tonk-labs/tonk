@@ -11,9 +11,9 @@ use std::sync::Arc;
 use dialog_credentials::Credential;
 use dialog_repository::{Repository, RepositoryExt as _};
 
-use crate::reactor::env::LoadProvider;
-use crate::reactor::error::ReactorError;
-use crate::reactor::{BranchReference, RepositoryState, TonkReactor};
+use crate::env::LoadProvider;
+use crate::error::ReactorError;
+use crate::{BranchReference, Reactor, RepositoryState};
 
 /// Reserved name used in error messages for the
 /// profile-as-repository. Not reachable through the named
@@ -30,7 +30,7 @@ pub enum RepositoryReference<'a> {
     /// A named repository — opened as a child of the profile.
     Named {
         /// Back-pointer to the reactor that owns the cache.
-        reactor: &'a TonkReactor,
+        reactor: &'a Reactor,
         /// Repository name.
         name: &'a str,
     },
@@ -40,7 +40,7 @@ pub enum RepositoryReference<'a> {
     Profile {
         /// Back-pointer to the reactor that owns the profile
         /// state.
-        reactor: &'a TonkReactor,
+        reactor: &'a Reactor,
     },
 }
 
@@ -56,7 +56,7 @@ impl<'a> RepositoryReference<'a> {
         }
     }
 
-    fn reactor(&self) -> &'a TonkReactor {
+    fn reactor(&self) -> &'a Reactor {
         match self {
             Self::Named { reactor, .. } | Self::Profile { reactor } => reactor,
         }

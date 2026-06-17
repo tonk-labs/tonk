@@ -30,7 +30,7 @@ use dialog_storage::{Blake3Hash, StorageBackend};
 use ipld_core::ipld::Ipld;
 use thiserror::Error;
 
-use crate::reactor::{Conclusion, Query, SelectProvider};
+use crate::{Conclusion, Query, SelectProvider};
 
 /// A decoded tree node, instantiated for the artifact key/value types.
 type TreeNode = PersistentNode<KeyBytes, State<Datum>>;

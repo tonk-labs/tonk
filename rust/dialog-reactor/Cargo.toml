@@ -1,0 +1,48 @@
+[package]
+name = "dialog-reactor"
+description = "Reactive layer over dialog branches — cached repository/branch handles, one-shot and subscription queries, transactions, and the transient-concept command machinery."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+base58 = { workspace = true }
+bytes = { workspace = true }
+dialog-artifacts = { workspace = true }
+dialog-capability = { workspace = true }
+dialog-common = { workspace = true }
+dialog-credentials = { workspace = true }
+dialog-effects = { workspace = true }
+dialog-operator = { workspace = true }
+dialog-query = { workspace = true }
+dialog-repository = { workspace = true }
+dialog-search-tree = { workspace = true }
+dialog-storage = { workspace = true }
+ipld-core = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tonk-common = { workspace = true }
+tonk-evaluator = { workspace = true }
+tonk-schema = { workspace = true }
+web-time = { workspace = true }
+
+# `tonk_common::log!` expands to `web_sys::console::log_1` on wasm,
+# so the macro's call sites here need web-sys with the console
+# feature available at that target.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+web-sys = { workspace = true, features = ["console"] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

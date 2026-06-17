@@ -13,16 +13,16 @@ use dialog_artifacts::Exporter;
 use dialog_common::ConditionalSend;
 use dialog_repository::Importer;
 
-use crate::reactor::env::{BranchOpenProvider, LoadProvider};
-use crate::reactor::error::ReactorError;
-use crate::reactor::export::Export;
-use crate::reactor::import::Import;
-use crate::reactor::pull::Pull;
-use crate::reactor::push::Push;
-use crate::reactor::query::QueryEffect;
-use crate::reactor::subscribe::Subscribe;
-use crate::reactor::transaction::TransactionBuilder;
-use crate::reactor::{BranchSession, BranchState, RepositoryReference};
+use crate::env::{BranchOpenProvider, LoadProvider};
+use crate::error::ReactorError;
+use crate::export::Export;
+use crate::import::Import;
+use crate::pull::Pull;
+use crate::push::Push;
+use crate::query::QueryEffect;
+use crate::subscribe::Subscribe;
+use crate::transaction::TransactionBuilder;
+use crate::{BranchSession, BranchState, RepositoryReference};
 
 /// Names a branch within a repository. Acquire the underlying
 /// handle with [`Self::acquire`] or chain to a leaf effect.

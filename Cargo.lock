@@ -1291,6 +1291,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "dialog-reactor"
+version = "0.1.0"
+dependencies = [
+ "base58",
+ "bytes",
+ "dialog-artifacts",
+ "dialog-capability",
+ "dialog-common",
+ "dialog-credentials",
+ "dialog-effects",
+ "dialog-operator",
+ "dialog-query",
+ "dialog-repository",
+ "dialog-search-tree",
+ "dialog-storage",
+ "ipld-core",
+ "parking_lot",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonk-common",
+ "tonk-evaluator",
+ "tonk-schema",
+ "wasm-bindgen-test",
+ "web-sys",
+ "web-time",
+]
+
+[[package]]
 name = "dialog-remote-s3"
 version = "0.1.0"
 source = "git+https://github.com/dialog-db/dialog-db.git?tag=tonk-2026-06-16#fffb9f9e0eebb7881937a9892d6859e5646e1e38"
@@ -5222,6 +5251,7 @@ dependencies = [
  "dialog-effects",
  "dialog-operator",
  "dialog-query",
+ "dialog-reactor",
  "dialog-remote-ucan-s3",
  "dialog-repository",
  "dialog-search-tree",
