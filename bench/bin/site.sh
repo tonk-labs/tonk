@@ -15,7 +15,20 @@ SLIDE="$ROOT/target/release/slide"
 setup() {
   mkdir -p "$SITE"
   cd "$SITE"
-  "$SLIDE" init
+  # `slide init` prints "DID: did:key:..." — the repository's subject
+  # DID. This is the identity the tonk-ui addresses a space by (the
+  # join flow returns it as repository.name); the harness must use it
+  # everywhere instead of a chosen name. Stash it for run.sh to export
+  # as SPACE_NAME.
+  init_out="$("$SLIDE" init)"
+  printf '%s\n' "$init_out"
+  did="$(printf '%s\n' "$init_out" | sed -n 's/^DID: //p' | head -1)"
+  if [ -n "$did" ]; then
+    printf '%s' "$did" > "$RUN_DIR/space.did"
+  else
+    echo "site: could not parse repository DID from 'slide init' output" >&2
+    exit 1
+  fi
   "$SLIDE" remote add origin "$BENCH_URL/ucan/"
   "$SLIDE" remote set-upstream origin
   "$SLIDE" status
