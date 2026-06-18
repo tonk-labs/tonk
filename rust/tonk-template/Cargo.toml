@@ -1,0 +1,26 @@
+[package]
+name = "tonk-template"
+description = "Target-agnostic binding planner for tonk-display view templates."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+indexmap = { workspace = true }
+ipld-core = { workspace = true }
+serde_ipld_dagjson = { workspace = true }
+serde_json = { workspace = true }
+tonk-schema = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }

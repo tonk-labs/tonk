@@ -55,6 +55,31 @@ view** — every instance of the model — using the model's
 Share a display: `slide share display <entity> --view <view-name>`
 (or `--model <concept>` for carousel mode).
 
+## Render to HTML headlessly: `slide render`
+
+`slide render <route>` runs the same model → view → entity resolution
+the browser `<tonk-display>` runs, and prints the resulting HTML — no
+browser, no service worker. The route is the shorthand:
+
+- `slide render person` — directory: every instance of `person`.
+- `slide render alice@person` — one entity (`{entity}@{model}`).
+- `slide render alice@person!card` — one entity through an explicit
+  view concept (`{entity}@{model}!{view}`).
+
+It writes HTML to stdout, or to a file with `--out`. It resolves
+`{dom.host/model}`, falls back to the `_:_` default view when a model
+has no specific one, and renders nested `<tonk-display>` recursively.
+
+A `type: text/html` (portal) view is **not** a template: its `display`
+is an author-written HTML document that runs its own JS against the
+`window.tonk` bridge to query whatever it needs. The browser loads it
+verbatim in a sandboxed iframe (placeholders like `{name}` are left
+untouched — they are not interpolated). `slide render` mirrors this by
+emitting the `display` verbatim inside `<iframe srcdoc>`; it does not
+prepend the `window.tonk` bridge bootstrap, which can't function
+headlessly (no service worker, no message channel), so a portal's own
+data queries don't run under SSR.
+
 ## Escape hatch: raw `text/html` views
 
 For a one-off HTML page (no live binding), assert a `text/html` claim

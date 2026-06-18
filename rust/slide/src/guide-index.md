@@ -16,6 +16,10 @@ them, and publish views that render those facts.
    - `<doc> | slide eval -`    — from stdin
    A committing eval auto-syncs (pull-before / push-after) unless `--no-sync`.
 3. Share a live view: `slide share display <entity> --view <name>`.
+4. Render a view to HTML headlessly: `slide render <route>` —
+   `slide render person` (directory), `slide render alice@person` (one
+   entity), `slide render alice@person!card` (explicit view). Writes
+   HTML to stdout, or `--out <file>`.
 
 ## Reference topics
 

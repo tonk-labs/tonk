@@ -1734,7 +1734,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2130,6 +2130,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "html5gum"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3918b5f36d61861b757261da986b51be562c7a87ac4e531d4158e67e08bff72"
+dependencies = [
+ "jetscii",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2480,6 +2489,12 @@ name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
+
+[[package]]
+name = "jetscii"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47f142fe24a9c9944451e8349de0a56af5f3e7226dc46f3ed4d4ecc0b85af75e"
 
 [[package]]
 name = "jni"
@@ -3415,7 +3430,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3818,7 +3833,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3876,7 +3891,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4394,6 +4409,7 @@ dependencies = [
  "dialog-varsig",
  "dirs",
  "futures-util",
+ "ipld-core",
  "lsp-types",
  "rand 0.9.2",
  "serde",
@@ -4405,6 +4421,7 @@ dependencies = [
  "tonk-evaluator",
  "tonk-invite",
  "tonk-notation",
+ "tonk-render",
  "tonk-schema",
  "url",
  "wasm-bindgen-test",
@@ -4602,7 +4619,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4987,6 +5004,7 @@ dependencies = [
  "tonk-host",
  "tonk-notation",
  "tonk-schema",
+ "tonk-template",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
@@ -5124,6 +5142,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-render"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "dialog-common",
+ "dialog-query",
+ "html5gum",
+ "ipld-core",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonk-schema",
+ "tonk-template",
+ "wasm-bindgen-test",
+]
+
+[[package]]
 name = "tonk-schema"
 version = "0.1.0"
 dependencies = [
@@ -5163,6 +5198,20 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "tonk-template"
+version = "0.1.0"
+dependencies = [
+ "dialog-common",
+ "indexmap",
+ "ipld-core",
+ "serde_ipld_dagjson",
+ "serde_json",
+ "tokio",
+ "tonk-schema",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -5816,7 +5865,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

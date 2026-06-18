@@ -94,6 +94,10 @@ mod tests {
     use super::*;
     use ipld_core::serde::to_ipld;
     use serde_json::{Value, json};
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     fn ipld(value: Value) -> Ipld {
         to_ipld(&value).expect("json value converts to ipld")
@@ -117,12 +121,12 @@ mod tests {
         select_rows(rows).into_iter().next()
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_returns_none_for_empty_input() {
         assert!(fold_one(vec![]).is_none());
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_returns_a_single_row_unchanged() {
         let c = conclusion("did:key:zX", &[("name", json!("Alice"))]);
         let folded = fold_one(vec![c.clone()]).expect("single row folds");
@@ -130,7 +134,7 @@ mod tests {
         assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Alice"))));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_keeps_scalar_when_every_row_agrees() {
         let rows = vec![
             conclusion("did:key:zX", &[("name", json!("Alice"))]),
@@ -141,7 +145,7 @@ mod tests {
         assert_eq!(folded.fields.get("name"), Some(&ipld(json!("Alice"))));
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_collects_distinct_values_into_an_array() {
         // The todo-list shape: three rows for one entity, each
         // with a different `item` value.
@@ -180,7 +184,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_preserves_first_seen_order_for_differing_values() {
         let rows = vec![
             conclusion("did:key:zX", &[("tag", json!("zebra"))]),
@@ -194,7 +198,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_deduplicates_repeated_values() {
         let rows = vec![
             conclusion("did:key:zX", &[("tag", json!("alpha"))]),
@@ -210,7 +214,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[dialog_common::test]
     fn it_handles_a_field_missing_from_later_rows() {
         // Worker output for cardinality-many queries can leave a
         // field unbound on some rows; we just don't append it.

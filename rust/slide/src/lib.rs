@@ -26,6 +26,7 @@ pub mod invite;
 pub mod migrate;
 pub mod output;
 pub mod remote;
+pub mod render;
 pub mod schema;
 pub mod share;
 pub mod site;

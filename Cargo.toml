@@ -17,6 +17,8 @@ members = [
     "rust/tonk-macros",
     "rust/tonk-notation",
     "rust/tonk-portal",
+    "rust/tonk-render",
+    "rust/tonk-template",
     "rust/slide",
     "rust/tonk-schema",
     "rust/tonk-sigil",
@@ -49,7 +51,9 @@ tonk-language-server = { path = "./rust/tonk-language-server" }
 tonk-macros = { path = "./rust/tonk-macros" }
 tonk-notation = { path = "./rust/tonk-notation" }
 tonk-portal = { path = "./rust/tonk-portal" }
+tonk-render = { path = "./rust/tonk-render" }
 tonk-schema = { path = "./rust/tonk-schema" }
+tonk-template = { path = "./rust/tonk-template" }
 tonk-sigil = { path = "./rust/tonk-sigil" }
 tonk-ui = { path = "./rust/tonk-ui" }
 tonk-worker = { path = "./rust/tonk-worker" }
@@ -112,6 +116,7 @@ proc-macro2 = "1"
 tempfile = "3"
 thirtyfour = "0.36"
 thiserror = "2"
+html5gum = "0.7"
 tokio = "1"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }

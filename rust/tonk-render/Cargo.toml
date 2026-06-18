@@ -1,0 +1,29 @@
+[package]
+name = "tonk-render"
+description = "Headless (no-DOM) rendering of tonk-display view templates to HTML strings."
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+dialog-query = { workspace = true }
+html5gum = { workspace = true }
+ipld-core = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tonk-schema = { workspace = true }
+tonk-template = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(dialog_test_native_integration)',
+    'cfg(dialog_test_wasm_integration)',
+    'cfg(feature, values("web-integration-tests"))',
+] }
