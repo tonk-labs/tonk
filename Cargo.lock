@@ -5347,8 +5347,11 @@ dependencies = [
 name = "tonk-workspace"
 version = "0.1.0"
 dependencies = [
+ "bs58",
  "custom-elements",
  "dialog-common",
+ "dialog-credentials",
+ "dialog-varsig",
  "js-sys",
  "serde_json",
  "tonk-common",

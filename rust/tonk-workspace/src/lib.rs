@@ -16,6 +16,8 @@ mod ancestors;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod binder;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod credential;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
@@ -38,6 +40,7 @@ mod sync;
 pub fn register() {
     sheet::register();
     binder::register();
+    credential::register();
     share::register();
     invite::register();
     sync::register();
