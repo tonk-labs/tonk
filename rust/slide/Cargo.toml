@@ -79,7 +79,6 @@ tonk-invite = { workspace = true }
 tonk-notation = { workspace = true }
 tonk-render = { workspace = true }
 tonk-schema = { workspace = true }
-tonk-template = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

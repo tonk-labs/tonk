@@ -7,9 +7,19 @@ license.workspace = true
 edition.workspace = true
 
 [dependencies]
+async-trait = { workspace = true }
+dialog-query = { workspace = true }
 html5gum = { workspace = true }
 ipld-core = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tonk-schema = { workspace = true }
 tonk-template = { workspace = true }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
