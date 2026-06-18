@@ -1,6 +1,6 @@
 use crate::components::{
     LastJoinOutcome, TonkBoardView, TonkDisplayView, TonkHub, TonkInviteDialog, TonkJoin,
-    TonkProfile, TonkSpaceViewer, TonkToolbar,
+    TonkSpaceViewer, TonkToolbar,
 };
 use leptos::prelude::*;
 use leptos_router::{
@@ -50,7 +50,6 @@ pub fn TonkLauncher() -> impl IntoView {
                             path=path!("space/:space/board/:board")
                             view=TonkBoardView
                         />
-                        <Route path=path!("profile") view=TonkProfile />
                         <Route path=path!("join") view=TonkJoin />
                     </ParentRoute>
 
@@ -123,12 +122,6 @@ mod integration_tests {
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use tonk_invite::{Invite, InviteAudience};
 
-    /// Selector for the profile footer tile. Keyed by its
-    /// `aria-label` so the test doesn't depend on the footer's
-    /// internal structure.
-    #[cfg_attr(not(feature = "integration-tests"), allow(dead_code))]
-    const PROFILE_TILE: &str = r#"wa-button[aria-label="Profile"]"#;
-
     #[dialog_common::test]
     async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
         let driver = test_environment.driver().await?;
@@ -158,57 +151,6 @@ mod integration_tests {
 
         driver.quit().await?;
 
-        Ok(())
-    }
-
-    /// Navigating to `/profile` lands on the chromed profile
-    /// route. The bare `/space/home` route has no sidebar, so we
-    /// reach the profile by direct navigation rather than a tile
-    /// click. Once there, the chromed `<wa-page>` shell renders
-    /// and the profile tile carries its active state.
-    #[dialog_common::test]
-    async fn it_navigates_to_the_profile_route(env: TestEnvironment) -> Result<()> {
-        let driver = env.driver().await?;
-
-        // Wait for the home space to finish loading. The bare
-        // display route is the readiness signal now.
-        driver
-            .query(By::Css("tonk-repository.display-route"))
-            .first()
-            .await?;
-        let url = driver.current_url().await?;
-        assert_eq!(
-            url.path(),
-            "/space/home",
-            "expected the default redirect to land on /space/home, got: {url}",
-        );
-
-        // Navigate directly to the profile route.
-        driver.goto(&format!("{}profile", env.tonk_web)).await?;
-
-        // `/profile` is chromed, so the adaptive `<wa-page>` shell
-        // wraps it. Its presence is the route-ready signal.
-        driver.query(By::Css("wa-page")).first().await?;
-        let url = driver.current_url().await?;
-        assert_eq!(
-            url.path(),
-            "/profile",
-            "expected URL to be /profile after navigating, got: {url}",
-        );
-
-        // The chromed profile route renders the sidebar, so the
-        // profile tile should carry `is-active` while we're on it.
-        let profile_tile = driver.query(By::Css(PROFILE_TILE)).first().await?;
-        assert!(
-            profile_tile
-                .class_name()
-                .await?
-                .unwrap_or_default()
-                .contains("is-active"),
-            "expected profile tile to carry `is-active` on /profile",
-        );
-
-        driver.quit().await?;
         Ok(())
     }
 

@@ -52,7 +52,6 @@ pub fn TonkToolbar() -> impl IntoView {
             .unwrap_or_else(|| segment.to_string());
         crate::components::route::parse_space(&decoded).map(|space_ref| space_ref.name)
     });
-    let profile_active = Signal::derive(move || location.pathname.get() == "/profile");
 
     // Turn the space list into a stable-sorted list of tiles, carrying
     // the routing key (the URL the tile links by) and the subject DID
@@ -70,16 +69,6 @@ pub fn TonkToolbar() -> impl IntoView {
             .collect();
         spaces.sort_by(|a, b| a.1.cmp(&b.1));
         Some(spaces)
-    });
-
-    // Profile footer's sigil is derived from the profile's own
-    // DID — it's a property of the profile, not of whichever
-    // space is currently active. `None` while the fetch is in
-    // flight; the `<tonk-sigil>` element handles that by falling
-    // back to its empty state.
-    let profile_sigil = Signal::derive_local(move || {
-        let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
-        did_to_sigil(info.profile.subject.as_ref())
     });
 
     view! {
@@ -147,18 +136,5 @@ pub fn TonkToolbar() -> impl IntoView {
                 </svg>
             </wa-button>
         </div>
-
-        <wa-button
-            slot="navigation-footer"
-            class="sidebar-space sidebar-space--profile"
-            class:is-active=move || profile_active.get()
-            href="/profile"
-            aria-label="Profile"
-        >
-            <tonk-sigil
-                class="sidebar-sigil"
-                value=move || profile_sigil.get()
-            ></tonk-sigil>
-        </wa-button>
     }
 }

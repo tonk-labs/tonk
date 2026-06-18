@@ -31,9 +31,6 @@ use board::*;
 mod inspector;
 pub use inspector::register as register_inspector;
 
-mod profile;
-use profile::*;
-
 mod join;
 use join::*;
 
