@@ -31,6 +31,28 @@ mod when_evaluating_a_document {
     }
 
     #[dialog_common::test]
+    async fn it_seeds_the_standard_library_view_concept_on_init() -> Result<()> {
+        // A freshly initialised site carries the tonk standard
+        // library — the same `core.yaml` the tonk-ui service worker
+        // seeds at repository creation — so the renderer's `tonk:view`
+        // concept is present without the user defining it.
+        // `<tonk-display>` queries `tonk:view` by `model`, so views
+        // authored through slide resolve and render instead of
+        // showing "View not found".
+        let test = common::TestSite::new().await?;
+        let query = test
+            .eval_inline("concept:\n  this: ?c\n  name: \"view\"\n")
+            .await?;
+        assert!(
+            !query.response.matches_after.is_empty()
+                && !query.response.matches_after[0].results.is_empty(),
+            "expected a freshly-initialised site to seed the `view` concept, got: {:#?}",
+            query.response.matches_after,
+        );
+        Ok(())
+    }
+
+    #[dialog_common::test]
     async fn it_round_trips_a_concept_declaration() -> Result<()> {
         let test = common::TestSite::new().await?;
         test.eval_inline(ATTRIBUTE_DECL).await?;
