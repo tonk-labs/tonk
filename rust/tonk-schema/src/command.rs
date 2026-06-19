@@ -70,3 +70,39 @@ impl Command for CreateSpace {
     type Input = Self;
     type Output = ();
 }
+
+/// Request to mint a repository invite delegated to a
+/// browser-generated audience DID.
+///
+/// Asserted transiently when the user submits the share form (a
+/// `<form onsubmit=tonk/invite>` in the standard library). A
+/// `<tonk-credential>` element generates an ephemeral keypair in the
+/// browser, fills the form's `audience` input with its public
+/// `did:key`, and keeps the private seed in the DOM. So the command
+/// carries only a *public* DID — never a secret. The worker handler
+/// delegates the repository's access to that DID and asserts an
+/// [`crate::concept`]-side `invitation` fact keyed by the DID; the view
+/// reads the resulting (non-secret) delegation chain back and assembles
+/// the final URL locally, joining it with the seed it still holds.
+///
+/// `audience` is read from `elements.audience.value`; `subject` (the
+/// repository) is stamped on the form's `data-subject`. Both are
+/// `dom.event.*` read-paths so the concept the form asserts is the one
+/// the handler decodes.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Invite {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The browser-generated audience DID, read from the form's
+    /// `audience` input.
+    pub audience: crate::domain::command::invite::Audience,
+    /// The repository being shared, stamped on the form's `data-subject`.
+    pub subject: crate::domain::command::invite::Subject,
+}
+
+/// `Invite` is a [`dialog_capability::Command`]; its handler lives in
+/// `tonk-worker` (delegates + asserts the `invitation` fact).
+impl Command for Invite {
+    type Input = Self;
+    type Output = ();
+}

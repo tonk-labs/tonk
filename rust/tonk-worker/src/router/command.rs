@@ -33,18 +33,42 @@ use crate::reactor::CommandRegistry;
 #[derive(Clone)]
 pub struct CommandEnv {
     state: AppState,
+    origin: CommandOrigin,
+}
+
+/// The repository + branch a command was triggered in. Captured at the
+/// dispatch site (the transact handler holds the committing
+/// `BranchReference`, which knows both names) and carried on the env so
+/// a handler can act on "the branch I fired in" without the command
+/// re-carrying that context as a field.
+#[derive(Clone, Debug, Default)]
+pub struct CommandOrigin {
+    /// The repository name (its routing key).
+    pub repo: String,
+    /// The branch name.
+    pub branch: String,
 }
 
 impl CommandEnv {
-    /// Build the env over a clone of the shared state.
-    pub fn new(state: AppState) -> Self {
-        Self { state }
+    /// Build the env over a clone of the shared state, scoped to the
+    /// `origin` the triggering commit happened in.
+    pub fn new(state: AppState, origin: CommandOrigin) -> Self {
+        Self { state, origin }
     }
 
     /// Borrow the underlying state — `Provider` impls re-lock through
     /// this to reach the operator and reactor.
     pub fn state(&self) -> &AppState {
         &self.state
+    }
+
+    /// The repository + branch this command was triggered in. A handler
+    /// that operates on "the repo I fired in" (e.g. minting an invite
+    /// for it) reads the origin repo name here and loads the repository
+    /// through `state()`, rather than receiving the subject as a command
+    /// field.
+    pub fn origin(&self) -> &CommandOrigin {
+        &self.origin
     }
 }
 
@@ -104,7 +128,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
 /// state. The goal is STM-like optimistic concurrency: track the observed
 /// revision/read-set and commit-or-conflict, re-running on conflict. See
 /// the `TODO(stm)` notes on `reactor::command::TypedCommand::run`.
-pub async fn dispatch(state: &AppState, transients: Changes) {
+pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Changes) {
     // Match commands and build their `'static` run-futures while holding
     // the read lock — each future owns its decoded command and an env
     // clone, so we can drop the lock before awaiting them. That keeps
@@ -115,7 +139,7 @@ pub async fn dispatch(state: &AppState, transients: Changes) {
         if tonk.commands.is_empty() {
             return;
         }
-        let env = CommandEnv::new(state.clone());
+        let env = CommandEnv::new(state.clone(), origin);
         tonk.commands
             .match_transients(&transients)
             .into_iter()
@@ -213,7 +237,7 @@ mod tests {
 
         async fn env() -> (AppState, CommandEnv) {
             let state: AppState = Arc::new(RwLock::new(test_state().await));
-            let env = CommandEnv::new(state.clone());
+            let env = CommandEnv::new(state.clone(), CommandOrigin::default());
             (state, env)
         }
 
@@ -296,7 +320,7 @@ mod tests {
                 .is("beta".to_string())
                 .assert(&mut changes);
 
-            dispatch(&state, changes).await;
+            dispatch(&state, CommandOrigin::default(), changes).await;
 
             let mut tags = drain_ping_log();
             tags.sort();
@@ -321,7 +345,7 @@ mod tests {
                 .is("x".to_string())
                 .assert(&mut changes);
 
-            dispatch(&state, changes).await;
+            dispatch(&state, CommandOrigin::default(), changes).await;
             assert!(drain_ping_log().is_empty());
         }
     }

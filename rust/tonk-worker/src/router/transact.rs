@@ -79,9 +79,14 @@ pub async fn transact(
     };
     // The transient commands (if any) were captured before commit;
     // dispatch them now that the state lock is released, so each
-    // command's `execute` can re-acquire it.
+    // command's `execute` can re-acquire it. The origin is the repo +
+    // branch this commit landed in, so a handler can act on it.
     if let Some(transients) = transients {
-        super::dispatch(&state, transients).await;
+        let origin = super::CommandOrigin {
+            repo: path.repo,
+            branch: path.branch,
+        };
+        super::dispatch(&state, origin, transients).await;
     }
     Ok(response)
 }
@@ -100,8 +105,15 @@ pub async fn transact_profile(
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
+    // Profile-branch commits carry an empty `repo` origin: the profile
+    // repository is not in the named-repo namespace, and no command
+    // dispatched here loads an origin repository by name.
     if let Some(transients) = transients {
-        super::dispatch(&state, transients).await;
+        let origin = super::CommandOrigin {
+            repo: String::new(),
+            branch: path.branch,
+        };
+        super::dispatch(&state, origin, transients).await;
     }
     Ok(response)
 }

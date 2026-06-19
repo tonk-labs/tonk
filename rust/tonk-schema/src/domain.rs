@@ -93,6 +93,26 @@ pub mod command {
         #[domain("dom.event.current-target.elements.remote")]
         pub struct Value(pub String);
     }
+
+    /// Attributes the `tonk/invite` command reads from its submit event.
+    pub mod invite {
+        use super::Attribute;
+
+        /// The audience DID, read from the share form's `audience`
+        /// input (`event.currentTarget.elements.audience.value`). A
+        /// `<tonk-credential>` fills it with a browser-generated
+        /// `did:key`. Entity-typed: it is a DID URI, not free text.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.elements.audience")]
+        pub struct Audience(pub String);
+
+        /// The repository being shared, read from the form's
+        /// `data-subject` (`event.currentTarget.dataset.subject`). The
+        /// share view stamps the repository's subject DID there.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Subject(pub String);
+    }
 }
 
 /// Attributes that live on a repository's own `tonk/repository`
