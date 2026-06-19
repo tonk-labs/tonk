@@ -99,6 +99,7 @@ pub fn command_registry() -> CommandRegistry<CommandEnv> {
     {
         let mut registry = CommandRegistry::new();
         registry.register(Box::new(super::repository::CreateSpaceHandler::new()));
+        registry.register(Box::new(super::repository::InviteHandler::new()));
         registry
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]

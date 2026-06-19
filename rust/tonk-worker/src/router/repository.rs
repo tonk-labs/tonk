@@ -373,6 +373,194 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
     }
 }
 
+/// Post-commit handler for the [`Invite`] command.
+///
+/// When the share form's `<form onsubmit=tonk/invite>` commits a
+/// transient [`Invite`], this handler delegates the *origin* repository's
+/// access to the browser-generated audience DID, base58-encodes the
+/// resulting delegation chain, and asserts a durable [`Invitation`] fact
+/// keyed by that DID on the repository's content branch (`main`) — the
+/// same branch the share view reads `model=invitation` from.
+///
+/// The repository is not a command field: it is read from
+/// [`CommandEnv::origin`](crate::router::CommandEnv::origin) (the branch
+/// the commit landed in), so the form needs no `data-subject` stamp. The
+/// delegation is *scoped* — the audience is known, the browser holds the
+/// matching ephemeral seed — so no ephemeral key is minted here.
+///
+/// A custom handler (not a plain `Provider<Invite>`) is required because
+/// the delegation reads durable repository state the decoded command
+/// alone does not carry, and because the target repository comes from the
+/// origin rather than a command field.
+///
+/// [`Invite`]: tonk_schema::command::Invite
+/// [`Invitation`]: tonk_schema::command::Invitation
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct InviteHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl InviteHandler {
+    /// Cache `Invite`'s trigger attributes (its `audience` field) so the
+    /// registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::Invite::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::Invite::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock), then
+        // hand owned values + an env clone to the `'static` future.
+        let audience = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
+            .map(|command| command.audience.0);
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(audience) = audience else {
+                return;
+            };
+            // The repository to delegate is read from the origin — the
+            // branch the commit landed in — not from a command field.
+            let repo_name = env.origin().repo.clone();
+            log!("command Invite repo={} audience={}", repo_name, audience);
+
+            if let Err(error) = run_invite(&env, &repo_name, &audience).await {
+                log!(
+                    "Invite for repo '{}' audience '{}' failed: {}",
+                    repo_name,
+                    audience,
+                    error
+                );
+            }
+        })
+    }
+}
+
+/// Delegate `repo_name`'s access to `audience`, then assert the resulting
+/// [`Invitation`] fact on the repository's content branch.
+///
+/// Split out from [`InviteHandler::run`] so the `?` early-return funnels
+/// into the single `log!` there — the command future itself returns `()`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_invite(
+    env: &crate::router::CommandEnv,
+    repo_name: &str,
+    audience: &str,
+) -> Result<(), TonkWorkerError> {
+    use dialog_artifacts::Entity;
+    use tonk_schema::command::Invitation;
+    use tonk_schema::domain::invitation::{Access, Remote as InvitationRemote};
+
+    // The audience is a browser-generated `did:key`: parsed once as a
+    // `Did` for the scoped delegation and once as an `Entity` to key the
+    // durable `invitation` fact.
+    let audience_did = audience
+        .parse::<Did>()
+        .map_err(|e| TonkWorkerError::Router(format!("invalid audience DID '{audience}': {e}")))?;
+    let audience_entity = audience.parse::<Entity>().map_err(|e| {
+        TonkWorkerError::Router(format!("invalid audience entity '{audience}': {e}"))
+    })?;
+
+    let tonk = env.state().read().await;
+
+    let repository = tonk
+        .profile
+        .repository(repo_name)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{repo_name}' not found: {e}"))
+        })?;
+
+    // Scoped delegation: the audience is known and the browser holds the
+    // matching ephemeral seed, so no ephemeral key is minted here.
+    let delegation: dialog_ucan::UcanDelegation = tonk
+        .profile
+        .access()
+        .claim(&repository)
+        .delegate(audience_did)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
+
+    // base58-encode the delegation chain — the `?access=` parameter the
+    // view reads back and assembles into the final URL.
+    let chain_bytes = delegation.into_chain().to_bytes().map_err(|e| {
+        TonkWorkerError::Internal(format!("failed to serialize delegation chain: {e}"))
+    })?;
+    let access = bs58::encode(&chain_bytes).into_string();
+
+    // Optional sync remote endpoint — empty string when local-only.
+    let remote = super::create_invite::resolve_remote_url(&tonk, &repository)
+        .await?
+        .map(|url| url.to_string())
+        .unwrap_or_default();
+
+    let invitation = Invitation {
+        this: audience_entity,
+        access: Access(access),
+        remote: InvitationRemote(remote),
+    };
+
+    // Assert on the repository's content branch (`main`) — the same
+    // branch the share view reads `model=invitation` from — not the meta
+    // branch.
+    let branch = repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!(
+                "failed to open content branch '{CONTENT_BRANCH}': {e}"
+            ))
+        })?;
+
+    branch
+        .transaction()
+        .assert(invitation)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to commit invitation fact: {e}")))?;
+
+    log!(
+        "Asserted invitation for repo '{}' audience '{}'",
+        repo_name,
+        audience
+    );
+    Ok(())
+}
+
 /// Build the [`RepositoryConfiguration`] for a space with a single
 /// `main` branch, optionally synced to `remote`.
 ///

@@ -105,13 +105,6 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.elements.audience")]
         pub struct Audience(pub String);
-
-        /// The repository being shared, read from the form's
-        /// `data-subject` (`event.currentTarget.dataset.subject`). The
-        /// share view stamps the repository's subject DID there.
-        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-        #[domain("dom.event.current-target.dataset")]
-        pub struct Subject(pub String);
     }
 }
 
@@ -126,6 +119,28 @@ pub mod repo {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.repo")]
     pub struct Name(pub String);
+}
+
+/// Attributes on the durable `invitation` concept — the delegation
+/// chain a `tonk/invite` command minted, keyed by the audience DID it
+/// was issued to. The chain is a scoped capability, not a secret, so it
+/// replicates like any fact; the matching private seed never leaves the
+/// browser that generated it.
+pub mod invitation {
+    use super::Attribute;
+
+    /// The base58-encoded delegation chain — the `?access=` parameter of
+    /// the invite URL the view assembles.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation")]
+    pub struct Access(pub String);
+
+    /// The UCAN access-service endpoint for sync, when the repository
+    /// advertises a remote — the optional `&remote=` parameter. Empty
+    /// when the repository is local-only.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.invitation")]
+    pub struct Remote(pub String);
 }
 
 /// Attributes that live on [`Branch`] entities (and

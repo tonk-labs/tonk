@@ -81,14 +81,14 @@ impl Command for CreateSpace {
 /// `did:key`, and keeps the private seed in the DOM. So the command
 /// carries only a *public* DID — never a secret. The worker handler
 /// delegates the repository's access to that DID and asserts an
-/// [`crate::concept`]-side `invitation` fact keyed by the DID; the view
-/// reads the resulting (non-secret) delegation chain back and assembles
-/// the final URL locally, joining it with the seed it still holds.
+/// `invitation` fact keyed by the DID; the view reads the resulting
+/// (non-secret) delegation chain back and assembles the final URL
+/// locally, joining it with the seed it still holds.
 ///
-/// `audience` is read from `elements.audience.value`; `subject` (the
-/// repository) is stamped on the form's `data-subject`. Both are
-/// `dom.event.*` read-paths so the concept the form asserts is the one
-/// the handler decodes.
+/// `audience` is read from `elements.audience.value`. The repository to
+/// delegate is *not* a command field: the handler reads it from the
+/// command's origin (`CommandEnv::origin`) — the branch the commit
+/// landed in — so the form needs no `data-subject` stamp.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Invite {
     /// The command entity (a fresh id per invocation).
@@ -96,8 +96,6 @@ pub struct Invite {
     /// The browser-generated audience DID, read from the form's
     /// `audience` input.
     pub audience: crate::domain::command::invite::Audience,
-    /// The repository being shared, stamped on the form's `data-subject`.
-    pub subject: crate::domain::command::invite::Subject,
 }
 
 /// `Invite` is a [`dialog_capability::Command`]; its handler lives in
@@ -105,4 +103,23 @@ pub struct Invite {
 impl Command for Invite {
     type Input = Self;
     type Output = ();
+}
+
+/// The durable fact a `tonk/invite` handler asserts: the delegation
+/// chain it minted, **keyed by the audience DID** (`this`). The share
+/// view queries `<tonk-display model=invitation entity={audience}>` to
+/// read `access` back and assemble the final URL.
+///
+/// Storing this is safe: a delegation chain is a scoped capability, not
+/// a secret. The secret (the ephemeral private seed) is held only by the
+/// browser's `<tonk-credential>` and joined into the URL there.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Invitation {
+    /// The audience DID the invite was issued to — the entity the share
+    /// view addresses by `entity={audience}`.
+    pub this: Entity,
+    /// The base58 delegation chain (`?access=`).
+    pub access: crate::domain::invitation::Access,
+    /// The sync remote endpoint (`&remote=`), empty when local-only.
+    pub remote: crate::domain::invitation::Remote,
 }

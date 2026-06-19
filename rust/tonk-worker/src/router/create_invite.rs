@@ -219,7 +219,7 @@ pub async fn create_invite(
 /// `main` is hardcoded; see `project_main_branch_implicit_creation`
 /// memory note on why `.open()` is used here despite not being
 /// strictly read-only.
-async fn resolve_remote_url<R>(
+pub(crate) async fn resolve_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,
 ) -> Result<Option<Url>, TonkWorkerError>
