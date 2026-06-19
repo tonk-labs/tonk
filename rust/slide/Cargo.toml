@@ -67,6 +67,11 @@ dialog-ucan = { workspace = true }
 dialog-ucan-core = { workspace = true }
 dialog-varsig = { workspace = true }
 dirs = { workspace = true }
+# slide doesn't call reqwest directly; this dep exists so Cargo feature unification
+# turns on `rustls-tls-native-roots` (see workspace Cargo.toml) for the reqwest that
+# dialog-db's transport crates build, letting slide's remote ops trust the OS CA
+# store behind TLS-intercepting proxies. Drop once dialog-db ships native roots.
+reqwest = { workspace = true }
 ipld-core = { workspace = true }
 lsp-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
