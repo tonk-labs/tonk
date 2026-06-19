@@ -1147,7 +1147,14 @@ view/directory!:
         <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
-          <wa-button class="workspace__share" appearance="plain" data-dialog="open share-repo" aria-label="Share this repo" title="Share this repo">
+          <!-- One click both opens the share dialog (`data-dialog`) and
+               submits the dialog's share form (`form=share-form`, the HTML
+               external-submit attribute) — so the invite mints on open with
+               no separate "Create link" click. The form's `<tonk-credential>`
+               has already filled the audience input on page load, so the
+               submit carries the DID. A user click is the trigger, so there
+               is no render-driven auto-fire loop. -->
+          <wa-button class="workspace__share" appearance="plain" type="submit" form="share-form" data-dialog="open share-repo" aria-label="Share this repo" title="Share this repo">
             <wa-icon name="share-nodes" label="Share"></wa-icon>
           </wa-button>
         </span>
@@ -1203,8 +1210,7 @@ view/directory!:
             </div>
           </tonk-display>
         </tonk-credential>
-        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Close</wa-button>
-        <wa-button slot="footer" variant="primary" type="submit" form="share-form">Create link</wa-button>
+        <wa-button slot="footer" variant="primary" data-dialog="close">Done</wa-button>
       </wa-dialog>
 
       <tonk-display model=workspace/sheet data-active={active} />
