@@ -440,7 +440,7 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler
             .first()
             .map(|artifact| artifact.of.clone())
             .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
-            .map(|command| command.audience.0);
+            .map(|command| command.audience.0.to_string());
         let env = env.clone();
 
         Box::pin(async move {
@@ -519,11 +519,21 @@ async fn run_invite(
     })?;
     let access = bs58::encode(&chain_bytes).into_string();
 
-    // Optional sync remote endpoint — empty string when local-only.
-    let remote = super::create_invite::resolve_remote_url(&tonk, &repository)
-        .await?
-        .map(|url| url.to_string())
-        .unwrap_or_default();
+    // Optional sync remote endpoint, stored as a ready-to-append URL query
+    // suffix (`&remote=<percent-encoded-url>`) — or empty when the repo is
+    // local-only. The share view appends it verbatim between `?access=…`
+    // and the `#seed`, so a recipient on another device knows where to
+    // pull from. It is a suffix (not a bare URL) because the view template
+    // can't conditionally include a parameter, and `Invite::parse_url`
+    // rejects an empty `remote=`, so "no remote" must append *nothing*.
+    let remote = match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
+        Some(url) => {
+            let encoded: String =
+                url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
+            format!("&remote={encoded}")
+        }
+        None => String::new(),
+    };
 
     let invitation = Invitation {
         this: audience_entity,
@@ -531,21 +541,15 @@ async fn run_invite(
         remote: InvitationRemote(remote),
     };
 
-    // Assert on the repository's content branch (`main`) — the same
-    // branch the share view reads `model=invitation` from — not the meta
-    // branch.
-    let branch = repository
+    // Assert on the repository's content branch (`main`) — the same branch
+    // the share view reads `model=invitation` from — **through the
+    // reactor**, not the bare repository handle. The reactor serves queries
+    // and subscriptions from its cached branch; committing via
+    // `repository.branch(...)` would land the fact in storage but leave the
+    // reactor's cached view (and the share view's live query) unaware of it.
+    tonk.reactor
+        .repository(repo_name)
         .branch(CONTENT_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!(
-                "failed to open content branch '{CONTENT_BRANCH}': {e}"
-            ))
-        })?;
-
-    branch
         .transaction()
         .assert(invitation)
         .commit()

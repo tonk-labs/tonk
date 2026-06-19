@@ -47,8 +47,7 @@ const BIND_PREFIX: &str = "bind:";
 
 /// Per-element state. The element holds nothing across renders today —
 /// the keypair is generated on connect and its values are pushed into
-/// the DOM — so the struct is empty. (A future `regenerate` would keep
-/// the signer here.)
+/// the DOM — so the struct is empty.
 #[derive(Default)]
 pub(crate) struct TonkCredential;
 
@@ -78,12 +77,16 @@ impl CustomElement for TonkCredential {
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
 }
 
-/// Generate a fresh keypair and return its `(did, seed_base58)`. The
-/// seed must be extractable to be embeddable in an invite URL; a
-/// non-extractable WebCrypto key can't yield one, so that case is a
-/// generation failure here.
+/// Generate a fresh keypair and return its `(did, seed_base58)`.
+///
+/// The seed must be embeddable in the invite URL, so the key has to be
+/// *extractable*. Wasm's default `Ed25519Signer::generate` produces a
+/// non-extractable WebCrypto key (the secure default), so we opt into
+/// extractable generation via [`ExtractableKey`] — the same path the
+/// worker's `generate_ephemeral` uses.
 async fn generate() -> Option<(String, String)> {
-    let signer = Ed25519Signer::generate().await.ok()?;
+    use dialog_credentials::key::ExtractableKey;
+    let signer = <Ed25519Signer as ExtractableKey>::generate().await.ok()?;
     let did = signer.did().as_str().to_owned();
     let seed = match signer.export().await.ok()? {
         KeyExport::Extractable(bytes) => bs58::encode(bytes).into_string(),

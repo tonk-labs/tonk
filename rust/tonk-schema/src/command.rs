@@ -95,7 +95,7 @@ pub struct Invite {
     pub this: Entity,
     /// The browser-generated audience DID, read from the form's
     /// `audience` input.
-    pub audience: crate::domain::command::invite::Audience,
+    pub audience: crate::domain::command::invite::Value,
 }
 
 /// `Invite` is a [`dialog_capability::Command`]; its handler lives in

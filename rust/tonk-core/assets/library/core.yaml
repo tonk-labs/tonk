@@ -258,16 +258,19 @@ concept!: &invitation
       cardinality: one
       as: text
 
-# The invite-link view. The share dialog mounts this on the `invitation`
-# model; it renders only once the worker has asserted the fact for the
-# audience DID (before that the display is empty). The readonly input shows
-# the assembled absolute URL: `{base}?access={access}#{seed}`, where `base`
-# (`{origin}/join`) and `seed` are host attributes the wrapping
-# `<tonk-credential>` set on this element, and `access` is the durable
-# fact. The seed and base come from the host attributes, never the
-# database. `<wa-copy-button>` copies the same value.
+# The invite-link view — the default view for the `invitation` model, so
+# `<tonk-display model=invitation>` mounts it with no explicit `view=`. It
+# renders only once the worker has asserted the fact for the audience DID
+# (before that the display is empty). The readonly input shows the
+# assembled absolute URL: `{base}?access={access}{remote}#{seed}`, where
+# `base` (`{origin}/join`) and `seed` are host attributes the wrapping
+# `<tonk-credential>` set on this element, and `access` + `remote` are the
+# durable fact. `remote` is a ready-to-append `&remote=<url>` suffix (empty
+# for a local-only repo) so the recipient knows where to sync from. The
+# seed and base come from the host attributes, never the database.
+# `<wa-copy-button>` copies the same value.
 view!: &invitation/link
-  this: tonk:invitation/link
+  this: id:invitation/link
   model: invitation
   display: |
     <div class="invite-link">
@@ -275,11 +278,11 @@ view!: &invitation/link
         class="invite-link__url"
         label="Invite link"
         readonly
-        value="{dom.host/data-base}?access={access}#{dom.host/data-seed}"
+        value="{dom.host/data-base}?access={access}{remote}#{dom.host/data-seed}"
       ></wa-input>
       <wa-copy-button
         class="invite-link__copy"
-        value="{dom.host/data-base}?access={access}#{dom.host/data-seed}"
+        value="{dom.host/data-base}?access={access}{remote}#{dom.host/data-seed}"
       ></wa-copy-button>
     </div>
 
@@ -1179,8 +1182,17 @@ view/directory!:
             model=invitation
             bind:did="entity"
             bind:seed="data-seed"
-            bind:base="data-base"
-            view=invitation/link>
+            bind:base="data-base">
+            <!-- Until the worker asserts the invitation fact for this
+                 audience DID (after "Create link" is submitted), the
+                 display has no entity to render. Provide a `no-entity` slot
+                 child so it shows a quiet pending affordance instead of the
+                 built-in "Not found" callout — the link is being generated,
+                 not missing. -->
+            <div slot="no-entity" class="invite-link invite-link--pending">
+              <wa-spinner></wa-spinner>
+              <span>Generating link…</span>
+            </div>
           </tonk-display>
         </tonk-credential>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Close</wa-button>

@@ -96,15 +96,28 @@ pub mod command {
 
     /// Attributes the `tonk/invite` command reads from its submit event.
     pub mod invite {
+        use super::super::Entity;
         use super::Attribute;
 
         /// The audience DID, read from the share form's `audience`
         /// input (`event.currentTarget.elements.audience.value`). A
         /// `<tonk-credential>` fills it with a browser-generated
-        /// `did:key`. Entity-typed: it is a DID URI, not free text.
+        /// `did:key`. The struct is named `Value` because the derived
+        /// attribute is the domain plus the struct name — so this is
+        /// `…elements.audience/value`, matching the form input and the
+        /// command's `the:`. (Naming it `Audience` would derive
+        /// `…/audience`, which would never match the asserted fact.)
+        ///
+        /// Typed `Entity`, not `String`: the audience is a `did:key`, and
+        /// any string carrying a `:` round-trips through the worker's
+        /// untagged `Value` deserialization as `Value::Entity`. A
+        /// `String`-typed field would never decode that entity value, so
+        /// the command would silently fail to match (the transient
+        /// commits, no handler runs). Decoding it as the `Entity` it
+        /// already is keeps the trigger matchable.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.elements.audience")]
-        pub struct Audience(pub String);
+        pub struct Value(pub Entity);
     }
 }
 

@@ -226,10 +226,23 @@ pub(crate) async fn resolve_remote_url<R>(
 where
     R: Principal + Clone,
 {
+    resolve_remote_url_with(repository, &tonk.operator).await
+}
+
+/// [`resolve_remote_url`] against a bare operator rather than the whole
+/// [`TonkState`] — for callers (e.g. the invite command handler) that
+/// must not hold the state guard across this await.
+pub(crate) async fn resolve_remote_url_with<R>(
+    repository: &dialog_repository::Repository<R>,
+    operator: &crate::worker::DefaultOperator,
+) -> Result<Option<Url>, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
     let main = repository
         .branch("main")
         .open()
-        .perform(&tonk.operator)
+        .perform(operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!(
@@ -245,7 +258,7 @@ where
     let remote = repository
         .remote(remote_name.as_str())
         .load()
-        .perform(&tonk.operator)
+        .perform(operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!(

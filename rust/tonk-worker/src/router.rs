@@ -508,6 +508,279 @@ pub mod tests {
         );
     }
 
+    /// The `tonk/invite` command handler: asserting the transient through
+    /// `/transact` must dispatch `InviteHandler`, which delegates and
+    /// asserts an `invitation` fact on the repo's content branch, queryable
+    /// by the audience DID. This exercises the real dispatch path (not the
+    /// HTTP mint route), surfacing any handler failure.
+    /// A freshly created repo plus the invite the `tonk/invite` command
+    /// minted for it: the stored `access` chain, the audience DID, and the
+    /// ephemeral seed that derives it. The test plays the browser's
+    /// `<tonk-credential>` role — it generates the ephemeral keypair, sends
+    /// only the public DID to the command, and keeps the seed (which never
+    /// crosses to the worker) to assemble a joinable URL.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    struct MintedInvite {
+        repo: String,
+        access: String,
+        /// The stored `&remote=<url>` suffix (empty for a local-only repo).
+        remote: String,
+        seed: [u8; 32],
+    }
+
+    /// Drive the `tonk/invite` command end to end on a fresh repo and
+    /// return the minted invite.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn mint_invite_via_command(app: &Router, label: &str) -> MintedInvite {
+        let repo = put_repo(app, label).await;
+        mint_invite_for(app, &repo).await
+    }
+
+    /// Drive the `tonk/invite` command against an existing `repo` and
+    /// return the minted invite. Panics if the handler never produces the
+    /// `invitation` fact.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn mint_invite_for(app: &Router, repo: &str) -> MintedInvite {
+        use dialog_credentials::{Ed25519Signer, key::ExtractableKey, key::KeyExport};
+        use dialog_varsig::Principal as _;
+
+        let repo = repo.to_owned();
+
+        // Browser-style ephemeral keypair: public DID goes to the command,
+        // the seed stays here (as `<tonk-credential>` keeps it in the DOM).
+        let signer = <Ed25519Signer as ExtractableKey>::generate().await.unwrap();
+        let audience = signer.did().as_str().to_owned();
+        let seed: [u8; 32] = match signer.export().await.unwrap() {
+            KeyExport::Extractable(bytes) => bytes.as_slice().try_into().unwrap(),
+            KeyExport::NonExtractable { .. } => panic!("extractable key expected"),
+        };
+
+        // Assert the `tonk/invite` transient via /transact — the path that
+        // dispatches commands post-commit.
+        let body = serde_json::json!({
+            "claims": [{
+                "op": "assert",
+                "application": {
+                    "parameters": { "audience": audience },
+                    "predicate": { "kind": "transient", "concept": {
+                        "description": "Mint a repo invite delegated to a browser-generated audience DID.",
+                        "with": {
+                            "audience": { "as": "Entity", "cardinality": "one", "description": "",
+                                "the": "dom.event.current-target.elements.audience/value" },
+                            "prevent-default": { "cardinality": "one", "description": "",
+                                "the": "dom.event.do/prevent-default" }
+                        }
+                    } }
+                }
+            }]
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/branch/main/transact"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "transact of tonk/invite should commit",
+        );
+
+        // Dispatch runs post-commit; poll the `invitation` fact keyed by
+        // the audience DID — the handler must commit through the reactor
+        // for the fact to be queryable.
+        for _ in 0..50 {
+            let q = serde_json::json!({
+                "terms": {
+                    "this": audience,
+                    "access": { "?": { "name": "access" } },
+                    "remote": { "?": { "name": "remote" } }
+                },
+                "predicate": { "with": {
+                    "access": { "the": "xyz.tonk.invitation/access", "as": "Text", "cardinality": "one" },
+                    "remote": { "the": "xyz.tonk.invitation/remote", "as": "Text", "cardinality": "one" }
+                } }
+            });
+            let r = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/repository/{repo}/branch/main/query"))
+                        .method("POST")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json")
+                        .body(Body::from(q.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let rows: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+            if let Some(row) = rows.first() {
+                let access = row["fields"]["access"].as_str().unwrap_or_default();
+                assert!(!access.is_empty(), "invitation fact has empty access");
+                let remote = row["fields"]["remote"].as_str().unwrap_or_default();
+                return MintedInvite {
+                    repo,
+                    access: access.to_owned(),
+                    remote: remote.to_owned(),
+                    seed,
+                };
+            }
+            // Yield to the microtask queue so the detached dispatch future
+            // makes progress (`tokio::time::sleep` is unsupported on wasm).
+            wasm_yield().await;
+        }
+        panic!("invitation fact for audience {audience} never appeared after dispatch");
+    }
+
+    /// The `tonk/invite` command handler asserts a queryable `invitation`
+    /// fact carrying the delegation chain. (`mint_invite_via_command`
+    /// panics if it doesn't.)
+    #[dialog_common::test]
+    async fn it_dispatches_the_invite_command() {
+        let state = test_state().await;
+        let (app, _state, _lsp) = super::api_router_with_state(state);
+        let minted = mint_invite_via_command(&app, "invite-command").await;
+        assert!(!minted.access.is_empty());
+    }
+
+    /// End-to-end share → join: an invite minted by the `tonk/invite`
+    /// command (browser-held keypair, seed in the URL fragment) must be
+    /// redeemable through `POST /api/profile/join`. This is the load-
+    /// bearing proof that the command-minted URL is a valid audience-open
+    /// invite — the chain the handler stored as `access`, joined with the
+    /// seed the browser held, claims as a fresh space.
+    #[dialog_common::test]
+    async fn it_joins_an_invite_minted_by_the_command() {
+        use tonk_invite::{Invite, InviteAudience};
+
+        let state = test_state().await;
+        let (app, _state, _lsp) = super::api_router_with_state(state);
+        let minted = mint_invite_via_command(&app, "invite-join").await;
+
+        // Assemble the invite URL exactly as the browser does: the stored
+        // `access` chain plus the `#seed` the credential element held.
+        let chain_bytes = bs58::decode(&minted.access)
+            .into_vec()
+            .expect("stored access must be valid base58");
+        let chain = dialog_ucan_core::DelegationChain::try_from(chain_bytes.as_slice())
+            .expect("stored access must decode to a delegation chain");
+        let invite = Invite::new(chain, InviteAudience::Open { seed: minted.seed }, None)
+            .await
+            .expect("command-minted chain + held seed must form a valid open invite");
+        let url = invite
+            .to_url(tonk_invite::DEFAULT_BASE_URL)
+            .expect("invite must serialize to a URL");
+
+        // Redeem it through the join route. The minter and the redeemer
+        // share this test's single profile, so the subject is already
+        // mounted (the mint created it) and the outcome is `renewed`
+        // rather than `joined` — both are success; the load-bearing
+        // assertion is that the command-minted URL *claims* (a 2xx with a
+        // replica), proving the chain + seed assemble into a valid,
+        // redeemable audience-open invite.
+        let (status, body) = post_join(&app, &url).await;
+        assert!(
+            status.is_success(),
+            "joining a command-minted invite should succeed, got {status}: {body}",
+        );
+        let outcome = body["outcome"].as_str().unwrap_or_default();
+        assert!(
+            outcome == "joined" || outcome == "renewed",
+            "expected a joined/renewed outcome from a command-minted invite, got {outcome:?}: {body}",
+        );
+        assert!(
+            body["repository"]["subject"].is_string(),
+            "a successful join must return the claimed repository's subject: {body}",
+        );
+    }
+
+    /// A command-minted invite for a *synced* repo must embed the sync
+    /// endpoint as a `&remote=` query parameter, so a recipient on another
+    /// device knows where to pull the shared content from. (A local-only
+    /// repo correctly omits it — covered by the join test above, whose repo
+    /// has no upstream.)
+    #[dialog_common::test]
+    async fn it_embeds_the_remote_in_a_command_minted_invite() {
+        use super::repository::{
+            BranchConfiguration, RemoteConfiguration, RepositoryConfiguration,
+        };
+        use dialog_remote_ucan_s3::UcanAddress;
+        use dialog_repository::SiteAddress;
+
+        let state = test_state().await;
+        let (app, _state, _lsp) = super::api_router_with_state(state);
+
+        // Create the repo, then attach a sync remote via the `/remote`
+        // route (the same path the topbar "Enable sync" form drives).
+        let repo = put_repo(&app, "invite-remote").await;
+        let endpoint = "https://sync.example.test/ucan/";
+        let config = RepositoryConfiguration::default()
+            .remote(
+                "origin",
+                RemoteConfiguration::new(SiteAddress::from(UcanAddress::new(endpoint))),
+            )
+            .branch(
+                "main",
+                BranchConfiguration::default().upstream("origin", "main"),
+            );
+        let attach = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{repo}/remote"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&config).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            attach.status(),
+            StatusCode::OK,
+            "remote attach should succeed"
+        );
+
+        // Mint the invite through the command. `mint_invite_via_command`
+        // creates its *own* fresh repo, so mint against THIS repo directly:
+        // generate the audience, assert the transient, read back the fact.
+        let minted = mint_invite_for(&app, &repo).await;
+
+        assert!(
+            minted.remote.contains("&remote="),
+            "a synced repo's invitation must carry a &remote= suffix, got {:?}",
+            minted.remote,
+        );
+        assert!(
+            minted.remote.contains("sync.example.test"),
+            "the &remote= suffix must point at the attached endpoint, got {:?}",
+            minted.remote,
+        );
+    }
+
+    /// Yield to the JS event loop (a `setTimeout(0)`-backed delay) so a
+    /// detached `spawn_local` future advances between polls. `tokio`'s
+    /// timer is unsupported on `wasm32`.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    async fn wasm_yield() {
+        use wasm_bindgen::JsCast;
+        let promise = js_sys::Promise::new(&mut |resolve: js_sys::Function, _| {
+            let scope: web_sys::ServiceWorkerGlobalScope = js_sys::global().unchecked_into();
+            let _ = scope.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 10);
+        });
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+
     /// Synthesize an audience-open invite for a fresh subject the
     /// caller's profile has never seen. Returns the URL plus the
     /// subject DID so tests can assert against it.
