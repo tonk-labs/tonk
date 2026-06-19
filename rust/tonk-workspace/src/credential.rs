@@ -35,29 +35,21 @@
 //! targets its descendants declare. The descendant markup, not the
 //! element, owns the wiring.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use custom_elements::CustomElement;
 use dialog_credentials::{Ed25519Signer, KeyExport};
 use dialog_varsig::Principal as _;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::Closure;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Element, Event, HtmlElement, window};
+use web_sys::{Element, HtmlElement, window};
 
 /// The `bind:` attribute prefix a descendant uses to request a value.
 const BIND_PREFIX: &str = "bind:";
 
-/// A retained event listener, kept alive for the element's lifetime.
-type ListenerCell = Rc<RefCell<Option<(web_sys::EventTarget, String, Closure<dyn FnMut(Event)>)>>>;
-
-/// Per-element state. Holds the optional `regenerate-on` listener so it
-/// stays valid until the element disconnects.
+/// Per-element state. The element holds nothing across renders today —
+/// the keypair is generated on connect and its values are pushed into
+/// the DOM — so the struct is empty.
 #[derive(Default)]
-pub(crate) struct TonkCredential {
-    regenerate_listener: ListenerCell,
-}
+pub(crate) struct TonkCredential;
 
 impl CustomElement for TonkCredential {
     fn shadow() -> bool {
@@ -73,78 +65,16 @@ impl CustomElement for TonkCredential {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // Initial generation: fill the bound targets once on connect.
-        regenerate(this);
-
-        // `regenerate-on="<event>"`: re-mint on each firing of `<event>`
-        // on the nearest ancestor that dispatches it (e.g. a `<wa-dialog>`
-        // emitting `wa-after-show`). This fires *per dialog open*, NOT per
-        // `connectedCallback`, so it produces a fresh invite each time the
-        // share dialog opens without the connect→render→reconnect loop a
-        // connect-time auto-trigger would cause. Paired with `autosubmit`,
-        // it both regenerates and submits the form on open.
-        if let Some(event_name) = this.get_attribute("regenerate-on") {
-            install_regenerate_listener(this, &event_name, &self.regenerate_listener);
-        }
-    }
-
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {
-        if let Some((target, event, closure)) = self.regenerate_listener.borrow_mut().take() {
-            let _ = target
-                .remove_event_listener_with_callback(&event, closure.as_ref().unchecked_ref());
-        }
-    }
-}
-
-/// Generate a fresh keypair and distribute its values, then — if the
-/// element carries `autosubmit` — submit its descendant form so the
-/// consuming view (the share dialog) starts producing a result without a
-/// separate click.
-fn regenerate(host: &HtmlElement) {
-    let host = host.clone();
-    spawn_local(async move {
-        match generate().await {
-            Some((did, seed)) => {
-                distribute(&host, &did, &seed, &join_base());
-                if host.has_attribute("autosubmit") {
-                    submit_descendant_form(&host);
-                }
+        let host = this.clone();
+        spawn_local(async move {
+            match generate().await {
+                Some((did, seed)) => distribute(&host, &did, &seed, &join_base()),
+                None => tonk_common::log!("tonk-credential: keypair generation failed"),
             }
-            None => tonk_common::log!("tonk-credential: keypair generation failed"),
-        }
-    });
-}
-
-/// Listen for `event_name` on the closest ancestor that emits it and
-/// re-mint on each firing. The listener is attached to the element's
-/// closest `<wa-dialog>` (the dialog dispatches its own show events), or
-/// the element itself as a fallback.
-fn install_regenerate_listener(host: &HtmlElement, event_name: &str, slot: &ListenerCell) {
-    let target: web_sys::EventTarget = host
-        .closest("wa-dialog")
-        .ok()
-        .flatten()
-        .map(|d| d.unchecked_into())
-        .unwrap_or_else(|| host.clone().unchecked_into());
-
-    let host_for_cb = host.clone();
-    let closure = Closure::wrap(Box::new(move |_event: Event| {
-        regenerate(&host_for_cb);
-    }) as Box<dyn FnMut(Event)>);
-
-    let _ = target.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref());
-    *slot.borrow_mut() = Some((target, event_name.to_owned(), closure));
-}
-
-/// Find the first descendant `<form>` and request its submission, firing
-/// the `submit` event (and its `onsubmit` handler) — unlike `.submit()`,
-/// which bypasses it. A no-op when there is no descendant form.
-fn submit_descendant_form(host: &HtmlElement) {
-    if let Ok(Some(form)) = host.query_selector("form")
-        && let Some(form) = form.dyn_ref::<web_sys::HtmlFormElement>()
-    {
-        let _ = form.request_submit();
+        });
     }
+
+    fn disconnected_callback(&mut self, _this: &HtmlElement) {}
 }
 
 /// Generate a fresh keypair and return its `(did, seed_base58)`.

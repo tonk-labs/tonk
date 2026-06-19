@@ -1182,14 +1182,7 @@ view/directory!:
            `#{dom.host/data-seed}` (the browser-held seed) — so the secret
            never crosses to the worker or into the database. -->
       <wa-dialog id="share-repo" label="Share this repo" class="workspace__share-dialog">
-        <!-- `regenerate-on=wa-after-show` re-mints a fresh invite each time
-             the dialog opens (the `<wa-dialog>` fires `wa-after-show`), and
-             `autosubmit` submits the form once the keypair is ready — so
-             opening the dialog is the only action needed; there is no
-             separate "Create link" click. Firing on the dialog-open event
-             (not on connect) avoids the mint→render→reconnect loop a
-             connect-time trigger would cause. -->
-        <tonk-credential regenerate-on="wa-after-show" autosubmit>
+        <tonk-credential>
           <form id="share-form" onsubmit=tonk/invite>
             <input type="hidden" name="audience" bind:did="value">
           </form>
@@ -1199,18 +1192,19 @@ view/directory!:
             bind:seed="data-seed"
             bind:base="data-base">
             <!-- Until the worker asserts the invitation fact for this
-                 audience DID (the form auto-submits when the dialog opens),
-                 the display has no entity to render. Provide a `no-entity`
-                 slot child so it shows a quiet pending affordance instead of
-                 the built-in "Not found" callout — the link is being
-                 generated, not missing. -->
+                 audience DID (after "Create link" is submitted), the
+                 display has no entity to render. Provide a `no-entity` slot
+                 child so it shows a quiet pending affordance instead of the
+                 built-in "Not found" callout — the link is being generated,
+                 not missing. -->
             <div slot="no-entity" class="invite-link invite-link--pending">
               <wa-spinner></wa-spinner>
               <span>Generating link…</span>
             </div>
           </tonk-display>
         </tonk-credential>
-        <wa-button slot="footer" variant="primary" data-dialog="close">Done</wa-button>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Close</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="share-form">Create link</wa-button>
       </wa-dialog>
 
       <tonk-display model=workspace/sheet data-active={active} />
