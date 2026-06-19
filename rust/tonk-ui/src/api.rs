@@ -3,9 +3,9 @@ use leptos::{logging::log, prelude::window};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tonk_worker::{
-    BranchConfiguration, CreateInviteRequest, CreateInviteResponse, EvaluateResponse,
-    IdentifyResponse, JoinRequest, JoinResponse, ProfileInfo, QueryResponse, RemoteConfiguration,
-    RepositoryConfiguration, RepositoryInfo, SyncResponse, SyncStatusResponse,
+    BranchConfiguration, EvaluateResponse, IdentifyResponse, JoinRequest, JoinResponse,
+    ProfileInfo, QueryResponse, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    SyncResponse, SyncStatusResponse,
 };
 
 use crate::error::TonkUiError;
@@ -394,58 +394,6 @@ async fn evaluate_at(
             let text = response.text().await.unwrap_or_default();
             Err(TonkUiError::ApiError(format!(
                 "POST {path} returned {status}: {text}",
-            )))
-        }
-    }
-}
-
-/// Mint an invite URL for a locally-owned space.
-///
-/// `POST /api/repository/{repo}/invite` with a JSON body —
-/// `base_url` defaults the recipient's `/join` to the inviter's
-/// own origin (so dev/localhost links open against dev), and
-/// `audience` (when present) constrains the invite to a specific
-/// recipient DID. Returns a tagged [`CreateInviteResponse`] so
-/// the caller can branch on `Open` vs `Scoped` without re-parsing
-/// the URL.
-pub async fn create_invite(
-    repo: &str,
-    audience: Option<&str>,
-) -> Result<CreateInviteResponse, TonkUiError> {
-    tonk_host::ready::wait().await;
-    log!("Minting invite for '{}' (audience={:?})...", repo, audience);
-
-    let base_url = url::Url::parse(&format!("{}/join", origin()))
-        .map_err(|e| TonkUiError::ApiError(format!("invalid window.origin: {e}")))?;
-    let body = CreateInviteRequest {
-        base_url: Some(base_url),
-        audience: audience
-            .map(|s| s.parse())
-            .transpose()
-            .map_err(|e| TonkUiError::ApiError(format!("invalid audience DID: {e}")))?,
-    };
-
-    let response = reqwest::Client::new()
-        .post(format!("{}/api/repository/{}/invite", origin(), repo))
-        .json(&body)
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    match response.status() {
-        // Tag decode failures separately so schema drift between
-        // worker and UI surfaces distinctly from network errors.
-        StatusCode::OK => response.json::<CreateInviteResponse>().await.map_err(|e| {
-            TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/invite: failed to decode response body: {e}",
-                repo
-            ))
-        }),
-        status => {
-            let text = response.text().await.unwrap_or_default();
-            Err(TonkUiError::ApiError(format!(
-                "POST /api/repository/{}/invite returned {}: {}",
-                repo, status, text
             )))
         }
     }

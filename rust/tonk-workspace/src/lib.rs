@@ -24,15 +24,13 @@ mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod invite;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod share;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod sheet;
 // Declared on every target: the pure sync-state/preference logic is
 // unit-tested natively; the custom elements inside are wasm-gated.
 mod sync;
 
 /// Register the workspace custom elements (`<tonk-sheet>`,
-/// `<tonk-sheet-binder>`, `<tonk-share>`, `<tonk-invite>`, `<tonk-sync-state>` — the
+/// `<tonk-sheet-binder>`, `<tonk-invite>`, `<tonk-sync-state>` — the
 /// status pill that doubles as the pause/resume button —
 /// `<tonk-default-remote>`, and `<tonk-editable>`) with the page.
 /// Idempotent — calling more than once is harmless.
@@ -41,7 +39,6 @@ pub fn register() {
     sheet::register();
     binder::register();
     credential::register();
-    share::register();
     invite::register();
     sync::register();
     default_remote::register();

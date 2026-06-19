@@ -4,10 +4,7 @@ use leptos_router::{hooks::use_params, params::Params};
 use tonk_worker::{EvaluateResponse, RepositoryInfo, Revision};
 use wasm_bindgen::JsCast;
 
-use crate::{
-    api,
-    components::{HostId, InviteSpace},
-};
+use crate::{api, components::HostId};
 
 /// State machine for the per-branch transaction editor.
 ///
@@ -1190,13 +1187,6 @@ pub fn TonkSpaceViewer() -> impl IntoView {
         }
     });
 
-    let invite_space = use_context::<InviteSpace>().expect("InviteSpace provided by TonkShell");
-    let on_share = move |_| {
-        if let Some(name) = space_name.get() {
-            invite_space.set(Some(name));
-        }
-    };
-
     view! {
         <Suspense fallback=|| view! {
             <wa-spinner></wa-spinner>
@@ -1214,7 +1204,6 @@ pub fn TonkSpaceViewer() -> impl IntoView {
                         branch_name,
                         entity_name,
                         host_id,
-                        on_share,
                     )),
                     None => Either::Right(view! {
                         <wa-callout variant="neutral">
@@ -1235,17 +1224,13 @@ pub fn TonkSpaceViewer() -> impl IntoView {
 /// `<main>`. Mirrors the profile/space banner chrome so the
 /// viewer reads as the same page — just with the
 /// branches/remotes sections replaced by the entity render.
-fn render_viewer_view<F>(
+fn render_viewer_view(
     info: RepositoryInfo,
     space_name: Signal<Option<String>, LocalStorage>,
     branch_name: Signal<Option<String>, LocalStorage>,
     entity_name: Signal<Option<String>, LocalStorage>,
     host_id: Option<Signal<Option<HostId>, LocalStorage>>,
-    on_share: F,
-) -> impl IntoView
-where
-    F: Fn(leptos::ev::MouseEvent) + 'static + Clone,
-{
+) -> impl IntoView {
     let local_subject = info.subject.to_string();
     let space_title = info.name.clone();
     let title_attr = local_subject.clone();
@@ -1271,18 +1256,6 @@ where
             <h1 class="space-banner-title" title=title_attr>
                 { space_title }
             </h1>
-            <wa-button
-                variant="neutral"
-                appearance="accent"
-                size="small"
-                on:click=on_share
-            >
-                <wa-icon
-                    name="share-nodes"
-                    variant="solid"
-                    label="Invite someone to this space"
-                ></wa-icon>
-            </wa-button>
         </header>
         <main class="wa-stack space-view space-viewer">
             { move || match iframe_src.get() {
