@@ -40,6 +40,7 @@ web-sys = { workspace = true, features = [
   "ClipboardItem",
   "Headers",
   "HtmlElement",
+  "HtmlFormElement",
   "HtmlInputElement",
   "KeyboardEvent",
   "Location",
