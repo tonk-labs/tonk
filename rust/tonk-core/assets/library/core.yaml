@@ -1130,6 +1130,14 @@ view/directory!:
           flex: 1 1 auto;
           min-height: 0;
         }
+        /* `<tonk-display>` hides a non-active lifecycle-state slot child by
+           setting the `hidden` attribute. The UA `[hidden]{display:none}`
+           rule is weak, so any `display:` a layout rule applies to the
+           slot child would defeat it (leaving the pending spinner showing
+           under the resolved view). Force it. */
+        tonk-display > [slot][hidden] {
+          display: none !important;
+        }
 
       </style>
       <div class="workspace__topbar">
