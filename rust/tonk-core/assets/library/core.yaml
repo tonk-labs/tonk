@@ -218,6 +218,71 @@ command!: &space/enable-sync
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# Mint a repository invite. The share form's `<tonk-credential>` generates
+# an ephemeral keypair in the browser, fills the `audience` input with its
+# public did:key, and keeps the private seed in the DOM. Submitting asserts
+# this transient; the worker's `InviteHandler` delegates the *origin*
+# repository's access to that DID and asserts an `invitation` fact keyed by
+# the DID. The repository is not a field here — the handler reads it from
+# the command's origin (the branch the commit landed in) — so the form
+# carries only the public DID, never the secret seed.
+command!: &tonk/invite
+  description: Mint a repo invite delegated to a browser-generated audience DID.
+  with:
+    audience:
+      description: The ephemeral did:key from `<tonk-credential>`, read from the form.
+      the: dom.event.current-target.elements.audience/value
+      as: entity
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
+# The durable fact the invite handler asserts: the delegation chain it
+# minted, keyed by the audience DID. The share view reads `access` back via
+# `<tonk-display model=invitation entity={audience}>` and assembles the
+# final URL locally (joining `?access=` with the `#seed` the browser still
+# holds). Storing the chain is safe — it is a scoped capability, not a
+# secret; the secret seed never leaves the browser.
+concept!: &invitation
+  this: tonk:invitation
+  description: A delegation chain granting access to a repo, keyed by audience DID.
+  with:
+    access:
+      description: base58 delegation chain — the `?access=` part of the invite URL.
+      the: xyz.tonk.invitation/access
+      cardinality: one
+      as: text
+    remote:
+      description: Sync endpoint — the `&remote=` part; empty when local-only.
+      the: xyz.tonk.invitation/remote
+      cardinality: one
+      as: text
+
+# The invite-link view. The share dialog mounts this on the `invitation`
+# model; it renders only once the worker has asserted the fact for the
+# audience DID (before that the display is empty). The readonly input shows
+# the assembled absolute URL: `{base}?access={access}#{seed}`, where `base`
+# (`{origin}/join`) and `seed` are host attributes the wrapping
+# `<tonk-credential>` set on this element, and `access` is the durable
+# fact. The seed and base come from the host attributes, never the
+# database. `<wa-copy-button>` copies the same value.
+view!: &invitation/link
+  this: tonk:invitation/link
+  model: invitation
+  display: |
+    <div class="invite-link">
+      <wa-input
+        class="invite-link__url"
+        label="Invite link"
+        readonly
+        value="{dom.host/data-base}?access={access}#{dom.host/data-seed}"
+      ></wa-input>
+      <wa-copy-button
+        class="invite-link__copy"
+        value="{dom.host/data-base}?access={access}#{dom.host/data-seed}"
+      ></wa-copy-button>
+    </div>
+
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
 # living only in the joining profile's replica index. The banner reads
@@ -1071,7 +1136,9 @@ view/directory!:
         <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
-          <tonk-share></tonk-share>
+          <wa-button class="workspace__share" appearance="plain" data-dialog="open share-repo" aria-label="Share this repo" title="Share this repo">
+            <wa-icon name="share-nodes" label="Share"></wa-icon>
+          </wa-button>
         </span>
       </div>
 
@@ -1090,6 +1157,34 @@ view/directory!:
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="enable-sync-form" data-dialog="close">Enable</wa-button>
+      </wa-dialog>
+
+      <!-- Share dialog. `<tonk-credential>` generates an ephemeral keypair
+           in the browser: it fills the form's hidden `audience` input with
+           the public did:key (the command reads it) and threads the same
+           did:key into the nested `<tonk-display>`'s `entity` plus the
+           private seed into its `data-seed` (both via `bind:`). Submitting
+           asserts `tonk/invite`; the worker delegates the origin repo to
+           that DID and asserts the `invitation` fact keyed by the DID. The
+           nested display then resolves that fact and composes the link:
+           `?access={access}` (from the worker, non-secret) joined with
+           `#{dom.host/data-seed}` (the browser-held seed) — so the secret
+           never crosses to the worker or into the database. -->
+      <wa-dialog id="share-repo" label="Share this repo" class="workspace__share-dialog">
+        <tonk-credential>
+          <form id="share-form" onsubmit=tonk/invite>
+            <input type="hidden" name="audience" bind:did="value">
+          </form>
+          <tonk-display
+            model=invitation
+            bind:did="entity"
+            bind:seed="data-seed"
+            bind:base="data-base"
+            view=invitation/link>
+          </tonk-display>
+        </tonk-credential>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Close</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="share-form">Create link</wa-button>
       </wa-dialog>
 
       <tonk-display model=workspace/sheet data-active={active} />

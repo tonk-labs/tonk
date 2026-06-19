@@ -1,11 +1,13 @@
 //! `<tonk-credential>` — a local-keypair source for declarative views.
 //!
 //! On connect it generates a fresh per-instance Ed25519 keypair *in the
-//! browser* and distributes two values to descendants that ask for them
+//! browser* and distributes these values to descendants that ask for them
 //! via `bind:` attributes:
 //!
 //! - `did`  — the public `did:key:…` identifier of the keypair.
 //! - `seed` — base58 of the 32-byte private seed.
+//! - `base` — the invite-URL base (`{origin}/join`), so a template can
+//!   assemble an absolute link without reading `window` itself.
 //!
 //! A descendant opts in by declaring `bind:<name>=<target-attr>`: the
 //! element writes the named value into that target attribute on the
@@ -67,7 +69,7 @@ impl CustomElement for TonkCredential {
         let host = this.clone();
         spawn_local(async move {
             match generate().await {
-                Some((did, seed)) => distribute(&host, &did, &seed),
+                Some((did, seed)) => distribute(&host, &did, &seed, &join_base()),
                 None => tonk_common::log!("tonk-credential: keypair generation failed"),
             }
         });
@@ -90,14 +92,26 @@ async fn generate() -> Option<(String, String)> {
     Some((did, seed))
 }
 
+/// The invite URL base — the recipient's `/join` page on this origin.
+/// Provided as the `base` bind value so a template can assemble an
+/// absolute invite URL (`{base}?access=…#{seed}`) without reading
+/// `window` itself. Empty when there is no window/origin.
+fn join_base() -> String {
+    window()
+        .and_then(|w| w.location().origin().ok())
+        .map(|origin| format!("{origin}/join"))
+        .unwrap_or_default()
+}
+
 /// Walk the element's descendants and, for each `bind:<name>=<target>`
 /// attribute, write the matching value into the named target attribute.
-fn distribute(host: &HtmlElement, did: &str, seed: &str) {
+fn distribute(host: &HtmlElement, did: &str, seed: &str, base: &str) {
     for element in descendants(host) {
         for (name, target) in bindings(&element) {
             let value = match name.as_str() {
                 "did" => Some(did),
                 "seed" => Some(seed),
+                "base" => Some(base),
                 _ => None,
             };
             if let Some(value) = value {
