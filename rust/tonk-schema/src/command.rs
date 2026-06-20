@@ -133,3 +133,87 @@ pub struct Credential {
     /// The base58 ed25519 seed (`#` fragment).
     pub seed: crate::domain::credential::Seed,
 }
+
+/// Request to redeem an invite URL and join its space.
+///
+/// Asserted transiently when `<tonk-page>` fires its `mount` event on the
+/// `/join` view (`<tonk-page onmount=tonk/join>`). The element reads the
+/// page's location and delivers the parsed invite as the event `detail`;
+/// this command picks the pieces it needs out of `detail`. The
+/// `#fragment` (the seed) is the part the service worker can't see, so it
+/// must come from the page through this command.
+///
+/// The handler reassembles the URL from `access` + `remote` + `fragment`,
+/// parses + validates it, and claims — driving the overlay-only
+/// `tonk:join/status` (pending → failed, or retract + durable space on
+/// success).
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Join {
+    /// The command entity (a fresh id per invocation).
+    pub this: Entity,
+    /// The full query string (incl. `?`), from `detail.search` — carries
+    /// `access` and the optional `remote`. Read whole (not per-param) so a
+    /// missing optional `remote` doesn't abort the command; the handler
+    /// reassembles + parses it.
+    pub search: crate::domain::command::join::Search,
+    /// The `#seed` fragment (incl. `#`), from `detail.hash` — page-only.
+    pub hash: crate::domain::command::join::Hash,
+}
+
+/// `Join` is a [`dialog_capability::Command`]; its handler lives in
+/// `tonk-worker` (reassembles + claims the invite, drives `JoinStatus`).
+impl Command for Join {
+    type Input = Self;
+    type Output = ();
+}
+
+/// The overlay-only fact tracking an in-flight join, at the fixed
+/// `tonk:join/status` entity (`this`). Just `status` — `tonk:pending`
+/// while claiming, `tonk:failed` on error — so this resolves the moment a
+/// join starts (a concept that also required `reason`/`kind` would only
+/// resolve once those exist, i.e. never in the pending state; see the
+/// invite `tonk:invitation` join for the same all-fields-required
+/// gotcha). On success the handler retracts this fact and asserts the
+/// durable space record instead; the failure detail lives on the
+/// separate [`JoinFailure`] concept at the same entity. Overlay-only, so
+/// the Hub (durable replicas) never shows in-flight or failed joins.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct JoinStatus {
+    /// The fixed `tonk:join/status` entity.
+    pub this: Entity,
+    /// `tonk:pending` | `tonk:failed`.
+    pub status: crate::domain::join::Status,
+}
+
+/// The failure detail for a join, at the same `tonk:join/status` entity —
+/// asserted (overlay-only) alongside `status: tonk:failed`. A separate
+/// concept from [`JoinStatus`] so the pending state (status only) still
+/// resolves; the view reads this for the error message when `status` is
+/// `tonk:failed`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct JoinFailure {
+    /// The fixed `tonk:join/status` entity (same as [`JoinStatus`]).
+    pub this: Entity,
+    /// Human-readable failure message.
+    pub reason: crate::domain::join::Reason,
+    /// Failure class: `malformed` | `audience-mismatch` | `claim-failed`.
+    pub kind: crate::domain::join::Kind,
+}
+
+/// A requested client-side navigation — the page-bound half of Elm's
+/// `pushUrl`. A worker handler asserts one (overlay-only) carrying the
+/// destination; a page-side `<tonk-navigate>` element renders it and
+/// performs the navigation (`window.location.assign`), since the service
+/// worker has no `window` to navigate with.
+///
+/// The join handler asserts this at the fixed `tonk:join/status` entity on
+/// success (in place of retracting): the `/join` view's `<tonk-navigate>`
+/// then redirects into `/space/<subject>`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Navigate {
+    /// The entity the navigation intent is keyed by (for the join: the
+    /// fixed `tonk:join/status` entity).
+    pub this: Entity,
+    /// The destination URL/path to navigate to.
+    pub href: crate::domain::navigate::Href,
+}

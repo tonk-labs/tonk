@@ -105,14 +105,62 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    log!("POST /api/profile/join");
-
     let tonk = state.write().await;
+    let outcome = claim_invite(&tonk, &body.url).await?;
+    log!(
+        "POST /api/profile/join → subject {} (key {})",
+        outcome.subject,
+        outcome.key
+    );
+    let repository = tonk
+        .profile
+        .repository(outcome.key.as_str())
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to load joined replica: {e}")))?;
+    let info = build_repository_info(&tonk, &outcome.key, &repository).await;
+    let (status, response) = if outcome.renewed {
+        (StatusCode::OK, JoinResponse::Renewed { repository: info })
+    } else {
+        (
+            StatusCode::CREATED,
+            JoinResponse::Joined { repository: info },
+        )
+    };
+    Ok((status, Json(response)))
+}
 
+/// The result of a successful claim: the routing key, subject DID, and
+/// whether the replica pre-existed (`renewed`) or was freshly created.
+/// Deliberately repository-free so the concrete `Repository<R>` type
+/// (which differs between the load and create paths) doesn't leak into
+/// the signature — callers re-load by key if they need the handle.
+pub(crate) struct JoinOutcome {
+    /// The routing/storage key (subject DID suffix).
+    pub key: String,
+    /// The joined subject DID.
+    pub subject: Did,
+    /// `true` when a replica already existed (renewed access, no new
+    /// replica); `false` when a fresh replica was created.
+    pub renewed: bool,
+}
+
+/// Parse + claim an invite URL and ensure a local replica exists.
+///
+/// Shared by the HTTP `/api/profile/join` route and the `tonk:join`
+/// command provider. Persists the delegation chain, and either surfaces
+/// the existing replica (`renewed: true`) or creates one (`renewed:
+/// false`). Errors carry a recipient-readable message; the command
+/// provider maps them to a `tonk:join/failure`.
+pub(crate) async fn claim_invite(
+    tonk: &TonkState,
+    url: &str,
+) -> Result<JoinOutcome, TonkWorkerError> {
     // Parse the invite first — the subject DID drives the
     // existing-replica lookup, and a malformed invite shouldn't
     // touch any state.
-    let invite = Invite::parse_url(&body.url)
+    let invite = Invite::parse_url(url)
         .await
         .map_err(|e| TonkWorkerError::Router(format!("invalid invite: {e}")))?;
     let claimed = invite
@@ -147,23 +195,12 @@ pub async fn join(
     // — surface the existing replica as `Renewed`. The chain refresh we
     // just did is kept; the replica is mounted at the routing key
     // (identity), not a stored label.
-    if find_replica_for_subject(&tonk, &subject).await? {
-        let repository = tonk
-            .profile
-            .repository(key.as_str())
-            .load()
-            .perform(&tonk.operator)
-            .await
-            .map_err(|e| {
-                TonkWorkerError::Internal(format!(
-                    "replica '{key}' present in profile meta but failed to load: {e}",
-                ))
-            })?;
-        let info = build_repository_info(&tonk, &key, &repository).await;
-        return Ok((
-            StatusCode::OK,
-            Json(JoinResponse::Renewed { repository: info }),
-        ));
+    if find_replica_for_subject(tonk, &subject).await? {
+        return Ok(JoinOutcome {
+            key,
+            subject,
+            renewed: true,
+        });
     }
 
     // Create a verifier-only credential keyed to the invited
@@ -216,22 +253,22 @@ pub async fn join(
     // queries the repo for its name. `record_repository_meta` only uses
     // this for log context + the home-demo check (never matched here), so
     // the routing key stands in.
-    record_repository_meta(&tonk, &repository, &key, &configuration).await?;
+    record_repository_meta(tonk, &repository, &key, &configuration).await?;
 
     // `record_repository_meta` stamps the replica `blank` (the create
     // path's "still seeding" state). A joined replica has no local seed
     // step — its content arrives over the pull the recipient triggers —
     // so flip it straight to `initialized`, otherwise its Hub card is
     // stuck on "Installing…" forever.
-    mark_replica_initialized(&tonk, &subject).await?;
+    mark_replica_initialized(tonk, &subject).await?;
 
     log!("Joined invite for subject {subject} as local replica (key {key})");
 
-    let info = build_repository_info(&tonk, &key, &repository).await;
-    Ok((
-        StatusCode::CREATED,
-        Json(JoinResponse::Joined { repository: info }),
-    ))
+    Ok(JoinOutcome {
+        key,
+        subject,
+        renewed: false,
+    })
 }
 
 /// Check whether the active profile already holds a replica for the
@@ -273,4 +310,188 @@ async fn find_replica_for_subject(
         })?;
 
     Ok(!rows.is_empty())
+}
+
+/// The fixed entity the in-flight join status lives at. Both the handler
+/// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
+/// agree on this URI, so there's no per-attempt id to thread.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const JOIN_STATUS_URI: &str = "tonk:join/status";
+
+/// Post-commit handler for the [`Join`] command.
+///
+/// `<tonk-page onmount=tonk/join>` on the `/join` view fires the command
+/// with the parsed location in the event detail. This handler reassembles
+/// the invite URL from the `access`/`remote`/`hash` fields, claims it, and
+/// drives the overlay-only `tonk:join/status` (pending → failed, or
+/// retract + durable replica on success) on the profile meta branch — the
+/// branch the `/join` view subscribes to.
+///
+/// [`Join`]: tonk_schema::command::Join
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct JoinHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl JoinHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::Join::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::Join::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode the parsed-location fields synchronously while the caller
+        // holds the lock; hand owned values to the `'static` future.
+        let command = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Join::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = command else {
+                return;
+            };
+            run_join(&env, command).await;
+        })
+    }
+}
+
+/// Reassemble the invite URL from the command's parsed pieces, claim it,
+/// and drive the overlay-only join status. Always leaves the overlay in a
+/// terminal state (status retracted on success, `failed` on error).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
+    use std::sync::Arc;
+    use tonk_schema::command::{JoinFailure, JoinStatus, Navigate};
+    use tonk_schema::domain::join::{Kind, Reason, Status};
+    use tonk_schema::domain::navigate::Href;
+
+    let tonk = env.state().read().await;
+
+    // Acquire the profile meta branch — the `/join` view reads
+    // `tonk:join/status` from here; overlay writes + their poll target it.
+    let session = match tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            log!("join: failed to acquire profile meta branch: {e}");
+            return;
+        }
+    };
+
+    let status_entity: dialog_artifacts::Entity = match JOIN_STATUS_URI.parse() {
+        Ok(entity) => entity,
+        Err(e) => {
+            log!("join: bad status URI: {e}");
+            return;
+        }
+    };
+
+    // Pending: a fresh attempt clears any prior status, then marks
+    // pending. Schedule a poll so the view shows "Joining…".
+    session.state.clear_overlay();
+    session.state.assert_overlay(JoinStatus {
+        this: status_entity.clone(),
+        status: Status(
+            "tonk:pending"
+                .parse()
+                .unwrap_or_else(|_| status_entity.clone()),
+        ),
+    });
+    tonk.reactor.schedule_poll(Arc::clone(&session.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+    // Reassemble the invite URL: ?access=…[&remote=…][#hash]. `access`
+    // and `remote` came from the parsed `searchParams` (already decoded),
+    // so re-encode them; `hash` keeps its leading `#`.
+    let url = build_invite_url(&command);
+
+    match claim_invite(&tonk, &url).await {
+        Ok(outcome) => {
+            // Success: the durable replica is recorded + initialized. Clear
+            // the in-flight status, then assert a `Navigate` intent at the
+            // same entity. The `/join` view renders `<tonk-navigate>` for it
+            // and redirects the page into `/space/<subject>` — the service
+            // worker has no `window`, so the act runs page-side.
+            session.state.clear_overlay();
+            session.state.assert_overlay(Navigate {
+                this: status_entity,
+                href: Href(format!("/space/{key}", key = outcome.key)),
+            });
+            tonk.reactor.schedule_poll(Arc::clone(&session.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            log!(
+                "join: succeeded (subject {}, key {})",
+                outcome.subject,
+                outcome.key
+            );
+        }
+        Err(error) => {
+            // Failure: mark failed + record the reason/kind, overlay-only.
+            // Never echo `url` (it carries the seed) into the message.
+            let kind = match &error {
+                TonkWorkerError::Router(_) => "malformed",
+                _ => "claim-failed",
+            };
+            session.state.assert_overlay(JoinStatus {
+                this: status_entity.clone(),
+                status: Status(
+                    "tonk:failed"
+                        .parse()
+                        .unwrap_or_else(|_| status_entity.clone()),
+                ),
+            });
+            session.state.assert_overlay(JoinFailure {
+                this: status_entity,
+                reason: Reason(error.to_string()),
+                kind: Kind(kind.to_owned()),
+            });
+            tonk.reactor.schedule_poll(Arc::clone(&session.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            log!("join: failed ({kind}): {error}");
+        }
+    }
+}
+
+/// Build the invite URL from the command's parsed pieces: the full
+/// `search` (incl. `?`, carrying `access` + optional `remote`) and `hash`
+/// (incl. `#`) are appended verbatim onto a placeholder origin.
+/// `Invite::parse_url` reads only the query + fragment, so the host is
+/// irrelevant; it recovers the sync remote from the query when present.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn build_invite_url(command: &tonk_schema::command::Join) -> String {
+    let search = &command.search.0; // includes leading `?` (or empty)
+    let hash = &command.hash.0; // includes leading `#` (or empty)
+    format!("https://join.invalid/join{search}{hash}")
 }

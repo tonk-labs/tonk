@@ -47,10 +47,13 @@ web-sys = { workspace = true, features = [
   "NamedNodeMap",
   "Node",
   "NodeList",
+  "AddEventListenerOptions",
   "Request",
   "RequestInit",
   "Response",
   "Storage",
+  "Url",
+  "UrlSearchParams",
   "Window",
 ] }
 

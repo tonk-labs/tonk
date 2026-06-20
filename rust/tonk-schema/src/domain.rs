@@ -113,6 +113,37 @@ pub mod command {
         #[domain("dom.event")]
         pub struct TimeStamp(pub f64);
     }
+
+    /// Attributes the `tonk:join` command reads from the `<tonk-page>`
+    /// `mount` event's `detail` — a flat, URL-shaped record (fields mirror
+    /// the DOM `URL` interface). The service worker can't see the `#hash`,
+    /// so `<tonk-page>` reads it page-side and delivers it (with the
+    /// `search`) in the event detail.
+    ///
+    /// The command reads the whole `search` + `hash` strings (always
+    /// present — `URL.search`/`URL.hash` are `""` when empty, never
+    /// `undefined`) rather than individual `searchParams`: a missing
+    /// optional param (e.g. `remote`) would read as `undefined` and the
+    /// event extractor aborts the command on that. The handler parses the
+    /// reassembled URL with `Invite::parse_url`, which already handles the
+    /// optional remote.
+    pub mod join {
+        use super::Attribute;
+
+        /// The full query string incl. the leading `?` (faithful to
+        /// `URL.search`), from `detail.search`. Carries `access` and the
+        /// optional `remote`; the handler parses it.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct Search(pub String);
+
+        /// The invite's `#seed` fragment incl. the leading `#` (faithful to
+        /// `URL.hash`, the handler strips it), from `detail.hash`. The part
+        /// only the page can see.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.detail")]
+        pub struct Hash(pub String);
+    }
 }
 
 /// Attributes that live on a repository's own `tonk/repository`
@@ -164,6 +195,47 @@ pub mod credential {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.credential")]
     pub struct Seed(pub String);
+}
+
+/// Attributes on the overlay-only `tonk:join/status` concept — the state
+/// of an in-flight join attempt at the fixed `tonk:join/status` entity.
+/// On success the whole fact is retracted and the durable space record is
+/// asserted instead; a failure leaves `status: failed` (+ `reason`/`kind`)
+/// in the overlay, session-scoped and never replicated.
+pub mod join {
+    use super::{Attribute, Entity};
+
+    /// The attempt's state: `tonk:pending` while claiming, `tonk:failed`
+    /// on error. (Success retracts the fact rather than setting a value.)
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.join")]
+    pub struct Status(pub Entity);
+
+    /// A human-readable failure message, set only when `status: failed`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.join")]
+    pub struct Reason(pub String);
+
+    /// The failure class: `malformed` | `audience-mismatch` | `claim-failed`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.join")]
+    pub struct Kind(pub String);
+}
+
+/// Attributes for the `tonk:navigate` fact — a requested client-side
+/// navigation. A worker handler asserts one (overlay-only) and a page-side
+/// `<tonk-navigate>` element renders it and performs the navigation
+/// (`window.location.assign`). This is the page-bound half of Elm's
+/// `pushUrl`: the *intent* is data on the branch, the *act* runs on the
+/// page because navigation is a page capability the service worker lacks.
+pub mod navigate {
+    use super::Attribute;
+
+    /// The destination URL/path, e.g. `/space/<did>`. Rendered onto
+    /// `<tonk-navigate href=…>`, which assigns it on mount.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.navigate")]
+    pub struct Href(pub String);
 }
 
 /// Attributes that live on [`Branch`] entities (and

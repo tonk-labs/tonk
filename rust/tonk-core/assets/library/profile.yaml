@@ -141,3 +141,151 @@ view/directory!:
         <span class="hub-card__sync"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-sync-badge></tonk-sync-badge></tonk-branch></tonk-repository></tonk-host></span>
       </a>
     </div>
+
+# ============================================================
+# JOIN — redeem an invite at /join (runs on the profile meta branch)
+# ============================================================
+
+# Redeem an invite URL. Fired by `<tonk-page onmount=tonk:join>` on the
+# /join view: the element reads the page location (the service worker can't
+# see the `#fragment`, where an open invite's seed rides) and delivers it in
+# the mount event's `detail` (a flat, URL-shaped record). The worker's
+# `JoinHandler` reassembles the URL from `search` + `hash`, claims the
+# invite, and drives the overlay-only `tonk:join/status` (pending → failed,
+# or retract + durable replica on success). Lives here, not in core.yaml:
+# the join happens on the PROFILE meta branch (it records a replica), so
+# the command + view must resolve there.
+command!: &tonk/join
+  this: tonk:join
+  description: Redeem an invite URL and join its space.
+  with:
+    search:
+      description: The full query string with its leading question mark, from detail.search.
+      the: dom.event.detail/search
+      as: text
+    hash:
+      description: The URL hash fragment carrying the seed, from detail.hash, page-only.
+      the: dom.event.detail/hash
+      as: text
+
+# The in-flight join, overlay-only, at the fixed `tonk:join/status` entity.
+# Just `status` (`tonk:pending` while claiming, `tonk:failed` on error) so it
+# resolves the moment a join starts — a concept also requiring reason/kind
+# would only resolve once those exist (never in pending). On success the
+# handler retracts this and asserts the durable replica instead; the Hub
+# (durable replicas) never shows in-flight or failed joins.
+concept!: &join/status
+  this: tonk:join/status
+  description: An in-flight join attempt's state (overlay-only).
+  with:
+    status:
+      description: The attempt state, either pending or failed.
+      the: xyz.tonk.join/status
+      cardinality: one
+      as: entity
+
+# The failure detail for a join, at the same `tonk:join/status` entity —
+# asserted alongside `status: tonk:failed`. A separate concept so the
+# pending state (status only) still resolves; the view reads this for the
+# message when failed.
+concept!: &join/failure
+  this: tonk:join/failure
+  description: Why a join attempt failed (overlay-only).
+  with:
+    reason:
+      description: Human-readable failure message.
+      the: xyz.tonk.join/reason
+      cardinality: one
+      as: text
+    kind:
+      description: The failure class, one of malformed, audience-mismatch, or claim-failed.
+      the: xyz.tonk.join/kind
+      cardinality: one
+      as: text
+
+# A requested client-side navigation, asserted by the worker on a
+# successful join at the same `tonk:join/status` entity (overlay-only). The
+# page-side `<tonk-navigate>` element renders its `href` and navigates the
+# page there. This is the page-bound half of Elm's pushUrl: the intent is
+# data on the branch, the act runs on the page (the worker has no window).
+concept!: &navigate
+  this: tonk:navigate
+  description: A requested client-side navigation to an href.
+  with:
+    href:
+      description: The destination URL or path to navigate to.
+      the: xyz.tonk.navigate/href
+      cardinality: one
+      as: text
+
+# The `view` concept — the shape `<tonk-display>` queries to resolve a
+# default (entity-set) view: a `model` + a `display` template. The
+# join-failure `view!:` instance below is an instance of it, so its concept
+# must be present on this branch. (The Hub above gets by with only
+# `view/directory`; the join failure needs an entity-set view, hence this.)
+concept!: &view
+  this: tonk:view
+  description: A display template for rendering an entity.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the view
+      the: xyz.tonk.view/display
+      cardinality: one
+      as: text
+
+# The /join view — a directory view for `tonk:join/status`, mounted by a
+# no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
+# route). Directory chrome renders even with zero instances, so the
+# `<tonk-page>` trigger mounts and fires `tonk:join` on load before any
+# status exists. The chrome carries three fixed-entity displays at
+# `tonk:join/status`:
+#   - the per-instance status repeat (a spinner while pending);
+#   - a failure display (`model=tonk:join/failure`) — empty until failed;
+#   - a navigate display (`model=tonk:navigate`) — empty until success,
+#     when the worker asserts a `tonk:navigate` href and the rendered
+#     `<tonk-navigate>` redirects into `/space/<subject>`.
+# On success the status is cleared and only the navigate fact remains, so
+# the redirect fires while the chrome's "Joining…" stands until the page
+# leaves.
+view/directory!:
+  this: id:tonk:join/status/view
+  model: tonk:join/status
+  display: |
+    <main class="join-view">
+      <tonk-page onmount=tonk:join></tonk-page>
+      <wa-card class="join-card">
+        <div slot="header"><h1>Joining…</h1></div>
+        <wa-spinner></wa-spinner>
+        <div class="join-status" with={this}>
+          <tonk-display entity={this} model=tonk:join/failure></tonk-display>
+        </div>
+      </wa-card>
+      <tonk-display entity=tonk:join/status model=tonk:navigate></tonk-display>
+    </main>
+
+# The failure view — the default view for `tonk:join/failure`, so the join
+# directory's per-instance `<tonk-display model=tonk:join/failure>` renders
+# it only when a failure exists (i.e. status: failed). Shows the reason.
+view!: &join/failure-view
+  this: id:tonk:join/failure/view
+  model: tonk:join/failure
+  display: |
+    <wa-callout variant="danger" class="join-error">
+      <wa-icon slot="icon" name="circle-exclamation"></wa-icon>
+      <strong>Couldn’t join</strong>
+      <p>{reason}</p>
+    </wa-callout>
+
+# The navigate view — the default view for `tonk:navigate`. Rendered only
+# when a navigate fact exists (on join success); the `<tonk-navigate>`
+# element assigns `window.location` to `href`, redirecting the page.
+view!: &navigate-view
+  this: id:tonk:navigate/view
+  model: tonk:navigate
+  display: |
+    <tonk-navigate href={href}></tonk-navigate>

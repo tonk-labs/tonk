@@ -27,6 +27,12 @@ pub fn TonkLauncher() -> impl IntoView {
                     // mounted on the profile's meta branch.
                     <Route path=path!("") view=TonkHub />
 
+                    // The /join route renders bare too — like the Hub, it
+                    // is a directory view on the profile meta branch (the
+                    // join-status view), not a space workspace, so no
+                    // `<wa-page>` shell / sidebar / toolbar wraps it.
+                    <Route path=path!("join") view=TonkJoin />
+
                     // Every other route renders inside the adaptive
                     // `<wa-page>` shell (navigation column on desktop,
                     // drawer on mobile) plus the toolbar. The parent
@@ -50,7 +56,6 @@ pub fn TonkLauncher() -> impl IntoView {
                             path=path!("space/:space/board/:board")
                             view=TonkBoardView
                         />
-                        <Route path=path!("join") view=TonkJoin />
                     </ParentRoute>
 
                     // The display route renders bare — just the
