@@ -68,10 +68,13 @@ impl SubscriptionPoll<'_> {
         };
 
         let terms = query.terms.clone();
+        // Fold in the session overlay so subscribed reads see the same
+        // ephemeral facts a one-shot query does (see `query.rs`).
         let conclusions = match self
             .state
             .branch
             .query()
+            .with(self.state.overlay())
             .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(env)
             .try_vec()

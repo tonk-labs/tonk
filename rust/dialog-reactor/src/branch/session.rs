@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use dialog_artifacts::Changes;
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
 
@@ -27,6 +28,12 @@ impl BranchSession {
     /// Borrow the underlying dialog branch handle.
     pub fn handle(&self) -> &Branch {
         &self.state.branch
+    }
+
+    /// A clone of this branch's session overlay, to fold into a read
+    /// query via [`QueryLayer::with`](dialog_repository::QueryLayer).
+    pub fn overlay(&self) -> Changes {
+        self.state.overlay()
     }
 
     /// Re-poll every subscription on this branch.

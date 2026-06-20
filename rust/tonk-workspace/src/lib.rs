@@ -16,13 +16,13 @@ mod ancestors;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod binder;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod credential;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod invite;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod origin;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod sheet;
 // Declared on every target: the pure sync-state/preference logic is
@@ -38,7 +38,7 @@ mod sync;
 pub fn register() {
     sheet::register();
     binder::register();
-    credential::register();
+    origin::register();
     invite::register();
     sync::register();
     default_remote::register();

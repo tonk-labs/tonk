@@ -16,10 +16,7 @@ crate-type = ["cdylib", "rlib"]
 tonk-schema = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
-bs58 = { workspace = true }
 custom-elements = { workspace = true }
-dialog-credentials = { workspace = true }
-dialog-varsig = { workspace = true }
 js-sys = { workspace = true }
 serde_json = { workspace = true }
 tonk-common = { workspace = true }

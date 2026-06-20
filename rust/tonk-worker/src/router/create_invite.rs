@@ -81,7 +81,7 @@ impl CreateInviteResponse {
 /// [`ExtractableKey`] variant opts in to extractable generation.
 ///
 /// [`ExtractableKey`]: dialog_credentials::key::ExtractableKey
-async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
+pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     let signer = {
         use dialog_credentials::key::ExtractableKey;

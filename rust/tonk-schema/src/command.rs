@@ -71,55 +71,65 @@ impl Command for CreateSpace {
     type Output = ();
 }
 
-/// Request to mint a repository invite delegated to a
-/// browser-generated audience DID.
+/// Request to mint a repository invite.
 ///
 /// Asserted transiently when the user submits the share form (a
-/// `<form onsubmit=tonk/invite>` in the standard library). A
-/// `<tonk-credential>` element generates an ephemeral keypair in the
-/// browser, fills the form's `audience` input with its public
-/// `did:key`, and keeps the private seed in the DOM. So the command
-/// carries only a *public* DID — never a secret. The worker handler
-/// delegates the repository's access to that DID and asserts an
-/// `invitation` fact keyed by the DID; the view reads the resulting
-/// (non-secret) delegation chain back and assembles the final URL
-/// locally, joining it with the seed it still holds.
+/// `<form onsubmit=tonk:invite>` in the standard library). The worker
+/// handler generates a fresh membership keypair, delegates the
+/// repository's access to its DID, asserts a durable [`Authorization`]
+/// (the public delegation chain) into storage, and asserts the private
+/// seed as a [`Credential`] into the reactor's session overlay (never
+/// replicated). The share view joins the two via `tonk:invitation` and
+/// assembles the final URL.
 ///
-/// `audience` is read from `elements.audience.value`. The repository to
-/// delegate is *not* a command field: the handler reads it from the
-/// command's origin (`CommandEnv::origin`) — the branch the commit
-/// landed in — so the form needs no `data-subject` stamp.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// The command carries only the click's `time` — no audience, no
+/// secret. The repository to delegate is read from the command's origin
+/// (`CommandEnv::origin`), the branch the commit landed in. The
+/// timestamp makes each click a distinct transient so repeated Share
+/// clicks reliably re-fire the handler and rotate the credential.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
 pub struct Invite {
     /// The command entity (a fresh id per invocation).
     pub this: Entity,
-    /// The browser-generated audience DID, read from the form's
-    /// `audience` input.
-    pub audience: crate::domain::command::invite::Value,
+    /// The submit event's timestamp — distinguishes one click from the
+    /// next so the transient re-fires.
+    pub time: crate::domain::command::invite::TimeStamp,
 }
 
 /// `Invite` is a [`dialog_capability::Command`]; its handler lives in
-/// `tonk-worker` (delegates + asserts the `invitation` fact).
+/// `tonk-worker` (generates the keypair, delegates, asserts the
+/// authorization + overlay credential).
 impl Command for Invite {
     type Input = Self;
     type Output = ();
 }
 
-/// The durable fact a `tonk/invite` handler asserts: the delegation
-/// chain it minted, **keyed by the audience DID** (`this`). The share
-/// view queries `<tonk-display model=invitation entity={audience}>` to
-/// read `access` back and assemble the final URL.
+/// The durable fact a `tonk:invite` handler asserts: the public
+/// delegation chain it minted, **keyed by the membership DID** (`this`).
 ///
 /// Storing this is safe: a delegation chain is a scoped capability, not
-/// a secret. The secret (the ephemeral private seed) is held only by the
-/// browser's `<tonk-credential>` and joined into the URL there.
+/// a secret. The secret (the private seed) lives only on the
+/// overlay-only [`Credential`].
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Invitation {
-    /// The audience DID the invite was issued to — the entity the share
-    /// view addresses by `entity={audience}`.
+pub struct Authorization {
+    /// The membership DID the invite was issued to.
     pub this: Entity,
     /// The base58 delegation chain (`?access=`).
-    pub access: crate::domain::invitation::Access,
+    pub proof: crate::domain::authorization::Proof,
     /// The sync remote endpoint (`&remote=`), empty when local-only.
-    pub remote: crate::domain::invitation::Remote,
+    pub remote: crate::domain::authorization::Remote,
+}
+
+/// The overlay-only fact a `tonk:invite` handler asserts: the private
+/// seed of the membership keypair, **keyed by the membership DID**
+/// (`this`). Asserted into the reactor's session overlay — never written
+/// to the branch tree, never replicated — so the secret stays out of
+/// storage while remaining queryable by the share view.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Credential {
+    /// The membership DID — the same entity its [`Authorization`] is
+    /// keyed by, so `tonk:invitation` joins them.
+    pub this: Entity,
+    /// The base58 ed25519 seed (`#` fragment).
+    pub seed: crate::domain::credential::Seed,
 }

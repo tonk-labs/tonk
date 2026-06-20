@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dialog_artifacts::{Changes, Statement};
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 
 use crate::env::SelectProvider;
@@ -28,6 +29,19 @@ pub struct BranchState {
     pub branch: Branch,
     /// Subscriptions on this branch, keyed by query hash.
     subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
+    /// In-memory session overlay — ephemeral facts folded into every
+    /// read query (one-shot and subscription poll) via
+    /// [`QueryLayer::with`](dialog_repository::QueryLayer), but never
+    /// written to the branch tree and never replicated. Holds secrets
+    /// that must stay out of storage (e.g. an invite's private seed):
+    /// readable by the UI's display query, invisible to the
+    /// transaction/commit path (dialog's transaction query is
+    /// non-composable), and lost on branch eviction.
+    ///
+    /// `RwLock`, not `Mutex`: every read query takes the shared lock to
+    /// clone the overlay in, so reads must not serialize against each
+    /// other; only the rare overlay write takes the exclusive lock.
+    overlay: RwLock<Changes>,
 }
 
 impl BranchState {
@@ -36,7 +50,39 @@ impl BranchState {
         Self {
             branch,
             subscriptions: Mutex::new(HashMap::new()),
+            overlay: RwLock::new(Changes::new()),
         }
+    }
+
+    /// A clone of the current session overlay, to fold into a read query
+    /// via [`QueryLayer::with`](dialog_repository::QueryLayer). Taken
+    /// under the shared read lock so concurrent reads don't serialize.
+    pub fn overlay(&self) -> Changes {
+        self.overlay.read().clone()
+    }
+
+    /// Assert a [`Statement`] into the session overlay. A cardinality-one
+    /// re-assert overwrites the prior value in place, so "keep exactly
+    /// one live fact" needs no separate retract. Takes the exclusive
+    /// write lock.
+    pub fn assert_overlay<S: Statement>(&self, claim: S) {
+        let mut overlay = self.overlay.write();
+        claim.assert(&mut *overlay);
+    }
+
+    /// Retract a [`Statement`] from the session overlay. Takes the
+    /// exclusive write lock.
+    pub fn retract_overlay<S: Statement>(&self, claim: S) {
+        let mut overlay = self.overlay.write();
+        claim.retract(&mut *overlay);
+    }
+
+    /// Drop every fact in the session overlay. Used to keep exactly one
+    /// live entry across keys that differ between writes (e.g. each
+    /// invitation is keyed by a fresh membership DID, so a cardinality-one
+    /// re-assert wouldn't replace the prior one — clearing does).
+    pub fn clear_overlay(&self) {
+        *self.overlay.write() = Changes::new();
     }
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]
