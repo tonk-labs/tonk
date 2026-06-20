@@ -138,19 +138,29 @@ pub async fn dispatch(state: &AppState, origin: CommandOrigin, transients: Chang
     let run_futures = {
         let tonk = state.read().await;
         if tonk.commands.is_empty() {
-            return;
+            // No command providers — but the triggering transact already
+            // committed and scheduled a poll, so still drain below.
+            Vec::new()
+        } else {
+            let env = CommandEnv::new(state.clone(), origin);
+            tonk.commands
+                .match_transients(&transients)
+                .into_iter()
+                .map(|(handler, facts)| handler.run(&facts, &env))
+                .collect::<Vec<_>>()
         }
-        let env = CommandEnv::new(state.clone(), origin);
-        tonk.commands
-            .match_transients(&transients)
-            .into_iter()
-            .map(|(handler, facts)| handler.run(&facts, &env))
-            .collect::<Vec<_>>()
     };
 
     // Drive every command concurrently. `join_all` interleaves them so
     // independent effects make progress together rather than in sequence.
     futures_util::future::join_all(run_futures).await;
+
+    // Drain every poll the request scheduled — the triggering commit plus
+    // anything its providers committed or wrote to the overlay — in one
+    // pass. This is the single point that turns scheduled writes into
+    // subscription broadcasts; coalesced by branch identity.
+    let tonk = state.read().await;
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 }
 
 #[cfg(test)]

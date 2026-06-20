@@ -79,6 +79,12 @@ impl<'a> BranchReference<'a> {
         })
     }
 
+    /// The reactor that owns this branch's cache — so leaf effects can
+    /// schedule a poll on the affected branch instead of polling inline.
+    pub(crate) fn reactor(&self) -> &'a crate::Reactor {
+        self.repository.reactor()
+    }
+
     /// Open or attach to a standing subscription for `query`.
     pub fn subscribe(self, query: ConceptQuery) -> Subscribe<'a> {
         Subscribe::new(self, query)

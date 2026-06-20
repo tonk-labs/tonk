@@ -1,11 +1,20 @@
 //! [`TransactionBuilder`] and [`Commit`] — accumulate
-//! assert/retract pairs and commit them through the reactor so
-//! subscriptions re-poll on success.
+//! assert/retract pairs and commit them through the reactor.
 //!
-//! Routes call this instead of `Branch::transaction()` so they
-//! can't forget to notify subscribers — the wrapper does it
-//! automatically. The builder is lazy; nothing touches the
-//! branch until `Commit::perform`.
+//! Routes call this instead of `Branch::transaction()`. On a
+//! successful commit, [`Commit::perform`] **schedules** a poll of
+//! the affected branch ([`Reactor::schedule_poll`]) rather than
+//! polling inline — so a commit and a session-overlay write on the
+//! same branch in one turn coalesce into a single re-evaluation.
+//! Every entry point that commits is therefore responsible for
+//! draining the scheduled set once it's done
+//! ([`Reactor::run_scheduled_polls`]); the command dispatcher does
+//! this for the transact path, and the create/migration/claim
+//! routes drain explicitly. The builder is lazy; nothing touches
+//! the branch until `Commit::perform`.
+//!
+//! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
+//! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 //!
 //! [`Commit::perform`] runs the effects evaluator
 //! ([`super::effects::evaluate_effects`]) between the user's
@@ -175,13 +184,16 @@ impl Commit<'_> {
         let revision = txn.commit().perform(env).await?;
         let commit_ms = t_commit.elapsed().as_millis();
 
-        let t_poll = web_time::Instant::now();
-        cached.poll(env).await;
-        let poll_ms = t_poll.elapsed().as_millis();
+        // Schedule the poll rather than running it inline: the request's
+        // dispatcher drains the scheduled set once after its providers run
+        // (`Reactor::run_scheduled_polls`), so a commit and a session-overlay
+        // write on the same branch in one turn coalesce into a single
+        // re-evaluation. Every entry point that commits must drain.
+        self.branch
+            .reactor()
+            .schedule_poll(std::sync::Arc::clone(&cached.state));
 
-        dialog_common::log!(
-            "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
-        );
+        dialog_common::log!("reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms");
         Ok(revision)
     }
 }

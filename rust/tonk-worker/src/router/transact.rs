@@ -77,17 +77,16 @@ pub async fn transact(
             .branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
-    // The transient commands (if any) were captured before commit;
-    // dispatch them now that the state lock is released, so each
-    // command's `execute` can re-acquire it. The origin is the repo +
-    // branch this commit landed in, so a handler can act on it.
-    if let Some(transients) = transients {
-        let origin = super::CommandOrigin {
-            repo: path.repo,
-            branch: path.branch,
-        };
-        super::dispatch(&state, origin, transients).await;
-    }
+    // Dispatch any transient commands (now that the state lock is
+    // released, so each command's `execute` can re-acquire it) and then
+    // drain the polls this request scheduled. `dispatch` always drains —
+    // even with no commands — so the durable commit's scheduled poll fans
+    // out. The origin is the repo + branch this commit landed in.
+    let origin = super::CommandOrigin {
+        repo: path.repo,
+        branch: path.branch,
+    };
+    super::dispatch(&state, origin, transients.unwrap_or_default()).await;
     Ok(response)
 }
 
@@ -107,14 +106,14 @@ pub async fn transact_profile(
     };
     // Profile-branch commits carry an empty `repo` origin: the profile
     // repository is not in the named-repo namespace, and no command
-    // dispatched here loads an origin repository by name.
-    if let Some(transients) = transients {
-        let origin = super::CommandOrigin {
-            repo: String::new(),
-            branch: path.branch,
-        };
-        super::dispatch(&state, origin, transients).await;
-    }
+    // dispatched here loads an origin repository by name. `dispatch`
+    // always drains the scheduled polls, even with no transients, so the
+    // durable commit fans out.
+    let origin = super::CommandOrigin {
+        repo: String::new(),
+        branch: path.branch,
+    };
+    super::dispatch(&state, origin, transients.unwrap_or_default()).await;
     Ok(response)
 }
 

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use dialog_operator::Profile;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 
 mod branch;
 mod command;
@@ -70,6 +70,17 @@ pub struct Reactor {
     /// call; lives outside `repos` because the profile is a
     /// singleton with no name in the routing namespace.
     profile_repo: RwLock<Option<Arc<RepositoryState>>>,
+    /// Branches whose subscriptions need re-evaluation but haven't
+    /// been polled yet. A mutation that changes query results —
+    /// a durable [`Commit`] or a session-overlay write — schedules
+    /// the affected branch here (sync, no env) instead of polling
+    /// inline; the request's command dispatcher drains this with
+    /// [`run_scheduled_polls`](Self::run_scheduled_polls) once after
+    /// its providers run, so the env lives at one drain point and
+    /// several writes on a branch in one turn coalesce into a single
+    /// poll. Pointer identity (`Arc::ptr_eq`) dedups, so the same
+    /// branch scheduled twice polls once.
+    pending_polls: Mutex<Vec<Arc<BranchState>>>,
 }
 
 impl Reactor {
@@ -81,6 +92,39 @@ impl Reactor {
             profile,
             repos: RwLock::new(HashMap::new()),
             profile_repo: RwLock::new(None),
+            pending_polls: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Schedule a poll of `state`'s subscriptions. Called by mutating
+    /// effects (a durable commit, a session-overlay write) so the change
+    /// propagates without the writer holding an env or polling inline.
+    /// The scheduled branch is re-evaluated when the request's dispatcher
+    /// calls [`run_scheduled_polls`](Self::run_scheduled_polls). Cheap and
+    /// sync — just an `Arc` push; dedup happens at drain time.
+    pub fn schedule_poll(&self, state: Arc<BranchState>) {
+        self.pending_polls.lock().push(state);
+    }
+
+    /// Drain the scheduled-poll set: re-evaluate every distinct branch's
+    /// subscriptions once, broadcasting changed results to subscribers.
+    /// Called by the command dispatcher after its providers run, so all
+    /// the polls a turn scheduled fire together with the env in hand.
+    /// Pointer identity dedups, so a branch scheduled by both its commit
+    /// and an overlay write polls a single time.
+    pub async fn run_scheduled_polls<Env: SelectProvider>(&self, env: &Env) {
+        let scheduled = {
+            let mut pending = self.pending_polls.lock();
+            std::mem::take(&mut *pending)
+        };
+        let mut unique: Vec<Arc<BranchState>> = Vec::new();
+        for state in scheduled {
+            if !unique.iter().any(|seen| Arc::ptr_eq(seen, &state)) {
+                unique.push(state);
+            }
+        }
+        for state in unique {
+            state.poll(env).await;
         }
     }
 

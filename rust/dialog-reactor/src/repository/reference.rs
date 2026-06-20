@@ -56,7 +56,7 @@ impl<'a> RepositoryReference<'a> {
         }
     }
 
-    fn reactor(&self) -> &'a Reactor {
+    pub(crate) fn reactor(&self) -> &'a Reactor {
         match self {
             Self::Named { reactor, .. } | Self::Profile { reactor } => reactor,
         }

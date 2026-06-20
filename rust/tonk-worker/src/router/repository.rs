@@ -560,24 +560,23 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to acquire content branch: {e}")))?;
 
-    // Write the private seed into the session overlay *before* the durable
-    // commit. The commit re-polls every subscription on the branch, so the
-    // share view's live `tonk:invitation` query re-evaluates with both
-    // halves already present — the overlay seed and the durable
-    // authorization — in one consistent frame. Doing the overlay write
-    // *after* the commit would re-poll with the seed still missing (the
-    // join empty, the view stuck on `no-entity`) and leave the later write
-    // with no re-poll of its own. Clearing first keeps exactly one live
-    // credential; the seed never reaches replicated storage.
+    // Write the private seed into the session overlay, then schedule a
+    // poll of this branch so the change propagates even though it never
+    // commits durably. The seed never reaches replicated storage; clearing
+    // first keeps exactly one live credential.
     session.state.clear_overlay();
     session.state.assert_overlay(Credential {
         this: subject_entity,
         seed: Seed(seed),
     });
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&session.state));
 
     // Assert the public authorization durably — committed **through the
-    // reactor** so its cached branch sees the fact and its subscription
-    // re-poll fans the now-complete invitation out to the share view.
+    // reactor** so its cached branch sees the fact. The commit schedules
+    // its own poll on the same branch; the dispatcher's drain coalesces it
+    // with the overlay write above into a single re-evaluation that fans
+    // the now-complete invitation out to the share view.
     tonk.reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
@@ -1221,6 +1220,11 @@ where
     // which is recoverable.
     record_replica_in_profile(tonk, display_name, &repository.did()).await?;
 
+    // Drain the polls scheduled by the meta and profile-index commits
+    // above so subscribers (e.g. the Hub on the profile meta branch) see
+    // the new replica.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
     Ok(())
 }
 
@@ -1314,6 +1318,10 @@ async fn set_replica_status(
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to set replica status: {}", e)))?;
 
+    // Drain the poll the status commit scheduled so the Hub's profile
+    // meta subscription reflects the new status.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
     broadcast(
         "/api/profile",
         &Notification {
@@ -1379,6 +1387,9 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
     // every boot. Fetch is only available in the SW scope; native
     // builds skip it (the Hub is a browser-only surface).
     seed_profile_library(tonk).await?;
+
+    // Drain the poll the bootstrap commit scheduled.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
 }
@@ -1947,6 +1958,9 @@ where
                 name, e
             ))
         })?;
+
+    // Drain the poll the meta commit scheduled.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     // Mirror the create path: tell listeners of the repository's
     // representation that its remotes/branches changed.
