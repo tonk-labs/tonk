@@ -668,6 +668,76 @@ pub mod tests {
         assert!(!minted.access.is_empty());
     }
 
+    /// The minted credential seed lives in the session overlay only — it
+    /// must never reach durable storage. Proof: after the overlay is
+    /// cleared (which drops only in-memory facts, never touching the
+    /// branch tree), the credential seed is gone but the durably-committed
+    /// authorization proof remains.
+    #[dialog_common::test]
+    async fn it_keeps_the_credential_seed_out_of_storage() {
+        let state = test_state().await;
+        let (app, app_state, _lsp) = super::api_router_with_state(state);
+
+        let (repo, subject) = put_repo_info(&app, "invite-no-leak").await;
+        let minted = mint_invite_for(&app, &repo, &subject).await;
+        assert!(!minted.access.is_empty(), "authorization must mint");
+
+        // Clear the overlay directly — this drops only the in-memory
+        // session facts; durable storage is untouched.
+        {
+            let tonk = app_state.read().await;
+            let session = tonk
+                .reactor
+                .repository(&repo)
+                .branch("main")
+                .acquire(&tonk.operator)
+                .await
+                .unwrap();
+            session.state.clear_overlay();
+        }
+
+        let query = |attr: &str, name: &str| {
+            serde_json::json!({
+                "terms": { "this": subject, name: { "?": { "name": name } } },
+                "predicate": { "with": {
+                    name: { "the": attr, "as": "Text", "cardinality": "one" }
+                } }
+            })
+        };
+        let read = |q: serde_json::Value| {
+            let app = app.clone();
+            let repo = repo.clone();
+            async move {
+                let r = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/repository/{repo}/branch/main/query"))
+                            .method("POST")
+                            .header("content-type", "application/json")
+                            .header("accept", "application/json")
+                            .body(Body::from(q.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                serde_json::from_slice::<Vec<serde_json::Value>>(&bytes).unwrap()
+            }
+        };
+
+        let proof = read(query("xyz.tonk.authorization/proof", "proof")).await;
+        let seed = read(query("xyz.tonk.credential/seed", "seed")).await;
+
+        assert_eq!(proof.len(), 1, "authorization proof must be durable");
+        assert_eq!(
+            seed.len(),
+            0,
+            "credential seed must be overlay-only, never persisted (got {seed:?})",
+        );
+    }
+
     /// End-to-end share → join: an invite minted by the `tonk:invite`
     /// command (worker-held keypair; the seed lives in the session overlay
     /// and the URL fragment) must be redeemable through

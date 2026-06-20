@@ -560,9 +560,24 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to acquire content branch: {e}")))?;
 
+    // Write the private seed into the session overlay *before* the durable
+    // commit. The commit re-polls every subscription on the branch, so the
+    // share view's live `tonk:invitation` query re-evaluates with both
+    // halves already present — the overlay seed and the durable
+    // authorization — in one consistent frame. Doing the overlay write
+    // *after* the commit would re-poll with the seed still missing (the
+    // join empty, the view stuck on `no-entity`) and leave the later write
+    // with no re-poll of its own. Clearing first keeps exactly one live
+    // credential; the seed never reaches replicated storage.
+    session.state.clear_overlay();
+    session.state.assert_overlay(Credential {
+        this: subject_entity,
+        seed: Seed(seed),
+    });
+
     // Assert the public authorization durably — committed **through the
-    // reactor** so its cached branch (and the share view's live query)
-    // sees the fact.
+    // reactor** so its cached branch sees the fact and its subscription
+    // re-poll fans the now-complete invitation out to the share view.
     tonk.reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
@@ -574,20 +589,6 @@ async fn run_invite(
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
         })?;
-
-    // Assert the private seed into the session overlay only. Retract any
-    // prior credential first so there is exactly one live invitation; the
-    // seed never reaches replicated storage.
-    session.state.clear_overlay();
-    session.state.assert_overlay(Credential {
-        this: subject_entity,
-        seed: Seed(seed),
-    });
-
-    // The overlay is folded in at read time, but standing subscriptions
-    // last polled before this write won't re-evaluate on their own — nudge
-    // them so the share view's live query picks up the new credential.
-    session.poll(&tonk.operator).await;
 
     log!("Minted invitation for repo '{}'", repo_name);
     Ok(())

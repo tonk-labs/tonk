@@ -61,6 +61,24 @@ impl BranchState {
         self.overlay.read().clone()
     }
 
+    /// The inverse of the current overlay: a [`Changes`] that retracts
+    /// every fact the overlay asserts. Integrate this into a transaction
+    /// *before* committing so an evaluation that folded the overlay in for
+    /// reads does not carry the ephemeral facts (e.g. an invite seed) into
+    /// the durable write. Asserts/replaces become retracts; existing
+    /// retracts are dropped (nothing to undo).
+    pub fn overlay_retraction(&self) -> Changes {
+        use dialog_artifacts::{Change, Update};
+        let overlay = self.overlay.read();
+        let mut inverse = Changes::new();
+        for (entity, attribute, change) in overlay.iter() {
+            if let Change::Assert(value) | Change::Replace(value) = change {
+                inverse.dissociate(attribute.clone(), entity.clone(), value.clone());
+            }
+        }
+        inverse
+    }
+
     /// Assert a [`Statement`] into the session overlay. A cardinality-one
     /// re-assert overwrites the prior value in place, so "keep exactly
     /// one live fact" needs no separate retract. Takes the exclusive

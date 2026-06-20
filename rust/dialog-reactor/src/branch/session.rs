@@ -36,6 +36,14 @@ impl BranchSession {
         self.state.overlay()
     }
 
+    /// The inverse of this branch's overlay — retracts every overlay
+    /// fact. Integrate before a commit so a read that folded the overlay
+    /// in does not persist the ephemeral facts. See
+    /// [`BranchState::overlay_retraction`](crate::BranchState::overlay_retraction).
+    pub fn overlay_retraction(&self) -> Changes {
+        self.state.overlay_retraction()
+    }
+
     /// Re-poll every subscription on this branch.
     pub async fn poll<Env: SelectProvider>(&self, env: &Env) {
         self.state.poll(env).await;
