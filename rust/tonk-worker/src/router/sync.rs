@@ -45,29 +45,28 @@ fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
     }
 }
 
-/// Publish a replica's live sync `status` to the profile meta branch's
-/// OVERLAY, keyed on the replica entity (`hash(profile, subject)`).
-///
-/// The status is a transient observation (idle / push / pull / offline), so
-/// it goes to the overlay — never persisted, never replicated — and folds
-/// into the chip's `tonk/sync` subscription on the profile meta branch.
-/// Mirrors `set_replica_status` (repository.rs) but overlay-only: no commit.
-/// `repo` is the subject did:key string; a malformed repo is a quiet no-op.
-/// Name of the profile repository's meta branch (where replica records,
-/// and the sync-state overlay keyed on them, live).
+/// Name of the profile repository's meta branch (where the sync-state
+/// overlay lives).
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 const META_BRANCH: &str = "meta";
 
+/// Publish the live sync `status` to the profile meta branch's OVERLAY,
+/// keyed on the fixed `state:here` entity (`Replica::SYNC_STATE_HERE`).
+///
+/// The status is a transient observation (idle / push / pull / offline), so
+/// it goes to the overlay — never persisted, never replicated — and folds
+/// into the chip's `tonk/sync` subscription. A well-known singleton entity
+/// (like `tonk:join/status`) so the chip subscribes without resolving this
+/// device's replica entity; one space is in scope per page. Mirrors
+/// `set_replica_status` but overlay-only: no commit.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_sync_status(tonk: &crate::worker::TonkState, repo: &str, state: SyncState) {
-    use dialog_varsig::Did;
+async fn publish_sync_status(tonk: &crate::worker::TonkState, state: SyncState) {
     use std::sync::Arc;
     use tonk_schema::{Replica, ReplicaSyncStatus};
 
-    let Ok(subject) = repo.parse::<Did>() else {
+    let Ok(entity) = Replica::SYNC_STATE_HERE.parse() else {
         return;
     };
-    let entity = Replica::new(tonk.profile.did(), subject).this().clone();
     let stamp = ReplicaSyncStatus::new(entity, Replica::sync_status_attr(state));
 
     let session = match tonk
@@ -357,7 +356,7 @@ pub async fn sync_status(
 
     if handle.upstream().is_none() {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        publish_sync_status(&tonk_state, &params.repo, SyncState::NoUpstream).await;
+        publish_sync_status(&tonk_state, SyncState::NoUpstream).await;
         return Ok(Json(SyncStatusResponse {
             state: SyncState::NoUpstream,
             local,
@@ -376,7 +375,7 @@ pub async fn sync_status(
     // chip's subscription reflects it — the same path the HTTP response
     // carries, now also a fact the UI can subscribe to.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    publish_sync_status(&tonk_state, &params.repo, sync_state).await;
+    publish_sync_status(&tonk_state, sync_state).await;
     Ok(Json(SyncStatusResponse {
         state: sync_state,
         local,

@@ -1182,7 +1182,11 @@ view/directory!:
         <span class="workspace__brand">tonk</span>
         <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
         <span class="workspace__title"><tonk-display entity={subject} model=tonk:repository></tonk-display></span>
-        <tonk-sync-state></tonk-sync-state>
+        <!-- The sync chip reads `tonk:sync` (the `state:here` overlay) off
+             the PROFILE meta branch — not the space branch this shell is
+             scoped to — so it carries its own `<tonk-repository profile>`
+             context. The worker stamps the live status there. -->
+        <tonk-repository profile><tonk-branch name="meta"><tonk-display entity=state:here model=tonk:sync></tonk-display></tonk-branch></tonk-repository>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
           <!-- One click both opens the share dialog (`data-dialog`) and

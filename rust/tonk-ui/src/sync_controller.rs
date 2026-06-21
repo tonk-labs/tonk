@@ -176,13 +176,16 @@ fn sweep_action(enabled: bool) -> SweepAction {
 /// upstream fetch (via the read-only `sync/status` route), so a paused
 /// repository still learns when remote moves out from under it.
 fn request_status_refresh(repo: &str) {
-    let init = web_sys::CustomEventInit::new();
-    init.set_detail(&JsValue::from_str(repo));
-    let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(STATUS_REFRESH_EVENT, &init)
-    else {
-        return;
-    };
-    let _ = window().dispatch_event(&event);
+    // Hit the read-only status route, which classifies the branch against
+    // its upstream and stamps the live `tonk/sync` status into the overlay
+    // the chip subscribes to. (Formerly this dispatched a window event the
+    // imperative `<tonk-sync-state>` chip listened to and re-fetched on; the
+    // chip is now a `<tonk-display model=tonk:sync>` driven by the overlay
+    // fact, so the controller drives the status check directly.)
+    let repo = repo.to_string();
+    spawn_local(async move {
+        let _ = api::sync_status(&repo, "main").await;
+    });
 }
 
 /// Notify the background controller that a local commit just landed,

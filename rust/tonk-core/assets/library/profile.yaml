@@ -223,6 +223,63 @@ concept!: &view
       cardinality: one
       as: text
 
+# This device's live sync state, keyed on the well-known singleton entity
+# `state:here` (one space is in scope per page). The worker stamps `status`
+# into this branch's OVERLAY (transient observation) on each status check;
+# the sync chip subscribes to it instead of polling a status route. Lives on
+# the profile meta branch (like the join overlay), so the chip reads it
+# under a `<tonk-repository profile>` context.
+concept!: &sync
+  this: tonk:sync
+  description: This device's sync state for the space in scope.
+  with:
+    status:
+      description: |
+          Live observation — sync:idle | sync:push | sync:pull | sync:offline.
+      the: xyz.tonk.sync/status
+      cardinality: one
+      as: entity
+
+# The sync chip — the default view for `model: tonk:sync`. A pill whose dot
+# colour + label come from `status` via CSS, so the template needs no
+# per-state branches. Pure presentation; the worker owns the state.
+view!: &sync/chip
+  this: id:tonk:sync/chip
+  model: tonk:sync
+  display: |
+    <span class="workspace__sync" data-sync-status={status}>
+      <style>
+        .workspace__sync {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-xs);
+          padding: var(--wa-space-3xs) var(--wa-space-s);
+          border-radius: var(--wa-border-radius-pill, 999px);
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-quiet);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        .workspace__sync::before {
+          content: "";
+          inline-size: 7px;
+          block-size: 7px;
+          border-radius: 50%;
+          background: var(--wa-color-text-quiet);
+        }
+        .workspace__sync::after { content: "offline"; }
+        .workspace__sync[data-sync-status="sync:idle"]::before {
+          background: var(--wa-color-success-fill-loud, #22c55e);
+        }
+        .workspace__sync[data-sync-status="sync:idle"]::after { content: "synced"; }
+        .workspace__sync[data-sync-status="sync:push"]::before,
+        .workspace__sync[data-sync-status="sync:pull"]::before {
+          background: var(--wa-color-brand-fill-loud, #a855f7);
+        }
+        .workspace__sync[data-sync-status="sync:push"]::after,
+        .workspace__sync[data-sync-status="sync:pull"]::after { content: "syncing…"; }
+      </style>
+    </span>
+
 # The /join view — a directory view for `tonk:join/status`, mounted by a
 # no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
 # route). Directory chrome renders even with zero instances, so the

@@ -283,6 +283,15 @@ impl Replica {
     /// `tonk/sync` `enabled` URI: the user paused auto-sync (durable).
     pub const PAUSED: &'static str = "sync:paused";
 
+    /// The fixed entity the live sync `status` overlay is keyed on —
+    /// `state:here`, a well-known singleton (like `tonk:join/status`) so the
+    /// chip can subscribe without resolving this device's replica entity.
+    /// One space is in scope per page (each sealed `/space` is its own
+    /// guest), so a singleton suffices; the durable pause preference still
+    /// lives per-replica. Defers the "scope the view to the local replica"
+    /// question.
+    pub const SYNC_STATE_HERE: &'static str = "state:here";
+
     /// `tonk/sync` `status` URI: up to date, nothing to do.
     pub const IDLE: &'static str = "sync:idle";
 
