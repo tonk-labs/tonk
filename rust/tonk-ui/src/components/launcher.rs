@@ -1,4 +1,4 @@
-use crate::components::{TonkDisplayView, TonkHub, TonkJoin};
+use crate::components::{TonkDisplayView, TonkHub, TonkJoin, TonkSpaceSealed};
 use leptos::prelude::*;
 use leptos_router::{
     components::{Route, Router, Routes},
@@ -42,7 +42,12 @@ pub fn TonkLauncher() -> impl IntoView {
                     //   /space/{name}/{model}/               directory
                     //   /space/{name}/{entity}@{model}/*     artifact
                     //   /space/{name}/{entity}@{model}!{view}/*  ad-hoc
-                    <Route path=path!("space/:space") view=TonkDisplayView />
+                    // SPIKE: the bare `/space/:space` route now renders the
+                    // space's default view inside a SEALED opaque-origin
+                    // iframe (the new architecture). The `/*subject` routes
+                    // (board/inspector/artifact) still use the in-page
+                    // `<tonk-display>` until they're migrated too.
+                    <Route path=path!("space/:space") view=TonkSpaceSealed />
                     <Route path=path!("space/:space/*subject") view=TonkDisplayView />
                 </Routes>
             </Router>

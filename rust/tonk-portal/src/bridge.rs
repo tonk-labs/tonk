@@ -169,10 +169,276 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   parent.postMessage({v:1,type:"hello"},"*",[ch.port2]);
 })();"#;
 
+/// Runtime-injection bootstrap, appended after [`BOOTSTRAP_JS`] when the
+/// portal is in `runtime` mode. It receives the element runtime from the
+/// parent (over `window` `postMessage`, NOT the data port) and brings it up
+/// inside the sealed guest: inject CSS, mint blob URLs for the glue +
+/// snippet modules, rewrite the glue's relative snippet imports to those
+/// blobs, import the glue, instantiate the wasm from bytes (no fetch), and
+/// call `start()` to register the custom elements. The `content` markup
+/// (e.g. `<tonk-display>`) is already in the document and upgrades the
+/// moment the elements are defined.
+///
+/// The guest fetches NOTHING — the parent (trusted, networked) hands over
+/// every byte. `runtime-ready` tells the parent to send.
+const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
+  window.addEventListener("message", async function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
+    try {
+      // Web Awesome theme classes on the root (mirrors index.html), so the
+      // injected WA CSS + palette resolve their custom properties.
+      document.documentElement.classList.add("wa-theme-default","wa-palette-shoelace");
+      try {
+        var dark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.classList.toggle("wa-dark",!!dark);
+        document.documentElement.classList.toggle("wa-light",!dark);
+      } catch(_) {}
+      if (d.css) {
+        var style=document.createElement("style");
+        style.textContent=d.css;
+        document.head.appendChild(style);
+      }
+      // Web Awesome component bundle: a self-contained ESM (no dynamic or
+      // relative imports), imported from a guest-minted blob so the <wa-*>
+      // elements upgrade with no network.
+      if (d.wa) {
+        var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
+        await import(waUrl);
+      }
+      // Rewrite each snippet import statement to a guest-minted blob URL.
+      var glue=d.glue;
+      for (var i=0;i<d.snippets.length;i++){
+        var s=d.snippets[i];
+        var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
+        glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
+      }
+      var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
+      var mod=await import(glueUrl);
+      await mod.default({ module_or_path: d.wasm });
+      mod.start();
+    } catch(err) {
+      parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
+    }
+  });
+  parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
+})();"#;
+
 /// Prepend the bootstrap script that wires `window.tonk` to this
 /// portal's bridge over a `MessagePort`.
 pub(crate) fn bootstrap_srcdoc(content: &str) -> String {
     format!("<script>{BOOTSTRAP_JS}</script>{content}")
+}
+
+/// Like [`bootstrap_srcdoc`], plus the runtime-injection bootstrap: the
+/// guest will ask the parent (`runtime-ready`) for the element runtime and
+/// bring it up before `content`'s custom elements upgrade.
+pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str) -> String {
+    format!("<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}")
+}
+
+/// Fetch the element runtime + app CSS (the parent is trusted + networked)
+/// and post an `inject` envelope to the sealed `iframe`'s window. Called
+/// when the guest signals `runtime-ready`. The guest fetches nothing; every
+/// byte crosses here.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
+    use wasm_bindgen::JsValue;
+
+    let Some(content_window) = iframe.content_window() else {
+        return;
+    };
+    spawn_local(async move {
+        let payload = match build_inject_payload().await {
+            Ok(p) => p,
+            Err(e) => {
+                tonk_common::log!("portal runtime: failed to assemble payload: {e}");
+                return;
+            }
+        };
+        // Post to the iframe window (not the data port): runtime setup is a
+        // one-time window-channel handoff, distinct from the tonk data port.
+        let _ = content_window.post_message(&payload, "*");
+    });
+}
+
+/// Build the `inject` envelope: `{ __tonkRuntime:"inject", glue, snippets:[
+/// {stmt,src} ], wasm: ArrayBuffer, css }`. Fetches the served guest bundle
+/// + app stylesheet.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn build_inject_payload() -> Result<JsValue, String> {
+    use wasm_bindgen::JsValue;
+
+    let glue = fetch_text("/guest/guest.js").await?;
+    let wasm = fetch_array_buffer("/guest/guest_bg.wasm").await?;
+    // App stylesheet — its hashed filename is discovered from the parent
+    // document's own `<link rel=stylesheet href=/styles-*.css>`. The Web
+    // Awesome CSS + the self-contained WA component bundle ride along so
+    // `<wa-*>` elements style + upgrade inside the sealed guest with no
+    // network of its own.
+    let mut css = fetch_text("/guest/wa.css").await.unwrap_or_default();
+    if let Some(href) = app_stylesheet_href() {
+        css.push('\n');
+        css.push_str(&fetch_text(&href).await.unwrap_or_default());
+    }
+    // Inline `@font-face url("/fonts/*.woff2")` as `data:` URLs: a
+    // null-origin guest can't fetch the fonts (CORS-blocked), so the host
+    // (same-origin) fetches each woff2 and base64-embeds it.
+    css = inline_fonts(&css).await;
+    // The bundled Web Awesome components (esbuild, no dynamic/relative
+    // imports), imported by the guest before its content upgrades.
+    let wa = fetch_text("/guest/wa.js").await.unwrap_or_default();
+
+    // Find every `import … from '…/snippets/…'` statement in the glue and
+    // fetch each snippet file, so the guest can rewrite them to blob URLs.
+    let snippets = js_sys::Array::new();
+    for (stmt, spec) in find_snippet_imports(&glue) {
+        let path = format!("/guest/{}", spec.trim_start_matches("./"));
+        let src = fetch_text(&path).await?;
+        let entry = Object::new();
+        let _ = Reflect::set(&entry, &"stmt".into(), &JsValue::from_str(&stmt));
+        let _ = Reflect::set(&entry, &"src".into(), &JsValue::from_str(&src));
+        snippets.push(&entry);
+    }
+
+    let payload = Object::new();
+    let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
+    let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
+    let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
+    let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
+    let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
+    let _ = Reflect::set(&payload, &"wa".into(), &JsValue::from_str(&wa));
+    Ok(payload.into())
+}
+
+/// Replace every `url("/fonts/<name>.woff2")` in `css` with a
+/// `url("data:font/woff2;base64,…")` so the sealed guest needs no font
+/// fetch. Fonts whose fetch/encode fails are left as-is (degrade to a
+/// fallback face).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn inline_fonts(css: &str) -> String {
+    // Collect distinct `/fonts/*.woff2` paths.
+    let mut paths: Vec<String> = Vec::new();
+    let mut rest = css;
+    while let Some(i) = rest.find("/fonts/") {
+        let tail = &rest[i..];
+        if let Some(end) = tail.find(".woff2") {
+            let path = tail[..end + 6].to_owned();
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+            rest = &tail[end + 6..];
+        } else {
+            break;
+        }
+    }
+
+    let mut out = css.to_owned();
+    for path in paths {
+        if let Ok(buffer) = fetch_array_buffer(&path).await {
+            if let Some(b64) = array_buffer_to_base64(&buffer) {
+                let data_url = format!("data:font/woff2;base64,{b64}");
+                // Replace both quoted forms `"<path>"` (the CSS uses
+                // double quotes around the url argument).
+                out = out.replace(&path, &data_url);
+            }
+        }
+    }
+    out
+}
+
+/// Base64-encode an `ArrayBuffer` via `btoa` over a binary string. Returns
+/// `None` on any JS error.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn array_buffer_to_base64(buffer: &JsValue) -> Option<String> {
+    let bytes = js_sys::Uint8Array::new(buffer);
+    let len = bytes.length() as usize;
+    // Build a binary string (each char = one byte) for `btoa`.
+    let mut binary = String::with_capacity(len);
+    let vec = bytes.to_vec();
+    for b in vec {
+        binary.push(b as char);
+    }
+    window()?.btoa(&binary).ok()
+}
+
+/// Parse `import … from '<spec>'` statements whose spec contains
+/// `/snippets/`, returning `(full statement, spec)` pairs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn find_snippet_imports(glue: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in glue.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("import") || !trimmed.contains("/snippets/") {
+            continue;
+        }
+        // spec is the quoted string after `from`
+        if let Some(from_idx) = trimmed.find(" from ") {
+            let after = &trimmed[from_idx + 6..];
+            let quote = after.chars().next();
+            if let Some(q) = quote {
+                if let Some(end) = after[1..].find(q) {
+                    let spec = &after[1..1 + end];
+                    // statement without a trailing `;`-only tail variance:
+                    // keep the trimmed line up to and including the close quote
+                    let stmt_end = from_idx + 6 + 1 + end + 1;
+                    let stmt = trimmed[..stmt_end].to_owned();
+                    out.push((stmt, spec.to_owned()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The parent document's app stylesheet href (the hashed `/styles-*.css`),
+/// read off its own `<link rel="stylesheet">`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn app_stylesheet_href() -> Option<String> {
+    let document = window()?.document()?;
+    let links = document.query_selector_all("link[rel=stylesheet]").ok()?;
+    for i in 0..links.length() {
+        let node = links.item(i)?;
+        let el: Element = node.dyn_into().ok()?;
+        if let Some(href) = el.get_attribute("href") {
+            if href.contains("/styles-") || href.ends_with("styles.css") {
+                return Some(href);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_text(url: &str) -> Result<String, String> {
+    let resp = fetch(url).await?;
+    let text = wasm_bindgen_futures::JsFuture::from(
+        resp.text().map_err(|e| format!("text(): {e:?}"))?,
+    )
+    .await
+    .map_err(|e| format!("await text: {e:?}"))?;
+    text.as_string().ok_or_else(|| "text not a string".into())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
+    let resp = fetch(url).await?;
+    wasm_bindgen_futures::JsFuture::from(
+        resp.array_buffer()
+            .map_err(|e| format!("array_buffer(): {e:?}"))?,
+    )
+    .await
+    .map_err(|e| format!("await array_buffer: {e:?}"))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch(url: &str) -> Result<web_sys::Response, String> {
+    let win = window().ok_or("no window")?;
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("fetch {url}: {e:?}"))?;
+    resp_value
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| format!("fetch {url}: not a Response"))
 }
 
 // --- Page-level `hello` listener + registry -----------------------
@@ -206,6 +472,36 @@ pub(crate) fn install_message_listener() {
     let listener: Closure<dyn FnMut(MessageEvent)> =
         Closure::wrap(Box::new(move |event: MessageEvent| {
             let data = event.data();
+
+            // Runtime-injection handshake: the guest's runtime bootstrap
+            // asks for the element runtime; match its source iframe and
+            // fetch+post the bundle. Distinct from the `hello`/data-port
+            // handshake below.
+            let runtime_kind = get_str(&data, "__tonkRuntime");
+            if let Some(kind) = runtime_kind.as_deref() {
+                let source = Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
+                match kind {
+                    "runtime-ready" => {
+                        let matched = registry.borrow().iter().find_map(|entry| {
+                            let cw: JsValue = entry.iframe.content_window()?.into();
+                            (cw == source).then(|| entry.iframe.clone())
+                        });
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        if let Some(iframe) = matched {
+                            inject_runtime(&iframe);
+                        }
+                    }
+                    "error" => {
+                        tonk_common::log!(
+                            "portal guest runtime error: {}",
+                            get_str(&data, "error").unwrap_or_default()
+                        );
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
             if get_str(&data, "type").as_deref() != Some("hello") {
                 return;
             }

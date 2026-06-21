@@ -234,6 +234,10 @@
         <link data-trunk rel="copy-dir" href="./assets/fonts" />
         <link data-trunk rel="copy-dir" href="./assets/images" />
         <link data-trunk rel="copy-dir" href="./assets/webawesome" />
+        <!-- Sealed-guest element runtime (registration-only wasm). The host
+       fetches these bytes and postMessages them into the sealed iframe;
+       the guest itself fetches nothing. NOT auto-loaded in this page. -->
+        <link data-trunk rel="copy-dir" href="./assets/guest" />
         <link
             data-trunk
             rel="copy-file"

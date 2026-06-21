@@ -42,7 +42,7 @@ impl CustomElement for TonkPortal {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["content", "entity", "model"]
+        &["content", "entity", "model", "runtime"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -79,8 +79,17 @@ impl CustomElement for TonkPortal {
         // the `hello` listener matches the live `contentWindow`, so the
         // bootstrap script resolves this portal when it posts `hello`.
         let content = host.get_attribute("content").unwrap_or_default();
+        // In `runtime` mode the guest renders OUR elements (a real
+        // `<tonk-display>`): the bootstrap additionally pulls in the
+        // injected element runtime + CSS before `content` upgrades.
+        let runtime = host.has_attribute("runtime");
         let _ = host.append_child(&iframe);
-        let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
+        let srcdoc = if runtime {
+            bridge::bootstrap_srcdoc_with_runtime(&content)
+        } else {
+            bridge::bootstrap_srcdoc(&content)
+        };
+        let _ = iframe.set_attribute("srcdoc", &srcdoc);
 
         state.borrow_mut().iframe = Some(iframe);
         *self.inner.borrow_mut() = Some(state);
@@ -133,7 +142,12 @@ fn reload(host: &Element, state: &Rc<RefCell<PortalState>>) {
     s.clear_subs();
     if let Some(iframe) = s.iframe.as_ref() {
         let content = host.get_attribute("content").unwrap_or_default();
-        let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
+        let srcdoc = if host.has_attribute("runtime") {
+            bridge::bootstrap_srcdoc_with_runtime(&content)
+        } else {
+            bridge::bootstrap_srcdoc(&content)
+        };
+        let _ = iframe.set_attribute("srcdoc", &srcdoc);
     }
 }
 

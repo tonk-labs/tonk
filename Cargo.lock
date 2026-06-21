@@ -5149,6 +5149,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "tonk-common",
  "tonk-display",
  "tonk-host",
  "tonk-schema",

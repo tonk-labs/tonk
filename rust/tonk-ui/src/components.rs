@@ -29,6 +29,9 @@ use join::*;
 mod route_views;
 pub use route_views::register as register_route_views;
 
+mod space_sealed;
+use space_sealed::*;
+
 /// The root UI component for the Tonk application.
 ///
 /// This component serves as the main entry point for the Tonk user interface,
