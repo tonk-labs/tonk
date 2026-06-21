@@ -16,26 +16,12 @@
 
 use leptos::prelude::*;
 
-use crate::api;
-
-/// The `/join` view. Pure routing context over the profile's meta branch:
-/// a no-entity `<tonk-display model="tonk:join/status">` resolves the
-/// `tonk:join/status` *directory view* in the standard library, whose
-/// chrome holds the `<tonk-page onmount=tonk/join>` trigger (always mounts
-/// → fires the command on load) and the pending/failed status rendering.
-/// Directory chrome renders even with zero instances, so the trigger
-/// fires before any status exists — and it's what creates the status.
+/// The `/join` view. A thin shim that mounts the `<tonk-join>` custom
+/// element (see [`crate::components::route_views`]); the element carries the
+/// routing-context markup and the `tonk:join/status` directory view holds
+/// the `<tonk-page onmount=tonk:join>` trigger that fires the join command.
+/// This shim exists only while the router is still Leptos.
 #[component]
 pub fn TonkJoin() -> impl IntoView {
-    view! {
-        <main class="join-route">
-            <tonk-repository class="display-route" name=api::DEFAULT_REPO profile>
-                <tonk-branch name="meta">
-                    <div class="display-view-slot">
-                        <tonk-display model="tonk:join/status"></tonk-display>
-                    </div>
-                </tonk-branch>
-            </tonk-repository>
-        </main>
-    }
+    view! { <tonk-join></tonk-join> }
 }

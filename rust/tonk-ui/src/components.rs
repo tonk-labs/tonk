@@ -26,6 +26,9 @@ pub use inspector::register as register_inspector;
 mod join;
 use join::*;
 
+mod route_views;
+pub use route_views::register as register_route_views;
+
 /// The root UI component for the Tonk application.
 ///
 /// This component serves as the main entry point for the Tonk user interface,

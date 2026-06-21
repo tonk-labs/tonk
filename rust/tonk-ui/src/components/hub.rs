@@ -15,27 +15,14 @@
 
 use leptos::prelude::*;
 
-use crate::api;
-
-/// The Tonk Hub view at `/`. Pure routing context over the `space`
-/// directory on the profile's meta branch — the cards AND the "Spaces"
-/// header with the "New space" form all come from the `space` directory
-/// view in the standard library. The form's `onsubmit=space/create`
-/// asserts the transient `CreateSpace` command, so the Hub chrome no
-/// longer lives in Leptos: this component just mounts the view.
+/// The Tonk Hub view at `/`. A thin shim that mounts the `<tonk-hub>`
+/// custom element (see [`crate::components::route_views`]); the element
+/// carries the routing-context markup and the `space` directory view does
+/// the rest. This shim exists only while the router is still Leptos; once
+/// the router mounts elements directly it goes away.
 #[component]
 pub fn TonkHub() -> impl IntoView {
-    view! {
-        <main class="hub-route">
-            <tonk-repository class="display-route" name=api::DEFAULT_REPO profile>
-                <tonk-branch name="meta">
-                    <div class="display-view-slot">
-                        <tonk-display model="space"></tonk-display>
-                    </div>
-                </tonk-branch>
-            </tonk-repository>
-        </main>
-    }
+    view! { <tonk-hub></tonk-hub> }
 }
 
 #[cfg(all(
