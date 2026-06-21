@@ -13,6 +13,11 @@ pub mod components;
 /// repository's upstream branches.
 pub mod sync_controller;
 
+/// `<tonk-host>` proxy for the sealed guest iframe — relays consumer
+/// events to the portal's `window.tonk` bridge. Guest-only.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub mod guest_host;
+
 /// DID parsing helpers.
 pub mod did;
 
