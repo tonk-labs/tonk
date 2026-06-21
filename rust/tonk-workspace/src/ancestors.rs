@@ -6,12 +6,15 @@
 
 use web_sys::HtmlElement;
 
-/// Read the `name` of the nearest `<tonk-repository>` ancestor, or
-/// `None` when it is absent or empty.
+/// Read the `name` of the nearest `<tonk-repository>` ancestor, or `None`
+/// when it is absent or empty. Inside the sealed guest the routing ancestors
+/// live OUTSIDE the iframe, so fall back to the repo the host supplied in the
+/// bridge context (`window.tonk.context.repo`).
 pub(crate) fn repo_from_ancestor(this: &HtmlElement) -> Option<String> {
     this.closest("tonk-repository")
         .ok()
         .flatten()
         .and_then(|repo| repo.get_attribute("name"))
         .filter(|name| !name.is_empty())
+        .or_else(|| tonk_host::bridge::context_field("repo"))
 }

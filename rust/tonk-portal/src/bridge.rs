@@ -134,6 +134,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
+    // Same-origin GET performed by the HOST: the opaque guest can't reach a
+    // same-origin, SW-routed `/api/...` endpoint itself. The host fetches the
+    // path on its real origin and returns the response body text. Used by the
+    // sync chip for `/api/.../sync/status`.
+    fetch:function(path){return call("fetch",{path:path});},
     subscribe:function(body){
       var id=mint();
       return new ReadableStream({
@@ -157,7 +162,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;
       }
-      case "query-error": case "transact-error": {
+      case "fetch-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
+        h.resolve(env.body); return;
+      }
+      case "query-error": case "transact-error": case "fetch-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
       }
@@ -710,6 +719,7 @@ fn make_dispatcher(
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
             "navigate" => handle_navigate(&data),
+            "fetch" => handle_host_fetch(&port, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -813,6 +823,36 @@ fn handle_navigate(data: &JsValue) {
     }
 }
 
+/// Perform a same-origin GET on the host and post the body back. The opaque
+/// guest can't reach a same-origin, SW-routed `/api/...` endpoint itself, so
+/// it asks the host. Restricted to host-relative paths (`/…`, not `//`) so
+/// the guest can't drive the host to fetch arbitrary cross-origin URLs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
+    let Some(id) = get_str(data, "id") else {
+        return;
+    };
+    let Some(path) = get_str(data, "path") else {
+        return post_error(port, "fetch-error", &id, "missing path");
+    };
+    if !path.starts_with('/') || path.starts_with("//") {
+        return post_error(port, "fetch-error", &id, "path must be host-relative");
+    };
+    let port = port.clone();
+    spawn_local(async move {
+        match fetch_text(&path).await {
+            Ok(body) => {
+                let env = Object::new();
+                set_v1(&env, "fetch-result");
+                let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&id));
+                let _ = Reflect::set(&env, &"body".into(), &JsValue::from_str(&body));
+                let _ = port.post_message(&env);
+            }
+            Err(e) => post_error(&port, "fetch-error", &id, &e),
+        }
+    });
+}
+
 // --- Query-body construction --------------------------------------
 
 /// Build the query body for a bridge call: no argument streams the
@@ -843,12 +883,15 @@ fn read_descriptor(host: &Element) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Build the `context` object (`{ this, model, origin }`) the iframe receives
-/// in its `ready` envelope. `this`/`model` come from the host's attributes;
-/// `origin` is the host page's real origin — the opaque guest can't read its
-/// own (`window.location.origin` is `"null"` there), so anything that needs a
-/// same-origin URL (the invite link, the sync `/api` route) reads it from
-/// `window.tonk.context.origin` instead of `window.location`.
+/// Build the `context` object (`{ this, model, origin, repo, branch }`) the
+/// iframe receives in its `ready` envelope. `this`/`model` come from the
+/// host's attributes; `origin` is the host page's real origin (the opaque
+/// guest's is `"null"`); `repo`/`branch` come from the portal's
+/// `<tonk-repository>`/`<tonk-branch>` ancestors — those routing elements
+/// live OUTSIDE the iframe, so a guest control that would normally resolve
+/// its repo via `closest("tonk-repository")` reads it from the context
+/// instead. Anything needing a same-origin URL or the scoped repo reads it
+/// from `window.tonk.context` rather than the DOM/`window.location`.
 fn build_context(host: &Element) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
@@ -856,9 +899,23 @@ fn build_context(host: &Element) -> Object {
     let origin = window()
         .and_then(|w| w.location().origin().ok())
         .unwrap_or_default();
+    let repo = host
+        .closest("tonk-repository")
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute("name"))
+        .unwrap_or_default();
+    let branch = host
+        .closest("tonk-branch")
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute("name"))
+        .unwrap_or_default();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
+    let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
+    let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
     context
 }
 

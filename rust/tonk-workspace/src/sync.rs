@@ -98,11 +98,8 @@ mod dom {
     use custom_elements::CustomElement;
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::{JsFuture, spawn_local};
-    use web_sys::{
-        CustomEvent, CustomEventInit, Element, Event, HtmlElement, Request, RequestInit, Response,
-        window,
-    };
+    use wasm_bindgen_futures::spawn_local;
+    use web_sys::{CustomEvent, CustomEventInit, Element, Event, HtmlElement, window};
 
     use tonk_schema::SyncState;
 
@@ -148,14 +145,17 @@ mod dom {
         storage.set_item(&pref_key(repo), value).is_ok()
     }
 
-    /// Read the `name` of the nearest `<tonk-branch>` ancestor,
-    /// defaulting to `main` when absent or empty.
+    /// Read the `name` of the nearest `<tonk-branch>` ancestor, defaulting to
+    /// `main` when absent or empty. Falls back to the bridge context inside
+    /// the sealed guest (the routing ancestors live outside the iframe).
     fn branch_from_ancestor(this: &HtmlElement) -> String {
         let name = this
             .closest("tonk-branch")
             .ok()
             .flatten()
-            .and_then(|el| el.get_attribute("name"));
+            .and_then(|el| el.get_attribute("name"))
+            .filter(|n| !n.is_empty())
+            .or_else(|| tonk_host::bridge::context_field("branch"));
         branch_or_default(name)
     }
 
@@ -172,42 +172,34 @@ mod dom {
     /// a dev should see, so those leave a `console` breadcrumb.
     async fn fetch_sync_status(repo: &str, branch: &str) -> Option<SyncState> {
         tonk_host::ready::wait().await;
-        let win = window()?;
-        // Read the origin from the bridge context, not `window.location`: in a
-        // sealed guest the latter is `"null"` (opaque origin).
-        let origin = tonk_host::bridge::context_origin()?;
-        let url = format!("{origin}/api/repository/{repo}/branch/{branch}/sync/status");
-
-        let init = RequestInit::new();
-        init.set_method("GET");
-        let request = Request::new_with_str_and_init(&url, &init).ok()?;
-
-        let resp_value = JsFuture::from(win.fetch_with_request(&request))
-            .await
-            .ok()?;
-        let resp: Response = resp_value.dyn_into().ok()?;
-        if !resp.ok() {
-            tonk_common::log!("sync status: GET {url} -> {}", resp.status());
-            return None;
-        }
-        let text = JsFuture::from(resp.text().ok()?).await.ok()?.as_string()?;
+        // GET a host-RELATIVE path: `host_fetch_text` performs it on the real
+        // origin — directly in the top document, or over the `window.tonk`
+        // bridge from the sealed guest (which has no reachable origin of its
+        // own). Either way the chip needs no `window.location`.
+        let path = format!("/api/repository/{repo}/branch/{branch}/sync/status");
+        let text = match tonk_host::bridge::host_fetch_text(&path).await {
+            Ok(text) => text,
+            // Quiet on failure: a cold-start or unreachable remote is expected
+            // and the chip degrades to `offline` rather than logging noise.
+            Err(_) => return None,
+        };
         // Read just the `state` field; the rest of the response (local /
         // remote revisions) is the inspector's concern.
         let value: serde_json::Value = match serde_json::from_str(&text) {
             Ok(value) => value,
             Err(err) => {
-                tonk_common::log!("sync status: malformed JSON from {url}: {err}");
+                tonk_common::log!("sync status: malformed JSON from {path}: {err}");
                 return None;
             }
         };
         let Some(state) = value.get("state") else {
-            tonk_common::log!("sync status: response from {url} missing `state` field");
+            tonk_common::log!("sync status: response from {path} missing `state` field");
             return None;
         };
         match serde_json::from_value::<SyncState>(state.clone()) {
             Ok(state) => Some(state),
             Err(err) => {
-                tonk_common::log!("sync status: unrecognized `state` from {url}: {err}");
+                tonk_common::log!("sync status: unrecognized `state` from {path}: {err}");
                 None
             }
         }

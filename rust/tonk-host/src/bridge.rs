@@ -32,6 +32,24 @@ fn tonk_global() -> Result<JsValue, ErrorDetail> {
     Ok(tonk)
 }
 
+/// Read a string field off the bridge `window.tonk.context`, if present and
+/// non-empty. The host populates the context (`{this, model, origin, repo,
+/// branch}`) in its `ready` envelope; guest controls read routing they can't
+/// resolve from the DOM (the `<tonk-repository>`/`<tonk-branch>` ancestors
+/// live outside the iframe) from here.
+pub fn context_field(name: &str) -> Option<String> {
+    let win = window()?;
+    let tonk = Reflect::get(&win, &JsValue::from_str("tonk")).ok()?;
+    if tonk.is_undefined() || tonk.is_null() {
+        return None;
+    }
+    let context = Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
+    Reflect::get(&context, &JsValue::from_str(name))
+        .ok()?
+        .as_string()
+        .filter(|s| !s.is_empty())
+}
+
 /// The host page's real origin, as the bridge reports it in
 /// `window.tonk.context.origin`. In a sealed guest `window.location.origin`
 /// is `"null"` (opaque origin), so anything that needs a same-origin URL —
@@ -39,21 +57,54 @@ fn tonk_global() -> Result<JsValue, ErrorDetail> {
 /// bridge context the host supplies. Falls back to `window.location.origin`
 /// when there is no bridge (the element running in the real top document).
 pub fn context_origin() -> Option<String> {
-    let win = window()?;
-    if let Ok(tonk) = Reflect::get(&win, &JsValue::from_str("tonk"))
-        && !tonk.is_undefined()
-        && !tonk.is_null()
-        && let Ok(context) = Reflect::get(&tonk, &JsValue::from_str("context"))
-        && let Ok(origin) = Reflect::get(&context, &JsValue::from_str("origin"))
-        && let Some(origin) = origin.as_string()
-        && !origin.is_empty()
-    {
+    if let Some(origin) = context_field("origin") {
         return Some(origin);
     }
-    win.location()
+    window()?
+        .location()
         .origin()
         .ok()
         .filter(|o| !o.is_empty() && o != "null")
+}
+
+/// GET a host-relative path and return its body text. When the bridge is
+/// present (sealed guest), the fetch is performed by the HOST over the
+/// `window.tonk.fetch` relay — the opaque guest can't reach a same-origin,
+/// SW-routed `/api/...` endpoint itself. Without a bridge (the top document),
+/// it falls back to a direct `window.fetch`.
+pub async fn host_fetch_text(path: &str) -> Result<String, ErrorDetail> {
+    if let Ok(method) = tonk_method("fetch") {
+        let tonk = tonk_global()?;
+        let promise = method
+            .call1(&tonk, &JsValue::from_str(path))
+            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("tonk.fetch call: {e:?}")))?;
+        let body = await_promise(promise, "tonk.fetch").await?;
+        return body
+            .as_string()
+            .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "tonk.fetch body not a string"));
+    }
+    // No bridge: direct same-origin fetch (the element is in the top document).
+    let win = window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no window"))?;
+    let resp_value = JsFuture::from(win.fetch_with_str(path))
+        .await
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch {path}: {e:?}")))?;
+    let resp: web_sys::Response = resp_value
+        .dyn_into()
+        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch: not a Response"))?;
+    if !resp.ok() {
+        return Err(ErrorDetail::new(
+            ErrorKind::Network,
+            format!("fetch {path}: {}", resp.status()),
+        ));
+    }
+    let text = JsFuture::from(
+        resp.text()
+            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text(): {e:?}")))?,
+    )
+    .await
+    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("await text: {e:?}")))?;
+    text.as_string()
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "fetch body not a string"))
 }
 
 fn tonk_method(name: &str) -> Result<Function, ErrorDetail> {
