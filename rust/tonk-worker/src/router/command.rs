@@ -47,6 +47,13 @@ pub struct CommandOrigin {
     pub repo: String,
     /// The branch name.
     pub branch: String,
+    /// The service-worker client the triggering request originated from,
+    /// when known. A handler whose effect is a page capability (e.g.
+    /// navigation) posts a message back to this exact client — the service
+    /// worker has no `window`, and a transient command never lands in a
+    /// branch a subscription could observe, so the originating client is
+    /// the only channel back to the page that asked for the effect.
+    pub client: Option<crate::router::ClientId>,
 }
 
 impl CommandEnv {
@@ -69,6 +76,13 @@ impl CommandEnv {
     /// field.
     pub fn origin(&self) -> &CommandOrigin {
         &self.origin
+    }
+
+    /// The service-worker client the triggering request came from, when
+    /// known. A handler posts a page-capability effect (e.g. navigation)
+    /// back to this client.
+    pub fn client(&self) -> Option<&crate::router::ClientId> {
+        self.origin.client.as_ref()
     }
 }
 

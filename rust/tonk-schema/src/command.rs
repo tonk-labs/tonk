@@ -199,21 +199,3 @@ pub struct JoinFailure {
     /// Failure class: `malformed` | `audience-mismatch` | `claim-failed`.
     pub kind: crate::domain::join::Kind,
 }
-
-/// A requested client-side navigation — the page-bound half of Elm's
-/// `pushUrl`. A worker handler asserts one (overlay-only) carrying the
-/// destination; a page-side `<tonk-navigate>` element renders it and
-/// performs the navigation (`window.location.assign`), since the service
-/// worker has no `window` to navigate with.
-///
-/// The join handler asserts this at the fixed `tonk:join/status` entity on
-/// success (in place of retracting): the `/join` view's `<tonk-navigate>`
-/// then redirects into `/space/<subject>`.
-#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Navigate {
-    /// The entity the navigation intent is keyed by (for the join: the
-    /// fixed `tonk:join/status` entity).
-    pub this: Entity,
-    /// The destination URL/path to navigate to.
-    pub href: crate::domain::navigate::Href,
-}

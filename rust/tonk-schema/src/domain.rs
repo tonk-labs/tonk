@@ -222,22 +222,6 @@ pub mod join {
     pub struct Kind(pub String);
 }
 
-/// Attributes for the `tonk:navigate` fact — a requested client-side
-/// navigation. A worker handler asserts one (overlay-only) and a page-side
-/// `<tonk-navigate>` element renders it and performs the navigation
-/// (`window.location.assign`). This is the page-bound half of Elm's
-/// `pushUrl`: the *intent* is data on the branch, the *act* runs on the
-/// page because navigation is a page capability the service worker lacks.
-pub mod navigate {
-    use super::Attribute;
-
-    /// The destination URL/path, e.g. `/space/<did>`. Rendered onto
-    /// `<tonk-navigate href=…>`, which assigns it on mount.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.navigate")]
-    pub struct Href(pub String);
-}
-
 /// Attributes that live on [`Branch`] entities (and
 /// [`TrackingBranch`], which extends `Branch`).
 ///

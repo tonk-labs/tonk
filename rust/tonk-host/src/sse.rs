@@ -184,7 +184,7 @@ mod tests {
         // A frame stream the test controls. The reader is parked on
         // `recv` (no frame yet) exactly like a live SSE awaiting the
         // next event; then we drop the handle.
-        let (mut tx, rx) = mpsc::unbounded::<Result<String, ErrorDetail>>();
+        let (tx, rx) = mpsc::unbounded::<Result<String, ErrorDetail>>();
         let frames = rx.boxed_local();
 
         let errored = Rc::new(Cell::new(false));

@@ -203,21 +203,6 @@ concept!: &join/failure
       cardinality: one
       as: text
 
-# A requested client-side navigation, asserted by the worker on a
-# successful join at the same `tonk:join/status` entity (overlay-only). The
-# page-side `<tonk-navigate>` element renders its `href` and navigates the
-# page there. This is the page-bound half of Elm's pushUrl: the intent is
-# data on the branch, the act runs on the page (the worker has no window).
-concept!: &navigate
-  this: tonk:navigate
-  description: A requested client-side navigation to an href.
-  with:
-    href:
-      description: The destination URL or path to navigate to.
-      the: xyz.tonk.navigate/href
-      cardinality: one
-      as: text
-
 # The `view` concept — the shape `<tonk-display>` queries to resolve a
 # default (entity-set) view: a `model` + a `display` template. The
 # join-failure `view!:` instance below is an instance of it, so its concept
@@ -242,15 +227,11 @@ concept!: &view
 # no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
 # route). Directory chrome renders even with zero instances, so the
 # `<tonk-page>` trigger mounts and fires `tonk:join` on load before any
-# status exists. The chrome carries three fixed-entity displays at
-# `tonk:join/status`:
-#   - the per-instance status repeat (a spinner while pending);
-#   - a failure display (`model=tonk:join/failure`) — empty until failed;
-#   - a navigate display (`model=tonk:navigate`) — empty until success,
-#     when the worker asserts a `tonk:navigate` href and the rendered
-#     `<tonk-navigate>` redirects into `/space/<subject>`.
-# On success the status is cleared and only the navigate fact remains, so
-# the redirect fires while the chrome's "Joining…" stands until the page
+# status exists. The per-instance repeat shows a spinner while pending and
+# the failure callout (`model=tonk:join/failure`) once a join fails. On
+# success there is no status to show: the worker posts a navigate message
+# to the originating client (see `<tonk-host>`), which redirects into
+# `/space/<subject>` while the chrome's "Joining…" stands until the page
 # leaves.
 view/directory!:
   this: id:tonk:join/status/view
@@ -265,7 +246,6 @@ view/directory!:
           <tonk-display entity={this} model=tonk:join/failure></tonk-display>
         </div>
       </wa-card>
-      <tonk-display entity=tonk:join/status model=tonk:navigate></tonk-display>
     </main>
 
 # The failure view — the default view for `tonk:join/failure`, so the join
@@ -280,12 +260,3 @@ view!: &join/failure-view
       <strong>Couldn’t join</strong>
       <p>{reason}</p>
     </wa-callout>
-
-# The navigate view — the default view for `tonk:navigate`. Rendered only
-# when a navigate fact exists (on join success); the `<tonk-navigate>`
-# element assigns `window.location` to `href`, redirecting the page.
-view!: &navigate-view
-  this: id:tonk:navigate/view
-  model: tonk:navigate
-  display: |
-    <tonk-navigate href={href}></tonk-navigate>

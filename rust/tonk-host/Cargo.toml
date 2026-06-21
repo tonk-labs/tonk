@@ -37,12 +37,16 @@ web-sys = { workspace = true, features = [
   "EventTarget",
   "Headers",
   "HtmlElement",
+  "Location",
+  "MessageEvent",
+  "Navigator",
   "Node",
   "ReadableStream",
   "ReadableStreamDefaultReader",
   "Request",
   "RequestInit",
   "Response",
+  "ServiceWorkerContainer",
   "Window",
 ] }
 

@@ -388,9 +388,8 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
     use std::sync::Arc;
-    use tonk_schema::command::{JoinFailure, JoinStatus, Navigate};
+    use tonk_schema::command::{JoinFailure, JoinStatus};
     use tonk_schema::domain::join::{Kind, Reason, Status};
-    use tonk_schema::domain::navigate::Href;
 
     let tonk = env.state().read().await;
 
@@ -439,18 +438,35 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
 
     match claim_invite(&tonk, &url).await {
         Ok(outcome) => {
-            // Success: the durable replica is recorded + initialized. Clear
-            // the in-flight status, then assert a `Navigate` intent at the
-            // same entity. The `/join` view renders `<tonk-navigate>` for it
-            // and redirects the page into `/space/<subject>` — the service
-            // worker has no `window`, so the act runs page-side.
+            // Success: the durable replica is recorded + initialized. But a
+            // *freshly* joined replica has an empty content branch — unlike a
+            // locally-created space (which is seeded with the standard library
+            // at creation), a joined space's content, including its `tonk/space`
+            // view, only arrives over the pull from the remote. Redirecting
+            // before that pull lands would drop the recipient on a branch with
+            // no view — `<tonk-display>` would resolve "Model not found".
+            //
+            // So pull the content branch now, while the "Joining…" spinner is
+            // still up, and only navigate once it has landed. A renewed replica
+            // already has content; a local-only invite has no remote to pull.
+            if !outcome.renewed {
+                pull_joined_content(&tonk, &outcome.key).await;
+            }
+
+            // Clear the in-flight status so the "Joining…" overlay empties,
+            // then tell the originating page to redirect into `/space/<subject>`.
+            //
+            // The redirect is a page capability — the service worker has no
+            // `window` — and this command is transient, so it never lands in
+            // a branch a subscription could observe. The only channel back to
+            // the page that asked is a `postMessage` to its client. We post
+            // `{ type: "navigate", href }`; the page's `<tonk-host>` performs
+            // the navigation.
             session.state.clear_overlay();
-            session.state.assert_overlay(Navigate {
-                this: status_entity,
-                href: Href(format!("/space/{key}", key = outcome.key)),
-            });
             tonk.reactor.schedule_poll(Arc::clone(&session.state));
             tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            let href = format!("/space/{key}", key = outcome.key);
+            notify_navigate(env.client(), &href);
             log!(
                 "join: succeeded (subject {}, key {})",
                 outcome.subject,
@@ -494,4 +510,95 @@ fn build_invite_url(command: &tonk_schema::command::Join) -> String {
     let search = &command.search.0; // includes leading `?` (or empty)
     let hash = &command.hash.0; // includes leading `#` (or empty)
     format!("https://join.invalid/join{search}{hash}")
+}
+
+/// Pull the freshly joined replica's `main` content branch from its remote,
+/// so the standard-library views (notably `tonk/space`) are present before
+/// the recipient is redirected into the space. Without this the redirect can
+/// land on an empty branch and `<tonk-display>` resolves "Model not found".
+///
+/// A pull failure is logged, not fatal: the redirect still fires (the
+/// recipient lands on the space and a later sync / reload fills it in) — far
+/// better than blocking the join on a flaky network.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn pull_joined_content(tonk: &TonkState, key: &str) {
+    match tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .pull()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(_) => log!("join: pulled content for joined replica {key}"),
+        Err(e) => log!("join: content pull for {key} did not complete: {e:?}"),
+    }
+}
+
+/// Post a `{ type: "navigate", href }` message to the originating client so
+/// it redirects there. This is how a worker-side command performs a page
+/// capability: the service worker has no `window`, and the command is
+/// transient (it never lands in a branch a subscription could observe), so
+/// the originating client is the only path back to the page that asked.
+///
+/// No-ops (with a log) when the client is unknown or its handle can't be
+/// resolved — the join still succeeded; only the convenience redirect is
+/// lost, and the recipient can navigate from the Hub.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("join: no originating client to navigate; skipping redirect");
+        return;
+    };
+    let client_id = client.0.clone();
+    let href = href.to_owned();
+
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(g) => g,
+        Err(_) => {
+            log!("join: not in a service worker scope; skipping redirect");
+            return;
+        }
+    };
+
+    // `clients.get(id)` resolves the live `Client` handle; post the message
+    // on it. Done on a spawned task so the caller isn't blocked on the
+    // round-trip (the navigate is fire-and-forget).
+    spawn_local(async move {
+        let client_value = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("join: originating client {client_id} is gone; skipping redirect");
+                return;
+            }
+            Err(e) => {
+                log!("join: clients.get failed: {e:?}");
+                return;
+            }
+        };
+        let Ok(client) = client_value.dyn_into::<web_sys::Client>() else {
+            log!("join: clients.get did not yield a Client; skipping redirect");
+            return;
+        };
+
+        // `{ type: "navigate", href }` — the page's `<tonk-host>` listens
+        // for `navigate` messages and assigns `window.location`.
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("navigate"),
+        );
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("href"),
+            &JsValue::from_str(&href),
+        );
+        if let Err(e) = client.post_message(&message) {
+            log!("join: post_message(navigate) failed: {e:?}");
+        }
+    });
 }

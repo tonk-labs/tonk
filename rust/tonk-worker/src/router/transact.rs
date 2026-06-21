@@ -10,7 +10,7 @@
 //! transient without re-querying the schema.
 
 use ::axum::{
-    Json,
+    Extension, Json,
     body::Bytes,
     extract::{Path, State},
     http::HeaderMap,
@@ -65,6 +65,7 @@ pub struct TransactResponse {
 pub async fn transact(
     State(state): State<AppState>,
     Path(path): Path<TransactPath>,
+    client: Option<Extension<super::ClientId>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
@@ -81,10 +82,13 @@ pub async fn transact(
     // released, so each command's `execute` can re-acquire it) and then
     // drain the polls this request scheduled. `dispatch` always drains —
     // even with no commands — so the durable commit's scheduled poll fans
-    // out. The origin is the repo + branch this commit landed in.
+    // out. The origin is the repo + branch this commit landed in, plus the
+    // client that asked, so a handler can post a page-capability effect
+    // (e.g. navigation) back to it.
     let origin = super::CommandOrigin {
         repo: path.repo,
         branch: path.branch,
+        client: client.map(|Extension(id)| id),
     };
     super::dispatch(&state, origin, transients.unwrap_or_default()).await;
     Ok(response)
@@ -95,6 +99,7 @@ pub async fn transact(
 pub async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,
+    client: Option<Extension<super::ClientId>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
@@ -106,12 +111,15 @@ pub async fn transact_profile(
     };
     // Profile-branch commits carry an empty `repo` origin: the profile
     // repository is not in the named-repo namespace, and no command
-    // dispatched here loads an origin repository by name. `dispatch`
-    // always drains the scheduled polls, even with no transients, so the
-    // durable commit fans out.
+    // dispatched here loads an origin repository by name. The originating
+    // client is carried so the join command can post its navigate message
+    // back to the exact tab that asked. `dispatch` always drains the
+    // scheduled polls, even with no transients, so the durable commit fans
+    // out.
     let origin = super::CommandOrigin {
         repo: String::new(),
         branch: path.branch,
+        client: client.map(|Extension(id)| id),
     };
     super::dispatch(&state, origin, transients.unwrap_or_default()).await;
     Ok(response)
