@@ -260,6 +260,21 @@ pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
     });
 }
 
+/// The hashed guest-asset basenames the `hash-guest.sh` post_build hook
+/// writes into `guest/manifest.json`. Each names a content-hashed file under
+/// the guest dir, so those assets cache immutably while the manifest itself
+/// is fetched fresh on every load.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(serde::Deserialize)]
+struct GuestManifest {
+    js: String,
+    wasm: String,
+    #[serde(rename = "waJs")]
+    wa_js: String,
+    #[serde(rename = "waCss")]
+    wa_css: String,
+}
+
 /// Build the `inject` envelope: `{ __tonkRuntime:"inject", glue, snippets:[
 /// {stmt,src} ], wasm: ArrayBuffer, css }`. Fetches the served guest bundle
 /// + app stylesheet.
@@ -267,14 +282,29 @@ pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
 async fn build_inject_payload() -> Result<JsValue, String> {
     use wasm_bindgen::JsValue;
 
-    let glue = fetch_text("/guest/guest.js").await?;
-    let wasm = fetch_array_buffer("/guest/guest_bg.wasm").await?;
+    // The manifest names the current build's hashed assets. It rides the
+    // SW's stale-while-revalidate cache like everything else, so a sealed
+    // `/space` works OFFLINE — never `no-store`, which the SW refuses to
+    // cache (an offline guest could then never resolve its assets). Serving
+    // a stale manifest is safe: it points at the PREVIOUS build's hashed
+    // assets, which are still cached (immutable, never evicted within a cache
+    // version), so the guest loads fully; SWR refreshes the manifest in the
+    // background and the next load picks up the new build.
+    let manifest: GuestManifest = {
+        let text = fetch_text("/guest/manifest.json").await?;
+        serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
+    };
+
+    let glue = fetch_text(&format!("/guest/{}", manifest.js)).await?;
+    let wasm = fetch_array_buffer(&format!("/guest/{}", manifest.wasm)).await?;
     // App stylesheet — its hashed filename is discovered from the parent
     // document's own `<link rel=stylesheet href=/styles-*.css>`. The Web
     // Awesome CSS + the self-contained WA component bundle ride along so
     // `<wa-*>` elements style + upgrade inside the sealed guest with no
     // network of its own.
-    let mut css = fetch_text("/guest/wa.css").await.unwrap_or_default();
+    let mut css = fetch_text(&format!("/guest/{}", manifest.wa_css))
+        .await
+        .unwrap_or_default();
     if let Some(href) = app_stylesheet_href() {
         css.push('\n');
         css.push_str(&fetch_text(&href).await.unwrap_or_default());
@@ -285,7 +315,9 @@ async fn build_inject_payload() -> Result<JsValue, String> {
     css = inline_fonts(&css).await;
     // The bundled Web Awesome components (esbuild, no dynamic/relative
     // imports), imported by the guest before its content upgrades.
-    let wa = fetch_text("/guest/wa.js").await.unwrap_or_default();
+    let wa = fetch_text(&format!("/guest/{}", manifest.wa_js))
+        .await
+        .unwrap_or_default();
 
     // Find every `import … from '…/snippets/…'` statement in the glue and
     // fetch each snippet file, so the guest can rewrite them to blob URLs.
@@ -444,14 +476,12 @@ async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
-    // Default cache mode (no override): the guest runtime + CSS go through
-    // the SW's stale-while-revalidate shell cache, so a sealed `/space`
-    // works OFFLINE (the assets are populated on the first online load and
-    // served from cache thereafter). An explicit `no-store` here would
-    // bypass the cache both ways — fresh online but nothing to serve
-    // offline. The guest assets are unhashed (`/guest/*`), so a content
-    // change self-heals via SWR's background revalidate on the next load,
-    // same as the rest of the app shell.
+    // Default cache mode (no override): these URLs are content-hashed (named
+    // by the guest manifest), so the SW's stale-while-revalidate shell cache
+    // can hold them immutably — a sealed `/space` works OFFLINE (populated on
+    // the first online load, served from cache after) and a content change
+    // is a NEW URL (cache miss → fresh), never a stale hit. Only the manifest
+    // itself is fetched `no-store` (see `fetch_text_no_store`).
     let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
         .await
         .map_err(|e| format!("fetch {url}: {e:?}"))?;

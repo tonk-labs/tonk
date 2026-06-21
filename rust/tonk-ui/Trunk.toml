@@ -2,6 +2,16 @@
 public_url = "/"
 offline = true
 
+# Content-hash the sealed-guest runtime assets after each build. Trunk's
+# worker-type rust asset (the guest bundle) and the copy-dir'd wa.js/wa.css
+# are emitted unhashed; this hook renames them to `<name>-<hash>.<ext>` and
+# writes `guest/manifest.json` so the portal can load cache-immutable URLs.
+# Runs on every (re)build, including incremental `trunk serve` rebuilds.
+[[hooks]]
+stage = "post_build"
+command = "sh"
+command_arguments = ["scripts/hash-guest.sh"]
+
 [serve]
 port = 8080
 # Disable trunk's built-in reload-everything client. A change to a

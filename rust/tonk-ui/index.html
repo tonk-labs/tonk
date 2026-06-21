@@ -234,9 +234,27 @@
         <link data-trunk rel="copy-dir" href="./assets/fonts" />
         <link data-trunk rel="copy-dir" href="./assets/images" />
         <link data-trunk rel="copy-dir" href="./assets/webawesome" />
-        <!-- Sealed-guest element runtime (registration-only wasm). The host
-       fetches these bytes and postMessages them into the sealed iframe;
-       the guest itself fetches nothing. NOT auto-loaded in this page. -->
+        <!-- Sealed-guest element runtime (registration-only wasm). Built as
+       a wasm-bindgen `web` worker bundle so trunk compiles + watches the
+       guest crate (no hand-run wasm-bindgen, no checked-in bundle). The
+       worker type emits no <script> into this page — the host fetches
+       `/guest/guest.js` + `guest_bg.wasm` and postMessages the bytes into
+       the sealed iframe; the guest itself fetches nothing. `wasm-release`
+       + `wasm-opt=z` keep it lean. -->
+        <link
+            data-trunk
+            rel="rust"
+            href="../tonk-guest/Cargo.toml"
+            data-bin="guest"
+            data-type="worker"
+            data-bindgen-target="web"
+            data-cargo-profile="wasm-release"
+            data-wasm-opt="z"
+            data-target-path="guest"
+        />
+        <!-- The esbuild-produced Web Awesome bundle + flattened CSS the host
+       injects alongside the guest runtime. Only `wa.js` / `wa.css` live
+       here now; the wasm/js/snippets are built by the rust link above. -->
         <link data-trunk rel="copy-dir" href="./assets/guest" />
         <link
             data-trunk
