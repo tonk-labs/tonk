@@ -223,34 +223,6 @@ pub async fn init() -> Result<String, TonkUiError> {
     }
 }
 
-/// Fetches the profile record at `GET /api/profile`.
-///
-/// Returns the profile's `RepositoryInfo` and a list of every space this
-/// profile owns (each with its routing key, display label, and subject
-/// DID). The sidebar uses this to render a tile per space without
-/// fetching each repository individually.
-pub async fn profile() -> Result<ProfileInfo, TonkUiError> {
-    tonk_host::ready::wait().await;
-    log!("Fetching profile...");
-
-    let response = reqwest::Client::new()
-        .get(format!("{}/api/profile", origin()))
-        .send()
-        .await
-        .map_err(into_api_error)?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(TonkUiError::ApiError(format!(
-            "GET /api/profile returned {}: {}",
-            status, text
-        )));
-    }
-
-    response.json().await.map_err(into_api_error)
-}
-
 /// Query claims on a branch via `GET /api/repository/{repo}/branch/{branch}/claim/select`.
 ///
 /// At least one of `the` (attribute, namespace/name form) or `of`

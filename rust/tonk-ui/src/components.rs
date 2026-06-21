@@ -4,20 +4,15 @@
 //! It compiles to Wasm and runs in the browser.
 
 use leptos::{logging::log, prelude::*};
-use tonk_worker::{Notification, ProfileInfo};
 
-use crate::{api, error::TonkUiError, watch::watch};
+use crate::api;
 
 pub(crate) mod route;
 
 mod launcher;
 use launcher::*;
 
-mod toolbar;
-use toolbar::*;
-
 mod space;
-use space::*;
 
 mod display;
 use display::*;
@@ -25,117 +20,36 @@ use display::*;
 mod hub;
 use hub::*;
 
-mod board;
-use board::*;
-
 mod inspector;
 pub use inspector::register as register_inspector;
 
 mod join;
 use join::*;
 
-/// The hosting document's service-worker Client ID, learned from
-/// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
-/// response. Provided as a Leptos context so descendant
-/// components can embed it in iframe URLs for the host/guest
-/// bridge.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostId(pub String);
-
-/// Shared [`LocalResource`] holding the latest `GET /api/profile`
-/// response. Provided by [`TonkShell`] so every consumer (today:
-/// the sidebar toolbar and profile view) reads from one source of
-/// truth. The shell refetches the resource automatically whenever
-/// the worker broadcasts on `/api/profile`, so writes from any
-/// source (this tab, another tab, external fetch) flow through.
-///
-/// `Ok(None)` is used to model "not yet ready" (shell still
-/// initialising); `Ok(Some(info))` is a successful fetch.
-pub type ProfileResource = LocalResource<Result<Option<ProfileInfo>, TonkUiError>>;
-
-/// Outcome of the most recent invite redemption, if any. Written
-/// by [`TonkJoin`] when a join completes; rendered as a
-/// `data-last-join-outcome` attribute on the launcher's root
-/// element so tests and any future banner / toast UI can react
-/// to which path ran without parsing an HTTP response.
-///
-/// `None` when no join has happened yet this session.
-pub type LastJoinOutcome = RwSignal<Option<&'static str>>;
-
 /// The root UI component for the Tonk application.
 ///
 /// This component serves as the main entry point for the Tonk user interface,
 /// rendering the primary application view.
 ///
-/// On startup, it waits for the service worker to activate, then automatically
-/// sets up the upstream remote if not already configured.
+/// On startup it ensures the default repository exists (the SW doesn't
+/// auto-create anything); `/` then renders the Hub.
 #[component]
 pub fn TonkShell() -> impl IntoView {
     log!("Tonk shell initializing...");
 
-    // Initialize the space: ensure the default repo exists, then
-    // (if the user landed on `/`) redirect into it. The worker
-    // doesn't auto-create anything at startup — we `PUT` here
-    // with `If-None-Match: *`, which covers both "didn't exist,
-    // created" (201) and "already existed" (412) as success.
-    // Redirect only fires when the current path is `/` so deep
-    // links like `/space/home/branch/main` are respected.
+    // Ensure the default repository exists. We `PUT` with
+    // `If-None-Match: *`, which covers both "didn't exist, created" (201)
+    // and "already existed" (412) as success. `/` renders the Hub (a picker
+    // over the profile's spaces), so there is no redirect into a default
+    // space — the user lands on the Hub and chooses where to go.
     //
-    // SW readiness is gated inside the API layer
-    // (`tonk_host::ready::wait`) so this resource doesn't need
-    // its own `serviceWorkerActivates()` step.
-    let init_resource = LocalResource::new(|| async {
+    // SW readiness is gated inside the API layer (`tonk_host::ready::wait`)
+    // so this resource doesn't need its own `serviceWorkerActivates()` step.
+    let _init_resource = LocalResource::new(|| async {
         log!("Ensuring default repository...");
-
-        // `/` renders the Tonk Hub (a picker over the profile's spaces),
-        // so there is no longer a redirect into the default space — the
-        // user lands on the Hub and chooses where to go.
-        let host_id = api::init().await?;
-
-        Ok::<_, crate::error::TonkUiError>(host_id)
+        api::init().await?;
+        Ok::<_, crate::error::TonkUiError>(())
     });
-
-    // Publish the host id as a reactive context so descendant
-    // components can subscribe: `None` while init is in flight
-    // or has errored, `Some(HostId)` once the PUT succeeds.
-    let host_id =
-        Signal::derive_local(move || init_resource.get().and_then(|r| r.ok()).map(HostId));
-
-    provide_context(host_id);
-
-    // Fire the profile fetch eagerly. The API layer's SW gate
-    // holds the request until the worker is up, so we don't
-    // need a separate ready signal at the shell level. Sharing
-    // the resource via context means a single fetch feeds the
-    // sidebar and the create-space flow — the latter calls
-    // `.refetch()` after a successful PUT so the sidebar picks
-    // up the new tile without us plumbing a second signal.
-    let profile_resource: ProfileResource =
-        LocalResource::new(|| async { api::profile().await.map(Some) });
-    provide_context(profile_resource);
-
-    // The worker posts on `/api/profile` whenever the profile
-    // repo's meta branch commits (replica added/removed, remote
-    // edited, etc.). Refetching on any message keeps the sidebar
-    // in sync with writes from anywhere — this tab, another tab,
-    // or a direct fetch that bypasses the dialog. The payload
-    // carries the new revision; we ignore it today (refetch is
-    // cheap and the endpoint is the source of truth) but the
-    // shape is available for future dedup.
-    let profile_update = watch::<Notification>("/api/profile");
-    Effect::new(move |_| {
-        if profile_update.get().is_some() {
-            profile_resource.refetch();
-        }
-    });
-
-    // The last join outcome lives in a shared signal so the view
-    // tree (specifically `TonkLauncher`) can render it as a
-    // `data-last-join-outcome` attribute through the regular
-    // reactive path — no manual DOM mutation from inside a
-    // component.
-    let last_join_outcome: LastJoinOutcome = RwSignal::new(None);
-    provide_context(last_join_outcome);
 
     view! {
         // App-wide LSP transport. One <tonk-diagnostics-provider>

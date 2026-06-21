@@ -1,20 +1,19 @@
-use crate::components::{
-    LastJoinOutcome, TonkBoardView, TonkDisplayView, TonkHub, TonkJoin, TonkSpaceViewer,
-    TonkToolbar,
-};
+use crate::components::{TonkDisplayView, TonkHub, TonkJoin};
 use leptos::prelude::*;
 use leptos_router::{
-    components::{Outlet, ParentRoute, Route, Router, Routes},
+    components::{Route, Router, Routes},
     path,
 };
 
-/// Main launcher view. `<wa-page>` provides the adaptive shell:
-/// navigation sits in its own column on desktop and collapses into a
-/// drawer (with a hamburger toggle) below the mobile breakpoint.
+/// Main launcher view. Every route renders bare — a `<tonk-display>` (or a
+/// directory view) and its routing context, no shell chrome. There is no
+/// sidebar/toolbar: navigation is driven by links in the directory views
+/// themselves (the Hub's space cards, breadcrumbs) and the service-worker
+/// navigate message.
 ///
-/// Creating a space is driven from the Hub's own view now (a
-/// `<form onsubmit=space/create>` in the `space` directory view), so
-/// there's no Leptos create-space dialog to mount here.
+/// Creating a space is driven from the Hub's own view (a
+/// `<form onsubmit=space/create>` in the `space` directory view), so there's
+/// no Leptos dialog to mount here.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
     view! {
@@ -22,85 +21,32 @@ pub fn TonkLauncher() -> impl IntoView {
             <Router>
                 <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     // The Tonk Hub at `/` — a picker over the spaces this
-                    // profile can open, rendered bare (no shell chrome)
-                    // just like the display routes. It is a directory view
-                    // mounted on the profile's meta branch.
+                    // profile can open. A directory view on the profile's
+                    // meta branch.
                     <Route path=path!("") view=TonkHub />
 
-                    // The /join route renders bare too — like the Hub, it
-                    // is a directory view on the profile meta branch (the
-                    // join-status view), not a space workspace, so no
-                    // `<wa-page>` shell / sidebar / toolbar wraps it.
+                    // The /join route — a directory view on the profile meta
+                    // branch (the join-status view) that redeems an invite.
                     <Route path=path!("join") view=TonkJoin />
 
-                    // Every other route renders inside the adaptive
-                    // `<wa-page>` shell (navigation column on desktop,
-                    // drawer on mobile) plus the toolbar. The parent
-                    // route provides that chrome once and slots the
-                    // matched child through `<Outlet/>`.
-                    //
-                    // The inspector/dev routes share the `{branch}@{name}`
-                    // space convention. Their static keyword segment
-                    // (`view`/`board`) must be defined BEFORE the
-                    // bare-space display routes below because the Leptos
-                    // router matches in definition order — the `*subject`
-                    // wildcard would otherwise capture them. A model named
-                    // `view` or `board` at the space root is therefore
-                    // reserved.
-                    <ParentRoute path=path!("") view=ChromeShell>
-                        <Route
-                            path=path!("space/:space/view/:entity")
-                            view=TonkSpaceViewer
-                        />
-                        <Route
-                            path=path!("space/:space/board/:board")
-                            view=TonkBoardView
-                        />
-                    </ParentRoute>
-
-                    // The display route renders bare — just the
-                    // `<tonk-display>` and its routing context, no shell
-                    // chrome. It sits OUTSIDE the chromed parent route so
-                    // no `<wa-page>` / toolbar wraps it. The space
-                    // segment is `{branch}@{name}` (branch defaults to
-                    // `main`); `*subject` is a wildcard so entity URIs
-                    // containing `/` (e.g. `id:tonk-workspace/itinerary`)
-                    // are captured whole rather than truncated.
+                    // The display routes. The space segment is
+                    // `{branch}@{name}` (branch defaults to `main`);
+                    // `*subject` is a wildcard so entity URIs containing `/`
+                    // (e.g. `id:tonk-workspace/itinerary`) are captured whole
+                    // rather than truncated. Models like `board` and
+                    // `inspector` are reached here too, as directory views
+                    // (`/space/{name}/board`, `/space/{name}/inspector`).
                     //
                     //   /space/{name}/                       default view
                     //   /space/{branch}@{name}/              + branch
                     //   /space/{name}/{model}/               directory
                     //   /space/{name}/{entity}@{model}/*     artifact
                     //   /space/{name}/{entity}@{model}!{view}/*  ad-hoc
-                    //
-                    // These routes must come AFTER the ParentRoute above.
-                    // The router matches in definition order; placing them
-                    // here ensures the static-keyword chromed routes win
-                    // over the bare wildcard on any path they share a
-                    // prefix with.
                     <Route path=path!("space/:space") view=TonkDisplayView />
                     <Route path=path!("space/:space/*subject") view=TonkDisplayView />
                 </Routes>
             </Router>
         </tonk-host>
-    }
-}
-
-/// The chromed shell: the adaptive `<wa-page>` layout plus the
-/// toolbar, with the matched child route rendered through
-/// `<Outlet/>`. Wraps every route except the bare display route.
-#[component]
-fn ChromeShell() -> impl IntoView {
-    let last_join_outcome =
-        use_context::<LastJoinOutcome>().expect("LastJoinOutcome provided by TonkShell");
-    view! {
-        <wa-page
-            navigation-placement="end"
-            attr:data-last-join-outcome=move || last_join_outcome.get()
-        >
-            <TonkToolbar />
-            <Outlet />
-        </wa-page>
     }
 }
 
