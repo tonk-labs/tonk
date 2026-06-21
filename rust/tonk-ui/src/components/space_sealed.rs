@@ -45,20 +45,29 @@ pub fn TonkSpaceSealed() -> impl IntoView {
             .filter(|s| !s.is_empty())
             .and_then(|s| parse_space(&s))
     });
-    let space_name = Signal::derive_local(move || space_ref.get().map(|s| s.name).unwrap_or_default());
+    let space_name =
+        Signal::derive_local(move || space_ref.get().map(|s| s.name).unwrap_or_default());
     let branch_name =
         Signal::derive_local(move || space_ref.get().map(|s| s.branch).unwrap_or_default());
 
-    // The guest content: a real `<tonk-display>` UNDER the guest-side proxy
-    // `<tonk-host>` (registered by the injected runtime). `<tonk-display>`
-    // dispatches its query/subscribe events to that ancestor, which relays
-    // them over `window.tonk` to the outer bridge. Only `model` is needed —
-    // space/branch are annotated outer-side from the routing context.
+    // The guest content is just the route's mount slot
+    // (`.display-view-slot > tonk-display`) under the proxy `<tonk-host>`.
+    // The app stylesheet anchors the bare-display-route fill-height layout
+    // on `.display-view-slot` (not the `.display-route > tonk-branch`
+    // routing path), so the view fills the iframe with no routing ancestors
+    // inside the guest — the iframe body is the route's viewport box and
+    // `100dvh` resolves against it.
     //
-    // A flex column so the display fills the iframe (the guest base CSS
-    // gives `<body>` full height + column flex).
-    const CONTENT: &str = "<tonk-host style=\"display:flex;flex-direction:column;flex:1 1 auto\">\
-<tonk-display model=tonk/space style=\"display:flex;flex-direction:column;flex:1 1 auto\"></tonk-display>\
+    // The proxy `<tonk-host>` (registered by the injected runtime) is the IO
+    // owner: `<tonk-display>` dispatches query/subscribe events to it and it
+    // relays them over `window.tonk` to the outer bridge. It collapses to
+    // `display: contents` (the app CSS `tonk-host:has(> .display-view-slot)`
+    // rule). Only `model` is needed — space/branch are annotated outer-side
+    // from the routing context.
+    const CONTENT: &str = "<tonk-host>\
+<div class=\"display-view-slot\">\
+<tonk-display model=tonk/space></tonk-display>\
+</div>\
 </tonk-host>";
 
     // No inner `<tonk-host>`: the launcher wraps the whole router in one

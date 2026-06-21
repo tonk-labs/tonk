@@ -257,7 +257,10 @@ tonk-notation {
 /* The routing elements — `<tonk-host>`, `<tonk-repository>`,
    `<tonk-branch>` — only wire context and event bubbling; they must not
    occupy layout, so `display: contents` removes their boxes and their
-   children participate in the page layout directly. */
+   children participate in the page layout directly. The `tonk-host`
+   wrapping the mount slot collapses too (the sealed `/space` guest has
+   only `tonk-host > .display-view-slot`, no repository/branch). */
+tonk-host:has(> .display-view-slot),
 tonk-host:has(.display-route),
 tonk-repository.display-route,
 .display-route > tonk-branch {
@@ -276,33 +279,38 @@ tonk-repository.display-route,
    `flex-direction`, so the view keeps its own layout mode (e.g. the
    board strip's `flex-direction: row`) and isn't clobbered.
 
-   The selector spells out the route's own mount chain
-   (`.display-view-slot > tonk-display > tonk-view > *`) deliberately:
-   it must reach EXACTLY the route's page view root and not any nested
-   `<tonk-display>`/`<tonk-view>` deeper in the tree (carousel slides,
-   board tiles), which own their own sizing. A looser descendant
-   selector would catch those and impose a viewport height on content
-   that should stay content-sized. */
-.display-route > tonk-branch > .display-view-slot {
+   The selector anchors on `.display-view-slot` — the route's mount
+   slot, which appears ONLY as a route page-view container (never inside
+   a board tile or carousel) — and spells out its mount chain
+   (`> tonk-display > tonk-view > *`) deliberately: it must reach EXACTLY
+   the route's page view root and not any nested `<tonk-display>`/
+   `<tonk-view>` deeper in the tree (carousel slides, board tiles), which
+   own their own sizing. A looser descendant selector would catch those
+   and impose a viewport height on content that should stay
+   content-sized. Anchoring on the slot (not the `.display-route >
+   tonk-branch` routing path) keeps the layout independent of the routing
+   elements, so it holds wherever the slot is mounted — including inside
+   the sealed `/space` guest, which has no routing ancestors. */
+.display-view-slot {
     display: flex;
     flex-direction: column;
     min-height: 100dvh;
 }
-.display-route > tonk-branch > .display-view-slot > tonk-display,
-.display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view {
+.display-view-slot > tonk-display,
+.display-view-slot > tonk-display > tonk-view {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
 }
-.display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view > * {
+.display-view-slot > tonk-display > tonk-view > * {
     min-height: 100dvh;
 }
 
-.display-route > tonk-branch > .display-view-slot:has(.workspace) {
+.display-view-slot:has(.workspace) {
     height: 100dvh;
 }
-.display-route .workspace {
+.display-view-slot .workspace {
     height: 100dvh;
     min-height: 0;
 }
@@ -537,10 +545,10 @@ tonk-repository.display-route,
 /* Inside the hub page the directory view is content-sized, not a
    full-height display route. Undo the viewport-min the generic
    `.display-route` rule imposes. */
-.hub-route .display-route > tonk-branch > .display-view-slot {
+.hub-route .display-view-slot {
     min-height: 0;
 }
-.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display > tonk-view > * {
+.hub-route .display-view-slot > tonk-display > tonk-view > * {
     min-height: 0;
 }
 
@@ -777,8 +785,8 @@ tonk-repository.display-route,
         opacity: 0.45;
     }
 }
-.display-route > tonk-branch > .display-view-slot:empty,
-.display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"]),
+.display-view-slot:empty,
+.display-view-slot:has(> tonk-display[data-state="loading"]),
 .workspace-directory > tonk-display[data-state="loading"],
 .workspace__binder > tonk-display[data-state="loading"],
 .workspace__binder tonk-sheet > tonk-display[data-state="loading"] {
@@ -787,8 +795,8 @@ tonk-repository.display-route,
         ghost-appear 0.25s ease-out 0.15s backwards;
 }
 @media (prefers-reduced-motion: reduce) {
-    .display-route > tonk-branch > .display-view-slot:empty,
-    .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"]),
+    .display-view-slot:empty,
+    .display-view-slot:has(> tonk-display[data-state="loading"]),
     .workspace-directory > tonk-display[data-state="loading"],
     .workspace__binder > tonk-display[data-state="loading"],
     .workspace__binder tonk-sheet > tonk-display[data-state="loading"] {
@@ -807,8 +815,8 @@ tonk-repository.display-route,
    The slot/host are already flex columns via the `.display-route`
    layout rules above. The Hub wraps the same `.display-route` chain;
    its higher-specificity rules below repaint all of these as cards. */
-.display-route > tonk-branch > .display-view-slot:empty::before,
-.display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::before {
+.display-view-slot:empty::before,
+.display-view-slot > tonk-display[data-state="loading"]::before {
     content: "";
     flex: none;
     height: 52px;
@@ -834,8 +842,8 @@ tonk-repository.display-route,
         12.5rem 50%,
         right var(--wa-space-l) center;
 }
-.display-route > tonk-branch > .display-view-slot:empty::after,
-.display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::after,
+.display-view-slot:empty::after,
+.display-view-slot > tonk-display[data-state="loading"]::after,
 .workspace-directory > tonk-display[data-state="loading"]::before,
 .workspace__binder:not(:has(tonk-sheet)) > tonk-display[data-state="loading"]:first-of-type::before {
     /* The sheet-canvas ghost: the bordered card frame with its
@@ -865,7 +873,7 @@ tonk-repository.display-route,
         var(--wa-space-l) 4.2rem,
         var(--wa-space-l) 5.8rem;
 }
-.display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::after,
+.display-view-slot:has(> tonk-display[data-state="loading"])::after,
 .workspace-directory > tonk-display[data-state="loading"]::after {
     /* The bottom tab strip ghost: the strip's raised band with two
        tab-label bars and the small "+" square. The canvas ghost's
@@ -939,7 +947,7 @@ tonk-repository.display-route,
    the full `.hub-route .display-route …` chain to outweigh the
    generic page-ghost rules, the same way the Hub's min-height
    overrides do. */
-.hub-route .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::before {
+.hub-route .display-view-slot:has(> tonk-display[data-state="loading"])::before {
     content: "";
     flex: none;
     height: 2.4rem;
@@ -959,14 +967,14 @@ tonk-repository.display-route,
         0 50%,
         100% 50%;
 }
-.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"] {
+.hub-route .display-view-slot > tonk-display[data-state="loading"] {
     display: flex;
     flex-direction: column;
     gap: var(--wa-space-m);
 }
-.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::before,
-.hub-route .display-route > tonk-branch > .display-view-slot > tonk-display[data-state="loading"]::after,
-.hub-route .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::after {
+.hub-route .display-view-slot > tonk-display[data-state="loading"]::before,
+.hub-route .display-view-slot > tonk-display[data-state="loading"]::after,
+.hub-route .display-view-slot:has(> tonk-display[data-state="loading"])::after {
     /* One ghost repo card: the sigil swatch on the left, name and
        URL bars to its right — matching `.hub-card` geometry. */
     content: "";
@@ -994,7 +1002,7 @@ tonk-repository.display-route,
 /* The slot has no flex gap (the header spaces itself with a margin),
    so the third card — the slot's ::after, laid out right after the
    display's two — carries the card gap itself. */
-.hub-route .display-route > tonk-branch > .display-view-slot:has(> tonk-display[data-state="loading"])::after {
+.hub-route .display-view-slot:has(> tonk-display[data-state="loading"])::after {
     margin-block-start: var(--wa-space-m);
 }
 

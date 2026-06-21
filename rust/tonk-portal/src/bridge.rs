@@ -243,8 +243,6 @@ pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str) -> String {
 /// byte crosses here.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
-    use wasm_bindgen::JsValue;
-
     let Some(content_window) = iframe.content_window() else {
         return;
     };
@@ -316,7 +314,11 @@ async fn build_inject_payload() -> Result<JsValue, String> {
         .and_then(|d| d.document_element())
         .map(|e| e.class_name())
         .unwrap_or_default();
-    let _ = Reflect::set(&payload, &"rootClass".into(), &JsValue::from_str(&root_class));
+    let _ = Reflect::set(
+        &payload,
+        &"rootClass".into(),
+        &JsValue::from_str(&root_class),
+    );
     Ok(payload.into())
 }
 
@@ -344,13 +346,13 @@ async fn inline_fonts(css: &str) -> String {
 
     let mut out = css.to_owned();
     for path in paths {
-        if let Ok(buffer) = fetch_array_buffer(&path).await {
-            if let Some(b64) = array_buffer_to_base64(&buffer) {
-                let data_url = format!("data:font/woff2;base64,{b64}");
-                // Replace both quoted forms `"<path>"` (the CSS uses
-                // double quotes around the url argument).
-                out = out.replace(&path, &data_url);
-            }
+        if let Ok(buffer) = fetch_array_buffer(&path).await
+            && let Some(b64) = array_buffer_to_base64(&buffer)
+        {
+            let data_url = format!("data:font/woff2;base64,{b64}");
+            // Replace both quoted forms `"<path>"` (the CSS uses
+            // double quotes around the url argument).
+            out = out.replace(&path, &data_url);
         }
     }
     out
@@ -385,15 +387,15 @@ fn find_snippet_imports(glue: &str) -> Vec<(String, String)> {
         if let Some(from_idx) = trimmed.find(" from ") {
             let after = &trimmed[from_idx + 6..];
             let quote = after.chars().next();
-            if let Some(q) = quote {
-                if let Some(end) = after[1..].find(q) {
-                    let spec = &after[1..1 + end];
-                    // statement without a trailing `;`-only tail variance:
-                    // keep the trimmed line up to and including the close quote
-                    let stmt_end = from_idx + 6 + 1 + end + 1;
-                    let stmt = trimmed[..stmt_end].to_owned();
-                    out.push((stmt, spec.to_owned()));
-                }
+            if let Some(q) = quote
+                && let Some(end) = after[1..].find(q)
+            {
+                let spec = &after[1..1 + end];
+                // statement without a trailing `;`-only tail variance:
+                // keep the trimmed line up to and including the close quote
+                let stmt_end = from_idx + 6 + 1 + end + 1;
+                let stmt = trimmed[..stmt_end].to_owned();
+                out.push((stmt, spec.to_owned()));
             }
         }
     }
@@ -409,10 +411,10 @@ fn app_stylesheet_href() -> Option<String> {
     for i in 0..links.length() {
         let node = links.item(i)?;
         let el: Element = node.dyn_into().ok()?;
-        if let Some(href) = el.get_attribute("href") {
-            if href.contains("/styles-") || href.ends_with("styles.css") {
-                return Some(href);
-            }
+        if let Some(href) = el.get_attribute("href")
+            && (href.contains("/styles-") || href.ends_with("styles.css"))
+        {
+            return Some(href);
         }
     }
     None
@@ -421,11 +423,10 @@ fn app_stylesheet_href() -> Option<String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_text(url: &str) -> Result<String, String> {
     let resp = fetch(url).await?;
-    let text = wasm_bindgen_futures::JsFuture::from(
-        resp.text().map_err(|e| format!("text(): {e:?}"))?,
-    )
-    .await
-    .map_err(|e| format!("await text: {e:?}"))?;
+    let text =
+        wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("text(): {e:?}"))?)
+            .await
+            .map_err(|e| format!("await text: {e:?}"))?;
     text.as_string().ok_or_else(|| "text not a string".into())
 }
 
