@@ -45,6 +45,49 @@ fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
     }
 }
 
+/// Publish a replica's live sync `status` to the profile meta branch's
+/// OVERLAY, keyed on the replica entity (`hash(profile, subject)`).
+///
+/// The status is a transient observation (idle / push / pull / offline), so
+/// it goes to the overlay — never persisted, never replicated — and folds
+/// into the chip's `tonk/sync` subscription on the profile meta branch.
+/// Mirrors `set_replica_status` (repository.rs) but overlay-only: no commit.
+/// `repo` is the subject did:key string; a malformed repo is a quiet no-op.
+/// Name of the profile repository's meta branch (where replica records,
+/// and the sync-state overlay keyed on them, live).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const META_BRANCH: &str = "meta";
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_sync_status(tonk: &crate::worker::TonkState, repo: &str, state: SyncState) {
+    use dialog_varsig::Did;
+    use std::sync::Arc;
+    use tonk_schema::{Replica, ReplicaSyncStatus};
+
+    let Ok(subject) = repo.parse::<Did>() else {
+        return;
+    };
+    let entity = Replica::new(tonk.profile.did(), subject).this().clone();
+    let stamp = ReplicaSyncStatus::new(entity, Replica::sync_status_attr(state));
+
+    let session = match tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            log!("publish_sync_status: failed to acquire profile meta branch: {e}");
+            return;
+        }
+    };
+    session.state.assert_overlay(stamp);
+    tonk.reactor.schedule_poll(Arc::clone(&session.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
 /// Tag prefix every durable background sync carries; the repository
 /// name follows the colon. A `sync` event delivers only this string
 /// and the worker has no notion of an "active repository", so the
@@ -313,6 +356,8 @@ pub async fn sync_status(
     let local = handle.revision();
 
     if handle.upstream().is_none() {
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        publish_sync_status(&tonk_state, &params.repo, SyncState::NoUpstream).await;
         return Ok(Json(SyncStatusResponse {
             state: SyncState::NoUpstream,
             local,
@@ -327,6 +372,11 @@ pub async fn sync_status(
         .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
 
     let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
+    // Publish the live status to the replica's `tonk/sync` overlay so the
+    // chip's subscription reflects it — the same path the HTTP response
+    // carries, now also a fact the UI can subscribe to.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    publish_sync_status(&tonk_state, &params.repo, sync_state).await;
     Ok(Json(SyncStatusResponse {
         state: sync_state,
         local,

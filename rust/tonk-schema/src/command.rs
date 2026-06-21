@@ -104,6 +104,29 @@ impl Command for Invite {
     type Output = ();
 }
 
+/// Toggle background sync for the origin repo's replica.
+///
+/// Dispatched when the sync chip is clicked. Carries only a timestamp so
+/// each click is a distinct transient (re-firing the handler); the handler
+/// reads the replica's current `auto-sync` preference and flips it. The
+/// repo is read from the command origin, the profile from the worker — the
+/// two that key the replica.
+#[derive(Concept, Debug, Clone, PartialEq, PartialOrd)]
+pub struct PauseSync {
+    /// The command entity (a fresh id per click).
+    pub this: Entity,
+    /// The click event's timestamp — distinguishes one click from the next
+    /// so the transient re-fires.
+    pub time: crate::domain::command::invite::TimeStamp,
+}
+
+/// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in
+/// `tonk-worker` (flips the replica's durable `auto-sync` preference).
+impl Command for PauseSync {
+    type Input = Self;
+    type Output = ();
+}
+
 /// The durable fact a `tonk:invite` handler asserts: the public
 /// delegation chain it minted, **keyed by the membership DID** (`this`).
 ///

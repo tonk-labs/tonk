@@ -52,6 +52,32 @@ pub mod replica {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for the `tonk/sync` concept — a replica's sync state.
+///
+/// Two orthogonal entity-valued fields, both keyed on the replica entity
+/// (the `tonk/sync` fact's `this`), on the profile meta branch — private,
+/// per-device-per-space, never replicated:
+///
+/// - `enabled` — the DURABLE pause *preference* (`sync:active` /
+///   `sync:paused`). The user toggles it; the service worker reads it to
+///   decide whether to sync this replica. Survives a worker restart.
+/// - `status` — the live *observation* (`sync:synced` / `sync:syncing` /
+///   `sync:offline`), written to the OVERLAY by the sweep (transient).
+///
+/// Keeping them separate avoids overloading one value: the chip reads
+/// `enabled` for paused-vs-running and `status` for the running detail.
+pub mod sync {
+    use super::{Attribute, Entity};
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.sync")]
+    pub struct Enabled(pub Entity);
+
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.sync")]
+    pub struct Status(pub Entity);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers
