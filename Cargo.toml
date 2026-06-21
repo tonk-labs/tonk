@@ -11,6 +11,7 @@ members = [
     "rust/dialog-reactor",
     "rust/tonk-display",
     "rust/tonk-evaluator",
+    "rust/tonk-guest",
     "rust/tonk-host",
     "rust/tonk-invite",
     "rust/tonk-language-server",

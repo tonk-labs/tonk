@@ -5034,6 +5034,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-guest"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "custom-elements",
+ "js-sys",
+ "tonk-board",
+ "tonk-display",
+ "tonk-sigil",
+ "tonk-tree",
+ "tonk-workspace",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-host"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,45 @@
+[package]
+name = "tonk-guest"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Sealed-iframe guest element runtime — registration-only, no worker/engine."
+license.workspace = true
+
+# The sealed guest's element-registration runtime. It depends ONLY on the
+# custom-element crates, deliberately NOT on tonk-ui or tonk-worker, so the
+# guest wasm carries the view runtime without the service worker / query
+# engine (which live across the iframe boundary).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "guest"
+path = "src/bin/guest.rs"
+
+[dependencies]
+console_error_panic_hook = { workspace = true }
+tonk-display = { workspace = true }
+tonk-board = { workspace = true }
+tonk-workspace = { workspace = true }
+tonk-tree = { workspace = true }
+tonk-sigil = { workspace = true, features = ["web"] }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+custom-elements = { workspace = true }
+# Union of web-sys features the element crates under-declare (they
+# free-ride on features tonk-ui enables in the normal build; built
+# standalone the guest must supply them).
+web-sys = { workspace = true, features = [
+  "Document",
+  "Element",
+  "HtmlElement",
+  "HtmlHeadElement",
+  "Window",
+  "CustomEvent",
+  "CustomEventInit",
+  "Event",
+  "EventTarget",
+  "CustomElementRegistry",
+] }
