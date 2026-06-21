@@ -444,11 +444,15 @@ async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
-    // Bypass HTTP + SW caches: the injected runtime/CSS must reflect the
-    // freshly built/served assets, not a stale cached copy.
-    let init = web_sys::RequestInit::new();
-    init.set_cache(web_sys::RequestCache::NoStore);
-    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init))
+    // Default cache mode (no override): the guest runtime + CSS go through
+    // the SW's stale-while-revalidate shell cache, so a sealed `/space`
+    // works OFFLINE (the assets are populated on the first online load and
+    // served from cache thereafter). An explicit `no-store` here would
+    // bypass the cache both ways — fresh online but nothing to serve
+    // offline. The guest assets are unhashed (`/guest/*`), so a content
+    // change self-heals via SWR's background revalidate on the next load,
+    // same as the rest of the app shell.
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
         .await
         .map_err(|e| format!("fetch {url}: {e:?}"))?;
     resp_value
