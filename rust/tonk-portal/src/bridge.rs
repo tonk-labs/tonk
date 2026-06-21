@@ -443,7 +443,11 @@ async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     let win = window().ok_or("no window")?;
-    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
+    // Bypass HTTP + SW caches: the injected runtime/CSS must reflect the
+    // freshly built/served assets, not a stale cached copy.
+    let init = web_sys::RequestInit::new();
+    init.set_cache(web_sys::RequestCache::NoStore);
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init))
         .await
         .map_err(|e| format!("fetch {url}: {e:?}"))?;
     resp_value
