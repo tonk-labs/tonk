@@ -73,6 +73,13 @@ impl CustomElement for TonkPortal {
         // can't reach the parent or a real origin.
         let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms");
 
+        // Delegate the `clipboard-write` Permissions Policy into the guest so
+        // its copy buttons (e.g. the share dialog's invite-link copy) can call
+        // `navigator.clipboard.writeText`. This is Permissions Policy, NOT a
+        // sandbox grant — orthogonal to the sandbox lockdown above; without it
+        // the API is blocked outright regardless of sandbox flags.
+        let _ = iframe.set_attribute("allow", "clipboard-write");
+
         // The iframe always fills its container. `flex: 1` + `align-self:
         // stretch` make it fill a flex-column host (the display-route layout)
         // without needing a definite-height ancestor for `height: 100%`.
