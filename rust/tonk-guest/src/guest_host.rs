@@ -66,13 +66,36 @@ impl CustomElement for GuestHost {
             let _ = this.add_event_listener_with_callback(name, listener.as_ref().unchecked_ref());
             installed.push((name.to_owned(), listener));
         }
+        // Navigation relay: a link click inside the opaque guest can't move
+        // the parent, so catch it at the document and post the href over the
+        // bridge for the host to perform. Capture phase so it runs before any
+        // app handler and before the (blocked-anyway) native navigation.
+        if let Some(doc) = window().and_then(|w| w.document()) {
+            let listener = make_nav_listener();
+            let _ = doc.add_event_listener_with_callback_and_bool(
+                "click",
+                listener.as_ref().unchecked_ref(),
+                true,
+            );
+            installed.push(("click".to_owned(), listener));
+        }
         *self.listeners.borrow_mut() = installed;
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
         for (name, listener) in self.listeners.borrow_mut().drain(..) {
-            let _ =
-                this.remove_event_listener_with_callback(&name, listener.as_ref().unchecked_ref());
+            if name == "click" {
+                if let Some(doc) = window().and_then(|w| w.document()) {
+                    let _ = doc.remove_event_listener_with_callback_and_bool(
+                        "click",
+                        listener.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+            } else {
+                let _ = this
+                    .remove_event_listener_with_callback(&name, listener.as_ref().unchecked_ref());
+            }
         }
     }
 }
@@ -99,6 +122,44 @@ fn make_listener(name: &'static str) -> Closure<dyn FnMut(Event)> {
             _ => {}
         }
     }) as Box<dyn FnMut(Event)>)
+}
+
+/// Build the document click listener that relays in-guest link navigation
+/// to the host over `window.tonk.navigate`.
+fn make_nav_listener() -> Closure<dyn FnMut(Event)> {
+    Closure::wrap(Box::new(move |event: Event| {
+        // Leave modified clicks (new tab/window, middle-click) to the
+        // browser — though in the sandbox they're inert, honoring them keeps
+        // behavior predictable.
+        if let Ok(mouse) = event.clone().dyn_into::<web_sys::MouseEvent>()
+            && (mouse.meta_key() || mouse.ctrl_key() || mouse.shift_key() || mouse.button() != 0)
+        {
+            return;
+        }
+        let Some(href) = event.target().and_then(closest_anchor_href) else {
+            return;
+        };
+        // Only relay in-app navigations: a path (`/…`) or a same-document
+        // href. Skip fragments, mailto:, external schemes, etc.
+        if !href.starts_with('/') || href.starts_with("//") {
+            return;
+        }
+        event.prevent_default();
+        if let Some(tonk) = window_tonk()
+            && let Some(navigate) = get_fn(&tonk, "navigate")
+        {
+            let _ = navigate.call1(&tonk, &JsValue::from_str(&href));
+        }
+    }) as Box<dyn FnMut(Event)>)
+}
+
+/// Walk up from an event target to the nearest `<a>` and read its `href`
+/// attribute (the raw attribute, not the resolved `.href` which an opaque
+/// origin mangles to `null/…`).
+fn closest_anchor_href(target: web_sys::EventTarget) -> Option<String> {
+    let element = target.dyn_into::<web_sys::Element>().ok()?;
+    let anchor = element.closest("a[href]").ok()??;
+    anchor.get_attribute("href").filter(|h| !h.is_empty())
 }
 
 /// `window.tonk` if the portal bootstrap installed it.

@@ -128,6 +128,12 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     ready:ready,
     query:function(body){return call("query",{body:body});},
     transact:function(request){return call("transact",{request:request});},
+    // Navigate the HOST page: the opaque guest can't touch parent.location
+    // and has no router, so a link click posts its href here and the parent
+    // performs the real navigation. Fire-and-forget (no response).
+    navigate:function(href){
+      ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
+    },
     subscribe:function(body){
       var id=mint();
       return new ReadableStream({
@@ -703,6 +709,7 @@ fn make_dispatcher(
             "transact" => handle_transact(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
+            "navigate" => handle_navigate(&data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -790,6 +797,19 @@ fn handle_unsubscribe(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     if let Some(tag) = tag {
         // Dropping the `BridgeSub` cancels its host subscription.
         s.subs.remove(&tag);
+    }
+}
+
+/// Navigate the host page to `href`. The sealed guest can't touch its
+/// parent's location, so a link click inside it posts the href here and the
+/// trusted parent performs the real navigation. `window.location.assign`
+/// (rather than a router push) so the in-page router re-resolves the route.
+fn handle_navigate(data: &JsValue) {
+    let Some(href) = get_str(data, "href").filter(|h| !h.is_empty()) else {
+        return;
+    };
+    if let Some(location) = window().map(|w| w.location()) {
+        let _ = location.assign(&href);
     }
 }
 

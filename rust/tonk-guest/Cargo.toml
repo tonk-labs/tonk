@@ -42,5 +42,6 @@ web-sys = { workspace = true, features = [
   "CustomEventInit",
   "Event",
   "EventTarget",
+  "MouseEvent",
   "CustomElementRegistry",
 ] }
