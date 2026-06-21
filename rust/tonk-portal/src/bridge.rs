@@ -291,7 +291,7 @@ async fn build_inject_payload() -> Result<JsValue, String> {
     // version), so the guest loads fully; SWR refreshes the manifest in the
     // background and the next load picks up the new build.
     let manifest: GuestManifest = {
-        let text = fetch_text("/guest/manifest.json").await?;
+        let text = fetch_manifest_text("/guest/manifest.json").await?;
         serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
     };
 
@@ -454,7 +454,11 @@ fn app_stylesheet_href() -> Option<String> {
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_text(url: &str) -> Result<String, String> {
-    let resp = fetch(url).await?;
+    resp_text(fetch(url).await?).await
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn resp_text(resp: web_sys::Response) -> Result<String, String> {
     let text =
         wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("text(): {e:?}"))?)
             .await
@@ -462,9 +466,44 @@ async fn fetch_text(url: &str) -> Result<String, String> {
     text.as_string().ok_or_else(|| "text not a string".into())
 }
 
+/// Fetch the guest manifest network-first, falling back to cache offline.
+///
+/// The manifest names the current build's hashed assets. If a STALE cached
+/// manifest were used while online, it could name a previous build's hashes
+/// that the server no longer has — and a missing hashed asset returns the
+/// SPA fallback (HTTP 200 `text/html`), which then blows up wasm-instantiate
+/// with a bad magic word. So online we force the network (`cache: "reload"`)
+/// to stay in lock-step with the served assets; if that throws (offline), we
+/// fall back to the SW-cached copy, whose assets are also cached. Either way
+/// manifest and assets agree.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_manifest_text(url: &str) -> Result<String, String> {
+    let win = window().ok_or("no window")?;
+    let init = web_sys::RequestInit::new();
+    init.set_cache(web_sys::RequestCache::Reload);
+    match wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init)).await {
+        Ok(value) => {
+            let resp = value
+                .dyn_into::<web_sys::Response>()
+                .map_err(|_| "manifest: not a Response".to_string())?;
+            resp_text(resp).await
+        }
+        // Network unreachable (offline): fall back to the SW-cached manifest.
+        Err(_) => fetch_text(url).await,
+    }
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
     let resp = fetch(url).await?;
+    // A missing hashed asset 200s with the SPA fallback (`text/html`). Reject
+    // that here so HTML bytes never reach `WebAssembly.instantiate` as a
+    // bogus magic word — surface a clear error instead.
+    if let Some(ct) = resp.headers().get("content-type").ok().flatten()
+        && ct.contains("text/html")
+    {
+        return Err(format!("fetch {url}: got HTML (asset missing?)"));
+    }
     wasm_bindgen_futures::JsFuture::from(
         resp.array_buffer()
             .map_err(|e| format!("array_buffer(): {e:?}"))?,
