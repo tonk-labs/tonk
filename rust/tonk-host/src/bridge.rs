@@ -32,6 +32,30 @@ fn tonk_global() -> Result<JsValue, ErrorDetail> {
     Ok(tonk)
 }
 
+/// The host page's real origin, as the bridge reports it in
+/// `window.tonk.context.origin`. In a sealed guest `window.location.origin`
+/// is `"null"` (opaque origin), so anything that needs a same-origin URL —
+/// the invite link, the sync `/api` route — must read the origin from the
+/// bridge context the host supplies. Falls back to `window.location.origin`
+/// when there is no bridge (the element running in the real top document).
+pub fn context_origin() -> Option<String> {
+    let win = window()?;
+    if let Ok(tonk) = Reflect::get(&win, &JsValue::from_str("tonk"))
+        && !tonk.is_undefined()
+        && !tonk.is_null()
+        && let Ok(context) = Reflect::get(&tonk, &JsValue::from_str("context"))
+        && let Ok(origin) = Reflect::get(&context, &JsValue::from_str("origin"))
+        && let Some(origin) = origin.as_string()
+        && !origin.is_empty()
+    {
+        return Some(origin);
+    }
+    win.location()
+        .origin()
+        .ok()
+        .filter(|o| !o.is_empty() && o != "null")
+}
+
 fn tonk_method(name: &str) -> Result<Function, ErrorDetail> {
     let tonk = tonk_global()?;
     let method = Reflect::get(&tonk, &JsValue::from_str(name))

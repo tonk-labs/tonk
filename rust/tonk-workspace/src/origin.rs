@@ -56,10 +56,13 @@ impl CustomElement for TonkOrigin {
 /// The invite URL base — the recipient's `/join` page on this origin.
 /// Provided as the `base` bind value so a template can assemble an
 /// absolute invite URL (`{base}?access=…#{code}`) without reading
-/// `window` itself. Empty when there is no window/origin.
+/// `window` itself. Empty when there is no origin.
+///
+/// Reads the origin from the bridge context (`window.tonk.context.origin`),
+/// not `window.location`: in a sealed guest the latter is `"null"` (opaque
+/// origin), so the host supplies its real origin over the bridge.
 fn join_base() -> String {
-    window()
-        .and_then(|w| w.location().origin().ok())
+    tonk_host::bridge::context_origin()
         .map(|origin| format!("{origin}/join"))
         .unwrap_or_default()
 }

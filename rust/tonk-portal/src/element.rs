@@ -63,7 +63,15 @@ impl CustomElement for TonkPortal {
         // Opaque-origin sandbox: scripts run but `parent.document` is
         // unreachable. The bridge bootstrap reaches the parent only over
         // a `MessagePort` it opens and transfers in its `hello`.
-        let _ = iframe.set_attribute("sandbox", "allow-scripts");
+        //
+        // `allow-forms` lets the guest's `<form>`s fire their `submit` event
+        // (so declarative `onsubmit=` bindings run); it does NOT let a form
+        // navigate the guest away, because the runtime installs a global
+        // capture-phase `submit` guard that `preventDefault`s every
+        // submission before its native action. We deliberately withhold
+        // `allow-top-navigation` and `allow-same-origin` — the guest still
+        // can't reach the parent or a real origin.
+        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms");
 
         // The iframe always fills its container. `flex: 1` + `align-self:
         // stretch` make it fill a flex-column host (the display-route layout)

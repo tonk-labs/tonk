@@ -173,7 +173,9 @@ mod dom {
     async fn fetch_sync_status(repo: &str, branch: &str) -> Option<SyncState> {
         tonk_host::ready::wait().await;
         let win = window()?;
-        let origin = win.location().origin().ok()?;
+        // Read the origin from the bridge context, not `window.location`: in a
+        // sealed guest the latter is `"null"` (opaque origin).
+        let origin = tonk_host::bridge::context_origin()?;
         let url = format!("{origin}/api/repository/{repo}/branch/{branch}/sync/status");
 
         let init = RequestInit::new();

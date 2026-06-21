@@ -802,14 +802,14 @@ mod tests {
         binder
     }
 
+    /// A captured-value handle plus the live listener that fills it.
+    type Capture = (Rc<RefCell<Option<String>>>, Closure<dyn FnMut(Event)>);
+
     /// Capture the next `event_type` CustomEvent's `detail` field
     /// `key` (a string) off the window. Returns a handle whose
     /// `borrow()` holds the captured value, plus the live listener
     /// (drop it to stop listening).
-    fn capture_detail(
-        event_type: &str,
-        key: &'static str,
-    ) -> (Rc<RefCell<Option<String>>>, Closure<dyn FnMut(Event)>) {
+    fn capture_detail(event_type: &str, key: &'static str) -> Capture {
         let captured: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
         let sink = captured.clone();
         let listener = Closure::wrap(Box::new(move |event: Event| {

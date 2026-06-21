@@ -182,6 +182,14 @@ const BOOTSTRAP_JS: &str = r#"(function(){
 /// The guest fetches NOTHING — the parent (trusted, networked) hands over
 /// every byte. `runtime-ready` tells the parent to send.
 const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
+  // Global submit guard: the iframe sandbox grants `allow-forms` only so a
+  // `<form>`'s `submit` event fires (declarative `onsubmit=` bindings run on
+  // it). This capture-phase listener `preventDefault`s EVERY submission
+  // before its native action, so a form can never navigate the guest away or
+  // POST anywhere — the event is observable, the navigation is not. Runs on
+  // every submit regardless of whether the form has an app handler.
+  document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
+
   window.addEventListener("message", async function(e){
     var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
     try {
@@ -815,14 +823,22 @@ fn read_descriptor(host: &Element) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Build the `context` object (`{ this, model }`) the iframe receives in
-/// its `ready` envelope, from the host's current attributes.
+/// Build the `context` object (`{ this, model, origin }`) the iframe receives
+/// in its `ready` envelope. `this`/`model` come from the host's attributes;
+/// `origin` is the host page's real origin — the opaque guest can't read its
+/// own (`window.location.origin` is `"null"` there), so anything that needs a
+/// same-origin URL (the invite link, the sync `/api` route) reads it from
+/// `window.tonk.context.origin` instead of `window.location`.
 fn build_context(host: &Element) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
     let model = host.get_attribute("model").unwrap_or_default();
+    let origin = window()
+        .and_then(|w| w.location().origin().ok())
+        .unwrap_or_default();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
+    let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
     context
 }
 
