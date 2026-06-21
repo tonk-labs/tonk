@@ -54,12 +54,22 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // dispatches its query/subscribe events to that ancestor, which relays
     // them over `window.tonk` to the outer bridge. Only `model` is needed —
     // space/branch are annotated outer-side from the routing context.
-    const CONTENT: &str =
-        "<tonk-host><tonk-display model=tonk/space></tonk-display></tonk-host>";
+    //
+    // A flex column so the display fills the iframe (the guest base CSS
+    // gives `<body>` full height + column flex).
+    const CONTENT: &str = "<tonk-host style=\"display:flex;flex-direction:column;flex:1 1 auto\">\
+<tonk-display model=tonk/space style=\"display:flex;flex-direction:column;flex:1 1 auto\"></tonk-display>\
+</tonk-host>";
 
     // No inner `<tonk-host>`: the launcher wraps the whole router in one
     // (the IO owner). The portal's relayed query/subscribe events bubble up
     // through these repository/branch ancestors to that host.
+    //
+    // The `.display-route` + `.display-view-slot` chain is the bare-route
+    // layout contract: `display: contents` collapses the routing-context
+    // elements and the slot fills the viewport (`min-height: 100dvh`). The
+    // sealed `<tonk-portal>` fills that slot via inline flex sizing (it
+    // carries no app CSS itself).
     view! {
         <main class="display-route">
             <tonk-repository
@@ -67,7 +77,13 @@ pub fn TonkSpaceSealed() -> impl IntoView {
                 name=move || space_name.get()
             >
                 <tonk-branch name=move || branch_name.get()>
-                    <tonk-portal runtime content=CONTENT></tonk-portal>
+                    <div class="display-view-slot">
+                        <tonk-portal
+                            runtime
+                            content=CONTENT
+                            style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"
+                        ></tonk-portal>
+                    </div>
                 </tonk-branch>
             </tonk-repository>
         </main>

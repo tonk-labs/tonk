@@ -37,6 +37,8 @@ watch = [
     "../tonk-workspace",
     "../tonk-display",
     "../tonk-host",
+    "../tonk-portal",
+    "../tonk-guest/src",
     "../tonk-code/assets",
     "../tonk-tree/src",
 ]

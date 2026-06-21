@@ -65,10 +65,14 @@ impl CustomElement for TonkPortal {
         // a `MessagePort` it opens and transfers in its `hello`.
         let _ = iframe.set_attribute("sandbox", "allow-scripts");
 
-        // The iframe always fills its container.
+        // The iframe always fills its container. `flex: 1` + `align-self:
+        // stretch` make it fill a flex-column host (the display-route layout)
+        // without needing a definite-height ancestor for `height: 100%`.
         let style = iframe.style();
         let _ = style.set_property("width", "100%");
         let _ = style.set_property("height", "100%");
+        let _ = style.set_property("flex", "1 1 auto");
+        let _ = style.set_property("align-self", "stretch");
         let _ = style.set_property("border", "0");
 
         let state = Rc::new(RefCell::new(PortalState::new()));

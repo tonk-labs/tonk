@@ -185,14 +185,15 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
   window.addEventListener("message", async function(e){
     var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
     try {
-      // Web Awesome theme classes on the root (mirrors index.html), so the
-      // injected WA CSS + palette resolve their custom properties.
-      document.documentElement.classList.add("wa-theme-default","wa-palette-shoelace");
-      try {
-        var dark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;
-        document.documentElement.classList.toggle("wa-dark",!!dark);
-        document.documentElement.classList.toggle("wa-light",!dark);
-      } catch(_) {}
+      // Apply the parent document's exact root classes (WA theme + palette +
+      // dark/light), so the injected WA CSS resolves its custom properties
+      // identically to the host page.
+      if (d.rootClass) document.documentElement.className=d.rootClass;
+      // Base layout: the guest fills the iframe and lays out as a column so
+      // the injected view (a `.display-route` chain) can flex to full height.
+      var base=document.createElement("style");
+      base.textContent="html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
+      document.head.appendChild(base);
       if (d.css) {
         var style=document.createElement("style");
         style.textContent=d.css;
@@ -307,6 +308,15 @@ async fn build_inject_payload() -> Result<JsValue, String> {
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
     let _ = Reflect::set(&payload, &"wa".into(), &JsValue::from_str(&wa));
+    // Mirror the outer document's root classes (the WA theme/palette/dark
+    // classes) so the guest themes identically — recomputing from
+    // matchMedia inside the guest can disagree with the parent.
+    let root_class = window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .map(|e| e.class_name())
+        .unwrap_or_default();
+    let _ = Reflect::set(&payload, &"rootClass".into(), &JsValue::from_str(&root_class));
     Ok(payload.into())
 }
 
