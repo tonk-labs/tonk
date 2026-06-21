@@ -200,8 +200,9 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
         document.head.appendChild(style);
       }
       // Web Awesome component bundle: a self-contained ESM (no dynamic or
-      // relative imports), imported from a guest-minted blob so the <wa-*>
-      // elements upgrade with no network.
+      // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
+      // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
+      // and import the URL so the <wa-*> elements upgrade with no network.
       if (d.wa) {
         var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
         await import(waUrl);
@@ -247,7 +248,7 @@ pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
         return;
     };
     spawn_local(async move {
-        let payload = match build_inject_payload().await {
+        let (payload, transfer) = match build_inject_payload().await {
             Ok(p) => p,
             Err(e) => {
                 tonk_common::log!("portal runtime: failed to assemble payload: {e}");
@@ -256,7 +257,9 @@ pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
         };
         // Post to the iframe window (not the data port): runtime setup is a
         // one-time window-channel handoff, distinct from the tonk data port.
-        let _ = content_window.post_message(&payload, "*");
+        // The large binary payloads (wasm + WA bundle) are TRANSFERRED by
+        // ownership via the transfer list, not structured-clone-copied.
+        let _ = content_window.post_message_with_transfer(&payload, "*", &transfer);
     });
 }
 
@@ -275,11 +278,13 @@ struct GuestManifest {
     wa_css: String,
 }
 
-/// Build the `inject` envelope: `{ __tonkRuntime:"inject", glue, snippets:[
-/// {stmt,src} ], wasm: ArrayBuffer, css }`. Fetches the served guest bundle
-/// + app stylesheet.
+/// Build the runtime-inject envelope by fetching the served guest bundle +
+/// app stylesheet. Returns `(payload, transfer)` for
+/// `post_message_with_transfer`: the payload carries the glue/css/snippets as
+/// strings plus the wasm + WA bundle as ArrayBuffers, and `transfer` lists
+/// those buffers so they hand off by ownership instead of being copied.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn build_inject_payload() -> Result<JsValue, String> {
+async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     use wasm_bindgen::JsValue;
 
     // The manifest names the current build's hashed assets. It rides the
@@ -314,10 +319,13 @@ async fn build_inject_payload() -> Result<JsValue, String> {
     // (same-origin) fetches each woff2 and base64-embeds it.
     css = inline_fonts(&css).await;
     // The bundled Web Awesome components (esbuild, no dynamic/relative
-    // imports), imported by the guest before its content upgrades.
-    let wa = fetch_text(&format!("/guest/{}", manifest.wa_js))
+    // imports), imported by the guest before its content upgrades. Fetched as
+    // an ArrayBuffer (not text): the guest never manipulates it as a string,
+    // it just blobs + imports it, so we transfer the bytes (ownership moved,
+    // no structured-clone copy) and the guest wraps them in a Blob zero-copy.
+    let wa = fetch_array_buffer(&format!("/guest/{}", manifest.wa_js))
         .await
-        .unwrap_or_default();
+        .unwrap_or(JsValue::UNDEFINED);
 
     // Find every `import … from '…/snippets/…'` statement in the glue and
     // fetch each snippet file, so the guest can rewrite them to blob URLs.
@@ -337,7 +345,7 @@ async fn build_inject_payload() -> Result<JsValue, String> {
     let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
     let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
     let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
-    let _ = Reflect::set(&payload, &"wa".into(), &JsValue::from_str(&wa));
+    let _ = Reflect::set(&payload, &"wa".into(), &wa);
     // Mirror the outer document's root classes (the WA theme/palette/dark
     // classes) so the guest themes identically — recomputing from
     // matchMedia inside the guest can disagree with the parent.
@@ -351,7 +359,19 @@ async fn build_inject_payload() -> Result<JsValue, String> {
         &"rootClass".into(),
         &JsValue::from_str(&root_class),
     );
-    Ok(payload.into())
+
+    // Transfer the two large binary payloads (the guest wasm + the WA bundle)
+    // by OWNERSHIP rather than letting `postMessage` structured-clone-copy
+    // them across the window boundary. `glue`/`css`/snippets stay as strings:
+    // the guest manipulates them as text, so there's nothing to transfer.
+    let transfer = js_sys::Array::new();
+    if !wasm.is_undefined() {
+        transfer.push(&wasm);
+    }
+    if !wa.is_undefined() {
+        transfer.push(&wa);
+    }
+    Ok((payload.into(), transfer.into()))
 }
 
 /// Replace every `url("/fonts/<name>.woff2")` in `css` with a
