@@ -23,6 +23,7 @@ tonk-display = { workspace = true }
 tonk-board = { workspace = true }
 tonk-workspace = { workspace = true }
 tonk-tree = { workspace = true }
+tonk-portal = { workspace = true }
 tonk-sigil = { workspace = true, features = ["web"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }

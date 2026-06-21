@@ -13,9 +13,8 @@
 //! - `tonk-query`     → `window.tonk.query(detail.query)`   → `detail.result`
 //! - `tonk-claim`     → `window.tonk.transact(detail.request)` → `detail.result`
 //! - `tonk-subscribe` → `window.tonk.subscribe(detail.query)`; each stream
-//!                      frame is delivered by calling `consumer.reset(rows,
-//!                      {tag})` back on the dispatching element; writes
-//!                      `detail.subscription = { cancel }`.
+//!   frame is delivered by calling `consumer.reset(rows, {tag})` back on the
+//!   dispatching element; writes `detail.subscription = { cancel }`.
 //! - `tonk-unsubscribe` → cancels the matching stream reader.
 //!
 //! It is the mirror image of the portal's *parent* relay: the parent turns
@@ -39,10 +38,14 @@ const CLAIM: &str = "tonk-claim";
 const SUBSCRIBE: &str = "tonk-subscribe";
 const UNSUBSCRIBE: &str = "tonk-unsubscribe";
 
+/// An installed event listener: the event name it's bound to and the
+/// closure kept alive for as long as it's attached.
+type Listener = (String, Closure<dyn FnMut(Event)>);
+
 /// Per-element listeners, dropped on disconnect.
 #[derive(Default)]
 pub(crate) struct GuestHost {
-    listeners: RefCell<Vec<(String, Closure<dyn FnMut(Event)>)>>,
+    listeners: RefCell<Vec<Listener>>,
 }
 
 impl CustomElement for GuestHost {
