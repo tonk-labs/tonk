@@ -243,6 +243,22 @@ const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
       // dark/light), so the injected WA CSS resolves its custom properties
       // identically to the host page.
       if (d.rootClass) document.documentElement.className=d.rootClass;
+      // The injected rootClass is a one-time snapshot, so a later OS
+      // light/dark switch wouldn't reach the guest (the parent retoggles its
+      // own `wa-dark`/`wa-light` on `prefers-color-scheme`, but the guest's
+      // class is frozen). Watch the same OS signal here and keep the guest's
+      // dark/light class live — `prefers-color-scheme` is identical inside the
+      // iframe, so guest and parent stay in agreement. The theme/palette
+      // classes from rootClass are untouched (they don't change).
+      (function(){
+        var mq=window.matchMedia("(prefers-color-scheme: dark)");
+        var apply=function(isDark){
+          var cls=document.documentElement.classList;
+          cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
+        };
+        apply(mq.matches);
+        mq.addEventListener("change",function(ev){apply(ev.matches);});
+      })();
       // Base layout: the guest fills the iframe and lays out as a column so
       // the injected view (a `.display-route` chain) can flex to full height.
       var base=document.createElement("style");
