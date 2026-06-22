@@ -156,13 +156,13 @@ impl SpaceStatus {
 /// The auto-sync *preference* of a replica as a standalone fact: just
 /// `this` and `enabled`.
 ///
-/// The DURABLE half of `tonk/sync` — `sync:active` or `sync:paused`,
-/// committed to the profile meta branch so the service worker's
-/// background-sync loop reads it and skips a paused replica, and so it
-/// survives a worker restart. Private — replica records never replicate,
-/// so pausing on this device doesn't pause sync for other members.
-/// Stamped onto the replica entity (cardinality one, a later assert
-/// supersedes) without re-asserting the whole [`Replica`].
+/// The DURABLE half of `tonk/sync` — a boolean (`true` syncing, `false`
+/// paused), committed to the profile meta branch and keyed on the replica
+/// entity, so the service worker's background-sync loop reads it and skips a
+/// paused replica, and so it survives a worker restart. Private — replica
+/// records never replicate, so pausing on this device doesn't pause sync for
+/// other members. Stamped onto the replica entity (cardinality one, a later
+/// assert supersedes) without re-asserting the whole [`Replica`].
 ///
 /// Separate from [`ReplicaSyncStatus`] (the transient observation) so each
 /// resolves independently: the durable preference is always present, the
@@ -172,14 +172,17 @@ impl SpaceStatus {
 pub struct ReplicaSyncEnabled {
     /// The replica entity being stamped.
     pub this: Entity,
-    /// Whether auto-sync is active or paused for this replica.
+    /// Whether auto-sync is on (`true`) or paused (`false`) for this replica.
     pub enabled: Enabled,
 }
 
 impl ReplicaSyncEnabled {
     /// An `enabled` stamp for the given replica entity.
-    pub fn new(this: Entity, enabled: Enabled) -> Self {
-        Self { this, enabled }
+    pub fn new(this: Entity, enabled: bool) -> Self {
+        Self {
+            this,
+            enabled: Enabled(enabled),
+        }
     }
 }
 
@@ -277,10 +280,9 @@ impl Replica {
         Status(Self::INITIALIZED.parse().expect("tonk:initialized parses"))
     }
 
-    /// `tonk/sync` `enabled` URI: auto-sync is running for this replica.
-    pub const ACTIVE: &'static str = "sync:active";
-
-    /// `tonk/sync` `enabled` URI: the user paused auto-sync (durable).
+    /// `tonk/sync` `status` URI: the user paused auto-sync. The OVERLAY twin of
+    /// the durable boolean `enabled = false` preference, so the chip can show
+    /// `paused` (the durable bool lives on the replica, off the chip's branch).
     pub const PAUSED: &'static str = "sync:paused";
 
     /// The fixed entity the live sync `status` overlay is keyed on —
@@ -309,6 +311,16 @@ impl Replica {
     /// but can't be reached).
     pub const LOCAL: &'static str = "sync:local";
 
+    /// The live `status` value for a paused replica — the overlay twin of the
+    /// durable [`PAUSED`](Self::PAUSED) `enabled` preference, so the chip shows
+    /// `paused` immediately without waiting for a status sweep (which a paused
+    /// replica skips). Shares the URI with the durable value: status and
+    /// enabled are different attributes, so the same `sync:paused` URI reads
+    /// unambiguously on each.
+    pub fn paused_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::PAUSED.parse().expect("sync:paused parses"))
+    }
+
     /// The `status` value for an in-flight / due sync.
     pub fn pending_status() -> SyncStatusAttr {
         SyncStatusAttr(Self::PENDING.parse().expect("sync:pending parses"))
@@ -317,16 +329,6 @@ impl Replica {
     /// The `status` value for an unreachable remote (a real offline state).
     pub fn offline_status() -> SyncStatusAttr {
         SyncStatusAttr(Self::OFFLINE.parse().expect("sync:offline parses"))
-    }
-
-    /// The `enabled` value for a running replica.
-    pub fn active_enabled() -> Enabled {
-        Enabled(Self::ACTIVE.parse().expect("sync:active parses"))
-    }
-
-    /// The `enabled` value for a paused replica.
-    pub fn paused_enabled() -> Enabled {
-        Enabled(Self::PAUSED.parse().expect("sync:paused parses"))
     }
 
     /// Map a head-comparison [`SyncState`](crate::SyncState) to the

@@ -69,12 +69,26 @@ pub mod replica {
 pub mod sync {
     use super::{Attribute, Entity};
 
+    /// Whether auto-sync is on for a replica — `true` syncing, `false` paused.
+    ///
+    /// A boolean preference, not an entity URI: pause is simply on or off. Lives
+    /// on the replica entity (profile meta branch, private), so pausing on this
+    /// device never reaches other members. Cardinality one — toggling
+    /// supersedes the prior value rather than accumulating.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.sync")]
-    pub struct Enabled(pub Entity);
+    #[cardinality(one)]
+    pub struct Enabled(pub bool);
 
+    /// The live sync *observation* — one of many variants (`sync:idle` /
+    /// `sync:pending` / `sync:offline` / `sync:local` / `sync:paused`). An
+    /// entity URI because it is multi-valued, unlike the boolean preference.
+    /// Written to the `state:here` overlay so the sealed chip reads it.
+    /// Cardinality one, so the chip's fold always sees the latest, never a
+    /// stale accumulated value.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.sync")]
+    #[cardinality(one)]
     pub struct Status(pub Entity);
 }
 
