@@ -33,6 +33,7 @@ custom-elements = { workspace = true }
 # free-ride on features tonk-ui enables in the normal build; built
 # standalone the guest must supply them).
 web-sys = { workspace = true, features = [
+  "console",
   "Document",
   "Element",
   "HtmlElement",
@@ -44,4 +45,7 @@ web-sys = { workspace = true, features = [
   "EventTarget",
   "MouseEvent",
   "CustomElementRegistry",
+  "Response",
+  "Blob",
+  "Url",
 ] }

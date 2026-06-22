@@ -53,28 +53,38 @@ fn load_sigil_sprite() {
     use wasm_bindgen_futures::{JsFuture, spawn_local};
     use web_sys::{Blob, Response};
 
+    // Log failures rather than swallowing them: if the bridge can't deliver
+    // the body, the sigil would otherwise silently fall back to the
+    // CORS-blocked `/sigils.svg` and render blank with no clue why.
+    fn warn(message: &str) {
+        web_sys::console::warn_1(&JsValue::from_str(message));
+    }
+
     spawn_local(async move {
         let Some(window) = web_sys::window() else {
             return;
         };
         // Routes through the overridden `window.fetch` → host bridge.
-        let Ok(resp) = JsFuture::from(window.fetch_with_str("/sigils.svg")).await else {
-            return;
+        let resp = match JsFuture::from(window.fetch_with_str("/sigils.svg")).await {
+            Ok(resp) => resp,
+            Err(e) => return warn(&format!("sigil sprite: fetch failed: {e:?}")),
         };
         let Ok(resp) = resp.dyn_into::<Response>() else {
-            return;
+            return warn("sigil sprite: fetch did not yield a Response");
         };
-        let Ok(blob_promise) = resp.blob() else {
-            return;
-        };
-        let Ok(blob) = JsFuture::from(blob_promise).await else {
-            return;
+        let blob = match resp.blob() {
+            Ok(promise) => match JsFuture::from(promise).await {
+                Ok(blob) => blob,
+                Err(e) => return warn(&format!("sigil sprite: reading body failed: {e:?}")),
+            },
+            Err(e) => return warn(&format!("sigil sprite: blob() failed: {e:?}")),
         };
         let Ok(blob) = blob.dyn_into::<Blob>() else {
-            return;
+            return warn("sigil sprite: body was not a Blob");
         };
-        if let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) {
-            tonk_sigil::set_default_sprite_href(&url);
+        match web_sys::Url::create_object_url_with_blob(&blob) {
+            Ok(url) => tonk_sigil::set_default_sprite_href(&url),
+            Err(e) => warn(&format!("sigil sprite: createObjectURL failed: {e:?}")),
         }
     });
 }

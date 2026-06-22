@@ -298,7 +298,9 @@ mod tests {
             .expect("sandbox attribute present");
         // No `allow-same-origin`: the iframe is an opaque origin and
         // reaches the parent only over the bridge's `MessagePort`.
-        assert_eq!(sandbox, "allow-scripts");
+        // `allow-forms` lets a guest `<form>` fire its `submit` event (a
+        // capture-phase guard cancels the native navigation).
+        assert_eq!(sandbox, "allow-scripts allow-forms");
     }
 
     #[dialog_common::test]

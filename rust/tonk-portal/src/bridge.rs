@@ -172,11 +172,46 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        // Rebuild a real Response from the transferred body stream + the
-        // status/headers the host captured. `env.body` is a ReadableStream
-        // (transferred) or undefined for a bodyless response.
+        // Rebuild a real Response from the status/headers the host captured
+        // plus the body. The body arrives one of three ways:
+        //   - env.body is a transferred ReadableStream (fast path) — use it.
+        //   - env.streamPort is a transferred MessagePort (Safari fallback) —
+        //     wrap it in a ReadableStream that pulls chunks with credit-based
+        //     backpressure: grant credit when the consumer wants more, enqueue
+        //     each {type:"chunk"}, close on {type:"close"}, error on
+        //     {type:"error"}, and post {type:"cancel"} if the reader cancels.
+        //   - neither — a bodyless response.
         var headers=new Headers(env.headers||[]);
-        h.resolve(new Response(env.body!==undefined?env.body:null,
+        var body=null;
+        if (env.body!==undefined) {
+          body=env.body;
+        } else if (env.streamPort) {
+          var sp=env.streamPort;
+          body=new ReadableStream({
+            start:function(controller){
+              sp.onmessage=function(ev){
+                var m=ev.data; if(!m) return;
+                if(m.type==="chunk"){
+                  controller.enqueue(new Uint8Array(m.chunk));
+                  // Ask for more while the consumer still has appetite.
+                  if(controller.desiredSize>0){ sp.postMessage({type:"credit",n:1}); }
+                } else if(m.type==="close"){
+                  controller.close(); sp.close();
+                } else if(m.type==="error"){
+                  controller.error(new Error(m.error||"stream error")); sp.close();
+                }
+              };
+              // Prime the pump: grant initial credit sized to the consumer's
+              // appetite (default 1 when desiredSize is null).
+              sp.postMessage({type:"credit",n:controller.desiredSize>0?controller.desiredSize:1});
+            },
+            pull:function(controller){
+              sp.postMessage({type:"credit",n:controller.desiredSize>0?controller.desiredSize:1});
+            },
+            cancel:function(){ sp.postMessage({type:"cancel"}); sp.close(); }
+          });
+        }
+        h.resolve(new Response(body,
           {status:env.status,statusText:env.statusText,headers:headers}));
         return;
       }
@@ -896,18 +931,30 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
     let port = port.clone();
     spawn_local(async move {
         match fetch(&path).await {
-            Ok(resp) => post_fetch_response(&port, &id, &resp),
+            Ok(resp) => post_fetch_response(&port, &id, &resp).await,
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
     });
 }
 
 /// Post a `fetch-result` envelope carrying the response status + headers and
-/// the body `ReadableStream`, transferring the stream so it crosses by
-/// ownership. A null body (e.g. a 204) sends no stream; the guest builds a
-/// bodyless `Response`.
+/// the body, streamed to the guest.
+///
+/// Body delivery has two paths, chosen by whether the browser can transfer a
+/// `ReadableStream` over `postMessage`:
+///
+/// - **Fast path** (Chrome, Firefox, Safari 27+): transfer `response.body`
+///   itself — one transfer, native streaming, zero plumbing.
+/// - **Fallback** (Safari before 27, which throws `DataCloneError` on a
+///   stream transfer): transfer one end of a fresh `MessageChannel` and drain
+///   the body into it as chunks, with credit-based backpressure (see
+///   [`drain_body_to_port`]). The guest rebuilds a `ReadableStream` fed by
+///   that port.
+///
+/// Either way the guest gets a real streaming `Response`. A bodyless response
+/// (e.g. 204) sends neither.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Response) {
+async fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Response) {
     let env = Object::new();
     set_v1(&env, "fetch-result");
     let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(id));
@@ -925,12 +972,227 @@ fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Response) {
     // re-hydrated into a `Headers` on the guest side.
     let _ = Reflect::set(&env, &"headers".into(), &headers_to_array(&resp.headers()));
 
-    let transfer = js_sys::Array::new();
-    if let Some(body) = resp.body() {
+    let Some(body) = resp.body() else {
+        // Bodyless response — send the head with no body.
+        let _ = port.post_message(&env);
+        return;
+    };
+
+    // Fast path: attempt to transfer the stream itself. We only learn whether
+    // the browser supports it by trying — a probe post on a throwaway channel,
+    // so a `DataCloneError` here never reaches the guest.
+    if streams_are_transferable() {
+        let transfer = js_sys::Array::new();
         let _ = Reflect::set(&env, &"body".into(), &body);
         transfer.push(&body);
+        match port.post_message_with_transferable(&env, &transfer) {
+            Ok(()) => return,
+            // Shouldn't happen once the probe passed, but if it does, fall
+            // through to the chunked path rather than dropping the response.
+            Err(e) => {
+                tonk_common::log!("portal fetch: stream transfer failed post-probe: {e:?}");
+            }
+        }
     }
-    let _ = port.post_message_with_transferable(&env, &transfer);
+
+    // Fallback: drain the body into a MessageChannel with credit-based
+    // backpressure. Strip the (untransferable) stream off the head envelope
+    // and hand the guest a port instead.
+    let _ = Reflect::delete_property(&env, &"body".into());
+    drain_body_to_port(port, env, &body);
+}
+
+/// Whether this browser can transfer a `ReadableStream` over `postMessage`.
+/// Detected once by probing a throwaway `MessageChannel` (the result is
+/// cached): Safari before 27 throws `DataCloneError`, every other current
+/// browser succeeds.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn streams_are_transferable() -> bool {
+    thread_local! {
+        static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
+    }
+    SUPPORTED.with(|cell| {
+        *cell.get_or_init(|| {
+            let Ok(channel) = web_sys::MessageChannel::new() else {
+                return false;
+            };
+            let stream = web_sys::ReadableStream::new().unwrap_or_else(|_| JsValue::NULL.into());
+            let transfer = js_sys::Array::new();
+            transfer.push(&stream);
+            channel
+                .port1()
+                .post_message_with_transferable(&JsValue::NULL, &transfer)
+                .is_ok()
+        })
+    })
+}
+
+/// Drain `body` into a fresh `MessageChannel`, transferring the guest's end on
+/// the `head` envelope (as `streamPort`). Credit-based backpressure: the guest
+/// posts `{type:"credit", n}` and the host reads + posts up to `n` more chunks
+/// (`{type:"chunk", buffer}` transferred), then `{type:"close"}` on EOF or
+/// `{type:"error", error}` on a read failure. A guest `{type:"cancel"}`
+/// cancels the reader. Used only when `ReadableStream` transfer is unavailable.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::ReadableStream) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let Ok(channel) = web_sys::MessageChannel::new() else {
+        return post_error_obj(port, &head, "host could not open a stream channel");
+    };
+    let host_port = channel.port1();
+    let guest_port = channel.port2();
+
+    // Hand the guest its end on the head envelope (transferred).
+    let _ = Reflect::set(&head, &"streamPort".into(), &guest_port);
+    let transfer = js_sys::Array::new();
+    transfer.push(&guest_port);
+    if let Err(e) = port.post_message_with_transferable(&head, &transfer) {
+        tonk_common::log!("portal fetch: failed to hand off stream port: {e:?}");
+        return;
+    }
+
+    let Ok(reader_val) = body
+        .get_reader()
+        .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+    else {
+        return;
+    };
+    let reader = Rc::new(reader_val);
+    // Available credit + a "pump in flight" guard so concurrent credit grants
+    // don't launch overlapping reader loops (a reader allows one read at a
+    // time).
+    let credit = Rc::new(Cell::new(0u32));
+    let pumping = Rc::new(Cell::new(false));
+    let host_port = Rc::new(host_port);
+    let cancelled = Rc::new(Cell::new(false));
+
+    // The pump: while there's credit and we're not already reading, read one
+    // chunk and post it, decrementing credit. Re-entrant-safe via `pumping`.
+    // The pump closure re-invokes itself (to drain remaining credit) and is
+    // also invoked by the credit handler, so it lives behind a shared cell.
+    type PumpCell = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+    let pump: PumpCell = Rc::new(RefCell::new(None));
+    {
+        let reader = reader.clone();
+        let credit = credit.clone();
+        let pumping = pumping.clone();
+        let host_port = host_port.clone();
+        let cancelled = cancelled.clone();
+        let pump_ref = pump.clone();
+        let closure = Closure::wrap(Box::new(move || {
+            if pumping.get() || cancelled.get() || credit.get() == 0 {
+                return;
+            }
+            pumping.set(true);
+            let reader = reader.clone();
+            let credit = credit.clone();
+            let pumping = pumping.clone();
+            let host_port = host_port.clone();
+            let cancelled = cancelled.clone();
+            let pump_ref = pump_ref.clone();
+            spawn_local(async move {
+                let result = wasm_bindgen_futures::JsFuture::from(reader.read()).await;
+                pumping.set(false);
+                if cancelled.get() {
+                    return;
+                }
+                match result {
+                    Ok(chunk) => {
+                        let done = Reflect::get(&chunk, &"done".into())
+                            .ok()
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+                        if done {
+                            let env = Object::new();
+                            let _ = Reflect::set(&env, &"type".into(), &"close".into());
+                            let _ = host_port.post_message(&env);
+                            return;
+                        }
+                        // `value` is a `Uint8Array` (possibly a view at an
+                        // offset into a larger buffer). Copy its exact bytes
+                        // into a fresh `ArrayBuffer` and transfer THAT as the
+                        // chunk; the guest wraps it as `new Uint8Array(buffer)`.
+                        // (Transferring the original backing buffer would
+                        // detach it and could carry sibling bytes.)
+                        let view = js_sys::Uint8Array::new(
+                            &Reflect::get(&chunk, &"value".into()).unwrap_or(JsValue::NULL),
+                        );
+                        let buffer = view.slice(0, view.length()).buffer();
+                        let env = Object::new();
+                        let _ = Reflect::set(&env, &"type".into(), &"chunk".into());
+                        let _ = Reflect::set(&env, &"chunk".into(), &buffer);
+                        let transfer = js_sys::Array::new();
+                        transfer.push(&buffer);
+                        let _ = host_port.post_message_with_transferable(&env, &transfer);
+                        credit.set(credit.get().saturating_sub(1));
+                        // More credit may remain — keep pumping.
+                        if let Some(cb) = pump_ref.borrow().as_ref() {
+                            let _ =
+                                js_sys::Function::from(cb.as_ref().clone()).call0(&JsValue::NULL);
+                        }
+                    }
+                    Err(e) => {
+                        let env = Object::new();
+                        let _ = Reflect::set(&env, &"type".into(), &"error".into());
+                        let _ = Reflect::set(
+                            &env,
+                            &"error".into(),
+                            &JsValue::from_str(&format!("{e:?}")),
+                        );
+                        let _ = host_port.post_message(&env);
+                    }
+                }
+            });
+        }) as Box<dyn FnMut()>);
+        *pump.borrow_mut() = Some(closure);
+    }
+
+    // The host port's message handler: grant credit, or cancel.
+    let onmessage = {
+        let credit = credit.clone();
+        let cancelled = cancelled.clone();
+        let reader = reader.clone();
+        let pump = pump.clone();
+        Closure::wrap(Box::new(move |event: MessageEvent| {
+            let data = event.data();
+            match get_str(&data, "type").as_deref() {
+                Some("credit") => {
+                    let n = Reflect::get(&data, &"n".into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as u32;
+                    credit.set(credit.get().saturating_add(n));
+                    if let Some(cb) = pump.borrow().as_ref() {
+                        let _ = js_sys::Function::from(cb.as_ref().clone()).call0(&JsValue::NULL);
+                    }
+                }
+                Some("cancel") => {
+                    cancelled.set(true);
+                    let _ = reader.cancel();
+                }
+                _ => {}
+            }
+        }) as Box<dyn FnMut(MessageEvent)>)
+    };
+    host_port.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+    // Keep everything alive for the stream's lifetime. `onmessage` is leaked
+    // (it's the only owner the browser-side port references). It holds an `Rc`
+    // clone of `pump` (the `RefCell<Option<Closure>>`), which keeps the pump
+    // closure itself alive — so the credit handler can still invoke it. Do NOT
+    // take the pump out of the cell: that would empty it and the handler would
+    // find nothing to pump.
+    onmessage.forget();
+}
+
+/// Post a `fetch-error` derived from a partially built `fetch-result` head
+/// (reusing its `id`).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn post_error_obj(port: &MessagePort, head: &Object, message: &str) {
+    if let Some(id) = get_str(head, "id") {
+        post_error(port, "fetch-error", &id, message);
+    }
 }
 
 /// Serialize a `Headers` into a `[[name, value], …]` array. `Headers`
@@ -1372,6 +1634,29 @@ mod tests {
                 sleep(5).await;
             }
             JsValue::UNDEFINED
+        }
+
+        /// Await the first message of any shape (for raw envelopes that
+        /// carry no `type` field, e.g. a bare transferred-body probe).
+        async fn wait_for_any(&self) -> JsValue {
+            for _ in 0..200 {
+                let found = self.messages.borrow().first().cloned();
+                if let Some(found) = found {
+                    return found;
+                }
+                sleep(5).await;
+            }
+            JsValue::UNDEFINED
+        }
+
+        /// How many messages have arrived so far.
+        fn count(&self) -> usize {
+            self.messages.borrow().len()
+        }
+
+        /// Drop collected messages so `wait_for_any` returns the next one.
+        fn clear(&self) {
+            self.messages.borrow_mut().clear();
         }
     }
 
@@ -1930,6 +2215,83 @@ mod tests {
         assert!(
             host.cancelled(),
             "a reload cancels the live host subscription",
+        );
+    }
+
+    /// The credit-based fallback (`drain_body_to_port`, used when a browser
+    /// can't transfer a `ReadableStream`) drains a response body into a
+    /// `MessageChannel`: it hands over a `streamPort`, then posts `chunk`
+    /// messages only as the consumer grants credit, and `close` at EOF. This
+    /// drives that protocol by hand (standing in for the guest's
+    /// ReadableStream) and asserts the bytes reassemble AND that no chunk
+    /// arrives before credit is granted (backpressure holds).
+    #[dialog_common::test]
+    async fn it_drains_a_body_to_a_port_with_credit_backpressure() {
+        use web_sys::{Response, ResponseInit};
+
+        // A body that yields a few chunks. A Response from a string gives one
+        // chunk; that's enough to exercise the credit gate + close.
+        let init = ResponseInit::new();
+        let resp = Response::new_with_opt_str_and_init(Some("sigil-bytes"), &init)
+            .expect("construct response");
+        let body = resp.body().expect("response body");
+
+        // The "guest" side: the head envelope is posted to `client`, carrying
+        // the transferred stream port.
+        let head_channel = MessageChannel::new().expect("head channel");
+        let host_to_guest = head_channel.port1();
+        let guest_in = head_channel.port2();
+        let head_listener = PortListener::attach(&guest_in);
+
+        let head = Object::new();
+        set_v1(&head, "fetch-result");
+        let _ = Reflect::set(&head, &"id".into(), &JsValue::from_str("r1"));
+        drain_body_to_port(&host_to_guest, head, &body);
+
+        // Receive the head + the stream port.
+        let received = head_listener.wait_for("fetch-result").await;
+        let stream_port: MessagePort = Reflect::get(&received, &"streamPort".into())
+            .expect("streamPort")
+            .dyn_into()
+            .expect("a MessagePort");
+        let chunk_listener = PortListener::attach(&stream_port);
+
+        // Backpressure: before granting credit, no chunk must arrive.
+        sleep(30).await;
+        assert!(
+            chunk_listener.count() == 0,
+            "no chunk may be sent before credit is granted",
+        );
+
+        // Grant credit and collect chunks until `close`.
+        let mut collected: Vec<u8> = Vec::new();
+        let mut closed = false;
+        for _ in 0..50 {
+            let grant = Object::new();
+            let _ = Reflect::set(&grant, &"type".into(), &"credit".into());
+            let _ = Reflect::set(&grant, &"n".into(), &JsValue::from_f64(1.0));
+            stream_port.post_message(&grant).expect("grant credit");
+
+            let msg = chunk_listener.wait_for_any().await;
+            chunk_listener.clear();
+            match get_str(&msg, "type").as_deref() {
+                Some("chunk") => {
+                    let chunk = Reflect::get(&msg, &"chunk".into()).expect("chunk");
+                    let bytes = js_sys::Uint8Array::new(&chunk).to_vec();
+                    collected.extend_from_slice(&bytes);
+                }
+                Some("close") => {
+                    closed = true;
+                    break;
+                }
+                other => panic!("unexpected stream message: {other:?}"),
+            }
+        }
+        assert!(closed, "the stream must close after the body is drained");
+        assert_eq!(
+            String::from_utf8(collected).unwrap(),
+            "sigil-bytes",
+            "the drained bytes must reassemble to the body",
         );
     }
 }
