@@ -233,8 +233,9 @@ body {
     --sync-pending: #e8a100;
     --sync-offline: #ff0000;
     --sync-local: #888888;
-    --sync-paused-ink: #333333;
-    --sync-paused-border: #888888;
+    /* Paused reads as muted/inactive — same quiet ink as the "all repos"
+       crumb, dimmer than the other status colours. */
+    --sync-paused: var(--wa-color-text-quiet);
 }
 
 /* Cards and callouts: transparent fill so the dot-grid shows

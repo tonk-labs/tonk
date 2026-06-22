@@ -19,14 +19,16 @@
 //!
 //! Each pass does one of two things, decided by the per-repository pause
 //! preference: a full **sync** (pull then push every upstream branch, then a
-//! status check) when enabled, or a **status-only** check when paused (so the
-//! chip keeps tracking remote drift without touching local/remote state). A
-//! `LocalCommit` additionally registers a durable Background-Sync tag
-//! (`tonk-sync:{repo}`) so the push survives the tab closing, where the
-//! browser supports it.
+//! status check). A `LocalCommit` additionally registers a durable
+//! Background-Sync tag (`tonk-sync:{repo}`) so the push survives the tab
+//! closing, where the browser supports it.
 //!
-//! On by default for every repository; an explicit per-repository `off`
-//! preference pauses it (see [`is_enabled`] / [`set_enabled`]).
+//! Pause is NOT a controller concern: it lives as a durable fact
+//! (`tonk:pause-sync` command → `ReplicaSyncEnabled` on the space branch) that
+//! the worker's `/sync` and `/sync/status` routes read. A paused replica's
+//! sync no-ops and its status reports `paused`, so the controller drives the
+//! cadence and the worker is the single gate — no client-side pause state to
+//! drift from what the chip shows.
 
 use leptos::ev;
 use leptos::logging::log;
@@ -78,47 +80,6 @@ impl Trigger {
             Trigger::LocalCommit => "local-commit",
         }
     }
-}
-
-/// Per-repository `localStorage` key holding the auto-sync pause
-/// preference. Absent means on (the default).
-fn pref_key(repo: &str) -> String {
-    format!("tonk:auto-sync:{repo}")
-}
-
-/// Interpret a stored auto-sync preference. Default on — only an
-/// explicit `"off"` pauses, so a missing or unrecognized value
-/// leaves background sync running.
-fn pref_is_enabled(stored: Option<&str>) -> bool {
-    stored != Some("off")
-}
-
-/// Whether background sync is enabled for `repo` (default on).
-pub fn is_enabled(repo: &str) -> bool {
-    let stored = window()
-        .local_storage()
-        .ok()
-        .flatten()
-        .and_then(|s| s.get_item(&pref_key(repo)).ok().flatten());
-    pref_is_enabled(stored.as_deref())
-}
-
-/// Persist whether background sync is enabled for `repo`, returning
-/// whether the preference was actually written. The running
-/// controller reads this fresh on its next sweep, so the change
-/// takes effect without re-mounting.
-///
-/// A `false` return means the write did not land (localStorage
-/// unavailable or rejected, e.g. quota or a privacy mode). Callers
-/// must not show the new state as in effect when that happens — the
-/// controller still reads the old, unchanged preference.
-#[must_use]
-pub fn set_enabled(repo: &str, enabled: bool) -> bool {
-    let Ok(Some(storage)) = window().local_storage() else {
-        return false;
-    };
-    let value = if enabled { "on" } else { "off" };
-    storage.set_item(&pref_key(repo), value).is_ok()
 }
 
 #[wasm_bindgen]
@@ -187,17 +148,18 @@ impl Controller {
             log!("sync[{}] no active repo — skipped", trigger.tag());
             return;
         };
-        let enabled = is_enabled(&repo);
 
         // OnLoad is a status check only — it shouldn't push on every
         // navigation; the heartbeat and commit triggers drive the actual
-        // sync. Paused repos likewise only check status.
-        if trigger == Trigger::OnLoad || !enabled {
-            log!(
-                "sync[{}] {repo} → status check ({})",
-                trigger.tag(),
-                if enabled { "enabled" } else { "paused" }
-            );
+        // sync. The pause preference is NOT consulted here: it lives as a
+        // durable fact the worker reads, so the worker's `/sync` and
+        // `/sync/status` routes no-op (and report `paused`) for a paused
+        // replica. The controller just drives the cadence; the worker is the
+        // single gate, so the chip's status and the durable preference can't
+        // drift (the localStorage pref this used to read never saw the
+        // command's writes).
+        if trigger == Trigger::OnLoad {
+            log!("sync[{}] {repo} → status check", trigger.tag());
             spawn_local(async move { check_status(&repo).await });
             return;
         }
@@ -326,21 +288,5 @@ mod tests {
     #[dialog_common::test]
     fn it_builds_a_sync_tag_the_worker_can_parse() {
         assert_eq!(sync_tag("home"), "tonk-sync:home");
-    }
-
-    #[dialog_common::test]
-    fn it_defaults_to_enabled_when_no_preference_is_stored() {
-        assert!(pref_is_enabled(None));
-    }
-
-    #[dialog_common::test]
-    fn it_is_disabled_only_for_an_explicit_off() {
-        assert!(!pref_is_enabled(Some("off")));
-    }
-
-    #[dialog_common::test]
-    fn it_stays_enabled_for_on_or_unrecognized_values() {
-        assert!(pref_is_enabled(Some("on")));
-        assert!(pref_is_enabled(Some("anything-else")));
     }
 }
