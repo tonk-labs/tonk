@@ -336,13 +336,13 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let main: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("main branch opens");
+        main.query()
             .select(Query::<tonk_schema::Membership> {
                 this: Term::var("this"),
                 subject: Term::var("subject"),
@@ -354,7 +354,7 @@ pub mod tests {
             .expect("membership query")
     }
 
-    /// Query all `Invitation` rows on `repo`'s meta branch.
+    /// Query all `Invitation` rows on `repo`'s content branch.
     pub(crate) async fn meta_invitations(
         state: &super::AppState,
         repo: &str,
@@ -369,13 +369,13 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let main: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("main branch opens");
+        main.query()
             .select(Query::<tonk_schema::Invitation> {
                 this: Term::var("this"),
                 subject: Term::var("subject"),
@@ -388,7 +388,7 @@ pub mod tests {
             .expect("invitation query")
     }
 
-    /// Query all `InvitedVia` rows on `repo`'s meta branch.
+    /// Query all `InvitedVia` rows on `repo`'s content branch.
     pub(crate) async fn meta_invited_via(
         state: &super::AppState,
         repo: &str,
@@ -403,13 +403,13 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let meta: Branch = repository
-            .branch("meta")
+        let main: Branch = repository
+            .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("meta branch opens");
-        meta.query()
+            .expect("main branch opens");
+        main.query()
             .select(Query::<tonk_schema::InvitedVia> {
                 this: Term::var("this"),
                 invitation: Term::var("invitation"),
@@ -418,6 +418,38 @@ pub mod tests {
             .try_vec()
             .await
             .expect("invited-via query")
+    }
+
+    /// Query all `MemberRole` rows on `repo`'s content branch.
+    pub(crate) async fn meta_member_roles(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::MemberRole> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let main: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("main branch opens");
+        main.query()
+            .select(Query::<tonk_schema::MemberRole> {
+                this: Term::var("this"),
+                role: Term::var("role"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("member-role query")
     }
 
     /// Creates a test repository via `PUT /api/repository/{label}` and

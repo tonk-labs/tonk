@@ -35,7 +35,7 @@ use super::AppState;
 use crate::TonkWorkerError;
 
 /// Name of the meta branch on a repository.
-const META_BRANCH: &str = "meta";
+const CONTENT_BRANCH: &str = "main";
 
 /// Body of `POST /api/repository/:repo/invite`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -183,20 +183,23 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
-    // Record the invitation on the repo's meta branch: the durable
-    // half of the invite. The URL (with its secret fragment) is never
-    // stored — only chain-derivable facts. A failure here fails the
-    // mint; the claim path can self-heal a missing record, but a mint
-    // that can't write its own repo's meta is broken enough to surface.
+    // Record the invitation on the repo's content branch: the durable
+    // half of the invite. The content branch (not meta) because it's the
+    // synced, shared branch — the roster facts replicate to every member.
+    // The URL (with its secret fragment) is never stored — only
+    // chain-derivable facts. A failure here fails the mint; the claim path
+    // can self-heal a missing record, but a mint that can't write its own
+    // repo's content is broken enough to surface.
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let meta = repository
-        .branch(META_BRANCH)
+    let content = repository
+        .branch(CONTENT_BRANCH)
         .open()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to open meta branch: {e}")))?;
-    meta.transaction()
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to open content branch: {e}")))?;
+    content
+        .transaction()
         .assert(invitation)
         .commit()
         .perform(&tonk.operator)

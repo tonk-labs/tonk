@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::Invite;
-use tonk_schema::{Invitation, InvitedVia, Membership, Replica, prelude::DidExt as _};
+use tonk_schema::{Invitation, InvitedVia, MemberRole, Membership, Replica, prelude::DidExt as _};
 
 use super::AppState;
 use super::repository::{
@@ -217,7 +217,7 @@ pub(crate) async fn claim_invite(
                     "replica '{key}' present in profile meta but failed to load: {e}",
                 ))
             })?;
-        record_claim_on_meta(tonk, &repository, &invitation).await?;
+        record_claim(tonk, &repository, &invitation).await?;
         return Ok(JoinOutcome {
             key,
             subject,
@@ -276,7 +276,7 @@ pub(crate) async fn claim_invite(
     // this for log context + the home-demo check (never matched here), so
     // the routing key stands in.
     record_repository_meta(tonk, &repository, &key, &configuration).await?;
-    record_claim_on_meta(tonk, &repository, &invitation).await?;
+    record_claim(tonk, &repository, &invitation).await?;
 
     // `record_repository_meta` stamps the replica `blank` (the create
     // path's "still seeding" state). A joined replica has no local seed
@@ -294,18 +294,23 @@ pub(crate) async fn claim_invite(
     })
 }
 
-/// Record the roster facts for a claimed invite on the repo's meta
+/// Record the roster facts for a claimed invite on the repo's content
 /// branch: the invitation itself (idempotent when the minter already
 /// wrote it; self-healing when the invite predates invitation
-/// records), the claimer's membership, and — first-wins — the
-/// `InvitedVia` provenance stamp.
+/// records), the claimer's membership stamped with the `member` role,
+/// and — first-wins — the `InvitedVia` provenance stamp.
+///
+/// The content branch (not meta) because it's the synced, shared branch:
+/// every member pulls it, so the roster converges across the space. A
+/// roster on the device-local meta branch would only ever show the
+/// claimer's own row.
 ///
 /// First-wins: provenance answers "how did this member first get in",
 /// so an existing stamp is never overwritten by a later claim
 /// (`invitation` is cardinality-one and a re-assert would silently
 /// replace the original inviter). Self-claims (the claimer minted the
 /// invitation) are not provenance and are skipped.
-async fn record_claim_on_meta<C>(
+async fn record_claim<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
     invitation: &Invitation,
@@ -315,15 +320,17 @@ where
 {
     let membership = Membership::new(tonk.profile.did(), repository.did());
 
-    let meta = repository
-        .branch(META_BRANCH)
+    let content = repository
+        .branch(DEFAULT_BRANCH)
         .open()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to open repo meta branch: {e}")))?;
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to open repo content branch: {e}"))
+        })?;
 
-    // First-wins: look for any existing stamp on this membership.
-    let stamps: Vec<InvitedVia> = meta
+    // First-wins: look for any existing provenance stamp on this membership.
+    let stamps: Vec<InvitedVia> = content
         .query()
         .select(Query::<InvitedVia> {
             this: Term::var("this"),
@@ -335,13 +342,31 @@ where
         .map_err(|e| TonkWorkerError::Internal(format!("invited-via query failed: {e:?}")))?;
     let already_stamped = stamps.iter().any(|s| s.this == *membership.this());
 
+    // First-wins on role too: `role` is cardinality-one, so blindly
+    // stamping `member` would DEMOTE a founder who reclaims their own
+    // invite. Only stamp when the membership has no role yet.
+    let roles: Vec<MemberRole> = content
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::var("this"),
+            role: Term::var("role"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("member-role query failed: {e:?}")))?;
+    let already_roled = roles.iter().any(|r| r.this == *membership.this());
+
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
-    let mut transaction = meta
+    let mut transaction = content
         .transaction()
         .assert(invitation.clone())
         .assert(membership.clone());
+    if !already_roled {
+        transaction = transaction.assert(MemberRole::member(membership.this().clone()));
+    }
     if !already_stamped && !self_invite {
         transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
@@ -352,7 +377,7 @@ where
         .commit()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record claim on meta: {e}")))?;
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record claim: {e}")))?;
     Ok(())
 }
 
@@ -702,12 +727,13 @@ mod tests {
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal as _;
     use tonk_invite::{Invite, InviteAudience};
-    use tonk_schema::Invitation;
     use tonk_schema::prelude::DidExt as _;
+    use tonk_schema::{Invitation, MemberRole};
 
     use crate::router::api_router_with_state;
     use crate::router::tests::{
-        meta_invitations, meta_invited_via, meta_memberships, put_repo, test_state,
+        meta_invitations, meta_invited_via, meta_member_roles, meta_memberships, put_repo,
+        test_state,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -798,6 +824,14 @@ mod tests {
             .find(|s| s.this == membership_entity)
             .expect("provenance stamp present");
         assert_eq!(stamp.invitation.0, expected.this);
+
+        // A claimer (not the inviter) joins as a plain member.
+        let roles = meta_member_roles(&state, &key).await;
+        let role = roles
+            .iter()
+            .find(|r| r.this == membership_entity)
+            .expect("role stamped on the claimer's membership");
+        assert_eq!(role.role.0.to_string(), MemberRole::MEMBER);
     }
 
     /// A second claim against the same subject (Renewed) records the
@@ -900,5 +934,14 @@ mod tests {
             !stamps.iter().any(|s| s.this == membership_entity),
             "self-claims must not stamp provenance",
         );
+
+        // The creator is the founder, and reclaiming their own invite must
+        // NOT demote them to member (role is first-wins).
+        let roles = meta_member_roles(&state, &key).await;
+        let role = roles
+            .iter()
+            .find(|r| r.this == membership_entity)
+            .expect("founder role stamped at creation");
+        assert_eq!(role.role.0.to_string(), MemberRole::FOUNDER);
     }
 }

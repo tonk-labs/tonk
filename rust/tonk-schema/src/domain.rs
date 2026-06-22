@@ -341,6 +341,18 @@ pub mod membership {
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.membership")]
     pub struct Invitation(pub Entity);
+
+    /// The member's role in the space — `tonk:founder` for the
+    /// creator, `tonk:member` for everyone who joined via an invite.
+    /// The [`MemberRole`] stamp's payload. Cardinality one — a member
+    /// has a single role, and the join path is first-wins so a founder
+    /// who reclaims their own invite is never demoted.
+    ///
+    /// [`MemberRole`]: crate::MemberRole
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.membership")]
+    #[cardinality(one)]
+    pub struct Role(pub Entity);
 }
 
 /// Attributes that live on [`Invitation`] entities only.

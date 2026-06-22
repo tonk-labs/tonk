@@ -28,7 +28,8 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Membership, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    Branch as MetaBranch, MemberRole, Membership, Remote, Replica, RepositoryName, SpaceStatus,
+    TrackingBranch,
 };
 
 use super::AppState;
@@ -1202,7 +1203,55 @@ pub async fn create_repository(
     // `tonk/repository` concept by the caller's seed step.
     record_repository_meta(tonk, &repository, display_name, configuration).await?;
 
+    // The creator is the space's founder. Recorded on the content branch
+    // (not meta) so the roster replicates to everyone who joins.
+    record_membership(tonk, &repository, MemberRole::FOUNDER)
+        .await
+        .map_err(|e| {
+            RepositoryError::Internal(format!("Failed to record founder membership: {e}"))
+        })?;
+
     Ok(repository)
+}
+
+/// Record the opening profile's [`Membership`] and its [`MemberRole`] on
+/// the repository's content branch.
+///
+/// The content branch (not meta) because it's the synced, shared branch:
+/// every member pulls it, so the roster converges across the space.
+/// `role_uri` is [`MemberRole::FOUNDER`] on create, [`MemberRole::MEMBER`]
+/// on claim. Both facts are content-derived / cardinality-one, so
+/// re-recording (multi-device, repeated joins) is idempotent.
+pub(crate) async fn record_membership<C>(
+    tonk: &TonkState,
+    repository: &Repository<C>,
+    role_uri: &str,
+) -> Result<(), TonkWorkerError>
+where
+    C: Principal + Clone,
+{
+    let membership = Membership::new(tonk.profile.did(), repository.did());
+    let role = if role_uri == MemberRole::FOUNDER {
+        MemberRole::founder(membership.this().clone())
+    } else {
+        MemberRole::member(membership.this().clone())
+    };
+
+    let content = repository
+        .branch(CONTENT_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to open content branch: {e}")))?;
+    content
+        .transaction()
+        .assert(membership)
+        .assert(role)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record membership: {e}")))?;
+    Ok(())
 }
 
 /// Lay down the meta-branch facts and profile-side index for an
@@ -1253,16 +1302,14 @@ where
     // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
-    // The opening profile is a member of this repository: the
-    // creator on the create path, the claimer on the join path.
-    // Content-derived entity, so re-opening is a no-op.
-    let membership = Membership::new(tonk.profile.did(), repository.did());
-
+    // Membership is NOT recorded here. The meta branch is device-local
+    // and never replicates, so a roster on it would only ever show the
+    // local profile. The shared roster lives on the content branch (see
+    // `record_membership`), written by the create + claim paths.
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH))
-        .assert(membership);
+        .assert(replica.branch(META_BRANCH));
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -2732,7 +2779,7 @@ mod tests {
     }
 
     /// Creating a repository records its creator as a member on the
-    /// repo's meta branch.
+    /// repo's content branch, stamped with the founder role.
     #[dialog_common::test]
     async fn it_records_the_founder_membership_on_create() {
         let (_app, state, key) = fresh_repo("test-founder-membership").await;
@@ -2747,5 +2794,13 @@ mod tests {
         // new: exactly the founder's membership.
         assert_eq!(memberships.len(), 1, "exactly the founder membership");
         assert_eq!(memberships[0].member.0, profile_entity);
+
+        // The creator's membership is stamped `founder`.
+        let roles = crate::router::tests::meta_member_roles(&state, &key).await;
+        let role = roles
+            .iter()
+            .find(|r| r.this == *memberships[0].this())
+            .expect("founder role stamped on create");
+        assert_eq!(role.role.0.to_string(), tonk_schema::MemberRole::FOUNDER);
     }
 }
