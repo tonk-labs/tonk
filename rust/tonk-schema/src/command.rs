@@ -94,6 +94,12 @@ pub struct Invite {
     /// The submit event's timestamp — distinguishes one click from the
     /// next so the transient re-fires.
     pub time: crate::domain::command::invite::TimeStamp,
+    /// Per-command marker (read from the share form's `data-invite`) that
+    /// gives `Invite` an attribute no other command carries — so a
+    /// `tonk:pause-sync` transient (identical `{this, time}` shape otherwise)
+    /// does NOT also decode as an invite. See
+    /// [`crate::domain::command::invite::Invite`].
+    pub marker: crate::domain::command::invite::Invite,
 }
 
 /// `Invite` is a [`dialog_capability::Command`]; its handler lives in
@@ -118,6 +124,11 @@ pub struct PauseSync {
     /// The click event's timestamp — distinguishes one click from the next
     /// so the transient re-fires.
     pub time: crate::domain::command::invite::TimeStamp,
+    /// Per-command marker (read from the pause form's `data-pause-sync`) that
+    /// gives `PauseSync` an attribute no other command carries — so this
+    /// transient does NOT also decode as `tonk:invite` (which shares the same
+    /// `{this, time}` shape). See [`crate::domain::command::pause_sync::PauseSync`].
+    pub marker: crate::domain::command::pause_sync::PauseSync,
 }
 
 /// `PauseSync` is a [`dialog_capability::Command`]; its handler lives in

@@ -568,12 +568,16 @@ pub mod tests {
             "claims": [{
                 "op": "assert",
                 "application": {
-                    "parameters": { "time": 1 },
+                    "parameters": { "time": 1, "marker": "tonk:invite" },
                     "predicate": { "kind": "transient", "concept": {
                         "description": "Mint a repo invite — generates a membership keypair and delegation.",
                         "with": {
                             "time": { "as": "Float", "cardinality": "one", "description": "",
                                 "the": "dom.event/time-stamp" },
+                            // Per-command marker — distinguishes `tonk:invite`
+                            // from other same-shape commands (e.g. pause-sync).
+                            "marker": { "as": "Text", "cardinality": "one", "description": "",
+                                "the": "dom.event.current-target.dataset/invite" },
                             "prevent-default": { "cardinality": "one", "description": "",
                                 "the": "dom.event.do/prevent-default" }
                         }

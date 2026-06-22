@@ -152,6 +152,32 @@ pub mod command {
         #[derive(Attribute, Clone, PartialEq, PartialOrd)]
         #[domain("dom.event")]
         pub struct TimeStamp(pub f64);
+
+        /// A per-command marker read from a `data-invite` attribute on the
+        /// share form. Its sole purpose is to give `tonk:invite` an attribute
+        /// no other command carries: a transient command is matched by which
+        /// attributes it carries, and `tonk:invite` + `tonk:pause-sync` would
+        /// otherwise share an identical `{this, time}` shape and BOTH decode
+        /// from one transient (so pausing also minted an invite). A distinct
+        /// marker per command makes their shapes differ, so each transient
+        /// decodes as exactly one command. The derived attribute is
+        /// `dom.event.current-target.dataset/invite`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Invite(pub String);
+    }
+
+    /// Attributes the `tonk:pause-sync` command reads from its submit event.
+    pub mod pause_sync {
+        use super::Attribute;
+
+        /// The per-command marker read from a `data-pause-sync` attribute on
+        /// the pause form — `tonk:pause-sync`'s distinct attribute, so it never
+        /// shares a shape with `tonk:invite` (see [`super::invite::Invite`]).
+        /// The derived attribute is `dom.event.current-target.dataset/pause-sync`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct PauseSync(pub String);
     }
 
     /// Attributes the `tonk:join` command reads from the `<tonk-page>`

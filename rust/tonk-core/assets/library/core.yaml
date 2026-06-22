@@ -235,6 +235,13 @@ command!: &tonk/invite
       description: The submit event's timestamp; makes each click distinct.
       the: dom.event/time-stamp
       as: float
+    marker:
+      description: |
+          Per-command marker read from the share form's `data-invite`. Gives
+          `tonk:invite` an attribute no other command carries, so a
+          `tonk:pause-sync` transient (otherwise an identical {this, time}
+          shape) does not also decode as an invite.
+      the: dom.event.current-target.dataset/invite
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -253,6 +260,12 @@ command!: &tonk/pause-sync
       description: The submit event's timestamp; makes each click distinct.
       the: dom.event/time-stamp
       as: float
+    marker:
+      description: |
+          Per-command marker read from the pause form's `data-pause-sync`.
+          Gives `tonk:pause-sync` an attribute no other command carries, so
+          this transient does not also decode as `tonk:invite`.
+      the: dom.event.current-target.dataset/pause-sync
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -1375,7 +1388,7 @@ view/directory!:
            on the replica, and publishes the matching status. The same form is
            submitted by the chip's resume overlay — the command is a toggle, so
            resume needs no separate command. -->
-      <form id="pause-sync-form" onsubmit=tonk:pause-sync></form>
+      <form id="pause-sync-form" data-pause-sync="tonk:pause-sync" onsubmit=tonk:pause-sync></form>
       <wa-dialog id="pause-sync" label="Pause sync?" class="workspace__pause-dialog">
         <p class="workspace__pause-meta">sync · substrate kill-switch</p>
         <p>Your changes won't reach other devices and agents until you resume. Local edits are buffered; incoming edits are queued.</p>
@@ -1400,7 +1413,7 @@ view/directory!:
            lives only in the worker's session overlay and the assembled
            URL — never in replicated storage. -->
       <wa-dialog id="share-repo" label="Share this repo" class="workspace__share-dialog">
-        <form id="share-form" onsubmit=tonk:invite></form>
+        <form id="share-form" data-invite="tonk:invite" onsubmit=tonk:invite></form>
         <tonk-origin>
           <tonk-display
             entity={subject}
