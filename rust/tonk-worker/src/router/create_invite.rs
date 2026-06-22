@@ -28,10 +28,14 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::{Invite, InviteAudience};
+use tonk_schema::Invitation;
 use url::Url;
 
 use super::AppState;
 use crate::TonkWorkerError;
+
+/// Name of the meta branch on a repository.
+const META_BRANCH: &str = "meta";
 
 /// Body of `POST /api/repository/:repo/invite`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -179,6 +183,26 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
+    // Record the invitation on the repo's meta branch: the durable
+    // half of the invite. The URL (with its secret fragment) is never
+    // stored — only chain-derivable facts. A failure here fails the
+    // mint; the claim path can self-heal a missing record, but a mint
+    // that can't write its own repo's meta is broken enough to surface.
+    let invitation = Invitation::from_chain(&invite.chain)
+        .expect("Invite invariant: chain has a specific subject");
+    let meta = repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to open meta branch: {e}")))?;
+    meta.transaction()
+        .assert(invitation)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
     let url_str = invite
         .to_url(base_url)
         .map_err(|e| TonkWorkerError::Router(format!("failed to serialize invite URL: {e}")))?;
@@ -261,5 +285,66 @@ where
             ))
         }),
         _ => Ok(None),
+    }
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    use tonk_invite::Invite;
+    use tonk_schema::Invitation;
+    use tonk_schema::prelude::DidExt as _;
+
+    use crate::router::tests::{meta_invitations, put_repo, test_state};
+    use crate::router::{CreateInviteResponse, api_router_with_state};
+
+    /// Minting an invite records an `Invitation` on the repo's meta
+    /// branch whose entity matches what a claimer derives from the
+    /// URL, and whose inviter is the minting profile.
+    #[dialog_common::test]
+    async fn it_records_the_invitation_on_mint() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+
+        // Create the repo; address it by the minted routing key.
+        let key = put_repo(&app, "test-mint-invitation").await;
+
+        // Mint an open invite.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/repository/{key}/invite"))
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let minted: CreateInviteResponse = serde_json::from_slice(&bytes).unwrap();
+
+        // The claimer-side derivation from the URL matches the record.
+        let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
+        let expected = Invitation::from_chain(&parsed.chain).unwrap();
+
+        let invitations = meta_invitations(&state, &key).await;
+        assert_eq!(invitations.len(), 1, "exactly the minted invitation");
+        assert_eq!(invitations[0].this, expected.this);
+
+        let profile_entity = {
+            let guard = state.read().await;
+            guard.profile.did().this()
+        };
+        assert_eq!(invitations[0].inviter.0, profile_entity);
     }
 }

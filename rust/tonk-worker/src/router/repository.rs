@@ -28,7 +28,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    Branch as MetaBranch, Membership, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
 };
 
 use super::AppState;
@@ -847,10 +847,16 @@ where
     // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
+    // The opening profile is a member of this repository: the
+    // creator on the create path, the claimer on the join path.
+    // Content-derived entity, so re-opening is a no-op.
+    let membership = Membership::new(tonk.profile.did(), repository.did());
+
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH));
+        .assert(replica.branch(META_BRANCH))
+        .assert(membership);
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -2302,5 +2308,23 @@ mod tests {
             "the live subscription must survive the refresh",
         );
         drop(subscriber);
+    }
+
+    /// Creating a repository records its creator as a member on the
+    /// repo's meta branch.
+    #[dialog_common::test]
+    async fn it_records_the_founder_membership_on_create() {
+        let (_app, state, key) = fresh_repo("test-founder-membership").await;
+
+        let memberships = crate::router::tests::meta_memberships(&state, &key).await;
+        let profile_entity = {
+            let guard = state.read().await;
+            use tonk_schema::prelude::DidExt as _;
+            guard.profile.did().this()
+        };
+        // Every create mints a fresh routing key, so the repo is brand
+        // new: exactly the founder's membership.
+        assert_eq!(memberships.len(), 1, "exactly the founder membership");
+        assert_eq!(memberships[0].member.0, profile_entity);
     }
 }
