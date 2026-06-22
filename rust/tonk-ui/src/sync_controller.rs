@@ -292,6 +292,16 @@ pub fn mount(source: Signal<Option<String>, LocalStorage>) {
             debounced();
         },
     );
+
+    // Publish an initial status as soon as the active repo is known, so the
+    // sync chip shows a real state on load instead of waiting for the first
+    // interval tick (the status overlay is transient, empty on a fresh
+    // load). Re-runs on navigation when `source` changes.
+    Effect::new(move |_| {
+        if let Some(repo) = source.get() {
+            request_status_refresh(&repo);
+        }
+    });
 }
 
 /// Fetch the repository's current branch set and sync every branch

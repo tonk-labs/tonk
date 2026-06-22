@@ -1242,8 +1242,14 @@ view/directory!:
         <span class="workspace__title"><tonk-display entity={subject} model=tonk:repository></tonk-display></span>
         <!-- The sync chip: subscribes to the `tonk:sync` `state:here` overlay
              the worker stamps on THIS space branch (the one the shell is
-             already scoped to), so it needs no extra repository context. -->
-        <tonk-display entity=state:here model=tonk:sync></tonk-display>
+             already scoped to), so it needs no extra repository context. The
+             `no-entity` slot renders a neutral pill until the first status
+             check stamps the overlay (the overlay is transient, so a fresh
+             load starts empty) — without it `<tonk-display>` would dump the
+             missing-instance notation as text. -->
+        <tonk-display entity=state:here model=tonk:sync>
+          <span slot="no-entity" class="workspace__sync" data-sync-status="sync:offline"></span>
+        </tonk-display>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
           <!-- One click both opens the share dialog (`data-dialog`) and
