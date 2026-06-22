@@ -30,6 +30,14 @@ impl BranchSession {
         &self.state.branch
     }
 
+    /// The per-branch transaction lock. A transaction takes it
+    /// (`transactor().lock().await`) around its commit so concurrent
+    /// transactions on this branch serialize instead of racing the head CAS.
+    /// Sync does not take it — see [`BranchState::transactor`].
+    pub fn transactor(&self) -> &tokio::sync::Mutex<()> {
+        self.state.transactor()
+    }
+
     /// A clone of this branch's session overlay, to fold into a read
     /// query via [`QueryLayer::with`](dialog_repository::QueryLayer).
     pub fn overlay(&self) -> Changes {

@@ -42,6 +42,20 @@ pub struct BranchState {
     /// clone the overlay in, so reads must not serialize against each
     /// other; only the rare overlay write takes the exclusive lock.
     overlay: RwLock<Changes>,
+    /// Serializes *transactions* on this branch — concurrent writers (e.g.
+    /// two browser tabs committing through one service worker) line up rather
+    /// than racing the head CAS and failing. Guards nothing but the right to be
+    /// the one committing; the commit's data lives on the branch handle.
+    ///
+    /// An async [`tokio::sync::Mutex`], not `parking_lot`, because the guard is
+    /// held *across* the commit's `await`s. A mutex, not an `RwLock`: only
+    /// writers take it (readers and sync don't), so there is no read side to
+    /// share. Deliberately separate from the reactor's `TonkState` lock and NOT
+    /// taken by sync: sync coordinates with transactions through the head CAS
+    /// (it refreshes and retries on a mismatch), so it must never wait on — or
+    /// block — a transaction. Per branch, so commits to different branches
+    /// proceed in parallel.
+    transactor: tokio::sync::Mutex<()>,
 }
 
 impl BranchState {
@@ -51,7 +65,16 @@ impl BranchState {
             branch,
             subscriptions: Mutex::new(HashMap::new()),
             overlay: RwLock::new(Changes::new()),
+            transactor: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The per-branch transaction lock. A transaction takes it
+    /// (`transactor().lock().await`) around its commit so concurrent
+    /// transactions serialize instead of failing the head CAS. Sync does not
+    /// participate — see the field docs.
+    pub fn transactor(&self) -> &tokio::sync::Mutex<()> {
+        &self.transactor
     }
 
     /// A clone of the current session overlay, to fold into a read query
