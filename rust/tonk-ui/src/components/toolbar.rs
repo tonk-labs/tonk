@@ -2,17 +2,7 @@ use js_sys::{decode_uri_component, encode_uri_component};
 use leptos::prelude::*;
 use leptos_router::hooks::use_location;
 
-use crate::{components::ProfileResource, did};
-
-/// Render a DID as the 8-hex-digit sigil value consumed by
-/// `<tonk-sigil value=...>`. Returns `None` when the DID isn't a
-/// `did:key` we can decode.
-fn did_to_sigil(did: &str) -> Option<String> {
-    did::did_key_prefix(did).map(|bytes| {
-        let n = u32::from_be_bytes(bytes);
-        format!("0x{n:08x}")
-    })
-}
+use crate::components::ProfileResource;
 
 /// Sidebar content slotted into `<wa-page>`'s navigation regions.
 ///
@@ -79,7 +69,7 @@ pub fn TonkToolbar() -> impl IntoView {
     // back to its empty state.
     let profile_sigil = Signal::derive_local(move || {
         let info = profile_resource.get().and_then(|r| r.ok()).flatten()?;
-        did_to_sigil(info.profile.subject.as_ref())
+        tonk_sigil::did_sigil_value(info.profile.subject.as_ref())
     });
 
     view! {
@@ -114,7 +104,7 @@ pub fn TonkToolbar() -> impl IntoView {
                         let is_active = Signal::derive(move || {
                             active_space.get().as_deref() == Some(key_for_active.as_str())
                         });
-                        let sigil = did_to_sigil(&did);
+                        let sigil = tonk_sigil::did_sigil_value(&did);
                         view! {
                             <wa-button
                                 class="sidebar-space"

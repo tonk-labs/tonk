@@ -34,8 +34,9 @@ use url::Url;
 use super::AppState;
 use crate::TonkWorkerError;
 
-/// Name of the meta branch on a repository.
-const META_BRANCH: &str = "meta";
+/// Name of the content branch on a repository — the branch that syncs
+/// across replicas, where roster/governance facts must live.
+const CONTENT_BRANCH: &str = "main";
 
 /// Body of `POST /api/repository/:repo/invite`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -183,20 +184,25 @@ pub async fn create_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to assemble invite: {e}")))?;
 
-    // Record the invitation on the repo's meta branch: the durable
-    // half of the invite. The URL (with its secret fragment) is never
-    // stored — only chain-derivable facts. A failure here fails the
-    // mint; the claim path can self-heal a missing record, but a mint
-    // that can't write its own repo's meta is broken enough to surface.
+    // Record the invitation on the repo's content branch: the durable
+    // half of the invite. The content branch syncs across replicas, so
+    // the record converges where the roster lives. The URL (with its
+    // secret fragment) is never stored — only chain-derivable facts. A
+    // failure here fails the mint; the claim path can self-heal a missing
+    // record, but a mint that can't write its own repo's content branch
+    // is broken enough to surface.
+    //
+    // Route through the *reactor's* cached `main` handle (keyed by the
+    // routing key, the `{repo}` param) rather than a fresh
+    // `repository.branch().open()`: background sync pulls/publishes through
+    // the reactor's cached handle, so a commit on a separate handle leaves
+    // it pinned at a stale head and the next pull's CAS fails forever.
     let invitation = Invitation::from_chain(&invite.chain)
         .expect("Invite invariant: chain has a specific subject");
-    let meta = repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to open meta branch: {e}")))?;
-    meta.transaction()
+    tonk.reactor
+        .repository(&repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
         .assert(invitation)
         .commit()
         .perform(&tonk.operator)
@@ -301,10 +307,10 @@ mod tests {
     use tonk_schema::Invitation;
     use tonk_schema::prelude::DidExt as _;
 
-    use crate::router::tests::{meta_invitations, put_repo, test_state};
+    use crate::router::tests::{content_invitations, put_repo, test_state};
     use crate::router::{CreateInviteResponse, api_router_with_state};
 
-    /// Minting an invite records an `Invitation` on the repo's meta
+    /// Minting an invite records an `Invitation` on the repo's content
     /// branch whose entity matches what a claimer derives from the
     /// URL, and whose inviter is the minting profile.
     #[dialog_common::test]
@@ -337,7 +343,7 @@ mod tests {
         let parsed = Invite::parse_url(minted.url().as_str()).await.unwrap();
         let expected = Invitation::from_chain(&parsed.chain).unwrap();
 
-        let invitations = meta_invitations(&state, &key).await;
+        let invitations = content_invitations(&state, &key).await;
         assert_eq!(invitations.len(), 1, "exactly the minted invitation");
         assert_eq!(invitations[0].this, expected.this);
 

@@ -288,6 +288,54 @@ view!:
       aria-label="Repository name"
     ></tonk-editable>
 
+# ============================================================
+# MEMBERSHIP / ROSTER
+# ============================================================
+
+# The `tonk:membership` concept. The worker writes a Membership fact
+# (member + subject) and a MemberName fact (the member's self-asserted
+# display `name`) onto the repository's content branch `main` on create
+# and on invite-claim, both keyed to the same membership entity. This
+# concept projects them together so a directory view can render the
+# roster. Pinned to `tonk:membership` so `<tonk-display>` can resolve
+# its view. A name is always written alongside the membership, so the
+# cardinality-one `name` field is present for every member.
+concept!: &tonk/membership
+  this: tonk:membership
+  description: A member of a repository, with their published display name.
+  with:
+    subject:
+      description: The repository the membership belongs to.
+      the: xyz.tonk.membership/subject
+      cardinality: one
+      as: entity
+    member:
+      description: The member profile's did:key.
+      the: xyz.tonk.membership/member
+      cardinality: one
+      as: entity
+    name:
+      description: The member's self-asserted display name.
+      the: xyz.tonk.membership/name
+      cardinality: one
+      as: text
+
+# The roster: a directory view over `tonk:membership`. `<tonk-display
+# model=tonk:membership>` (no entity) resolves this. Each membership on
+# the branch becomes one `<tonk-sigil>`; the bare `subject={this}`
+# marker makes the sigil the per-member repeat node, so the wrapping
+# `<div>` renders once as chrome. `did={member}` feeds the shared
+# DID->sigil derivation (matching the other surfaces) and `{name}` is
+# the hover label. Each repo's `main` holds only its own members, so the
+# unfiltered query is already this repo's roster.
+view/directory!:
+  this: id:tonk:membership/roster
+  model: tonk:membership
+  display: |
+    <div class="workspace__roster">
+      <tonk-sigil class="workspace__roster-avatar" subject={this} did={member} title={name}></tonk-sigil>
+    </div>
+
 # A read-only label view kind. Its `display` template lives under a
 # distinct attribute (`xyz.tonk.view/label`) so a model can carry both
 # the editable `tonk:view` banner above AND a plain-text label view
@@ -1071,6 +1119,7 @@ view/directory!:
         <tonk-sync-state></tonk-sync-state>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
+          <tonk-display model=tonk:membership></tonk-display>
           <tonk-share></tonk-share>
         </span>
       </div>

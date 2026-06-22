@@ -31,6 +31,17 @@ pub fn did_key_prefix(did: &str) -> Option<[u8; 4]> {
     Some([key[0], key[1], key[2], key[3]])
 }
 
+/// The sigil hex string for a DID, suitable for `<tonk-sigil value=…>`.
+/// `None` when the input is not a recognizable `did:key:z…`. The same
+/// key always yields the same value, so every surface that renders a
+/// member's sigil agrees.
+pub fn did_sigil_value(did: &str) -> Option<String> {
+    did_key_prefix(did).map(|bytes| {
+        let n = u32::from_be_bytes(bytes);
+        format!("0x{n:08x}")
+    })
+}
+
 /// Parses an unsigned LEB128 varint. Returns `(value, bytes_consumed)`.
 /// Since we only need to skip past it, the value is just informational.
 fn read_varint(bytes: &[u8]) -> Option<(u64, usize)> {
@@ -91,5 +102,14 @@ mod tests {
             read_varint(&[0xed, 0x01, 0xff, 0xff]).map(|(_, n)| n),
             Some(2)
         );
+    }
+
+    #[test]
+    fn sigil_value_is_stable_and_hex() {
+        let did = "did:key:z6MkriCnXHFHhVuyGf5uR7gafNnyjPZxTtFxw94gCx6ynxe8";
+        let v = did_sigil_value(did).expect("parses");
+        assert!(v.starts_with("0x"));
+        assert_eq!(v, did_sigil_value(did).unwrap());
+        assert_eq!(did_sigil_value("not a did"), None);
     }
 }

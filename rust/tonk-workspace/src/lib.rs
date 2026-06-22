@@ -32,8 +32,8 @@ mod sync;
 /// Register the workspace custom elements (`<tonk-sheet>`,
 /// `<tonk-sheet-binder>`, `<tonk-share>`, `<tonk-invite>`, `<tonk-sync-state>` — the
 /// status pill that doubles as the pause/resume button —
-/// `<tonk-default-remote>`, and `<tonk-editable>`) with the page.
-/// Idempotent — calling more than once is harmless.
+/// `<tonk-default-remote>`, and `<tonk-editable>`)
+/// with the page. Idempotent — calling more than once is harmless.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
     sheet::register();

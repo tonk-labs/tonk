@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::Invite;
-use tonk_schema::{Invitation, InvitedVia, Membership, Replica, prelude::DidExt as _};
+use tonk_schema::{Invitation, InvitedVia, MemberName, Membership, Replica, prelude::DidExt as _};
 
 use super::AppState;
 use super::repository::{
@@ -166,7 +166,7 @@ pub async fn join(
                     "replica '{key}' present in profile meta but failed to load: {e}",
                 ))
             })?;
-        record_claim_on_meta(&tonk, &repository, &invitation).await?;
+        record_claim_on_content(&tonk, &repository, &key, &invitation).await?;
         let info = build_repository_info(&tonk, &key, &repository).await;
         return Ok((
             StatusCode::OK,
@@ -225,7 +225,7 @@ pub async fn join(
     // this for log context + the home-demo check (never matched here), so
     // the routing key stands in.
     record_repository_meta(&tonk, &repository, &key, &configuration).await?;
-    record_claim_on_meta(&tonk, &repository, &invitation).await?;
+    record_claim_on_content(&tonk, &repository, &key, &invitation).await?;
 
     // `record_repository_meta` stamps the replica `blank` (the create
     // path's "still seeding" state). A joined replica has no local seed
@@ -243,20 +243,25 @@ pub async fn join(
     ))
 }
 
-/// Record the roster facts for a claimed invite on the repo's meta
+/// Record the roster facts for a claimed invite on the repo's content
 /// branch: the invitation itself (idempotent when the minter already
 /// wrote it; self-healing when the invite predates invitation
 /// records), the claimer's membership, and — first-wins — the
 /// `InvitedVia` provenance stamp.
+///
+/// The roster lives on the content branch (`main`) because that branch
+/// syncs across replicas; the meta branch is local-only, so a roster
+/// written there never converges between the inviter and the claimer.
 ///
 /// First-wins: provenance answers "how did this member first get in",
 /// so an existing stamp is never overwritten by a later claim
 /// (`invitation` is cardinality-one and a re-assert would silently
 /// replace the original inviter). Self-claims (the claimer minted the
 /// invitation) are not provenance and are skipped.
-async fn record_claim_on_meta<C>(
+async fn record_claim_on_content<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
+    key: &str,
     invitation: &Invitation,
 ) -> Result<(), TonkWorkerError>
 where
@@ -264,15 +269,26 @@ where
 {
     let membership = Membership::new(tonk.profile.did(), repository.did());
 
-    let meta = repository
-        .branch(META_BRANCH)
-        .open()
-        .perform(&tonk.operator)
+    // Route both the read and the write through the *reactor's* cached
+    // `main` handle (keyed by the routing key) rather than a fresh
+    // `repository.branch().open()`. Background sync pulls/publishes through
+    // the reactor's cached handle; a commit on a separate handle leaves it
+    // pinned at a stale head, so a later pull's CAS fails forever
+    // (`VersionMismatch`), wedging all `main` sync. Going through the
+    // reactor advances the cached handle and re-polls its subscriptions.
+    let session = tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .acquire(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to open repo meta branch: {e}")))?;
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to open repo content branch: {e}"))
+        })?;
 
     // First-wins: look for any existing stamp on this membership.
-    let stamps: Vec<InvitedVia> = meta
+    let stamps: Vec<InvitedVia> = session
+        .handle()
         .query()
         .select(Query::<InvitedVia> {
             this: Term::var("this"),
@@ -287,10 +303,15 @@ where
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
-    let mut transaction = meta
+    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+    let mut transaction = tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
         .transaction()
         .assert(invitation.clone())
-        .assert(membership.clone());
+        .assert(membership.clone())
+        .assert(member_name);
     if !already_stamped && !self_invite {
         transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
@@ -301,7 +322,9 @@ where
         .commit()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to record claim on meta: {e}")))?;
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to record claim on content: {e}"))
+        })?;
     Ok(())
 }
 
@@ -364,8 +387,9 @@ mod tests {
     use tonk_schema::prelude::DidExt as _;
 
     use crate::router::api_router_with_state;
+    use crate::router::repository::build_repository_info;
     use crate::router::tests::{
-        meta_invitations, meta_invited_via, meta_memberships, put_repo, test_state,
+        content_invitations, content_invited_via, content_memberships, put_repo, test_state,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -431,20 +455,20 @@ mod tests {
 
         assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
 
-        let memberships = meta_memberships(&state, &key).await;
+        let memberships = content_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
         };
         assert!(memberships.iter().any(|m| m.member.0 == profile_entity));
 
-        let invitations = meta_invitations(&state, &key).await;
+        let invitations = content_invitations(&state, &key).await;
         assert!(
             invitations.iter().any(|i| i.this == expected.this),
             "invitation self-healed from the URL",
         );
 
-        let stamps = meta_invited_via(&state, &key).await;
+        let stamps = content_invited_via(&state, &key).await;
         let membership_entity = memberships
             .iter()
             .find(|m| m.member.0 == profile_entity)
@@ -456,6 +480,72 @@ mod tests {
             .find(|s| s.this == membership_entity)
             .expect("provenance stamp present");
         assert_eq!(stamp.invitation.0, expected.this);
+    }
+
+    /// Claiming an invite names the claimer on the repo meta.
+    #[dialog_common::test]
+    async fn it_records_the_claimer_name_on_join() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(30, 31).await;
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let memberships = content_memberships(&state, &key).await;
+        let names = crate::router::tests::content_member_names(&state, &key).await;
+        let profile_entity = {
+            let guard = state.read().await;
+            guard.profile.did().this()
+        };
+        let membership_entity = memberships
+            .iter()
+            .find(|m| m.member.0 == profile_entity)
+            .expect("claimer membership present")
+            .this()
+            .clone();
+        assert_eq!(names.len(), 1, "one name row per membership entity");
+        assert!(
+            names
+                .iter()
+                .any(|n| n.this == membership_entity && !n.name.0.is_empty()),
+            "the claimer is named on their membership",
+        );
+    }
+
+    /// A claimer's member entry records the inviter via provenance.
+    #[dialog_common::test]
+    async fn it_reports_provenance_in_members() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let (url, key) = handcrafted_invite_url(40, 41).await;
+        let expected = {
+            let parsed = Invite::parse_url(&url).await.unwrap();
+            Invitation::from_chain(&parsed.chain).unwrap()
+        };
+
+        assert_eq!(post_join(&app, &url).await, StatusCode::CREATED);
+
+        let info = {
+            let tonk = state.read().await;
+            use dialog_repository::RepositoryExt as _;
+            let repository: dialog_repository::Repository = tonk
+                .profile
+                .repository(&key)
+                .load()
+                .perform(&tonk.operator)
+                .await
+                .expect("repo loads");
+            build_repository_info(&tonk, &key, &repository).await
+        };
+
+        let me = info
+            .members
+            .iter()
+            .find(|m| m.is_self)
+            .expect("self present");
+        assert_eq!(
+            me.invited_by.as_deref(),
+            Some(expected.inviter.0.to_string().as_str()),
+            "claimer records the invitation's inviter as provenance",
+        );
     }
 
     /// A second claim against the same subject (Renewed) records the
@@ -480,7 +570,7 @@ mod tests {
 
         // The Renewed path still records the second invitation, even
         // though it leaves provenance pinned to the first.
-        let invitations = meta_invitations(&state, &key).await;
+        let invitations = content_invitations(&state, &key).await;
         assert!(
             invitations.iter().any(|i| i.this == expected_a.this),
             "first invitation recorded",
@@ -490,10 +580,10 @@ mod tests {
             "renewed join records the second invitation too",
         );
 
-        let stamps = meta_invited_via(&state, &key).await;
+        let stamps = content_invited_via(&state, &key).await;
         // Exactly one stamp for this membership, still pointing at the
         // first invitation.
-        let memberships = meta_memberships(&state, &key).await;
+        let memberships = content_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
@@ -542,7 +632,7 @@ mod tests {
         assert_eq!(post_join(&app, minted.url().as_str()).await, StatusCode::OK);
 
         // The claimer's own membership exists, but no stamp on it.
-        let memberships = meta_memberships(&state, &key).await;
+        let memberships = content_memberships(&state, &key).await;
         let profile_entity = {
             let guard = state.read().await;
             guard.profile.did().this()
@@ -553,7 +643,7 @@ mod tests {
             .expect("founder membership present")
             .this()
             .clone();
-        let stamps = meta_invited_via(&state, &key).await;
+        let stamps = content_invited_via(&state, &key).await;
         assert!(
             !stamps.iter().any(|s| s.this == membership_entity),
             "self-claims must not stamp provenance",

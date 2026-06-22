@@ -14,11 +14,14 @@ crate-type = ["cdylib", "rlib"]
 # state-chip mapping is unit-tested natively; the DOM elements that
 # consume it are wasm-only.
 tonk-schema = { workspace = true }
+# serde + serde_json: the pure sync-state mapping is parsed and
+# unit-tested natively, so these are base (all-target) deps.
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 custom-elements = { workspace = true }
 js-sys = { workspace = true }
-serde_json = { workspace = true }
 tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 wasm-bindgen = { workspace = true }
