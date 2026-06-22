@@ -576,7 +576,7 @@ pub mod tests {
                                 "the": "dom.event/time-stamp" },
                             // Per-command marker — distinguishes `tonk:invite`
                             // from other same-shape commands (e.g. pause-sync).
-                            "marker": { "as": "Text", "cardinality": "one", "description": "",
+                            "marker": { "as": "Entity", "cardinality": "one", "description": "",
                                 "the": "dom.event.current-target.dataset/invite" },
                             "prevent-default": { "cardinality": "one", "description": "",
                                 "the": "dom.event.do/prevent-default" }

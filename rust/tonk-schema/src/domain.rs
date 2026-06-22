@@ -142,6 +142,7 @@ pub mod command {
     /// which makes each invocation a distinct transient so repeated Share
     /// clicks reliably re-fire the handler (and rotate the credential).
     pub mod invite {
+        use super::super::Entity;
         use super::Attribute;
 
         /// The event timestamp, read from the share form's submit event
@@ -162,22 +163,28 @@ pub mod command {
         /// marker per command makes their shapes differ, so each transient
         /// decodes as exactly one command. The derived attribute is
         /// `dom.event.current-target.dataset/invite`.
+        /// An `Entity`, not a `String`: the marker value (`tonk:invite`) has a
+        /// `:`, and the worker's untagged `Value` decode reads any `:`-bearing
+        /// string as an `Entity`. A `String` field would then fail to decode
+        /// the fact (`Entity(tonk:invite)` ≠ Text).
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.dataset")]
-        pub struct Invite(pub String);
+        pub struct Invite(pub Entity);
     }
 
     /// Attributes the `tonk:pause-sync` command reads from its submit event.
     pub mod pause_sync {
+        use super::super::Entity;
         use super::Attribute;
 
         /// The per-command marker read from a `data-pause-sync` attribute on
         /// the pause form — `tonk:pause-sync`'s distinct attribute, so it never
         /// shares a shape with `tonk:invite` (see [`super::invite::Invite`]).
         /// The derived attribute is `dom.event.current-target.dataset/pause-sync`.
+        /// An `Entity` for the same reason as the invite marker.
         #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
         #[domain("dom.event.current-target.dataset")]
-        pub struct PauseSync(pub String);
+        pub struct PauseSync(pub Entity);
     }
 
     /// Attributes the `tonk:join` command reads from the `<tonk-page>`

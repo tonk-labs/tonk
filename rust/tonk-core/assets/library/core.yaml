@@ -242,6 +242,7 @@ command!: &tonk/invite
           `tonk:pause-sync` transient (otherwise an identical {this, time}
           shape) does not also decode as an invite.
       the: dom.event.current-target.dataset/invite
+      as: entity
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
@@ -266,6 +267,7 @@ command!: &tonk/pause-sync
           Gives `tonk:pause-sync` an attribute no other command carries, so
           this transient does not also decode as `tonk:invite`.
       the: dom.event.current-target.dataset/pause-sync
+      as: entity
     prevent-default:
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
