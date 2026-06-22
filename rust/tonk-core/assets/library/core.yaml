@@ -1137,6 +1137,32 @@ concept!: &tonk/replica
       the: dialog.origin/profile
       as: entity
 
+# This device's live sync state. Defined here AND in profile.yaml: the
+# shell view below references `model: tonk:sync` so the concept must exist
+# on the SPACE branch (this file) to evaluate; the chip's actual
+# subscription + the worker's status overlay live on the PROFILE meta branch
+# (profile.yaml), read under a `<tonk-repository profile>` context. Keyed on
+# the well-known singleton `state:here` so the chip needs no replica entity.
+concept!: &tonk/sync
+  this: tonk:sync
+  description: This device's sync state for the space in scope.
+  with:
+    status:
+      description: |
+          Live observation — sync:idle | sync:push | sync:pull | sync:offline.
+      the: xyz.tonk.sync/status
+      cardinality: one
+      as: entity
+
+# The sync chip — the default view for `model: tonk:sync`. A pill whose dot
+# colour + label come from `status` via CSS (rules in the shell topbar's
+# <style>). Pure presentation; the worker owns the state.
+view!: &sync/chip
+  this: id:tonk:sync/chip
+  model: tonk:sync
+  display: |
+    <span class="workspace__sync" data-sync-status={status}></span>
+
 # what's up
 view/directory!:
   this: tonk:shell
@@ -1177,16 +1203,47 @@ view/directory!:
           display: none !important;
         }
 
+        /* Sync chip — a pill whose dot colour + label come from the
+           `data-sync-status` the `tonk:sync` view stamps. The worker owns
+           the value (sync:idle | sync:push | sync:pull | sync:offline). */
+        .workspace__sync {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--wa-space-xs);
+          padding: var(--wa-space-3xs) var(--wa-space-s);
+          border-radius: 999px;
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-quiet);
+          background: var(--wa-color-neutral-fill-quiet);
+        }
+        .workspace__sync::before {
+          content: "";
+          inline-size: 7px;
+          block-size: 7px;
+          border-radius: 50%;
+          background: var(--wa-color-text-quiet);
+        }
+        .workspace__sync::after { content: "offline"; }
+        .workspace__sync[data-sync-status="sync:idle"]::before {
+          background: var(--wa-color-success-fill-loud, #22c55e);
+        }
+        .workspace__sync[data-sync-status="sync:idle"]::after { content: "synced"; }
+        .workspace__sync[data-sync-status="sync:push"]::before,
+        .workspace__sync[data-sync-status="sync:pull"]::before {
+          background: var(--wa-color-brand-fill-loud, #a855f7);
+        }
+        .workspace__sync[data-sync-status="sync:push"]::after,
+        .workspace__sync[data-sync-status="sync:pull"]::after { content: "syncing…"; }
+
       </style>
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
         <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
         <span class="workspace__title"><tonk-display entity={subject} model=tonk:repository></tonk-display></span>
-        <!-- The sync chip reads `tonk:sync` (the `state:here` overlay) off
-             the PROFILE meta branch — not the space branch this shell is
-             scoped to — so it carries its own `<tonk-repository profile>`
-             context. The worker stamps the live status there. -->
-        <tonk-repository profile><tonk-branch name="meta"><tonk-display entity=state:here model=tonk:sync></tonk-display></tonk-branch></tonk-repository>
+        <!-- The sync chip: subscribes to the `tonk:sync` `state:here` overlay
+             the worker stamps on THIS space branch (the one the shell is
+             already scoped to), so it needs no extra repository context. -->
+        <tonk-display entity=state:here model=tonk:sync></tonk-display>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
           <!-- One click both opens the share dialog (`data-dialog`) and

@@ -45,22 +45,27 @@ fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
     }
 }
 
-/// Name of the profile repository's meta branch (where the sync-state
-/// overlay lives).
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-const META_BRANCH: &str = "meta";
-
-/// Publish the live sync `status` to the profile meta branch's OVERLAY,
-/// keyed on the fixed `state:here` entity (`Replica::SYNC_STATE_HERE`).
+/// Publish the live sync `status` to the SPACE branch's OVERLAY, keyed on
+/// the fixed `state:here` entity (`Replica::SYNC_STATE_HERE`).
 ///
 /// The status is a transient observation (idle / push / pull / offline), so
 /// it goes to the overlay — never persisted, never replicated — and folds
-/// into the chip's `tonk/sync` subscription. A well-known singleton entity
-/// (like `tonk:join/status`) so the chip subscribes without resolving this
-/// device's replica entity; one space is in scope per page. Mirrors
-/// `set_replica_status` but overlay-only: no commit.
+/// into the chip's `tonk:sync` subscription. A well-known singleton entity
+/// (like `tonk:join/status`); one space is in scope per page, so the chip
+/// needs no replica entity.
+///
+/// It lives on the SPACE branch (the one the page is showing), not the
+/// profile meta branch: a sealed-guest chip can only reach the branch the
+/// `<tonk-portal>` is mounted under (the bridge annotates the outer
+/// `<tonk-repository name={space}>` context), so the overlay must be where
+/// the chip already queries. Overlay-only: no commit.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn publish_sync_status(tonk: &crate::worker::TonkState, state: SyncState) {
+async fn publish_sync_status(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    state: SyncState,
+) {
     use std::sync::Arc;
     use tonk_schema::{Replica, ReplicaSyncStatus};
 
@@ -71,14 +76,14 @@ async fn publish_sync_status(tonk: &crate::worker::TonkState, state: SyncState) 
 
     let session = match tonk
         .reactor
-        .profile_repository()
-        .branch(META_BRANCH)
+        .repository(repo)
+        .branch(branch)
         .acquire(&tonk.operator)
         .await
     {
         Ok(session) => session,
         Err(e) => {
-            log!("publish_sync_status: failed to acquire profile meta branch: {e}");
+            log!("publish_sync_status: failed to acquire {repo}/{branch}: {e}");
             return;
         }
     };
@@ -356,7 +361,13 @@ pub async fn sync_status(
 
     if handle.upstream().is_none() {
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-        publish_sync_status(&tonk_state, SyncState::NoUpstream).await;
+        publish_sync_status(
+            &tonk_state,
+            &params.repo,
+            &params.branch,
+            SyncState::NoUpstream,
+        )
+        .await;
         return Ok(Json(SyncStatusResponse {
             state: SyncState::NoUpstream,
             local,
@@ -375,7 +386,7 @@ pub async fn sync_status(
     // chip's subscription reflects it — the same path the HTTP response
     // carries, now also a fact the UI can subscribe to.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    publish_sync_status(&tonk_state, sync_state).await;
+    publish_sync_status(&tonk_state, &params.repo, &params.branch, sync_state).await;
     Ok(Json(SyncStatusResponse {
         state: sync_state,
         local,
