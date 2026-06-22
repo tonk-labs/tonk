@@ -498,6 +498,15 @@ tonk-roster {
 .workspace__roster-avatar:last-child {
     margin-inline-end: 0;
 }
+/* The roster renders through a `<tonk-display>` → `<tonk-view>` pair
+   whose line boxes would otherwise sit the avatar cluster above the
+   topbar's centerline. Collapse the wrappers (as `.workspace__title`
+   does) so `.workspace__roster` is laid out — and vertically centered —
+   directly by the `.workspace__actions` flex row. */
+.workspace__actions tonk-display,
+.workspace__actions tonk-view {
+    display: contents;
+}
 .workspace__spacer {
     flex: 1;
 }
