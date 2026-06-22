@@ -70,8 +70,13 @@ pub async fn transact(
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact repo={}, branch={}", path.repo, path.branch);
+    // A read lock on `TonkState` — concurrent transactions and syncs don't
+    // serialize on the outer lock. Transactions instead serialize on the
+    // per-branch transactor lock (taken inside `transact_on_branch`); sync
+    // coordinates via the head CAS. So a tab's commit never blocks behind an
+    // in-flight sync (the bug that made pause-mid-sync feel dead).
     let (response, transients) = {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         let tonk_branch = tonk_state
             .reactor
             .repository(&path.repo)
@@ -105,7 +110,7 @@ pub async fn transact_profile(
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact profile branch={}", path.branch);
     let (response, transients) = {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
@@ -166,6 +171,10 @@ async fn transact_on_branch<'a>(
     let transients = builder.transients.clone();
     let to_dispatch = (!transients.is_empty()).then_some(transients);
 
+    // The per-branch transactor lock that serializes commits is taken INSIDE
+    // the reactor's `commit().perform()` (so no commit path — route or direct
+    // handler — can sidestep it). Taking it here too would deadlock: the
+    // mutex is not re-entrant.
     let revision_after = builder
         .commit()
         .perform(&tonk_state.operator)
