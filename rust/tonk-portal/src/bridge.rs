@@ -134,11 +134,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
-    // Same-origin GET performed by the HOST: the opaque guest can't reach a
+    // Same-origin fetch performed by the HOST: the opaque guest can't reach a
     // same-origin, SW-routed `/api/...` endpoint itself. The host fetches the
-    // path on its real origin and returns the response body text. Used by the
-    // sync chip for `/api/.../sync/status`.
-    fetch:function(path){return call("fetch",{path:path});},
+    // path on its real origin and TRANSFERS the response stream back; we
+    // rebuild a real `Response`. See the `window.fetch` override below — this
+    // is its transport, and host-relative URLs route through here.
+    fetch:function(path){
+      return ready.then(function(){
+        return new Promise(function(resolve,reject){
+          var id=mint(); pending.set(id,{resolve:resolve,reject:reject});
+          port.postMessage({v:1,type:"fetch",id:id,path:path});
+        });
+      });
+    },
     subscribe:function(body){
       var id=mint();
       return new ReadableStream({
@@ -164,7 +172,13 @@ const BOOTSTRAP_JS: &str = r#"(function(){
       }
       case "fetch-result": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
-        h.resolve(env.body); return;
+        // Rebuild a real Response from the transferred body stream + the
+        // status/headers the host captured. `env.body` is a ReadableStream
+        // (transferred) or undefined for a bodyless response.
+        var headers=new Headers(env.headers||[]);
+        h.resolve(new Response(env.body!==undefined?env.body:null,
+          {status:env.status,statusText:env.statusText,headers:headers}));
+        return;
       }
       case "query-error": case "transact-error": case "fetch-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
@@ -181,6 +195,23 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     }
   };
   window.tonk=tonk;
+
+  // Override window.fetch so guest code (and our own loaders) can fetch
+  // same-origin, SW-routed resources the opaque iframe can't reach itself.
+  // Host-relative requests (`/…`, not `//`) route through `tonk.fetch`, which
+  // has the host perform the real fetch and transfer the response stream back;
+  // everything else (absolute cross-origin, `blob:`, `data:`) passes through
+  // to the native fetch — notably the runtime bootstrap's own blob-URL module
+  // imports, which must never be intercepted.
+  var nativeFetch=window.fetch.bind(window);
+  window.fetch=function(input,init){
+    var url=(typeof input==="string")?input:(input&&input.url)||"";
+    if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
+      return tonk.fetch(url);
+    }
+    return nativeFetch(input,init);
+  };
+
   parent.postMessage({v:1,type:"hello"},"*",[ch.port2]);
 })();"#;
 
@@ -823,10 +854,18 @@ fn handle_navigate(data: &JsValue) {
     }
 }
 
-/// Perform a same-origin GET on the host and post the body back. The opaque
-/// guest can't reach a same-origin, SW-routed `/api/...` endpoint itself, so
-/// it asks the host. Restricted to host-relative paths (`/…`, not `//`) so
-/// the guest can't drive the host to fetch arbitrary cross-origin URLs.
+/// Perform a same-origin fetch on the host and stream the response back. The
+/// opaque guest can't reach a same-origin, SW-routed `/api/...` endpoint
+/// itself, so it asks the host (which IS same-origin). Restricted to
+/// host-relative paths (`/…`, not `//`) so the guest can't drive the host to
+/// fetch arbitrary cross-origin URLs.
+///
+/// The host does its own `fetch`, then posts a `fetch-result` envelope back
+/// over the port carrying the status, status text, headers, and the response
+/// body's `ReadableStream` — TRANSFERRED (not copied) so the bytes never
+/// round-trip through wasm. The guest rebuilds a real streaming `Response`
+/// from those, so its overridden `window.fetch` is faithful (`.text()`,
+/// `.blob()`, `.arrayBuffer()`, `.body` all work) and binary-safe.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
     let Some(id) = get_str(data, "id") else {
@@ -840,17 +879,58 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
     };
     let port = port.clone();
     spawn_local(async move {
-        match fetch_text(&path).await {
-            Ok(body) => {
-                let env = Object::new();
-                set_v1(&env, "fetch-result");
-                let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(&id));
-                let _ = Reflect::set(&env, &"body".into(), &JsValue::from_str(&body));
-                let _ = port.post_message(&env);
-            }
+        match fetch(&path).await {
+            Ok(resp) => post_fetch_response(&port, &id, &resp),
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
     });
+}
+
+/// Post a `fetch-result` envelope carrying the response status + headers and
+/// the body `ReadableStream`, transferring the stream so it crosses by
+/// ownership. A null body (e.g. a 204) sends no stream; the guest builds a
+/// bodyless `Response`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Response) {
+    let env = Object::new();
+    set_v1(&env, "fetch-result");
+    let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(id));
+    let _ = Reflect::set(
+        &env,
+        &"status".into(),
+        &JsValue::from_f64(resp.status() as f64),
+    );
+    let _ = Reflect::set(
+        &env,
+        &"statusText".into(),
+        &JsValue::from_str(&resp.status_text()),
+    );
+    // Headers as an array of [name, value] pairs — structured-clonable and
+    // re-hydrated into a `Headers` on the guest side.
+    let _ = Reflect::set(&env, &"headers".into(), &headers_to_array(&resp.headers()));
+
+    let transfer = js_sys::Array::new();
+    if let Some(body) = resp.body() {
+        let _ = Reflect::set(&env, &"body".into(), &body);
+        transfer.push(&body);
+    }
+    let _ = port.post_message_with_transferable(&env, &transfer);
+}
+
+/// Serialize a `Headers` into a `[[name, value], …]` array. `Headers`
+/// isn't structured-clonable, but this pair array is, and the guest
+/// reconstructs a `Headers` from it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn headers_to_array(headers: &web_sys::Headers) -> js_sys::Array {
+    let out = js_sys::Array::new();
+    let iter = js_sys::try_iter(headers).ok().flatten();
+    if let Some(iter) = iter {
+        for entry in iter.flatten() {
+            // Each entry is a `[name, value]` array already.
+            out.push(&entry);
+        }
+    }
+    out
 }
 
 // --- Query-body construction --------------------------------------

@@ -26,6 +26,12 @@ pub fn start() {
     tonk_guest::guest_host::register();
 
     tonk_sigil::Sigil::install();
+    // The opaque guest can't mask sigils against a cross-origin `/sigils.svg`
+    // sprite (CSS `url()` is CORS-blocked at a null origin). Fetch the sprite
+    // bytes over the host bridge (the overridden `window.fetch` routes
+    // host-relative URLs there), mint a same-origin blob URL, and install it
+    // as the sigil default — re-rendering any sigils that already painted.
+    load_sigil_sprite();
     tonk_display::register();
     tonk_board::register();
     tonk_workspace::register();
@@ -35,6 +41,42 @@ pub fn start() {
     // it nests cleanly since the canvas portal is plain `content=` (a
     // self-contained srcdoc), needing no runtime injection or network.
     tonk_portal::register();
+}
+
+/// Fetch the sigil sprite over the host bridge, mint a same-origin blob URL,
+/// and install it as the global sigil sprite default. Best-effort: any
+/// failure leaves the build-time `/sigils.svg` default in place (which a
+/// sealed guest can't load, so sigils render blank — acceptable degradation,
+/// not a crash).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn load_sigil_sprite() {
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+    use web_sys::{Blob, Response};
+
+    spawn_local(async move {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        // Routes through the overridden `window.fetch` → host bridge.
+        let Ok(resp) = JsFuture::from(window.fetch_with_str("/sigils.svg")).await else {
+            return;
+        };
+        let Ok(resp) = resp.dyn_into::<Response>() else {
+            return;
+        };
+        let Ok(blob_promise) = resp.blob() else {
+            return;
+        };
+        let Ok(blob) = JsFuture::from(blob_promise).await else {
+            return;
+        };
+        let Ok(blob) = blob.dyn_into::<Blob>() else {
+            return;
+        };
+        if let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) {
+            tonk_sigil::set_default_sprite_href(&url);
+        }
+    });
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
