@@ -14,9 +14,8 @@ crate-type = ["cdylib", "rlib"]
 # state-chip mapping is unit-tested natively; the DOM elements that
 # consume it are wasm-only.
 tonk-schema = { workspace = true }
-# Sigil derivation + the roster member parser, both unit-tested
-# natively, so these are base (all-target) deps as well.
-tonk-sigil = { workspace = true }
+# serde + serde_json: the pure sync-state mapping is parsed and
+# unit-tested natively, so these are base (all-target) deps.
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 

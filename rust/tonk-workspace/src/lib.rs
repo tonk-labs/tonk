@@ -21,9 +21,6 @@ mod default_remote;
 mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod invite;
-// Declared on every target: the pure roster-member parser is
-// unit-tested natively; the custom element inside is wasm-gated.
-mod roster;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod share;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -35,7 +32,7 @@ mod sync;
 /// Register the workspace custom elements (`<tonk-sheet>`,
 /// `<tonk-sheet-binder>`, `<tonk-share>`, `<tonk-invite>`, `<tonk-sync-state>` — the
 /// status pill that doubles as the pause/resume button —
-/// `<tonk-roster>`, `<tonk-default-remote>`, and `<tonk-editable>`)
+/// `<tonk-default-remote>`, and `<tonk-editable>`)
 /// with the page. Idempotent — calling more than once is harmless.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub fn register() {
@@ -44,7 +41,6 @@ pub fn register() {
     share::register();
     invite::register();
     sync::register();
-    roster::register();
     default_remote::register();
     editable::register();
 }
