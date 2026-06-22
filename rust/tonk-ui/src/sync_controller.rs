@@ -6,20 +6,27 @@
 //! Push. The manual buttons in [`crate::components::space`] stay as
 //! they are; this sits on top of the same `/sync` routes.
 //!
-//! Triggers, all funneling into one re-entrancy-guarded sweep:
+//! Every trigger funnels through one coordinator, [`run`], tagged with a
+//! named [`Trigger`] reason and logged so you can always tell what fired a
+//! sync (or status check) and why. The triggers:
 //!
-//! - a steady [`TICK_INTERVAL_MS`] interval;
-//! - the window coming back `online`;
-//! - the tab becoming visible again;
-//! - a local commit, debounced by [`COMMIT_DEBOUNCE_MS`] so a burst
-//!   of edits collapses into a single sync.
+//! - [`Trigger::OnLoad`] — the active repo became known (load / navigation);
+//! - [`Trigger::Interval`] — a steady [`TICK_INTERVAL_MS`] heartbeat;
+//! - [`Trigger::Online`] — the window came back `online`;
+//! - [`Trigger::Refocus`] — the tab became visible again;
+//! - [`Trigger::LocalCommit`] — a local commit landed, debounced by
+//!   [`COMMIT_DEBOUNCE_MS`] so a burst of edits collapses into one pass.
 //!
-//! On by default for every repository; an explicit per-repository
-//! `off` preference pauses it (see [`is_enabled`] / [`set_enabled`]).
-//! Pausing stops pull/push — but the background triggers still fetch
-//! the upstream head read-only on each tick, so the sync-state badges
-//! keep showing where local sits relative to remote. A frozen badge
-//! would make the pause indicator useless.
+//! Each pass does one of two things, decided by the per-repository pause
+//! preference: a full **sync** (pull then push every upstream branch, then a
+//! status check) when enabled, or a **status-only** check when paused (so the
+//! chip keeps tracking remote drift without touching local/remote state). A
+//! `LocalCommit` additionally registers a durable Background-Sync tag
+//! (`tonk-sync:{repo}`) so the push survives the tab closing, where the
+//! browser supports it.
+//!
+//! On by default for every repository; an explicit per-repository `off`
+//! preference pauses it (see [`is_enabled`] / [`set_enabled`]).
 
 use leptos::ev;
 use leptos::logging::log;
@@ -42,16 +49,36 @@ const COMMIT_DEBOUNCE_MS: f64 = 1_000.0;
 /// controller listens for it to sync shortly after a write.
 pub const COMMITTED_EVENT: &str = "tonk:committed";
 
-/// DOM event the controller dispatches on `window` to ask the active
-/// repository's branch rows to re-read their read-only sync status.
-/// Fired on *every* sweep — after a successful `Sync` sweep as well as
-/// on the paused tick — so the sync-state badges keep tracking remote
-/// drift whether or not anything is being pulled or pushed, and a
-/// consumer that reads status off this event (rather than the SSE
-/// `watch` layer) stays current. The active repository name rides in
-/// the event's `detail` as a plain string so a consumer can ignore
-/// events for other repositories.
-pub const STATUS_REFRESH_EVENT: &str = "tonk:status-refresh";
+/// Why the controller is running this pass. Every sync/status action
+/// flows through [`run`] tagged with one of these, and is logged
+/// (`sync[{reason}] …`) so you can always tell what fired it and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trigger {
+    /// The active repository just became known (load / navigation).
+    OnLoad,
+    /// The steady [`TICK_INTERVAL_MS`] heartbeat.
+    Interval,
+    /// The window came back `online`.
+    Online,
+    /// The tab became visible again.
+    Refocus,
+    /// A local commit landed (debounced). This is the only trigger that
+    /// also registers a durable background sync.
+    LocalCommit,
+}
+
+impl Trigger {
+    /// Short tag used in log lines: `sync[interval] …`.
+    fn tag(self) -> &'static str {
+        match self {
+            Trigger::OnLoad => "on-load",
+            Trigger::Interval => "interval",
+            Trigger::Online => "online",
+            Trigger::Refocus => "refocus",
+            Trigger::LocalCommit => "local-commit",
+        }
+    }
+}
 
 /// Per-repository `localStorage` key holding the auto-sync pause
 /// preference. Absent means on (the default).
@@ -113,84 +140,26 @@ fn sync_tag(repo: &str) -> String {
     format!("tonk-sync:{repo}")
 }
 
-/// Whether this browser offers one-shot Background Sync. Chromium
-/// does; Safari and Firefox don't, and there the commit path uses the
-/// in-page sweep instead. A seam so [`commit_action`] is unit-testable
-/// without a browser.
+/// Whether this browser offers one-shot Background Sync. Chromium does;
+/// Safari and Firefox don't, and there a `LocalCommit` skips the durable
+/// registration and just syncs in-page.
 fn sync_manager_available() -> bool {
     js_sys::Reflect::has(&window(), &JsValue::from_str("SyncManager")).unwrap_or(false)
 }
 
-/// What the debounced post-commit trigger should do, given whether
-/// auto-sync is enabled for the repo and whether the Background Sync
-/// API is available.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CommitAction {
-    /// Auto-sync is paused — do nothing.
-    Skip,
-    /// Register a durable one-shot background sync; the user agent
-    /// owns the retry from there, even after the tab is gone.
-    Register,
-    /// Run the in-page sweep now — the polyfill where the Background
-    /// Sync API is absent.
-    Sweep,
-}
-
-/// Decide the post-commit action. Pure so the enabled/disabled and
-/// available/absent branches are testable without a browser.
-fn commit_action(enabled: bool, sync_manager_available: bool) -> CommitAction {
-    if !enabled {
-        CommitAction::Skip
-    } else if sync_manager_available {
-        CommitAction::Register
-    } else {
-        CommitAction::Sweep
+/// Run one read-only status check for `repo`'s main branch: classify local
+/// vs upstream and stamp the `tonk:sync` `state:here` overlay the chip
+/// subscribes to. Logs the resulting state.
+async fn check_status(repo: &str) {
+    match api::sync_status(repo, "main").await {
+        Ok(status) => log!("sync[status] {repo} → {:?}", status.state),
+        Err(err) => log!("sync[status] {repo} check failed: {err}"),
     }
 }
 
-/// What a background trigger (interval, `online`, `visibilitychange`)
-/// should do, given whether auto-sync is enabled for the repo.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SweepAction {
-    /// Auto-sync is on — pull then push every upstream branch.
-    Sync,
-    /// Auto-sync is paused — don't touch local or remote state, but
-    /// still fetch the upstream head read-only so the sync-state badges
-    /// keep reflecting where local sits relative to remote.
-    RefreshStatus,
-}
-
-/// Decide what a background trigger should do. Pure so the
-/// enabled/paused branches are testable without a browser.
-fn sweep_action(enabled: bool) -> SweepAction {
-    if enabled {
-        SweepAction::Sync
-    } else {
-        SweepAction::RefreshStatus
-    }
-}
-
-/// Ask the active repository's branch rows to re-read their read-only
-/// sync status, by dispatching [`STATUS_REFRESH_EVENT`] on `window`
-/// with `repo` in the event detail. The rows perform the actual
-/// upstream fetch (via the read-only `sync/status` route), so a paused
-/// repository still learns when remote moves out from under it.
-fn request_status_refresh(repo: &str) {
-    // Hit the read-only status route, which classifies the branch against
-    // its upstream and stamps the live `tonk/sync` status into the overlay
-    // the chip subscribes to. (Formerly this dispatched a window event the
-    // imperative `<tonk-sync-state>` chip listened to and re-fetched on; the
-    // chip is now a `<tonk-display model=tonk:sync>` driven by the overlay
-    // fact, so the controller drives the status check directly.)
-    let repo = repo.to_string();
-    spawn_local(async move {
-        let _ = api::sync_status(&repo, "main").await;
-    });
-}
-
-/// Notify the background controller that a local commit just landed,
-/// so it can sync shortly after. Called from the editor's commit
-/// path; a no-op if no controller is listening.
+/// Notify the controller that a local commit just landed, so it can sync
+/// shortly after. Called from the editor's commit path; a no-op if no
+/// controller is listening.
 pub fn notify_committed() {
     let Ok(event) = web_sys::CustomEvent::new(COMMITTED_EVENT) else {
         return;
@@ -198,93 +167,97 @@ pub fn notify_committed() {
     let _ = window().dispatch_event(&event);
 }
 
-/// Wire the background sync triggers for the active repository.
-///
-/// Call once from the component that owns the active-repository
-/// signal. The interval and event listeners are registered under
-/// the current reactive owner, so they're torn down automatically
-/// when that component unmounts.
-///
-/// A sweep reconciles upstream but does *not* refetch any UI
-/// resource: subscribed components update from the worker's
-/// subscription re-poll, and the branch rows refresh their revision
-/// and sync-state badges off the per-branch broadcast the `/sync`
-/// route posts (see [`crate::components::space`]). Refetching here
-/// would tear down in-flight editor state on every tick.
-pub fn mount(source: Signal<Option<String>, LocalStorage>) {
-    // One sweep at a time — a slow sync must not stack ticks.
-    let syncing = RwSignal::new(false);
+/// Per-mount state shared by every trigger: the active repo source and the
+/// one-sweep-at-a-time guard.
+#[derive(Clone, Copy)]
+struct Controller {
+    source: Signal<Option<String>, LocalStorage>,
+    /// True while a sync is in flight — a slow sync must not stack ticks.
+    busy: RwSignal<bool>,
+}
 
-    let sweep = move || {
-        if syncing.get_untracked() {
-            return;
-        }
-        let Some(repo) = source.get_untracked() else {
+impl Controller {
+    /// THE single entry point. Every trigger calls this with its reason; it
+    /// logs what it's doing and why, then either runs a full sync (enabled)
+    /// or a status-only check (paused). `LocalCommit` additionally registers
+    /// a durable background sync. Re-entrancy is guarded so overlapping
+    /// triggers don't stack syncs.
+    fn run(self, trigger: Trigger) {
+        let Some(repo) = self.source.get_untracked() else {
+            log!("sync[{}] no active repo — skipped", trigger.tag());
             return;
         };
-        // Honor the per-repository pause preference, read fresh so a
-        // toggle takes effect on the very next trigger. Paused stops
-        // pull/push, but we still refresh the read-only sync status so
-        // the badges keep tracking remote drift.
-        match sweep_action(is_enabled(&repo)) {
-            SweepAction::RefreshStatus => request_status_refresh(&repo),
-            SweepAction::Sync => {
-                syncing.set(true);
-                spawn_local(async move {
-                    sweep_repository(&repo).await;
-                    // Refresh the status badges after the sweep too, not
-                    // just on the paused tick, so a chip that reads
-                    // status off this event (rather than the SSE `watch`
-                    // layer) stays current. Harmless to the inspector's
-                    // branch rows, which de-dupe on `state` equality.
-                    request_status_refresh(&repo);
-                    syncing.set(false);
-                });
-            }
+        let enabled = is_enabled(&repo);
+
+        // OnLoad is a status check only — it shouldn't push on every
+        // navigation; the heartbeat and commit triggers drive the actual
+        // sync. Paused repos likewise only check status.
+        if trigger == Trigger::OnLoad || !enabled {
+            log!(
+                "sync[{}] {repo} → status check ({})",
+                trigger.tag(),
+                if enabled { "enabled" } else { "paused" }
+            );
+            spawn_local(async move { check_status(&repo).await });
+            return;
         }
+
+        // A local commit registers a durable background sync where supported,
+        // so the push survives the tab closing — then still runs an in-page
+        // sync now. Other triggers just sync in-page.
+        if trigger == Trigger::LocalCommit && sync_manager_available() {
+            let tag = sync_tag(&repo);
+            log!("sync[local-commit] {repo} → register background sync '{tag}'");
+            spawn_local(async move {
+                if let Err(err) = tonkRegisterSync(&tag).await {
+                    log!(
+                        "sync[local-commit] background register rejected ({err:?}); syncing in-page"
+                    );
+                }
+            });
+        }
+
+        if self.busy.get_untracked() {
+            log!("sync[{}] {repo} → already syncing, skipped", trigger.tag());
+            return;
+        }
+        log!("sync[{}] {repo} → sync (pull+push)", trigger.tag());
+        self.busy.set(true);
+        spawn_local(async move {
+            sweep_repository(&repo).await;
+            check_status(&repo).await;
+            self.busy.set(false);
+        });
+    }
+}
+
+/// Wire the sync triggers for the active repository.
+///
+/// Call once from the component that owns the active-repository signal. The
+/// interval and event listeners register under the current reactive owner,
+/// so they tear down when that component unmounts. Every trigger funnels
+/// through [`Controller::run`] tagged with its [`Trigger`] reason and logged.
+pub fn mount(source: Signal<Option<String>, LocalStorage>) {
+    let ctl = Controller {
+        source,
+        busy: RwSignal::new(false),
     };
 
-    // Steady interval.
-    use_interval_fn(sweep, TICK_INTERVAL_MS);
+    // Steady heartbeat.
+    use_interval_fn(move || ctl.run(Trigger::Interval), TICK_INTERVAL_MS);
 
     // Back online — reconcile whatever drifted while offline.
-    let _ = use_event_listener(window(), ev::online, move |_| sweep());
+    let _ = use_event_listener(window(), ev::online, move |_| ctl.run(Trigger::Online));
 
     // Tab refocused — pick up changes made elsewhere.
     let _ = use_event_listener(document(), ev::visibilitychange, move |_| {
         if document().visibility_state() == web_sys::VisibilityState::Visible {
-            sweep();
+            ctl.run(Trigger::Refocus);
         }
     });
 
-    // Local commit — debounced so a burst of edits collapses into one
-    // action. Where the Background Sync API is present we register a
-    // durable one-shot sync so the push survives the tab closing or
-    // going offline; otherwise we run the in-page sweep as the
-    // polyfill. The interval, `online`, and `visibilitychange` triggers
-    // above are untouched and keep running the in-page sweep regardless
-    // of `SyncManager` support — they cover pull and double as a push
-    // safety net.
-    let on_commit = move || {
-        let Some(repo) = source.get_untracked() else {
-            return;
-        };
-        match commit_action(is_enabled(&repo), sync_manager_available()) {
-            CommitAction::Skip => {}
-            CommitAction::Sweep => sweep(),
-            CommitAction::Register => {
-                spawn_local(async move {
-                    if tonkRegisterSync(&sync_tag(&repo)).await.is_err() {
-                        // Unsupported or registration rejected — fall
-                        // back to the in-page sweep so the commit still
-                        // reconciles before the next tick.
-                        sweep();
-                    }
-                });
-            }
-        }
-    };
-    let debounced = use_debounce_fn(on_commit, COMMIT_DEBOUNCE_MS);
+    // Local commit — debounced so a burst of edits collapses into one pass.
+    let debounced = use_debounce_fn(move || ctl.run(Trigger::LocalCommit), COMMIT_DEBOUNCE_MS);
     let _ = use_event_listener(
         window(),
         ev::Custom::<web_sys::Event>::new(COMMITTED_EVENT),
@@ -293,13 +266,12 @@ pub fn mount(source: Signal<Option<String>, LocalStorage>) {
         },
     );
 
-    // Publish an initial status as soon as the active repo is known, so the
-    // sync chip shows a real state on load instead of waiting for the first
-    // interval tick (the status overlay is transient, empty on a fresh
-    // load). Re-runs on navigation when `source` changes.
+    // The active repo became known (load) — and re-runs on navigation when
+    // `source` changes — so the chip shows a real state at once instead of
+    // waiting for the first heartbeat (the status overlay is transient).
     Effect::new(move |_| {
-        if let Some(repo) = source.get() {
-            request_status_refresh(&repo);
+        if source.get().is_some() {
+            ctl.run(Trigger::OnLoad);
         }
     });
 }
@@ -345,29 +317,10 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[dialog_common::test]
-    fn it_skips_the_commit_action_when_auto_sync_is_paused() {
-        assert_eq!(commit_action(false, true), CommitAction::Skip);
-        assert_eq!(commit_action(false, false), CommitAction::Skip);
-    }
-
-    #[dialog_common::test]
-    fn it_registers_a_background_sync_when_enabled_and_supported() {
-        assert_eq!(commit_action(true, true), CommitAction::Register);
-    }
-
-    #[dialog_common::test]
-    fn it_falls_back_to_the_in_page_sweep_when_supported_api_is_absent() {
-        assert_eq!(commit_action(true, false), CommitAction::Sweep);
-    }
-
-    #[dialog_common::test]
-    fn it_syncs_on_a_background_trigger_when_enabled() {
-        assert_eq!(sweep_action(true), SweepAction::Sync);
-    }
-
-    #[dialog_common::test]
-    fn it_refreshes_status_only_on_a_background_trigger_when_paused() {
-        assert_eq!(sweep_action(false), SweepAction::RefreshStatus);
+    fn it_tags_each_trigger_for_logging() {
+        assert_eq!(Trigger::Interval.tag(), "interval");
+        assert_eq!(Trigger::LocalCommit.tag(), "local-commit");
+        assert_eq!(Trigger::OnLoad.tag(), "on-load");
     }
 
     #[dialog_common::test]
