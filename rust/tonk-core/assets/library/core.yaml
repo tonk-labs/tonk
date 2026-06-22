@@ -1203,39 +1203,72 @@ view/directory!:
           display: none !important;
         }
 
-        /* Sync chip — a pill whose dot colour + label come from the
-           `data-sync-status` the `tonk:sync` view stamps. The worker owns
-           the value: sync:idle (synced) | sync:pending (syncing…) |
-           sync:offline (remote unreachable) | sync:local (no remote). The
-           bare default below is the offline look. */
+        /* Sync chip (wireframe brutalist pill): a square 1px-bordered mono
+           lowercase tag with a status dot. Text + border + dot colour come
+           from the `--sync-*` theme tokens, keyed on the `data-sync-status`
+           the `tonk:sync` view stamps. The worker owns the value: sync:idle
+           (synced, green) | sync:pending (syncing…, amber + pulse) |
+           sync:offline (remote unreachable, warn) | sync:local (no remote,
+           grey). */
         .workspace__sync {
           display: inline-flex;
           align-items: center;
-          gap: var(--wa-space-xs);
-          padding: var(--wa-space-3xs) var(--wa-space-s);
-          border-radius: 999px;
-          font-size: var(--wa-font-size-s);
-          color: var(--wa-color-text-quiet);
-          background: var(--wa-color-neutral-fill-quiet);
+          gap: 6px;
+          padding: 2px 8px;
+          border: 1px solid currentColor;
+          border-radius: 0;
+          font-family: var(--wa-font-family-code);
+          font-size: 11px;
+          line-height: 1.4;
+          text-transform: lowercase;
+          letter-spacing: 0.02em;
+          /* `currentColor` drives the border (above), the dot (below), and
+             the label, so each state only sets one `color:`. Default =
+             offline. */
+          color: var(--sync-offline);
         }
         .workspace__sync::before {
           content: "";
-          inline-size: 7px;
-          block-size: 7px;
+          inline-size: 8px;
+          block-size: 8px;
           border-radius: 50%;
-          background: var(--wa-color-text-quiet);
+          background: currentColor;
         }
         .workspace__sync::after { content: "offline"; }
-        .workspace__sync[data-sync-status="sync:idle"]::before {
-          background: var(--wa-color-success-fill-loud, #22c55e);
+        .workspace__sync[data-sync-status="sync:idle"] {
+          color: var(--sync-idle);
         }
         .workspace__sync[data-sync-status="sync:idle"]::after { content: "synced"; }
-        .workspace__sync[data-sync-status="sync:pending"]::before {
-          background: var(--wa-color-brand-fill-loud, #a855f7);
+        .workspace__sync[data-sync-status="sync:pending"] {
+          color: var(--sync-pending);
         }
         .workspace__sync[data-sync-status="sync:pending"]::after { content: "syncing…"; }
+        .workspace__sync[data-sync-status="sync:pending"]::before {
+          animation: workspace-sync-pulse 1s ease-out infinite;
+        }
+        .workspace__sync[data-sync-status="sync:offline"] {
+          color: var(--sync-offline);
+        }
         .workspace__sync[data-sync-status="sync:offline"]::after { content: "offline"; }
+        .workspace__sync[data-sync-status="sync:local"] {
+          color: var(--sync-local);
+        }
         .workspace__sync[data-sync-status="sync:local"]::after { content: "local"; }
+        /* Paused (durable pause preference; wired by the pause-sync command).
+           Muted ink text, grey border, a hollow ring dot. */
+        .workspace__sync[data-sync-status="sync:paused"] {
+          color: var(--sync-paused-ink);
+          border-color: var(--sync-paused-border);
+        }
+        .workspace__sync[data-sync-status="sync:paused"]::before {
+          background: transparent;
+          box-shadow: inset 0 0 0 1.5px var(--sync-paused-border);
+        }
+        .workspace__sync[data-sync-status="sync:paused"]::after { content: "paused"; }
+        @keyframes workspace-sync-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.35; }
+        }
 
       </style>
       <div class="workspace__topbar">

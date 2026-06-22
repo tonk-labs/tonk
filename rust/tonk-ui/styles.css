@@ -224,6 +224,17 @@ body {
     --tl-red: #e03131;
     --tl-violet: #ae3ec9;
     --tl-yellow: #f1ac4b;
+
+    /* Sync-state palette (from the wireframes). Semantic tokens the sync
+       chip — and anything else reflecting sync state — references, so the
+       colours live in one place. `idle`=synced (green), `pending`=in flight
+       (amber, pulses), `paused`/`local`=muted (grey), `offline`=warn. */
+    --sync-idle: #00a050;
+    --sync-pending: #e8a100;
+    --sync-offline: #ff0000;
+    --sync-local: #888888;
+    --sync-paused-ink: #333333;
+    --sync-paused-border: #888888;
 }
 
 /* Cards and callouts: transparent fill so the dot-grid shows
