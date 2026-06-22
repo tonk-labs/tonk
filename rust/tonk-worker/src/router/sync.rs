@@ -48,8 +48,8 @@ fn announce_head(repo: &str, branch: &str, revision: Option<Revision>) {
 /// Publish the live sync `status` to the SPACE branch's OVERLAY, keyed on
 /// the fixed `state:here` entity (`Replica::SYNC_STATE_HERE`).
 ///
-/// The status is a transient observation (idle / push / pull / offline), so
-/// it goes to the overlay — never persisted, never replicated — and folds
+/// The status is a transient observation (idle / pending / offline / local),
+/// so it goes to the overlay — never persisted, never replicated — and folds
 /// into the chip's `tonk:sync` subscription. A well-known singleton entity
 /// (like `tonk:join/status`); one space is in scope per page, so the chip
 /// needs no replica entity.
@@ -66,13 +66,31 @@ async fn publish_sync_status(
     branch: &str,
     state: SyncState,
 ) {
+    publish_sync_status_attr(
+        tonk,
+        repo,
+        branch,
+        tonk_schema::Replica::sync_status_attr(state),
+    )
+    .await;
+}
+
+/// Stamp a specific `tonk/sync` `status` value into the `state:here` overlay
+/// (e.g. `offline` on a fetch failure, where there is no `SyncState` to map).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn publish_sync_status_attr(
+    tonk: &crate::worker::TonkState,
+    repo: &str,
+    branch: &str,
+    status: tonk_schema::domain::sync::Status,
+) {
     use std::sync::Arc;
     use tonk_schema::{Replica, ReplicaSyncStatus};
 
     let Ok(entity) = Replica::SYNC_STATE_HERE.parse() else {
         return;
     };
-    let stamp = ReplicaSyncStatus::new(entity, Replica::sync_status_attr(state));
+    let stamp = ReplicaSyncStatus::new(entity, status);
 
     let session = match tonk
         .reactor
@@ -375,11 +393,22 @@ pub async fn sync_status(
         }));
     }
 
-    let remote = handle
-        .fetch()
-        .perform(&tonk_state.operator)
-        .await
-        .map_err(|e| TonkWorkerError::Internal(e.to_string()))?;
+    let remote = match handle.fetch().perform(&tonk_state.operator).await {
+        Ok(remote) => remote,
+        Err(e) => {
+            // A remote is configured but unreachable — publish `offline` so
+            // the chip reflects it (distinct from `local`, no remote at all).
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            publish_sync_status_attr(
+                &tonk_state,
+                &params.repo,
+                &params.branch,
+                tonk_schema::Replica::offline_status(),
+            )
+            .await;
+            return Err(TonkWorkerError::Internal(e.to_string()));
+        }
+    };
 
     let sync_state = SyncState::from(classify(local.as_ref(), remote.as_ref()));
     // Publish the live status to the replica's `tonk/sync` overlay so the
@@ -405,6 +434,24 @@ pub async fn sync(
         params.repo,
         params.branch
     );
+
+    // Flip the chip to `pending` for the duration. This runs in its OWN brief
+    // write-lock scope that drops before the long pull/push lock below, so the
+    // overlay write + subscription re-poll reach the chip *before* the sync
+    // begins (a mid-sync publish wouldn't — the chip's re-poll needs the read
+    // lock the long write lock holds). The settled status is published by the
+    // status check the controller runs after `/sync` returns.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let tonk_state = state.write().await;
+        publish_sync_status_attr(
+            &tonk_state,
+            &params.repo,
+            &params.branch,
+            tonk_schema::Replica::pending_status(),
+        )
+        .await;
+    }
 
     let tonk_state = state.write().await;
 

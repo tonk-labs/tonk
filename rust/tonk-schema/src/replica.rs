@@ -295,14 +295,29 @@ impl Replica {
     /// `tonk/sync` `status` URI: up to date, nothing to do.
     pub const IDLE: &'static str = "sync:idle";
 
-    /// `tonk/sync` `status` URI: pushing local commits to the upstream.
-    pub const PUSH: &'static str = "sync:push";
+    /// `tonk/sync` `status` URI: a sync is in flight / due. One in-progress
+    /// state — the worker holds a single lock for the whole pull+push, so the
+    /// chip can't observe finer phases mid-sync anyway.
+    pub const PENDING: &'static str = "sync:pending";
 
-    /// `tonk/sync` `status` URI: pulling upstream commits down.
-    pub const PULL: &'static str = "sync:pull";
-
-    /// `tonk/sync` `status` URI: no reachable upstream.
+    /// `tonk/sync` `status` URI: a remote is configured but unreachable
+    /// (network down, remote unavailable) — a real "offline" state.
     pub const OFFLINE: &'static str = "sync:offline";
+
+    /// `tonk/sync` `status` URI: no remote is configured — the repo is
+    /// local-only. Distinct from [`OFFLINE`](Self::OFFLINE) (a remote exists
+    /// but can't be reached).
+    pub const LOCAL: &'static str = "sync:local";
+
+    /// The `status` value for an in-flight / due sync.
+    pub fn pending_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::PENDING.parse().expect("sync:pending parses"))
+    }
+
+    /// The `status` value for an unreachable remote (a real offline state).
+    pub fn offline_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::OFFLINE.parse().expect("sync:offline parses"))
+    }
 
     /// The `enabled` value for a running replica.
     pub fn active_enabled() -> Enabled {
@@ -315,17 +330,16 @@ impl Replica {
     }
 
     /// Map a head-comparison [`SyncState`](crate::SyncState) to the
-    /// replica's `sync` `status` value — the live observation. `idle` when
-    /// up to date, `pull` when behind, `push` when ahead or diverged (a
-    /// diverged reconcile pushes after merging), and `offline` when there
-    /// is no upstream.
+    /// replica's settled `sync` `status` value. `idle` when up to date,
+    /// `pending` when there's drift (a reconcile is due), and `local` when
+    /// there is no remote configured. (A reachable-but-failed remote is
+    /// `offline`, published separately when the status fetch errors.)
     pub fn sync_status_attr(state: crate::SyncState) -> SyncStatusAttr {
         use crate::SyncState as S;
         let uri = match state {
             S::Synced => Self::IDLE,
-            S::Behind => Self::PULL,
-            S::Ahead | S::Diverged => Self::PUSH,
-            S::NoUpstream => Self::OFFLINE,
+            S::Behind | S::Ahead | S::Diverged => Self::PENDING,
+            S::NoUpstream => Self::LOCAL,
         };
         SyncStatusAttr(uri.parse().expect("sync status uri parses"))
     }
