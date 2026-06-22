@@ -12,6 +12,11 @@ pub(crate) mod route;
 mod launcher;
 use launcher::*;
 
+// `space` holds the inspector's render helpers; its only consumer is the
+// wasm-gated `inspector` module (its `use super::space` is `cfg(wasm32)`),
+// so on native every item reads as dead and `-D warnings` fails the lint
+// check. Gate the module to match its consumer.
+#[cfg(target_arch = "wasm32")]
 mod space;
 
 mod display;
