@@ -31,7 +31,6 @@ mod sheet;
 // unit-tested natively; the custom elements inside are wasm-gated.
 mod sync;
 
-/// Register the workspace custom elements (`<tonk-sheet>`,
 /// `<tonk-sheet-binder>`, `<tonk-page>`, `<tonk-invite>`,
 /// `<tonk-sync-state>` — the status pill that doubles as the pause/resume
 /// button — `<tonk-default-remote>`, and `<tonk-editable>`) with the page.

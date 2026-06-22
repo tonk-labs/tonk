@@ -13,9 +13,6 @@ pub mod components;
 /// repository's upstream branches.
 pub mod sync_controller;
 
-/// DID parsing helpers.
-pub mod did;
-
 /// Error types for the Tonk UI.
 pub mod error;
 

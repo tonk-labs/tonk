@@ -51,7 +51,7 @@ impl CustomElement for SigilElement {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["value", "fill", "sprite"]
+        &["value", "fill", "sprite", "did"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -149,13 +149,24 @@ fn render(this: &HtmlElement) {
 }
 
 /// Determines the 4 bytes driving the sigil:
-///   1. If `value` attribute parses as a u32 (decimal, or `0x`-prefixed hex),
+///   1. If a `did` attribute holds a `did:key:z…`, derive the bytes from
+///      the key the same way [`crate::did_sigil_value`] does, so a
+///      template can pass a raw DID (`did={member}`) and still match the
+///      glyph every other surface renders for that member.
+///   2. Else if `value` parses as a u32 (decimal, or `0x`-prefixed hex),
 ///      use it directly.
-///   2. Else hash the element's text content with blake3 and take the first
+///   3. Else hash the element's text content with blake3 and take the first
 ///      4 bytes. The wrapper's own SVG is read-back as empty text, so this
 ///      stays correct across re-renders.
-///   3. Fallback: zero.
+///   4. Fallback: zero.
 fn resolve_bits(this: &HtmlElement) -> [u8; 4] {
+    if let Some(did) = this.get_attribute("did")
+        && let Some(value) = crate::did_sigil_value(&did)
+        && let Some(n) = parse_u32(&value)
+    {
+        return n.to_be_bytes();
+    }
+
     if let Some(attr) = this.get_attribute("value")
         && let Some(n) = parse_u32(&attr)
     {

@@ -21,7 +21,7 @@ pub use inspect::{BranchStatusResponse, RemoteBranchStatusResponse, RemoteStatus
 
 mod repository;
 pub use repository::{
-    BranchConfiguration, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
+    BranchConfiguration, MemberInfo, RemoteConfiguration, RepositoryConfiguration, RepositoryInfo,
     UpstreamConfiguration, bootstrap_profile_meta,
 };
 
@@ -321,8 +321,8 @@ pub mod tests {
         }
     }
 
-    /// Query all `Membership` rows on `repo`'s meta branch.
-    pub(crate) async fn meta_memberships(
+    /// Query all `Membership` rows on `repo`'s content branch.
+    pub(crate) async fn content_memberships(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::Membership> {
@@ -336,13 +336,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let main: Branch = repository
+        let content: Branch = repository
             .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("main branch opens");
-        main.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::Membership> {
                 this: Term::var("this"),
                 subject: Term::var("subject"),
@@ -355,7 +356,7 @@ pub mod tests {
     }
 
     /// Query all `Invitation` rows on `repo`'s content branch.
-    pub(crate) async fn meta_invitations(
+    pub(crate) async fn content_invitations(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::Invitation> {
@@ -369,13 +370,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let main: Branch = repository
+        let content: Branch = repository
             .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("main branch opens");
-        main.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::Invitation> {
                 this: Term::var("this"),
                 subject: Term::var("subject"),
@@ -389,7 +391,7 @@ pub mod tests {
     }
 
     /// Query all `InvitedVia` rows on `repo`'s content branch.
-    pub(crate) async fn meta_invited_via(
+    pub(crate) async fn content_invited_via(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::InvitedVia> {
@@ -403,13 +405,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let main: Branch = repository
+        let content: Branch = repository
             .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("main branch opens");
-        main.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::InvitedVia> {
                 this: Term::var("this"),
                 invitation: Term::var("invitation"),
@@ -421,7 +424,7 @@ pub mod tests {
     }
 
     /// Query all `MemberRole` rows on `repo`'s content branch.
-    pub(crate) async fn meta_member_roles(
+    pub(crate) async fn content_member_roles(
         state: &super::AppState,
         repo: &str,
     ) -> Vec<tonk_schema::MemberRole> {
@@ -435,13 +438,14 @@ pub mod tests {
             .perform(&tonk.operator)
             .await
             .expect("repo loads");
-        let main: Branch = repository
+        let content: Branch = repository
             .branch("main")
             .open()
             .perform(&tonk.operator)
             .await
-            .expect("main branch opens");
-        main.query()
+            .expect("content branch opens");
+        content
+            .query()
             .select(Query::<tonk_schema::MemberRole> {
                 this: Term::var("this"),
                 role: Term::var("role"),
@@ -450,6 +454,39 @@ pub mod tests {
             .try_vec()
             .await
             .expect("member-role query")
+    }
+
+    /// Query all `MemberName` rows on `repo`'s content branch.
+    pub(crate) async fn content_member_names(
+        state: &super::AppState,
+        repo: &str,
+    ) -> Vec<tonk_schema::MemberName> {
+        use dialog_query::{Output as _, Query, Term};
+        use dialog_repository::{Branch, Repository, RepositoryExt as _};
+        let tonk = state.read().await;
+        let repository: Repository = tonk
+            .profile
+            .repository(repo)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let content: Branch = repository
+            .branch("main")
+            .open()
+            .perform(&tonk.operator)
+            .await
+            .expect("content branch opens");
+        content
+            .query()
+            .select(Query::<tonk_schema::MemberName> {
+                this: Term::var("this"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .expect("member-name query")
     }
 
     /// Creates a test repository via `PUT /api/repository/{label}` and

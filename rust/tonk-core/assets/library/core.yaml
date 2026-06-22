@@ -387,21 +387,26 @@ concept!: &member
       the: xyz.tonk.membership/role
       cardinality: one
       as: entity
+    name:
+      description: The member's self-asserted display name for this space
+      the: xyz.tonk.membership/name
+      cardinality: one
+      as: text
 
 # A single roster row — the default view for `model: tonk:member`. Each
 # member is one entry in the "shared with" list: a sigil-glyph avatar, the
-# member's DID (last 8 chars), and a role badge. Display name + last-active
-# are deferred (no data recorded yet); the DID identifies the member.
+# member's display name (with the DID tail beneath as a fallback id), and a
+# role badge.
 #
 # The `<tonk-sigil>` avatar masks against a sprite that the sealed guest
 # loads over the host bridge and installs as the global default (see
 # `load_sigil_sprite` in tonk-guest) — so the identity glyph renders inside
-# the opaque iframe with no cross-origin fetch.
+# the opaque iframe with no cross-origin fetch. `did={member}` seeds it from
+# the member DID so the glyph matches everywhere that member is shown.
 #
-# The DID shows only its last 8 chars: the full value is in `title` (and the
-# sigil hashes the whole thing), but the tail is enough to disambiguate. CSS
-# `direction:rtl` truncation clips the HEAD with an ellipsis, leaving the
-# tail visible.
+# The DID's last 8 chars sit under the name as a stable disambiguator (the
+# full value is in `title`); CSS `direction:rtl` truncation clips the HEAD
+# with an ellipsis, leaving the tail visible.
 #
 # The role badge label comes from CSS `::after` keyed on `data-role`, so the
 # raw `tonk:founder` / `tonk:member` URI never shows; the raw {role} text is
@@ -411,8 +416,11 @@ view!: &member/row
   model: tonk:member
   display: |
     <div class="roster__row" data-role={role}>
-      <tonk-sigil class="roster__avatar">{member}</tonk-sigil>
-      <span class="roster__did" title={member}><bdi>{member}</bdi></span>
+      <tonk-sigil class="roster__avatar" did={member}></tonk-sigil>
+      <span class="roster__identity">
+        <span class="roster__name">{name}</span>
+        <span class="roster__did" title={member}><bdi>{member}</bdi></span>
+      </span>
       <span class="roster__role" data-role={role}>{role}</span>
     </div>
 
@@ -477,13 +485,25 @@ view/directory!:
            the head (with a leading ellipsis), so the tail stays visible.
            `<bdi>` keeps the DID itself rendering left-to-right inside the
            rtl box. Monospace, quiet — a fallback identity until names land. */
+        /* The name + DID column. Grows to fill the row, pushing the role
+           badge to the right edge. */
+        .roster__identity {
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        /* The display name — the primary identifier. */
+        .roster__name {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-normal);
+        }
         .roster__did {
           /* Cap to about the last 8 chars (+ the leading ellipsis); the
-             row stays compact and the full DID is in `title`. `margin-right:
-             auto` pushes the role badge to the row's right edge. */
-          flex: 0 1 auto;
-          margin-right: auto;
-          min-width: 0;
+             full DID is in `title`. A quiet sub-line under the name. */
           max-width: 9ch;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -598,6 +618,54 @@ view!:
       onchange=tonk/rename-repository
       aria-label="Repository name"
     ></tonk-editable>
+
+# ============================================================
+# MEMBERSHIP / ROSTER
+# ============================================================
+
+# The `tonk:membership` concept. The worker writes a Membership fact
+# (member + subject) and a MemberName fact (the member's self-asserted
+# display `name`) onto the repository's content branch `main` on create
+# and on invite-claim, both keyed to the same membership entity. This
+# concept projects them together so a directory view can render the
+# roster. Pinned to `tonk:membership` so `<tonk-display>` can resolve
+# its view. A name is always written alongside the membership, so the
+# cardinality-one `name` field is present for every member.
+concept!: &tonk/membership
+  this: tonk:membership
+  description: A member of a repository, with their published display name.
+  with:
+    subject:
+      description: The repository the membership belongs to.
+      the: xyz.tonk.membership/subject
+      cardinality: one
+      as: entity
+    member:
+      description: The member profile's did:key.
+      the: xyz.tonk.membership/member
+      cardinality: one
+      as: entity
+    name:
+      description: The member's self-asserted display name.
+      the: xyz.tonk.membership/name
+      cardinality: one
+      as: text
+
+# The roster: a directory view over `tonk:membership`. `<tonk-display
+# model=tonk:membership>` (no entity) resolves this. Each membership on
+# the branch becomes one `<tonk-sigil>`; the bare `subject={this}`
+# marker makes the sigil the per-member repeat node, so the wrapping
+# `<div>` renders once as chrome. `did={member}` feeds the shared
+# DID->sigil derivation (matching the other surfaces) and `{name}` is
+# the hover label. Each repo's `main` holds only its own members, so the
+# unfiltered query is already this repo's roster.
+view/directory!:
+  this: id:tonk:membership/roster
+  model: tonk:membership
+  display: |
+    <div class="workspace__roster">
+      <tonk-sigil class="workspace__roster-avatar" subject={this} did={member} title={name}></tonk-sigil>
+    </div>
 
 # A read-only label view kind. Its `display` template lives under a
 # distinct attribute (`xyz.tonk.view/label`) so a model can carry both

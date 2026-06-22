@@ -31,6 +31,32 @@ use super::evaluate::EvaluatePath;
 use crate::TonkWorkerError;
 use crate::broadcast::{Notification, broadcast};
 
+/// Attribute domain prefixes that are repo governance, not user
+/// content, and so are withheld from content CSV export. Every
+/// attribute under these domains (`…/member`, `…/name`, `…/inviter`,
+/// etc.) is governance.
+const GOVERNANCE_DOMAINS: [&str; 2] = ["xyz.tonk.membership", "xyz.tonk.invitation"];
+
+/// Drop CSV rows whose attribute (first `the` column) is in a
+/// governance domain, preserving the header and all content rows. The
+/// result always ends with a trailing newline.
+fn strip_governance_rows(csv: &str) -> String {
+    let mut out = String::with_capacity(csv.len());
+    for (i, line) in csv.lines().enumerate() {
+        let is_governance = i > 0
+            && line
+                .split(',')
+                .next()
+                .map(|attr| attr.trim_matches('"'))
+                .is_some_and(|attr| GOVERNANCE_DOMAINS.iter().any(|d| attr.starts_with(d)));
+        if !is_governance {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// `GET /api/repository/{repo}/branch/{branch}/export`
 ///
 /// Streams every artifact on the branch as a CSV document
@@ -54,8 +80,15 @@ pub async fn export(
         .await
         .map_err(|e| TonkWorkerError::NotFound(e.to_string()))?;
 
+    // Withhold governance facts (membership/invitation) that now live on
+    // the content branch alongside user content, so they don't leak into
+    // a content import on the other side. CSV is utf8.
+    let csv = String::from_utf8(buf)
+        .map_err(|e| TonkWorkerError::Internal(format!("export produced non-utf8 csv: {e}")))?;
+    let csv = strip_governance_rows(&csv);
+
     let filename = format!("{}-{}.csv", path.repo, path.branch);
-    let mut response = (StatusCode::OK, Body::from(buf)).into_response();
+    let mut response = (StatusCode::OK, Body::from(csv)).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, "text/csv".parse().unwrap());
     if let Ok(value) = format!("attachment; filename=\"{filename}\"").parse::<header::HeaderValue>()
@@ -277,6 +310,23 @@ mod tests {
             dest_rows, source_rows,
             "round-tripped rows differ\nsource:\n{source_csv}\ndest:\n{dest_csv}",
         );
+    }
+
+    /// A repo's content export withholds governance facts
+    /// (membership/invitation) that live on the content branch.
+    #[dialog_common::test]
+    async fn it_excludes_governance_facts_from_export() {
+        let (state, repo) = fresh_repo("gov-export").await;
+        seed(&state, &repo).await;
+        let (_, _, csv) = get_export(&state, &repo).await;
+        for line in csv.lines().skip(1) {
+            let attr = line.split(',').next().unwrap_or("").trim_matches('"');
+            assert!(
+                !attr.starts_with("xyz.tonk.membership")
+                    && !attr.starts_with("xyz.tonk.invitation"),
+                "governance row leaked into export: {line}",
+            );
+        }
     }
 
     /// An empty CSV (header only) imports without error and commits

@@ -15,6 +15,7 @@ web = [
 ]
 
 [dependencies]
+bs58 = { workspace = true }
 blake3 = { workspace = true, optional = true }
 custom-elements = { workspace = true, optional = true }
 js-sys = { workspace = true, optional = true }

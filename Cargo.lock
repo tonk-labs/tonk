@@ -5022,6 +5022,7 @@ name = "tonk-sigil"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bs58",
  "custom-elements",
  "js-sys",
  "wasm-bindgen",
@@ -5179,6 +5180,7 @@ dependencies = [
  "custom-elements",
  "dialog-common",
  "js-sys",
+ "serde",
  "serde_json",
  "tonk-common",
  "tonk-host",
