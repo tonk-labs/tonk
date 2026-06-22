@@ -50,6 +50,14 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     let branch_name =
         Signal::derive_local(move || space_ref.get().map(|s| s.branch).unwrap_or_default());
 
+    // Run background sync for the space while it's shown — without this the
+    // sealed `/space` route never swept (the controller was only mounted by
+    // the non-sealed `display.rs`), so nothing pushed/pulled and the sync
+    // chip never updated. Same `Option<name>` source the display route uses.
+    let sync_source =
+        Signal::derive_local(move || space_ref.get().map(|s| s.name).filter(|s| !s.is_empty()));
+    crate::sync_controller::mount(sync_source);
+
     // The guest content is just the route's mount slot
     // (`.display-view-slot > tonk-display`) under the proxy `<tonk-host>`.
     // The app stylesheet anchors the bare-display-route fill-height layout
