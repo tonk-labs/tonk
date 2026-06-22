@@ -345,16 +345,188 @@ view!: &invitation/link
   model: invitation
   display: |
     <div class="invite-link">
+      <style>
+        /* Full-width invite field: the URL input fills the row and the
+           copy button rides inside it as a suffix, so it reads as one
+           control (matching the wireframe) rather than a narrow box with
+           a tiny detached icon. */
+        .invite-link { display: block; }
+        .invite-link__url { display: block; width: 100%; }
+      </style>
       <wa-input
         class="invite-link__url"
         label="Invite link"
         readonly
         value="{dom.host/data-base}?access={access}{remote}#{code}"
-      ></wa-input>
-      <wa-copy-button
-        class="invite-link__copy"
-        value="{dom.host/data-base}?access={access}{remote}#{code}"
-      ></wa-copy-button>
+      >
+        <wa-copy-button
+          slot="end"
+          class="invite-link__copy"
+          value="{dom.host/data-base}?access={access}{remote}#{code}"
+        ></wa-copy-button>
+      </wa-input>
+    </div>
+
+# A space member, as seen in the "shared with" roster. Reads the
+# `Membership` + `MemberRole` facts the worker records on the content
+# branch (the synced branch, so the roster converges across the space).
+# `member` is the member profile's DID entity; `role` is `tonk:founder`
+# for the creator or `tonk:member` for invite claimers. Declaring both
+# attributes makes an instance resolve only once its role is stamped.
+concept!: &member
+  this: tonk:member
+  description: A member of a space — a profile on the roster.
+  with:
+    member:
+      description: The member profile's DID (the `member` of the Membership)
+      the: xyz.tonk.membership/member
+      cardinality: one
+      as: entity
+    role:
+      description: "The member's role: tonk:founder (creator) or tonk:member (joiner)"
+      the: xyz.tonk.membership/role
+      cardinality: one
+      as: entity
+
+# A single roster row — the default view for `model: tonk:member`. Each
+# member is one entry in the "shared with" list: a sigil-glyph avatar, the
+# member's DID (last 8 chars), and a role badge. Display name + last-active
+# are deferred (no data recorded yet); the DID identifies the member.
+#
+# The `<tonk-sigil>` avatar masks against a sprite that the sealed guest
+# loads over the host bridge and installs as the global default (see
+# `load_sigil_sprite` in tonk-guest) — so the identity glyph renders inside
+# the opaque iframe with no cross-origin fetch.
+#
+# The DID shows only its last 8 chars: the full value is in `title` (and the
+# sigil hashes the whole thing), but the tail is enough to disambiguate. CSS
+# `direction:rtl` truncation clips the HEAD with an ellipsis, leaving the
+# tail visible.
+#
+# The role badge label comes from CSS `::after` keyed on `data-role`, so the
+# raw `tonk:founder` / `tonk:member` URI never shows; the raw {role} text is
+# kept (visually hidden) only to drive the attribute.
+view!: &member/row
+  this: id:tonk:member/row
+  model: tonk:member
+  display: |
+    <div class="roster__row" data-role={role}>
+      <tonk-sigil class="roster__avatar">{member}</tonk-sigil>
+      <span class="roster__did" title={member}><bdi>{member}</bdi></span>
+      <span class="roster__role" data-role={role}>{role}</span>
+    </div>
+
+# The roster — every `tonk:member` instance rendered as a row. Mounted
+# in the invite panel via `<tonk-display model=tonk:member>` (no
+# `entity`, so the directory view resolves and iterates all members).
+view/directory!:
+  this: id:tonk:member/roster
+  model: tonk:member
+  display: |
+    <div class="roster">
+      <style>
+        /* Share-dialog roster section: a labelled block under the invite
+           link. (Styled here because the roster view always mounts with
+           it, and the share dialog has no <style> of its own.) */
+        .roster-section {
+          margin-top: var(--wa-space-l);
+        }
+        .roster-section__label {
+          margin: 0 0 var(--wa-space-2xs);
+          font-size: var(--wa-font-size-xs);
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: var(--wa-color-text-quiet);
+        }
+        .roster {
+          display: flex;
+          flex-direction: column;
+        }
+        /* Each member instance mounts as a nested <tonk-display>; let the
+           row fill the width so avatar / did / badge lay out across it. */
+        .roster > tonk-display,
+        .roster > tonk-display > tonk-view {
+          display: block;
+        }
+        .roster__row {
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          padding: var(--wa-space-xs) 0;
+          border-bottom: 1px solid var(--wa-color-surface-border);
+          font-size: var(--wa-font-size-s);
+        }
+        .roster > tonk-display:last-child .roster__row {
+          border-bottom: none;
+        }
+        /* The sigil-glyph avatar: a deterministic identity glyph hashed
+           from the member DID, CLIPPED to a circle. The sigil renders a
+           square SVG; `border-radius:50%` + `overflow:hidden` on the host
+           clips it round (matching the wireframe avatars). The sprite is
+           supplied by the sealed guest, so it paints inside the opaque
+           iframe. */
+        .roster__avatar {
+          flex: none;
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          border: 1px solid var(--wa-color-surface-border);
+          overflow: hidden;
+        }
+        /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
+           the head (with a leading ellipsis), so the tail stays visible.
+           `<bdi>` keeps the DID itself rendering left-to-right inside the
+           rtl box. Monospace, quiet — a fallback identity until names land. */
+        .roster__did {
+          /* Cap to about the last 8 chars (+ the leading ellipsis); the
+             row stays compact and the full DID is in `title`. `margin-right:
+             auto` pushes the role badge to the row's right edge. */
+          flex: 0 1 auto;
+          margin-right: auto;
+          min-width: 0;
+          max-width: 9ch;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          direction: rtl;
+          text-align: left;
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-xs);
+          color: var(--wa-color-text-quiet);
+        }
+        /* The raw role URI is hidden; the badge label comes from ::after
+           keyed on data-role. Square brutalist chip, matching the wireframe:
+           founder is filled (loud), member is outline. */
+        .roster__role {
+          flex: none;
+          font-size: 0;
+          line-height: 0;
+          color: transparent;
+        }
+        .roster__role::after {
+          display: inline-block;
+          font-family: var(--wa-font-family-code);
+          font-size: 11px;
+          line-height: 1.4;
+          letter-spacing: 0.02em;
+          text-transform: lowercase;
+          padding: 1px 7px;
+          border: 1px solid var(--wa-color-text-normal);
+          color: var(--wa-color-text-normal);
+          content: attr(data-role);
+        }
+        .roster__role[data-role="tonk:founder"]::after {
+          content: "founder";
+          background: var(--wa-color-text-normal);
+          color: var(--wa-color-surface-default);
+        }
+        .roster__role[data-role="tonk:member"]::after {
+          content: "member";
+          color: var(--wa-color-text-quiet);
+          border-color: var(--wa-color-surface-border);
+        }
+      </style>
+      <tonk-display entity={this} model={dom.host/model} />
     </div>
 
 # The repository's own name, stored in its content branch so the repo
@@ -1415,6 +1587,23 @@ view/directory!:
            lives only in the worker's session overlay and the assembled
            URL — never in replicated storage. -->
       <wa-dialog id="share-repo" label="Share this repo" class="workspace__share-dialog">
+        <style>
+          /* Share dialog: a quiet intro line over the link, then the
+             roster, then a quiet footer explaining the membership rule —
+             matching the wireframe's copy + rhythm. */
+          .share-dialog__intro {
+            margin: 0 0 var(--wa-space-m);
+            font-size: var(--wa-font-size-s);
+            color: var(--wa-color-text-quiet);
+          }
+          .share-dialog__note {
+            margin: var(--wa-space-l) 0 0;
+            font-size: var(--wa-font-size-xs);
+            line-height: 1.5;
+            color: var(--wa-color-text-quiet);
+          }
+        </style>
+        <p class="share-dialog__intro">One link · anyone who follows it becomes a member · stays active forever</p>
         <form id="share-form" data-invite="tonk:invite" onsubmit=tonk:invite></form>
         <tonk-origin>
           <tonk-display
@@ -1432,7 +1621,14 @@ view/directory!:
             </div>
           </tonk-display>
         </tonk-origin>
-        <wa-button slot="footer" variant="primary" data-dialog="close">Done</wa-button>
+        <!-- The roster: everyone who's a member of this space. No
+             `entity`, so the `tonk:member` directory view resolves and
+             iterates every member, one row each (sigil + DID + role). -->
+        <div class="roster-section">
+          <p class="roster-section__label">Shared with</p>
+          <tonk-display model=tonk:member></tonk-display>
+        </div>
+        <p class="share-dialog__note">Everyone who follows this link becomes a member of this space. The link stays active, so share it only with people you want to let in.</p>
       </wa-dialog>
 
       <tonk-display model=workspace/sheet data-active={active} />

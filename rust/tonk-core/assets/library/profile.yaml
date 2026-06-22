@@ -243,7 +243,15 @@ view/directory!:
         <div slot="header"><h1>Joining…</h1></div>
         <wa-spinner></wa-spinner>
         <div class="join-status" with={this}>
-          <tonk-display entity={this} model=tonk:join/failure></tonk-display>
+          <tonk-display entity={this} model=tonk:join/failure>
+            <!-- While the join is pending there is a `tonk:join/status` but
+                 no `tonk:join/failure` yet: stay quiet (empty slots) instead
+                 of the built-in "Not found" callout. The failure view only
+                 renders once a failure is actually recorded. -->
+            <span slot="no-entity"></span>
+            <span slot="no-model"></span>
+            <span slot="loading"></span>
+          </tonk-display>
         </div>
       </wa-card>
     </main>
