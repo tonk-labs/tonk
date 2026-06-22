@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Make the browser a member of the run's space: mint an invite from
-# the slide site, open it, fill the join form's name input (wa-input
-# Web Awesome custom element: set .value + dispatch input event on the
-# custom element; the Leptos on:input handler reads from event.target.value),
-# submit the form, and wait until the space route renders. The single
-# UI interaction in the whole harness.
+# the slide site, open it, and wait until the space route renders. The
+# join component auto-joins (no name form — a joined space is addressed
+# by its repository DID, returned as repository.name), so the only job
+# here is to navigate to the invite and confirm we land off /join, then
+# pull the data so the shots don't race the background sync.
 #
 # Join component states:
-#   Loading         — spinner, no form
-#   NewMember       — form with <wa-input name="space-name"> + <wa-button type="submit">
-#   AlreadyMember   — auto-joins via JS navigate, no form rendered
-#   InvalidInvite   — error shown, no form
-#   AudienceMismatch — error shown, no form
+#   Loading          — spinner
+#   (auto-join)      — claims the invite, then JS-navigates to /space/<DID>
+#   InvalidInvite    — error shown
+#   AudienceMismatch — error shown
+#
+# SPACE_NAME is the repository DID (set by run.sh from site.sh's
+# space.did); it addresses both the pull endpoint and the shot URLs.
 #
 # Env: ROOT, RUN_DIR, BENCH_URL, SPACE_NAME
 set -euo pipefail
@@ -45,46 +47,9 @@ echo "bridge: navigating to $INVITE_URL" >&2
 # wait for render again so the join component is fully hydrated.
 "$B" wait-render
 
-# Detect the current join state before attempting to fill the form.
-# wa-input is a Web Awesome custom element — its .value property is
-# what the Leptos on:input handler reads from event.target.value.
-FILL_RESULT="$("$B" eval "(() => {
-  const waInput = document.querySelector('wa-input[name=\"space-name\"]');
-  if (!waInput) return 'no-input';
-  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(waInput), 'value')
-    || Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'value');
-  if (setter && setter.set) {
-    setter.set.call(waInput, '$SPACE_NAME');
-  } else {
-    waInput.value = '$SPACE_NAME';
-  }
-  waInput.dispatchEvent(new Event('input', { bubbles: true }));
-  return 'filled';
-})()")"
-
-echo "bridge: fill result: $FILL_RESULT" >&2
-
-# Submit the form. wa-button[type=submit] inside a form triggers
-# form submission when clicked; also try form.requestSubmit() as backup.
-SUBMIT_RESULT="$("$B" eval "(() => {
-  const form = document.querySelector('form');
-  if (form) {
-    try { form.requestSubmit(); return 'submitted-requestSubmit'; } catch(_) {}
-    const btn = form.querySelector('wa-button[type=\"submit\"]');
-    if (btn) { btn.click(); return 'submitted-btn-click'; }
-    form.submit();
-    return 'submitted-form-submit';
-  }
-  const btn = document.querySelector('wa-button[type=\"submit\"]');
-  if (btn) { btn.click(); return 'submitted-btn-outer'; }
-  return 'no-form';
-})()")"
-
-echo "bridge: submit result: $SUBMIT_RESULT" >&2
-
-# On the AlreadyMember fast-path, no-input/no-form is expected — the
-# component auto-navigates without rendering any form. Either way,
-# poll until the URL leaves /join.
+# The join component auto-joins: it claims the invite and JS-navigates
+# to /space/<repository-DID> with no form interaction. Poll until the
+# URL leaves /join.
 for _ in $(seq 1 60); do
   loc="$("$B" eval "window.location.pathname")"
   # strip outer JSON quotes from eval output

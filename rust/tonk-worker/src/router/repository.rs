@@ -28,7 +28,7 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
+    Branch as MetaBranch, Membership, Remote, Replica, RepositoryName, SpaceStatus, TrackingBranch,
 };
 
 use super::AppState;
@@ -476,6 +476,7 @@ async fn run_invite(
 ) -> Result<(), TonkWorkerError> {
     use dialog_artifacts::Entity;
     use dialog_varsig::Principal as _;
+    use tonk_schema::Invitation;
     use tonk_schema::command::{Authorization, Credential};
     use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
     use tonk_schema::domain::credential::Seed;
@@ -520,9 +521,17 @@ async fn run_invite(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
 
+    // Derive the invitation record from the chain as minted — before it's
+    // serialized away — so the meta-branch roster carries this invite. The
+    // claim side self-heals a missing record, but the mint should write its
+    // own. Guaranteed `Some`: the delegation is scoped to the repo subject.
+    let chain = delegation.into_chain();
+    let invitation =
+        Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
+
     // base58-encode the delegation chain — the `?access=` parameter the
     // view reads back and assembles into the final URL.
-    let chain_bytes = delegation.into_chain().to_bytes().map_err(|e| {
+    let chain_bytes = chain.to_bytes().map_err(|e| {
         TonkWorkerError::Internal(format!("failed to serialize delegation chain: {e}"))
     })?;
     let proof = bs58::encode(&chain_bytes).into_string();
@@ -588,6 +597,23 @@ async fn run_invite(
         .map_err(|e| {
             TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
         })?;
+
+    // Record the invitation on the repo's meta branch — the durable roster
+    // half of the invite (the URL with its secret fragment is never stored).
+    // Mirrors the HTTP `create_invite` route so both mint paths leave the
+    // same roster fact for the claim side to match against.
+    let meta = repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to open meta branch: {e}")))?;
+    meta.transaction()
+        .assert(invitation)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
 
     log!("Minted invitation for repo '{}'", repo_name);
     Ok(())
@@ -1227,10 +1253,16 @@ where
     // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
+    // The opening profile is a member of this repository: the
+    // creator on the create path, the claimer on the join path.
+    // Content-derived entity, so re-opening is a no-op.
+    let membership = Membership::new(tonk.profile.did(), repository.did());
+
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
-        .assert(replica.branch(META_BRANCH));
+        .assert(replica.branch(META_BRANCH))
+        .assert(membership);
 
     // 4. Create remotes at the dialog layer and assert their
     // concepts on the same transaction. Stash each created
@@ -2697,5 +2729,23 @@ mod tests {
             "the live subscription must survive the refresh",
         );
         drop(subscriber);
+    }
+
+    /// Creating a repository records its creator as a member on the
+    /// repo's meta branch.
+    #[dialog_common::test]
+    async fn it_records_the_founder_membership_on_create() {
+        let (_app, state, key) = fresh_repo("test-founder-membership").await;
+
+        let memberships = crate::router::tests::meta_memberships(&state, &key).await;
+        let profile_entity = {
+            let guard = state.read().await;
+            use tonk_schema::prelude::DidExt as _;
+            guard.profile.did().this()
+        };
+        // Every create mints a fresh routing key, so the repo is brand
+        // new: exactly the founder's membership.
+        assert_eq!(memberships.len(), 1, "exactly the founder membership");
+        assert_eq!(memberships[0].member.0, profile_entity);
     }
 }

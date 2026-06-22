@@ -103,7 +103,18 @@ port_check = "0.3"
 rand = "0.9"
 rand_0_8 = { package = "rand", version = "0.8" }
 rand_core = "0.9"
-reqwest = "0.13"
+# Pinned to 0.12 to match dialog-db's transport crates (dialog-remote-ucan-s3 /
+# dialog-remote-s3) so Cargo unifies features into the same reqwest. `rustls-tls`
+# keeps the embedded webpki roots; `rustls-tls-native-roots` additionally trusts
+# the OS CA store (and SSL_CERT_FILE/DIR) so slide works behind TLS-intercepting
+# egress proxies (e.g. the Claude Code sandbox gateway). Both root sets load — a
+# strict superset, non-breaking. TLS deps are gated off wasm, so this is a no-op
+# for tonk-ui's wasm build. default-features = false avoids pulling in native-tls.
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "rustls-tls-native-roots",
+    "json",
+] }
 serde = "1"
 serde_bytes = "0.11"
 serde_json = "1"
