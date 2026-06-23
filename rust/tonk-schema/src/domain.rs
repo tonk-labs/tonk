@@ -219,6 +219,22 @@ pub mod command {
     }
 }
 
+/// Attributes on the profile's own identity facts, written to the
+/// profile's meta branch (private, never replicated) and keyed by the
+/// profile DID entity.
+pub mod profile {
+    use super::Attribute;
+
+    /// The member's chosen display name override. Absent until the user
+    /// renames themselves; `tonk-worker` falls back to a deterministic
+    /// `petname` when it is missing. Cardinality-one (last write wins).
+    /// The struct is named `DisplayName` so the derived attribute is
+    /// `xyz.tonk.profile/display-name`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.profile")]
+    pub struct DisplayName(pub String);
+}
+
 /// Attributes that live on a repository's own `tonk/repository`
 /// concept — the repository's self-describing name, stored on its
 /// content branch and keyed by the subject DID.
