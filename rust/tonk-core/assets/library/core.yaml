@@ -1289,10 +1289,10 @@ concept!: &space
       as: entity
 
 
-# Set the binder shell as the space's default view. The display route
-# mounts `<tonk-display model="tonk/space">`; this alias resolves it to
-# `tonk:binder`, so directory mode renders the `tonk:shell` view (the
-# topbar over the sheet binder) for the device's replica binder.
+# Set the binder shell as the space's default view. The space route mounts
+# `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
+# `tonk/space` to `tonk:binder`, so the single-mode `tonk:shell` view (the topbar
+# over the sheet binder) renders for that one replica's binder.
 name!:
   this: id:tonk/space
   entity: tonk:binder
@@ -1553,8 +1553,13 @@ view!: &sync/chip
       <button class="workspace__sync-resume" type="submit" form="pause-sync-form" aria-label="Resume sync" title="Resume sync"></button>
     </span>
 
-# what's up yo
-view/directory!:
+# The workspace shell — the single-mode view for `model: tonk:binder`. Rendered
+# for ONE concrete replica (the binder instance IS the replica entity), so
+# `{this}`/`{subject}`/`{active}` resolve to that tab's replica. The route mounts
+# it via `<tonk-display entity={replica} model=tonk/space>` (tonk/space aliases
+# tonk:binder), so the shell is scoped to this tab's replica, not folded over
+# every replica.
+view!:
   this: tonk:shell
   model: tonk:binder
   display: |
