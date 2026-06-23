@@ -1577,6 +1577,12 @@ view!:
         .workspace-directory {
           display: flex;
           flex-direction: column;
+          /* The view root owns its fill: the route gives the slot a
+             viewport box and the pass-through display chain flexes height
+             down to here, but the route indirection means this root is no
+             longer the slot's direct child, so it claims the viewport
+             height itself rather than relying on a positional app rule. */
+          min-height: 100dvh;
         }
         .workspace-directory > tonk-display,
         .workspace-directory > tonk-display > tonk-view {

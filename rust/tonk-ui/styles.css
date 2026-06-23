@@ -316,8 +316,22 @@ tonk-repository.display-route,
     flex: 1 1 auto;
     min-height: 0;
 }
-.display-view-slot > tonk-display > tonk-view > * {
-    min-height: 100dvh;
+/* Route indirection pass-through: the `tonk:site` view nests into the matched
+   route view, which nests into the page model, so the page-view root sits a few
+   displays below the slot. Each level is a bare `<tonk-display>` rendered
+   directly inside a `<tonk-view>` (a pure pass-through, no wrapper) — flex-fill
+   those so the slot's height reaches the real page view. This targets ONLY the
+   pass-through chain: a content slide (carousel slide, board tile) is a NAMED
+   element under `tonk-view`, never a bare nested `tonk-display`, so its own
+   sizing is untouched. No viewport height is imposed here — the height flows by
+   flex from the slot, and each page-view root sets its own `100dvh` below, so
+   nothing stacks per indirection level. */
+.display-view-slot tonk-view > tonk-display,
+.display-view-slot tonk-view > tonk-display > tonk-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .display-view-slot:has(.workspace) {
