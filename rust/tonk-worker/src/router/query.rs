@@ -88,7 +88,7 @@ async fn query_on_branch<'a>(
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::session::stamp_host_context(tonk, &headers).await;
+    super::session::stamp_site(tonk, &headers).await;
     let bytes = request
         .into_body()
         .collect()

@@ -115,20 +115,17 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
-  // A stable id for this guest iframe instance; the SW keys the session entity
-  // (route + context facts) by it. Distinct per iframe (each runs this once).
-  var SESSION="guest:"+Date.now().toString(36)+"-"+Math.floor(Math.random()*1e9).toString(36);
   // The request-context headers every relayed /api fetch carries, so the SW can
-  // tie the request to this guest and route/contain it. Path and hash are stamped
-  // explicitly: a service worker intercepting the request reads request.headers,
-  // which never includes Referer (the browser exposes it only as request.referrer,
-  // not as a header), so the SW cannot recover the route from it. Path/hash come
-  // from the injected context (the guest's own location is about:srcdoc). Hash is
-  // sent only when present. Returns [[name,value]] pairs prepended to any
-  // per-request headers.
+  // tie the request to this tab's SITE and route/contain it. Site, path, and hash
+  // come from the injected context (the host's site id + the host's location;
+  // the guest's own location is about:srcdoc). They are explicit headers because
+  // a service worker reads request.headers, which never includes Referer (the
+  // browser exposes it only as request.referrer, not as a header). Returns
+  // [[name,value]] pairs prepended to any per-request headers.
   function contextHeaders(){
     var c=(window.tonk&&window.tonk.context)||{};
-    var headers=[["x-tonk-session",SESSION]];
+    var headers=[];
+    if(c.site){ headers.push(["x-tonk-site",c.site]); }
     if(c.path){ headers.push(["x-tonk-path",c.path]); }
     if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
     return headers;
@@ -1391,13 +1388,13 @@ fn build_context(host: &Element) -> Object {
         .flatten()
         .and_then(|el| el.get_attribute("name"))
         .unwrap_or_default();
-    // The host's per-tab session id (`host:<uuid>`). The guest's data queries are
-    // ultimately issued by the host's `<tonk-host>` over HTTP, which stamps THIS
-    // session on `X-Tonk-Session` — so the SW keys this tab's `router/active` /
-    // `HostContext` overlay facts by it, not by the guest's own `guest:…` id.
-    // Guest content that renders through the routing indirection binds `entity`
-    // to this so it resolves the facts the SW actually stamped.
-    let session = tonk_host::bridge::session_id();
+    // The host's per-tab `site` entity (`site:<uuid>`). The guest's data queries
+    // are ultimately issued by the host's `<tonk-host>` over HTTP, which stamps
+    // THIS site on `X-Tonk-Site` — so the SW keys this tab's `tonk:site` facts by
+    // it, not by the guest's own `guest:…` id. Guest content that renders the
+    // routing indirection binds `entity` to this so it resolves the facts the SW
+    // actually stamped.
+    let site = tonk_host::bridge::site_id();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
@@ -1405,7 +1402,7 @@ fn build_context(host: &Element) -> Object {
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
-    let _ = Reflect::set(&context, &"session".into(), &JsValue::from_str(&session));
+    let _ = Reflect::set(&context, &"site".into(), &JsValue::from_str(&site));
     context
 }
 

@@ -69,25 +69,27 @@ pub fn context_origin() -> Option<String> {
 }
 
 thread_local! {
-    /// A stable id for this document instance (top page, or one sealed guest
-    /// iframe). Each document runs its own wasm instance, so a per-instance
-    /// cell gives a distinct id per tab/iframe. The SW keys the session entity
-    /// (route + context facts) by this id. Minted lazily on first use.
-    static SESSION_ID: std::cell::OnceCell<String> = const { std::cell::OnceCell::new() };
+    /// The `site` entity for this document instance (top page, or one sealed
+    /// guest iframe). Each document runs its own wasm instance, so a per-instance
+    /// cell gives a distinct site per tab/iframe. The SW keys the tab's
+    /// `tonk:site` facts (path, replica, matched route) by this entity. Minted
+    /// lazily on first use.
+    static SITE_ID: std::cell::OnceCell<String> = const { std::cell::OnceCell::new() };
 }
 
-/// This document's session id, minted once per instance. A random v4 UUID,
-/// distinct per live document.
-pub fn session_id() -> String {
-    SESSION_ID.with(|cell| {
-        cell.get_or_init(|| format!("host:{}", Uuid::new_v4()))
+/// This document's `site` entity, minted once per instance — a `site:<uuid>`
+/// URI, distinct per live document. The SW stamps the tab's location/route
+/// facts on it; the rendering shell reads them from it.
+pub fn site_id() -> String {
+    SITE_ID.with(|cell| {
+        cell.get_or_init(|| format!("site:{}", Uuid::new_v4()))
             .clone()
     })
 }
 
 /// The request-context headers every host-relative `/api` request carries, so
 /// the SW can tie the request to its originating document and route/contain it:
-/// `X-Tonk-Path`, `X-Tonk-Hash`, `X-Tonk-Session`. The host does not interpret
+/// `X-Tonk-Path`, `X-Tonk-Hash`, `X-Tonk-Site`. The host does not interpret
 /// these; the SW decides how to use them.
 ///
 /// The document path is stamped explicitly rather than relying on `Referer`: a
@@ -108,7 +110,7 @@ pub fn context_headers() -> Vec<(&'static str, String)> {
         .or_else(|| window().and_then(|w| w.location().hash().ok()))
         .filter(|hash| !hash.is_empty());
 
-    let mut headers = vec![("x-tonk-session", session_id())];
+    let mut headers = vec![("x-tonk-site", site_id())];
     if let Some(path) = path {
         headers.push(("x-tonk-path", path));
     }

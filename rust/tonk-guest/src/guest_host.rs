@@ -60,19 +60,19 @@ impl CustomElement for GuestHost {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        // Bind the per-tab host-id: any descendant that opted in with
-        // `data-tonk-entity="session"` gets its `entity` set to the host's
-        // session id (the X-Tonk-Session the host stamps on the HTTP queries it
-        // issues on this guest's behalf — `window.tonk.context.session`). That is
-        // how the routing shell (`<tonk-display model=tonk:router/active
-        // data-tonk-entity="session">`) resolves its own tab's matched route:
-        // the host-id entity carries the `router/active` fact the SW stamped.
-        // Deferred until `window.tonk.ready` resolves, since the context (with
-        // the session) arrives asynchronously after the host's ready envelope.
+        // Bind the per-tab `site` entity: any descendant that opted in with
+        // `data-tonk-entity="site"` gets its `entity` set to the host's site
+        // (the X-Tonk-Site the host stamps on the HTTP queries it issues on this
+        // guest's behalf — `window.tonk.context.site`). That is how the routing
+        // shell (`<tonk-display model=tonk:site data-tonk-entity="site">`)
+        // resolves its own tab's location/route: the site entity carries the
+        // `tonk:site` facts the SW stamped. Deferred until `window.tonk.ready`
+        // resolves, since the context (with the site) arrives asynchronously
+        // after the host's ready envelope.
         let root = this.clone();
         spawn_local(async move {
             await_tonk_ready().await;
-            fill_session_entities(&root);
+            fill_site_entities(&root);
         });
 
         let mut installed = Vec::new();
@@ -185,14 +185,14 @@ fn window_tonk() -> Option<Object> {
         .and_then(|v| v.dyn_into::<Object>().ok())
 }
 
-/// The host's per-tab session id (`window.tonk.context.session`), the
-/// X-Tonk-Session the SW keys this tab's overlay facts on. Lives on `context`
+/// The host's per-tab `site` entity (`window.tonk.context.site`), the
+/// `X-Tonk-Site` the SW keys this tab's `tonk:site` facts on. Lives on `context`
 /// (not `tonk` directly) because it is the HOST's id, delivered with the rest of
 /// the context in the `ready` envelope.
-fn session_id() -> Option<String> {
+fn site_id() -> Option<String> {
     let tonk: JsValue = window_tonk()?.into();
     let context = Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
-    Reflect::get(&context, &JsValue::from_str("session"))
+    Reflect::get(&context, &JsValue::from_str("site"))
         .ok()?
         .as_string()
         .filter(|s| !s.is_empty())
@@ -212,20 +212,20 @@ async fn await_tonk_ready() {
     }
 }
 
-/// Set `entity` to the host's session id on every descendant of `root` that
-/// opted in with `data-tonk-entity="session"`. Idempotent: `<tonk-display>`
+/// Set `entity` to the host's `site` entity on every descendant of `root` that
+/// opted in with `data-tonk-entity="site"`. Idempotent: `<tonk-display>`
 /// observes `entity`, so a re-set after upgrade just re-resolves to the same
 /// value.
-fn fill_session_entities(root: &HtmlElement) {
-    let Some(session) = session_id() else {
+fn fill_site_entities(root: &HtmlElement) {
+    let Some(site) = site_id() else {
         return;
     };
-    let Ok(matches) = root.query_selector_all("[data-tonk-entity=\"session\"]") else {
+    let Ok(matches) = root.query_selector_all("[data-tonk-entity=\"site\"]") else {
         return;
     };
     for i in 0..matches.length() {
         if let Some(el) = matches.item(i).and_then(|n| n.dyn_into::<Element>().ok()) {
-            let _ = el.set_attribute("entity", &session);
+            let _ = el.set_attribute("entity", &site);
         }
     }
 }

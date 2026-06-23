@@ -70,17 +70,17 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // owner: `<tonk-display>` dispatches query/subscribe events to it and it
     // relays them over `window.tonk` to the outer bridge. It collapses to
     // `display: contents` (the app CSS `tonk-host:has(> .display-view-slot)`
-    // rule). Only `model` is needed — space/branch are annotated outer-side
-    // from the routing context.
-    // The space renders through the SW router indirection: `router/active` on
-    // this tab's host-id entity names the matched page model, and its view
-    // delegates inward. `data-tonk-entity="session"` is the seam — the guest
-    // proxy `<tonk-host>` fills `entity` with this tab's session id (the
-    // X-Tonk-Session value the SW keys `router/active` on), since the host-id
-    // is minted inside the guest and unknown when this markup is built.
+    // rule).
+    //
+    // The space renders the tab's SITE. The fixed `model=tonk:site` resolves the
+    // `tonk:site` instance the SW stamped on this tab's `site:<uuid>` entity; its
+    // view nests into the matched route's `{concept}` on the same entity, which
+    // resolves and renders. `data-tonk-entity="site"` is the seam — the guest
+    // proxy `<tonk-host>` fills `entity` with this tab's site id (minted inside
+    // the host, unknown when this markup is built).
     const CONTENT: &str = "<tonk-host>\
 <div class=\"display-view-slot\">\
-<tonk-display model=tonk:router/active data-tonk-entity=\"session\"></tonk-display>\
+<tonk-display model=tonk:site data-tonk-entity=\"site\"></tonk-display>\
 </div>\
 </tonk-host>";
 

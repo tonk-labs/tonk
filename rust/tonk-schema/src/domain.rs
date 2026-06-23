@@ -92,76 +92,67 @@ pub mod sync {
     pub struct Status(pub Entity);
 }
 
-/// Attributes for the `tonk/host` concept — a tab's request context.
+/// Attributes for the `tonk:site` concept — a tab's location and matched route.
 ///
-/// Keyed on the per-tab host-id entity (the `X-Tonk-Session` value parsed to an
-/// [`Entity`]), stamped by the service worker onto the Level-0-resolved branch's
-/// overlay. Both are cardinality one: a navigation re-stamps the same entity and
-/// supersedes the prior values rather than accumulating, so the tab's context is
-/// always exactly the latest location.
+/// Keyed on the per-tab `site` entity (the `X-Tonk-Site` value, a `site:<uuid>`
+/// parsed to an [`Entity`]), stamped by the service worker onto the
+/// Level-0-resolved branch's overlay. All cardinality one: a navigation
+/// re-stamps the same entity and supersedes, so the site always reflects the
+/// tab's latest location + route. Route models pick whichever of these they
+/// need (e.g. `replica`) as their own fields, so they resolve on the site entity.
 ///
 /// [`Entity`]: dialog_artifacts::Entity
-pub mod host {
-    use super::Attribute;
+pub mod site {
+    use super::{Attribute, Entity};
 
-    /// The document path the request came from — the host's `location.pathname`,
-    /// carried on `Referer` and parsed by the SW. Cardinality one.
+    /// The matched document path on this site.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.host")]
+    #[domain("xyz.tonk.site")]
     #[cardinality(one)]
     pub struct Path(pub String);
 
-    /// The document fragment — the host's `location.hash`, carried on
-    /// `X-Tonk-Hash` (the network strips fragments otherwise). Cardinality one.
+    /// The document fragment (URL hash) on this site.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.host")]
+    #[domain("xyz.tonk.site")]
     #[cardinality(one)]
-    pub struct Hash(pub String);
+    pub struct Anchor(pub String);
+
+    /// The active replica entity for this site (this device's replica of the
+    /// space the tab is on).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Replica(pub Entity);
+
+    /// The matched route entity (the route-table entry that matched the path).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Route(pub Entity);
+
+    /// The matched route's concept — the model the shell mounts on the site.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Concept(pub Entity);
 }
 
-/// Attributes for the durable route table (`router/route`) the SW page router
-/// reads. Its own namespace, distinct from the `route` command's `xyz.tonk.route`
-/// (a shared namespace would make the command→table assert rule tautological).
-pub mod router_route {
+/// Attributes for the durable `tonk:route` table the SW reads to build its
+/// matchit router: a path pattern → the route model to mount.
+pub mod route {
     use super::{Attribute, Entity};
 
     /// The axum/matchit path pattern, fed to `matchit::insert`.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.router.route")]
-    #[cardinality(one)]
-    pub struct Path(pub String);
-
-    /// The page model to render when this path matches.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.router.route")]
-    #[cardinality(one)]
-    pub struct Model(pub Entity);
-}
-
-/// Attribute for the per-tab matched route (`router/active`) the shell mounts —
-/// keyed on the host-id entity, stamped in the overlay by the SW.
-pub mod router_active {
-    use super::{Attribute, Entity};
-
-    /// The matched page model.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    #[domain("xyz.tonk.router.active")]
-    #[cardinality(one)]
-    pub struct Model(pub Entity);
-}
-
-/// Attribute shared by the route page models (`route/default`, `route/board`, …).
-/// The SW stamps it on the host-id entity so the matched model's instance
-/// resolves; the rendered model is fixed by `router/active.model`, so one
-/// stamped `path` satisfies whichever route matched.
-pub mod route {
-    use super::Attribute;
-
-    /// The matched path.
-    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.route")]
     #[cardinality(one)]
     pub struct Path(pub String);
+
+    /// The route model to mount when this path matches.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route")]
+    #[cardinality(one)]
+    pub struct Concept(pub Entity);
 }
 
 /// Attributes for transient *command* concepts — the effect triggers
