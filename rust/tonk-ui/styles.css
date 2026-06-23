@@ -242,11 +242,12 @@ body {
    through, no shadow so they read as flat outlined boxes. The
    default top/bottom *and* left/right borders are kept so cards
    look like proper containers. `appearance="plain"` opts out
-   entirely. Danger callouts are exempt — they need the loud
-   filled appearance Web Awesome ships by default so an error
-   surface reads as an alert, not just another bordered card. */
+   entirely. Status callouts (`danger`, `warning`) are exempt — they
+   keep the loud filled appearance Web Awesome's theme ships per
+   variant so an alert reads as an alert, not just another bordered
+   card. */
 wa-card:not([appearance="plain"]),
-wa-callout:not([appearance="plain"]):not([variant="danger"]) {
+wa-callout:not([appearance="plain"]):not([variant="danger"]):not([variant="warning"]) {
     background: transparent;
     box-shadow: none;
 }

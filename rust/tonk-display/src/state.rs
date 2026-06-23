@@ -197,7 +197,14 @@ fn set_default_notice(host: &Element) {
         let _ = icon.set_attribute("name", "circle-info");
         let _ = callout.append_child(&icon);
     }
-    let label = document.create_text_node("No view for this model; showing the default.");
+    // Name the model so the viewer knows exactly which one lacks a view.
+    let model = host.get_attribute("model").unwrap_or_default();
+    let text = if model.is_empty() {
+        "No view for this model; showing the default.".to_owned()
+    } else {
+        format!("No view for {model}; showing the default.")
+    };
+    let label = document.create_text_node(&text);
     let _ = callout.append_child(&label);
     // Prepend so the notice sits on top of the rendered default content.
     let _ = host.insert_before(&callout, host.first_child().as_ref());
