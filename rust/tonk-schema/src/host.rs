@@ -16,8 +16,9 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::host::{Hash, Path};
+use crate::domain::route::Path as RouteMatchedPath;
 use crate::domain::router_active::Model as ActiveModel;
-use crate::domain::router_route::{Model as RouteModel, Path as RoutePath};
+use crate::domain::router_route::{Model as RouteModel, Path as RoutePathAttr};
 
 /// A tab's request context: the location (`path`, `hash`) the host stamped,
 /// keyed on the tab's host-id entity.
@@ -54,7 +55,7 @@ pub struct RouterRoute {
     /// The route's entity (the command's derived `this`).
     pub this: Entity,
     /// The axum/matchit path pattern.
-    pub path: RoutePath,
+    pub path: RoutePathAttr,
     /// The page model rendered when this path matches.
     pub model: RouteModel,
 }
@@ -77,6 +78,27 @@ impl RouterActive {
         Self {
             this,
             model: ActiveModel(model),
+        }
+    }
+}
+
+/// The matched `path` on the host-id entity — the shared field every route page
+/// model (`route/default`, `route/board`, …) carries, so its instance resolves
+/// for the entity-bound delegation. Stamped by the SW alongside [`RouterActive`].
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouteMatch {
+    /// The per-tab host-id entity.
+    pub this: Entity,
+    /// The matched path.
+    pub path: RouteMatchedPath,
+}
+
+impl RouteMatch {
+    /// A matched-path stamp for the given host-id entity.
+    pub fn new(this: Entity, path: String) -> Self {
+        Self {
+            this,
+            path: RouteMatchedPath(path),
         }
     }
 }

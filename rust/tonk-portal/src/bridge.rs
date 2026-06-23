@@ -143,11 +143,6 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   }
   var tonk={
     context:{this:"",model:""},
-    // This guest instance's per-tab session id (the X-Tonk-Session value). The
-    // SW keys the host-id entity's overlay facts (HostContext, router/active) by
-    // it, so guest content that renders through the routing indirection can bind
-    // `entity` to this to resolve its own tab's matched route.
-    session:SESSION,
     ready:ready,
     query:function(body){return call("query",{body:body});},
     transact:function(request){return call("transact",{request:request});},
@@ -1396,6 +1391,13 @@ fn build_context(host: &Element) -> Object {
         .flatten()
         .and_then(|el| el.get_attribute("name"))
         .unwrap_or_default();
+    // The host's per-tab session id (`host:<uuid>`). The guest's data queries are
+    // ultimately issued by the host's `<tonk-host>` over HTTP, which stamps THIS
+    // session on `X-Tonk-Session` — so the SW keys this tab's `router/active` /
+    // `HostContext` overlay facts by it, not by the guest's own `guest:…` id.
+    // Guest content that renders through the routing indirection binds `entity`
+    // to this so it resolves the facts the SW actually stamped.
+    let session = tonk_host::bridge::session_id();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
@@ -1403,6 +1405,7 @@ fn build_context(host: &Element) -> Object {
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
+    let _ = Reflect::set(&context, &"session".into(), &JsValue::from_str(&session));
     context
 }
 

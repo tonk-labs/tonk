@@ -30,7 +30,7 @@ use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{CustomEvent, Event, HtmlElement, window};
+use web_sys::{CustomEvent, Element, Event, HtmlElement, window};
 
 /// The four consumer event names, matching `tonk_host::events`.
 const QUERY: &str = "tonk-query";
@@ -60,6 +60,21 @@ impl CustomElement for GuestHost {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
+        // Bind the per-tab host-id: any descendant that opted in with
+        // `data-tonk-entity="session"` gets its `entity` set to the host's
+        // session id (the X-Tonk-Session the host stamps on the HTTP queries it
+        // issues on this guest's behalf — `window.tonk.context.session`). That is
+        // how the routing shell (`<tonk-display model=tonk:router/active
+        // data-tonk-entity="session">`) resolves its own tab's matched route:
+        // the host-id entity carries the `router/active` fact the SW stamped.
+        // Deferred until `window.tonk.ready` resolves, since the context (with
+        // the session) arrives asynchronously after the host's ready envelope.
+        let root = this.clone();
+        spawn_local(async move {
+            await_tonk_ready().await;
+            fill_session_entities(&root);
+        });
+
         let mut installed = Vec::new();
         for name in [QUERY, CLAIM, SUBSCRIBE, UNSUBSCRIBE] {
             let listener = make_listener(name);
@@ -168,6 +183,51 @@ fn window_tonk() -> Option<Object> {
     Reflect::get(&win, &JsValue::from_str("tonk"))
         .ok()
         .and_then(|v| v.dyn_into::<Object>().ok())
+}
+
+/// The host's per-tab session id (`window.tonk.context.session`), the
+/// X-Tonk-Session the SW keys this tab's overlay facts on. Lives on `context`
+/// (not `tonk` directly) because it is the HOST's id, delivered with the rest of
+/// the context in the `ready` envelope.
+fn session_id() -> Option<String> {
+    let tonk: JsValue = window_tonk()?.into();
+    let context = Reflect::get(&tonk, &JsValue::from_str("context")).ok()?;
+    Reflect::get(&context, &JsValue::from_str("session"))
+        .ok()?
+        .as_string()
+        .filter(|s| !s.is_empty())
+}
+
+/// Await `window.tonk.ready` (resolves once the host's `ready` envelope, with
+/// the context, has arrived). Resolves immediately if the bridge is absent.
+async fn await_tonk_ready() {
+    let Some(tonk) = window_tonk() else {
+        return;
+    };
+    let Ok(ready) = Reflect::get(&tonk, &JsValue::from_str("ready")) else {
+        return;
+    };
+    if let Ok(promise) = ready.dyn_into::<Promise>() {
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+}
+
+/// Set `entity` to the host's session id on every descendant of `root` that
+/// opted in with `data-tonk-entity="session"`. Idempotent: `<tonk-display>`
+/// observes `entity`, so a re-set after upgrade just re-resolves to the same
+/// value.
+fn fill_session_entities(root: &HtmlElement) {
+    let Some(session) = session_id() else {
+        return;
+    };
+    let Ok(matches) = root.query_selector_all("[data-tonk-entity=\"session\"]") else {
+        return;
+    };
+    for i in 0..matches.length() {
+        if let Some(el) = matches.item(i).and_then(|n| n.dyn_into::<Element>().ok()) {
+            let _ = el.set_attribute("entity", &session);
+        }
+    }
 }
 
 /// Call `tonk[method](detail[arg_key])`, expect a Promise, write it into

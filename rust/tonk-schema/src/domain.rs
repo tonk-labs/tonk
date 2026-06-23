@@ -150,6 +150,20 @@ pub mod router_active {
     pub struct Model(pub Entity);
 }
 
+/// Attribute shared by the route page models (`route/default`, `route/board`, …).
+/// The SW stamps it on the host-id entity so the matched model's instance
+/// resolves; the rendered model is fixed by `router/active.model`, so one
+/// stamped `path` satisfies whichever route matched.
+pub mod route {
+    use super::Attribute;
+
+    /// The matched path.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers

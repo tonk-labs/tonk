@@ -85,13 +85,18 @@ pub async fn stamp_host_context(tonk: &crate::worker::TonkState, headers: &Heade
 
     // Level 1: match the remaining path against the space's route table and
     // stamp the matched page model so the shell can render through the
-    // `router/active` indirection. The profile has no Level 1 routes yet.
+    // `router/active` indirection. Also stamp the matched path as the shared
+    // `route/*` field, so the matched model's instance resolves for the
+    // entity-bound delegation. The profile has no Level 1 routes yet.
     if let RouteTarget::Space { rest, .. } = &target
         && let Some(model) = match_route(tonk, &state, rest).await
     {
         state
             .state
-            .assert_overlay(tonk_schema::RouterActive::new(entity, model));
+            .assert_overlay(tonk_schema::RouterActive::new(entity.clone(), model));
+        state
+            .state
+            .assert_overlay(tonk_schema::RouteMatch::new(entity, rest.clone()));
     }
 
     tonk.reactor.schedule_poll(Arc::clone(&state.state));

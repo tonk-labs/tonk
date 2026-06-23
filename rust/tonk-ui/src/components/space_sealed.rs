@@ -72,9 +72,15 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // `display: contents` (the app CSS `tonk-host:has(> .display-view-slot)`
     // rule). Only `model` is needed — space/branch are annotated outer-side
     // from the routing context.
+    // The space renders through the SW router indirection: `router/active` on
+    // this tab's host-id entity names the matched page model, and its view
+    // delegates inward. `data-tonk-entity="session"` is the seam — the guest
+    // proxy `<tonk-host>` fills `entity` with this tab's session id (the
+    // X-Tonk-Session value the SW keys `router/active` on), since the host-id
+    // is minted inside the guest and unknown when this markup is built.
     const CONTENT: &str = "<tonk-host>\
 <div class=\"display-view-slot\">\
-<tonk-display model=tonk/space></tonk-display>\
+<tonk-display model=tonk:router/active data-tonk-entity=\"session\"></tonk-display>\
 </div>\
 </tonk-host>";
 

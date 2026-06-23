@@ -1555,39 +1555,46 @@ view!: &router/active/view
 
 # ---- Page models (Level 1 targets) and their views ----
 
-# The space's default view — what a bare `/space/{name}/` renders. No params to
-# bind, so a single marker field satisfies the concept shape (a concept must
-# declare at least one field).
+# The route page models. Each is keyed on the host-id entity and resolves once
+# the SW stamps the matched `path` on it (the `RouterActive` stamp carries `path`
+# alongside `model`, on the same entity). They share the `xyz.tonk.route/path`
+# attribute: the rendered model is fixed by `router/active.model`, so the
+# instance only needs to RESOLVE, and one stamped `path` fact satisfies whichever
+# route matched.
+
+# The space's default view — what a bare `/space/{name}/` renders.
 concept!: &route/default
   this: tonk:route/default
   description: The space's default page.
   with:
-    name:
-      description: A label (unused; satisfies the concept shape).
-      the: xyz.tonk.route.default/name
+    path:
+      description: The matched path, stamped by the SW on the host-id entity.
+      the: xyz.tonk.route/path
+      cardinality: one
       as: text
 
 view!: &route/default/view
   this: id:tonk:route/default/view
   model: tonk:route/default
   display: |
-    <tonk-display model=tonk/space />
+    <tonk-display entity={this} model=tonk/space />
 
 # The board page — `/space/{name}/board`.
 concept!: &route/board
   this: tonk:route/board
   description: The space's board page.
   with:
-    name:
-      description: A label (unused; satisfies the concept shape).
-      the: xyz.tonk.route.board/name
+    path:
+      description: The matched path, stamped by the SW on the host-id entity.
+      the: xyz.tonk.route/path
+      cardinality: one
       as: text
 
 view!: &route/board/view
   this: id:tonk:route/board/view
   model: tonk:route/board
   display: |
-    <tonk-display model=tonk:board />
+    <tonk-display entity={this} model=tonk:board />
 
 # ---- Seeded route table (bootstrap) ----
 #
