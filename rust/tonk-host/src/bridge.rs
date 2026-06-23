@@ -87,23 +87,31 @@ pub fn session_id() -> String {
 
 /// The request-context headers every host-relative `/api` request carries, so
 /// the SW can tie the request to its originating document and route/contain it:
-/// `X-Tonk-Hash`, `X-Tonk-Session`. The host does not interpret these; the SW
-/// decides how to use them.
+/// `X-Tonk-Path`, `X-Tonk-Hash`, `X-Tonk-Session`. The host does not interpret
+/// these; the SW decides how to use them.
 ///
-/// The document path is not stamped: it rides `Referer`, which the browser sets
-/// to the host document's same-origin URL (and the host URL mirrors the guest
-/// route by design). The fragment never rides `Referer`, so the hash is stamped
-/// explicitly, and only when there is one.
+/// The document path is stamped explicitly rather than relying on `Referer`: a
+/// service worker intercepting the request reads `request.headers`, which never
+/// includes `Referer` (the browser exposes it as the separate `request.referrer`
+/// property, not as a header), so the SW cannot see it. The host knows its own
+/// document path, so it carries it directly. The hash is stamped too (the
+/// network strips fragments), only when there is one.
 ///
-/// The hash comes from the bridge context in a sealed guest (its
+/// Path/hash come from the bridge context in a sealed guest (its
 /// `window.location` is `about:srcdoc`, useless) and from `window.location` in
 /// the top document — the same source split as [`context_origin`].
 pub fn context_headers() -> Vec<(&'static str, String)> {
+    let path = context_field("path")
+        .or_else(|| window().and_then(|w| w.location().pathname().ok()))
+        .filter(|path| !path.is_empty());
     let hash = context_field("hash")
         .or_else(|| window().and_then(|w| w.location().hash().ok()))
         .filter(|hash| !hash.is_empty());
 
     let mut headers = vec![("x-tonk-session", session_id())];
+    if let Some(path) = path {
+        headers.push(("x-tonk-path", path));
+    }
     if let Some(hash) = hash {
         headers.push(("x-tonk-hash", hash));
     }

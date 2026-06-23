@@ -119,15 +119,17 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   // (route + context facts) by it. Distinct per iframe (each runs this once).
   var SESSION="guest:"+Date.now().toString(36)+"-"+Math.floor(Math.random()*1e9).toString(36);
   // The request-context headers every relayed /api fetch carries, so the SW can
-  // tie the request to this guest and route/contain it. The path is not stamped:
-  // the host issues the real fetch, so Referer carries the host's URL, which
-  // mirrors the guest route by design. The fragment never rides Referer, so the
-  // hash is stamped explicitly, and only when there is one. The hash comes from
-  // the injected context (the guest's own location is about:srcdoc). Returns
-  // [[name,value]] pairs prepended to any per-request headers.
+  // tie the request to this guest and route/contain it. Path and hash are stamped
+  // explicitly: a service worker intercepting the request reads request.headers,
+  // which never includes Referer (the browser exposes it only as request.referrer,
+  // not as a header), so the SW cannot recover the route from it. Path/hash come
+  // from the injected context (the guest's own location is about:srcdoc). Hash is
+  // sent only when present. Returns [[name,value]] pairs prepended to any
+  // per-request headers.
   function contextHeaders(){
     var c=(window.tonk&&window.tonk.context)||{};
     var headers=[["x-tonk-session",SESSION]];
+    if(c.path){ headers.push(["x-tonk-path",c.path]); }
     if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
     return headers;
   }
@@ -211,7 +213,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
               sp.onmessage=function(ev){
                 var m=ev.data; if(!m) return;
                 if(m.type==="chunk"){
-                  controller.enqueue(new Uint8Array(m.chunk));
+                  controller.enqueue(new Uint8Array(m.chunk,m.byteOffset||0,m.byteLength!==undefined?m.byteLength:m.chunk.byteLength));
                   // Ask for more while the consumer still has appetite.
                   if(controller.desiredSize>0){ sp.postMessage({type:"credit",n:1}); }
                 } else if(m.type==="close"){
@@ -1204,19 +1206,30 @@ fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::Readable
                             let _ = host_port.post_message(&env);
                             return;
                         }
-                        // `value` is a `Uint8Array` (possibly a view at an
-                        // offset into a larger buffer). Copy its exact bytes
-                        // into a fresh `ArrayBuffer` and transfer THAT as the
-                        // chunk; the guest wraps it as `new Uint8Array(buffer)`.
-                        // (Transferring the original backing buffer would
-                        // detach it and could carry sibling bytes.)
+                        // `value` is a `Uint8Array`, possibly a view windowed
+                        // into a larger backing buffer (byteOffset/byteLength).
+                        // Transfer the backing buffer (zero-copy — the whole
+                        // point of a transfer) and carry the window offsets so
+                        // the guest reconstructs a view over exactly this
+                        // chunk's bytes, not the sibling bytes that may share
+                        // the buffer.
                         let view = js_sys::Uint8Array::new(
                             &Reflect::get(&chunk, &"value".into()).unwrap_or(JsValue::NULL),
                         );
-                        let buffer = view.slice(0, view.length()).buffer();
+                        let buffer = view.buffer();
                         let env = Object::new();
                         let _ = Reflect::set(&env, &"type".into(), &"chunk".into());
                         let _ = Reflect::set(&env, &"chunk".into(), &buffer);
+                        let _ = Reflect::set(
+                            &env,
+                            &"byteOffset".into(),
+                            &JsValue::from_f64(view.byte_offset() as f64),
+                        );
+                        let _ = Reflect::set(
+                            &env,
+                            &"byteLength".into(),
+                            &JsValue::from_f64(view.byte_length() as f64),
+                        );
                         let transfer = js_sys::Array::new();
                         transfer.push(&buffer);
                         let _ = host_port.post_message_with_transferable(&env, &transfer);
@@ -2387,8 +2400,22 @@ mod tests {
             chunk_listener.clear();
             match get_str(&msg, "type").as_deref() {
                 Some("chunk") => {
+                    // Reconstruct the view over exactly the chunk's window, the
+                    // way the guest does — the buffer is transferred whole but
+                    // the bytes live in [byteOffset, byteOffset+byteLength).
                     let chunk = Reflect::get(&msg, &"chunk".into()).expect("chunk");
-                    let bytes = js_sys::Uint8Array::new(&chunk).to_vec();
+                    let offset = Reflect::get(&msg, &"byteOffset".into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as u32;
+                    let length = Reflect::get(&msg, &"byteLength".into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .map(|n| n as u32)
+                        .unwrap_or_else(|| js_sys::ArrayBuffer::from(chunk.clone()).byte_length());
+                    let bytes =
+                        js_sys::Uint8Array::new_with_byte_offset_and_length(&chunk, offset, length)
+                            .to_vec();
                     collected.extend_from_slice(&bytes);
                 }
                 Some("close") => {

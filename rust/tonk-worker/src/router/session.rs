@@ -2,12 +2,15 @@
 //! onto its host-id entity, in the Level-0-resolved branch's overlay.
 //!
 //! The host (top page or sealed guest) stamps three things on every host-relative
-//! `/api` request: the document path (via `Referer`), the fragment (via
-//! `X-Tonk-Hash`), and a per-tab id (via `X-Tonk-Session`). Level 0 resolves the
-//! document path to a `(repo, branch)` target; the SW then asserts the path/hash
-//! onto the host-id entity in that branch's overlay, exactly the `state:here`
-//! pattern the sync chip uses (see [`super::sync`]) but keyed per tab instead of
-//! a singleton. Multiple tabs coexist as distinct entities in one overlay.
+//! `/api` request: the document path (`X-Tonk-Path`), the fragment
+//! (`X-Tonk-Hash`), and a per-tab id (`X-Tonk-Session`). The path is an explicit
+//! header rather than `Referer` because a service worker reads `request.headers`,
+//! which never includes `Referer` (the browser exposes it only as the separate
+//! `request.referrer` property). Level 0 resolves the path to a `(repo, branch)`
+//! target; the SW then asserts the path/hash onto the host-id entity in that
+//! branch's overlay, exactly the `state:here` pattern the sync chip uses (see
+//! [`super::sync`]) but keyed per tab. Multiple tabs coexist as distinct
+//! entities in one overlay.
 //!
 //! For a space, the SW also matches the remaining (Level 1) path against the
 //! branch's durable `router/route` table with `matchit` and stamps the matched
@@ -32,28 +35,6 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
         .unwrap_or("")
 }
 
-/// The pathname of a `Referer` URL. `Referer` is an absolute URL
-/// (`https://host/space/x?q#f`); Level 0 only cares about the path, so strip the
-/// scheme/authority and any query/fragment. Returns `""` when there is no
-/// `Referer` (a hard navigation carries none) — the caller treats that as "no
-/// document to resolve" and skips stamping.
-fn referer_pathname(referer: &str) -> &str {
-    if referer.is_empty() {
-        return "";
-    }
-    // Drop the scheme + authority: everything up to the first `/` after `//`.
-    let after_scheme = referer
-        .split_once("://")
-        .map(|(_, rest)| rest)
-        .unwrap_or(referer);
-    let path = match after_scheme.find('/') {
-        Some(i) => &after_scheme[i..],
-        None => "/",
-    };
-    // Drop a query and/or fragment.
-    path.split(['?', '#']).next().unwrap_or(path)
-}
-
 /// Stamp the request's [`HostContext`] (and, for a space, the matched
 /// [`RouterActive`]) onto its host-id entity in the Level-0-resolved branch's
 /// overlay.
@@ -75,7 +56,7 @@ pub async fn stamp_host_context(tonk: &crate::worker::TonkState, headers: &Heade
         return;
     };
 
-    let path = referer_pathname(header(headers, "referer"));
+    let path = header(headers, "x-tonk-path");
     let Some(target) = resolve_path(path) else {
         return;
     };
@@ -160,38 +141,4 @@ async fn match_route(
     }
 
     router.at(rest).ok().map(|matched| matched.value.clone())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use wasm_bindgen_test::wasm_bindgen_test_configure;
-
-    wasm_bindgen_test_configure!(run_in_service_worker);
-
-    #[dialog_common::test]
-    async fn it_extracts_the_pathname_from_a_referer_url() {
-        assert_eq!(
-            referer_pathname("https://hub.tonk.xyz/space/home:z6Mk"),
-            "/space/home:z6Mk",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_drops_query_and_fragment_from_a_referer() {
-        assert_eq!(
-            referer_pathname("https://hub.tonk.xyz/space/home?q=1#frag"),
-            "/space/home",
-        );
-    }
-
-    #[dialog_common::test]
-    async fn it_yields_root_for_a_bare_origin_referer() {
-        assert_eq!(referer_pathname("https://hub.tonk.xyz"), "/");
-    }
-
-    #[dialog_common::test]
-    async fn it_yields_empty_for_a_missing_referer() {
-        assert_eq!(referer_pathname(""), "");
-    }
 }

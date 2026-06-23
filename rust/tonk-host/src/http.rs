@@ -22,9 +22,9 @@ fn window_handle() -> Result<Window, ErrorDetail> {
     window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no `window` available"))
 }
 
-/// Append the request-context headers (`X-Tonk-Hash`/`X-Tonk-Session`) so the
-/// SW can tie the request to its originating document. The path itself rides
-/// `Referer`. Best-effort: a failed append never blocks the request.
+/// Append the request-context headers (`X-Tonk-Path`/`X-Tonk-Hash`/
+/// `X-Tonk-Session`) so the SW can tie the request to its originating document.
+/// Best-effort: a failed append never blocks the request.
 fn append_context_headers(headers: &Headers) {
     for (name, value) in crate::bridge::context_headers() {
         let _ = headers.append(name, &value);
