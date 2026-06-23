@@ -85,3 +85,9 @@ pub use remote::*;
 
 pub mod tracking_branch;
 pub use tracking_branch::*;
+
+mod identity;
+pub use identity::ProfileName;
+
+mod petname;
+pub use petname::petname;
