@@ -9,6 +9,7 @@ use crate::error::{ErrorDetail, ErrorKind};
 use crate::ready;
 use ipld_core::ipld::Ipld;
 use js_sys::{Function, Promise, Reflect};
+use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -65,6 +66,48 @@ pub fn context_origin() -> Option<String> {
         .origin()
         .ok()
         .filter(|o| !o.is_empty() && o != "null")
+}
+
+thread_local! {
+    /// A stable id for this document instance (top page, or one sealed guest
+    /// iframe). Each document runs its own wasm instance, so a per-instance
+    /// cell gives a distinct id per tab/iframe. The SW keys the session entity
+    /// (route + context facts) by this id. Minted lazily on first use.
+    static SESSION_ID: std::cell::OnceCell<String> = const { std::cell::OnceCell::new() };
+}
+
+/// This document's session id, minted once per instance. A random v4 UUID,
+/// distinct per live document.
+pub fn session_id() -> String {
+    SESSION_ID.with(|cell| {
+        cell.get_or_init(|| format!("host:{}", Uuid::new_v4()))
+            .clone()
+    })
+}
+
+/// The request-context headers every host-relative `/api` request carries, so
+/// the SW can tie the request to its originating document and route/contain it:
+/// `X-Tonk-Hash`, `X-Tonk-Session`. The host does not interpret these; the SW
+/// decides how to use them.
+///
+/// The document path is not stamped: it rides `Referer`, which the browser sets
+/// to the host document's same-origin URL (and the host URL mirrors the guest
+/// route by design). The fragment never rides `Referer`, so the hash is stamped
+/// explicitly, and only when there is one.
+///
+/// The hash comes from the bridge context in a sealed guest (its
+/// `window.location` is `about:srcdoc`, useless) and from `window.location` in
+/// the top document — the same source split as [`context_origin`].
+pub fn context_headers() -> Vec<(&'static str, String)> {
+    let hash = context_field("hash")
+        .or_else(|| window().and_then(|w| w.location().hash().ok()))
+        .filter(|hash| !hash.is_empty());
+
+    let mut headers = vec![("x-tonk-session", session_id())];
+    if let Some(hash) = hash {
+        headers.push(("x-tonk-hash", hash));
+    }
+    headers
 }
 
 /// GET a host-relative path and return its body text. When the bridge is

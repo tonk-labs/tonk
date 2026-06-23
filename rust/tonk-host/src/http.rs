@@ -22,6 +22,15 @@ fn window_handle() -> Result<Window, ErrorDetail> {
     window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no `window` available"))
 }
 
+/// Append the request-context headers (`X-Tonk-Hash`/`X-Tonk-Session`) so the
+/// SW can tie the request to its originating document. The path itself rides
+/// `Referer`. Best-effort: a failed append never blocks the request.
+fn append_context_headers(headers: &Headers) {
+    for (name, value) in crate::bridge::context_headers() {
+        let _ = headers.append(name, &value);
+    }
+}
+
 /// POST JSON `body` to `url` with `accept: application/json`,
 /// return the response body text. Errors out on non-2xx with a
 /// `Network` kind error carrying the status code.
@@ -41,6 +50,7 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 
@@ -108,6 +118,7 @@ pub(crate) async fn frame_stream(
     headers
         .append("content-type", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
+    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
     init.set_signal(Some(&abort.signal()));
@@ -250,6 +261,7 @@ pub(crate) async fn post_text(
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 

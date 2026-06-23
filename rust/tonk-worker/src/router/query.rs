@@ -27,6 +27,31 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use crate::reactor::{Conclusion, Query, ReactorError};
 use crate::{TonkWorkerError, router::AppState};
 
+/// Read and log the per-request session context the host stamps: the document
+/// path rides `Referer` (the host's same-origin URL mirrors the guest route),
+/// the fragment rides `X-Tonk-Hash` (when present, since `Referer` drops it),
+/// and `X-Tonk-Session` ties the request to its originating document. Stage 1
+/// of the SW-router rollout: every request now carries which document it came
+/// from; nothing depends on it yet (this just proves the headers arrive). Later
+/// stages key the session entity (route + context facts) by the session id.
+fn log_session_context(route: &str, headers: &HeaderMap) {
+    let get = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+    };
+    let session = get("x-tonk-session");
+    if session.is_empty() {
+        return;
+    }
+    tonk_common::log!(
+        "{route}: session={session} referer={} hash={}",
+        get("referer"),
+        get("x-tonk-hash"),
+    );
+}
+
 /// Path parameters for `/query`.
 #[derive(Debug, Deserialize)]
 pub struct QueryPath {
@@ -87,6 +112,7 @@ async fn query_on_branch<'a>(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
+    log_session_context("query", &headers);
     let bytes = request
         .into_body()
         .collect()

@@ -115,6 +115,22 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
+  // A stable id for this guest iframe instance; the SW keys the session entity
+  // (route + context facts) by it. Distinct per iframe (each runs this once).
+  var SESSION="guest:"+Date.now().toString(36)+"-"+Math.floor(Math.random()*1e9).toString(36);
+  // The request-context headers every relayed /api fetch carries, so the SW can
+  // tie the request to this guest and route/contain it. The path is not stamped:
+  // the host issues the real fetch, so Referer carries the host's URL, which
+  // mirrors the guest route by design. The fragment never rides Referer, so the
+  // hash is stamped explicitly, and only when there is one. The hash comes from
+  // the injected context (the guest's own location is about:srcdoc). Returns
+  // [[name,value]] pairs prepended to any per-request headers.
+  function contextHeaders(){
+    var c=(window.tonk&&window.tonk.context)||{};
+    var headers=[["x-tonk-session",SESSION]];
+    if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
+    return headers;
+  }
   function call(type,extra){
     return ready.then(function(){
       return new Promise(function(resolve,reject){
@@ -134,16 +150,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
-    // Same-origin fetch performed by the HOST: the opaque guest can't reach a
-    // same-origin, SW-routed `/api/...` endpoint itself. The host fetches the
-    // path on its real origin and TRANSFERS the response stream back; we
-    // rebuild a real `Response`. See the `window.fetch` override below — this
-    // is its transport, and host-relative URLs route through here.
-    fetch:function(path){
+    // Same-origin request performed by the HOST: the opaque guest can't reach a
+    // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
+    // request on its real origin and streams the response back; we rebuild a
+    // real `Response`. The full request (method, headers, body) is forwarded so
+    // POST query/subscribe/transact route through here, not just GET. See the
+    // `window.fetch` override below.
+    fetch:function(path,req){
+      req=req||{};
       return ready.then(function(){
         return new Promise(function(resolve,reject){
           var id=mint(); pending.set(id,{resolve:resolve,reject:reject});
-          port.postMessage({v:1,type:"fetch",id:id,path:path});
+          port.postMessage({v:1,type:"fetch",id:id,path:path,
+            method:req.method||"GET",headers:req.headers||[],body:req.body});
         });
       });
     },
@@ -239,10 +258,31 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   // to the native fetch — notably the runtime bootstrap's own blob-URL module
   // imports, which must never be intercepted.
   var nativeFetch=window.fetch.bind(window);
+  // Normalize a fetch(input, init) call into {method, headers:[[k,v]], body}
+  // the relay can postMessage. `input` may be a string or a Request; `init`
+  // overrides Request fields. Body is read to text (our /api bodies are JSON
+  // strings); a Request body is consumed via .text() so we return a Promise.
+  function relayRequest(url,input,init){
+    var method="GET", headers=contextHeaders(), bodyP=Promise.resolve(undefined);
+    var reqLike=(typeof input==="object"&&input)?input:null;
+    if(reqLike){ method=reqLike.method||method; }
+    if(init&&init.method){ method=init.method; }
+    var hsrc=(init&&init.headers)||(reqLike&&reqLike.headers);
+    if(hsrc){
+      if(typeof hsrc.forEach==="function"){ hsrc.forEach(function(v,k){headers.push([k,v]);}); }
+      else if(Array.isArray(hsrc)){ headers=headers.concat(hsrc); }
+      else { for(var k in hsrc){ if(Object.prototype.hasOwnProperty.call(hsrc,k)){headers.push([k,hsrc[k]]);} } }
+    }
+    if(init&&"body"in init){ bodyP=Promise.resolve(init.body); }
+    else if(reqLike&&!reqLike.bodyUsed&&reqLike.body){ bodyP=reqLike.clone().text(); }
+    return bodyP.then(function(body){
+      return tonk.fetch(url,{method:method,headers:headers,body:body});
+    });
+  }
   window.fetch=function(input,init){
     var url=(typeof input==="string")?input:(input&&input.url)||"";
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
-      return tonk.fetch(url);
+      return relayRequest(url,input,init);
     }
     return nativeFetch(input,init);
   };
@@ -928,13 +968,67 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
     if !path.starts_with('/') || path.starts_with("//") {
         return post_error(port, "fetch-error", &id, "path must be host-relative");
     };
+    // The guest forwards the full request so POST query/subscribe/transact work,
+    // not just GET. Build a `Request` carrying its method, headers, and body.
+    let request = match build_relayed_request(&path, data) {
+        Ok(request) => request,
+        Err(e) => return post_error(port, "fetch-error", &id, &e),
+    };
     let port = port.clone();
     spawn_local(async move {
-        match fetch(&path).await {
+        match fetch_request(&request).await {
             Ok(resp) => post_fetch_response(&port, &id, &resp).await,
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
     });
+}
+
+/// Build a `Request` for a relayed guest fetch from the envelope's
+/// `method`/`headers`/`body`. `headers` is an array of `[name, value]` pairs;
+/// `body` is a string (our `/api` bodies are JSON) or absent.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn build_relayed_request(path: &str, data: &JsValue) -> Result<web_sys::Request, String> {
+    let init = web_sys::RequestInit::new();
+    let method = get_str(data, "method").unwrap_or_else(|| "GET".to_owned());
+    init.set_method(&method);
+
+    let headers = web_sys::Headers::new().map_err(|e| format!("Headers: {e:?}"))?;
+    if let Ok(pairs) = Reflect::get(data, &"headers".into())
+        && let Ok(pairs) = pairs.dyn_into::<js_sys::Array>()
+    {
+        for pair in pairs.iter() {
+            let pair: js_sys::Array = match pair.dyn_into() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let (Some(name), Some(value)) = (pair.get(0).as_string(), pair.get(1).as_string()) {
+                let _ = headers.append(&name, &value);
+            }
+        }
+    }
+    init.set_headers(&headers);
+
+    // Body — only for methods that carry one. A bodyless GET/HEAD with a body
+    // set throws, so only attach when present and non-null.
+    let body = Reflect::get(data, &"body".into()).unwrap_or(JsValue::UNDEFINED);
+    if !body.is_undefined() && !body.is_null() {
+        init.set_body(&body);
+    }
+
+    web_sys::Request::new_with_str_and_init(path, &init)
+        .map_err(|e| format!("Request {path}: {e:?}"))
+}
+
+/// Perform a host-side `fetch(Request)` and return the `Response`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_request(request: &web_sys::Request) -> Result<web_sys::Response, String> {
+    let win = window().ok_or("no window")?;
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_request(request))
+        .await
+        .map_err(|e| format!("fetch: {e:?}"))?;
+    resp_value
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| "fetch: not a Response".to_string())
 }
 
 /// Post a `fetch-result` envelope carrying the response status + headers and
@@ -1254,8 +1348,23 @@ fn build_context(host: &Element) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
     let model = host.get_attribute("model").unwrap_or_default();
-    let origin = window()
-        .and_then(|w| w.location().origin().ok())
+    let location = window().map(|w| w.location());
+    let origin = location
+        .as_ref()
+        .and_then(|l| l.origin().ok())
+        .unwrap_or_default();
+    // The guest's own `window.location` is `about:srcdoc`; its REAL location is
+    // the parent's. Pass the parent's path + hash so the guest stamps them on
+    // its requests (the SW reads them to route/contain). `hash` especially:
+    // browsers strip the fragment from network requests, so the SW never sees
+    // it otherwise.
+    let path = location
+        .as_ref()
+        .and_then(|l| l.pathname().ok())
+        .unwrap_or_default();
+    let hash = location
+        .as_ref()
+        .and_then(|l| l.hash().ok())
         .unwrap_or_default();
     let repo = host
         .closest("tonk-repository")
@@ -1272,6 +1381,8 @@ fn build_context(host: &Element) -> Object {
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
+    let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
+    let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
     context
@@ -2293,5 +2404,48 @@ mod tests {
             "sigil-bytes",
             "the drained bytes must reassemble to the body",
         );
+    }
+
+    /// The relay forwards the FULL request (method, headers, body), not just a
+    /// GET path, so POST query/subscribe/transact route through it. This
+    /// verifies `build_relayed_request` reconstructs each from the envelope.
+    #[dialog_common::test]
+    async fn it_builds_a_relayed_request_with_method_headers_body() {
+        // Envelope shaped like what the guest posts: method + [[name,value]]
+        // header pairs + a string body.
+        let data = Object::new();
+        let _ = Reflect::set(&data, &"method".into(), &"POST".into());
+        let headers = Array::new();
+        let pair = Array::new();
+        pair.push(&"content-type".into());
+        pair.push(&"application/json".into());
+        headers.push(&pair);
+        let _ = Reflect::set(&data, &"headers".into(), &headers);
+        let _ = Reflect::set(&data, &"body".into(), &"{\"q\":1}".into());
+
+        let request =
+            build_relayed_request("/api/repository/x/branch/main/query", &data).expect("request");
+
+        assert_eq!(request.method(), "POST");
+        assert!(
+            request
+                .url()
+                .ends_with("/api/repository/x/branch/main/query"),
+            "url: {}",
+            request.url(),
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("content-type")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("application/json"),
+        );
+        let body = JsFuture::from(request.text().expect("text()"))
+            .await
+            .expect("await body");
+        assert_eq!(body.as_string().as_deref(), Some("{\"q\":1}"));
     }
 }
