@@ -87,7 +87,7 @@ pub mod tracking_branch;
 pub use tracking_branch::*;
 
 mod identity;
-pub use identity::ProfileName;
+pub use identity::{ProfileIdentity, ProfileName};
 
 mod petname;
 pub use petname::petname;

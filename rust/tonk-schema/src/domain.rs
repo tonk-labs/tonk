@@ -246,6 +246,24 @@ pub mod command {
     }
 }
 
+/// Attributes on the transient self-identity overlay the topbar chip
+/// reads (`state:self`). Overlay-only — never persisted, never replicated.
+pub mod identity {
+    use super::{Attribute, Entity};
+
+    /// The self profile DID (feeds `<tonk-sigil did=>`). Derived
+    /// attribute: `xyz.tonk.identity/did`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.identity")]
+    pub struct Did(pub Entity);
+
+    /// The self display name (the editable chip label). Derived
+    /// attribute: `xyz.tonk.identity/name`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.identity")]
+    pub struct Name(pub String);
+}
+
 /// Attributes on the profile's own identity facts, written to the
 /// profile's meta branch (private, never replicated) and keyed by the
 /// profile DID entity.

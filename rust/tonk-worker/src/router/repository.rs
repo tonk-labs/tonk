@@ -855,6 +855,10 @@ async fn run_profile_rename(
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to restamp member name: {e}")))?;
 
+    // 3. Re-stamp the self-identity overlay so the topbar chip reflects the
+    //    new name instantly without waiting for the next sync cycle.
+    crate::router::sync::publish_self_identity(&tonk, key, CONTENT_BRANCH).await;
+
     Ok(())
 }
 
@@ -922,6 +926,7 @@ async fn run_pause_sync(
     // sweep settles it to the real state (idle / local / offline).
     if now_enabled {
         super::sync::publish_sync_status_attr(&tonk, repo, branch, Replica::pending_status()).await;
+        super::sync::publish_self_identity(&tonk, repo, branch).await;
     } else {
         super::sync::publish_paused_status(&tonk, repo, branch).await;
     }

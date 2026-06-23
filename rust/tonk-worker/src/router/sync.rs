@@ -122,6 +122,39 @@ pub async fn publish_paused_status(tonk: &crate::worker::TonkState, repo: &str, 
     publish_sync_status_attr(tonk, repo, branch, tonk_schema::Replica::paused_status()).await;
 }
 
+/// Stamp the self-identity overlay (`state:self`) on a space branch so
+/// the topbar chip can render the member's sigil + name without seeing
+/// the profile branch. Overlay-only — never committed, never replicated.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn publish_self_identity(tonk: &crate::worker::TonkState, repo: &str, branch: &str) {
+    use tonk_schema::{ProfileIdentity, Replica, prelude::DidExt as _};
+
+    let Ok(entity) = Replica::SELF_STATE_HERE.parse() else {
+        return;
+    };
+    let did = tonk.profile.did().this();
+    let name = crate::router::profile_name::resolve_display_name(tonk).await;
+    let stamp = ProfileIdentity::new(entity, did, name);
+
+    let session = match tonk
+        .reactor
+        .repository(repo)
+        .branch(branch)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            log!("publish_self_identity: failed to acquire {repo}/{branch}: {e}");
+            return;
+        }
+    };
+    session.state.assert_overlay(stamp);
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&session.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
 /// Whether auto-sync is enabled for `repo`'s content branch: reads the durable
 /// boolean [`ReplicaSyncEnabled`](tonk_schema::ReplicaSyncEnabled) preference
 /// keyed on this device's replica entity, on the space content branch. An
@@ -771,5 +804,58 @@ mod tests {
     fn it_returns_empty_when_no_branch_has_an_upstream() {
         let branches = HashMap::from([("main".to_string(), without_upstream())]);
         assert!(branches_to_sync(&branches).is_empty());
+    }
+}
+
+/// Overlay tests — wasm-only (needs IndexedDB / branch IO via the service-worker
+/// host).
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod overlay_tests {
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::petname;
+
+    use crate::router::{api_router_with_state, tests::test_state, tests::put_repo};
+
+    #[dialog_common::test]
+    async fn it_stamps_the_self_identity_overlay_on_load() {
+        let (app, state, _lsp) = api_router_with_state(test_state().await);
+        let key = put_repo(&app, "chip-space").await;
+        let tonk = state.read().await;
+        super::publish_self_identity(&tonk, &key, "main").await;
+
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .unwrap();
+
+        let entity: dialog_artifacts::Entity = tonk_schema::Replica::SELF_STATE_HERE
+            .parse()
+            .unwrap();
+        let rows: Vec<tonk_schema::ProfileIdentity> = session
+            .handle()
+            .query()
+            .with(session.overlay())
+            .select(Query::<tonk_schema::ProfileIdentity> {
+                this: Term::from(entity),
+                did: Term::var("did"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1, "expected one state:self row");
+        assert_eq!(
+            rows[0].name.0,
+            petname(&tonk.profile.did()),
+            "name must be the petname when no override is set",
+        );
     }
 }
