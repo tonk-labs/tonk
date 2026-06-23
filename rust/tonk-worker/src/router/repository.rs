@@ -926,7 +926,6 @@ async fn run_pause_sync(
     // sweep settles it to the real state (idle / local / offline).
     if now_enabled {
         super::sync::publish_sync_status_attr(&tonk, repo, branch, Replica::pending_status()).await;
-        super::sync::publish_self_identity(&tonk, repo, branch).await;
     } else {
         super::sync::publish_paused_status(&tonk, repo, branch).await;
     }

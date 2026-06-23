@@ -495,6 +495,13 @@ pub async fn sync_status(
     // of blocking on the (network-bound) status request.
     let tonk_state = state.read().await;
 
+    // A status check fires whenever a space is opened, so this is the load-time
+    // hook for the topbar identity chip: re-stamp the `state:self` overlay here,
+    // before any sync-state branch returns, so a freshly opened space (even a
+    // paused or upstream-less one) always carries the member's identity.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    publish_self_identity(&tonk_state, &params.repo, &params.branch).await;
+
     // A paused replica reports `paused` and skips the upstream fetch — so a
     // status sweep can't clobber the chip's `paused` with a fresh `synced`/
     // `ahead` reading, and we don't hit the network while paused.
@@ -815,7 +822,7 @@ mod overlay_tests {
     wasm_bindgen_test_configure!(run_in_service_worker);
 
     use dialog_query::{Output as _, Query, Term};
-    use tonk_schema::petname;
+    use tonk_schema::{petname, prelude::DidExt as _};
 
     use crate::router::{api_router_with_state, tests::test_state, tests::put_repo};
 
@@ -856,6 +863,11 @@ mod overlay_tests {
             rows[0].name.0,
             petname(&tonk.profile.did()),
             "name must be the petname when no override is set",
+        );
+        assert_eq!(
+            rows[0].did.0,
+            tonk.profile.did().this(),
+            "did must match the profile DID for the sigil",
         );
     }
 }
