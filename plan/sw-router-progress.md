@@ -43,6 +43,32 @@ of `Referer`, so the SW never saw the path and every stamp landed on the profile
 branch with an empty path. Restored the explicit `X-Tonk-Path` header (host and
 guest both know their document path). Re-verified green.
 
+## Stage 4 progress — sealed /space renders through router/active (one bug left)
+
+Wired the data-driven shell for the sealed `/space` route and browser-verified
+most of the chain. Decisions used: the guest proxy fills `entity` from the
+host's session id; route views always thread `entity={this}`.
+
+What works (browser-confirmed):
+- The guest proxy `<tonk-host>` fills `entity` on `[data-tonk-entity="session"]`
+  from the host's session id (passed in the bridge context as `session`, since
+  the guest's data queries are issued by the host's `<tonk-host>` carrying
+  `X-Tonk-Session: host:<uuid>` — NOT the guest's own `guest:…`). The sealed
+  content binds `<tonk-display model=tonk:router/active data-tonk-entity=session>`.
+- `router/active` resolves to `tonk:route/default` on the bound `host:<uuid>`.
+- The SW stamps both `router/active {model}` and `route/path {path}` on the
+  host-id entity. Direct query AND SSE-subscribe both return the `route/default`
+  instance (`path: /`) when pinned to the host-id.
+
+The one remaining bug: the inner `<tonk-display model=tonk:route/default
+entity=host:…>` (rendered by `router/active/view`'s delegation) reports
+`NoEntity` ("Not found"), even though that exact instance resolves via direct
+query and SSE. Both attributes are set on it (the debug box prints them). So it
+is a `<tonk-display>` delegation/entity-query gap, not a data-layer problem —
+needs logging inside `tonk-display/src/element.rs` `handle_entity_frame` /
+`entity_query` to see what query it actually issues for the nested route model.
+Everything compiles, the library lowers, and schema tests pass.
+
 ## Verified autonomously
 
 - `tonk-schema`, `tonk-worker`, `tonk-ui` compile on `wasm32-unknown-unknown`;
