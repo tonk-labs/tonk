@@ -47,7 +47,7 @@ impl CustomElement for TonkOrigin {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        distribute(this, &join_base());
+        distribute(this, &join_base(), repo_subject().as_deref());
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
@@ -67,13 +67,34 @@ fn join_base() -> String {
         .unwrap_or_default()
 }
 
-/// Walk the element's descendants and, for each `bind:base=<target>`
-/// attribute, write the base into the named target attribute.
-fn distribute(host: &HtmlElement, base: &str) {
+/// The repository subject DID — `window.tonk.context.repo`, the same value
+/// the `<tonk-repository name=…>` ancestor carries. Provided as the
+/// `subject` bind value so a template can mount a display at the repo
+/// subject (`<tonk-display entity={subject}>`) — e.g. to resolve the
+/// `tonk:invitation` join, which keys on the subject. `None` when there is
+/// no bridge context (the element running outside a sealed guest with no
+/// `<tonk-repository>` to read).
+fn repo_subject() -> Option<String> {
+    tonk_host::bridge::context_field("repo")
+}
+
+/// Walk the element's descendants and fill each `bind:<name>=<target>`
+/// from the supplied context values: `bind:base` ← the invite-URL base,
+/// `bind:subject` ← the repo subject DID (when present). An unknown bind
+/// name, or a `subject` bind with no context, is left untouched.
+fn distribute(host: &HtmlElement, base: &str, subject: Option<&str>) {
     for element in descendants(host) {
         for (name, target) in bindings(&element) {
-            if name == "base" {
-                let _ = element.set_attribute(&target, base);
+            match name.as_str() {
+                "base" => {
+                    let _ = element.set_attribute(&target, base);
+                }
+                "subject" => {
+                    if let Some(subject) = subject {
+                        let _ = element.set_attribute(&target, subject);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -153,6 +174,59 @@ mod tests {
         );
 
         origin.remove();
+    }
+
+    /// `bind:subject` writes the supplied repo subject DID into its
+    /// target attribute (here `entity`, so a display mounts at the repo
+    /// subject). The bridge context isn't present in the harness, so
+    /// `distribute` is called directly with an explicit subject.
+    #[dialog_common::test]
+    async fn it_binds_the_subject_to_declared_targets() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let host: HtmlElement = document
+            .create_element("tonk-origin")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let sink = document.create_element("tonk-display").unwrap();
+        sink.set_attribute("bind:subject", "entity").unwrap();
+        host.append_child(&sink).unwrap();
+        body.append_child(&host).unwrap();
+
+        distribute(&host, "http://x/join", Some("did:key:zX"));
+
+        assert_eq!(sink.get_attribute("entity").as_deref(), Some("did:key:zX"));
+        host.remove();
+    }
+
+    /// `bind:subject` with no subject context leaves the target unset
+    /// (rather than writing an empty string that would mis-resolve).
+    #[dialog_common::test]
+    async fn it_leaves_subject_unset_without_context() {
+        register();
+        let document = window().unwrap().document().unwrap();
+        let body = document.body().unwrap();
+
+        let host: HtmlElement = document
+            .create_element("tonk-origin")
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+        let sink = document.create_element("tonk-display").unwrap();
+        sink.set_attribute("bind:subject", "entity").unwrap();
+        host.append_child(&sink).unwrap();
+        body.append_child(&host).unwrap();
+
+        distribute(&host, "http://x/join", None);
+
+        assert!(
+            !sink.has_attribute("entity"),
+            "no subject context → entity stays unset",
+        );
+        host.remove();
     }
 
     /// Bare descendants with no `bind:` attribute are left untouched.
