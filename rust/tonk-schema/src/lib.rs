@@ -85,3 +85,6 @@ pub use remote::*;
 
 pub mod tracking_branch;
 pub use tracking_branch::*;
+
+mod petname;
+pub use petname::petname;
