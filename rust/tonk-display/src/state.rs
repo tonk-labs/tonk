@@ -162,13 +162,16 @@ pub fn set(host: &Element, state: State) {
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_NOTICE_ATTR: &str = "data-tonk-display-default-notice";
 
-/// Inject a quiet `<wa-callout variant="neutral">` telling the viewer that the
-/// model has no view of its own, so the built-in default presentation (the
-/// `_:_` view or the notation dump) is shown instead. Same shape as the absence
-/// callouts ([`set_absence`]) — a `circle-info` icon and a plain text label —
-/// but unlike them it coexists with the rendered fallback content rather than
-/// replacing it, so it is **prepended** (sits on top, above the default
-/// presentation). An embedder can suppress it with a `slot="default-view"` child.
+/// Inject a `<wa-callout variant="warning">` telling the viewer that the model
+/// has no view of its own, so the built-in default presentation (the `_:_` view
+/// or the notation dump) is shown instead. Same shape as the absence callouts
+/// ([`set_absence`]) — a `circle-info` icon and a plain text label — but
+/// `warning` (theme yellow), not the `danger` red of a missing model/view: a
+/// model without its own view still renders something, so it is a heads-up, not
+/// an error. Unlike the absence callouts it coexists with the rendered fallback
+/// content rather than replacing it, so it is **prepended** (sits on top, above
+/// the default presentation). An embedder can suppress it with a
+/// `slot="default-view"` child.
 #[cfg(target_arch = "wasm32")]
 fn set_default_notice(host: &Element) {
     // Let an embedder own the notice via `slot="default-view"`; if it did,
@@ -187,7 +190,7 @@ fn set_default_notice(host: &Element) {
     let Ok(callout) = document.create_element("wa-callout") else {
         return;
     };
-    let _ = callout.set_attribute("variant", "neutral");
+    let _ = callout.set_attribute("variant", "warning");
     let _ = callout.set_attribute(DEFAULT_NOTICE_ATTR, "");
     if let Ok(icon) = document.create_element("wa-icon") {
         let _ = icon.set_attribute("slot", "icon");
