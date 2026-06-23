@@ -1454,6 +1454,156 @@ view!: &host/context
   display: |
     <span class="tonk-host-context" data-path={path} data-hash={hash}>{path}</span>
 
+# ============================================================
+# ROUTING (Stage 3) — routes as concepts, matched in the SW
+# ============================================================
+#
+# Three distinct `route`-family concepts, do not conflate them:
+#   - `route`          the transient COMMAND (write API): {path, model}
+#   - `router/route`   the durable route TABLE matchit reads: {path, model}
+#   - `router/active`  the per-tab MATCHED route on the host-id entity: {model}
+#   - (plus `route/{name}` — the page models like `route/board`, with views)
+#
+# Level 0 (the SW builtin) resolves the space; these `route!` patterns are
+# Level 1 — they match the REMAINING path after the space prefix. The pattern
+# is axum/matchit 0.8 brace syntax (`{section}`), a plain text field fed to
+# `matchit::insert`.
+
+# The write API: declaring a route is a runtime mutation, like any command.
+# Transient — consumed by the two rules below, no Rust handler.
+command!: &route
+  description: Register a Level 1 route mapping a path to a page model.
+  with:
+    path:
+      description: The axum/matchit path pattern, e.g. `/board` or `/{entity}`.
+      the: xyz.tonk.route/path
+      as: text
+    model:
+      description: The page model to render when this path matches.
+      the: xyz.tonk.route/model
+      as: entity
+
+# The durable table the SW's matchit router subscribes to and rebuilds from.
+# Its own attribute namespace (`xyz.tonk.router.route/*`), distinct from the
+# `route` command's (`xyz.tonk.route/*`): a shared namespace would make the
+# assert rule below tautological (head reads back exactly what the premise
+# binds) since a concept's identity is its attribute set.
+concept!: &router/route
+  this: tonk:router/route
+  description: A durable route — the table the SW page router reads.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.router.route/path
+      cardinality: one
+      as: text
+    model:
+      description: The page model to render when this path matches.
+      the: xyz.tonk.router.route/model
+      cardinality: one
+      as: entity
+
+# Assert the durable route on a `route` command. The command's derived `this`
+# carries over as the `router/route` entity, so re-registering the same
+# path+model (same derived `this`) is an idempotent no-op.
+rule!:
+  description: Materializes a durable router/route from a route command
+  assert!: router/route
+  when:
+    - assert: route
+      where: { this: ?this, path: ?path, model: ?model }
+
+# One route per path: a new route at a path evicts the old one there, UNLESS it
+# is the one we are asserting (same `this`). Mirrors the sheet-order eviction
+# guard — the assert rule above spares the command's own entity, this retract
+# rule drops every same-path route whose `this` differs.
+rule!:
+  description: Evicts a stale router/route when a new one claims its path
+  retract!: router/route
+  when:
+    - assert: route
+      where: { this: ?route, path: ?path }
+    - assert: router/route
+      where: { this: ?this, path: ?path, model: ?model }
+  unless:
+    - assert: ==
+      where: { this: ?this, is: ?route }
+
+# The per-tab matched route, stamped by the SW onto the host-id entity in the
+# resolved branch's overlay. `model` points at the matched page model (e.g.
+# `route/board`); the shell renders THROUGH this indirection because which
+# model matched is itself data.
+concept!: &router/active
+  this: tonk:router/active
+  description: The route matched for a tab — what the shell mounts.
+  with:
+    model:
+      description: The matched page model.
+      the: xyz.tonk.router.active/model
+      cardinality: one
+      as: entity
+
+# The shell mounts `<tonk-display model=router/active entity={host-id}>`; this
+# view delegates to the matched model, threading the `model` field it read into
+# a nested display on the SAME host-id entity. Any captured params (facts on
+# the same entity) are read by the inner page view.
+view!: &router/active/view
+  this: id:tonk:router/active/view
+  model: tonk:router/active
+  display: |
+    <tonk-display model={model} entity={this} />
+
+# ---- Page models (Level 1 targets) and their views ----
+
+# The space's default view — what a bare `/space/{name}/` renders. No params to
+# bind, so a single marker field satisfies the concept shape (a concept must
+# declare at least one field).
+concept!: &route/default
+  this: tonk:route/default
+  description: The space's default page.
+  with:
+    name:
+      description: A label (unused; satisfies the concept shape).
+      the: xyz.tonk.route.default/name
+      as: text
+
+view!: &route/default/view
+  this: id:tonk:route/default/view
+  model: tonk:route/default
+  display: |
+    <tonk-display model=tonk/space />
+
+# The board page — `/space/{name}/board`.
+concept!: &route/board
+  this: tonk:route/board
+  description: The space's board page.
+  with:
+    name:
+      description: A label (unused; satisfies the concept shape).
+      the: xyz.tonk.route.board/name
+      as: text
+
+view!: &route/board/view
+  this: id:tonk:route/board/view
+  model: tonk:route/board
+  display: |
+    <tonk-display model=tonk:board />
+
+# ---- Seeded route table (bootstrap) ----
+#
+# Durable `router/route` instances so the SW page router has a table to match
+# before any `route` command fires. Authoring more routes later goes through
+# the `route` command; these are the built-in defaults every space starts with.
+router/route!: &route/seed-default
+  this: id:tonk:router/route/default
+  path: /
+  model: tonk:route/default
+
+router/route!: &route/seed-board
+  this: id:tonk:router/route/board
+  path: /board
+  model: tonk:route/board
+
 # The sync chip — the default view for `model: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's
 # <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"
