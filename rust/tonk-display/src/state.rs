@@ -164,10 +164,11 @@ const DEFAULT_NOTICE_ATTR: &str = "data-tonk-display-default-notice";
 
 /// Inject a quiet `<wa-callout variant="neutral">` telling the viewer that the
 /// model has no view of its own, so the built-in default presentation (the
-/// `_:_` view or the notation dump) is shown instead. Unlike the error/absence
-/// callouts, this coexists with the rendered fallback content — it informs,
-/// it does not replace. An embedder can suppress it with a `slot="default-view"`
-/// child (handled by `update_slot_children`).
+/// `_:_` view or the notation dump) is shown instead. Same shape as the absence
+/// callouts ([`set_absence`]) — a `circle-info` icon and a plain text label —
+/// but unlike them it coexists with the rendered fallback content rather than
+/// replacing it, so it is **prepended** (sits on top, above the default
+/// presentation). An embedder can suppress it with a `slot="default-view"` child.
 #[cfg(target_arch = "wasm32")]
 fn set_default_notice(host: &Element) {
     // Let an embedder own the notice via `slot="default-view"`; if it did,
@@ -193,16 +194,10 @@ fn set_default_notice(host: &Element) {
         let _ = icon.set_attribute("name", "circle-info");
         let _ = callout.append_child(&icon);
     }
-    if let Ok(strong) = document.create_element("strong") {
-        strong.set_text_content(Some("No view for this model"));
-        let _ = callout.append_child(&strong);
-    }
-    if let Ok(br) = document.create_element("br") {
-        let _ = callout.append_child(&br);
-    }
-    let message = document.create_text_node("Showing the default presentation.");
-    let _ = callout.append_child(&message);
-    let _ = host.append_child(&callout);
+    let label = document.create_text_node("No view for this model; showing the default.");
+    let _ = callout.append_child(&label);
+    // Prepend so the notice sits on top of the rendered default content.
+    let _ = host.insert_before(&callout, host.first_child().as_ref());
 }
 
 #[cfg(target_arch = "wasm32")]
