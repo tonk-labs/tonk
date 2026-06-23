@@ -1659,8 +1659,13 @@ view/directory!:
                overlay the worker stamps on load (see task-5/6). Editing
                the name commits via the worker-backed `profile/rename`
                command (no declarative rule — the Rust handler writes to
-               the profile meta branch). -->
-          <tonk-display entity=state:self model=tonk:identity></tonk-display>
+               the profile meta branch). The empty `no-entity` slot renders
+               nothing while `state:self` is briefly absent (e.g. just after
+               an overlay clear) — without it `<tonk-display>` would dump the
+               missing-instance notation as text, mirroring the sync chip. -->
+          <tonk-display entity=state:self model=tonk:identity>
+            <span slot="no-entity" class="workspace__identity" aria-hidden="true"></span>
+          </tonk-display>
           <!-- One click both opens the share dialog (`data-dialog`) and
                submits the dialog's share form (`form=share-form`, the HTML
                external-submit attribute) — so the invite mints on open with
