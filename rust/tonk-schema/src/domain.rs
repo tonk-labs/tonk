@@ -187,6 +187,33 @@ pub mod command {
         pub struct PauseSync(pub Entity);
     }
 
+    /// Attributes the `profile/rename` command reads from the identity
+    /// chip's `<tonk-editable>` commit event.
+    pub mod rename {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The new name, read from `event.currentTarget.value` on commit
+        /// (blur/Enter) — the same read-path the repo-title editable uses.
+        /// The struct is named `Value` so the attribute is
+        /// `dom.event.current-target/value`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target")]
+        pub struct Value(pub String);
+
+        /// Per-command marker read from the editable's `data-rename`
+        /// attribute. Gives `profile/rename` an attribute the declarative
+        /// `tonk/rename-repository` transient does NOT carry, so a
+        /// repo-title edit (which also writes `current-target/value`)
+        /// never also decodes as a `ProfileRename`. An `Entity` because
+        /// the marker value (`tonk:profile`) carries a `:` — see the
+        /// invite marker note. Derived attribute:
+        /// `dom.event.current-target.dataset/rename`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Rename(pub Entity);
+    }
+
     /// Attributes the `tonk:join` command reads from the `<tonk-page>`
     /// `mount` event's `detail` — a flat, URL-shaped record (fields mirror
     /// the DOM `URL` interface). The service worker can't see the `#hash`,

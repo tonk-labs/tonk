@@ -138,6 +138,29 @@ impl Command for PauseSync {
     type Output = ();
 }
 
+/// Request to rename the current profile (set the member display name).
+///
+/// Asserted transiently when the topbar identity chip's `<tonk-editable>`
+/// commits. Carries the new `name` (read from `currentTarget.value`) and
+/// a `marker` (`data-rename`) that distinguishes it from the declarative
+/// `tonk/rename-repository` transient, which shares the `current-target/
+/// value` attribute. The handler persists the override to the profile
+/// meta branch and re-stamps `MemberName` on the origin space.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProfileRename {
+    /// The command entity (a fresh id per commit).
+    pub this: Entity,
+    /// The new display name.
+    pub name: crate::domain::command::rename::Value,
+    /// Per-command marker (`data-rename="tonk:profile"`).
+    pub marker: crate::domain::command::rename::Rename,
+}
+
+impl Command for ProfileRename {
+    type Input = Self;
+    type Output = ();
+}
+
 /// The durable fact a `tonk:invite` handler asserts: the public
 /// delegation chain it minted, **keyed by the membership DID** (`this`).
 ///
