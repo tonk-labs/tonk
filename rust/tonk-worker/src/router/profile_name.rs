@@ -7,13 +7,21 @@
 use dialog_query::{Output as _, Query, Term};
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
-use tonk_schema::{MemberName, Membership, ProfileName, petname};
+use tonk_schema::{ProfileName, petname};
 
+// Used only by the wasm-gated `restamp_member_name`.
+#[cfg(target_arch = "wasm32")]
 use crate::RepositoryError;
 use crate::worker::TonkState;
+#[cfg(target_arch = "wasm32")]
+use tonk_schema::{MemberName, Membership};
 
 // The meta and content branch name constants, as used throughout router code.
 const META_BRANCH: &str = "meta";
+// Only the wasm-gated rename handler re-stamps member names, so this and
+// `restamp_member_name` exist only on the wasm target (the worker's real
+// runtime). Gating them keeps the native `clippy -D warnings` build clean.
+#[cfg(target_arch = "wasm32")]
 const CONTENT_BRANCH: &str = "main";
 
 /// The member's effective display name: stored override, else the
@@ -55,6 +63,7 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
 
 /// Re-stamp the self member's `MemberName` on a space's content branch.
 /// Used by the rename handler so the current space's roster updates.
+#[cfg(target_arch = "wasm32")]
 pub(crate) async fn restamp_member_name(
     tonk: &TonkState,
     key: &str,
