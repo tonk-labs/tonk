@@ -14,7 +14,6 @@ use crate::worker::TonkState;
 
 // The meta and content branch name constants, as used throughout router code.
 const META_BRANCH: &str = "meta";
-#[allow(dead_code)]
 const CONTENT_BRANCH: &str = "main";
 
 /// The member's effective display name: stored override, else the
@@ -56,7 +55,6 @@ pub(crate) async fn resolve_display_name(tonk: &TonkState) -> String {
 
 /// Re-stamp the self member's `MemberName` on a space's content branch.
 /// Used by the rename handler so the current space's roster updates.
-#[allow(dead_code)]
 pub(crate) async fn restamp_member_name(
     tonk: &TonkState,
     key: &str,
@@ -83,9 +81,7 @@ pub(crate) async fn restamp_member_name(
         .commit()
         .perform(&tonk.operator)
         .await
-        .map_err(|e| {
-            RepositoryError::Internal(format!("restamp member name for '{key}': {e}"))
-        })?;
+        .map_err(|e| RepositoryError::Internal(format!("restamp member name for '{key}': {e}")))?;
     Ok(())
 }
 

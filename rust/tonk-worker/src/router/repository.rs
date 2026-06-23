@@ -839,7 +839,10 @@ async fn run_profile_rename(
         .profile_repository()
         .branch(META_BRANCH)
         .transaction()
-        .assert(tonk_schema::ProfileName::new(profile_entity, name.to_string()))
+        .assert(tonk_schema::ProfileName::new(
+            profile_entity,
+            name.to_string(),
+        ))
         .commit()
         .perform(&tonk.operator)
         .await
@@ -850,9 +853,7 @@ async fn run_profile_rename(
     // 2. Re-stamp MemberName on the current space.
     crate::router::profile_name::restamp_member_name(&tonk, key, name)
         .await
-        .map_err(|e| {
-            TonkWorkerError::Internal(format!("failed to restamp member name: {e}"))
-        })?;
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to restamp member name: {e}")))?;
 
     Ok(())
 }

@@ -8,17 +8,17 @@
 use dialog_varsig::Did;
 
 const ADJECTIVES: &[&str] = &[
-    "fancy", "brave", "calm", "clever", "eager", "gentle", "jolly", "keen",
-    "lively", "mellow", "nimble", "plucky", "quiet", "rapid", "sunny", "witty",
-    "bold", "bright", "cosy", "deft", "fond", "glad", "honest", "lucky",
-    "merry", "noble", "proud", "quirky", "spry", "tidy", "vivid", "warm",
+    "fancy", "brave", "calm", "clever", "eager", "gentle", "jolly", "keen", "lively", "mellow",
+    "nimble", "plucky", "quiet", "rapid", "sunny", "witty", "bold", "bright", "cosy", "deft",
+    "fond", "glad", "honest", "lucky", "merry", "noble", "proud", "quirky", "spry", "tidy",
+    "vivid", "warm",
 ];
 
 const ANIMALS: &[&str] = &[
-    "otter", "lynx", "heron", "marten", "badger", "vole", "finch", "newt",
-    "stoat", "ibis", "tapir", "gecko", "raven", "quokka", "dingo", "okapi",
-    "panda", "robin", "shrew", "toad", "wren", "yak", "zebra", "puffin",
-    "mole", "hare", "swift", "crane", "loris", "civet", "fossa", "genet",
+    "otter", "lynx", "heron", "marten", "badger", "vole", "finch", "newt", "stoat", "ibis",
+    "tapir", "gecko", "raven", "quokka", "dingo", "okapi", "panda", "robin", "shrew", "toad",
+    "wren", "yak", "zebra", "puffin", "mole", "hare", "swift", "crane", "loris", "civet", "fossa",
+    "genet",
 ];
 
 /// A stable `adjective-animal` name derived from a profile DID.
@@ -63,7 +63,11 @@ mod tests {
         let name = petname(&did("z6MkProfileA"));
         let parts: Vec<&str> = name.split('-').collect();
         assert_eq!(parts.len(), 2, "expected adjective-animal, got {name}");
-        assert!(parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_lowercase())));
+        assert!(
+            parts
+                .iter()
+                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_lowercase()))
+        );
     }
 
     #[test]

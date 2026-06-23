@@ -203,7 +203,9 @@ mod tests {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let name = json["display_name"].as_str().expect("display_name is a string");
+        let name = json["display_name"]
+            .as_str()
+            .expect("display_name is a string");
         assert_eq!(name, expected);
     }
 }
