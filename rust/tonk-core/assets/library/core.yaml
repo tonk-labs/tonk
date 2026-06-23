@@ -367,6 +367,67 @@ view!: &invitation/link
       </wa-input>
     </div>
 
+# The agent-prompt invite view — an alternative to `id:invitation/link`
+# that renders a full, paste-able agent prompt (task + bootstrap commands)
+# with the minted invite URL embedded, instead of a bare link. Mounted by
+# the empty-artifact canvas via `view=id:invitation/agent-prompt`. The page
+# title arrives as the `data-page` host attribute; the origin base as
+# `data-base` (from `<tonk-origin>`); `access`/`remote`/`code` are the
+# resolved invitation. `<wa-copy-button from=…>` copies the rendered
+# `<pre>` verbatim. (Space name is layered in next via a wrapping
+# `tonk:repository` view.)
+view/label!:
+  this: id:invitation/agent-prompt
+  model: invitation
+  display: |
+    <div class="agent-prompt">
+      <style>
+        .agent-prompt { border: var(--wa-border-width-s) solid var(--wa-color-surface-border); border-radius: var(--wa-border-radius-m); background: var(--wa-color-surface-lowered); overflow: hidden; }
+        .agent-prompt__bar { display: flex; align-items: center; justify-content: space-between; padding: var(--wa-space-s) var(--wa-space-m); border-bottom: var(--wa-border-width-s) solid var(--wa-color-surface-border); }
+        .agent-prompt__label { font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--wa-color-text-quiet); }
+        .agent-prompt__copy { color: var(--wa-color-text-quiet); }
+        .agent-prompt__copy::part(button) {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: var(--wa-space-xs);
+          border: var(--wa-border-width-s) solid var(--wa-color-surface-border);
+          border-radius: var(--wa-border-radius-m);
+          background: var(--wa-color-surface-default);
+          color: var(--wa-color-text-quiet);
+          transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+        }
+        .agent-prompt__copy::part(button):hover {
+          background: var(--wa-color-neutral-fill-quiet);
+          border-color: var(--wa-color-neutral-border-loud);
+          color: var(--wa-color-text-normal);
+        }
+        .agent-prompt__copy::part(copy-icon) { font-size: 15px; }
+        .agent-prompt__pre { margin: 0; padding: var(--wa-space-l) var(--wa-space-m); font-family: var(--wa-font-family-code); font-size: var(--wa-font-size-s); line-height: var(--wa-line-height-normal); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--wa-color-text-normal); }
+      </style>
+      <div class="agent-prompt__bar">
+        <span class="agent-prompt__label">prompt for your agent</span>
+        <wa-copy-button class="agent-prompt__copy" value="You're helping build this repo.
+
+    Claim access and orient yourself, then fill the &quot;{dom.host/data-page}&quot; page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+
+      slide join '{dom.host/data-base}?access={access}{remote}#{code}'
+      slide guide        # how to drive the CLI
+      slide schema       # concepts already on the branch
+
+    Then build."></wa-copy-button>
+      </div>
+      <pre class="agent-prompt__pre">You're helping build this repo.
+
+    Claim access and orient yourself, then fill the "{dom.host/data-page}" page. Work the repo's data, schemas and views — not this page alone. Everything you change lands here for review before it's applied.
+
+      slide join '{dom.host/data-base}?access={access}{remote}#{code}'
+      slide guide        # how to drive the CLI
+      slide schema       # concepts already on the branch
+
+    Then build.</pre>
+    </div>
+
 # A space member, as seen in the "shared with" roster. Reads the
 # `Membership` + `MemberRole` facts the worker records on the content
 # branch (the synced branch, so the roster converges across the space).
@@ -917,11 +978,25 @@ view!:
       </h1>
       <section class="empty-artifact__deeplink">
         <div class="empty-artifact__deeplink-label">agent link &middot; paste into your agent</div>
-        <tonk-invite
-          artifact={this}
-          concept="tonk:artifact"
-          button-class="empty-artifact__share"
-          label="copy"></tonk-invite>
+        <!-- Mint a repo invite on mount via the same `tonk:invite` command
+             the repo-share dialog uses. `<tonk-origin>` supplies the real
+             host origin (`data-base`) and the repo subject DID (`entity`,
+             via `bind:subject`) so the sealed guest can resolve the
+             `tonk:invitation` join without reading `window` or the routing
+             ancestors itself. The default `id:invitation/link` view renders
+             the assembled URL + copy button; until both halves land, the
+             `no-entity` slot shows a pending affordance. -->
+        <tonk-page onmount=tonk:invite data-invite="tonk:invite"></tonk-page>
+        <tonk-origin>
+          <tonk-display
+            bind:subject="entity"
+            bind:base="data-base"
+            model=invitation
+            view=tonk:view/label
+            data-page="{title}">
+            <div slot="no-entity" class="empty-artifact__deeplink-label">Generating link…</div>
+          </tonk-display>
+        </tonk-origin>
       </section>
       <div class="empty-artifact__instr">
         <p>Paste this link into your agent's chat to start building.</p>
