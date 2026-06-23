@@ -24,6 +24,25 @@ for browser verification — see "Why I stopped before Stage 4" below.
 All three are **additive**: the Leptos router still drives production, so the app
 boots exactly as before. The data-driven path runs alongside it.
 
+## Browser-verified (Stage 3 end to end)
+
+Ran the app (`nix develop .#default --command dev:web`, port 8080) and drove it
+with Chrome DevTools MCP. Confirmed on a real space
+(`did:key:z6MkpYAk…`/`main`):
+
+- `HostContext` stamps on the space branch overlay, keyed by host-id entities,
+  with `path: /space/z6MkpYAk…`.
+- `router/active` stamps `model: tonk:route/default` for the `/` remaining path,
+  and `model: tonk:route/board` when the path is `/space/…/board`.
+- The seeded `router/route` table is present and queryable.
+
+**Bug found + fixed in the process (commit bcb6abef):** a service worker reads
+`request.headers`, which never includes `Referer` (the browser exposes it only
+as the `request.referrer` property). PR #527 had dropped `x-tonk-path` in favour
+of `Referer`, so the SW never saw the path and every stamp landed on the profile
+branch with an empty path. Restored the explicit `X-Tonk-Path` header (host and
+guest both know their document path). Re-verified green.
+
 ## Verified autonomously
 
 - `tonk-schema`, `tonk-worker`, `tonk-ui` compile on `wasm32-unknown-unknown`;
@@ -55,32 +74,41 @@ plan gates it on a "proven host-id-entity seam" (Stage 3 rendering one route end
 to end in a browser). That proof needs a running app, which can't be done
 unattended. Landing Stage 4 blind risks a non-booting app.
 
-## Stage 4 — ready to execute (needs a browser at each step)
+## Stage 4 — refined plan (decision: keep `/` and `/join` special for now)
 
-The seam is in place: `tonk_host::bridge::session_id()` is public and returns
-the same `host:<uuid>` the SW receives, so the shell can bind
-`entity={session_id}`.
+Stage 3 is proven, so the seam is real. The remaining cutover is the
+production-breaking step; the user chose to keep `/` and `/join` as Level-0
+specials, so only the per-space render goes data-driven now. The blocker
+surfaced while scoping: the sealed `/space/:space` content hardcodes
+`<tonk-display model=tonk/space>` (`space_sealed.rs:75`), and to render through
+`router/active` the inner display needs `entity={the guest's host-id}` — but the
+guest mints its `SESSION` as a private `var` inside the bridge IIFE
+(`tonk-portal/src/bridge.rs:120`), exposed only via the `x-tonk-session` header,
+not on `window.tonk`. So the cutover needs new plumbing on the working sealed
+path. Steps, each browser-verified:
 
-1. **Prove Stage 3 first** (the gate). With the app running, navigate to
-   `/space/{home}/board`, then read the host-id entity on the space's `main`
-   overlay: confirm a `router/active` fact pointing at `tonk:route/board`. Mount
-   `<tonk-display model=router/active entity={host-id}>` on a scratch route and
-   confirm it renders the board. Fire a `route` command and confirm the table
-   updates (re-request the path, see the new match).
-2. **Switch the shell.** Replace the `<Router>/<Routes>` block in
-   `launcher.rs` with `<tonk-display model=router/active entity={host-id}>`
-   (host-id from `tonk_host::bridge::session_id()`).
-3. **Move routes to `route!`.** `/` and `/join` → profile-side `router/route`
-   instances (profile.yaml); per-space `/board` `/inspector` `/{entity}@{model}`
-   → `router/route` in core.yaml. Level 0 already owns the `/space/{seg}` prefix.
-   The SW must also match+stamp `router/active` for the **profile** target (Stage
-   3b only does it for spaces — extend `stamp_host_context`).
-4. **Nav glue.** Intercept same-origin link clicks + `popstate`, forward to the
-   SW via the existing `navigate` channel (now page→SW). pushState generates no
-   FetchEvent, so the host must forward it; the SW re-stamps `router/active`, and
-   the subscribed shell display switches with no reload.
-5. **Delete `leptos_router`** from `tonk-ui/Cargo.toml` (5 source refs, in
-   `launcher.rs`, `display.rs`, `space_sealed.rs`).
+1. **Expose the guest session id.** Add `session: SESSION` to the `window.tonk`
+   object (`tonk-portal/src/bridge.rs`, the `var tonk={…}` literal) so guest
+   content can reference it. Additive; can't break anything.
+2. **Make `<tonk-display>` resolve a dynamic entity** from the bridge context
+   (today `entity` is a literal attribute; the guest proxy `tonk-guest/guest_host.rs`
+   doesn't annotate displays). Either teach the proxy to fill `entity` from
+   `window.tonk.session`, or add a small indirection element. THIS is the real
+   work — verify the nested `router/active` → matched-model delegation renders.
+3. **Switch the sealed content** (`space_sealed.rs:75`) from
+   `<tonk-display model=tonk/space>` to
+   `<tonk-display model=tonk:router/active entity=<guest session>>`.
+4. **Keep `/` and `/join` on Leptos** (user's call). Only `/space/:space` goes
+   data-driven. So `leptos_router` is NOT deleted yet — that waits until `/` and
+   `/join` also move to `route!` (a later step). Update task #9 accordingly.
+5. **Per-space sub-routes** (`/board`, `/{entity}@{model}`, the `*subject`
+   route in `display.rs`): move to `route!` concepts with param binding, and
+   retire the Leptos `/space/:space/*subject` route. The artifact routes need
+   matchit param capture → facts on the host-id entity → inner view reads them.
+6. **Nav glue + live router** as before (host forwards link clicks/popstate to
+   the SW; SW re-stamps; subscribed display switches). The current
+   per-request matching already updates on the next request; live-without-request
+   needs the subscription-cached matchit router.
 
 ## Stage 5+ (after the cutover)
 

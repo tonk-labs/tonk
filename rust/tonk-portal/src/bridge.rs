@@ -143,6 +143,11 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   }
   var tonk={
     context:{this:"",model:""},
+    // This guest instance's per-tab session id (the X-Tonk-Session value). The
+    // SW keys the host-id entity's overlay facts (HostContext, router/active) by
+    // it, so guest content that renders through the routing indirection can bind
+    // `entity` to this to resolve its own tab's matched route.
+    session:SESSION,
     ready:ready,
     query:function(body){return call("query",{body:body});},
     transact:function(request){return call("transact",{request:request});},
