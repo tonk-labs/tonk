@@ -141,6 +141,12 @@ pub fn set(host: &Element, state: State) {
     // `default-view` after a `no-model`, so the informative callout does
     // not sit beside the rendered content.
     remove_absence_callout(host);
+    // The default-view notice coexists with rendered content, so it is
+    // cleared on every transition and re-injected only for `DefaultView`.
+    remove_default_notice(host);
+    if matches!(state, State::DefaultView) {
+        set_default_notice(host);
+    }
     // Project the matching slot child for this state and hide the rest.
     // `ready` / `default-view` render the view output, so no slot child
     // shows; `loading` / `empty` may have their own slot child.
@@ -149,6 +155,69 @@ pub fn set(host: &Element, state: State) {
         other => Some(other),
     };
     update_slot_children(host, project);
+}
+
+/// Sentinel marking the built-in *default-view* notice, kept distinct from the
+/// error and absence sentinels so they never clobber each other.
+#[cfg(target_arch = "wasm32")]
+const DEFAULT_NOTICE_ATTR: &str = "data-tonk-display-default-notice";
+
+/// Inject a quiet `<wa-callout variant="neutral">` telling the viewer that the
+/// model has no view of its own, so the built-in default presentation (the
+/// `_:_` view or the notation dump) is shown instead. Unlike the error/absence
+/// callouts, this coexists with the rendered fallback content — it informs,
+/// it does not replace. An embedder can suppress it with a `slot="default-view"`
+/// child (handled by `update_slot_children`).
+#[cfg(target_arch = "wasm32")]
+fn set_default_notice(host: &Element) {
+    // Let an embedder own the notice via `slot="default-view"`; if it did,
+    // skip the built-in one.
+    if host
+        .query_selector("[slot=\"default-view\"]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(callout) = document.create_element("wa-callout") else {
+        return;
+    };
+    let _ = callout.set_attribute("variant", "neutral");
+    let _ = callout.set_attribute(DEFAULT_NOTICE_ATTR, "");
+    if let Ok(icon) = document.create_element("wa-icon") {
+        let _ = icon.set_attribute("slot", "icon");
+        let _ = icon.set_attribute("name", "circle-info");
+        let _ = callout.append_child(&icon);
+    }
+    if let Ok(strong) = document.create_element("strong") {
+        strong.set_text_content(Some("No view for this model"));
+        let _ = callout.append_child(&strong);
+    }
+    if let Ok(br) = document.create_element("br") {
+        let _ = callout.append_child(&br);
+    }
+    let message = document.create_text_node("Showing the default presentation.");
+    let _ = callout.append_child(&message);
+    let _ = host.append_child(&callout);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn remove_default_notice(host: &Element) {
+    let selector = format!("[{DEFAULT_NOTICE_ATTR}]");
+    let Ok(found) = host.query_selector_all(&selector) else {
+        return;
+    };
+    for i in 0..found.length() {
+        if let Some(node) = found.item(i)
+            && let Some(el) = node.dyn_ref::<Element>()
+        {
+            el.remove();
+        }
+    }
 }
 
 /// Transition the host to a loud error `state` and surface a
