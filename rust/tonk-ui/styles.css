@@ -536,6 +536,48 @@ tonk-roster {
     gap: var(--wa-space-m);
     color: var(--wa-color-text-quiet);
 }
+/* Self-identity chip: the signed-in member's sigil + their editable
+   display name, in the topbar actions row. The name reads as plain text
+   until hovered/focused, mirroring the repository-title banner
+   (`.workspace__title-input`); the avatar reuses the roster sigil's
+   black-ringed circle (`.workspace__roster-avatar`). */
+.workspace__identity {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-2xs);
+    color: var(--wa-color-text-normal, inherit);
+}
+.workspace__identity-avatar {
+    width: 1.5rem;
+    height: 1.5rem;
+    box-sizing: border-box;
+    overflow: hidden;
+    border-radius: 50%;
+    border: 1.5px solid #1c1c1c;
+    background: #fff;
+    color: #1c1c1c;
+    flex: none;
+}
+.workspace__identity-name {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--wa-border-radius-s);
+    padding: var(--wa-space-3xs) var(--wa-space-2xs);
+    margin: calc(-1 * var(--wa-space-3xs)) calc(-1 * var(--wa-space-2xs));
+    min-width: 6ch;
+    white-space: nowrap;
+    cursor: text;
+}
+.workspace__identity-name:hover {
+    border-color: var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
+}
+.workspace__identity-name:focus {
+    outline: none;
+    border-color: var(--wa-color-brand-fill-loud, #0070f3);
+    background: var(--wa-color-surface-default, #fff);
+}
 /* The share (`<tonk-share>`) and pause/resume (`<tonk-sync-toggle>`)
    controls: icon-only ghost buttons that brighten on hover. */
 .workspace__share,
