@@ -44,8 +44,8 @@ use reqwest::StatusCode;
 use serde_json::json;
 
 use crate::api;
-use crate::components::route::parse_space;
 use crate::error::TonkUiError;
+use tonk_schema::parse_space;
 
 /// The model a bare `/space/{name}/` renders — the space's primary
 /// interface. A user can override it per repository; it presets to the

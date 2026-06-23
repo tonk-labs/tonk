@@ -51,6 +51,13 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 mod query;
 pub use query::QueryPath;
 
+// Level 0 routing lives in `tonk-schema` (shared with the UI); re-export it so
+// the SW's routing/containment code reads it locally.
+pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod session;
+
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 

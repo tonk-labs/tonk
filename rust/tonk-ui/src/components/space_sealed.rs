@@ -24,7 +24,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params;
 use leptos_router::params::Params;
 
-use crate::components::route::parse_space;
+use tonk_schema::parse_space;
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct SealedSpaceParams {

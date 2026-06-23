@@ -1427,6 +1427,33 @@ concept!: &tonk/sync
       cardinality: one
       as: entity
 
+# A tab's request context, stamped by the service worker onto the per-tab
+# host-id entity (the X-Tonk-Session value). Keyed per tab, not a singleton, so
+# each tab reads its own location.
+concept!: &tonk/host
+  this: tonk:host
+  description: This tab's request context (path + hash) for the space in scope.
+  with:
+    path:
+      description: The document path the request came from.
+      the: xyz.tonk.host/path
+      cardinality: one
+      as: text
+    hash:
+      description: The document fragment (may be empty).
+      the: xyz.tonk.host/hash
+      cardinality: one
+      as: text
+
+# Proof view for Stage 2: render a tab's stamped path. Mounted as
+# `<tonk-display entity={host-id} model=tonk:host>`; a second tab's host-id
+# entity shows its own path, not the first's.
+view!: &host/context
+  this: id:tonk:host/context
+  model: tonk:host
+  display: |
+    <span class="tonk-host-context" data-path={path} data-hash={hash}>{path}</span>
+
 # The sync chip — the default view for `model: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's
 # <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"

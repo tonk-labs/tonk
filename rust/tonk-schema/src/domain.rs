@@ -92,6 +92,33 @@ pub mod sync {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for the `tonk/host` concept — a tab's request context.
+///
+/// Keyed on the per-tab host-id entity (the `X-Tonk-Session` value parsed to an
+/// [`Entity`]), stamped by the service worker onto the Level-0-resolved branch's
+/// overlay. Both are cardinality one: a navigation re-stamps the same entity and
+/// supersedes the prior values rather than accumulating, so the tab's context is
+/// always exactly the latest location.
+///
+/// [`Entity`]: dialog_artifacts::Entity
+pub mod host {
+    use super::Attribute;
+
+    /// The document path the request came from — the host's `location.pathname`,
+    /// carried on `Referer` and parsed by the SW. Cardinality one.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.host")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+
+    /// The document fragment — the host's `location.hash`, carried on
+    /// `X-Tonk-Hash` (the network strips fragments otherwise). Cardinality one.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.host")]
+    #[cardinality(one)]
+    pub struct Hash(pub String);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers
