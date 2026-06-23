@@ -23,13 +23,14 @@ const ANIMALS: &[&str] = &[
 
 /// A stable `adjective-animal` name derived from a profile DID.
 pub fn petname(did: &Did) -> String {
-    // Two independent FNV-1a folds over the DID string give two indices.
-    // FNV is stable across platforms and runs (unlike `DefaultHasher`,
-    // which is randomized), preserving the determinism contract.
+    // Two FNV-1a folds over the DID string with distinct initial seeds produce
+    // decorrelated indices for adjective and animal. FNV is stable across
+    // platforms and runs (unlike `DefaultHasher`, which is randomized),
+    // preserving the determinism contract.
     let bytes = did.as_str().as_bytes();
 
     let adj = fnv1a(bytes, 0xcbf29ce484222325) as usize % ADJECTIVES.len();
-    let animal = fnv1a(bytes, 0x100000001b3) as usize % ANIMALS.len();
+    let animal = fnv1a(bytes, 0xdeadbeefcafe1234) as usize % ANIMALS.len();
     format!("{}-{}", ADJECTIVES[adj], ANIMALS[animal])
 }
 
@@ -54,7 +55,7 @@ mod tests {
     #[test]
     fn it_is_deterministic_for_the_same_did() {
         let d = did("z6MkProfileA");
-        assert_eq!(petname(&d), petname(&d));
+        assert_eq!(petname(&d), "deft-shrew");
     }
 
     #[test]
