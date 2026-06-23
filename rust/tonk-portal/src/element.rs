@@ -42,7 +42,7 @@ impl CustomElement for TonkPortal {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["content", "entity", "model"]
+        &["content", "entity", "model", "runtime"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -63,12 +63,31 @@ impl CustomElement for TonkPortal {
         // Opaque-origin sandbox: scripts run but `parent.document` is
         // unreachable. The bridge bootstrap reaches the parent only over
         // a `MessagePort` it opens and transfers in its `hello`.
-        let _ = iframe.set_attribute("sandbox", "allow-scripts");
+        //
+        // `allow-forms` lets the guest's `<form>`s fire their `submit` event
+        // (so declarative `onsubmit=` bindings run); it does NOT let a form
+        // navigate the guest away, because the runtime installs a global
+        // capture-phase `submit` guard that `preventDefault`s every
+        // submission before its native action. We deliberately withhold
+        // `allow-top-navigation` and `allow-same-origin` — the guest still
+        // can't reach the parent or a real origin.
+        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms");
 
-        // The iframe always fills its container.
+        // Delegate the `clipboard-write` Permissions Policy into the guest so
+        // its copy buttons (e.g. the share dialog's invite-link copy) can call
+        // `navigator.clipboard.writeText`. This is Permissions Policy, NOT a
+        // sandbox grant — orthogonal to the sandbox lockdown above; without it
+        // the API is blocked outright regardless of sandbox flags.
+        let _ = iframe.set_attribute("allow", "clipboard-write");
+
+        // The iframe always fills its container. `flex: 1` + `align-self:
+        // stretch` make it fill a flex-column host (the display-route layout)
+        // without needing a definite-height ancestor for `height: 100%`.
         let style = iframe.style();
         let _ = style.set_property("width", "100%");
         let _ = style.set_property("height", "100%");
+        let _ = style.set_property("flex", "1 1 auto");
+        let _ = style.set_property("align-self", "stretch");
         let _ = style.set_property("border", "0");
 
         let state = Rc::new(RefCell::new(PortalState::new()));
@@ -79,8 +98,17 @@ impl CustomElement for TonkPortal {
         // the `hello` listener matches the live `contentWindow`, so the
         // bootstrap script resolves this portal when it posts `hello`.
         let content = host.get_attribute("content").unwrap_or_default();
+        // In `runtime` mode the guest renders OUR elements (a real
+        // `<tonk-display>`): the bootstrap additionally pulls in the
+        // injected element runtime + CSS before `content` upgrades.
+        let runtime = host.has_attribute("runtime");
         let _ = host.append_child(&iframe);
-        let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
+        let srcdoc = if runtime {
+            bridge::bootstrap_srcdoc_with_runtime(&content)
+        } else {
+            bridge::bootstrap_srcdoc(&content)
+        };
+        let _ = iframe.set_attribute("srcdoc", &srcdoc);
 
         state.borrow_mut().iframe = Some(iframe);
         *self.inner.borrow_mut() = Some(state);
@@ -133,7 +161,12 @@ fn reload(host: &Element, state: &Rc<RefCell<PortalState>>) {
     s.clear_subs();
     if let Some(iframe) = s.iframe.as_ref() {
         let content = host.get_attribute("content").unwrap_or_default();
-        let _ = iframe.set_attribute("srcdoc", &bridge::bootstrap_srcdoc(&content));
+        let srcdoc = if host.has_attribute("runtime") {
+            bridge::bootstrap_srcdoc_with_runtime(&content)
+        } else {
+            bridge::bootstrap_srcdoc(&content)
+        };
+        let _ = iframe.set_attribute("srcdoc", &srcdoc);
     }
 }
 
@@ -265,7 +298,9 @@ mod tests {
             .expect("sandbox attribute present");
         // No `allow-same-origin`: the iframe is an opaque origin and
         // reaches the parent only over the bridge's `MessagePort`.
-        assert_eq!(sandbox, "allow-scripts");
+        // `allow-forms` lets a guest `<form>` fire its `submit` event (a
+        // capture-phase guard cancels the native navigation).
+        assert_eq!(sandbox, "allow-scripts allow-forms");
     }
 
     #[dialog_common::test]

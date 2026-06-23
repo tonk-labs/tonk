@@ -15,6 +15,7 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use web_sys::{HtmlElement, window};
 
+use crate::navigate::{self, NavigateListener};
 use crate::ops::{self, InstalledListener};
 use crate::query_cache::QueryCache;
 use crate::registry::Registry;
@@ -51,6 +52,9 @@ impl HostState {
 pub(crate) struct TonkHost {
     state: RefCell<Option<Rc<RefCell<HostState>>>>,
     listeners: RefCell<Vec<InstalledListener>>,
+    /// `navigator.serviceWorker` `message` listener that performs
+    /// worker-requested navigations (the main-thread navigate provider).
+    navigate: RefCell<Option<NavigateListener>>,
 }
 
 impl CustomElement for TonkHost {
@@ -69,11 +73,18 @@ impl CustomElement for TonkHost {
         *self.state.borrow_mut() = Some(state.clone());
         let installed = ops::attach_all(this, state);
         *self.listeners.borrow_mut() = installed;
+        // Install the main-thread navigate provider: a worker command can
+        // ask the page to redirect by posting `{ type: "navigate", href }`
+        // to its client, and this listener performs it.
+        *self.navigate.borrow_mut() = navigate::install();
     }
 
     fn disconnected_callback(&mut self, this: &HtmlElement) {
         let listeners = std::mem::take(&mut *self.listeners.borrow_mut());
         ops::detach_all(this, &listeners);
+        if let Some(navigate) = self.navigate.borrow_mut().take() {
+            navigate.remove();
+        }
         if let Some(state) = self.state.borrow_mut().take() {
             let mut s = state.borrow_mut();
             s.disposed = true;

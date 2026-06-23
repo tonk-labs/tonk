@@ -9,7 +9,7 @@ use dialog_query::Concept;
 use dialog_varsig::Did;
 use serde::Serialize;
 
-use crate::domain::membership::{Invitation, Member, Name, Subject};
+use crate::domain::membership::{Invitation, Member, Name, Role, Subject};
 use crate::prelude::*;
 
 /// A membership — a profile is a member of a repository.
@@ -94,6 +94,53 @@ impl InvitedVia {
     }
 }
 
+/// The role of a member in a space, stamped onto a [`Membership`]
+/// entity. Follows the [`InvitedVia`] / [`SpaceStatus`] stamp pattern:
+/// a standalone fact on an existing entity, so the base [`Membership`]
+/// query stays uniform across all members.
+///
+/// The creator is stamped [`MemberRole::FOUNDER`] at space creation;
+/// invite claimers are stamped [`MemberRole::MEMBER`] on join. Lives on
+/// the repository's content branch alongside [`Membership`], so the
+/// roster replicates to every member.
+///
+/// [`SpaceStatus`]: crate::SpaceStatus
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MemberRole {
+    /// The membership entity being stamped.
+    pub this: Entity,
+    /// The member's role — `tonk:founder` or `tonk:member`.
+    pub role: Role,
+}
+
+impl MemberRole {
+    /// The space creator's role URI.
+    pub const FOUNDER: &'static str = "tonk:founder";
+    /// An invite claimer's role URI.
+    pub const MEMBER: &'static str = "tonk:member";
+
+    /// Stamp `membership` with the founder role.
+    pub fn founder(membership: Entity) -> Self {
+        Self::stamp(membership, Self::FOUNDER)
+    }
+
+    /// Stamp `membership` with the member role.
+    pub fn member(membership: Entity) -> Self {
+        Self::stamp(membership, Self::MEMBER)
+    }
+
+    /// Stamp `membership` with the role at `role_uri`. The URIs
+    /// ([`FOUNDER`](Self::FOUNDER) / [`MEMBER`](Self::MEMBER)) are
+    /// constants, so the parse never fails in practice.
+    fn stamp(membership: Entity, role_uri: &str) -> Self {
+        let role = role_uri.parse().unwrap_or_else(|_| membership.clone());
+        Self {
+            this: membership,
+            role: Role(role),
+        }
+    }
+}
+
 /// A member's self-asserted display name for this repository. A
 /// standalone fact on the membership entity, mirroring [`InvitedVia`]
 /// — the base [`Membership`] query stays uniform whether or not a
@@ -165,6 +212,18 @@ mod tests {
         let stamp = InvitedVia::new(membership.this().clone(), invitation_entity.clone());
         assert_eq!(stamp.this, *membership.this());
         assert_eq!(stamp.invitation.0, invitation_entity);
+    }
+
+    #[dialog_common::test]
+    fn it_stamps_founder_and_member_roles() {
+        let membership = Membership::new(did!("test:m"), did!("test:r"));
+        let founder = MemberRole::founder(membership.this().clone());
+        let member = MemberRole::member(membership.this().clone());
+        assert_eq!(founder.this, *membership.this());
+        assert_eq!(member.this, *membership.this());
+        assert_eq!(founder.role.0.to_string(), MemberRole::FOUNDER);
+        assert_eq!(member.role.0.to_string(), MemberRole::MEMBER);
+        assert_ne!(founder.role.0, member.role.0);
     }
 
     #[dialog_common::test]

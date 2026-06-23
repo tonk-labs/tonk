@@ -16,6 +16,7 @@ use crate::Branch;
 use crate::Remote;
 use crate::domain::remote::Address;
 use crate::domain::replica::{Kind, Name, Profile, Status, Subject};
+use crate::domain::sync::{Enabled, Status as SyncStatusAttr};
 use crate::prelude::*;
 
 /// A replica — this device's view of a specific repository.
@@ -152,6 +153,63 @@ impl SpaceStatus {
     }
 }
 
+/// The auto-sync *preference* of a replica as a standalone fact: just
+/// `this` and `enabled`.
+///
+/// The DURABLE half of `tonk/sync` — a boolean (`true` syncing, `false`
+/// paused), committed to the profile meta branch and keyed on the replica
+/// entity, so the service worker's background-sync loop reads it and skips a
+/// paused replica, and so it survives a worker restart. Private — replica
+/// records never replicate, so pausing on this device doesn't pause sync for
+/// other members. Stamped onto the replica entity (cardinality one, a later
+/// assert supersedes) without re-asserting the whole [`Replica`].
+///
+/// Separate from [`ReplicaSyncStatus`] (the transient observation) so each
+/// resolves independently: the durable preference is always present, the
+/// live status may lag — a single two-field concept would only resolve
+/// once both existed (the join-status lesson).
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReplicaSyncEnabled {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// Whether auto-sync is on (`true`) or paused (`false`) for this replica.
+    pub enabled: Enabled,
+}
+
+impl ReplicaSyncEnabled {
+    /// An `enabled` stamp for the given replica entity.
+    pub fn new(this: Entity, enabled: bool) -> Self {
+        Self {
+            this,
+            enabled: Enabled(enabled),
+        }
+    }
+}
+
+/// The live sync *status* of a replica as a standalone fact: just `this`
+/// and `status`.
+///
+/// The OVERLAY half of `tonk/sync` — `sync:synced` / `sync:syncing` /
+/// `sync:offline`, stamped by the sweep (transient, never persisted), a
+/// live observation of how this replica's head compares to its upstream.
+/// Keyed on the replica entity so it folds into the same subscription as
+/// [`ReplicaSyncEnabled`]; the chip subscribes to the replica and renders
+/// both.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ReplicaSyncStatus {
+    /// The replica entity being stamped.
+    pub this: Entity,
+    /// The observed sync status — synced / syncing / offline.
+    pub status: SyncStatusAttr,
+}
+
+impl ReplicaSyncStatus {
+    /// A `status` stamp for the given replica entity.
+    pub fn new(this: Entity, status: SyncStatusAttr) -> Self {
+        Self { this, status }
+    }
+}
+
 /// Hash input for [`Replica::this`].
 ///
 /// The single-variant enum shape tags the CBOR encoding with the
@@ -220,6 +278,72 @@ impl Replica {
     /// The [`Status`] for a seeded replica.
     pub fn initialized_status() -> Status {
         Status(Self::INITIALIZED.parse().expect("tonk:initialized parses"))
+    }
+
+    /// `tonk/sync` `status` URI: the user paused auto-sync. The OVERLAY twin of
+    /// the durable boolean `enabled = false` preference, so the chip can show
+    /// `paused` (the durable bool lives on the replica, off the chip's branch).
+    pub const PAUSED: &'static str = "sync:paused";
+
+    /// The fixed entity the live sync `status` overlay is keyed on —
+    /// `state:here`, a well-known singleton (like `tonk:join/status`) so the
+    /// chip can subscribe without resolving this device's replica entity.
+    /// One space is in scope per page (each sealed `/space` is its own
+    /// guest), so a singleton suffices; the durable pause preference still
+    /// lives per-replica. Defers the "scope the view to the local replica"
+    /// question.
+    pub const SYNC_STATE_HERE: &'static str = "state:here";
+
+    /// `tonk/sync` `status` URI: up to date, nothing to do.
+    pub const IDLE: &'static str = "sync:idle";
+
+    /// `tonk/sync` `status` URI: a sync is in flight / due. One in-progress
+    /// state — the worker holds a single lock for the whole pull+push, so the
+    /// chip can't observe finer phases mid-sync anyway.
+    pub const PENDING: &'static str = "sync:pending";
+
+    /// `tonk/sync` `status` URI: a remote is configured but unreachable
+    /// (network down, remote unavailable) — a real "offline" state.
+    pub const OFFLINE: &'static str = "sync:offline";
+
+    /// `tonk/sync` `status` URI: no remote is configured — the repo is
+    /// local-only. Distinct from [`OFFLINE`](Self::OFFLINE) (a remote exists
+    /// but can't be reached).
+    pub const LOCAL: &'static str = "sync:local";
+
+    /// The live `status` value for a paused replica — the overlay twin of the
+    /// durable [`PAUSED`](Self::PAUSED) `enabled` preference, so the chip shows
+    /// `paused` immediately without waiting for a status sweep (which a paused
+    /// replica skips). Shares the URI with the durable value: status and
+    /// enabled are different attributes, so the same `sync:paused` URI reads
+    /// unambiguously on each.
+    pub fn paused_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::PAUSED.parse().expect("sync:paused parses"))
+    }
+
+    /// The `status` value for an in-flight / due sync.
+    pub fn pending_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::PENDING.parse().expect("sync:pending parses"))
+    }
+
+    /// The `status` value for an unreachable remote (a real offline state).
+    pub fn offline_status() -> SyncStatusAttr {
+        SyncStatusAttr(Self::OFFLINE.parse().expect("sync:offline parses"))
+    }
+
+    /// Map a head-comparison [`SyncState`](crate::SyncState) to the
+    /// replica's settled `sync` `status` value. `idle` when up to date,
+    /// `pending` when there's drift (a reconcile is due), and `local` when
+    /// there is no remote configured. (A reachable-but-failed remote is
+    /// `offline`, published separately when the status fetch errors.)
+    pub fn sync_status_attr(state: crate::SyncState) -> SyncStatusAttr {
+        use crate::SyncState as S;
+        let uri = match state {
+            S::Synced => Self::IDLE,
+            S::Behind | S::Ahead | S::Diverged => Self::PENDING,
+            S::NoUpstream => Self::LOCAL,
+        };
+        SyncStatusAttr(uri.parse().expect("sync status uri parses"))
     }
 
     /// The replica's entity.

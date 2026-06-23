@@ -218,6 +218,337 @@ command!: &space/enable-sync
       description: Stop the form submission from reloading the page
       the: dom.event.do/prevent-default
 
+# Mint a repository invite. Clicking Share submits this transient; the
+# worker's `InviteHandler` generates a fresh membership keypair, delegates
+# the *origin* repository's access to its DID, asserts a durable
+# `tonk:authorization` fact (the public delegation chain) and asserts the
+# private seed as a `tonk:credential` into the reactor's session overlay
+# (never replicated). The repository is not a field here — the handler
+# reads it from the command's origin (the branch the commit landed in).
+# `time` carries the submit event's timestamp so each click is a distinct
+# transient and reliably re-fires the handler (rotating the credential).
+command!: &tonk/invite
+  this: tonk:invite
+  description: Mint a repo invite — generates a membership keypair and delegation.
+  with:
+    time:
+      description: The submit event's timestamp; makes each click distinct.
+      the: dom.event/time-stamp
+      as: float
+    marker:
+      description: |
+          Per-command marker read from the share form's `data-invite`. Gives
+          `tonk:invite` an attribute no other command carries, so a
+          `tonk:pause-sync` transient (otherwise an identical {this, time}
+          shape) does not also decode as an invite.
+      the: dom.event.current-target.dataset/invite
+      as: entity
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
+# Toggle auto-sync for the space in scope. The sync chip submits this (via the
+# confirm dialog when pausing, directly via the resume overlay when paused).
+# `time` carries the click timestamp so each submit is a distinct transient and
+# reliably re-fires the toggle handler. The worker reads the origin repo, flips
+# the durable `enabled` preference, and publishes the matching status — the
+# command carries no payload beyond the timestamp.
+command!: &tonk/pause-sync
+  this: tonk:pause-sync
+  description: Toggle auto-sync (pause ⇄ resume) for the space in scope.
+  with:
+    time:
+      description: The submit event's timestamp; makes each click distinct.
+      the: dom.event/time-stamp
+      as: float
+    marker:
+      description: |
+          Per-command marker read from the pause form's `data-pause-sync`.
+          Gives `tonk:pause-sync` an attribute no other command carries, so
+          this transient does not also decode as `tonk:invite`.
+      the: dom.event.current-target.dataset/pause-sync
+      as: entity
+    prevent-default:
+      description: Stop the form submission from reloading the page
+      the: dom.event.do/prevent-default
+
+# The durable, public half of an invite: the base58 delegation chain the
+# handler minted, keyed by the membership DID. Replicates like any fact —
+# a delegation chain is a scoped capability, not a secret.
+concept!: &authorization
+  this: tonk:authorization
+  description: A delegation chain granting access to a repo, keyed by membership DID.
+  with:
+    proof:
+      description: base58 delegation chain — the `?access=` part of the invite URL.
+      the: xyz.tonk.authorization/proof
+      cardinality: one
+      as: text
+    remote:
+      description: Sync endpoint — the `&remote=` part; empty when local-only.
+      the: xyz.tonk.authorization/remote
+      cardinality: one
+      as: text
+
+# The private, ephemeral half of an invite: the membership keypair's seed.
+# Asserted only into the reactor's session overlay (never written to the
+# branch tree, never replicated), so the secret stays out of storage. Keyed
+# by the same membership DID as its `tonk:authorization`, so `tonk:invitation`
+# joins the two.
+concept!: &credential
+  this: tonk:credential
+  description: The private ed25519 seed of a membership principal (overlay-only).
+  with:
+    seed:
+      description: base58 keypair seed — the `#` fragment of the invite URL.
+      the: xyz.tonk.credential/seed
+      cardinality: one
+      as: text
+
+# The invite, as a join of the public `tonk:authorization` and the
+# overlay-only `tonk:credential` on the membership DID. Declaring all three
+# attributes makes this concept resolve only an entity that has both halves
+# — the durable proof/remote AND the overlay seed — so the share view
+# renders only once the handler has asserted both.
+concept!: &invitation
+  this: tonk:invitation
+  description: An invite that can be used to join a space (authorization + credential).
+  with:
+    access:
+      description: base58 delegation chain — the `?access=` part of the invite URL.
+      the: xyz.tonk.authorization/proof
+      cardinality: one
+      as: text
+    remote:
+      description: Sync endpoint — the `&remote=` part; empty when local-only.
+      the: xyz.tonk.authorization/remote
+      cardinality: one
+      as: text
+    code:
+      description: base58 keypair seed — the `#` fragment of the invite URL.
+      the: xyz.tonk.credential/seed
+      cardinality: one
+      as: text
+
+# The invite-link view — the default view for the `invitation` model, so
+# `<tonk-display model=invitation>` mounts it with no explicit `view=`. It
+# renders only once the handler has asserted both halves for the repo's
+# subject (before that the display is empty). The readonly input shows the
+# assembled absolute URL: `{base}?access={access}{remote}#{code}`, where
+# `base` (`{origin}/join`) is the `data-base` host attribute a wrapping
+# `<tonk-origin>` set, `access`/`remote` are the durable authorization, and
+# `code` is the overlay-only seed. `remote` is a ready-to-append
+# `&remote=<url>` suffix (empty for a local-only repo) so the recipient
+# knows where to sync from. `<wa-copy-button>` copies the same value.
+view!: &invitation/link
+  this: id:invitation/link
+  model: invitation
+  display: |
+    <div class="invite-link">
+      <style>
+        /* Full-width invite field: the URL input fills the row and the
+           copy button rides inside it as a suffix, so it reads as one
+           control (matching the wireframe) rather than a narrow box with
+           a tiny detached icon. */
+        .invite-link { display: block; }
+        .invite-link__url { display: block; width: 100%; }
+      </style>
+      <wa-input
+        class="invite-link__url"
+        label="Invite link"
+        readonly
+        value="{dom.host/data-base}?access={access}{remote}#{code}"
+      >
+        <wa-copy-button
+          slot="end"
+          class="invite-link__copy"
+          value="{dom.host/data-base}?access={access}{remote}#{code}"
+        ></wa-copy-button>
+      </wa-input>
+    </div>
+
+# A space member, as seen in the "shared with" roster. Reads the
+# `Membership` + `MemberRole` facts the worker records on the content
+# branch (the synced branch, so the roster converges across the space).
+# `member` is the member profile's DID entity; `role` is `tonk:founder`
+# for the creator or `tonk:member` for invite claimers. Declaring both
+# attributes makes an instance resolve only once its role is stamped.
+concept!: &member
+  this: tonk:member
+  description: A member of a space — a profile on the roster.
+  with:
+    member:
+      description: The member profile's DID (the `member` of the Membership)
+      the: xyz.tonk.membership/member
+      cardinality: one
+      as: entity
+    role:
+      description: "The member's role: tonk:founder (creator) or tonk:member (joiner)"
+      the: xyz.tonk.membership/role
+      cardinality: one
+      as: entity
+    name:
+      description: The member's self-asserted display name for this space
+      the: xyz.tonk.membership/name
+      cardinality: one
+      as: text
+
+# A single roster row — the default view for `model: tonk:member`. Each
+# member is one entry in the "shared with" list: a sigil-glyph avatar, the
+# member's display name (with the DID tail beneath as a fallback id), and a
+# role badge.
+#
+# The `<tonk-sigil>` avatar masks against a sprite that the sealed guest
+# loads over the host bridge and installs as the global default (see
+# `load_sigil_sprite` in tonk-guest) — so the identity glyph renders inside
+# the opaque iframe with no cross-origin fetch. `did={member}` seeds it from
+# the member DID so the glyph matches everywhere that member is shown.
+#
+# The DID's last 8 chars sit under the name as a stable disambiguator (the
+# full value is in `title`); CSS `direction:rtl` truncation clips the HEAD
+# with an ellipsis, leaving the tail visible.
+#
+# The role badge label comes from CSS `::after` keyed on `data-role`, so the
+# raw `tonk:founder` / `tonk:member` URI never shows; the raw {role} text is
+# kept (visually hidden) only to drive the attribute.
+view!: &member/row
+  this: id:tonk:member/row
+  model: tonk:member
+  display: |
+    <div class="roster__row" data-role={role}>
+      <tonk-sigil class="roster__avatar" did={member}></tonk-sigil>
+      <span class="roster__identity">
+        <span class="roster__name">{name}</span>
+        <span class="roster__did" title={member}><bdi>{member}</bdi></span>
+      </span>
+      <span class="roster__role" data-role={role}>{role}</span>
+    </div>
+
+# The roster — every `tonk:member` instance rendered as a row. Mounted
+# in the invite panel via `<tonk-display model=tonk:member>` (no
+# `entity`, so the directory view resolves and iterates all members).
+view/directory!:
+  this: id:tonk:member/roster
+  model: tonk:member
+  display: |
+    <div class="roster">
+      <style>
+        /* Share-dialog roster section: a labelled block under the invite
+           link. (Styled here because the roster view always mounts with
+           it, and the share dialog has no <style> of its own.) */
+        .roster-section {
+          margin-top: var(--wa-space-l);
+        }
+        .roster-section__label {
+          margin: 0 0 var(--wa-space-2xs);
+          font-size: var(--wa-font-size-xs);
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: var(--wa-color-text-quiet);
+        }
+        .roster {
+          display: flex;
+          flex-direction: column;
+        }
+        /* Each member instance mounts as a nested <tonk-display>; let the
+           row fill the width so avatar / did / badge lay out across it. */
+        .roster > tonk-display,
+        .roster > tonk-display > tonk-view {
+          display: block;
+        }
+        .roster__row {
+          display: flex;
+          align-items: center;
+          gap: var(--wa-space-s);
+          padding: var(--wa-space-xs) 0;
+          border-bottom: 1px solid var(--wa-color-surface-border);
+          font-size: var(--wa-font-size-s);
+        }
+        .roster > tonk-display:last-child .roster__row {
+          border-bottom: none;
+        }
+        /* The sigil-glyph avatar: a deterministic identity glyph hashed
+           from the member DID, CLIPPED to a circle. The sigil renders a
+           square SVG; `border-radius:50%` + `overflow:hidden` on the host
+           clips it round (matching the wireframe avatars). The sprite is
+           supplied by the sealed guest, so it paints inside the opaque
+           iframe. */
+        .roster__avatar {
+          flex: none;
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          border: 1px solid var(--wa-color-surface-border);
+          overflow: hidden;
+        }
+        /* The DID's LAST 8 chars: `direction:rtl` makes the overflow clip
+           the head (with a leading ellipsis), so the tail stays visible.
+           `<bdi>` keeps the DID itself rendering left-to-right inside the
+           rtl box. Monospace, quiet — a fallback identity until names land. */
+        /* The name + DID column. Grows to fill the row, pushing the role
+           badge to the right edge. */
+        .roster__identity {
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        /* The display name — the primary identifier. */
+        .roster__name {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: var(--wa-font-size-s);
+          color: var(--wa-color-text-normal);
+        }
+        .roster__did {
+          /* Cap to about the last 8 chars (+ the leading ellipsis); the
+             full DID is in `title`. A quiet sub-line under the name. */
+          max-width: 9ch;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          direction: rtl;
+          text-align: left;
+          font-family: var(--wa-font-family-code);
+          font-size: var(--wa-font-size-xs);
+          color: var(--wa-color-text-quiet);
+        }
+        /* The raw role URI is hidden; the badge label comes from ::after
+           keyed on data-role. Square brutalist chip, matching the wireframe:
+           founder is filled (loud), member is outline. */
+        .roster__role {
+          flex: none;
+          font-size: 0;
+          line-height: 0;
+          color: transparent;
+        }
+        .roster__role::after {
+          display: inline-block;
+          font-family: var(--wa-font-family-code);
+          font-size: 11px;
+          line-height: 1.4;
+          letter-spacing: 0.02em;
+          text-transform: lowercase;
+          padding: 1px 7px;
+          border: 1px solid var(--wa-color-text-normal);
+          color: var(--wa-color-text-normal);
+          content: attr(data-role);
+        }
+        .roster__role[data-role="tonk:founder"]::after {
+          content: "founder";
+          background: var(--wa-color-text-normal);
+          color: var(--wa-color-surface-default);
+        }
+        .roster__role[data-role="tonk:member"]::after {
+          content: "member";
+          color: var(--wa-color-text-quiet);
+          border-color: var(--wa-color-surface-border);
+        }
+      </style>
+      <tonk-display entity={this} model={dom.host/model} />
+    </div>
+
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
 # living only in the joining profile's replica index. The banner reads
@@ -1079,6 +1410,39 @@ concept!: &tonk/replica
       the: dialog.origin/profile
       as: entity
 
+# This device's live sync STATUS — the observation the chip renders. The worker
+# stamps it into an overlay on the SPACE branch keyed on the well-known
+# singleton `state:here`, so the sealed-guest chip (which can only reach the
+# space branch) reads it with no replica entity. Distinct from the durable
+# `enabled` pause preference, which is a boolean keyed on the replica entity
+# (worker-only, off the chip's path).
+concept!: &tonk/sync
+  this: tonk:sync
+  description: This device's live sync status for the space in scope.
+  with:
+    status:
+      description: |
+          Live observation — sync:idle | sync:pending | sync:offline | sync:local | sync:paused.
+      the: xyz.tonk.sync/status
+      cardinality: one
+      as: entity
+
+# The sync chip — the default view for `model: tonk:sync`. A pill whose dot
+# colour + label come from `status` via CSS (rules in the shell topbar's
+# <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"
+# confirm dialog (`data-dialog`). When paused, a `resume` button overlays on
+# top of the chip (shown by CSS only at `data-sync-status=sync:paused`) and
+# submits the toggle command directly (`form=pause-sync-form`) — a direct
+# resume, no dialog. The worker owns the state and the toggle.
+view!: &sync/chip
+  this: id:tonk:sync/chip
+  model: tonk:sync
+  display: |
+    <span class="workspace__sync-control" data-sync-status={status}>
+      <span class="workspace__sync" data-sync-status={status} role="button" tabindex="0" data-dialog="open pause-sync" aria-label="Pause sync" title="Pause sync"></span>
+      <button class="workspace__sync-resume" type="submit" form="pause-sync-form" aria-label="Resume sync" title="Resume sync"></button>
+    </span>
+
 # what's up
 view/directory!:
   this: tonk:shell
@@ -1110,17 +1474,135 @@ view/directory!:
           flex: 1 1 auto;
           min-height: 0;
         }
+        /* `<tonk-display>` hides a non-active lifecycle-state slot child by
+           setting the `hidden` attribute. The UA `[hidden]{display:none}`
+           rule is weak, so any `display:` a layout rule applies to the
+           slot child would defeat it (leaving the pending spinner showing
+           under the resolved view). Force it. */
+        tonk-display > [slot][hidden] {
+          display: none !important;
+        }
+
+        /* Sync chip (wireframe brutalist pill): a square 1px-bordered mono
+           lowercase tag with a status dot. Text + border + dot colour come
+           from the `--sync-*` theme tokens, keyed on the `data-sync-status`
+           the `tonk:sync` view stamps. The worker owns the value: sync:idle
+           (synced, green) | sync:pending (syncing…, amber + pulse) |
+           sync:offline (remote unreachable, warn) | sync:local (no remote,
+           grey). */
+        .workspace__sync {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 2px 8px;
+          border: 1px solid currentColor;
+          border-radius: 0;
+          font-family: var(--wa-font-family-code);
+          font-size: 11px;
+          line-height: 1.4;
+          text-transform: lowercase;
+          letter-spacing: 0.02em;
+          cursor: pointer;
+          /* `currentColor` drives the border (above), the dot (below), and
+             the label, so each state only sets one `color:`. Default =
+             offline. */
+          color: var(--sync-offline);
+        }
+        /* The chip control stacks the pause-trigger chip and a resume overlay.
+           The overlay (a real `wa-button`, so it can submit the toggle form)
+           sits on top of the chip and is shown only when paused — clicking it
+           resumes directly, no dialog. */
+        .workspace__sync-control {
+          position: relative;
+          display: inline-flex;
+        }
+        /* The resume affordance is a transparent button covering the whole
+           paused chip — the chip below shows `○ paused`, this captures the
+           click and submits the toggle. No icon, no label: the wireframe
+           paused chip is just the hollow-ring pill. Hidden unless paused. */
+        .workspace__sync-resume {
+          position: absolute;
+          inset: 0;
+          margin: 0;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          cursor: pointer;
+          display: none;
+        }
+        .workspace__sync-control[data-sync-status="sync:paused"] .workspace__sync-resume {
+          display: block;
+        }
+        .workspace__sync::before {
+          content: "";
+          inline-size: 8px;
+          block-size: 8px;
+          border-radius: 50%;
+          background: currentColor;
+        }
+        .workspace__sync::after { content: "offline"; }
+        .workspace__sync[data-sync-status="sync:idle"] {
+          color: var(--sync-idle);
+        }
+        .workspace__sync[data-sync-status="sync:idle"]::after { content: "synced"; }
+        .workspace__sync[data-sync-status="sync:pending"] {
+          color: var(--sync-pending);
+        }
+        .workspace__sync[data-sync-status="sync:pending"]::after { content: "syncing…"; }
+        .workspace__sync[data-sync-status="sync:pending"]::before {
+          animation: workspace-sync-pulse 1s ease-out infinite;
+        }
+        .workspace__sync[data-sync-status="sync:offline"] {
+          color: var(--sync-offline);
+        }
+        .workspace__sync[data-sync-status="sync:offline"]::after { content: "offline"; }
+        .workspace__sync[data-sync-status="sync:local"] {
+          color: var(--sync-local);
+        }
+        .workspace__sync[data-sync-status="sync:local"]::after { content: "local"; }
+        /* Paused (durable pause preference; wired by the pause-sync command).
+           One muted grey drives text, border, and the hollow-ring dot via
+           `currentColor` — text and border match like every other state. */
+        .workspace__sync[data-sync-status="sync:paused"] {
+          color: var(--sync-paused);
+        }
+        .workspace__sync[data-sync-status="sync:paused"]::before {
+          background: transparent;
+          box-shadow: inset 0 0 0 1.5px currentColor;
+        }
+        .workspace__sync[data-sync-status="sync:paused"]::after { content: "paused"; }
+        @keyframes workspace-sync-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.35; }
+        }
 
       </style>
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
         <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
         <span class="workspace__title"><tonk-display entity={subject} model=tonk:repository></tonk-display></span>
-        <tonk-sync-state></tonk-sync-state>
+        <!-- The sync chip: subscribes to the `tonk:sync` `state:here` overlay
+             the worker stamps on THIS space branch (the one the shell is
+             already scoped to), so it needs no extra repository context. The
+             `no-entity` slot shows `pending` ("syncing…") until the first
+             status lands — which is honest, since a status check / sync fires
+             on load. Without the slot `<tonk-display>` would dump the
+             missing-instance notation as text. -->
+        <tonk-display entity=state:here model=tonk:sync>
+          <span slot="no-entity" class="workspace__sync" data-sync-status="sync:pending" role="button" tabindex="0" data-dialog="open pause-sync" aria-label="Pause sync" title="Pause sync"></span>
+        </tonk-display>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
-          <tonk-display model=tonk:membership></tonk-display>
-          <tonk-share></tonk-share>
+          <!-- One click both opens the share dialog (`data-dialog`) and
+               submits the dialog's share form (`form=share-form`, the HTML
+               external-submit attribute) — so the invite mints on open with
+               no separate "Create link" click. The form carries no payload
+               beyond the click timestamp; the worker mints the keypair and
+               delegation. A user click is the trigger, so there is no
+               render-driven auto-fire loop. -->
+          <wa-button class="workspace__share" appearance="plain" type="submit" form="share-form" data-dialog="open share-repo" aria-label="Share this repo" title="Share this repo">
+            <wa-icon name="share-nodes" label="Share"></wa-icon>
+          </wa-button>
         </span>
       </div>
 
@@ -1139,6 +1621,82 @@ view/directory!:
         </form>
         <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="primary" type="submit" form="enable-sync-form" data-dialog="close">Enable</wa-button>
+      </wa-dialog>
+
+      <!-- Pause-sync confirm dialog + form. The sync chip opens this
+           (`data-dialog="open pause-sync"`); its "Pause sync" button submits
+           `pause-sync-form`, asserting the transient `tonk:pause-sync` command.
+           The worker reads the origin repo, flips the durable `enabled` boolean
+           on the replica, and publishes the matching status. The same form is
+           submitted by the chip's resume overlay — the command is a toggle, so
+           resume needs no separate command. -->
+      <form id="pause-sync-form" data-pause-sync="tonk:pause-sync" onsubmit=tonk:pause-sync></form>
+      <wa-dialog id="pause-sync" label="Pause sync?" class="workspace__pause-dialog">
+        <p class="workspace__pause-meta">sync · substrate kill-switch</p>
+        <p>Your changes won't reach other devices and agents until you resume. Local edits are buffered; incoming edits are queued.</p>
+        <wa-button slot="footer" variant="neutral" appearance="plain" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="primary" type="submit" form="pause-sync-form" data-dialog="close" autofocus>
+          <wa-icon slot="start" name="pause"></wa-icon>
+          Pause sync
+        </wa-button>
+      </wa-dialog>
+
+      <!-- Share dialog. Clicking the topbar Share button (above) submits
+           `share-form` via the `form=` external-submit attribute, asserting
+           the `tonk:invite` command. The worker generates a membership
+           keypair, delegates the origin repo to it, asserts the public
+           `tonk:authorization` durably and the private seed as an
+           overlay-only `tonk:credential` — both keyed by the repo's
+           subject DID. The nested `<tonk-display entity={subject}>`
+           resolves the `tonk:invitation` join (authorization + credential)
+           and composes the link. `<tonk-origin>` supplies the `data-base`
+           (`{origin}/join`) host attribute so the template can build an
+           absolute URL without reading `window` itself. The secret seed
+           lives only in the worker's session overlay and the assembled
+           URL — never in replicated storage. -->
+      <wa-dialog id="share-repo" label="Share this repo" class="workspace__share-dialog">
+        <style>
+          /* Share dialog: a quiet intro line over the link, then the
+             roster, then a quiet footer explaining the membership rule —
+             matching the wireframe's copy + rhythm. */
+          .share-dialog__intro {
+            margin: 0 0 var(--wa-space-m);
+            font-size: var(--wa-font-size-s);
+            color: var(--wa-color-text-quiet);
+          }
+          .share-dialog__note {
+            margin: var(--wa-space-l) 0 0;
+            font-size: var(--wa-font-size-xs);
+            line-height: 1.5;
+            color: var(--wa-color-text-quiet);
+          }
+        </style>
+        <p class="share-dialog__intro">One link · anyone who follows it becomes a member · stays active forever</p>
+        <form id="share-form" data-invite="tonk:invite" onsubmit=tonk:invite></form>
+        <tonk-origin>
+          <tonk-display
+            entity={subject}
+            model=invitation
+            bind:base="data-base">
+            <!-- Until the handler asserts both halves of the invitation,
+                 the display has no instance to render. A `no-entity` slot
+                 child shows a quiet pending affordance instead of the
+                 built-in "Not found" callout — the link is being generated,
+                 not missing. -->
+            <div slot="no-entity" class="invite-link invite-link--pending">
+              <wa-spinner></wa-spinner>
+              <span>Generating link…</span>
+            </div>
+          </tonk-display>
+        </tonk-origin>
+        <!-- The roster: everyone who's a member of this space. No
+             `entity`, so the `tonk:member` directory view resolves and
+             iterates every member, one row each (sigil + DID + role). -->
+        <div class="roster-section">
+          <p class="roster-section__label">Shared with</p>
+          <tonk-display model=tonk:member></tonk-display>
+        </div>
+        <p class="share-dialog__note">Everyone who follows this link becomes a member of this space. The link stays active, so share it only with people you want to let in.</p>
       </wa-dialog>
 
       <tonk-display model=workspace/sheet data-active={active} />

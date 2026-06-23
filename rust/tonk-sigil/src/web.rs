@@ -1,7 +1,46 @@
+use std::cell::RefCell;
+
 use crate::Sigil;
 use custom_elements::CustomElement;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen::{JsCast, UnwrapThrowExt};
 use web_sys::{Element, HtmlElement};
+
+thread_local! {
+    /// The sprite href every sigil masks against when it carries no
+    /// per-element `sprite=` attribute. `None` until set; the render
+    /// path then falls back to the build-time default (`/sigils.svg`).
+    /// A sealed-iframe guest (opaque origin) can't reach a cross-origin
+    /// sprite via CSS `url()`, so it fetches the bytes over the host
+    /// bridge, mints a same-origin blob URL, and installs it here via
+    /// [`set_default_sprite_href`].
+    static DEFAULT_SPRITE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Install the default sprite href for sigils that carry no `sprite=`
+/// attribute, then re-render every live `<tonk-sigil>` so any that
+/// painted before the sprite was known pick it up. A sealed guest calls
+/// this with a same-origin blob URL once it has the sprite bytes.
+#[wasm_bindgen]
+pub fn set_default_sprite_href(href: &str) {
+    DEFAULT_SPRITE.with(|c| *c.borrow_mut() = Some(href.to_owned()));
+    rerender_all();
+}
+
+/// Re-run `render` on every `<tonk-sigil>` currently in the document.
+fn rerender_all() {
+    let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(nodes) = document.query_selector_all("tonk-sigil") else {
+        return;
+    };
+    for i in 0..nodes.length() {
+        if let Some(el) = nodes.item(i).and_then(|n| n.dyn_into::<HtmlElement>().ok()) {
+            render(&el);
+        }
+    }
+}
 
 #[derive(Default)]
 struct SigilElement;
@@ -44,8 +83,13 @@ fn render(this: &HtmlElement) {
     if let Some(fill) = this.get_attribute("fill") {
         sigil = sigil.fill(fill);
     }
+    // Sprite precedence: a per-element `sprite=` wins; else the global
+    // default (installed by a sealed guest); else the build-time default
+    // baked into `Sigil` (`/sigils.svg`).
     if let Some(sprite) = this.get_attribute("sprite") {
         sigil = sigil.sprite_href(sprite);
+    } else if let Some(default) = DEFAULT_SPRITE.with(|c| c.borrow().clone()) {
+        sigil = sigil.sprite_href(default);
     }
 
     let rendered = sigil.render();

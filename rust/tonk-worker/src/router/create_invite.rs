@@ -86,7 +86,7 @@ impl CreateInviteResponse {
 /// [`ExtractableKey`] variant opts in to extractable generation.
 ///
 /// [`ExtractableKey`]: dialog_credentials::key::ExtractableKey
-async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
+pub(crate) async fn generate_ephemeral() -> Result<(Ed25519Signer, [u8; 32]), TonkWorkerError> {
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     let signer = {
         use dialog_credentials::key::ExtractableKey;
@@ -249,9 +249,22 @@ pub async fn create_invite(
 /// `main` is hardcoded; see `project_main_branch_implicit_creation`
 /// memory note on why `.open()` is used here despite not being
 /// strictly read-only.
-async fn resolve_remote_url<R>(
+pub(crate) async fn resolve_remote_url<R>(
     tonk: &crate::worker::TonkState,
     repository: &dialog_repository::Repository<R>,
+) -> Result<Option<Url>, TonkWorkerError>
+where
+    R: Principal + Clone,
+{
+    resolve_remote_url_with(repository, &tonk.operator).await
+}
+
+/// [`resolve_remote_url`] against a bare operator rather than the whole
+/// [`TonkState`] — for callers (e.g. the invite command handler) that
+/// must not hold the state guard across this await.
+pub(crate) async fn resolve_remote_url_with<R>(
+    repository: &dialog_repository::Repository<R>,
+    operator: &crate::worker::DefaultOperator,
 ) -> Result<Option<Url>, TonkWorkerError>
 where
     R: Principal + Clone,
@@ -259,7 +272,7 @@ where
     let main = repository
         .branch("main")
         .open()
-        .perform(&tonk.operator)
+        .perform(operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!(
@@ -275,7 +288,7 @@ where
     let remote = repository
         .remote(remote_name.as_str())
         .load()
-        .perform(&tonk.operator)
+        .perform(operator)
         .await
         .map_err(|e| {
             TonkWorkerError::Internal(format!(

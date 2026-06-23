@@ -6,9 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use dialog_artifacts::{Changes, Statement};
 use dialog_query::ConceptQuery;
 use dialog_repository::Branch;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 
 use crate::env::SelectProvider;
@@ -28,6 +29,33 @@ pub struct BranchState {
     pub branch: Branch,
     /// Subscriptions on this branch, keyed by query hash.
     subscriptions: Mutex<HashMap<QueryHash, Subscription>>,
+    /// In-memory session overlay — ephemeral facts folded into every
+    /// read query (one-shot and subscription poll) via
+    /// [`QueryLayer::with`](dialog_repository::QueryLayer), but never
+    /// written to the branch tree and never replicated. Holds secrets
+    /// that must stay out of storage (e.g. an invite's private seed):
+    /// readable by the UI's display query, invisible to the
+    /// transaction/commit path (dialog's transaction query is
+    /// non-composable), and lost on branch eviction.
+    ///
+    /// `RwLock`, not `Mutex`: every read query takes the shared lock to
+    /// clone the overlay in, so reads must not serialize against each
+    /// other; only the rare overlay write takes the exclusive lock.
+    overlay: RwLock<Changes>,
+    /// Serializes *transactions* on this branch — concurrent writers (e.g.
+    /// two browser tabs committing through one service worker) line up rather
+    /// than racing the head CAS and failing. Guards nothing but the right to be
+    /// the one committing; the commit's data lives on the branch handle.
+    ///
+    /// An async [`tokio::sync::Mutex`], not `parking_lot`, because the guard is
+    /// held *across* the commit's `await`s. A mutex, not an `RwLock`: only
+    /// writers take it (readers and sync don't), so there is no read side to
+    /// share. Deliberately separate from the reactor's `TonkState` lock and NOT
+    /// taken by sync: sync coordinates with transactions through the head CAS
+    /// (it refreshes and retries on a mismatch), so it must never wait on — or
+    /// block — a transaction. Per branch, so commits to different branches
+    /// proceed in parallel.
+    transactor: tokio::sync::Mutex<()>,
 }
 
 impl BranchState {
@@ -36,7 +64,66 @@ impl BranchState {
         Self {
             branch,
             subscriptions: Mutex::new(HashMap::new()),
+            overlay: RwLock::new(Changes::new()),
+            transactor: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The per-branch transaction lock. A transaction takes it
+    /// (`transactor().lock().await`) around its commit so concurrent
+    /// transactions serialize instead of failing the head CAS. Sync does not
+    /// participate — see the field docs.
+    pub fn transactor(&self) -> &tokio::sync::Mutex<()> {
+        &self.transactor
+    }
+
+    /// A clone of the current session overlay, to fold into a read query
+    /// via [`QueryLayer::with`](dialog_repository::QueryLayer). Taken
+    /// under the shared read lock so concurrent reads don't serialize.
+    pub fn overlay(&self) -> Changes {
+        self.overlay.read().clone()
+    }
+
+    /// The inverse of the current overlay: a [`Changes`] that retracts
+    /// every fact the overlay asserts. Integrate this into a transaction
+    /// *before* committing so an evaluation that folded the overlay in for
+    /// reads does not carry the ephemeral facts (e.g. an invite seed) into
+    /// the durable write. Asserts/replaces become retracts; existing
+    /// retracts are dropped (nothing to undo).
+    pub fn overlay_retraction(&self) -> Changes {
+        use dialog_artifacts::{Change, Update};
+        let overlay = self.overlay.read();
+        let mut inverse = Changes::new();
+        for (entity, attribute, change) in overlay.iter() {
+            if let Change::Assert(value) | Change::Replace(value) = change {
+                inverse.dissociate(attribute.clone(), entity.clone(), value.clone());
+            }
+        }
+        inverse
+    }
+
+    /// Assert a [`Statement`] into the session overlay. A cardinality-one
+    /// re-assert overwrites the prior value in place, so "keep exactly
+    /// one live fact" needs no separate retract. Takes the exclusive
+    /// write lock.
+    pub fn assert_overlay<S: Statement>(&self, claim: S) {
+        let mut overlay = self.overlay.write();
+        claim.assert(&mut *overlay);
+    }
+
+    /// Retract a [`Statement`] from the session overlay. Takes the
+    /// exclusive write lock.
+    pub fn retract_overlay<S: Statement>(&self, claim: S) {
+        let mut overlay = self.overlay.write();
+        claim.retract(&mut *overlay);
+    }
+
+    /// Drop every fact in the session overlay. Used to keep exactly one
+    /// live entry across keys that differ between writes (e.g. each
+    /// invitation is keyed by a fresh membership DID, so a cardinality-one
+    /// re-assert wouldn't replace the prior one — clearing does).
+    pub fn clear_overlay(&self) {
+        *self.overlay.write() = Changes::new();
     }
 
     /// Borrow the subscription map. Used by [`SubscriptionPoll`]

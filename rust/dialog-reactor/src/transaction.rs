@@ -1,11 +1,20 @@
 //! [`TransactionBuilder`] and [`Commit`] — accumulate
-//! assert/retract pairs and commit them through the reactor so
-//! subscriptions re-poll on success.
+//! assert/retract pairs and commit them through the reactor.
 //!
-//! Routes call this instead of `Branch::transaction()` so they
-//! can't forget to notify subscribers — the wrapper does it
-//! automatically. The builder is lazy; nothing touches the
-//! branch until `Commit::perform`.
+//! Routes call this instead of `Branch::transaction()`. On a
+//! successful commit, [`Commit::perform`] **schedules** a poll of
+//! the affected branch ([`Reactor::schedule_poll`]) rather than
+//! polling inline — so a commit and a session-overlay write on the
+//! same branch in one turn coalesce into a single re-evaluation.
+//! Every entry point that commits is therefore responsible for
+//! draining the scheduled set once it's done
+//! ([`Reactor::run_scheduled_polls`]); the command dispatcher does
+//! this for the transact path, and the create/migration/claim
+//! routes drain explicitly. The builder is lazy; nothing touches
+//! the branch until `Commit::perform`.
+//!
+//! [`Reactor::schedule_poll`]: crate::Reactor::schedule_poll
+//! [`Reactor::run_scheduled_polls`]: crate::Reactor::run_scheduled_polls
 //!
 //! [`Commit::perform`] runs the effects evaluator
 //! ([`super::effects::evaluate_effects`]) between the user's
@@ -14,7 +23,7 @@
 //! never reach durable storage.
 
 use dialog_artifacts::{Changes, Statement};
-use dialog_repository::Revision;
+use dialog_repository::{CommitError, Revision};
 use tonk_evaluator::effects::TransactionExt;
 use tonk_schema::claim::{Claim, PredicateApplication};
 use tonk_schema::transact::application_plan_from_predicate;
@@ -159,29 +168,87 @@ impl Commit<'_> {
         Env: LoadProvider + BranchOpenProvider + CommitProvider + SelectProvider,
     {
         let cached = self.branch.acquire(env).await?;
-        let branch = cached.handle();
 
-        let t_induce = web_time::Instant::now();
-        let txn = branch
-            .transaction()
-            .integrate(self.changes)
-            .integrate(self.transients.clone())
-            .induce(self.transients)
-            .perform(env)
-            .await?;
-        let induce_ms = t_induce.elapsed().as_millis();
+        // Serialize every commit on this branch through the per-branch
+        // transactor lock — so concurrent writers (the transact route AND the
+        // direct handler commits: invite, join, pause, …) line up here rather
+        // than racing the head CAS. The lock lives on `.commit()` so no caller
+        // can sidestep it. Held across the whole induce+commit. Sync does NOT
+        // take it — it coordinates via the CAS and retries — so a commit never
+        // waits on a sync.
+        let _transacting = cached.state.transactor().lock().await;
 
-        let t_commit = web_time::Instant::now();
-        let revision = txn.commit().perform(env).await?;
-        let commit_ms = t_commit.elapsed().as_millis();
+        // A sync (which doesn't take the lock above) can still advance the head
+        // between our snapshot and our publish; the dialog commit CAS's against
+        // the head it built on, so that surfaces as a version mismatch rather
+        // than a silent loss. Refresh the branch's view of the head and retry —
+        // the changes are idempotent asserts/retracts, so replaying them on the
+        // advanced head is safe.
+        let changes = self.changes;
+        let transients = self.transients;
+        let mut attempt = 0;
+        let revision = loop {
+            let branch = cached.handle();
+            let t_induce = web_time::Instant::now();
+            let txn = branch
+                .transaction()
+                .integrate(changes.clone())
+                .integrate(transients.clone())
+                .induce(transients.clone())
+                .perform(env)
+                .await?;
+            let induce_ms = t_induce.elapsed().as_millis();
 
-        let t_poll = web_time::Instant::now();
-        cached.poll(env).await;
-        let poll_ms = t_poll.elapsed().as_millis();
+            let t_commit = web_time::Instant::now();
+            match txn.commit().perform(env).await {
+                Ok(revision) => {
+                    let commit_ms = t_commit.elapsed().as_millis();
+                    dialog_common::log!(
+                        "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms"
+                    );
+                    break revision;
+                }
+                Err(e) if is_head_moved(&e) && attempt < COMMIT_RETRY_LIMIT => {
+                    attempt += 1;
+                    dialog_common::log!(
+                        "reactor commit raced (attempt {attempt}); refreshing head and retrying"
+                    );
+                    // Refresh the handle's view of the head before retrying. If
+                    // even that fails, give up with the original mismatch.
+                    if let Err(refresh_err) = branch.refresh(env).await {
+                        dialog_common::log!(
+                            "reactor commit refresh after race failed: {refresh_err}"
+                        );
+                        return Err(e.into());
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
 
-        dialog_common::log!(
-            "reactor commit timing: induce {induce_ms}ms | commit {commit_ms}ms | poll {poll_ms}ms"
-        );
+        // Schedule the poll rather than running it inline: the request's
+        // dispatcher drains the scheduled set once after its providers run
+        // (`Reactor::run_scheduled_polls`), so a commit and a session-overlay
+        // write on the same branch in one turn coalesce into a single
+        // re-evaluation. Every entry point that commits must drain.
+        self.branch
+            .reactor()
+            .schedule_poll(std::sync::Arc::clone(&cached.state));
+
         Ok(revision)
     }
+}
+
+/// How many times a reactor commit refreshes-and-retries when a sync advanced
+/// the head under it. Transactions serialize via the transactor lock, so the
+/// only racer is sync; one retry settles it in practice.
+const COMMIT_RETRY_LIMIT: usize = 4;
+
+/// Whether a commit error is the "head moved under us" version mismatch (a sync
+/// advanced the head between this commit's snapshot and its publish) — the
+/// signal to refresh and retry. Matched on the rendered error so the reactor
+/// need not import the dialog error hierarchy; the `VersionMismatch` leaf
+/// renders its distinctive text through the chain.
+fn is_head_moved(error: &CommitError) -> bool {
+    error.to_string().contains("Version mismatch")
 }

@@ -254,13 +254,15 @@ impl CustomElement for TonkDisplay {
 
     fn observed_attributes() -> &'static [&'static str] {
         // `entity`/`model`/`view` are the subject inputs: a change to any
-        // restarts the resolve/subscribe flow. `data-active` is a
-        // host-context attribute a parent view threads in (read by a
-        // template as `{dom.host/data-active}`); a change to it does not
-        // alter what this display resolves, only the value projected into
-        // the already-mounted view, so it is propagated in place rather
-        // than restarting. See `attribute_changed_callback`.
-        &["entity", "model", "view", "data-active"]
+        // restarts the resolve/subscribe flow. `data-active` / `data-base`
+        // are host-context attributes a parent threads in (read by a
+        // template as `{dom.host/<attr>}`); a change to one does not alter
+        // what this display resolves, only the value projected into the
+        // already-mounted view, so it is propagated in place rather than
+        // restarting. `data-base` lets a wrapping `<tonk-origin>` deliver
+        // the invite-URL base (`{origin}/join`) into the view after mount.
+        // See `attribute_changed_callback`.
+        &["entity", "model", "view", "data-active", "data-base"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -1475,6 +1477,15 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
         return;
     }
     s.delegate = Some(delegate);
+    drop(s);
+
+    // The delegate's listeners are now attached. Announce it so any
+    // mount-triggered element (e.g. `<tonk-page onmount=…>`) that
+    // connected *before* this point — its `mount` event would have fired
+    // into the void, since the delegate installs asynchronously after the
+    // template renders — can now fire knowing a listener exists. Carries
+    // the bound event types so a listener only acts when its event is live.
+    dispatch_event(host, "tonk-display:bound", Some(JsValue::from_str("ok")));
 }
 
 /// Apply an entity frame: empty → empty state + clear slides;

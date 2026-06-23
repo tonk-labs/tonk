@@ -128,6 +128,25 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     ready:ready,
     query:function(body){return call("query",{body:body});},
     transact:function(request){return call("transact",{request:request});},
+    // Navigate the HOST page: the opaque guest can't touch parent.location
+    // and has no router, so a link click posts its href here and the parent
+    // performs the real navigation. Fire-and-forget (no response).
+    navigate:function(href){
+      ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
+    },
+    // Same-origin fetch performed by the HOST: the opaque guest can't reach a
+    // same-origin, SW-routed `/api/...` endpoint itself. The host fetches the
+    // path on its real origin and TRANSFERS the response stream back; we
+    // rebuild a real `Response`. See the `window.fetch` override below — this
+    // is its transport, and host-relative URLs route through here.
+    fetch:function(path){
+      return ready.then(function(){
+        return new Promise(function(resolve,reject){
+          var id=mint(); pending.set(id,{resolve:resolve,reject:reject});
+          port.postMessage({v:1,type:"fetch",id:id,path:path});
+        });
+      });
+    },
     subscribe:function(body){
       var id=mint();
       return new ReadableStream({
@@ -151,7 +170,52 @@ const BOOTSTRAP_JS: &str = r#"(function(){
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.resolve("rows" in env ? env.rows : env.receipt); return;
       }
-      case "query-error": case "transact-error": {
+      case "fetch-result": {
+        var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
+        // Rebuild a real Response from the status/headers the host captured
+        // plus the body. The body arrives one of three ways:
+        //   - env.body is a transferred ReadableStream (fast path) — use it.
+        //   - env.streamPort is a transferred MessagePort (Safari fallback) —
+        //     wrap it in a ReadableStream that pulls chunks with credit-based
+        //     backpressure: grant credit when the consumer wants more, enqueue
+        //     each {type:"chunk"}, close on {type:"close"}, error on
+        //     {type:"error"}, and post {type:"cancel"} if the reader cancels.
+        //   - neither — a bodyless response.
+        var headers=new Headers(env.headers||[]);
+        var body=null;
+        if (env.body!==undefined) {
+          body=env.body;
+        } else if (env.streamPort) {
+          var sp=env.streamPort;
+          body=new ReadableStream({
+            start:function(controller){
+              sp.onmessage=function(ev){
+                var m=ev.data; if(!m) return;
+                if(m.type==="chunk"){
+                  controller.enqueue(new Uint8Array(m.chunk));
+                  // Ask for more while the consumer still has appetite.
+                  if(controller.desiredSize>0){ sp.postMessage({type:"credit",n:1}); }
+                } else if(m.type==="close"){
+                  controller.close(); sp.close();
+                } else if(m.type==="error"){
+                  controller.error(new Error(m.error||"stream error")); sp.close();
+                }
+              };
+              // Prime the pump: grant initial credit sized to the consumer's
+              // appetite (default 1 when desiredSize is null).
+              sp.postMessage({type:"credit",n:controller.desiredSize>0?controller.desiredSize:1});
+            },
+            pull:function(controller){
+              sp.postMessage({type:"credit",n:controller.desiredSize>0?controller.desiredSize:1});
+            },
+            cancel:function(){ sp.postMessage({type:"cancel"}); sp.close(); }
+          });
+        }
+        h.resolve(new Response(body,
+          {status:env.status,statusText:env.statusText,headers:headers}));
+        return;
+      }
+      case "query-error": case "transact-error": case "fetch-error": {
         var h=pending.get(env.id); if(!h) return; pending.delete(env.id);
         h.reject(new Error(env.error)); return;
       }
@@ -166,13 +230,428 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     }
   };
   window.tonk=tonk;
+
+  // Override window.fetch so guest code (and our own loaders) can fetch
+  // same-origin, SW-routed resources the opaque iframe can't reach itself.
+  // Host-relative requests (`/…`, not `//`) route through `tonk.fetch`, which
+  // has the host perform the real fetch and transfer the response stream back;
+  // everything else (absolute cross-origin, `blob:`, `data:`) passes through
+  // to the native fetch — notably the runtime bootstrap's own blob-URL module
+  // imports, which must never be intercepted.
+  var nativeFetch=window.fetch.bind(window);
+  window.fetch=function(input,init){
+    var url=(typeof input==="string")?input:(input&&input.url)||"";
+    if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
+      return tonk.fetch(url);
+    }
+    return nativeFetch(input,init);
+  };
+
   parent.postMessage({v:1,type:"hello"},"*",[ch.port2]);
+})();"#;
+
+/// Runtime-injection bootstrap, appended after [`BOOTSTRAP_JS`] when the
+/// portal is in `runtime` mode. It receives the element runtime from the
+/// parent (over `window` `postMessage`, NOT the data port) and brings it up
+/// inside the sealed guest: inject CSS, mint blob URLs for the glue +
+/// snippet modules, rewrite the glue's relative snippet imports to those
+/// blobs, import the glue, instantiate the wasm from bytes (no fetch), and
+/// call `start()` to register the custom elements. The `content` markup
+/// (e.g. `<tonk-display>`) is already in the document and upgrades the
+/// moment the elements are defined.
+///
+/// The guest fetches NOTHING — the parent (trusted, networked) hands over
+/// every byte. `runtime-ready` tells the parent to send.
+const RUNTIME_BOOTSTRAP_JS: &str = r#"(function(){
+  // Global submit guard: the iframe sandbox grants `allow-forms` only so a
+  // `<form>`'s `submit` event fires (declarative `onsubmit=` bindings run on
+  // it). This capture-phase listener `preventDefault`s EVERY submission
+  // before its native action, so a form can never navigate the guest away or
+  // POST anywhere — the event is observable, the navigation is not. Runs on
+  // every submit regardless of whether the form has an app handler.
+  document.addEventListener("submit", function(ev){ ev.preventDefault(); }, true);
+
+  window.addEventListener("message", async function(e){
+    var d=e.data; if(!d||d.__tonkRuntime!=="inject") return;
+    try {
+      // Apply the parent document's exact root classes (WA theme + palette +
+      // dark/light), so the injected WA CSS resolves its custom properties
+      // identically to the host page.
+      if (d.rootClass) document.documentElement.className=d.rootClass;
+      // The injected rootClass is a one-time snapshot, so a later OS
+      // light/dark switch wouldn't reach the guest (the parent retoggles its
+      // own `wa-dark`/`wa-light` on `prefers-color-scheme`, but the guest's
+      // class is frozen). Watch the same OS signal here and keep the guest's
+      // dark/light class live — `prefers-color-scheme` is identical inside the
+      // iframe, so guest and parent stay in agreement. The theme/palette
+      // classes from rootClass are untouched (they don't change).
+      (function(){
+        var mq=window.matchMedia("(prefers-color-scheme: dark)");
+        var apply=function(isDark){
+          var cls=document.documentElement.classList;
+          cls.toggle("wa-dark",isDark); cls.toggle("wa-light",!isDark);
+        };
+        apply(mq.matches);
+        mq.addEventListener("change",function(ev){apply(ev.matches);});
+      })();
+      // Base layout: the guest fills the iframe and lays out as a column so
+      // the injected view (a `.display-route` chain) can flex to full height.
+      var base=document.createElement("style");
+      base.textContent="html,body{height:100%;margin:0}body{display:flex;flex-direction:column;min-height:100%}";
+      document.head.appendChild(base);
+      if (d.css) {
+        var style=document.createElement("style");
+        style.textContent=d.css;
+        document.head.appendChild(style);
+      }
+      // Web Awesome component bundle: a self-contained ESM (no dynamic or
+      // relative imports). `d.wa` is the transferred ArrayBuffer (ownership
+      // moved, no copy); wrap it in a Blob (a zero-copy view over the bytes)
+      // and import the URL so the <wa-*> elements upgrade with no network.
+      if (d.wa) {
+        var waUrl=URL.createObjectURL(new Blob([d.wa],{type:"text/javascript"}));
+        await import(waUrl);
+      }
+      // Rewrite each snippet import statement to a guest-minted blob URL.
+      var glue=d.glue;
+      for (var i=0;i<d.snippets.length;i++){
+        var s=d.snippets[i];
+        var url=URL.createObjectURL(new Blob([s.src],{type:"text/javascript"}));
+        glue=glue.replace(s.stmt, s.stmt.replace(/from\s*['"][^'"]*['"]/, 'from "'+url+'"'));
+      }
+      var glueUrl=URL.createObjectURL(new Blob([glue],{type:"text/javascript"}));
+      var mod=await import(glueUrl);
+      await mod.default({ module_or_path: d.wasm });
+      mod.start();
+    } catch(err) {
+      parent.postMessage({__tonkRuntime:"error",error:String(err)+(err&&err.stack?"\n"+err.stack:"")},"*");
+    }
+  });
+  parent.postMessage({__tonkRuntime:"runtime-ready"},"*");
 })();"#;
 
 /// Prepend the bootstrap script that wires `window.tonk` to this
 /// portal's bridge over a `MessagePort`.
 pub(crate) fn bootstrap_srcdoc(content: &str) -> String {
     format!("<script>{BOOTSTRAP_JS}</script>{content}")
+}
+
+/// Like [`bootstrap_srcdoc`], plus the runtime-injection bootstrap: the
+/// guest will ask the parent (`runtime-ready`) for the element runtime and
+/// bring it up before `content`'s custom elements upgrade.
+pub(crate) fn bootstrap_srcdoc_with_runtime(content: &str) -> String {
+    format!("<script>{BOOTSTRAP_JS}</script><script>{RUNTIME_BOOTSTRAP_JS}</script>{content}")
+}
+
+/// Fetch the element runtime + app CSS (the parent is trusted + networked)
+/// and post an `inject` envelope to the sealed `iframe`'s window. Called
+/// when the guest signals `runtime-ready`. The guest fetches nothing; every
+/// byte crosses here.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn inject_runtime(iframe: &HtmlIFrameElement) {
+    let Some(content_window) = iframe.content_window() else {
+        return;
+    };
+    spawn_local(async move {
+        let (payload, transfer) = match build_inject_payload().await {
+            Ok(p) => p,
+            Err(e) => {
+                tonk_common::log!("portal runtime: failed to assemble payload: {e}");
+                return;
+            }
+        };
+        // Post to the iframe window (not the data port): runtime setup is a
+        // one-time window-channel handoff, distinct from the tonk data port.
+        // The large binary payloads (wasm + WA bundle) are TRANSFERRED by
+        // ownership via the transfer list, not structured-clone-copied.
+        let _ = content_window.post_message_with_transfer(&payload, "*", &transfer);
+    });
+}
+
+/// The hashed guest-asset basenames the `hash-guest.sh` post_build hook
+/// writes into `guest/manifest.json`. Each names a content-hashed file under
+/// the guest dir, so those assets cache immutably while the manifest itself
+/// is fetched fresh on every load.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[derive(serde::Deserialize)]
+struct GuestManifest {
+    js: String,
+    wasm: String,
+    #[serde(rename = "waJs")]
+    wa_js: String,
+    #[serde(rename = "waCss")]
+    wa_css: String,
+}
+
+/// Build the runtime-inject envelope by fetching the served guest bundle +
+/// app stylesheet. Returns `(payload, transfer)` for
+/// `post_message_with_transfer`: the payload carries the glue/css/snippets as
+/// strings plus the wasm + WA bundle as ArrayBuffers, and `transfer` lists
+/// those buffers so they hand off by ownership instead of being copied.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
+    use wasm_bindgen::JsValue;
+
+    // The manifest names the current build's hashed assets. It rides the
+    // SW's stale-while-revalidate cache like everything else, so a sealed
+    // `/space` works OFFLINE — never `no-store`, which the SW refuses to
+    // cache (an offline guest could then never resolve its assets). Serving
+    // a stale manifest is safe: it points at the PREVIOUS build's hashed
+    // assets, which are still cached (immutable, never evicted within a cache
+    // version), so the guest loads fully; SWR refreshes the manifest in the
+    // background and the next load picks up the new build.
+    let manifest: GuestManifest = {
+        let text = fetch_manifest_text("/guest/manifest.json").await?;
+        serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
+    };
+
+    let glue = fetch_text(&format!("/guest/{}", manifest.js)).await?;
+    let wasm = fetch_array_buffer(&format!("/guest/{}", manifest.wasm)).await?;
+    // App stylesheet — its hashed filename is discovered from the parent
+    // document's own `<link rel=stylesheet href=/styles-*.css>`. The Web
+    // Awesome CSS + the self-contained WA component bundle ride along so
+    // `<wa-*>` elements style + upgrade inside the sealed guest with no
+    // network of its own.
+    let mut css = fetch_text(&format!("/guest/{}", manifest.wa_css))
+        .await
+        .unwrap_or_default();
+    if let Some(href) = app_stylesheet_href() {
+        css.push('\n');
+        css.push_str(&fetch_text(&href).await.unwrap_or_default());
+    }
+    // Inline `@font-face url("/fonts/*.woff2")` as `data:` URLs: a
+    // null-origin guest can't fetch the fonts (CORS-blocked), so the host
+    // (same-origin) fetches each woff2 and base64-embeds it.
+    css = inline_fonts(&css).await;
+    // The bundled Web Awesome components (esbuild, no dynamic/relative
+    // imports), imported by the guest before its content upgrades. Fetched as
+    // an ArrayBuffer (not text): the guest never manipulates it as a string,
+    // it just blobs + imports it, so we transfer the bytes (ownership moved,
+    // no structured-clone copy) and the guest wraps them in a Blob zero-copy.
+    let wa = fetch_array_buffer(&format!("/guest/{}", manifest.wa_js))
+        .await
+        .unwrap_or(JsValue::UNDEFINED);
+
+    // Find every `import … from '…/snippets/…'` statement in the glue and
+    // fetch each snippet file, so the guest can rewrite them to blob URLs.
+    let snippets = js_sys::Array::new();
+    for (stmt, spec) in find_snippet_imports(&glue) {
+        let path = format!("/guest/{}", spec.trim_start_matches("./"));
+        let src = fetch_text(&path).await?;
+        let entry = Object::new();
+        let _ = Reflect::set(&entry, &"stmt".into(), &JsValue::from_str(&stmt));
+        let _ = Reflect::set(&entry, &"src".into(), &JsValue::from_str(&src));
+        snippets.push(&entry);
+    }
+
+    let payload = Object::new();
+    let _ = Reflect::set(&payload, &"__tonkRuntime".into(), &"inject".into());
+    let _ = Reflect::set(&payload, &"glue".into(), &JsValue::from_str(&glue));
+    let _ = Reflect::set(&payload, &"snippets".into(), &snippets);
+    let _ = Reflect::set(&payload, &"wasm".into(), &wasm);
+    let _ = Reflect::set(&payload, &"css".into(), &JsValue::from_str(&css));
+    let _ = Reflect::set(&payload, &"wa".into(), &wa);
+    // Mirror the outer document's root classes (the WA theme/palette/dark
+    // classes) so the guest themes identically — recomputing from
+    // matchMedia inside the guest can disagree with the parent.
+    let root_class = window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .map(|e| e.class_name())
+        .unwrap_or_default();
+    let _ = Reflect::set(
+        &payload,
+        &"rootClass".into(),
+        &JsValue::from_str(&root_class),
+    );
+
+    // Transfer the two large binary payloads (the guest wasm + the WA bundle)
+    // by OWNERSHIP rather than letting `postMessage` structured-clone-copy
+    // them across the window boundary. `glue`/`css`/snippets stay as strings:
+    // the guest manipulates them as text, so there's nothing to transfer.
+    let transfer = js_sys::Array::new();
+    if !wasm.is_undefined() {
+        transfer.push(&wasm);
+    }
+    if !wa.is_undefined() {
+        transfer.push(&wa);
+    }
+    Ok((payload.into(), transfer.into()))
+}
+
+/// Replace every `url("/fonts/<name>.woff2")` in `css` with a
+/// `url("data:font/woff2;base64,…")` so the sealed guest needs no font
+/// fetch. Fonts whose fetch/encode fails are left as-is (degrade to a
+/// fallback face).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn inline_fonts(css: &str) -> String {
+    // Collect distinct `/fonts/*.woff2` paths.
+    let mut paths: Vec<String> = Vec::new();
+    let mut rest = css;
+    while let Some(i) = rest.find("/fonts/") {
+        let tail = &rest[i..];
+        if let Some(end) = tail.find(".woff2") {
+            let path = tail[..end + 6].to_owned();
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+            rest = &tail[end + 6..];
+        } else {
+            break;
+        }
+    }
+
+    let mut out = css.to_owned();
+    for path in paths {
+        if let Ok(buffer) = fetch_array_buffer(&path).await
+            && let Some(b64) = array_buffer_to_base64(&buffer)
+        {
+            let data_url = format!("data:font/woff2;base64,{b64}");
+            // Replace both quoted forms `"<path>"` (the CSS uses
+            // double quotes around the url argument).
+            out = out.replace(&path, &data_url);
+        }
+    }
+    out
+}
+
+/// Base64-encode an `ArrayBuffer` via `btoa` over a binary string. Returns
+/// `None` on any JS error.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn array_buffer_to_base64(buffer: &JsValue) -> Option<String> {
+    let bytes = js_sys::Uint8Array::new(buffer);
+    let len = bytes.length() as usize;
+    // Build a binary string (each char = one byte) for `btoa`.
+    let mut binary = String::with_capacity(len);
+    let vec = bytes.to_vec();
+    for b in vec {
+        binary.push(b as char);
+    }
+    window()?.btoa(&binary).ok()
+}
+
+/// Parse `import … from '<spec>'` statements whose spec contains
+/// `/snippets/`, returning `(full statement, spec)` pairs.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn find_snippet_imports(glue: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in glue.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("import") || !trimmed.contains("/snippets/") {
+            continue;
+        }
+        // spec is the quoted string after `from`
+        if let Some(from_idx) = trimmed.find(" from ") {
+            let after = &trimmed[from_idx + 6..];
+            let quote = after.chars().next();
+            if let Some(q) = quote
+                && let Some(end) = after[1..].find(q)
+            {
+                let spec = &after[1..1 + end];
+                // statement without a trailing `;`-only tail variance:
+                // keep the trimmed line up to and including the close quote
+                let stmt_end = from_idx + 6 + 1 + end + 1;
+                let stmt = trimmed[..stmt_end].to_owned();
+                out.push((stmt, spec.to_owned()));
+            }
+        }
+    }
+    out
+}
+
+/// The parent document's app stylesheet href (the hashed `/styles-*.css`),
+/// read off its own `<link rel="stylesheet">`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn app_stylesheet_href() -> Option<String> {
+    let document = window()?.document()?;
+    let links = document.query_selector_all("link[rel=stylesheet]").ok()?;
+    for i in 0..links.length() {
+        let node = links.item(i)?;
+        let el: Element = node.dyn_into().ok()?;
+        if let Some(href) = el.get_attribute("href")
+            && (href.contains("/styles-") || href.ends_with("styles.css"))
+        {
+            return Some(href);
+        }
+    }
+    None
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_text(url: &str) -> Result<String, String> {
+    resp_text(fetch(url).await?).await
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn resp_text(resp: web_sys::Response) -> Result<String, String> {
+    let text =
+        wasm_bindgen_futures::JsFuture::from(resp.text().map_err(|e| format!("text(): {e:?}"))?)
+            .await
+            .map_err(|e| format!("await text: {e:?}"))?;
+    text.as_string().ok_or_else(|| "text not a string".into())
+}
+
+/// Fetch the guest manifest network-first, falling back to cache offline.
+///
+/// The manifest names the current build's hashed assets. If a STALE cached
+/// manifest were used while online, it could name a previous build's hashes
+/// that the server no longer has — and a missing hashed asset returns the
+/// SPA fallback (HTTP 200 `text/html`), which then blows up wasm-instantiate
+/// with a bad magic word. So online we force the network (`cache: "reload"`)
+/// to stay in lock-step with the served assets; if that throws (offline), we
+/// fall back to the SW-cached copy, whose assets are also cached. Either way
+/// manifest and assets agree.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_manifest_text(url: &str) -> Result<String, String> {
+    let win = window().ok_or("no window")?;
+    let init = web_sys::RequestInit::new();
+    init.set_cache(web_sys::RequestCache::Reload);
+    match wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init)).await {
+        Ok(value) => {
+            let resp = value
+                .dyn_into::<web_sys::Response>()
+                .map_err(|_| "manifest: not a Response".to_string())?;
+            resp_text(resp).await
+        }
+        // Network unreachable (offline): fall back to the SW-cached manifest.
+        Err(_) => fetch_text(url).await,
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
+    let resp = fetch(url).await?;
+    // A missing hashed asset 200s with the SPA fallback (`text/html`). Reject
+    // that here so HTML bytes never reach `WebAssembly.instantiate` as a
+    // bogus magic word — surface a clear error instead.
+    if let Some(ct) = resp.headers().get("content-type").ok().flatten()
+        && ct.contains("text/html")
+    {
+        return Err(format!("fetch {url}: got HTML (asset missing?)"));
+    }
+    wasm_bindgen_futures::JsFuture::from(
+        resp.array_buffer()
+            .map_err(|e| format!("array_buffer(): {e:?}"))?,
+    )
+    .await
+    .map_err(|e| format!("await array_buffer: {e:?}"))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch(url: &str) -> Result<web_sys::Response, String> {
+    let win = window().ok_or("no window")?;
+    // Default cache mode (no override): these URLs are content-hashed (named
+    // by the guest manifest), so the SW's stale-while-revalidate shell cache
+    // can hold them immutably — a sealed `/space` works OFFLINE (populated on
+    // the first online load, served from cache after) and a content change
+    // is a NEW URL (cache miss → fresh), never a stale hit. Only the manifest
+    // itself is fetched `no-store` (see `fetch_text_no_store`).
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
+        .await
+        .map_err(|e| format!("fetch {url}: {e:?}"))?;
+    resp_value
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| format!("fetch {url}: not a Response"))
 }
 
 // --- Page-level `hello` listener + registry -----------------------
@@ -206,6 +685,36 @@ pub(crate) fn install_message_listener() {
     let listener: Closure<dyn FnMut(MessageEvent)> =
         Closure::wrap(Box::new(move |event: MessageEvent| {
             let data = event.data();
+
+            // Runtime-injection handshake: the guest's runtime bootstrap
+            // asks for the element runtime; match its source iframe and
+            // fetch+post the bundle. Distinct from the `hello`/data-port
+            // handshake below.
+            let runtime_kind = get_str(&data, "__tonkRuntime");
+            if let Some(kind) = runtime_kind.as_deref() {
+                let source = Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
+                match kind {
+                    "runtime-ready" => {
+                        let matched = registry.borrow().iter().find_map(|entry| {
+                            let cw: JsValue = entry.iframe.content_window()?.into();
+                            (cw == source).then(|| entry.iframe.clone())
+                        });
+                        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+                        if let Some(iframe) = matched {
+                            inject_runtime(&iframe);
+                        }
+                    }
+                    "error" => {
+                        tonk_common::log!(
+                            "portal guest runtime error: {}",
+                            get_str(&data, "error").unwrap_or_default()
+                        );
+                    }
+                    _ => {}
+                }
+                return;
+            }
+
             if get_str(&data, "type").as_deref() != Some("hello") {
                 return;
             }
@@ -291,6 +800,8 @@ fn make_dispatcher(
             "transact" => handle_transact(&host, &port, &data),
             "subscribe" => handle_subscribe(&host, &state, &port, &data),
             "unsubscribe" => handle_unsubscribe(&state, &data),
+            "navigate" => handle_navigate(&data),
+            "fetch" => handle_host_fetch(&port, &data),
             _ => {}
         }
     }) as Box<dyn FnMut(MessageEvent)>)
@@ -381,6 +892,325 @@ fn handle_unsubscribe(state: &Rc<RefCell<PortalState>>, data: &JsValue) {
     }
 }
 
+/// Navigate the host page to `href`. The sealed guest can't touch its
+/// parent's location, so a link click inside it posts the href here and the
+/// trusted parent performs the real navigation. `window.location.assign`
+/// (rather than a router push) so the in-page router re-resolves the route.
+fn handle_navigate(data: &JsValue) {
+    let Some(href) = get_str(data, "href").filter(|h| !h.is_empty()) else {
+        return;
+    };
+    if let Some(location) = window().map(|w| w.location()) {
+        let _ = location.assign(&href);
+    }
+}
+
+/// Perform a same-origin fetch on the host and stream the response back. The
+/// opaque guest can't reach a same-origin, SW-routed `/api/...` endpoint
+/// itself, so it asks the host (which IS same-origin). Restricted to
+/// host-relative paths (`/…`, not `//`) so the guest can't drive the host to
+/// fetch arbitrary cross-origin URLs.
+///
+/// The host does its own `fetch`, then posts a `fetch-result` envelope back
+/// over the port carrying the status, status text, headers, and the response
+/// body's `ReadableStream` — TRANSFERRED (not copied) so the bytes never
+/// round-trip through wasm. The guest rebuilds a real streaming `Response`
+/// from those, so its overridden `window.fetch` is faithful (`.text()`,
+/// `.blob()`, `.arrayBuffer()`, `.body` all work) and binary-safe.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
+    let Some(id) = get_str(data, "id") else {
+        return;
+    };
+    let Some(path) = get_str(data, "path") else {
+        return post_error(port, "fetch-error", &id, "missing path");
+    };
+    if !path.starts_with('/') || path.starts_with("//") {
+        return post_error(port, "fetch-error", &id, "path must be host-relative");
+    };
+    let port = port.clone();
+    spawn_local(async move {
+        match fetch(&path).await {
+            Ok(resp) => post_fetch_response(&port, &id, &resp).await,
+            Err(e) => post_error(&port, "fetch-error", &id, &e),
+        }
+    });
+}
+
+/// Post a `fetch-result` envelope carrying the response status + headers and
+/// the body, streamed to the guest.
+///
+/// Body delivery has two paths, chosen by whether the browser can transfer a
+/// `ReadableStream` over `postMessage`:
+///
+/// - **Fast path** (Chrome, Firefox, Safari 27+): transfer `response.body`
+///   itself — one transfer, native streaming, zero plumbing.
+/// - **Fallback** (Safari before 27, which throws `DataCloneError` on a
+///   stream transfer): transfer one end of a fresh `MessageChannel` and drain
+///   the body into it as chunks, with credit-based backpressure (see
+///   [`drain_body_to_port`]). The guest rebuilds a `ReadableStream` fed by
+///   that port.
+///
+/// Either way the guest gets a real streaming `Response`. A bodyless response
+/// (e.g. 204) sends neither.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn post_fetch_response(port: &MessagePort, id: &str, resp: &web_sys::Response) {
+    let env = Object::new();
+    set_v1(&env, "fetch-result");
+    let _ = Reflect::set(&env, &"id".into(), &JsValue::from_str(id));
+    let _ = Reflect::set(
+        &env,
+        &"status".into(),
+        &JsValue::from_f64(resp.status() as f64),
+    );
+    let _ = Reflect::set(
+        &env,
+        &"statusText".into(),
+        &JsValue::from_str(&resp.status_text()),
+    );
+    // Headers as an array of [name, value] pairs — structured-clonable and
+    // re-hydrated into a `Headers` on the guest side.
+    let _ = Reflect::set(&env, &"headers".into(), &headers_to_array(&resp.headers()));
+
+    let Some(body) = resp.body() else {
+        // Bodyless response — send the head with no body.
+        let _ = port.post_message(&env);
+        return;
+    };
+
+    // Fast path: attempt to transfer the stream itself. We only learn whether
+    // the browser supports it by trying — a probe post on a throwaway channel,
+    // so a `DataCloneError` here never reaches the guest.
+    if streams_are_transferable() {
+        let transfer = js_sys::Array::new();
+        let _ = Reflect::set(&env, &"body".into(), &body);
+        transfer.push(&body);
+        match port.post_message_with_transferable(&env, &transfer) {
+            Ok(()) => return,
+            // Shouldn't happen once the probe passed, but if it does, fall
+            // through to the chunked path rather than dropping the response.
+            Err(e) => {
+                tonk_common::log!("portal fetch: stream transfer failed post-probe: {e:?}");
+            }
+        }
+    }
+
+    // Fallback: drain the body into a MessageChannel with credit-based
+    // backpressure. Strip the (untransferable) stream off the head envelope
+    // and hand the guest a port instead.
+    let _ = Reflect::delete_property(&env, &"body".into());
+    drain_body_to_port(port, env, &body);
+}
+
+/// Whether this browser can transfer a `ReadableStream` over `postMessage`.
+/// Detected once by probing a throwaway `MessageChannel` (the result is
+/// cached): Safari before 27 throws `DataCloneError`, every other current
+/// browser succeeds.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn streams_are_transferable() -> bool {
+    thread_local! {
+        static SUPPORTED: std::cell::OnceCell<bool> = const { std::cell::OnceCell::new() };
+    }
+    SUPPORTED.with(|cell| {
+        *cell.get_or_init(|| {
+            let Ok(channel) = web_sys::MessageChannel::new() else {
+                return false;
+            };
+            let stream = web_sys::ReadableStream::new().unwrap_or_else(|_| JsValue::NULL.into());
+            let transfer = js_sys::Array::new();
+            transfer.push(&stream);
+            channel
+                .port1()
+                .post_message_with_transferable(&JsValue::NULL, &transfer)
+                .is_ok()
+        })
+    })
+}
+
+/// Drain `body` into a fresh `MessageChannel`, transferring the guest's end on
+/// the `head` envelope (as `streamPort`). Credit-based backpressure: the guest
+/// posts `{type:"credit", n}` and the host reads + posts up to `n` more chunks
+/// (`{type:"chunk", buffer}` transferred), then `{type:"close"}` on EOF or
+/// `{type:"error", error}` on a read failure. A guest `{type:"cancel"}`
+/// cancels the reader. Used only when `ReadableStream` transfer is unavailable.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::ReadableStream) {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    let Ok(channel) = web_sys::MessageChannel::new() else {
+        return post_error_obj(port, &head, "host could not open a stream channel");
+    };
+    let host_port = channel.port1();
+    let guest_port = channel.port2();
+
+    // Hand the guest its end on the head envelope (transferred).
+    let _ = Reflect::set(&head, &"streamPort".into(), &guest_port);
+    let transfer = js_sys::Array::new();
+    transfer.push(&guest_port);
+    if let Err(e) = port.post_message_with_transferable(&head, &transfer) {
+        tonk_common::log!("portal fetch: failed to hand off stream port: {e:?}");
+        return;
+    }
+
+    let Ok(reader_val) = body
+        .get_reader()
+        .dyn_into::<web_sys::ReadableStreamDefaultReader>()
+    else {
+        return;
+    };
+    let reader = Rc::new(reader_val);
+    // Available credit + a "pump in flight" guard so concurrent credit grants
+    // don't launch overlapping reader loops (a reader allows one read at a
+    // time).
+    let credit = Rc::new(Cell::new(0u32));
+    let pumping = Rc::new(Cell::new(false));
+    let host_port = Rc::new(host_port);
+    let cancelled = Rc::new(Cell::new(false));
+
+    // The pump: while there's credit and we're not already reading, read one
+    // chunk and post it, decrementing credit. Re-entrant-safe via `pumping`.
+    // The pump closure re-invokes itself (to drain remaining credit) and is
+    // also invoked by the credit handler, so it lives behind a shared cell.
+    type PumpCell = Rc<RefCell<Option<Closure<dyn FnMut()>>>>;
+    let pump: PumpCell = Rc::new(RefCell::new(None));
+    {
+        let reader = reader.clone();
+        let credit = credit.clone();
+        let pumping = pumping.clone();
+        let host_port = host_port.clone();
+        let cancelled = cancelled.clone();
+        let pump_ref = pump.clone();
+        let closure = Closure::wrap(Box::new(move || {
+            if pumping.get() || cancelled.get() || credit.get() == 0 {
+                return;
+            }
+            pumping.set(true);
+            let reader = reader.clone();
+            let credit = credit.clone();
+            let pumping = pumping.clone();
+            let host_port = host_port.clone();
+            let cancelled = cancelled.clone();
+            let pump_ref = pump_ref.clone();
+            spawn_local(async move {
+                let result = wasm_bindgen_futures::JsFuture::from(reader.read()).await;
+                pumping.set(false);
+                if cancelled.get() {
+                    return;
+                }
+                match result {
+                    Ok(chunk) => {
+                        let done = Reflect::get(&chunk, &"done".into())
+                            .ok()
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+                        if done {
+                            let env = Object::new();
+                            let _ = Reflect::set(&env, &"type".into(), &"close".into());
+                            let _ = host_port.post_message(&env);
+                            return;
+                        }
+                        // `value` is a `Uint8Array` (possibly a view at an
+                        // offset into a larger buffer). Copy its exact bytes
+                        // into a fresh `ArrayBuffer` and transfer THAT as the
+                        // chunk; the guest wraps it as `new Uint8Array(buffer)`.
+                        // (Transferring the original backing buffer would
+                        // detach it and could carry sibling bytes.)
+                        let view = js_sys::Uint8Array::new(
+                            &Reflect::get(&chunk, &"value".into()).unwrap_or(JsValue::NULL),
+                        );
+                        let buffer = view.slice(0, view.length()).buffer();
+                        let env = Object::new();
+                        let _ = Reflect::set(&env, &"type".into(), &"chunk".into());
+                        let _ = Reflect::set(&env, &"chunk".into(), &buffer);
+                        let transfer = js_sys::Array::new();
+                        transfer.push(&buffer);
+                        let _ = host_port.post_message_with_transferable(&env, &transfer);
+                        credit.set(credit.get().saturating_sub(1));
+                        // More credit may remain — keep pumping.
+                        if let Some(cb) = pump_ref.borrow().as_ref() {
+                            let _ =
+                                js_sys::Function::from(cb.as_ref().clone()).call0(&JsValue::NULL);
+                        }
+                    }
+                    Err(e) => {
+                        let env = Object::new();
+                        let _ = Reflect::set(&env, &"type".into(), &"error".into());
+                        let _ = Reflect::set(
+                            &env,
+                            &"error".into(),
+                            &JsValue::from_str(&format!("{e:?}")),
+                        );
+                        let _ = host_port.post_message(&env);
+                    }
+                }
+            });
+        }) as Box<dyn FnMut()>);
+        *pump.borrow_mut() = Some(closure);
+    }
+
+    // The host port's message handler: grant credit, or cancel.
+    let onmessage = {
+        let credit = credit.clone();
+        let cancelled = cancelled.clone();
+        let reader = reader.clone();
+        let pump = pump.clone();
+        Closure::wrap(Box::new(move |event: MessageEvent| {
+            let data = event.data();
+            match get_str(&data, "type").as_deref() {
+                Some("credit") => {
+                    let n = Reflect::get(&data, &"n".into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as u32;
+                    credit.set(credit.get().saturating_add(n));
+                    if let Some(cb) = pump.borrow().as_ref() {
+                        let _ = js_sys::Function::from(cb.as_ref().clone()).call0(&JsValue::NULL);
+                    }
+                }
+                Some("cancel") => {
+                    cancelled.set(true);
+                    let _ = reader.cancel();
+                }
+                _ => {}
+            }
+        }) as Box<dyn FnMut(MessageEvent)>)
+    };
+    host_port.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+    // Keep everything alive for the stream's lifetime. `onmessage` is leaked
+    // (it's the only owner the browser-side port references). It holds an `Rc`
+    // clone of `pump` (the `RefCell<Option<Closure>>`), which keeps the pump
+    // closure itself alive — so the credit handler can still invoke it. Do NOT
+    // take the pump out of the cell: that would empty it and the handler would
+    // find nothing to pump.
+    onmessage.forget();
+}
+
+/// Post a `fetch-error` derived from a partially built `fetch-result` head
+/// (reusing its `id`).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn post_error_obj(port: &MessagePort, head: &Object, message: &str) {
+    if let Some(id) = get_str(head, "id") {
+        post_error(port, "fetch-error", &id, message);
+    }
+}
+
+/// Serialize a `Headers` into a `[[name, value], …]` array. `Headers`
+/// isn't structured-clonable, but this pair array is, and the guest
+/// reconstructs a `Headers` from it.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn headers_to_array(headers: &web_sys::Headers) -> js_sys::Array {
+    let out = js_sys::Array::new();
+    let iter = js_sys::try_iter(headers).ok().flatten();
+    if let Some(iter) = iter {
+        for entry in iter.flatten() {
+            // Each entry is a `[name, value]` array already.
+            out.push(&entry);
+        }
+    }
+    out
+}
+
 // --- Query-body construction --------------------------------------
 
 /// Build the query body for a bridge call: no argument streams the
@@ -411,14 +1241,39 @@ fn read_descriptor(host: &Element) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Build the `context` object (`{ this, model }`) the iframe receives in
-/// its `ready` envelope, from the host's current attributes.
+/// Build the `context` object (`{ this, model, origin, repo, branch }`) the
+/// iframe receives in its `ready` envelope. `this`/`model` come from the
+/// host's attributes; `origin` is the host page's real origin (the opaque
+/// guest's is `"null"`); `repo`/`branch` come from the portal's
+/// `<tonk-repository>`/`<tonk-branch>` ancestors — those routing elements
+/// live OUTSIDE the iframe, so a guest control that would normally resolve
+/// its repo via `closest("tonk-repository")` reads it from the context
+/// instead. Anything needing a same-origin URL or the scoped repo reads it
+/// from `window.tonk.context` rather than the DOM/`window.location`.
 fn build_context(host: &Element) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
     let model = host.get_attribute("model").unwrap_or_default();
+    let origin = window()
+        .and_then(|w| w.location().origin().ok())
+        .unwrap_or_default();
+    let repo = host
+        .closest("tonk-repository")
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute("name"))
+        .unwrap_or_default();
+    let branch = host
+        .closest("tonk-branch")
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute("name"))
+        .unwrap_or_default();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
+    let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
+    let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
+    let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
     context
 }
 
@@ -779,6 +1634,29 @@ mod tests {
                 sleep(5).await;
             }
             JsValue::UNDEFINED
+        }
+
+        /// Await the first message of any shape (for raw envelopes that
+        /// carry no `type` field, e.g. a bare transferred-body probe).
+        async fn wait_for_any(&self) -> JsValue {
+            for _ in 0..200 {
+                let found = self.messages.borrow().first().cloned();
+                if let Some(found) = found {
+                    return found;
+                }
+                sleep(5).await;
+            }
+            JsValue::UNDEFINED
+        }
+
+        /// How many messages have arrived so far.
+        fn count(&self) -> usize {
+            self.messages.borrow().len()
+        }
+
+        /// Drop collected messages so `wait_for_any` returns the next one.
+        fn clear(&self) {
+            self.messages.borrow_mut().clear();
         }
     }
 
@@ -1337,6 +2215,83 @@ mod tests {
         assert!(
             host.cancelled(),
             "a reload cancels the live host subscription",
+        );
+    }
+
+    /// The credit-based fallback (`drain_body_to_port`, used when a browser
+    /// can't transfer a `ReadableStream`) drains a response body into a
+    /// `MessageChannel`: it hands over a `streamPort`, then posts `chunk`
+    /// messages only as the consumer grants credit, and `close` at EOF. This
+    /// drives that protocol by hand (standing in for the guest's
+    /// ReadableStream) and asserts the bytes reassemble AND that no chunk
+    /// arrives before credit is granted (backpressure holds).
+    #[dialog_common::test]
+    async fn it_drains_a_body_to_a_port_with_credit_backpressure() {
+        use web_sys::{Response, ResponseInit};
+
+        // A body that yields a few chunks. A Response from a string gives one
+        // chunk; that's enough to exercise the credit gate + close.
+        let init = ResponseInit::new();
+        let resp = Response::new_with_opt_str_and_init(Some("sigil-bytes"), &init)
+            .expect("construct response");
+        let body = resp.body().expect("response body");
+
+        // The "guest" side: the head envelope is posted to `client`, carrying
+        // the transferred stream port.
+        let head_channel = MessageChannel::new().expect("head channel");
+        let host_to_guest = head_channel.port1();
+        let guest_in = head_channel.port2();
+        let head_listener = PortListener::attach(&guest_in);
+
+        let head = Object::new();
+        set_v1(&head, "fetch-result");
+        let _ = Reflect::set(&head, &"id".into(), &JsValue::from_str("r1"));
+        drain_body_to_port(&host_to_guest, head, &body);
+
+        // Receive the head + the stream port.
+        let received = head_listener.wait_for("fetch-result").await;
+        let stream_port: MessagePort = Reflect::get(&received, &"streamPort".into())
+            .expect("streamPort")
+            .dyn_into()
+            .expect("a MessagePort");
+        let chunk_listener = PortListener::attach(&stream_port);
+
+        // Backpressure: before granting credit, no chunk must arrive.
+        sleep(30).await;
+        assert!(
+            chunk_listener.count() == 0,
+            "no chunk may be sent before credit is granted",
+        );
+
+        // Grant credit and collect chunks until `close`.
+        let mut collected: Vec<u8> = Vec::new();
+        let mut closed = false;
+        for _ in 0..50 {
+            let grant = Object::new();
+            let _ = Reflect::set(&grant, &"type".into(), &"credit".into());
+            let _ = Reflect::set(&grant, &"n".into(), &JsValue::from_f64(1.0));
+            stream_port.post_message(&grant).expect("grant credit");
+
+            let msg = chunk_listener.wait_for_any().await;
+            chunk_listener.clear();
+            match get_str(&msg, "type").as_deref() {
+                Some("chunk") => {
+                    let chunk = Reflect::get(&msg, &"chunk".into()).expect("chunk");
+                    let bytes = js_sys::Uint8Array::new(&chunk).to_vec();
+                    collected.extend_from_slice(&bytes);
+                }
+                Some("close") => {
+                    closed = true;
+                    break;
+                }
+                other => panic!("unexpected stream message: {other:?}"),
+            }
+        }
+        assert!(closed, "the stream must close after the body is drained");
+        assert_eq!(
+            String::from_utf8(collected).unwrap(),
+            "sigil-bytes",
+            "the drained bytes must reassemble to the body",
         );
     }
 }

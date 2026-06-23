@@ -42,7 +42,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_invite::Invite;
-use tonk_schema::{Invitation, InvitedVia, MemberName, Membership, Replica, prelude::DidExt as _};
+use tonk_schema::{
+    Invitation, InvitedVia, MemberName, MemberRole, Membership, Replica, prelude::DidExt as _,
+};
 
 use super::AppState;
 use super::repository::{
@@ -105,14 +107,62 @@ pub async fn join(
     State(state): State<AppState>,
     Json(body): Json<JoinRequest>,
 ) -> Result<(StatusCode, Json<JoinResponse>), TonkWorkerError> {
-    log!("POST /api/profile/join");
-
     let tonk = state.write().await;
+    let outcome = claim_invite(&tonk, &body.url).await?;
+    log!(
+        "POST /api/profile/join → subject {} (key {})",
+        outcome.subject,
+        outcome.key
+    );
+    let repository = tonk
+        .profile
+        .repository(outcome.key.as_str())
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to load joined replica: {e}")))?;
+    let info = build_repository_info(&tonk, &outcome.key, &repository).await;
+    let (status, response) = if outcome.renewed {
+        (StatusCode::OK, JoinResponse::Renewed { repository: info })
+    } else {
+        (
+            StatusCode::CREATED,
+            JoinResponse::Joined { repository: info },
+        )
+    };
+    Ok((status, Json(response)))
+}
 
+/// The result of a successful claim: the routing key, subject DID, and
+/// whether the replica pre-existed (`renewed`) or was freshly created.
+/// Deliberately repository-free so the concrete `Repository<R>` type
+/// (which differs between the load and create paths) doesn't leak into
+/// the signature — callers re-load by key if they need the handle.
+pub(crate) struct JoinOutcome {
+    /// The routing/storage key (subject DID suffix).
+    pub key: String,
+    /// The joined subject DID.
+    pub subject: Did,
+    /// `true` when a replica already existed (renewed access, no new
+    /// replica); `false` when a fresh replica was created.
+    pub renewed: bool,
+}
+
+/// Parse + claim an invite URL and ensure a local replica exists.
+///
+/// Shared by the HTTP `/api/profile/join` route and the `tonk:join`
+/// command provider. Persists the delegation chain, and either surfaces
+/// the existing replica (`renewed: true`) or creates one (`renewed:
+/// false`). Errors carry a recipient-readable message; the command
+/// provider maps them to a `tonk:join/failure`.
+pub(crate) async fn claim_invite(
+    tonk: &TonkState,
+    url: &str,
+) -> Result<JoinOutcome, TonkWorkerError> {
     // Parse the invite first — the subject DID drives the
     // existing-replica lookup, and a malformed invite shouldn't
     // touch any state.
-    let invite = Invite::parse_url(&body.url)
+    let invite = Invite::parse_url(url)
         .await
         .map_err(|e| TonkWorkerError::Router(format!("invalid invite: {e}")))?;
 
@@ -154,7 +204,10 @@ pub async fn join(
     // — surface the existing replica as `Renewed`. The chain refresh we
     // just did is kept; the replica is mounted at the routing key
     // (identity), not a stored label.
-    if find_replica_for_subject(&tonk, &subject).await? {
+    if find_replica_for_subject(tonk, &subject).await? {
+        // Renewed: the replica already exists, but still record the roster
+        // facts for this claim — a renewing invite can carry a fresh
+        // invitation, and provenance is first-wins so re-stamping is a no-op.
         let repository = tonk
             .profile
             .repository(key.as_str())
@@ -166,12 +219,12 @@ pub async fn join(
                     "replica '{key}' present in profile meta but failed to load: {e}",
                 ))
             })?;
-        record_claim_on_content(&tonk, &repository, &key, &invitation).await?;
-        let info = build_repository_info(&tonk, &key, &repository).await;
-        return Ok((
-            StatusCode::OK,
-            Json(JoinResponse::Renewed { repository: info }),
-        ));
+        record_claim_on_content(tonk, &repository, &key, &invitation).await?;
+        return Ok(JoinOutcome {
+            key,
+            subject,
+            renewed: true,
+        });
     }
 
     // Create a verifier-only credential keyed to the invited
@@ -224,30 +277,42 @@ pub async fn join(
     // queries the repo for its name. `record_repository_meta` only uses
     // this for log context + the home-demo check (never matched here), so
     // the routing key stands in.
-    record_repository_meta(&tonk, &repository, &key, &configuration).await?;
-    record_claim_on_content(&tonk, &repository, &key, &invitation).await?;
+    record_repository_meta(
+        tonk,
+        &repository,
+        &key,
+        &configuration,
+        tonk_schema::MemberRole::MEMBER,
+    )
+    .await?;
+    record_claim_on_content(tonk, &repository, &key, &invitation).await?;
 
     // `record_repository_meta` stamps the replica `blank` (the create
     // path's "still seeding" state). A joined replica has no local seed
     // step — its content arrives over the pull the recipient triggers —
     // so flip it straight to `initialized`, otherwise its Hub card is
     // stuck on "Installing…" forever.
-    mark_replica_initialized(&tonk, &subject).await?;
+    mark_replica_initialized(tonk, &subject).await?;
 
     log!("Joined invite for subject {subject} as local replica (key {key})");
 
-    let info = build_repository_info(&tonk, &key, &repository).await;
-    Ok((
-        StatusCode::CREATED,
-        Json(JoinResponse::Joined { repository: info }),
-    ))
+    Ok(JoinOutcome {
+        key,
+        subject,
+        renewed: false,
+    })
 }
 
 /// Record the roster facts for a claimed invite on the repo's content
 /// branch: the invitation itself (idempotent when the minter already
 /// wrote it; self-healing when the invite predates invitation
-/// records), the claimer's membership, and — first-wins — the
-/// `InvitedVia` provenance stamp.
+/// records), the claimer's membership stamped with the `member` role,
+/// and — first-wins — the `InvitedVia` provenance stamp.
+///
+/// The content branch (not meta) because it's the synced, shared branch:
+/// every member pulls it, so the roster converges across the space. A
+/// roster on the device-local meta branch would only ever show the
+/// claimer's own row.
 ///
 /// The roster lives on the content branch (`main`) because that branch
 /// syncs across replicas; the meta branch is local-only, so a roster
@@ -286,7 +351,7 @@ where
             TonkWorkerError::Internal(format!("failed to open repo content branch: {e}"))
         })?;
 
-    // First-wins: look for any existing stamp on this membership.
+    // First-wins: look for any existing provenance stamp on this membership.
     let stamps: Vec<InvitedVia> = session
         .handle()
         .query()
@@ -300,6 +365,22 @@ where
         .map_err(|e| TonkWorkerError::Internal(format!("invited-via query failed: {e:?}")))?;
     let already_stamped = stamps.iter().any(|s| s.this == *membership.this());
 
+    // First-wins on role too: `role` is cardinality-one, so blindly
+    // stamping `member` would DEMOTE a founder who reclaims their own
+    // invite. Only stamp when the membership has no role yet.
+    let roles: Vec<MemberRole> = session
+        .handle()
+        .query()
+        .select(Query::<MemberRole> {
+            this: Term::var("this"),
+            role: Term::var("role"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("member-role query failed: {e:?}")))?;
+    let already_roled = roles.iter().any(|r| r.this == *membership.this());
+
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
@@ -312,6 +393,9 @@ where
         .assert(invitation.clone())
         .assert(membership.clone())
         .assert(member_name);
+    if !already_roled {
+        transaction = transaction.assert(MemberRole::member(membership.this().clone()));
+    }
     if !already_stamped && !self_invite {
         transaction = transaction.assert(InvitedVia::new(
             membership.this().clone(),
@@ -369,6 +453,297 @@ async fn find_replica_for_subject(
     Ok(!rows.is_empty())
 }
 
+/// The fixed entity the in-flight join status lives at. Both the handler
+/// (writes overlay status) and the `/join` view (`entity=tonk:join/status`)
+/// agree on this URI, so there's no per-attempt id to thread.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const JOIN_STATUS_URI: &str = "tonk:join/status";
+
+/// Post-commit handler for the [`Join`] command.
+///
+/// `<tonk-page onmount=tonk/join>` on the `/join` view fires the command
+/// with the parsed location in the event detail. This handler reassembles
+/// the invite URL from the `access`/`remote`/`hash` fields, claims it, and
+/// drives the overlay-only `tonk:join/status` (pending → failed, or
+/// retract + durable replica on success) on the profile meta branch — the
+/// branch the `/join` view subscribes to.
+///
+/// [`Join`]: tonk_schema::command::Join
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct JoinHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl JoinHandler {
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::Join::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for JoinHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::Join::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode the parsed-location fields synchronously while the caller
+        // holds the lock; hand owned values to the `'static` future.
+        let command = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Join::decode(entity, facts));
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(command) = command else {
+                return;
+            };
+            run_join(&env, command).await;
+        })
+    }
+}
+
+/// Reassemble the invite URL from the command's parsed pieces, claim it,
+/// and drive the overlay-only join status. Always leaves the overlay in a
+/// terminal state (status retracted on success, `failed` on error).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command::Join) {
+    use std::sync::Arc;
+    use tonk_schema::command::{JoinFailure, JoinStatus};
+    use tonk_schema::domain::join::{Kind, Reason, Status};
+
+    let tonk = env.state().read().await;
+
+    // Acquire the profile meta branch — the `/join` view reads
+    // `tonk:join/status` from here; overlay writes + their poll target it.
+    let session = match tonk
+        .reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+    {
+        Ok(session) => session,
+        Err(e) => {
+            log!("join: failed to acquire profile meta branch: {e}");
+            return;
+        }
+    };
+
+    let status_entity: dialog_artifacts::Entity = match JOIN_STATUS_URI.parse() {
+        Ok(entity) => entity,
+        Err(e) => {
+            log!("join: bad status URI: {e}");
+            return;
+        }
+    };
+
+    // Pending: a fresh attempt clears any prior status, then marks
+    // pending. Schedule a poll so the view shows "Joining…".
+    session.state.clear_overlay();
+    session.state.assert_overlay(JoinStatus {
+        this: status_entity.clone(),
+        status: Status(
+            "tonk:pending"
+                .parse()
+                .unwrap_or_else(|_| status_entity.clone()),
+        ),
+    });
+    tonk.reactor.schedule_poll(Arc::clone(&session.state));
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
+    // Reassemble the invite URL: ?access=…[&remote=…][#hash]. `access`
+    // and `remote` came from the parsed `searchParams` (already decoded),
+    // so re-encode them; `hash` keeps its leading `#`.
+    let url = build_invite_url(&command);
+
+    match claim_invite(&tonk, &url).await {
+        Ok(outcome) => {
+            // Success: the durable replica is recorded + initialized. But a
+            // *freshly* joined replica has an empty content branch — unlike a
+            // locally-created space (which is seeded with the standard library
+            // at creation), a joined space's content, including its `tonk/space`
+            // view, only arrives over the pull from the remote. Redirecting
+            // before that pull lands would drop the recipient on a branch with
+            // no view — `<tonk-display>` would resolve "Model not found".
+            //
+            // So pull the content branch now, while the "Joining…" spinner is
+            // still up, and only navigate once it has landed. A renewed replica
+            // already has content; a local-only invite has no remote to pull.
+            if !outcome.renewed {
+                pull_joined_content(&tonk, &outcome.key).await;
+            }
+
+            // Clear the in-flight status so the "Joining…" overlay empties,
+            // then tell the originating page to redirect into `/space/<subject>`.
+            //
+            // The redirect is a page capability — the service worker has no
+            // `window` — and this command is transient, so it never lands in
+            // a branch a subscription could observe. The only channel back to
+            // the page that asked is a `postMessage` to its client. We post
+            // `{ type: "navigate", href }`; the page's `<tonk-host>` performs
+            // the navigation.
+            session.state.clear_overlay();
+            tonk.reactor.schedule_poll(Arc::clone(&session.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            let href = format!("/space/{key}", key = outcome.key);
+            notify_navigate(env.client(), &href);
+            log!(
+                "join: succeeded (subject {}, key {})",
+                outcome.subject,
+                outcome.key
+            );
+        }
+        Err(error) => {
+            // Failure: mark failed + record the reason/kind, overlay-only.
+            // Never echo `url` (it carries the seed) into the message.
+            let kind = match &error {
+                TonkWorkerError::Router(_) => "malformed",
+                _ => "claim-failed",
+            };
+            session.state.assert_overlay(JoinStatus {
+                this: status_entity.clone(),
+                status: Status(
+                    "tonk:failed"
+                        .parse()
+                        .unwrap_or_else(|_| status_entity.clone()),
+                ),
+            });
+            session.state.assert_overlay(JoinFailure {
+                this: status_entity,
+                reason: Reason(error.to_string()),
+                kind: Kind(kind.to_owned()),
+            });
+            tonk.reactor.schedule_poll(Arc::clone(&session.state));
+            tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+            log!("join: failed ({kind}): {error}");
+        }
+    }
+}
+
+/// Build the invite URL from the command's parsed pieces: the full
+/// `search` (incl. `?`, carrying `access` + optional `remote`) and `hash`
+/// (incl. `#`) are appended verbatim onto a placeholder origin.
+/// `Invite::parse_url` reads only the query + fragment, so the host is
+/// irrelevant; it recovers the sync remote from the query when present.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn build_invite_url(command: &tonk_schema::command::Join) -> String {
+    let search = &command.search.0; // includes leading `?` (or empty)
+    let hash = &command.hash.0; // includes leading `#` (or empty)
+    format!("https://join.invalid/join{search}{hash}")
+}
+
+/// Pull the freshly joined replica's `main` content branch from its remote,
+/// so the standard-library views (notably `tonk/space`) are present before
+/// the recipient is redirected into the space. Without this the redirect can
+/// land on an empty branch and `<tonk-display>` resolves "Model not found".
+///
+/// A pull failure is logged, not fatal: the redirect still fires (the
+/// recipient lands on the space and a later sync / reload fills it in) — far
+/// better than blocking the join on a flaky network.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn pull_joined_content(tonk: &TonkState, key: &str) {
+    match tonk
+        .reactor
+        .repository(key)
+        .branch(DEFAULT_BRANCH)
+        .pull()
+        .perform(&tonk.operator)
+        .await
+    {
+        Ok(_) => log!("join: pulled content for joined replica {key}"),
+        Err(e) => log!("join: content pull for {key} did not complete: {e:?}"),
+    }
+}
+
+/// Post a `{ type: "navigate", href }` message to the originating client so
+/// it redirects there. This is how a worker-side command performs a page
+/// capability: the service worker has no `window`, and the command is
+/// transient (it never lands in a branch a subscription could observe), so
+/// the originating client is the only path back to the page that asked.
+///
+/// No-ops (with a log) when the client is unknown or its handle can't be
+/// resolved — the join still succeeded; only the convenience redirect is
+/// lost, and the recipient can navigate from the Hub.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("join: no originating client to navigate; skipping redirect");
+        return;
+    };
+    let client_id = client.0.clone();
+    let href = href.to_owned();
+
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(g) => g,
+        Err(_) => {
+            log!("join: not in a service worker scope; skipping redirect");
+            return;
+        }
+    };
+
+    // `clients.get(id)` resolves the live `Client` handle; post the message
+    // on it. Done on a spawned task so the caller isn't blocked on the
+    // round-trip (the navigate is fire-and-forget).
+    spawn_local(async move {
+        let client_value = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("join: originating client {client_id} is gone; skipping redirect");
+                return;
+            }
+            Err(e) => {
+                log!("join: clients.get failed: {e:?}");
+                return;
+            }
+        };
+        let Ok(client) = client_value.dyn_into::<web_sys::Client>() else {
+            log!("join: clients.get did not yield a Client; skipping redirect");
+            return;
+        };
+
+        // `{ type: "navigate", href }` — the page's `<tonk-host>` listens
+        // for `navigate` messages and assigns `window.location`.
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("navigate"),
+        );
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("href"),
+            &JsValue::from_str(&href),
+        );
+        if let Err(e) = client.post_message(&message) {
+            log!("join: post_message(navigate) failed: {e:?}");
+        }
+    });
+}
+
 #[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
 mod tests {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -383,13 +758,14 @@ mod tests {
     use dialog_ucan_core::{DelegationBuilder, DelegationChain};
     use dialog_varsig::Principal as _;
     use tonk_invite::{Invite, InviteAudience};
-    use tonk_schema::Invitation;
     use tonk_schema::prelude::DidExt as _;
+    use tonk_schema::{Invitation, MemberRole};
 
     use crate::router::api_router_with_state;
     use crate::router::repository::build_repository_info;
     use crate::router::tests::{
-        content_invitations, content_invited_via, content_memberships, put_repo, test_state,
+        content_invitations, content_invited_via, content_member_roles, content_memberships,
+        put_repo, test_state,
     };
 
     /// Hand-craft an audience-open invite URL for a synthetic
@@ -480,6 +856,14 @@ mod tests {
             .find(|s| s.this == membership_entity)
             .expect("provenance stamp present");
         assert_eq!(stamp.invitation.0, expected.this);
+
+        // A claimer (not the inviter) joins as a plain member.
+        let roles = content_member_roles(&state, &key).await;
+        let role = roles
+            .iter()
+            .find(|r| r.this == membership_entity)
+            .expect("role stamped on the claimer's membership");
+        assert_eq!(role.role.0.to_string(), MemberRole::MEMBER);
     }
 
     /// Claiming an invite names the claimer on the repo meta.
@@ -648,5 +1032,14 @@ mod tests {
             !stamps.iter().any(|s| s.this == membership_entity),
             "self-claims must not stamp provenance",
         );
+
+        // The creator is the founder, and reclaiming their own invite must
+        // NOT demote them to member (role is first-wins).
+        let roles = content_member_roles(&state, &key).await;
+        let role = roles
+            .iter()
+            .find(|r| r.this == membership_entity)
+            .expect("founder role stamped at creation");
+        assert_eq!(role.role.0.to_string(), MemberRole::FOUNDER);
     }
 }

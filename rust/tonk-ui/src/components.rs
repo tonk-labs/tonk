@@ -4,20 +4,20 @@
 //! It compiles to Wasm and runs in the browser.
 
 use leptos::{logging::log, prelude::*};
-use tonk_worker::{Notification, ProfileInfo};
 
-use crate::{api, error::TonkUiError, watch::watch};
+use crate::api;
 
 pub(crate) mod route;
 
 mod launcher;
 use launcher::*;
 
-mod toolbar;
-use toolbar::*;
-
+// `space` holds the inspector's render helpers; its only consumer is the
+// wasm-gated `inspector` module (its `use super::space` is `cfg(wasm32)`),
+// so on native every item reads as dead and `-D warnings` fails the lint
+// check. Gate the module to match its consumer.
+#[cfg(target_arch = "wasm32")]
 mod space;
-use space::*;
 
 mod display;
 use display::*;
@@ -25,160 +25,42 @@ use display::*;
 mod hub;
 use hub::*;
 
-mod board;
-use board::*;
-
 mod inspector;
 pub use inspector::register as register_inspector;
-
-mod profile;
-use profile::*;
 
 mod join;
 use join::*;
 
-mod invite;
-use invite::*;
+mod route_views;
+pub use route_views::register as register_route_views;
 
-/// The hosting document's service-worker Client ID, learned from
-/// the `X-Tonk-Client-Id` header on the `PUT /api/repository/...`
-/// response. Provided as a Leptos context so descendant
-/// components can embed it in iframe URLs for the host/guest
-/// bridge.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostId(pub String);
-
-/// Shared [`LocalResource`] holding the latest `GET /api/profile`
-/// response. Provided by [`TonkShell`] so every consumer (today:
-/// the sidebar toolbar and profile view) reads from one source of
-/// truth. The shell refetches the resource automatically whenever
-/// the worker broadcasts on `/api/profile`, so writes from any
-/// source (this tab, another tab, external fetch) flow through.
-///
-/// `Ok(None)` is used to model "not yet ready" (shell still
-/// initialising); `Ok(Some(info))` is a successful fetch.
-pub type ProfileResource = LocalResource<Result<Option<ProfileInfo>, TonkUiError>>;
-
-/// Shared open-state for the invite dialog. `Some(name)` opens
-/// the dialog and triggers a fresh invite mint for that space;
-/// `None` closes it. Set by the workspace's `<tonk-share>` control
-/// (via the `tonk:share` window bridge in [`TonkShell`]) and by the
-/// space viewer's share button.
-pub type InviteSpace = RwSignal<Option<String>>;
-
-/// Outcome of the most recent invite redemption, if any. Written
-/// by [`TonkJoin`] when a join completes; rendered as a
-/// `data-last-join-outcome` attribute on the launcher's root
-/// element so tests and any future banner / toast UI can react
-/// to which path ran without parsing an HTTP response.
-///
-/// `None` when no join has happened yet this session.
-pub type LastJoinOutcome = RwSignal<Option<&'static str>>;
+mod space_sealed;
+use space_sealed::*;
 
 /// The root UI component for the Tonk application.
 ///
 /// This component serves as the main entry point for the Tonk user interface,
 /// rendering the primary application view.
 ///
-/// On startup, it waits for the service worker to activate, then automatically
-/// sets up the upstream remote if not already configured.
+/// On startup it ensures the default repository exists (the SW doesn't
+/// auto-create anything); `/` then renders the Hub.
 #[component]
 pub fn TonkShell() -> impl IntoView {
     log!("Tonk shell initializing...");
 
-    // Initialize the space: ensure the default repo exists, then
-    // (if the user landed on `/`) redirect into it. The worker
-    // doesn't auto-create anything at startup — we `PUT` here
-    // with `If-None-Match: *`, which covers both "didn't exist,
-    // created" (201) and "already existed" (412) as success.
-    // Redirect only fires when the current path is `/` so deep
-    // links like `/space/home/branch/main` are respected.
+    // Ensure the default repository exists. We `PUT` with
+    // `If-None-Match: *`, which covers both "didn't exist, created" (201)
+    // and "already existed" (412) as success. `/` renders the Hub (a picker
+    // over the profile's spaces), so there is no redirect into a default
+    // space — the user lands on the Hub and chooses where to go.
     //
-    // SW readiness is gated inside the API layer
-    // (`tonk_host::ready::wait`) so this resource doesn't need
-    // its own `serviceWorkerActivates()` step.
-    let init_resource = LocalResource::new(|| async {
+    // SW readiness is gated inside the API layer (`tonk_host::ready::wait`)
+    // so this resource doesn't need its own `serviceWorkerActivates()` step.
+    let _init_resource = LocalResource::new(|| async {
         log!("Ensuring default repository...");
-
-        // `/` renders the Tonk Hub (a picker over the profile's spaces),
-        // so there is no longer a redirect into the default space — the
-        // user lands on the Hub and chooses where to go.
-        let host_id = api::init().await?;
-
-        Ok::<_, crate::error::TonkUiError>(host_id)
+        api::init().await?;
+        Ok::<_, crate::error::TonkUiError>(())
     });
-
-    // Publish the host id as a reactive context so descendant
-    // components can subscribe: `None` while init is in flight
-    // or has errored, `Some(HostId)` once the PUT succeeds.
-    let host_id =
-        Signal::derive_local(move || init_resource.get().and_then(|r| r.ok()).map(HostId));
-
-    provide_context(host_id);
-
-    // Fire the profile fetch eagerly. The API layer's SW gate
-    // holds the request until the worker is up, so we don't
-    // need a separate ready signal at the shell level. Sharing
-    // the resource via context means a single fetch feeds the
-    // sidebar and the create-space flow — the latter calls
-    // `.refetch()` after a successful PUT so the sidebar picks
-    // up the new tile without us plumbing a second signal.
-    let profile_resource: ProfileResource =
-        LocalResource::new(|| async { api::profile().await.map(Some) });
-    provide_context(profile_resource);
-
-    // The worker posts on `/api/profile` whenever the profile
-    // repo's meta branch commits (replica added/removed, remote
-    // edited, etc.). Refetching on any message keeps the sidebar
-    // in sync with writes from anywhere — this tab, another tab,
-    // or a direct fetch that bypasses the dialog. The payload
-    // carries the new revision; we ignore it today (refetch is
-    // cheap and the endpoint is the source of truth) but the
-    // shape is available for future dedup.
-    let profile_update = watch::<Notification>("/api/profile");
-    Effect::new(move |_| {
-        if profile_update.get().is_some() {
-            profile_resource.refetch();
-        }
-    });
-
-    // Shared open-state for the invite dialog. The workspace top
-    // bar's `<tonk-share>` control writes a `Some(name)` here (via
-    // the `tonk:share` bridge below); the dialog resets it back to
-    // `None` on close.
-    let invite_space: InviteSpace = RwSignal::new(None);
-    provide_context(invite_space);
-
-    // Bridge `<tonk-share>` to the invite dialog. The workspace
-    // element can't call into the shell directly — view templates
-    // bind DOM events to data-model commands only, and sharing isn't
-    // a data mutation (it mints a UCAN invite over HTTP and opens a
-    // modal). So the element dispatches a bubbling, composed
-    // `tonk:share` CustomEvent carrying `{ repo }`, and the shell
-    // listens on the window. This mirrors how the sync controller
-    // bridges `tonk:committed` / `tonk:status-refresh`.
-    let _ = leptos_use::use_event_listener(
-        window(),
-        leptos::ev::Custom::<web_sys::CustomEvent>::new("tonk:share"),
-        move |event| {
-            // Prefer the repo the element resolved from its
-            // `<tonk-repository>` ancestor; fall back to the active
-            // repo parsed from the route for any host that fires the
-            // event without a detail.
-            let repo = share_repo_from_event(&event).or_else(active_repo_from_route);
-            if let Some(repo) = repo {
-                invite_space.set(Some(repo));
-            }
-        },
-    );
-
-    // The last join outcome lives in a shared signal so the view
-    // tree (specifically `TonkLauncher`) can render it as a
-    // `data-last-join-outcome` attribute through the regular
-    // reactive path — no manual DOM mutation from inside a
-    // component.
-    let last_join_outcome: LastJoinOutcome = RwSignal::new(None);
-    provide_context(last_join_outcome);
 
     view! {
         // App-wide LSP transport. One <tonk-diagnostics-provider>
@@ -193,24 +75,6 @@ pub fn TonkShell() -> impl IntoView {
             <TonkLauncher></TonkLauncher>
         </tonk-diagnostics-provider>
     }
-}
-
-/// Read the `repo` from a `tonk:share` event's `detail`, if present
-/// and non-empty.
-fn share_repo_from_event(event: &web_sys::CustomEvent) -> Option<String> {
-    js_sys::Reflect::get(&event.detail(), &wasm_bindgen::JsValue::from_str("repo"))
-        .ok()
-        .and_then(|value| value.as_string())
-        .filter(|repo| !repo.is_empty())
-}
-
-/// Fall back to the active repository parsed from the current route
-/// (`/space/{branch}@{name}/…`) when a `tonk:share` event carries no
-/// repo of its own. Mirrors the toolbar's active-space derivation.
-fn active_repo_from_route() -> Option<String> {
-    let pathname = window().location().pathname().ok()?;
-    let segment = pathname.strip_prefix("/space/")?.split('/').next()?;
-    route::parse_space(segment).map(|space| space.name)
 }
 
 #[cfg(test)]

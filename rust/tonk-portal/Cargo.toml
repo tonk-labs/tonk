@@ -17,6 +17,7 @@ js-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde-wasm-bindgen = { workspace = true }
 serde_json = { workspace = true }
+tonk-common = { workspace = true }
 tonk-host = { workspace = true }
 tonk-schema = { workspace = true }
 wasm-bindgen = { workspace = true }
@@ -33,6 +34,14 @@ web-sys = { workspace = true, features = [
     "MessageEvent",
     "MessagePort",
     "Node",
+    "NodeList",
+    "Headers",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "RequestInit",
+    "RequestCache",
+    "Response",
+    "ResponseInit",
     "Window",
 ] }
 

@@ -185,6 +185,8 @@ async fn run_migration(state: AppState) -> Result<MigrationReport, TonkWorkerErr
             .perform(&tonk.operator)
             .await
             .map_err(|e| TonkWorkerError::Internal(format!("commit migration failed: {e}")))?;
+        // Drain the poll the commit scheduled so subscribers refresh.
+        tonk.reactor.run_scheduled_polls(&tonk.operator).await;
     }
 
     log!(

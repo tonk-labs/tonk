@@ -27,6 +27,7 @@ tonk-host = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
+  "Attr",
   "CssStyleDeclaration",
   "CustomElementRegistry",
   "CustomEvent",
@@ -46,12 +47,16 @@ web-sys = { workspace = true, features = [
   "MutationObserver",
   "MutationObserverInit",
   "MutationRecord",
+  "NamedNodeMap",
   "Node",
   "NodeList",
+  "AddEventListenerOptions",
   "Request",
   "RequestInit",
   "Response",
   "Storage",
+  "Url",
+  "UrlSearchParams",
   "Window",
 ] }
 

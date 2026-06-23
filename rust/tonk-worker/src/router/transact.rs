@@ -10,7 +10,7 @@
 //! transient without re-querying the schema.
 
 use ::axum::{
-    Json,
+    Extension, Json,
     body::Bytes,
     extract::{Path, State},
     http::HeaderMap,
@@ -65,24 +65,37 @@ pub struct TransactResponse {
 pub async fn transact(
     State(state): State<AppState>,
     Path(path): Path<TransactPath>,
+    client: Option<Extension<super::ClientId>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact repo={}, branch={}", path.repo, path.branch);
+    // A read lock on `TonkState` — concurrent transactions and syncs don't
+    // serialize on the outer lock. Transactions instead serialize on the
+    // per-branch transactor lock (taken inside `transact_on_branch`); sync
+    // coordinates via the head CAS. So a tab's commit never blocks behind an
+    // in-flight sync (the bug that made pause-mid-sync feel dead).
     let (response, transients) = {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         let tonk_branch = tonk_state
             .reactor
             .repository(&path.repo)
             .branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
-    // The transient commands (if any) were captured before commit;
-    // dispatch them now that the state lock is released, so each
-    // command's `execute` can re-acquire it.
-    if let Some(transients) = transients {
-        super::dispatch(&state, transients).await;
-    }
+    // Dispatch any transient commands (now that the state lock is
+    // released, so each command's `execute` can re-acquire it) and then
+    // drain the polls this request scheduled. `dispatch` always drains —
+    // even with no commands — so the durable commit's scheduled poll fans
+    // out. The origin is the repo + branch this commit landed in, plus the
+    // client that asked, so a handler can post a page-capability effect
+    // (e.g. navigation) back to it.
+    let origin = super::CommandOrigin {
+        repo: path.repo,
+        branch: path.branch,
+        client: client.map(|Extension(id)| id),
+    };
+    super::dispatch(&state, origin, transients.unwrap_or_default()).await;
     Ok(response)
 }
 
@@ -91,18 +104,29 @@ pub async fn transact(
 pub async fn transact_profile(
     State(state): State<AppState>,
     Path(path): Path<ProfileTransactPath>,
+    client: Option<Extension<super::ClientId>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<TransactResponse>, TonkWorkerError> {
     log!("transact profile branch={}", path.branch);
     let (response, transients) = {
-        let tonk_state = state.write().await;
+        let tonk_state = state.read().await;
         let tonk_branch = tonk_state.reactor.profile_repository().branch(&path.branch);
         transact_on_branch(&tonk_state, tonk_branch, body).await?
     };
-    if let Some(transients) = transients {
-        super::dispatch(&state, transients).await;
-    }
+    // Profile-branch commits carry an empty `repo` origin: the profile
+    // repository is not in the named-repo namespace, and no command
+    // dispatched here loads an origin repository by name. The originating
+    // client is carried so the join command can post its navigate message
+    // back to the exact tab that asked. `dispatch` always drains the
+    // scheduled polls, even with no transients, so the durable commit fans
+    // out.
+    let origin = super::CommandOrigin {
+        repo: String::new(),
+        branch: path.branch,
+        client: client.map(|Extension(id)| id),
+    };
+    super::dispatch(&state, origin, transients.unwrap_or_default()).await;
     Ok(response)
 }
 
@@ -147,6 +171,10 @@ async fn transact_on_branch<'a>(
     let transients = builder.transients.clone();
     let to_dispatch = (!transients.is_empty()).then_some(transients);
 
+    // The per-branch transactor lock that serializes commits is taken INSIDE
+    // the reactor's `commit().perform()` (so no commit path — route or direct
+    // handler — can sidestep it). Taking it here too would deadlock: the
+    // mutex is not re-entrant.
     let revision_after = builder
         .commit()
         .perform(&tonk_state.operator)

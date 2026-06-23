@@ -295,10 +295,15 @@ mod tests {
         let _ = resp.revision;
 
         // The destination now exports the same artifact rows the
-        // source did (header + data, set-equal).
+        // source did (header + data, set-equal). Membership rows are
+        // excluded: each repo stamps its OWN founder membership (keyed
+        // by its own subject DID) on the content branch, so those rows
+        // legitimately differ between source and dest.
         let (_, _, dest_csv) = get_export(&state, &dest).await;
-        let mut source_rows: Vec<&str> = source_csv.lines().skip(1).collect();
-        let mut dest_rows: Vec<&str> = dest_csv.lines().skip(1).collect();
+        let is_artifact_row = |row: &&str| !row.contains("xyz.tonk.membership/");
+        let mut source_rows: Vec<&str> =
+            source_csv.lines().skip(1).filter(is_artifact_row).collect();
+        let mut dest_rows: Vec<&str> = dest_csv.lines().skip(1).filter(is_artifact_row).collect();
         source_rows.sort_unstable();
         dest_rows.sort_unstable();
         assert_eq!(

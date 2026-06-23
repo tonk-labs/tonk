@@ -1,20 +1,19 @@
-use crate::components::{
-    LastJoinOutcome, TonkBoardView, TonkDisplayView, TonkHub, TonkInviteDialog, TonkJoin,
-    TonkProfile, TonkSpaceViewer, TonkToolbar,
-};
+use crate::components::{TonkDisplayView, TonkHub, TonkJoin, TonkSpaceSealed};
 use leptos::prelude::*;
 use leptos_router::{
-    components::{Outlet, ParentRoute, Route, Router, Routes},
+    components::{Route, Router, Routes},
     path,
 };
 
-/// Main launcher view. `<wa-page>` provides the adaptive shell:
-/// navigation sits in its own column on desktop and collapses into a
-/// drawer (with a hamburger toggle) below the mobile breakpoint.
+/// Main launcher view. Every route renders bare — a `<tonk-display>` (or a
+/// directory view) and its routing context, no shell chrome. There is no
+/// sidebar/toolbar: navigation is driven by links in the directory views
+/// themselves (the Hub's space cards, breadcrumbs) and the service-worker
+/// navigate message.
 ///
-/// Creating a space is driven from the Hub's own view now (a
-/// `<form onsubmit=space/create>` in the `space` directory view), so
-/// there's no Leptos create-space dialog to mount here.
+/// Creating a space is driven from the Hub's own view (a
+/// `<form onsubmit=space/create>` in the `space` directory view), so there's
+/// no Leptos dialog to mount here.
 #[component]
 pub fn TonkLauncher() -> impl IntoView {
     view! {
@@ -22,82 +21,37 @@ pub fn TonkLauncher() -> impl IntoView {
             <Router>
                 <Routes fallback=move || view!{ <section class="not-found">"Nothing here ¯\\_(ツ)_/¯"</section> }>
                     // The Tonk Hub at `/` — a picker over the spaces this
-                    // profile can open, rendered bare (no shell chrome)
-                    // just like the display routes. It is a directory view
-                    // mounted on the profile's meta branch.
+                    // profile can open. A directory view on the profile's
+                    // meta branch.
                     <Route path=path!("") view=TonkHub />
 
-                    // Every other route renders inside the adaptive
-                    // `<wa-page>` shell (navigation column on desktop,
-                    // drawer on mobile) plus the toolbar. The parent
-                    // route provides that chrome once and slots the
-                    // matched child through `<Outlet/>`.
-                    //
-                    // The inspector/dev routes share the `{branch}@{name}`
-                    // space convention. Their static keyword segment
-                    // (`view`/`board`) must be defined BEFORE the
-                    // bare-space display routes below because the Leptos
-                    // router matches in definition order — the `*subject`
-                    // wildcard would otherwise capture them. A model named
-                    // `view` or `board` at the space root is therefore
-                    // reserved.
-                    <ParentRoute path=path!("") view=ChromeShell>
-                        <Route
-                            path=path!("space/:space/view/:entity")
-                            view=TonkSpaceViewer
-                        />
-                        <Route
-                            path=path!("space/:space/board/:board")
-                            view=TonkBoardView
-                        />
-                        <Route path=path!("profile") view=TonkProfile />
-                        <Route path=path!("join") view=TonkJoin />
-                    </ParentRoute>
+                    // The /join route — a directory view on the profile meta
+                    // branch (the join-status view) that redeems an invite.
+                    <Route path=path!("join") view=TonkJoin />
 
-                    // The display route renders bare — just the
-                    // `<tonk-display>` and its routing context, no shell
-                    // chrome. It sits OUTSIDE the chromed parent route so
-                    // no `<wa-page>` / toolbar wraps it. The space
-                    // segment is `{branch}@{name}` (branch defaults to
-                    // `main`); `*subject` is a wildcard so entity URIs
-                    // containing `/` (e.g. `id:tonk-workspace/itinerary`)
-                    // are captured whole rather than truncated.
+                    // The display routes. The space segment is
+                    // `{branch}@{name}` (branch defaults to `main`);
+                    // `*subject` is a wildcard so entity URIs containing `/`
+                    // (e.g. `id:tonk-workspace/itinerary`) are captured whole
+                    // rather than truncated. Models like `board` and
+                    // `inspector` are reached here too, as directory views
+                    // (`/space/{name}/board`, `/space/{name}/inspector`).
                     //
                     //   /space/{name}/                       default view
                     //   /space/{branch}@{name}/              + branch
                     //   /space/{name}/{model}/               directory
                     //   /space/{name}/{entity}@{model}/*     artifact
                     //   /space/{name}/{entity}@{model}!{view}/*  ad-hoc
-                    //
-                    // These routes must come AFTER the ParentRoute above.
-                    // The router matches in definition order; placing them
-                    // here ensures the static-keyword chromed routes win
-                    // over the bare wildcard on any path they share a
-                    // prefix with.
-                    <Route path=path!("space/:space") view=TonkDisplayView />
+                    // SPIKE: the bare `/space/:space` route now renders the
+                    // space's default view inside a SEALED opaque-origin
+                    // iframe (the new architecture). The `/*subject` routes
+                    // (board/inspector/artifact) still use the in-page
+                    // `<tonk-display>` until they're migrated too.
+                    <Route path=path!("space/:space") view=TonkSpaceSealed />
                     <Route path=path!("space/:space/*subject") view=TonkDisplayView />
                 </Routes>
-                <TonkInviteDialog />
             </Router>
         </tonk-host>
-    }
-}
-
-/// The chromed shell: the adaptive `<wa-page>` layout plus the
-/// toolbar, with the matched child route rendered through
-/// `<Outlet/>`. Wraps every route except the bare display route.
-#[component]
-fn ChromeShell() -> impl IntoView {
-    let last_join_outcome =
-        use_context::<LastJoinOutcome>().expect("LastJoinOutcome provided by TonkShell");
-    view! {
-        <wa-page
-            navigation-placement="end"
-            attr:data-last-join-outcome=move || last_join_outcome.get()
-        >
-            <TonkToolbar />
-            <Outlet />
-        </wa-page>
     }
 }
 
@@ -122,12 +76,6 @@ mod integration_tests {
     use thirtyfour::prelude::*;
     #[cfg_attr(not(feature = "integration-tests"), allow(unused))]
     use tonk_invite::{Invite, InviteAudience};
-
-    /// Selector for the profile footer tile. Keyed by its
-    /// `aria-label` so the test doesn't depend on the footer's
-    /// internal structure.
-    #[cfg_attr(not(feature = "integration-tests"), allow(dead_code))]
-    const PROFILE_TILE: &str = r#"wa-button[aria-label="Profile"]"#;
 
     #[dialog_common::test]
     async fn it_navigates_to_the_default_space(test_environment: TestEnvironment) -> Result<()> {
@@ -158,57 +106,6 @@ mod integration_tests {
 
         driver.quit().await?;
 
-        Ok(())
-    }
-
-    /// Navigating to `/profile` lands on the chromed profile
-    /// route. The bare `/space/home` route has no sidebar, so we
-    /// reach the profile by direct navigation rather than a tile
-    /// click. Once there, the chromed `<wa-page>` shell renders
-    /// and the profile tile carries its active state.
-    #[dialog_common::test]
-    async fn it_navigates_to_the_profile_route(env: TestEnvironment) -> Result<()> {
-        let driver = env.driver().await?;
-
-        // Wait for the home space to finish loading. The bare
-        // display route is the readiness signal now.
-        driver
-            .query(By::Css("tonk-repository.display-route"))
-            .first()
-            .await?;
-        let url = driver.current_url().await?;
-        assert_eq!(
-            url.path(),
-            "/space/home",
-            "expected the default redirect to land on /space/home, got: {url}",
-        );
-
-        // Navigate directly to the profile route.
-        driver.goto(&format!("{}profile", env.tonk_web)).await?;
-
-        // `/profile` is chromed, so the adaptive `<wa-page>` shell
-        // wraps it. Its presence is the route-ready signal.
-        driver.query(By::Css("wa-page")).first().await?;
-        let url = driver.current_url().await?;
-        assert_eq!(
-            url.path(),
-            "/profile",
-            "expected URL to be /profile after navigating, got: {url}",
-        );
-
-        // The chromed profile route renders the sidebar, so the
-        // profile tile should carry `is-active` while we're on it.
-        let profile_tile = driver.query(By::Css(PROFILE_TILE)).first().await?;
-        assert!(
-            profile_tile
-                .class_name()
-                .await?
-                .unwrap_or_default()
-                .contains("is-active"),
-            "expected profile tile to carry `is-active` on /profile",
-        );
-
-        driver.quit().await?;
         Ok(())
     }
 
@@ -272,62 +169,6 @@ mod integration_tests {
             repository.attr("name").await?.unwrap_or_default(),
             "pictures",
             "expected the display route to name the pictures repository",
-        );
-
-        driver.quit().await?;
-        Ok(())
-    }
-
-    /// The shell bridges the workspace's `<tonk-share>` control to
-    /// the invite dialog via a `tonk:share` window event. Firing it
-    /// for the home repo opens the dialog and, once the mint lands,
-    /// surfaces the invite-link input — the same path a real share
-    /// click drives, minus the DOM click on the element (covered by
-    /// `tonk-workspace`'s own dispatch test).
-    #[dialog_common::test]
-    async fn it_opens_the_invite_dialog_on_a_tonk_share_event(env: TestEnvironment) -> Result<()> {
-        let driver = env.driver().await?;
-
-        // Wait for the home space's bare display route — the shell is
-        // live, so the `tonk:share` listener is mounted.
-        driver
-            .query(By::Css("tonk-repository.display-route"))
-            .first()
-            .await?;
-
-        // Fire the bridge event the workspace's `<tonk-share>`
-        // dispatches on click.
-        driver
-            .execute(
-                r#"window.dispatchEvent(new CustomEvent('tonk:share', {
-                    detail: { repo: 'home' },
-                }));"#,
-                vec![],
-            )
-            .await?;
-
-        // The invite-link input renders only after the dialog opened
-        // and the mint resolved, so its presence proves the bridge
-        // opened the dialog and `create_invite` ran.
-        let input = driver.query(By::Css("#tonk-invite-url")).first().await?;
-        assert_eq!(
-            input.tag_name().await?.to_lowercase(),
-            "wa-input",
-            "expected the minted invite link to render in a wa-input",
-        );
-
-        // The dialog itself is open (its `open` property is set by the
-        // shared `invite_space` signal the bridge wrote).
-        let is_open = driver
-            .execute(
-                r#"return document.querySelector('wa-dialog')?.open === true;"#,
-                vec![],
-            )
-            .await?;
-        assert_eq!(
-            is_open.json().as_bool(),
-            Some(true),
-            "expected the invite <wa-dialog> to be open after tonk:share",
         );
 
         driver.quit().await?;

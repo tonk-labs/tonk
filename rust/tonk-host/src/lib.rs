@@ -68,6 +68,8 @@ mod host;
 #[cfg(target_arch = "wasm32")]
 mod http;
 #[cfg(target_arch = "wasm32")]
+mod navigate;
+#[cfg(target_arch = "wasm32")]
 mod ops;
 // LRU for `tonk-query` responses. The production callers live in
 // `host.rs` / `ops.rs` (both wasm-only), but the unit tests run

@@ -207,9 +207,20 @@ async fn evaluate_on_branch<'a>(
     let branch = session.handle();
     let revision_before = branch.revision();
 
+    // Fold the branch's session overlay (ephemeral facts kept out of
+    // storage, e.g. an invite's private seed) into the evaluation
+    // transaction so every evaluation — the inspector running
+    // `invitation:`, preview or explicit — sees the same facts a
+    // `query`/`subscribe` does. Folding it here (not gated on
+    // `transact`) is what keeps the read paths consistent; the overlay
+    // is read-only and gets `induce`-swept on commit (below) so it never
+    // lands durably.
+    let overlay = session.overlay();
+    let txn = branch.transaction().integrate(overlay.clone());
+
     let t_eval = web_time::Instant::now();
     let evaluated = syntax
-        .evaluate(branch.transaction())
+        .evaluate(txn)
         .perform(&tonk_state.operator)
         .await
         .map_err(map_evaluate_error)?;
@@ -232,8 +243,14 @@ async fn evaluate_on_branch<'a>(
     // statement is the single commit signal.
     let response = if query.transact && evaluated.analysis.analysis.has_statements() {
         let t_commit = web_time::Instant::now();
+        // Sweep the overlay before the durable write: the transaction
+        // folded the session overlay in for reads, but those ephemeral
+        // facts (e.g. an invite seed) must never persist. Retracting them
+        // here cancels the integrated asserts so only the document's own
+        // statements land.
         let revision_after = evaluated
             .txn
+            .integrate(session.overlay_retraction())
             .commit()
             .perform(&tonk_state.operator)
             .await

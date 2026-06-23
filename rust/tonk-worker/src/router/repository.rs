@@ -28,8 +28,8 @@ use tokio::sync::oneshot;
 use tonk_common::log;
 use tonk_schema::prelude::DidExt as _;
 use tonk_schema::{
-    Branch as MetaBranch, Invitation, InvitedVia, MemberName, Membership, Remote, Replica,
-    RepositoryName, SpaceStatus, TrackingBranch,
+    Branch as MetaBranch, Invitation, InvitedVia, MemberName, MemberRole, Membership, Remote,
+    Replica, RepositoryName, SpaceStatus, TrackingBranch,
 };
 
 use super::AppState;
@@ -394,6 +394,412 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for CreateSpaceHa
             }
         })
     }
+}
+
+/// Post-commit handler for the [`Invite`] command.
+///
+/// When the share form's `<form onsubmit=tonk:invite>` commits a
+/// transient [`Invite`], this handler generates a fresh membership
+/// keypair, delegates the *origin* repository's access to its DID,
+/// base58-encodes the resulting delegation chain, and asserts a durable
+/// [`Authorization`] fact keyed by that DID on the repository's content
+/// branch (`main`). It then asserts the private seed as a [`Credential`]
+/// into the reactor's session overlay (never replicated). The share view
+/// joins the two via `tonk:invitation` and assembles the final URL.
+///
+/// The repository is not a command field: it is read from
+/// [`CommandEnv::origin`](crate::router::CommandEnv::origin) (the branch
+/// the commit landed in), so the form needs no `data-subject` stamp.
+///
+/// A custom handler (not a plain `Provider<Invite>`) is required because
+/// it reads durable repository state the decoded command alone does not
+/// carry, writes to the reactor's session overlay, and targets the repo
+/// from the origin rather than a command field.
+///
+/// [`Invite`]: tonk_schema::command::Invite
+/// [`Authorization`]: tonk_schema::command::Authorization
+/// [`Credential`]: tonk_schema::command::Credential
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct InviteHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl InviteHandler {
+    /// Cache `Invite`'s trigger attributes (its `time` field) so the
+    /// registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::Invite::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for InviteHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::Invite::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock) only to
+        // confirm this is an `Invite` command — it carries no payload the
+        // handler needs (the repo comes from the origin, the keypair is
+        // minted here).
+        let is_invite = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::Invite::decode(entity, facts))
+            .is_some();
+        let env = env.clone();
+
+        Box::pin(async move {
+            if !is_invite {
+                return;
+            }
+            // The repository to delegate is read from the origin — the
+            // branch the commit landed in — not from a command field.
+            let repo_name = env.origin().repo.clone();
+            log!("command Invite repo={}", repo_name);
+
+            if let Err(error) = run_invite(&env, &repo_name).await {
+                log!("Invite for repo '{}' failed: {}", repo_name, error);
+            }
+        })
+    }
+}
+
+/// Generate a membership keypair, delegate `repo_name`'s access to it,
+/// assert the public [`Authorization`] on the content branch, and assert
+/// the private seed as a [`Credential`] into the reactor's session
+/// overlay (so it stays out of replicated storage).
+///
+/// Split out from [`InviteHandler::run`] so the `?` early-return funnels
+/// into the single `log!` there — the command future itself returns `()`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_invite(
+    env: &crate::router::CommandEnv,
+    repo_name: &str,
+) -> Result<(), TonkWorkerError> {
+    use dialog_artifacts::Entity;
+    use dialog_varsig::Principal as _;
+    use tonk_schema::Invitation;
+    use tonk_schema::command::{Authorization, Credential};
+    use tonk_schema::domain::authorization::{Proof, Remote as AuthorizationRemote};
+    use tonk_schema::domain::credential::Seed;
+
+    // Mint a fresh membership keypair. Its private seed becomes the
+    // invite URL's `#` fragment; its public DID is the audience the repo
+    // access is delegated to. The browser never sees this DID.
+    let (signer, seed_bytes) = super::create_invite::generate_ephemeral().await?;
+    let membership_did = signer.did();
+    let seed = bs58::encode(seed_bytes).into_string();
+
+    let tonk = env.state().read().await;
+
+    let repository = tonk
+        .profile
+        .repository(repo_name)
+        .load()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::NotFound(format!("Repository '{repo_name}' not found: {e}"))
+        })?;
+
+    // Both facts are keyed by the repository's *subject* DID — the entity
+    // the share view already addresses (`entity={subject}`) — not the
+    // membership DID. So the membership DID is only the delegation
+    // audience; the subject is the join key for authorization + credential.
+    let subject_entity = repository
+        .did()
+        .to_string()
+        .parse::<Entity>()
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("repository subject is not a valid entity: {e}"))
+        })?;
+
+    let delegation: dialog_ucan::UcanDelegation = tonk
+        .profile
+        .access()
+        .claim(&repository)
+        .delegate(membership_did)
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to create delegation: {e}")))?;
+
+    // Derive the invitation record from the chain as minted — before it's
+    // serialized away — so the meta-branch roster carries this invite. The
+    // claim side self-heals a missing record, but the mint should write its
+    // own. Guaranteed `Some`: the delegation is scoped to the repo subject.
+    let chain = delegation.into_chain();
+    let invitation =
+        Invitation::from_chain(&chain).expect("invite delegation is scoped to a specific subject");
+
+    // base58-encode the delegation chain — the `?access=` parameter the
+    // view reads back and assembles into the final URL.
+    let chain_bytes = chain.to_bytes().map_err(|e| {
+        TonkWorkerError::Internal(format!("failed to serialize delegation chain: {e}"))
+    })?;
+    let proof = bs58::encode(&chain_bytes).into_string();
+
+    // Optional sync remote endpoint, stored as a ready-to-append URL query
+    // suffix (`&remote=<percent-encoded-url>`) — or empty when the repo is
+    // local-only. The share view appends it verbatim between `?access=…`
+    // and the `#seed`, so a recipient on another device knows where to
+    // pull from. It is a suffix (not a bare URL) because the view template
+    // can't conditionally include a parameter, and `Invite::parse_url`
+    // rejects an empty `remote=`, so "no remote" must append *nothing*.
+    let remote = match super::create_invite::resolve_remote_url(&tonk, &repository).await? {
+        Some(url) => {
+            let encoded: String =
+                url::form_urlencoded::byte_serialize(url.as_str().as_bytes()).collect();
+            format!("&remote={encoded}")
+        }
+        None => String::new(),
+    };
+
+    let authorization = Authorization {
+        this: subject_entity.clone(),
+        proof: Proof(proof),
+        remote: AuthorizationRemote(remote),
+    };
+
+    // Acquire the content branch through the reactor so the durable
+    // commit and the overlay write target the same cached branch the
+    // share view reads from.
+    let session = tonk
+        .reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to acquire content branch: {e}")))?;
+
+    // Write the private seed into the session overlay, then schedule a
+    // poll of this branch so the change propagates even though it never
+    // commits durably. The seed never reaches replicated storage; clearing
+    // first keeps exactly one live credential.
+    session.state.clear_overlay();
+    session.state.assert_overlay(Credential {
+        this: subject_entity,
+        seed: Seed(seed),
+    });
+    tonk.reactor
+        .schedule_poll(std::sync::Arc::clone(&session.state));
+
+    // Assert the public authorization durably — committed **through the
+    // reactor** so its cached branch sees the fact. The commit schedules
+    // its own poll on the same branch; the dispatcher's drain coalesces it
+    // with the overlay write above into a single re-evaluation that fans
+    // the now-complete invitation out to the share view.
+    tonk.reactor
+        .repository(repo_name)
+        .branch(CONTENT_BRANCH)
+        .transaction()
+        .assert(authorization)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to commit authorization fact: {e}"))
+        })?;
+
+    // Record the invitation on the repo's meta branch — the durable roster
+    // half of the invite (the URL with its secret fragment is never stored).
+    // Mirrors the HTTP `create_invite` route so both mint paths leave the
+    // same roster fact for the claim side to match against.
+    let meta = repository
+        .branch(META_BRANCH)
+        .open()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to open meta branch: {e}")))?;
+    meta.transaction()
+        .assert(invitation)
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to record invitation: {e}")))?;
+
+    log!("Minted invitation for repo '{}'", repo_name);
+    Ok(())
+}
+
+/// Post-commit handler for the [`PauseSync`] command.
+///
+/// Toggles auto-sync for the *origin* space: reads the durable
+/// [`ReplicaSyncEnabled`] preference at the `state:here` singleton, flips it
+/// (`active` ⇄ `paused`, defaulting an absent fact to "pause"), and commits the
+/// new value on the origin's content branch. On pause it stamps `sync:paused`
+/// into the live-status overlay so the chip and banner update at once; on
+/// resume it leaves the overlay for the next status sweep (which resumes now
+/// that the gate is open).
+///
+/// The preference lives on the space's content branch — not the profile meta —
+/// so the sealed-guest chip can read it (it can only reach the branch the
+/// `<tonk-portal>` is mounted under) and so the service worker's background
+/// sweep can gate on it (the same branch it syncs). Keyed on `state:here`, the
+/// same singleton the live status uses, so both fold into one chip
+/// subscription.
+///
+/// A custom handler (not a plain `Provider<PauseSync>`) because it reads and
+/// writes durable branch state the decoded command doesn't carry and targets
+/// the repo from the origin rather than a command field — like
+/// [`InviteHandler`].
+///
+/// [`PauseSync`]: tonk_schema::command::PauseSync
+/// [`ReplicaSyncEnabled`]: tonk_schema::ReplicaSyncEnabled
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct PauseSyncHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl PauseSyncHandler {
+    /// Cache `PauseSync`'s trigger attributes (its `time` field) so the
+    /// registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::PauseSync::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::PauseSync::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously only to confirm this is a `PauseSync`; it
+        // carries no payload the handler needs (the repo comes from the
+        // origin, the toggle is read from durable state).
+        let is_pause = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::PauseSync::decode(entity, facts))
+            .is_some();
+        let env = env.clone();
+
+        Box::pin(async move {
+            if !is_pause {
+                return;
+            }
+            let repo = env.origin().repo.clone();
+            let branch = env.origin().branch.clone();
+            log!("command PauseSync repo={} branch={}", repo, branch);
+
+            if let Err(error) = run_pause_sync(&env, &repo, &branch).await {
+                log!("PauseSync for repo '{}' failed: {}", repo, error);
+            }
+        })
+    }
+}
+
+/// Toggle the durable `enabled` preference on the replica and publish the
+/// matching live status to the chip's overlay.
+///
+/// The preference is a per-replica boolean keyed on this device's replica
+/// entity (`(profile, subject)`), committed on the space content branch — the
+/// branch the SW syncs. The chip reads the `status` overlay (`state:here`, same
+/// branch), so the command also publishes status on BOTH pause and resume so
+/// the chip reflects the change immediately.
+///
+/// Split out from [`PauseSyncHandler::run`] so the `?` early-return funnels
+/// into the single `log!` there.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_pause_sync(
+    env: &crate::router::CommandEnv,
+    repo: &str,
+    branch: &str,
+) -> Result<(), TonkWorkerError> {
+    use tonk_schema::ReplicaSyncEnabled;
+
+    let tonk = env.state().read().await;
+
+    // The durable key: this device's replica entity, derived from `(profile,
+    // subject)` — the subject DID comes straight off the branch handle.
+    let session = tonk
+        .reactor
+        .repository(repo)
+        .branch(branch)
+        .acquire(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::NotFound(format!("{repo}/{branch} not found: {e}")))?;
+    let replica = Replica::new(tonk.profile.did(), session.handle().of().clone())
+        .this()
+        .clone();
+
+    // Toggle: read the current preference (absent → enabled, so a first click
+    // pauses), flip it.
+    let was_enabled = super::sync::is_sync_enabled(&tonk, repo, branch).await;
+    let now_enabled = !was_enabled;
+    log!(
+        "PauseSync repo={} {} -> {}",
+        repo,
+        if was_enabled { "enabled" } else { "paused" },
+        if now_enabled { "enabled" } else { "paused" }
+    );
+
+    // Commit the new preference durably on the content branch, keyed on the
+    // replica entity. Through the reactor so subscriptions re-poll. `enabled` is
+    // cardinality-one, so the assert supersedes the prior value.
+    tonk.reactor
+        .repository(repo)
+        .branch(branch)
+        .transaction()
+        .assert(ReplicaSyncEnabled::new(replica, now_enabled))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to commit sync preference: {e}")))?;
+
+    // Update the chip's status overlay on the space branch — on both pause and
+    // resume. On pause we stamp `paused` (a paused replica runs no sweep to
+    // publish it). On resume we stamp `pending`; the controller's next status
+    // sweep settles it to the real state (idle / local / offline).
+    if now_enabled {
+        super::sync::publish_sync_status_attr(&tonk, repo, branch, Replica::pending_status()).await;
+    } else {
+        super::sync::publish_paused_status(&tonk, repo, branch).await;
+    }
+
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    Ok(())
 }
 
 /// Build the [`RepositoryConfiguration`] for a space with a single
@@ -817,7 +1223,15 @@ pub async fn create_repository(
     // is the repository DID. The `display_name` is only threaded for log
     // context — the name itself is seeded into the repository's own
     // `tonk/repository` concept by the caller's seed step.
-    record_repository_meta(tonk, &repository, display_name, configuration).await?;
+    // The opener of a freshly created repo is its founder.
+    record_repository_meta(
+        tonk,
+        &repository,
+        display_name,
+        configuration,
+        MemberRole::FOUNDER,
+    )
+    .await?;
 
     Ok(repository)
 }
@@ -843,6 +1257,7 @@ pub async fn record_repository_meta<C>(
     repository: &Repository<C>,
     display_name: &str,
     configuration: &RepositoryConfiguration,
+    role_uri: &str,
 ) -> Result<(), RepositoryError>
 where
     C: Principal + Clone,
@@ -870,6 +1285,10 @@ where
     // on its content branch (seeded into the scaffold body, see `repository_name_body`).
     let replica = Replica::new(tonk.profile.did(), repository.did());
 
+    // Membership is NOT recorded here. The meta branch is device-local
+    // and never replicates, so a roster on it would only ever show the
+    // local profile. The shared roster lives on the content branch (see
+    // `record_membership_on_content`), written by the create + claim paths.
     let mut transaction = meta
         .transaction()
         .assert(replica.clone())
@@ -1020,7 +1439,7 @@ where
     // not on the local-only meta branch — otherwise each replica only
     // ever sees its own membership and the roster never converges. The
     // branch loop above has already opened `main`, so it is present.
-    record_membership_on_content(tonk, repository, key).await?;
+    record_membership_on_content(tonk, repository, key, role_uri).await?;
 
     // 7. Record this replica in the profile repository's meta
     // branch so the profile keeps an index of every replica it
@@ -1030,31 +1449,45 @@ where
     // which is recoverable.
     record_replica_in_profile(tonk, display_name, &repository.did()).await?;
 
+    // Drain the polls scheduled by the meta and profile-index commits
+    // above so subscribers (e.g. the Hub on the profile meta branch) see
+    // the new replica.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
     Ok(())
 }
 
-/// Assert the opening profile's [`Membership`] + [`MemberName`] on the
-/// repository's content branch.
+/// Assert the opening profile's [`Membership`] + [`MemberRole`] +
+/// [`MemberName`] on the repository's content branch.
 ///
 /// The roster lives on the content branch (`main`) because that branch
 /// syncs across replicas; the meta branch is local-only, so a roster
 /// written there never converges. Runs on every path
-/// [`record_repository_meta`] serves: on create it is the founder's
-/// only membership write; on join the claim path
-/// (`record_claim_on_content`) also records the claimer's membership,
-/// so this re-asserts idempotently. The membership entity is
-/// content-derived from `(profile, subject)`, so the repeat is a no-op.
-async fn record_membership_on_content<C>(
+/// [`record_repository_meta`] serves: on create the opener is the
+/// `tonk:founder`; on join the claimer is a `tonk:member`. The
+/// membership entity is content-derived from `(profile, subject)`, so a
+/// repeat is a no-op; `role`/`name` are cardinality-one stamps.
+///
+/// `key` is the repository's routing key (the `{repo}` param) so the
+/// write goes through the *reactor's* cached `main` handle.
+pub(crate) async fn record_membership_on_content<C>(
     tonk: &TonkState,
     repository: &Repository<C>,
     key: &str,
+    role_uri: &str,
 ) -> Result<(), RepositoryError>
 where
     C: Principal + Clone,
 {
-    // The opening profile is a member of this repository. The member
-    // also names themselves with the name their profile was opened under.
+    // The opening profile is a member of this repository, stamped with
+    // its role (founder on create, member on join) and named with the
+    // name their profile was opened under.
     let membership = Membership::new(tonk.profile.did(), repository.did());
+    let role = if role_uri == MemberRole::FOUNDER {
+        MemberRole::founder(membership.this().clone())
+    } else {
+        MemberRole::member(membership.this().clone())
+    };
     let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
 
     // Write through the *reactor's* cached content-branch handle, not a
@@ -1069,6 +1502,7 @@ where
         .branch(CONTENT_BRANCH)
         .transaction()
         .assert(membership)
+        .assert(role)
         .assert(member_name)
         .commit()
         .perform(&tonk.operator)
@@ -1170,6 +1604,10 @@ async fn set_replica_status(
         .await
         .map_err(|e| RepositoryError::Internal(format!("Failed to set replica status: {}", e)))?;
 
+    // Drain the poll the status commit scheduled so the Hub's profile
+    // meta subscription reflects the new status.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
     broadcast(
         "/api/profile",
         &Notification {
@@ -1235,6 +1673,9 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
     // every boot. Fetch is only available in the SW scope; native
     // builds skip it (the Hub is a browser-only surface).
     seed_profile_library(tonk).await?;
+
+    // Drain the poll the bootstrap commit scheduled.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
 
     Ok(())
 }
@@ -1943,6 +2384,9 @@ where
             ))
         })?;
 
+    // Drain the poll the meta commit scheduled.
+    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+
     // Mirror the create path: tell listeners of the repository's
     // representation that its remotes/branches changed.
     broadcast(
@@ -2547,7 +2991,7 @@ mod tests {
     }
 
     /// Creating a repository records its creator as a member on the
-    /// repo's content branch.
+    /// repo's content branch, stamped with the founder role.
     #[dialog_common::test]
     async fn it_records_the_founder_membership_on_create() {
         let (_app, state, key) = fresh_repo("test-founder-membership").await;
@@ -2562,6 +3006,14 @@ mod tests {
         // new: exactly the founder's membership.
         assert_eq!(memberships.len(), 1, "exactly the founder membership");
         assert_eq!(memberships[0].member.0, profile_entity);
+
+        // The creator's membership is stamped `founder`.
+        let roles = crate::router::tests::content_member_roles(&state, &key).await;
+        let role = roles
+            .iter()
+            .find(|r| r.this == *memberships[0].this())
+            .expect("founder role stamped on create");
+        assert_eq!(role.role.0.to_string(), tonk_schema::MemberRole::FOUNDER);
     }
 
     /// Creating a repository names the creator on the content branch.

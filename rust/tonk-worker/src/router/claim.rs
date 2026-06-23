@@ -243,6 +243,12 @@ pub async fn assert_claim(
             TonkWorkerError::Internal(format!("Failed to assert claim: {}", e))
         })?;
 
+    // The commit scheduled a poll; drain it so subscribers see the change.
+    tonk_state
+        .reactor
+        .run_scheduled_polls(&tonk_state.operator)
+        .await;
+
     log!("Claim asserted successfully");
 
     Ok(Json(AssertResponse {
@@ -308,6 +314,12 @@ pub async fn retract_claim(
             log!("Failed to retract claim: {:?}", e);
             TonkWorkerError::Internal(format!("Failed to retract claim: {}", e))
         })?;
+
+    // The commit scheduled a poll; drain it so subscribers see the change.
+    tonk_state
+        .reactor
+        .run_scheduled_polls(&tonk_state.operator)
+        .await;
 
     log!("Claim retracted successfully");
 
