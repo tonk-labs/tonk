@@ -10,7 +10,6 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 use dialog_repository::SiteAddress;
 use dialog_varsig::Did;
-use serde::Serialize;
 
 use crate::Branch;
 use crate::Remote;
@@ -210,17 +209,6 @@ impl ReplicaSyncStatus {
     }
 }
 
-/// Hash input for [`Replica::this`].
-///
-/// The single-variant enum shape tags the CBOR encoding with the
-/// concept name: two inputs with the same data but different
-/// concepts (e.g. a replica and a branch that happened to share
-/// field shapes) produce distinct hashes.
-#[derive(Debug, Clone, Serialize)]
-enum This<'a> {
-    Replica { subject: &'a Did, profile: &'a Did },
-}
-
 impl Replica {
     /// Build a replica concept from a profile DID and a subject DID.
     ///
@@ -235,10 +223,14 @@ impl Replica {
             Self::repository_kind()
         };
         Self {
-            this: Entity::of(&This::Replica {
-                subject: &subject,
-                profile: &profile,
-            }),
+            // Derive `this` via dialog's own `Origin` so a tonk `Replica` and a
+            // dialog `Origin` for the same `(profile, subject)` are the SAME
+            // entity. They are the same thing — this device's view of a repo —
+            // and the library's `tonk/replica` / `tonk:binder` concepts key on
+            // `dialog.origin/*`, so they must land on this entity. (Deriving a
+            // separate `This::Replica`-tagged hash split them, which silently
+            // put binder/replica facts on two different entities.)
+            this: dialog_repository::schema::Origin::new(profile.clone(), subject.clone()).this,
             subject: Subject(subject.this()),
             profile: Profile(profile.this()),
             kind,

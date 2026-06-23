@@ -39,7 +39,7 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
 /// and not routed here yet.
 pub async fn stamp_site(tonk: &crate::worker::TonkState, headers: &HeaderMap) {
     use std::sync::Arc;
-    use tonk_schema::{Replica, Site};
+    use tonk_schema::Site;
 
     let site = header(headers, "x-tonk-site");
     if site.is_empty() {
@@ -65,12 +65,14 @@ pub async fn stamp_site(tonk: &crate::worker::TonkState, headers: &HeaderMap) {
         }
     };
 
-    // The tab's replica: this device's replica of the space, derived from the
-    // branch's subject DID and the profile DID — the same derivation the sync
-    // status uses (see `super::sync::is_sync_enabled`).
-    let replica = Replica::new(tonk.profile.did(), state.handle().of().clone())
-        .this()
-        .clone();
+    // The tab's replica entity: the existing dialog `Origin` for this
+    // (profile, subject), QUERIED rather than re-derived — `tonk/replica` /
+    // `tonk:binder` live on it, and re-deriving risks drift (tonk's `Replica`
+    // and dialog's `Origin` no longer hash to the same entity). Skip stamping if
+    // it isn't on the branch yet.
+    let Some(replica) = origin_entity(tonk, &state).await else {
+        return;
+    };
 
     // Match the remaining (Level 1) path against the space's route table; the
     // matched route entry carries the route model to mount.
@@ -86,6 +88,37 @@ pub async fn stamp_site(tonk: &crate::worker::TonkState, headers: &HeaderMap) {
 
     tonk.reactor.schedule_poll(Arc::clone(&state.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for
+/// this device's `(profile, subject)` on the branch — the entity `tonk/replica`
+/// and `tonk:binder` live on. Queried (not derived) so it stays correct even if
+/// tonk's and dialog's hashing drift. `None` if no origin is on the branch yet.
+async fn origin_entity(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+) -> Option<dialog_artifacts::Entity> {
+    use dialog_query::{Output as _, Query, Term};
+    use dialog_repository::schema::origin::{Profile, Subject};
+    use dialog_repository::schema::{DidExt as _, Origin};
+
+    let subject = state.handle().of().this();
+    let profile = tonk.profile.did().this();
+
+    let origins: Vec<Origin> = state
+        .handle()
+        .query()
+        .select(Query::<Origin> {
+            this: Term::var("this"),
+            subject: Term::from(Subject(subject)),
+            profile: Term::from(Profile(profile)),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    origins.into_iter().next().map(|origin| origin.this)
 }
 
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
