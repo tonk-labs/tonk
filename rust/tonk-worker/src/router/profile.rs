@@ -58,6 +58,9 @@ pub struct ProfileInfo {
     /// own self-replica.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub space: Vec<SpaceEntry>,
+    /// The member's effective display name (override, else petname).
+    /// Lets the shell read identity without going through a space branch.
+    pub display_name: String,
 }
 
 /// Handler for `GET /api/profile`.
@@ -156,5 +159,51 @@ pub async fn get_profile(
         });
     }
 
-    Ok(Json(ProfileInfo { profile, space }))
+    let display_name = crate::router::profile_name::resolve_display_name(&tonk).await;
+
+    Ok(Json(ProfileInfo {
+        profile,
+        space,
+        display_name,
+    }))
+}
+
+#[cfg(all(test, target_arch = "wasm32", target_os = "unknown"))]
+mod tests {
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_service_worker);
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+
+    use crate::api_router;
+    use crate::router::tests::test_state;
+
+    #[dialog_common::test]
+    async fn it_reports_a_display_name_on_the_profile() {
+        let state = test_state().await;
+        let expected = tonk_schema::petname(&state.profile.did());
+        let (app, _lsp) = api_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/profile")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let name = json["display_name"].as_str().expect("display_name is a string");
+        assert_eq!(name, expected);
+    }
 }
