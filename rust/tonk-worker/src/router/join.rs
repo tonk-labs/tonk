@@ -384,7 +384,8 @@ where
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
-    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    let member_name = MemberName::new(membership.this().clone(), display_name);
     let mut transaction = tonk
         .reactor
         .repository(key)

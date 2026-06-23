@@ -1488,7 +1488,8 @@ where
     } else {
         MemberRole::member(membership.this().clone())
     };
-    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    let member_name = MemberName::new(membership.this().clone(), display_name);
 
     // Write through the *reactor's* cached content-branch handle, not a
     // fresh `repository.branch().open()`. Background sync pulls/publishes
