@@ -119,6 +119,37 @@ pub mod host {
     pub struct Hash(pub String);
 }
 
+/// Attributes for the durable route table (`router/route`) the SW page router
+/// reads. Its own namespace, distinct from the `route` command's `xyz.tonk.route`
+/// (a shared namespace would make the command→table assert rule tautological).
+pub mod router_route {
+    use super::{Attribute, Entity};
+
+    /// The axum/matchit path pattern, fed to `matchit::insert`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.router.route")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+
+    /// The page model to render when this path matches.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.router.route")]
+    #[cardinality(one)]
+    pub struct Model(pub Entity);
+}
+
+/// Attribute for the per-tab matched route (`router/active`) the shell mounts —
+/// keyed on the host-id entity, stamped in the overlay by the SW.
+pub mod router_active {
+    use super::{Attribute, Entity};
+
+    /// The matched page model.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.router.active")]
+    #[cardinality(one)]
+    pub struct Model(pub Entity);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers

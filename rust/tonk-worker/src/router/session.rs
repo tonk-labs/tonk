@@ -9,8 +9,11 @@
 //! pattern the sync chip uses (see [`super::sync`]) but keyed per tab instead of
 //! a singleton. Multiple tabs coexist as distinct entities in one overlay.
 //!
-//! This is Stage 2 of the SW-router rollout: the facts land, a view keyed on the
-//! host-id entity can read them, but nothing routes on them yet.
+//! For a space, the SW also matches the remaining (Level 1) path against the
+//! branch's durable `router/route` table with `matchit` and stamps the matched
+//! page model as `router/active` on the same entity, so the shell can render
+//! through that indirection. Production still uses the Leptos router (Stage 4
+//! switches the shell); this stands the data-driven path up alongside it.
 
 use ::axum::http::HeaderMap;
 
@@ -51,13 +54,15 @@ fn referer_pathname(referer: &str) -> &str {
     path.split(['?', '#']).next().unwrap_or(path)
 }
 
-/// Stamp the request's [`HostContext`] onto its host-id entity in the
-/// Level-0-resolved branch's overlay.
+/// Stamp the request's [`HostContext`] (and, for a space, the matched
+/// [`RouterActive`]) onto its host-id entity in the Level-0-resolved branch's
+/// overlay.
 ///
 /// Best-effort and silent on every miss: no host-id, an unparseable id, no
 /// resolvable document path, or an unacquirable branch all skip stamping rather
-/// than fail the request. Nothing routes on these facts yet (Stage 2), so a miss
-/// only means a tab's context is absent, never a broken request.
+/// than fail the request. Nothing in production routes on these facts yet
+/// (Stage 3 stands the path up alongside the Leptos router), so a miss only
+/// means a tab's context is absent, never a broken request.
 pub async fn stamp_host_context(tonk: &crate::worker::TonkState, headers: &HeaderMap) {
     use std::sync::Arc;
     use tonk_schema::HostContext;
@@ -66,7 +71,7 @@ pub async fn stamp_host_context(tonk: &crate::worker::TonkState, headers: &Heade
     if session.is_empty() {
         return;
     }
-    let Ok(entity) = session.parse() else {
+    let Ok(entity): Result<dialog_artifacts::Entity, _> = session.parse() else {
         return;
     };
 
@@ -77,7 +82,9 @@ pub async fn stamp_host_context(tonk: &crate::worker::TonkState, headers: &Heade
     let hash = header(headers, "x-tonk-hash").to_owned();
 
     let branch = match &target {
-        RouteTarget::Space(space) => tonk.reactor.repository(&space.name).branch(&space.branch),
+        RouteTarget::Space { space, .. } => {
+            tonk.reactor.repository(&space.name).branch(&space.branch)
+        }
         RouteTarget::Profile => tonk.reactor.profile_repository().branch(META_BRANCH),
     };
 
@@ -92,10 +99,67 @@ pub async fn stamp_host_context(tonk: &crate::worker::TonkState, headers: &Heade
     // `path`/`hash` are cardinality-one attributes, so asserting supersedes the
     // prior values on this host-id entity rather than accumulating — a
     // navigation re-stamp leaves exactly the latest location.
-    let stamp = HostContext::new(entity, path.to_owned(), hash);
+    let stamp = HostContext::new(entity.clone(), path.to_owned(), hash);
     state.state.assert_overlay(stamp);
+
+    // Level 1: match the remaining path against the space's route table and
+    // stamp the matched page model so the shell can render through the
+    // `router/active` indirection. The profile has no Level 1 routes yet.
+    if let RouteTarget::Space { rest, .. } = &target
+        && let Some(model) = match_route(tonk, &state, rest).await
+    {
+        state
+            .state
+            .assert_overlay(tonk_schema::RouterActive::new(entity, model));
+    }
+
     tonk.reactor.schedule_poll(Arc::clone(&state.state));
     tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+}
+
+/// Match `rest` (the Level 1 remaining path) against the branch's durable
+/// `router/route` table, returning the matched page model entity.
+///
+/// Builds a fresh `matchit::Router` per request from the queried routes. Routes
+/// are inserted in stable entity-URI order so a `matchit` conflict (two
+/// structurally identical patterns) resolves deterministically — the loser is
+/// skipped with a log line (Stage 3 defers the queryable `router/conflict`
+/// fact). Returns `None` when nothing matches.
+async fn match_route(
+    tonk: &crate::worker::TonkState,
+    state: &dialog_reactor::BranchSession,
+    rest: &str,
+) -> Option<dialog_artifacts::Entity> {
+    use dialog_query::{Output as _, Query, Term};
+    use tonk_schema::RouterRoute;
+
+    let mut routes: Vec<RouterRoute> = state
+        .handle()
+        .query()
+        .select(Query::<RouterRoute> {
+            this: Term::var("this"),
+            path: Term::var("path"),
+            model: Term::var("model"),
+        })
+        .perform(&tonk.operator)
+        .try_vec()
+        .await
+        .unwrap_or_default();
+
+    // Stable order by entity URI so conflict resolution is deterministic.
+    routes.sort_by(|a, b| a.this.to_string().cmp(&b.this.to_string()));
+
+    let mut router = matchit::Router::new();
+    for route in &routes {
+        if let Err(e) = router.insert(route.path.0.clone(), route.model.0.clone()) {
+            tonk_common::log!(
+                "match_route: skipping conflicting route {}: {e}",
+                route.path.0
+            );
+        }
+    }
+
+    router.at(rest).ok().map(|matched| matched.value.clone())
 }
 
 #[cfg(test)]

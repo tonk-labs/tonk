@@ -70,32 +70,45 @@ pub fn parse_space(segment: &str) -> Option<SpaceRef> {
 /// [`Self::Profile`]); resolving the target is pure, mapping it is the SW's job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RouteTarget {
-    /// A named space: `/space/{segment}/…`.
-    Space(SpaceRef),
+    /// A named space: `/space/{segment}/…`. Carries the space and the
+    /// **remaining** path after the `/space/{segment}` prefix (Level 1's input,
+    /// always starting with `/`; `/` for a bare space root).
+    Space {
+        /// The resolved repository + branch.
+        space: SpaceRef,
+        /// The path Level 1 (the space router) matches against.
+        rest: String,
+    },
     /// The profile (its meta branch): `/` and `/join`.
     Profile,
 }
 
 /// Resolve a document path to its Level 0 [`RouteTarget`].
 ///
-/// `/space/{segment}/…` resolves the segment via [`parse_space`]; `/` and
-/// `/join` are the profile. An unknown prefix or an unparseable space segment
-/// yields `None` — there is no database to address. A leading scheme/host is not
-/// expected; pass the pathname (what `location.pathname` gives, and what the
-/// SW extracts from `Referer`).
+/// `/space/{segment}/…` resolves the segment via [`parse_space`] and hands back
+/// the remaining path for Level 1; `/` and `/join` are the profile. An unknown
+/// prefix or an unparseable space segment yields `None` — there is no database
+/// to address. A leading scheme/host is not expected; pass the pathname (what
+/// `location.pathname` gives, and what the SW extracts from `Referer`).
 pub fn resolve_path(path: &str) -> Option<RouteTarget> {
-    let path = path.trim_start_matches('/');
-    let (head, rest) = match path.split_once('/') {
+    let trimmed = path.trim_start_matches('/');
+    let (head, rest) = match trimmed.split_once('/') {
         Some((head, rest)) => (head, rest),
-        None => (path, ""),
+        None => (trimmed, ""),
     };
     match head {
         "" | "join" => Some(RouteTarget::Profile),
         "space" => {
             // The space segment is the first component after `space/`; anything
-            // past it is the remaining (Level 1) path, ignored here.
-            let segment = rest.split_once('/').map(|(seg, _)| seg).unwrap_or(rest);
-            parse_space(segment).map(RouteTarget::Space)
+            // past it is the remaining (Level 1) path.
+            let (segment, remaining) = match rest.split_once('/') {
+                Some((seg, remaining)) => (seg, remaining),
+                None => (rest, ""),
+            };
+            parse_space(segment).map(|space| RouteTarget::Space {
+                space,
+                rest: format!("/{remaining}"),
+            })
         }
         _ => None,
     }
@@ -183,23 +196,29 @@ mod tests {
     async fn it_resolves_a_space_path_to_its_target() {
         assert_eq!(
             resolve_path("/space/home:z6MkABC"),
-            Some(RouteTarget::Space(SpaceRef {
-                name: "did:key:z6MkABC".into(),
-                branch: "main".into(),
-            })),
+            Some(RouteTarget::Space {
+                space: SpaceRef {
+                    name: "did:key:z6MkABC".into(),
+                    branch: "main".into(),
+                },
+                rest: "/".into(),
+            }),
         );
     }
 
     #[dialog_common::test]
-    async fn it_ignores_the_remaining_path_after_the_space_segment() {
-        // `/space/{seg}/board` resolves the same target as `/space/{seg}` —
-        // the remaining path is Level 1's concern, not Level 0's.
+    async fn it_carries_the_remaining_path_after_the_space_segment() {
+        // `/space/{seg}/board/extra` resolves the same space as `/space/{seg}`;
+        // the remaining path `/board/extra` is Level 1's input.
         assert_eq!(
             resolve_path("/space/feat@home:z6MkABC/board/extra"),
-            Some(RouteTarget::Space(SpaceRef {
-                name: "did:key:z6MkABC".into(),
-                branch: "feat".into(),
-            })),
+            Some(RouteTarget::Space {
+                space: SpaceRef {
+                    name: "did:key:z6MkABC".into(),
+                    branch: "feat".into(),
+                },
+                rest: "/board/extra".into(),
+            }),
         );
     }
 

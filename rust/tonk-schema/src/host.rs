@@ -16,6 +16,8 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::host::{Hash, Path};
+use crate::domain::router_active::Model as ActiveModel;
+use crate::domain::router_route::{Model as RouteModel, Path as RoutePath};
 
 /// A tab's request context: the location (`path`, `hash`) the host stamped,
 /// keyed on the tab's host-id entity.
@@ -40,6 +42,41 @@ impl HostContext {
             this,
             path: Path(path),
             hash: Hash(hash),
+        }
+    }
+}
+
+/// A durable route — one row of the table the SW page router reads. A `route`
+/// command materializes these (via the library rules); the SW queries them on a
+/// branch and feeds `path` → `model` to `matchit`.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouterRoute {
+    /// The route's entity (the command's derived `this`).
+    pub this: Entity,
+    /// The axum/matchit path pattern.
+    pub path: RoutePath,
+    /// The page model rendered when this path matches.
+    pub model: RouteModel,
+}
+
+/// The per-tab matched route, keyed on the host-id entity. The SW asserts this
+/// in the overlay after matching; the shell mounts
+/// `<tonk-display model=router/active entity={host-id}>` and the active view
+/// delegates to `model`. Cardinality one, so a navigation re-stamp supersedes.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RouterActive {
+    /// The per-tab host-id entity.
+    pub this: Entity,
+    /// The matched page model.
+    pub model: ActiveModel,
+}
+
+impl RouterActive {
+    /// A matched-route stamp for the given host-id entity.
+    pub fn new(this: Entity, model: Entity) -> Self {
+        Self {
+            this,
+            model: ActiveModel(model),
         }
     }
 }
