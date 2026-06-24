@@ -1471,17 +1471,17 @@ rule!:
         order: ?order
 
 rule!:
-  description: Activates the freshly created sheet on the binder
-  assert!: tonk/binder
+  description: Activates the freshly created sheet
+  assert!: tonk/active-sheet
   when:
     - assert: workspace/create-sheet
       where:
         this: ?active
         name: ?title
         order: ?order
-    # The binder is the replica's (bound through `tonk/replica`); point
-    # its `active` at the new sheet so creating lands the user on the
-    # new empty artifact (the head's `active` field unifies with the
+    # The active sheet is the replica's (bound through `tonk/replica`);
+    # point its `active` at the new sheet so creating lands the user on
+    # the new empty artifact (the head's `active` field unifies with the
     # created sheet `?active`).
     - assert: tonk/replica
       where:
@@ -2303,7 +2303,8 @@ view/directory!:
         }
       </style>
 
-      <tonk-sheet-binder active={dom.host/data-active} class="workspace__binder" onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
+      <tonk-sheet-binder class="workspace__binder" onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
+        <tonk-display slot="active" entity={dom.host/data-binder} model=tonk:active-sheet><span slot="no-entity"></span></tonk-display>
         <div slot="empty" class="workspace-launchpad" hidden>
           <div class="workspace-launchpad__inner">
             <h1 class="workspace-launchpad__title">nothing here yet.</h1>
@@ -2345,40 +2346,33 @@ concept!: &tonk/active-sheet
       the: xyz.tonk.binder/active
       as: entity
 
+# The active-sheet feed — the default view for `tonk:active-sheet`. The
+# shell slots `<tonk-display model=tonk:active-sheet>` into the binder's
+# `[slot="active"]`; this view renders just the active sheet id as bare
+# text, which `<tonk-sheet-binder>` reads to highlight the live tab. When
+# no `tonk/active-sheet` fact exists yet (a freshly created or joined
+# replica that never selected a tab), the model resolves nothing and the
+# slot stays empty, so the binder falls back to the first sheet by order.
+view!:
+  this: id:active-sheet/feed
+  model: tonk:active-sheet
+  display: |
+    {active}
+
 # Tab selection: when an `activate-sheet` command fires, point the
-# binder's `active` at the clicked sheet (replacing the prior
-# selection). The binder is the replica's (one per device, bound
-# through `tonk/replica`), so the command needs only the sheet - no
-# binder id plumbed through the DOM. Mirrors the close/create rules.
+# active sheet at the clicked one (replacing the prior selection). The
+# active sheet is the replica's (one per device, bound through
+# `tonk/replica`), so the command needs only the sheet — no binder id
+# plumbed through the DOM. Mirrors the close/create rules. The slotted
+# `<tonk-display model=tonk:active-sheet>` reads this back to light the
+# live tab.
 rule!:
-  assert!: tonk/binder
+  assert!: tonk/active-sheet
   when:
     - assert: workspace/activate-sheet
       where: { sheet: ?active }
     - assert: tonk/replica
       where: { this: ?this, subject: ?subject }
-
-# Sets active sheet of the binder to about:blank unless
-# it already has an active sheet. This ensures that every
-# replica also matches a binder model.
-rule!:
-  assert!: tonk/binder
-  when:
-    - assert: tonk/initialize
-      where:
-         this: ?init
-    - assert: tonk/replica
-      where:
-         this: ?this
-         subject: ?subject
-    - assert: ==
-      where:
-        this: ?active
-        is: about:blank
-  unless:
-    - assert: tonk/binder
-      where:
-        this: ?this
 
 rule!:
   assert!: tonk/repository
