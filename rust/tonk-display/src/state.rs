@@ -780,9 +780,11 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
-    fn it_injects_a_neutral_fallback_for_a_missing_entity() {
-        // `no-entity` is expected and recoverable (concept + view
-        // resolved, the instance just isn't there) → `neutral`.
+    fn it_injects_a_danger_fallback_for_a_missing_entity() {
+        // `no-entity` is loud (`danger`): the entity is on the branch but
+        // does not match the concept (a required attribute is absent), so
+        // the accompanying diagnostic explains why — not a quiet
+        // still-syncing placeholder.
         let host = host();
         set_absence(
             &host,
@@ -800,8 +802,8 @@ mod tests {
             .expect("no-entity injects a fallback callout");
         assert_eq!(
             callout.get_attribute("variant").as_deref(),
-            Some("neutral"),
-            "a missing instance is informative, not a danger",
+            Some("danger"),
+            "a concept mismatch is an error, not a quiet placeholder",
         );
     }
 
