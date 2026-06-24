@@ -1,10 +1,11 @@
 //! Profile identity concepts: the durable display-name override stored on
-//! the profile meta branch. (The transient self overlay used by the
-//! topbar chip is added with the chip UI.)
+//! the profile meta branch and the transient self overlay used by the
+//! topbar chip.
 
 use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
+use crate::domain::identity::{Did as IdentityDid, Name as IdentityName};
 use crate::domain::profile::DisplayName;
 
 /// The profile's chosen display name, stored on the profile meta branch
@@ -25,6 +26,30 @@ impl ProfileName {
         Self {
             this: profile,
             name: DisplayName(name),
+        }
+    }
+}
+
+/// The self-identity overlay the topbar chip resolves against
+/// `state:self`. Transient: stamped on space load and on rename, never
+/// committed. Carries the self DID (for the sigil) and the current name.
+#[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProfileIdentity {
+    /// The well-known `state:self` entity.
+    pub this: Entity,
+    /// The self profile DID.
+    pub did: IdentityDid,
+    /// The current display name.
+    pub name: IdentityName,
+}
+
+impl ProfileIdentity {
+    /// A self-identity stamp for the `state:self` entity.
+    pub fn new(state_self: Entity, did: Entity, name: String) -> Self {
+        Self {
+            this: state_self,
+            did: IdentityDid(did),
+            name: IdentityName(name),
         }
     }
 }

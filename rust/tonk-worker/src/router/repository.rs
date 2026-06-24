@@ -601,6 +601,9 @@ async fn run_invite(
         this: subject_entity,
         seed: Seed(seed),
     });
+    // Re-stamp state:self after clear_overlay wiped it — without this the
+    // topbar identity chip loses its data until the next sync_status poll.
+    crate::router::sync::publish_self_identity(&tonk, repo_name, CONTENT_BRANCH).await;
     tonk.reactor
         .schedule_poll(std::sync::Arc::clone(&session.state));
 
@@ -854,6 +857,16 @@ async fn run_profile_rename(
     crate::router::profile_name::restamp_member_name(&tonk, key, name)
         .await
         .map_err(|e| TonkWorkerError::Internal(format!("failed to restamp member name: {e}")))?;
+
+    // 3. Re-stamp the self-identity overlay so the topbar chip reflects the
+    //    new name instantly without waiting for the next sync cycle.
+    crate::router::sync::publish_self_identity(&tonk, key, CONTENT_BRANCH).await;
+
+    // 4. Prompt an immediate push so peers see the new name without waiting
+    //    for the 20s heartbeat. Fire-and-forget: the held read lock is
+    //    released before the spawned task runs.
+    drop(tonk);
+    crate::router::join::notify_sync(env.client());
 
     Ok(())
 }
@@ -3266,5 +3279,92 @@ mod tests {
         assert_eq!(names.len(), 1, "exactly the founder's name");
         assert_eq!(names[0].this, memberships[0].this);
         assert!(!names[0].name.0.is_empty(), "a non-empty display name");
+    }
+
+    /// Build a one-entity transient `Invite{this, time, marker}` batch —
+    /// the facts the share form's submit event asserts. Carries both the
+    /// `time-stamp` (`dom.event/time-stamp`) and the `marker`
+    /// (`dom.event.current-target.dataset/invite`) so it decodes as an
+    /// `Invite` command and not a `PauseSync` (identical `{this, time}`
+    /// shape otherwise).
+    fn invite_transient(of: &str) -> dialog_artifacts::Changes {
+        use dialog_artifacts::{Entity, Statement};
+        use dialog_query::the;
+
+        let entity: Entity = of.parse().expect("entity URI");
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("dom.event/time-stamp")
+            .of(entity.clone())
+            .is(1.0_f64)
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/invite")
+            .of(entity)
+            .is("tonk:invite".parse::<Entity>().expect("marker URI"))
+            .assert(&mut changes);
+        changes
+    }
+
+    /// Dispatching a `tonk:invite` command clears the overlay (to rotate
+    /// the credential) but MUST re-stamp `state:self` so the topbar chip
+    /// retains the member's identity data. Without the re-stamp the chip
+    /// goes blank until the next sync_status poll (~20 s).
+    #[dialog_common::test]
+    async fn it_restamps_state_self_after_invite_clears_the_overlay() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, key) = fresh_repo("test-invite-restamps-self").await;
+
+        // Prime state:self so we have something to lose.
+        {
+            let tonk = state.read().await;
+            crate::router::sync::publish_self_identity(&tonk, &key, "main").await;
+        }
+
+        // Drive the invite command through the real dispatcher — same path
+        // the share modal takes.
+        let changes = invite_transient("did:key:zInviteCmd");
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: key.clone(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        // state:self must still be present on the overlay after run_invite's
+        // clear_overlay + re-stamp sequence.
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("acquire main");
+
+        let entity: dialog_artifacts::Entity =
+            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
+        let rows: Vec<tonk_schema::ProfileIdentity> = session
+            .handle()
+            .query()
+            .with(session.overlay())
+            .select(Query::<tonk_schema::ProfileIdentity> {
+                this: Term::from(entity),
+                did: Term::var("did"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "state:self must be re-stamped after invite clears the overlay",
+        );
     }
 }

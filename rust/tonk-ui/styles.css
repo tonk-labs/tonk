@@ -479,50 +479,11 @@ tonk-repository.display-route,
 .workspace__sync.is-diverged::before {
     background: var(--wa-color-danger-fill-loud);
 }
-/* The member roster (`<tonk-roster>` renders this cluster): one
-   `<tonk-sigil>` avatar per repo member, each cropped into a
-   black-ringed circle and overlapped into a left-to-right stack.
-   Later siblings paint over earlier ones; the drop shadow on each
-   avatar's leading edge gives the overlap its depth. */
-/* `<tonk-roster>` is a bare custom element (display:inline by
-   default), so the cluster rode the text baseline and sat high.
-   Make it a centred flex item so it aligns with the share button
-   through the topbar's vertical centre. */
-tonk-roster {
-    display: inline-flex;
-    align-items: center;
-}
-.workspace__roster {
-    display: inline-flex;
-    align-items: center;
-    line-height: 0;
-    padding-inline-end: 0.4rem;
-}
-.workspace__roster-avatar {
-    width: 1.5rem;
-    height: 1.5rem;
-    box-sizing: border-box;
-    /* The sigil child is absolutely positioned, so `border-radius`
-       alone won't clip it — `overflow: hidden` crops the square
-       identicon into the circle. The white disc occludes the avatar
-       beneath where they overlap; the leftward shadow reads as the
-       upper avatar lifting off the one below. */
-    overflow: hidden;
-    border-radius: 50%;
-    border: 1.5px solid #1c1c1c;
-    background: #fff;
-    color: #1c1c1c;
-    box-shadow: -2px 0 3px -1px rgba(0, 0, 0, 0.3);
-    margin-inline-end: -0.5rem;
-}
-.workspace__roster-avatar:last-child {
-    margin-inline-end: 0;
-}
-/* The roster renders through a `<tonk-display>` → `<tonk-view>` pair
-   whose line boxes would otherwise sit the avatar cluster above the
+/* The topbar chips (identity, sync) render through a `<tonk-display>` →
+   `<tonk-view>` pair whose line boxes would otherwise sit them above the
    topbar's centerline. Collapse the wrappers (as `.workspace__title`
-   does) so `.workspace__roster` is laid out — and vertically centered —
-   directly by the `.workspace__actions` flex row. */
+   does) so each chip is laid out — and vertically centered — directly by
+   the `.workspace__actions` flex row. */
 .workspace__actions tonk-display,
 .workspace__actions tonk-view {
     display: contents;
@@ -535,6 +496,48 @@ tonk-roster {
     align-items: center;
     gap: var(--wa-space-m);
     color: var(--wa-color-text-quiet);
+}
+/* Self-identity chip: the signed-in member's sigil + their editable
+   display name, in the topbar actions row. The name reads as plain text
+   until hovered/focused, mirroring the repository-title banner
+   (`.workspace__title-input`); the avatar is a black-ringed circle
+   cropping the square sigil. */
+.workspace__identity {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--wa-space-2xs);
+    color: var(--wa-color-text-normal, inherit);
+}
+.workspace__identity-avatar {
+    width: 1.5rem;
+    height: 1.5rem;
+    box-sizing: border-box;
+    overflow: hidden;
+    border-radius: 50%;
+    border: 1.5px solid #1c1c1c;
+    background: #fff;
+    color: #1c1c1c;
+    flex: none;
+}
+.workspace__identity-name {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--wa-border-radius-s);
+    padding: var(--wa-space-3xs) var(--wa-space-2xs);
+    margin: calc(-1 * var(--wa-space-3xs)) calc(-1 * var(--wa-space-2xs));
+    min-width: 6ch;
+    white-space: nowrap;
+    cursor: text;
+}
+.workspace__identity-name:hover {
+    border-color: var(--wa-color-surface-border, rgba(127, 127, 127, 0.2));
+}
+.workspace__identity-name:focus {
+    outline: none;
+    border-color: var(--wa-color-brand-fill-loud, #0070f3);
+    background: var(--wa-color-surface-default, #fff);
 }
 /* The share (`<tonk-share>`) and pause/resume (`<tonk-sync-toggle>`)
    controls: icon-only ghost buttons that brighten on hover. */

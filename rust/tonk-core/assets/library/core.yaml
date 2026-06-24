@@ -620,52 +620,65 @@ view!:
     ></tonk-editable>
 
 # ============================================================
-# MEMBERSHIP / ROSTER
+# SELF-IDENTITY CHIP
 # ============================================================
 
-# The `tonk:membership` concept. The worker writes a Membership fact
-# (member + subject) and a MemberName fact (the member's self-asserted
-# display `name`) onto the repository's content branch `main` on create
-# and on invite-claim, both keyed to the same membership entity. This
-# concept projects them together so a directory view can render the
-# roster. Pinned to `tonk:membership` so `<tonk-display>` can resolve
-# its view. A name is always written alongside the membership, so the
-# cardinality-one `name` field is present for every member.
-concept!: &tonk/membership
-  this: tonk:membership
-  description: A member of a repository, with their published display name.
+# The signed-in member's own identity for this space. Resolves against
+# the `state:self` overlay the worker stamps on this space branch
+# (mirroring the sync chip's `state:here`), so self-identity reaches
+# the sealed iframe with no profile-branch access. `did` feeds the
+# sigil; `name` is the editable display name.
+concept!: &tonk/identity
+  this: tonk:identity
+  description: The signed-in member's own identity for this space.
   with:
-    subject:
-      description: The repository the membership belongs to.
-      the: xyz.tonk.membership/subject
-      cardinality: one
-      as: entity
-    member:
-      description: The member profile's did:key.
-      the: xyz.tonk.membership/member
+    did:
+      description: The self profile DID (feeds the sigil glyph).
+      the: xyz.tonk.identity/did
       cardinality: one
       as: entity
     name:
-      description: The member's self-asserted display name.
-      the: xyz.tonk.membership/name
+      description: The self display name shown (and edited) in the chip.
+      the: xyz.tonk.identity/name
       cardinality: one
       as: text
 
-# The roster: a directory view over `tonk:membership`. `<tonk-display
-# model=tonk:membership>` (no entity) resolves this. Each membership on
-# the branch becomes one `<tonk-sigil>`; the bare `subject={this}`
-# marker makes the sigil the per-member repeat node, so the wrapping
-# `<div>` renders once as chrome. `did={member}` feeds the shared
-# DID->sigil derivation (matching the other surfaces) and `{name}` is
-# the hover label. Each repo's `main` holds only its own members, so the
-# unfiltered query is already this repo's roster.
-view/directory!:
-  this: id:tonk:membership/roster
-  model: tonk:membership
+# The chip view: sigil + an inline-editable name. Editing commits on
+# blur/Enter exactly like the repository-title banner, dispatching the
+# worker-backed `profile/rename` command. `data-rename` carries the
+# marker that distinguishes this transient from `tonk/rename-repository`.
+view!:
+  this: id:tonk:identity/chip
+  model: tonk:identity
   display: |
-    <div class="workspace__roster">
-      <tonk-sigil class="workspace__roster-avatar" subject={this} did={member} title={name}></tonk-sigil>
-    </div>
+    <span class="workspace__identity">
+      <tonk-sigil class="workspace__identity-avatar" did={did}></tonk-sigil>
+      <tonk-editable
+        class="workspace__identity-name"
+        value={name}
+        data-rename="tonk:profile"
+        onchange=profile/rename
+        aria-label="Your name"
+      ></tonk-editable>
+    </span>
+
+# Rename the signed-in member (set their display name). The editable
+# chip input dispatches this on commit (blur/Enter); `name` reads the
+# input's value and `marker` reads the `data-rename` attribute so the
+# worker handler matches this transient distinctly from
+# `tonk/rename-repository`. No rule: a typed-Rust handler in
+# tonk-worker reacts (it must reach the profile meta branch).
+command!: &profile/rename
+  description: Rename the signed-in member (set their display name).
+  with:
+    name:
+      description: The new name, read from the editable's value on commit.
+      the: dom.event.current-target/value
+      as: text
+    marker:
+      description: Per-command marker (data-rename) distinguishing this from repo rename.
+      the: dom.event.current-target.dataset/rename
+      as: entity
 
 # A read-only label view kind. Its `display` template lives under a
 # distinct attribute (`xyz.tonk.view/label`) so a model can carry both
@@ -1593,6 +1606,18 @@ view/directory!:
         </tonk-display>
         <span class="workspace__spacer"></span>
         <span class="workspace__actions">
+          <!-- Identity chip: shows the signed-in member's sigil + their
+               editable display name. Resolves against the `state:self`
+               overlay the worker stamps on load (see task-5/6). Editing
+               the name commits via the worker-backed `profile/rename`
+               command (no declarative rule — the Rust handler writes to
+               the profile meta branch). The empty `no-entity` slot renders
+               nothing while `state:self` is briefly absent (e.g. just after
+               an overlay clear) — without it `<tonk-display>` would dump the
+               missing-instance notation as text, mirroring the sync chip. -->
+          <tonk-display entity=state:self model=tonk:identity>
+            <span slot="no-entity" class="workspace__identity" aria-hidden="true"></span>
+          </tonk-display>
           <!-- One click both opens the share dialog (`data-dialog`) and
                submits the dialog's share form (`form=share-form`, the HTML
                external-submit attribute) — so the invite mints on open with

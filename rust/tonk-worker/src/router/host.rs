@@ -226,6 +226,12 @@ pub async fn guest(
 
     let tonk = state.read().await;
 
+    // Stamp the self-identity overlay so the topbar chip can render the
+    // member's sigil + name immediately on space open, before the first
+    // sync-status sweep arrives.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    crate::router::sync::publish_self_identity(&tonk, &params.repo, &params.branch).await;
+
     let repo = tonk
         .profile
         .repository(&params.repo)
