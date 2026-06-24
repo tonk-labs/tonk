@@ -759,13 +759,13 @@ rule!:
 # sheet leaves `active` untouched (no match).
 rule!:
   description: Moves the binder's active pointer to the neighbour when the active sheet closes
-  assert!: tonk/binder
+  assert!: tonk/active-sheet
   when:
     - assert: workspace/close-sheet
       where: { sheet: ?sheet, next: ?active }
     - assert: tonk/replica
       where: { this: ?this, subject: ?subject }
-    - assert: tonk/binder
+    - assert: tonk/active-sheet
       where: { this: ?this, active: ?sheet }
 
 # The sheet-mount view (default view for `workspace/sheet`): wraps the
@@ -1510,6 +1510,9 @@ concept!: &route
       cardinality: one
       as: entity
 
+
+
+
 # ---- Route models and their views ----
 
 # The space's default page — a bare `/space/{name}/`. Picks the tab's `replica`
@@ -1820,7 +1823,7 @@ view!:
         <p class="share-dialog__note">Everyone who follows this link becomes a member of this space. The link stays active, so share it only with people you want to let in.</p>
       </wa-dialog>
 
-      <tonk-display model=workspace/sheet data-active={active} />
+      <tonk-display model=workspace/sheet data-binder={this} />
     </div>
 
 
@@ -2214,17 +2217,22 @@ concept!: &tonk/binder
   this: tonk:binder
   description: A binder view of the the tonk replica
   with:
-    active:
-      description: Currently active sheet
-      the: xyz.tonk.binder/active
-      as: entity
     subject:
-      description: >
+      description: |
         The repository's subject DID. The binder and the replica share
         an entity, so the binder carries the replica's `subject` and the
         shell view can read `{subject}` directly to mount the
         repository-name banner — no bridge view needed.
       the: dialog.origin/subject
+      as: entity
+
+concept!: &tonk/active-sheet
+  this: tonk:active-sheet
+  description: A an active sheet on the binder
+  with:
+    active:
+      description: Currently active sheet
+      the: xyz.tonk.binder/active
       as: entity
 
 # Tab selection: when an `activate-sheet` command fires, point the
