@@ -83,9 +83,20 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     let site = LocalResource::new(move || {
         let path = route_path.get();
         async move {
-            match path {
-                Some(path) => tonk_host::bridge::ensure_site(&path).await.ok(),
-                None => None,
+            // `tonk_host::bridge` is wasm-only (it talks to the service
+            // worker); on native the route has no SW to register with, so
+            // the resource resolves to `None` and the portal stays ungated.
+            #[cfg(target_arch = "wasm32")]
+            {
+                match path {
+                    Some(path) => tonk_host::bridge::ensure_site(&path).await.ok(),
+                    None => None,
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = path;
+                None::<String>
             }
         }
     });
