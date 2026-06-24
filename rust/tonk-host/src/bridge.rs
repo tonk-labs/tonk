@@ -9,7 +9,6 @@ use crate::error::{ErrorDetail, ErrorKind};
 use crate::ready;
 use ipld_core::ipld::Ipld;
 use js_sys::{Function, Promise, Reflect};
-use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
@@ -69,22 +68,42 @@ pub fn context_origin() -> Option<String> {
 }
 
 thread_local! {
-    /// The `site` entity for this document instance (top page, or one sealed
-    /// guest iframe). Each document runs its own wasm instance, so a per-instance
-    /// cell gives a distinct site per tab/iframe. The SW keys the tab's
-    /// `tonk:site` facts (path, replica, matched route) by this entity. Minted
-    /// lazily on first use.
-    static SITE_ID: std::cell::OnceCell<String> = const { std::cell::OnceCell::new() };
+    /// This document's `site` entity, as assigned by the service worker. The SW
+    /// derives it from the requesting client id (`site:<client-id>`) when the
+    /// page registers via `POST /api/site` — so it is browser-managed and GC-able
+    /// rather than a locally-minted uuid. `None` until [`ensure_site`] has run.
+    static SITE_ID: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-/// This document's `site` entity, minted once per instance — a `site:<uuid>`
-/// URI, distinct per live document. The SW stamps the tab's location/route
-/// facts on it; the rendering shell reads them from it.
+/// This document's `site` entity, as assigned by the SW — empty until
+/// [`ensure_site`] has registered the page. The shell reads the tab's
+/// location/route facts the SW stamped on this entity.
 pub fn site_id() -> String {
-    SITE_ID.with(|cell| {
-        cell.get_or_init(|| format!("site:{}", Uuid::new_v4()))
-            .clone()
-    })
+    SITE_ID.with(|cell| cell.borrow().clone().unwrap_or_default())
+}
+
+/// Register this page's site with the service worker and cache the assigned id.
+///
+/// On first load the navigation predates the SW (the page is served before the
+/// SW exists), so the SW never sees a navigation for this document — the page
+/// must announce itself. `POST /api/site` (carrying the current path on
+/// `X-Tonk-Path`) makes the SW assert this tab's `tonk:site` and return the
+/// `site:<client-id>` entity to render against. Idempotent: re-call on
+/// navigation to update the site in place.
+#[cfg(target_arch = "wasm32")]
+pub async fn ensure_site() -> Result<String, ErrorDetail> {
+    let site = crate::http::post_site().await?;
+    SITE_ID.with(|cell| *cell.borrow_mut() = Some(site.clone()));
+    Ok(site)
+}
+
+/// Native stub — the `/api/site` fetch is wasm-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn ensure_site() -> Result<String, ErrorDetail> {
+    Err(ErrorDetail::new(
+        ErrorKind::Network,
+        "ensure_site is only available on wasm32",
+    ))
 }
 
 /// The request-context headers every host-relative `/api` request carries, so

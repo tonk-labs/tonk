@@ -17,6 +17,7 @@ use crate::env::{BranchOpenProvider, LoadProvider};
 use crate::error::ReactorError;
 use crate::export::Export;
 use crate::import::Import;
+use crate::overlay::OverlayBuilder;
 use crate::pull::Pull;
 use crate::push::Push;
 use crate::query::QueryEffect;
@@ -103,6 +104,15 @@ impl<'a> BranchReference<'a> {
     /// results fan out without callers having to remember.
     pub fn transaction(self) -> TransactionBuilder<'a> {
         TransactionBuilder::new(self)
+    }
+
+    /// Begin a **session-overlay** write — the ephemeral counterpart to
+    /// [`Self::transaction`]. Chain `.assert(…)` / `.retract(…)`, then
+    /// `.write().perform(&op)`. The changes land in the in-memory overlay
+    /// (never committed, never replicated) and, like a commit, schedule a poll
+    /// so subscribers see the change — callers don't drive the poll themselves.
+    pub fn overlay(self) -> OverlayBuilder<'a> {
+        OverlayBuilder::new(self)
     }
 
     /// Pull from upstream. On success, subscriptions re-poll.

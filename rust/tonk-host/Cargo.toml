@@ -21,7 +21,6 @@ serde_ipld_dagjson = { workspace = true }
 serde_json = { workspace = true }
 tonk-common = { workspace = true }
 tonk-schema = { workspace = true }
-uuid = { version = "1", features = ["v4", "js"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 wasm-streams = { workspace = true }

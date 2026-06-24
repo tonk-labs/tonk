@@ -58,6 +58,15 @@ pub fn TonkSpaceSealed() -> impl IntoView {
         Signal::derive_local(move || space_ref.get().map(|s| s.name).filter(|s| !s.is_empty()));
     crate::sync_controller::mount(sync_source);
 
+    // Register this page's SITE with the service worker before mounting the
+    // sealed view. The navigation that loaded this page predates the SW, so the
+    // SW never saw it — the page must announce itself via `POST /api/site`. That
+    // asserts the tab's `tonk:site` (so the display has something to resolve) and
+    // returns the `site:<client-id>` entity the SW keys it on, which the host
+    // caches for the guest context. We gate the portal mount on it so the guest's
+    // `<tonk-display model=tonk:site>` never queries an unstamped site.
+    let site = LocalResource::new(|| async { tonk_host::bridge::ensure_site().await.ok() });
+
     // The guest content is just the route's mount slot
     // (`.display-view-slot > tonk-display`) under the proxy `<tonk-host>`.
     // The app stylesheet anchors the bare-display-route fill-height layout
@@ -101,11 +110,17 @@ pub fn TonkSpaceSealed() -> impl IntoView {
             >
                 <tonk-branch name=move || branch_name.get()>
                     <div class="display-view-slot">
-                        <tonk-portal
-                            runtime
-                            content=CONTENT
-                            style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"
-                        ></tonk-portal>
+                        // Gate the sealed portal on the site registration so the
+                        // guest never queries an unstamped site. `ensure_site`
+                        // also populates `site_id()`, which the portal threads
+                        // into the guest context.
+                        {move || site.get().flatten().map(|_site| view! {
+                            <tonk-portal
+                                runtime
+                                content=CONTENT
+                                style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"
+                            ></tonk-portal>
+                        })}
                     </div>
                 </tonk-branch>
             </tonk-repository>

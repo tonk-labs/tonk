@@ -1,27 +1,40 @@
-//! Per-tab site: stamp the [`Site`] facts a request carries onto its site
-//! entity, in the Level-0-resolved branch's overlay.
+//! `POST /api/site` — register/update the requesting client's site.
 //!
-//! The host (top page or sealed guest) stamps three things on every host-relative
-//! `/api` request: the document path (`X-Tonk-Path`), the fragment
-//! (`X-Tonk-Hash`), and the per-tab site id (`X-Tonk-Site`). The path is an
-//! explicit header rather than `Referer` because a service worker reads
-//! `request.headers`, which never includes `Referer` (the browser exposes it
-//! only as the separate `request.referrer` property). Level 0 resolves the path
-//! to a `(repo, branch)` target and the remaining (Level 1) path.
+//! The site is per-tab navigation state, NOT per-query. On first load the
+//! navigation predates the service worker (the page is served before the SW
+//! exists), so the SW never sees a navigation `FetchEvent` for it — the page
+//! must announce itself. Once controlled, the page calls `POST /api/site` with
+//! its current path; the SW reads the requesting **client id**, derives the site
+//! entity (`site:<client-id>`), asserts a [`Site`] `{path, anchor, replica,
+//! route, concept}` on the Level-0-resolved branch's overlay, and returns the
+//! site id. The page renders `<tonk-display entity={site} model=tonk:site>`; the
+//! `tonk:site` view nests into the matched `{concept}` and renders.
 //!
-//! For a space, the SW derives the tab's replica, matches the remaining path
-//! against the branch's durable `tonk:route` table with `matchit`, and asserts a
-//! [`Site`] `{path, anchor, replica, route, concept}` onto the site entity in
-//! that branch's overlay (the `state:here` pattern keyed per tab). The shell
-//! mounts `<tonk-display entity=site:… model={concept}>`; the route model
-//! resolves on the site entity and its view renders. Multiple tabs coexist as
-//! distinct site entities in one overlay.
+//! The same endpoint handles navigation updates: the page re-calls it on each
+//! client-side navigation, and the cardinality-one fields update in place. Read
+//! queries never stamp, so a tab's displays re-querying never re-derive or
+//! re-poll — the perf cost of stamping is paid once per navigation, not per read.
 
+use ::axum::Json;
+use ::axum::extract::{Request, State};
 use ::axum::http::HeaderMap;
+use axum_wasm_macros::wasm_compat;
+use serde::Serialize;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use tokio::sync::oneshot;
 
-use tonk_schema::{RouteTarget, resolve_path};
+use super::{AppState, ClientId};
+use crate::TonkWorkerError;
+
+/// `POST /api/site` response: the site entity the client should render against.
+#[derive(Debug, Serialize)]
+pub struct SiteResponse {
+    /// The site entity URI (`site:<client-id>`).
+    pub site: String,
+}
 
 /// Read a header as a `&str`, empty when absent or non-ASCII.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
     headers
         .get(name)
@@ -29,71 +42,98 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
         .unwrap_or("")
 }
 
-/// Stamp the request's [`Site`] onto its site entity in the Level-0-resolved
-/// branch's overlay.
-///
-/// Best-effort and silent on every miss: no site id, an unparseable id, an
-/// unresolvable/non-space path, an unacquirable branch, or no matched route all
-/// skip stamping rather than fail the request — a miss only means a tab's site
-/// is absent, never a broken request. The profile (`/`, `/join`) is kept special
-/// and not routed here yet.
-pub async fn stamp_site(tonk: &crate::worker::TonkState, headers: &HeaderMap) {
-    use std::sync::Arc;
-    use tonk_schema::Site;
-
-    let site = header(headers, "x-tonk-site");
-    if site.is_empty() {
-        return;
+/// Register the requesting client's site: assert its [`Site`] and return the
+/// site id. The client id (browser-assigned, one per document) keys the site, so
+/// it is GC-able (the SW can reconcile against live clients) and needs no minted
+/// uuid. Idempotent — re-calling on navigation supersedes the cardinality-one
+/// fields in place.
+#[wasm_compat]
+pub async fn register_site(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    request: Request,
+) -> Result<Json<SiteResponse>, TonkWorkerError> {
+    let client_id = request
+        .extensions()
+        .get::<ClientId>()
+        .map(|c| c.0.clone())
+        .unwrap_or_default();
+    if client_id.is_empty() {
+        return Err(TonkWorkerError::Router("no client id on /api/site".into()));
     }
+    let site = format!("site:{client_id}");
+
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        let path = header(&headers, "x-tonk-path").to_owned();
+        let anchor = header(&headers, "x-tonk-hash").to_owned();
+        let tonk = state.read().await;
+        stamp_site(&tonk, &site, &path, anchor).await;
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    {
+        let _ = (&state, &headers);
+    }
+
+    Ok(Json(SiteResponse { site }))
+}
+
+/// Assert the [`Site`] for `site` (a `site:<client-id>` URI) from `path` on the
+/// Level-0-resolved branch's overlay: derive the replica, match the remaining
+/// path against the route table, and write `{path, anchor, replica, route,
+/// concept}` through the overlay builder (which schedules a poll so subscribers
+/// see the change — no inline whole-branch re-poll). Best-effort: a non-space
+/// path, an unacquirable branch, an absent replica, or no matched route all skip
+/// stamping rather than fail registration.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anchor: String) {
+    use tonk_schema::{RouteTarget, Site, resolve_path};
+
     let Ok(entity): Result<dialog_artifacts::Entity, _> = site.parse() else {
         return;
     };
-
-    let path = header(headers, "x-tonk-path");
     // Only spaces route here; the profile (`/`, `/join`) stays special for now.
     let Some(RouteTarget::Space { space, rest }) = resolve_path(path) else {
         return;
     };
-    let anchor = header(headers, "x-tonk-hash").to_owned();
 
     let branch = tonk.reactor.repository(&space.name).branch(&space.branch);
     let state = match branch.acquire(&tonk.operator).await {
         Ok(session) => session,
         Err(e) => {
-            tonk_common::log!("stamp_site: failed to acquire branch for {path}: {e}");
+            tonk_common::log!("register_site: failed to acquire branch for {path}: {e}");
             return;
         }
     };
 
-    // The tab's replica entity: the existing dialog `Origin` for this
-    // (profile, subject), QUERIED rather than re-derived — `tonk/replica` /
-    // `tonk:binder` live on it, and re-deriving risks drift (tonk's `Replica`
-    // and dialog's `Origin` no longer hash to the same entity). Skip stamping if
-    // it isn't on the branch yet.
     let Some(replica) = origin_entity(tonk, &state).await else {
         return;
     };
-
-    // Match the remaining (Level 1) path against the space's route table; the
-    // matched route entry carries the route model to mount.
     let Some((route, concept)) = match_route(tonk, &state, &rest).await else {
         return;
     };
 
-    // All fields are cardinality one, so asserting supersedes the prior values
-    // on this site entity rather than accumulating — a navigation re-stamp
-    // leaves exactly the latest location + route.
+    // Write through the overlay builder: it asserts into the session overlay and
+    // schedules a poll so subscribers are notified — the request dispatcher
+    // drains the poll once. Cardinality-one fields supersede in place, so a
+    // navigation re-call just updates this site's path/route/concept.
     let stamp = Site::new(entity, path.to_owned(), anchor, replica, route, concept);
-    state.state.assert_overlay(stamp);
-
-    tonk.reactor.schedule_poll(Arc::clone(&state.state));
-    tonk.reactor.run_scheduled_polls(&tonk.operator).await;
+    if let Err(e) = branch
+        .overlay()
+        .assert(stamp)
+        .write()
+        .perform(&tonk.operator)
+        .await
+    {
+        tonk_common::log!("register_site: overlay write failed for {path}: {e}");
+    }
 }
 
 /// The existing dialog [`Origin`](dialog_repository::schema::Origin) entity for
 /// this device's `(profile, subject)` on the branch — the entity `tonk/replica`
 /// and `tonk:binder` live on. Queried (not derived) so it stays correct even if
 /// tonk's and dialog's hashing drift. `None` if no origin is on the branch yet.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn origin_entity(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
@@ -124,10 +164,11 @@ async fn origin_entity(
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
 /// `tonk:route` table, returning the matched `(route entity, route model)`.
 ///
-/// Builds a fresh `matchit::Router` per request from the queried routes. Routes
-/// are inserted in stable entity-URI order so a `matchit` conflict (two
-/// structurally identical patterns) resolves deterministically — the loser is
-/// skipped with a log line. Returns `None` when nothing matches.
+/// Builds a fresh `matchit::Router` per call from the queried routes. Routes are
+/// inserted in stable entity-URI order so a `matchit` conflict (two structurally
+/// identical patterns) resolves deterministically — the loser is skipped with a
+/// log line. Returns `None` when nothing matches.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn match_route(
     tonk: &crate::worker::TonkState,
     state: &dialog_reactor::BranchSession,
@@ -154,7 +195,6 @@ async fn match_route(
 
     let mut router = matchit::Router::new();
     for route in &routes {
-        // The value is the (route entity, route model) the SW stamps on the site.
         let value = (route.this.clone(), route.concept.0.clone());
         if let Err(e) = router.insert(route.path.0.clone(), value) {
             tonk_common::log!(

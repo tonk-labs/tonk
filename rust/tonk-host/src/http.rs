@@ -81,6 +81,60 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
     Ok(body_text)
 }
 
+/// `POST /api/site` to register this document's site and read back the assigned
+/// `site:<client-id>` entity. Carries the context headers (notably `X-Tonk-Path`,
+/// so the SW can match the route); the SW keys the site on the requesting client
+/// id, so no body is needed. Returns the `site` field of the JSON response.
+pub(crate) async fn post_site() -> Result<String, ErrorDetail> {
+    ready::wait().await;
+    let init = RequestInit::new();
+    init.set_method("POST");
+    let headers = Headers::new()
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    headers
+        .append("accept", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    append_context_headers(&headers);
+    init.set_headers(&headers);
+
+    // Same-origin relative URL: the SW intercepts it. The sealed guest never
+    // calls this (the host does), so the opaque-origin caveat doesn't apply.
+    let request = Request::new_with_str_and_init("/api/site", &init)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
+    let win = window_handle()?;
+    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+        .await
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
+    let resp: Response = resp_value
+        .dyn_into()
+        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let text = JsFuture::from(
+        resp.text()
+            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read body: {e:?}")))?;
+    let body_text = text
+        .as_string()
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
+    if !resp.ok() {
+        return Err(ErrorDetail::new(
+            ErrorKind::Network,
+            format!("HTTP {}: {body_text}", resp.status()),
+        ));
+    }
+    // Pull the `site` field out of `{"site":"site:<id>"}` without a serde dep.
+    let value: js_sys::Object = js_sys::JSON::parse(&body_text)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse /api/site: {e:?}")))?
+        .dyn_into()
+        .map_err(|_| ErrorDetail::new(ErrorKind::Parse, "/api/site body not an object"))?;
+    js_sys::Reflect::get(&value, &JsValue::from_str("site"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "/api/site response missing `site`"))
+}
+
 /// Open an SSE subscription against `url`, sending `body` as the
 /// JSON request body, and return it as a uniform **frame stream**
 /// plus a teardown closure for [`crate::sse::Subscription`].

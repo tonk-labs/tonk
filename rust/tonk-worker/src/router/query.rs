@@ -87,8 +87,6 @@ async fn query_on_branch<'a>(
     headers: HeaderMap,
     request: Request,
 ) -> Result<Response, TonkWorkerError> {
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    super::session::stamp_site(tonk, &headers).await;
     let bytes = request
         .into_body()
         .collect()
