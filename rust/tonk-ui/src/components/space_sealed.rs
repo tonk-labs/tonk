@@ -58,14 +58,37 @@ pub fn TonkSpaceSealed() -> impl IntoView {
         Signal::derive_local(move || space_ref.get().map(|s| s.name).filter(|s| !s.is_empty()));
     crate::sync_controller::mount(sync_source);
 
+    // The route's own path — `/space/{space}` from the param, NOT
+    // `window.location`. On a client-side navigation the resource below fires
+    // before the router has committed the new URL, so reading `window.location`
+    // would carry the previous path and the SW would resolve the wrong route.
+    let route_path = Signal::derive_local(move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.space)
+            .filter(|s| !s.is_empty())
+            .map(|space| format!("/space/{space}"))
+    });
+
     // Register this page's SITE with the service worker before mounting the
     // sealed view. The navigation that loaded this page predates the SW, so the
     // SW never saw it — the page must announce itself via `POST /api/site`. That
     // asserts the tab's `tonk:site` (so the display has something to resolve) and
     // returns the `site:<client-id>` entity the SW keys it on, which the host
     // caches for the guest context. We gate the portal mount on it so the guest's
-    // `<tonk-display model=tonk:site>` never queries an unstamped site.
-    let site = LocalResource::new(|| async { tonk_host::bridge::ensure_site().await.ok() });
+    // `<tonk-display model=tonk:site>` never queries an unstamped site. The
+    // resource tracks `route_path`, so a client-side navigation re-registers the
+    // site for the new path.
+    let site = LocalResource::new(move || {
+        let path = route_path.get();
+        async move {
+            match path {
+                Some(path) => tonk_host::bridge::ensure_site(&path).await.ok(),
+                None => None,
+            }
+        }
+    });
 
     // The guest content is just the route's mount slot
     // (`.display-view-slot > tonk-display`) under the proxy `<tonk-host>`.

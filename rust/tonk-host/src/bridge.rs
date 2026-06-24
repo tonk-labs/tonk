@@ -91,15 +91,15 @@ pub fn site_id() -> String {
 /// `site:<client-id>` entity to render against. Idempotent: re-call on
 /// navigation to update the site in place.
 #[cfg(target_arch = "wasm32")]
-pub async fn ensure_site() -> Result<String, ErrorDetail> {
-    let site = crate::http::post_site().await?;
+pub async fn ensure_site(path: &str) -> Result<String, ErrorDetail> {
+    let site = crate::http::post_site(path).await?;
     SITE_ID.with(|cell| *cell.borrow_mut() = Some(site.clone()));
     Ok(site)
 }
 
 /// Native stub — the `/api/site` fetch is wasm-only.
 #[cfg(not(target_arch = "wasm32"))]
-pub async fn ensure_site() -> Result<String, ErrorDetail> {
+pub async fn ensure_site(_path: &str) -> Result<String, ErrorDetail> {
     Err(ErrorDetail::new(
         ErrorKind::Network,
         "ensure_site is only available on wasm32",

@@ -82,10 +82,14 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
 }
 
 /// `POST /api/site` to register this document's site and read back the assigned
-/// `site:<client-id>` entity. Carries the context headers (notably `X-Tonk-Path`,
-/// so the SW can match the route); the SW keys the site on the requesting client
-/// id, so no body is needed. Returns the `site` field of the JSON response.
-pub(crate) async fn post_site() -> Result<String, ErrorDetail> {
+/// `site:<client-id>` entity. The SW matches the route from `X-Tonk-Path`, so the
+/// caller passes the **route's** path explicitly rather than relying on
+/// `window.location` — on a client-side navigation the resource fires before the
+/// router has committed the new URL, so reading `window.location` would carry the
+/// stale (previous) path and the SW would resolve the wrong route. The SW keys
+/// the site on the requesting client id, so no body is needed. Returns the `site`
+/// field of the JSON response.
+pub(crate) async fn post_site(path: &str) -> Result<String, ErrorDetail> {
     ready::wait().await;
     let init = RequestInit::new();
     init.set_method("POST");
@@ -94,7 +98,9 @@ pub(crate) async fn post_site() -> Result<String, ErrorDetail> {
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
-    append_context_headers(&headers);
+    // The authoritative path comes from the caller (the route), not the context
+    // headers' `window.location` read — see the doc comment.
+    let _ = headers.append("x-tonk-path", path);
     init.set_headers(&headers);
 
     // Same-origin relative URL: the SW intercepts it. The sealed guest never

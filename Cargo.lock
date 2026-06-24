@@ -4874,7 +4874,6 @@ dependencies = [
  "serde_json",
  "tonk-common",
  "tonk-schema",
- "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
