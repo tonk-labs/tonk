@@ -3345,9 +3345,8 @@ mod tests {
             .await
             .expect("acquire main");
 
-        let entity: dialog_artifacts::Entity = tonk_schema::Replica::SELF_STATE_HERE
-            .parse()
-            .unwrap();
+        let entity: dialog_artifacts::Entity =
+            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()

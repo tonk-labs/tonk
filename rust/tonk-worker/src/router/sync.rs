@@ -824,7 +824,7 @@ mod overlay_tests {
     use dialog_query::{Output as _, Query, Term};
     use tonk_schema::{petname, prelude::DidExt as _};
 
-    use crate::router::{api_router_with_state, tests::test_state, tests::put_repo};
+    use crate::router::{api_router_with_state, tests::put_repo, tests::test_state};
 
     #[dialog_common::test]
     async fn it_stamps_the_self_identity_overlay_on_load() {
@@ -841,9 +841,8 @@ mod overlay_tests {
             .await
             .unwrap();
 
-        let entity: dialog_artifacts::Entity = tonk_schema::Replica::SELF_STATE_HERE
-            .parse()
-            .unwrap();
+        let entity: dialog_artifacts::Entity =
+            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
         let rows: Vec<tonk_schema::ProfileIdentity> = session
             .handle()
             .query()
