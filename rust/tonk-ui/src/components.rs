@@ -7,8 +7,6 @@ use leptos::{logging::log, prelude::*};
 
 use crate::api;
 
-pub(crate) mod route;
-
 mod launcher;
 use launcher::*;
 

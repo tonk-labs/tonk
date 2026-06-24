@@ -92,6 +92,69 @@ pub mod sync {
     pub struct Status(pub Entity);
 }
 
+/// Attributes for the `tonk:site` concept — a tab's location and matched route.
+///
+/// Keyed on the per-tab `site` entity (the `X-Tonk-Site` value, a `site:<uuid>`
+/// parsed to an [`Entity`]), stamped by the service worker onto the
+/// Level-0-resolved branch's overlay. All cardinality one: a navigation
+/// re-stamps the same entity and supersedes, so the site always reflects the
+/// tab's latest location + route. Route models pick whichever of these they
+/// need (e.g. `replica`) as their own fields, so they resolve on the site entity.
+///
+/// [`Entity`]: dialog_artifacts::Entity
+pub mod site {
+    use super::{Attribute, Entity};
+
+    /// The matched document path on this site.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+
+    /// The document fragment (URL hash) on this site.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Anchor(pub String);
+
+    /// The active replica entity for this site (this device's replica of the
+    /// space the tab is on).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Replica(pub Entity);
+
+    /// The matched route entity (the route-table entry that matched the path).
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Route(pub Entity);
+
+    /// The matched route's concept — the model the shell mounts on the site.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.site")]
+    #[cardinality(one)]
+    pub struct Concept(pub Entity);
+}
+
+/// Attributes for the durable `tonk:route` table the SW reads to build its
+/// matchit router: a path pattern → the route model to mount.
+pub mod route {
+    use super::{Attribute, Entity};
+
+    /// The axum/matchit path pattern, fed to `matchit::insert`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route")]
+    #[cardinality(one)]
+    pub struct Path(pub String);
+
+    /// The route model to mount when this path matches.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.route")]
+    #[cardinality(one)]
+    pub struct Concept(pub Entity);
+}
+
 /// Attributes for transient *command* concepts — the effect triggers
 /// dispatched to typed-Rust handlers after a commit. A command is a
 /// plain concept marked transient; these are the fields its triggers

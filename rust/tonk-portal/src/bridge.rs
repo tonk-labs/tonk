@@ -115,6 +115,21 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   var resolveReady; var ready=new Promise(function(r){resolveReady=r;});
   var ch=new MessageChannel(), port=ch.port1;
   function mint(){return "r"+(++nextId);}
+  // The request-context headers every relayed /api fetch carries, so the SW can
+  // tie the request to this tab's SITE and route/contain it. Site, path, and hash
+  // come from the injected context (the host's site id + the host's location;
+  // the guest's own location is about:srcdoc). They are explicit headers because
+  // a service worker reads request.headers, which never includes Referer (the
+  // browser exposes it only as request.referrer, not as a header). Returns
+  // [[name,value]] pairs prepended to any per-request headers.
+  function contextHeaders(){
+    var c=(window.tonk&&window.tonk.context)||{};
+    var headers=[];
+    if(c.site){ headers.push(["x-tonk-site",c.site]); }
+    if(c.path){ headers.push(["x-tonk-path",c.path]); }
+    if(c.hash){ headers.push(["x-tonk-hash",c.hash]); }
+    return headers;
+  }
   function call(type,extra){
     return ready.then(function(){
       return new Promise(function(resolve,reject){
@@ -134,16 +149,19 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     navigate:function(href){
       ready.then(function(){port.postMessage({v:1,type:"navigate",href:href});});
     },
-    // Same-origin fetch performed by the HOST: the opaque guest can't reach a
-    // same-origin, SW-routed `/api/...` endpoint itself. The host fetches the
-    // path on its real origin and TRANSFERS the response stream back; we
-    // rebuild a real `Response`. See the `window.fetch` override below — this
-    // is its transport, and host-relative URLs route through here.
-    fetch:function(path){
+    // Same-origin request performed by the HOST: the opaque guest can't reach a
+    // same-origin, SW-routed `/api/...` endpoint itself. The host issues the
+    // request on its real origin and streams the response back; we rebuild a
+    // real `Response`. The full request (method, headers, body) is forwarded so
+    // POST query/subscribe/transact route through here, not just GET. See the
+    // `window.fetch` override below.
+    fetch:function(path,req){
+      req=req||{};
       return ready.then(function(){
         return new Promise(function(resolve,reject){
           var id=mint(); pending.set(id,{resolve:resolve,reject:reject});
-          port.postMessage({v:1,type:"fetch",id:id,path:path});
+          port.postMessage({v:1,type:"fetch",id:id,path:path,
+            method:req.method||"GET",headers:req.headers||[],body:req.body});
         });
       });
     },
@@ -192,7 +210,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
               sp.onmessage=function(ev){
                 var m=ev.data; if(!m) return;
                 if(m.type==="chunk"){
-                  controller.enqueue(new Uint8Array(m.chunk));
+                  controller.enqueue(new Uint8Array(m.chunk,m.byteOffset||0,m.byteLength!==undefined?m.byteLength:m.chunk.byteLength));
                   // Ask for more while the consumer still has appetite.
                   if(controller.desiredSize>0){ sp.postMessage({type:"credit",n:1}); }
                 } else if(m.type==="close"){
@@ -239,10 +257,31 @@ const BOOTSTRAP_JS: &str = r#"(function(){
   // to the native fetch — notably the runtime bootstrap's own blob-URL module
   // imports, which must never be intercepted.
   var nativeFetch=window.fetch.bind(window);
+  // Normalize a fetch(input, init) call into {method, headers:[[k,v]], body}
+  // the relay can postMessage. `input` may be a string or a Request; `init`
+  // overrides Request fields. Body is read to text (our /api bodies are JSON
+  // strings); a Request body is consumed via .text() so we return a Promise.
+  function relayRequest(url,input,init){
+    var method="GET", headers=contextHeaders(), bodyP=Promise.resolve(undefined);
+    var reqLike=(typeof input==="object"&&input)?input:null;
+    if(reqLike){ method=reqLike.method||method; }
+    if(init&&init.method){ method=init.method; }
+    var hsrc=(init&&init.headers)||(reqLike&&reqLike.headers);
+    if(hsrc){
+      if(typeof hsrc.forEach==="function"){ hsrc.forEach(function(v,k){headers.push([k,v]);}); }
+      else if(Array.isArray(hsrc)){ headers=headers.concat(hsrc); }
+      else { for(var k in hsrc){ if(Object.prototype.hasOwnProperty.call(hsrc,k)){headers.push([k,hsrc[k]]);} } }
+    }
+    if(init&&"body"in init){ bodyP=Promise.resolve(init.body); }
+    else if(reqLike&&!reqLike.bodyUsed&&reqLike.body){ bodyP=reqLike.clone().text(); }
+    return bodyP.then(function(body){
+      return tonk.fetch(url,{method:method,headers:headers,body:body});
+    });
+  }
   window.fetch=function(input,init){
     var url=(typeof input==="string")?input:(input&&input.url)||"";
     if(url.charAt(0)==="/"&&url.charAt(1)!=="/"){
-      return tonk.fetch(url);
+      return relayRequest(url,input,init);
     }
     return nativeFetch(input,init);
   };
@@ -401,7 +440,7 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // version), so the guest loads fully; SWR refreshes the manifest in the
     // background and the next load picks up the new build.
     let manifest: GuestManifest = {
-        let text = fetch_manifest_text("/guest/manifest.json").await?;
+        let text = fetch_text("/guest/manifest.json").await?;
         serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
     };
 
@@ -591,33 +630,6 @@ async fn resp_text(resp: web_sys::Response) -> Result<String, String> {
     text.as_string().ok_or_else(|| "text not a string".into())
 }
 
-/// Fetch the guest manifest network-first, falling back to cache offline.
-///
-/// The manifest names the current build's hashed assets. If a STALE cached
-/// manifest were used while online, it could name a previous build's hashes
-/// that the server no longer has — and a missing hashed asset returns the
-/// SPA fallback (HTTP 200 `text/html`), which then blows up wasm-instantiate
-/// with a bad magic word. So online we force the network (`cache: "reload"`)
-/// to stay in lock-step with the served assets; if that throws (offline), we
-/// fall back to the SW-cached copy, whose assets are also cached. Either way
-/// manifest and assets agree.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_manifest_text(url: &str) -> Result<String, String> {
-    let win = window().ok_or("no window")?;
-    let init = web_sys::RequestInit::new();
-    init.set_cache(web_sys::RequestCache::Reload);
-    match wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init)).await {
-        Ok(value) => {
-            let resp = value
-                .dyn_into::<web_sys::Response>()
-                .map_err(|_| "manifest: not a Response".to_string())?;
-            resp_text(resp).await
-        }
-        // Network unreachable (offline): fall back to the SW-cached manifest.
-        Err(_) => fetch_text(url).await,
-    }
-}
-
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
     let resp = fetch(url).await?;
@@ -644,8 +656,8 @@ async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     // by the guest manifest), so the SW's stale-while-revalidate shell cache
     // can hold them immutably — a sealed `/space` works OFFLINE (populated on
     // the first online load, served from cache after) and a content change
-    // is a NEW URL (cache miss → fresh), never a stale hit. Only the manifest
-    // itself is fetched `no-store` (see `fetch_text_no_store`).
+    // is a NEW URL (cache miss → fresh), never a stale hit. The manifest rides
+    // the same SWR cache so an offline guest can still resolve its assets.
     let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
         .await
         .map_err(|e| format!("fetch {url}: {e:?}"))?;
@@ -928,13 +940,67 @@ fn handle_host_fetch(port: &MessagePort, data: &JsValue) {
     if !path.starts_with('/') || path.starts_with("//") {
         return post_error(port, "fetch-error", &id, "path must be host-relative");
     };
+    // The guest forwards the full request so POST query/subscribe/transact work,
+    // not just GET. Build a `Request` carrying its method, headers, and body.
+    let request = match build_relayed_request(&path, data) {
+        Ok(request) => request,
+        Err(e) => return post_error(port, "fetch-error", &id, &e),
+    };
     let port = port.clone();
     spawn_local(async move {
-        match fetch(&path).await {
+        match fetch_request(&request).await {
             Ok(resp) => post_fetch_response(&port, &id, &resp).await,
             Err(e) => post_error(&port, "fetch-error", &id, &e),
         }
     });
+}
+
+/// Build a `Request` for a relayed guest fetch from the envelope's
+/// `method`/`headers`/`body`. `headers` is an array of `[name, value]` pairs;
+/// `body` is a string (our `/api` bodies are JSON) or absent.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn build_relayed_request(path: &str, data: &JsValue) -> Result<web_sys::Request, String> {
+    let init = web_sys::RequestInit::new();
+    let method = get_str(data, "method").unwrap_or_else(|| "GET".to_owned());
+    init.set_method(&method);
+
+    let headers = web_sys::Headers::new().map_err(|e| format!("Headers: {e:?}"))?;
+    if let Ok(pairs) = Reflect::get(data, &"headers".into())
+        && let Ok(pairs) = pairs.dyn_into::<js_sys::Array>()
+    {
+        for pair in pairs.iter() {
+            let pair: js_sys::Array = match pair.dyn_into() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if let (Some(name), Some(value)) = (pair.get(0).as_string(), pair.get(1).as_string()) {
+                let _ = headers.append(&name, &value);
+            }
+        }
+    }
+    init.set_headers(&headers);
+
+    // Body — only for methods that carry one. A bodyless GET/HEAD with a body
+    // set throws, so only attach when present and non-null.
+    let body = Reflect::get(data, &"body".into()).unwrap_or(JsValue::UNDEFINED);
+    if !body.is_undefined() && !body.is_null() {
+        init.set_body(&body);
+    }
+
+    web_sys::Request::new_with_str_and_init(path, &init)
+        .map_err(|e| format!("Request {path}: {e:?}"))
+}
+
+/// Perform a host-side `fetch(Request)` and return the `Response`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn fetch_request(request: &web_sys::Request) -> Result<web_sys::Response, String> {
+    let win = window().ok_or("no window")?;
+    let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_request(request))
+        .await
+        .map_err(|e| format!("fetch: {e:?}"))?;
+    resp_value
+        .dyn_into::<web_sys::Response>()
+        .map_err(|_| "fetch: not a Response".to_string())
 }
 
 /// Post a `fetch-result` envelope carrying the response status + headers and
@@ -1110,19 +1176,30 @@ fn drain_body_to_port(port: &MessagePort, head: Object, body: &web_sys::Readable
                             let _ = host_port.post_message(&env);
                             return;
                         }
-                        // `value` is a `Uint8Array` (possibly a view at an
-                        // offset into a larger buffer). Copy its exact bytes
-                        // into a fresh `ArrayBuffer` and transfer THAT as the
-                        // chunk; the guest wraps it as `new Uint8Array(buffer)`.
-                        // (Transferring the original backing buffer would
-                        // detach it and could carry sibling bytes.)
+                        // `value` is a `Uint8Array`, possibly a view windowed
+                        // into a larger backing buffer (byteOffset/byteLength).
+                        // Transfer the backing buffer (zero-copy — the whole
+                        // point of a transfer) and carry the window offsets so
+                        // the guest reconstructs a view over exactly this
+                        // chunk's bytes, not the sibling bytes that may share
+                        // the buffer.
                         let view = js_sys::Uint8Array::new(
                             &Reflect::get(&chunk, &"value".into()).unwrap_or(JsValue::NULL),
                         );
-                        let buffer = view.slice(0, view.length()).buffer();
+                        let buffer = view.buffer();
                         let env = Object::new();
                         let _ = Reflect::set(&env, &"type".into(), &"chunk".into());
                         let _ = Reflect::set(&env, &"chunk".into(), &buffer);
+                        let _ = Reflect::set(
+                            &env,
+                            &"byteOffset".into(),
+                            &JsValue::from_f64(view.byte_offset() as f64),
+                        );
+                        let _ = Reflect::set(
+                            &env,
+                            &"byteLength".into(),
+                            &JsValue::from_f64(view.byte_length() as f64),
+                        );
                         let transfer = js_sys::Array::new();
                         transfer.push(&buffer);
                         let _ = host_port.post_message_with_transferable(&env, &transfer);
@@ -1254,8 +1331,23 @@ fn build_context(host: &Element) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
     let model = host.get_attribute("model").unwrap_or_default();
-    let origin = window()
-        .and_then(|w| w.location().origin().ok())
+    let location = window().map(|w| w.location());
+    let origin = location
+        .as_ref()
+        .and_then(|l| l.origin().ok())
+        .unwrap_or_default();
+    // The guest's own `window.location` is `about:srcdoc`; its REAL location is
+    // the parent's. Pass the parent's path + hash so the guest stamps them on
+    // its requests (the SW reads them to route/contain). `hash` especially:
+    // browsers strip the fragment from network requests, so the SW never sees
+    // it otherwise.
+    let path = location
+        .as_ref()
+        .and_then(|l| l.pathname().ok())
+        .unwrap_or_default();
+    let hash = location
+        .as_ref()
+        .and_then(|l| l.hash().ok())
         .unwrap_or_default();
     let repo = host
         .closest("tonk-repository")
@@ -1269,11 +1361,21 @@ fn build_context(host: &Element) -> Object {
         .flatten()
         .and_then(|el| el.get_attribute("name"))
         .unwrap_or_default();
+    // The host's per-tab `site` entity (`site:<uuid>`). The guest's data queries
+    // are ultimately issued by the host's `<tonk-host>` over HTTP, which stamps
+    // THIS site on `X-Tonk-Site` — so the SW keys this tab's `tonk:site` facts by
+    // it, not by the guest's own `guest:…` id. Guest content that renders the
+    // routing indirection binds `entity` to this so it resolves the facts the SW
+    // actually stamped.
+    let site = tonk_host::bridge::site_id();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
     let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
+    let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
+    let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
     let _ = Reflect::set(&context, &"repo".into(), &JsValue::from_str(&repo));
     let _ = Reflect::set(&context, &"branch".into(), &JsValue::from_str(&branch));
+    let _ = Reflect::set(&context, &"site".into(), &JsValue::from_str(&site));
     context
 }
 
@@ -2276,8 +2378,22 @@ mod tests {
             chunk_listener.clear();
             match get_str(&msg, "type").as_deref() {
                 Some("chunk") => {
+                    // Reconstruct the view over exactly the chunk's window, the
+                    // way the guest does — the buffer is transferred whole but
+                    // the bytes live in [byteOffset, byteOffset+byteLength).
                     let chunk = Reflect::get(&msg, &"chunk".into()).expect("chunk");
-                    let bytes = js_sys::Uint8Array::new(&chunk).to_vec();
+                    let offset = Reflect::get(&msg, &"byteOffset".into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as u32;
+                    let length = Reflect::get(&msg, &"byteLength".into())
+                        .ok()
+                        .and_then(|v| v.as_f64())
+                        .map(|n| n as u32)
+                        .unwrap_or_else(|| js_sys::ArrayBuffer::from(chunk.clone()).byte_length());
+                    let bytes =
+                        js_sys::Uint8Array::new_with_byte_offset_and_length(&chunk, offset, length)
+                            .to_vec();
                     collected.extend_from_slice(&bytes);
                 }
                 Some("close") => {
@@ -2293,5 +2409,48 @@ mod tests {
             "sigil-bytes",
             "the drained bytes must reassemble to the body",
         );
+    }
+
+    /// The relay forwards the FULL request (method, headers, body), not just a
+    /// GET path, so POST query/subscribe/transact route through it. This
+    /// verifies `build_relayed_request` reconstructs each from the envelope.
+    #[dialog_common::test]
+    async fn it_builds_a_relayed_request_with_method_headers_body() {
+        // Envelope shaped like what the guest posts: method + [[name,value]]
+        // header pairs + a string body.
+        let data = Object::new();
+        let _ = Reflect::set(&data, &"method".into(), &"POST".into());
+        let headers = Array::new();
+        let pair = Array::new();
+        pair.push(&"content-type".into());
+        pair.push(&"application/json".into());
+        headers.push(&pair);
+        let _ = Reflect::set(&data, &"headers".into(), &headers);
+        let _ = Reflect::set(&data, &"body".into(), &"{\"q\":1}".into());
+
+        let request =
+            build_relayed_request("/api/repository/x/branch/main/query", &data).expect("request");
+
+        assert_eq!(request.method(), "POST");
+        assert!(
+            request
+                .url()
+                .ends_with("/api/repository/x/branch/main/query"),
+            "url: {}",
+            request.url(),
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("content-type")
+                .ok()
+                .flatten()
+                .as_deref(),
+            Some("application/json"),
+        );
+        let body = JsFuture::from(request.text().expect("text()"))
+            .await
+            .expect("await body");
+        assert_eq!(body.as_string().as_deref(), Some("{\"q\":1}"));
     }
 }

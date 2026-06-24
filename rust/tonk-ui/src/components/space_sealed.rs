@@ -24,7 +24,7 @@ use leptos::prelude::*;
 use leptos_router::hooks::use_params;
 use leptos_router::params::Params;
 
-use crate::components::route::parse_space;
+use tonk_schema::parse_space;
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct SealedSpaceParams {
@@ -58,6 +58,49 @@ pub fn TonkSpaceSealed() -> impl IntoView {
         Signal::derive_local(move || space_ref.get().map(|s| s.name).filter(|s| !s.is_empty()));
     crate::sync_controller::mount(sync_source);
 
+    // The route's own path — `/space/{space}` from the param, NOT
+    // `window.location`. On a client-side navigation the resource below fires
+    // before the router has committed the new URL, so reading `window.location`
+    // would carry the previous path and the SW would resolve the wrong route.
+    let route_path = Signal::derive_local(move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.space)
+            .filter(|s| !s.is_empty())
+            .map(|space| format!("/space/{space}"))
+    });
+
+    // Register this page's SITE with the service worker before mounting the
+    // sealed view. The navigation that loaded this page predates the SW, so the
+    // SW never saw it — the page must announce itself via `POST /api/site`. That
+    // asserts the tab's `tonk:site` (so the display has something to resolve) and
+    // returns the `site:<client-id>` entity the SW keys it on, which the host
+    // caches for the guest context. We gate the portal mount on it so the guest's
+    // `<tonk-display model=tonk:site>` never queries an unstamped site. The
+    // resource tracks `route_path`, so a client-side navigation re-registers the
+    // site for the new path.
+    let site = LocalResource::new(move || {
+        let path = route_path.get();
+        async move {
+            // `tonk_host::bridge` is wasm-only (it talks to the service
+            // worker); on native the route has no SW to register with, so
+            // the resource resolves to `None` and the portal stays ungated.
+            #[cfg(target_arch = "wasm32")]
+            {
+                match path {
+                    Some(path) => tonk_host::bridge::ensure_site(&path).await.ok(),
+                    None => None,
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = path;
+                None::<String>
+            }
+        }
+    });
+
     // The guest content is just the route's mount slot
     // (`.display-view-slot > tonk-display`) under the proxy `<tonk-host>`.
     // The app stylesheet anchors the bare-display-route fill-height layout
@@ -70,11 +113,17 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // owner: `<tonk-display>` dispatches query/subscribe events to it and it
     // relays them over `window.tonk` to the outer bridge. It collapses to
     // `display: contents` (the app CSS `tonk-host:has(> .display-view-slot)`
-    // rule). Only `model` is needed — space/branch are annotated outer-side
-    // from the routing context.
+    // rule).
+    //
+    // The space renders the tab's SITE. The fixed `model=tonk:site` resolves the
+    // `tonk:site` instance the SW stamped on this tab's `site:<uuid>` entity; its
+    // view nests into the matched route's `{concept}` on the same entity, which
+    // resolves and renders. `data-tonk-entity="site"` is the seam — the guest
+    // proxy `<tonk-host>` fills `entity` with this tab's site id (minted inside
+    // the host, unknown when this markup is built).
     const CONTENT: &str = "<tonk-host>\
 <div class=\"display-view-slot\">\
-<tonk-display model=tonk/space></tonk-display>\
+<tonk-display model=tonk:site data-tonk-entity=\"site\"></tonk-display>\
 </div>\
 </tonk-host>";
 
@@ -95,11 +144,17 @@ pub fn TonkSpaceSealed() -> impl IntoView {
             >
                 <tonk-branch name=move || branch_name.get()>
                     <div class="display-view-slot">
-                        <tonk-portal
-                            runtime
-                            content=CONTENT
-                            style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"
-                        ></tonk-portal>
+                        // Gate the sealed portal on the site registration so the
+                        // guest never queries an unstamped site. `ensure_site`
+                        // also populates `site_id()`, which the portal threads
+                        // into the guest context.
+                        {move || site.get().flatten().map(|_site| view! {
+                            <tonk-portal
+                                runtime
+                                content=CONTENT
+                                style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"
+                            ></tonk-portal>
+                        })}
                     </div>
                 </tonk-branch>
             </tonk-repository>

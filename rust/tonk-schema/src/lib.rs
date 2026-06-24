@@ -86,6 +86,12 @@ pub use remote::*;
 pub mod tracking_branch;
 pub use tracking_branch::*;
 
+pub mod space;
+pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path};
+
+pub mod site;
+pub use site::{Route, Site};
+
 mod identity;
 pub use identity::{ProfileIdentity, ProfileName};
 

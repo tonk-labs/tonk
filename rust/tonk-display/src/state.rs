@@ -141,6 +141,12 @@ pub fn set(host: &Element, state: State) {
     // `default-view` after a `no-model`, so the informative callout does
     // not sit beside the rendered content.
     remove_absence_callout(host);
+    // The default-view notice coexists with rendered content, so it is
+    // cleared on every transition and re-injected only for `DefaultView`.
+    remove_default_notice(host);
+    if matches!(state, State::DefaultView) {
+        set_default_notice(host);
+    }
     // Project the matching slot child for this state and hide the rest.
     // `ready` / `default-view` render the view output, so no slot child
     // shows; `loading` / `empty` may have their own slot child.
@@ -149,6 +155,74 @@ pub fn set(host: &Element, state: State) {
         other => Some(other),
     };
     update_slot_children(host, project);
+}
+
+/// Sentinel marking the built-in *default-view* notice, kept distinct from the
+/// error and absence sentinels so they never clobber each other.
+#[cfg(target_arch = "wasm32")]
+const DEFAULT_NOTICE_ATTR: &str = "data-tonk-display-default-notice";
+
+/// Inject a `<wa-callout variant="warning">` telling the viewer that the model
+/// has no view of its own, so the built-in default presentation (the `_:_` view
+/// or the notation dump) is shown instead. Same shape as the absence callouts
+/// ([`set_absence`]) — a `circle-info` icon and a plain text label — but
+/// `warning` (theme yellow), not the `danger` red of a missing model/view: a
+/// model without its own view still renders something, so it is a heads-up, not
+/// an error. Unlike the absence callouts it coexists with the rendered fallback
+/// content rather than replacing it, so it is **prepended** (sits on top, above
+/// the default presentation). An embedder can suppress it with a
+/// `slot="default-view"` child.
+#[cfg(target_arch = "wasm32")]
+fn set_default_notice(host: &Element) {
+    // Let an embedder own the notice via `slot="default-view"`; if it did,
+    // skip the built-in one.
+    if host
+        .query_selector("[slot=\"default-view\"]")
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return;
+    }
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+    let Ok(callout) = document.create_element("wa-callout") else {
+        return;
+    };
+    let _ = callout.set_attribute("variant", "warning");
+    let _ = callout.set_attribute(DEFAULT_NOTICE_ATTR, "");
+    if let Ok(icon) = document.create_element("wa-icon") {
+        let _ = icon.set_attribute("slot", "icon");
+        let _ = icon.set_attribute("name", "circle-info");
+        let _ = callout.append_child(&icon);
+    }
+    // Name the model so the viewer knows exactly which one lacks a view.
+    let model = host.get_attribute("model").unwrap_or_default();
+    let text = if model.is_empty() {
+        "No view for this model; showing the default.".to_owned()
+    } else {
+        format!("No view for {model}; showing the default.")
+    };
+    let label = document.create_text_node(&text);
+    let _ = callout.append_child(&label);
+    // Prepend so the notice sits on top of the rendered default content.
+    let _ = host.insert_before(&callout, host.first_child().as_ref());
+}
+
+#[cfg(target_arch = "wasm32")]
+fn remove_default_notice(host: &Element) {
+    let selector = format!("[{DEFAULT_NOTICE_ATTR}]");
+    let Ok(found) = host.query_selector_all(&selector) else {
+        return;
+    };
+    for i in 0..found.length() {
+        if let Some(node) = found.item(i)
+            && let Some(el) = node.dyn_ref::<Element>()
+        {
+            el.remove();
+        }
+    }
 }
 
 /// Transition the host to a loud error `state` and surface a
@@ -269,11 +343,13 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
     };
     // A missing model/view concept is a config/authoring problem the
     // display can't render around → `danger`. A missing *instance*
-    // (`no-entity`) is expected and recoverable (the concept + view
-    // resolved fine) → `neutral`. The variant carries the severity; the
-    // icon is the same info glyph for every absence.
+    // (`no-entity`) is also `danger`: the entity is on the branch but
+    // does not match the concept (some required attribute is absent), so
+    // the diagnostic that accompanies it explains why the match failed —
+    // not a quiet still-syncing placeholder. The variant carries the
+    // severity; the icon is the same info glyph for every absence.
     let variant = match state {
-        State::NoModel | State::NoView => "danger",
+        State::NoModel | State::NoView | State::NoEntity => "danger",
         _ => "neutral",
     };
     let _ = callout.set_attribute("variant", variant);
@@ -320,6 +396,106 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
         let _ = query.set_attribute("class", "tonk-display-query");
         // Same sentinel so `remove_absence_callout` clears the query
         // sibling alongside the callout on the next transition.
+        let _ = query.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+        let _ = query.append_child(&body);
+        let _ = host.append_child(&query);
+    }
+}
+
+/// Loud `no-entity` diagnostic: the entity is on the branch but does not
+/// match its model concept because one or more required attributes are
+/// absent. Renders the concept as an entity dump where every required
+/// attribute is a line — present ones carry their value, missing ones
+/// render as a squiggled `_` with a `<wa-tooltip>` naming the absent
+/// attribute URI — so the viewer sees *why* the match failed without
+/// hand-querying.
+///
+/// `present` is `(field, value)` for attributes the entity carries;
+/// `missing` is `(field, attribute_uri)` for the absent ones. The
+/// notation source stays clean (`field: _`); the tooltip text rides
+/// out-of-band as a `data-error-<field>` attribute on the
+/// `<tonk-notation>`, which its renderer turns into the squiggle +
+/// tooltip. An embedder may still own the state via a `slot="no-entity"`
+/// child.
+#[cfg(target_arch = "wasm32")]
+pub fn set_no_entity_diagnostic(
+    host: &Element,
+    model: &str,
+    entity: &str,
+    present: &[(String, String)],
+    missing: &[(String, String)],
+) {
+    let _ = host.set_attribute("data-state", State::NoEntity.as_str());
+    remove_error_callout(host);
+    remove_absence_callout(host);
+
+    // An embedder may skin `no-entity` itself; if it did, show that child
+    // and skip the built-in diagnostic.
+    if update_slot_children(host, Some(State::NoEntity)) {
+        return;
+    }
+
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+
+    // The loud callout strip — danger, like a missing model/view.
+    if let Ok(callout) = document.create_element("wa-callout") {
+        let _ = callout.set_attribute("variant", "danger");
+        let _ = callout.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+        if let Ok(icon) = document.create_element("wa-icon") {
+            let _ = icon.set_attribute("slot", "icon");
+            let _ = icon.set_attribute("name", "circle-info");
+            let _ = callout.append_child(&icon);
+        }
+        let label = document.create_text_node("Concept mismatch: required attribute missing");
+        let _ = callout.append_child(&label);
+        let _ = host.append_child(&callout);
+    }
+
+    // Build the entity dump as notation: one line per required attribute,
+    // present values verbatim, missing ones as `_`. The renderer paints
+    // every blank as a variable; the `data-error-<line>` attributes below
+    // upgrade the missing ones to a squiggle + tooltip. Errors are keyed by
+    // **line index** (not field name) because notation renders arbitrary
+    // expressions where a field name is not unique — a line number points
+    // at exactly one row whatever the shape. Line 0 is the head; the first
+    // field (`this`) is line 1.
+    let mut source = format!("{model}:\n  this: {entity}\n");
+    let mut line = 2usize; // head (0), `this` (1) already emitted.
+    for (field, value) in present {
+        source.push_str(&format!("  {field}: {value}\n"));
+        line += 1;
+    }
+    let mut error_lines: Vec<(usize, String)> = Vec::new();
+    for (field, uri) in missing {
+        source.push_str(&format!("  {field}: _\n"));
+        error_lines.push((line, format!("Attribute {uri} is missing")));
+        line += 1;
+    }
+
+    let notation_el = match (
+        document.create_element("tonk-notation"),
+        document.create_element("script"),
+    ) {
+        (Ok(notation_el), Ok(script)) => {
+            let _ = script.set_attribute("type", "text/tonk-notation");
+            script.set_text_content(Some(&source));
+            let _ = notation_el.append_child(&script);
+            // Name each missing attribute out-of-band, keyed by line index,
+            // so the renderer can decorate exactly that line.
+            for (index, message) in &error_lines {
+                let _ = notation_el.set_attribute(&format!("data-error-{index}"), message);
+            }
+            Some(notation_el)
+        }
+        _ => None,
+    };
+
+    if let Some(body) = notation_el
+        && let Ok(query) = document.create_element("div")
+    {
+        let _ = query.set_attribute("class", "tonk-display-query");
         let _ = query.set_attribute(ABSENCE_CALLOUT_ATTR, "");
         let _ = query.append_child(&body);
         let _ = host.append_child(&query);
@@ -604,9 +780,11 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
-    fn it_injects_a_neutral_fallback_for_a_missing_entity() {
-        // `no-entity` is expected and recoverable (concept + view
-        // resolved, the instance just isn't there) → `neutral`.
+    fn it_injects_a_danger_fallback_for_a_missing_entity() {
+        // `no-entity` is loud (`danger`): the entity is on the branch but
+        // does not match the concept (a required attribute is absent), so
+        // the accompanying diagnostic explains why — not a quiet
+        // still-syncing placeholder.
         let host = host();
         set_absence(
             &host,
@@ -624,8 +802,8 @@ mod tests {
             .expect("no-entity injects a fallback callout");
         assert_eq!(
             callout.get_attribute("variant").as_deref(),
-            Some("neutral"),
-            "a missing instance is informative, not a danger",
+            Some("danger"),
+            "a concept mismatch is an error, not a quiet placeholder",
         );
     }
 

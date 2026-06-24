@@ -67,6 +67,78 @@ pub fn context_origin() -> Option<String> {
         .filter(|o| !o.is_empty() && o != "null")
 }
 
+thread_local! {
+    /// This document's `site` entity, as assigned by the service worker. The SW
+    /// derives it from the requesting client id (`site:<client-id>`) when the
+    /// page registers via `POST /api/site` — so it is browser-managed and GC-able
+    /// rather than a locally-minted uuid. `None` until [`ensure_site`] has run.
+    static SITE_ID: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// This document's `site` entity, as assigned by the SW — empty until
+/// [`ensure_site`] has registered the page. The shell reads the tab's
+/// location/route facts the SW stamped on this entity.
+pub fn site_id() -> String {
+    SITE_ID.with(|cell| cell.borrow().clone().unwrap_or_default())
+}
+
+/// Register this page's site with the service worker and cache the assigned id.
+///
+/// On first load the navigation predates the SW (the page is served before the
+/// SW exists), so the SW never sees a navigation for this document — the page
+/// must announce itself. `POST /api/site` (carrying the current path on
+/// `X-Tonk-Path`) makes the SW assert this tab's `tonk:site` and return the
+/// `site:<client-id>` entity to render against. Idempotent: re-call on
+/// navigation to update the site in place.
+#[cfg(target_arch = "wasm32")]
+pub async fn ensure_site(path: &str) -> Result<String, ErrorDetail> {
+    let site = crate::http::post_site(path).await?;
+    SITE_ID.with(|cell| *cell.borrow_mut() = Some(site.clone()));
+    Ok(site)
+}
+
+/// Native stub — the `/api/site` fetch is wasm-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub async fn ensure_site(_path: &str) -> Result<String, ErrorDetail> {
+    Err(ErrorDetail::new(
+        ErrorKind::Network,
+        "ensure_site is only available on wasm32",
+    ))
+}
+
+/// The request-context headers every host-relative `/api` request carries, so
+/// the SW can tie the request to its originating document and route/contain it:
+/// `X-Tonk-Path`, `X-Tonk-Hash`, `X-Tonk-Site`. The host does not interpret
+/// these; the SW decides how to use them.
+///
+/// The document path is stamped explicitly rather than relying on `Referer`: a
+/// service worker intercepting the request reads `request.headers`, which never
+/// includes `Referer` (the browser exposes it as the separate `request.referrer`
+/// property, not as a header), so the SW cannot see it. The host knows its own
+/// document path, so it carries it directly. The hash is stamped too (the
+/// network strips fragments), only when there is one.
+///
+/// Path/hash come from the bridge context in a sealed guest (its
+/// `window.location` is `about:srcdoc`, useless) and from `window.location` in
+/// the top document — the same source split as [`context_origin`].
+pub fn context_headers() -> Vec<(&'static str, String)> {
+    let path = context_field("path")
+        .or_else(|| window().and_then(|w| w.location().pathname().ok()))
+        .filter(|path| !path.is_empty());
+    let hash = context_field("hash")
+        .or_else(|| window().and_then(|w| w.location().hash().ok()))
+        .filter(|hash| !hash.is_empty());
+
+    let mut headers = vec![("x-tonk-site", site_id())];
+    if let Some(path) = path {
+        headers.push(("x-tonk-path", path));
+    }
+    if let Some(hash) = hash {
+        headers.push(("x-tonk-hash", hash));
+    }
+    headers
+}
+
 /// GET a host-relative path and return its body text. When the bridge is
 /// present (sealed guest), the fetch is performed by the HOST over the
 /// `window.tonk.fetch` relay — the opaque guest can't reach a same-origin,

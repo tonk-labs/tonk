@@ -133,7 +133,7 @@ fn project(this: &HtmlElement) {
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
-    let active = this.get_attribute("active").unwrap_or_default();
+    let active = active_sheet(this);
 
     // Collect sheets in `order` order.
     let mut sheets = collect_sheets(this);
@@ -194,6 +194,44 @@ fn project(this: &HtmlElement) {
     // The add control sits after the tabs: the "+" button (idle) or the
     // inline create form (while naming a new sheet).
     ensure_add_control(this, &strip, &document);
+}
+
+/// The active sheet id the binder should show. Read from the
+/// `[slot="active"]` child's text — the consuming view slots a
+/// `<tonk-display model=tonk:active-sheet>` there, which renders the
+/// binder entity's recorded `active` sheet id (and nothing when no
+/// `active` fact exists yet, e.g. a freshly joined replica). An empty
+/// result lets `project()` fall back to the first sheet by order.
+///
+/// Falls back to the `active` attribute when no slot is present, so a
+/// view that sets `active` directly (or an older markup) still works.
+/// The slot wins when both are present — it is the live, queryable
+/// source; the attribute is the static legacy path.
+fn active_sheet(this: &HtmlElement) -> String {
+    // The binder's own `active` attribute is the source of truth once set:
+    // the click handler sets it optimistically on selection, so switching is
+    // instant and immune to the persisted `tonk/active-sheet` fact changing
+    // underneath (which would otherwise yank the tab around). It behaves like
+    // a form control's value after the user has interacted.
+    if let Some(active) = this.get_attribute("active").filter(|s| !s.is_empty()) {
+        return active;
+    }
+
+    // Not yet set: seed it ONCE from the `[slot="active"]` display, which
+    // renders the persisted `tonk:active-sheet` id (the default / initial
+    // selection, like `defaultValue`). Writing it onto the attribute makes
+    // the binder own it from here on; a later slot change is ignored. An
+    // empty slot (no persisted active — a fresh replica) leaves the
+    // attribute unset so `project()` falls back to the first sheet.
+    if let Ok(Some(slot)) = this.query_selector(":scope > [slot=\"active\"]") {
+        let seed = slot.text_content().unwrap_or_default();
+        let seed = seed.trim();
+        if !seed.is_empty() {
+            let _ = this.set_attribute("active", seed);
+            return seed.to_owned();
+        }
+    }
+    String::new()
 }
 
 /// Toggle the view-supplied empty-state region. The consuming view
@@ -753,6 +791,12 @@ fn reobserve(observer: &MutationObserver, target: &HtmlElement) {
     init.set_child_list(true);
     init.set_subtree(true);
     init.set_attributes(true);
+    // The active-sheet `[slot="active"]` display surfaces the seed id as a
+    // text node that lands asynchronously; watch character data so the first
+    // resolve re-runs `project()` and seeds the binder's `active`. The
+    // observer is disconnected during `project()`, so the binder's own text
+    // writes don't re-trigger this.
+    init.set_character_data(true);
     let _ = observer.observe_with_options(target, &init);
 }
 

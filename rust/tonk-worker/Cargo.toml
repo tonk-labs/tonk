@@ -45,6 +45,7 @@ http-body-util = { workspace = true }
 ipld-core = { workspace = true }
 js-sys = { workspace = true }
 lsp-types = { workspace = true }
+matchit = { workspace = true }
 rand = { workspace = true }
 send_wrapper = { workspace = true }
 serde = { workspace = true }

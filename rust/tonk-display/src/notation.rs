@@ -254,9 +254,37 @@ fn render(host: &Element) {
         return;
     };
     let marks = collect_marks(&text);
-    if let Some(pre) = build_pre(&document, &text, &marks) {
+    // Per-line error annotations from `data-error-<line>` attributes — set
+    // by the no-entity diagnostic to flag a line whose value is a missing
+    // required attribute. Keyed by zero-based line index; the value is the
+    // tooltip message.
+    let line_errors = collect_line_errors(host);
+    if let Some(pre) = build_pre(&document, &text, &marks, &line_errors) {
         let _: Result<web_sys::Node, _> = host.append_child(&pre);
     }
+}
+
+/// Read the host's `data-error-<line>` attributes into a `line -> message`
+/// map. Each names a zero-based source line whose value span the renderer
+/// should decorate as an error (squiggle + tooltip). Empty for ordinary
+/// notation that carries no such attributes.
+fn collect_line_errors(host: &Element) -> std::collections::HashMap<usize, String> {
+    let mut errors = std::collections::HashMap::new();
+    let Some(attributes) = host.dyn_ref::<HtmlElement>().map(|el| el.attributes()) else {
+        return errors;
+    };
+    for i in 0..attributes.length() {
+        let Some(attr) = attributes.item(i) else {
+            continue;
+        };
+        let name = attr.name();
+        if let Some(suffix) = name.strip_prefix("data-error-")
+            && let Ok(line) = suffix.parse::<usize>()
+        {
+            errors.insert(line, attr.value());
+        }
+    }
+    errors
 }
 
 /// Return the source `<script>` child if present.
@@ -276,32 +304,115 @@ fn source_text(host: &Element) -> Option<String> {
     script.text_content()
 }
 
-fn build_pre(document: &Document, text: &str, marks: &[Mark]) -> Option<Element> {
+fn build_pre(
+    document: &Document,
+    text: &str,
+    marks: &[Mark],
+    line_errors: &std::collections::HashMap<usize, String>,
+) -> Option<Element> {
     let pre = document.create_element("pre").ok()?;
     let _ = pre.set_attribute("class", PRE_CLASS);
+    let line_starts = line_starts(text);
+    // A line carrying a `data-error-<line>` annotation flags a missing
+    // required attribute; the squiggle covers the whole `field: value`
+    // pair, so every span on that line — key, separator, and value alike —
+    // gets the error. The shared `text-decoration` on adjacent inline
+    // spans joins into one continuous underline. Leading indentation is
+    // whitespace-only and `error_for` skips it, so the squiggle starts at
+    // the key rather than the margin.
+    let error_for = |text: &str, from: usize| -> Option<&String> {
+        if text.trim().is_empty() {
+            return None;
+        }
+        line_errors.get(&line_of(from, &line_starts))
+    };
     let mut cursor = 0usize;
     for mark in marks {
         if mark.from > cursor {
-            append_span(document, &pre, Decoration::Plain, &text[cursor..mark.from]);
+            let gap = &text[cursor..mark.from];
+            append_span(
+                document,
+                &pre,
+                Decoration::Plain,
+                gap,
+                error_for(gap, cursor),
+            );
         }
-        append_span(document, &pre, mark.decoration, &text[mark.from..mark.to]);
+        let body = &text[mark.from..mark.to];
+        append_span(
+            document,
+            &pre,
+            mark.decoration,
+            body,
+            error_for(body, mark.from),
+        );
         cursor = mark.to;
     }
     if cursor < text.len() {
-        append_span(document, &pre, Decoration::Plain, &text[cursor..]);
+        let tail = &text[cursor..];
+        append_span(
+            document,
+            &pre,
+            Decoration::Plain,
+            tail,
+            error_for(tail, cursor),
+        );
     }
     Some(pre)
 }
 
-fn append_span(document: &Document, parent: &Element, decoration: Decoration, text: &str) {
+/// Byte offsets where each source line begins (line 0 starts at 0).
+fn line_starts(text: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (idx, b) in text.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(idx + 1);
+        }
+    }
+    starts
+}
+
+/// Zero-based line index containing byte `offset`.
+fn line_of(offset: usize, line_starts: &[usize]) -> usize {
+    match line_starts.binary_search(&offset) {
+        Ok(line) => line,
+        // `offset` falls inside line `i-1` (the largest start <= offset).
+        Err(i) => i.saturating_sub(1),
+    }
+}
+
+/// Append a decorated `<span>` for `text`. When `error` is `Some`, the
+/// span carries the `tonk-notation-error` squiggle class and a native
+/// `title` tooltip with the message, so hovering the flagged value
+/// explains what is wrong (e.g. the missing attribute URI). A plain
+/// `title` (not `<wa-tooltip>`) keeps the span inline inside the `<pre>` —
+/// `<wa-tooltip>` is `display: block` and would break the line flow.
+fn append_span(
+    document: &Document,
+    parent: &Element,
+    decoration: Decoration,
+    text: &str,
+    error: Option<&String>,
+) {
     if text.is_empty() {
         return;
     }
     let Ok(span) = document.create_element("span") else {
         return;
     };
-    if let Some(class) = decoration.class() {
-        let _ = span.set_attribute("class", class);
+    // The decoration class and the error class compose: an errored blank
+    // still reads as a variable, with the squiggle layered on top.
+    let class = match (decoration.class(), error.is_some()) {
+        (Some(base), true) => format!("{base} tonk-notation-error"),
+        (Some(base), false) => base.to_owned(),
+        (None, true) => "tonk-notation-error".to_owned(),
+        (None, false) => String::new(),
+    };
+    if !class.is_empty() {
+        let _ = span.set_attribute("class", &class);
+    }
+    if let Some(message) = error {
+        let _ = span.set_attribute("title", message);
     }
     span.set_text_content(Some(text));
     let _ = parent.append_child(&span);

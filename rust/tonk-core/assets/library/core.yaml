@@ -884,13 +884,13 @@ rule!:
 # sheet leaves `active` untouched (no match).
 rule!:
   description: Moves the binder's active pointer to the neighbour when the active sheet closes
-  assert!: tonk/binder
+  assert!: tonk/active-sheet
   when:
     - assert: workspace/close-sheet
       where: { sheet: ?sheet, next: ?active }
     - assert: tonk/replica
       where: { this: ?this, subject: ?subject }
-    - assert: tonk/binder
+    - assert: tonk/active-sheet
       where: { this: ?this, active: ?sheet }
 
 # The sheet-mount view (default view for `workspace/sheet`): wraps the
@@ -1387,10 +1387,10 @@ concept!: &space
       as: entity
 
 
-# Set the binder shell as the space's default view. The display route
-# mounts `<tonk-display model="tonk/space">`; this alias resolves it to
-# `tonk:binder`, so directory mode renders the `tonk:shell` view (the
-# topbar over the sheet binder) for the device's replica binder.
+# Set the binder shell as the space's default view. The space route mounts
+# `<tonk-display entity={replica} model=tonk/space>`; this alias resolves
+# `tonk/space` to `tonk:binder`, so the single-mode `tonk:shell` view (the topbar
+# over the sheet binder) renders for that one replica's binder.
 name!:
   this: id:tonk/space
   entity: tonk:binder
@@ -1471,17 +1471,17 @@ rule!:
         order: ?order
 
 rule!:
-  description: Activates the freshly created sheet on the binder
-  assert!: tonk/binder
+  description: Activates the freshly created sheet
+  assert!: tonk/active-sheet
   when:
     - assert: workspace/create-sheet
       where:
         this: ?active
         name: ?title
         order: ?order
-    # The binder is the replica's (bound through `tonk/replica`); point
-    # its `active` at the new sheet so creating lands the user on the
-    # new empty artifact (the head's `active` field unifies with the
+    # The active sheet is the replica's (bound through `tonk/replica`);
+    # point its `active` at the new sheet so creating lands the user on
+    # the new empty artifact (the head's `active` field unifies with the
     # created sheet `?active`).
     - assert: tonk/replica
       where:
@@ -1525,6 +1525,119 @@ concept!: &tonk/sync
       cardinality: one
       as: entity
 
+# ============================================================
+# SITE — a tab's location and what it renders
+# ============================================================
+#
+# `tonk:site` is the per-tab entity (a `site:<uuid>` minted by the host). The
+# service worker stamps the tab's location + matched route on it; the rendering
+# shell reads them from it. Multiple tabs coexist as distinct site entities in
+# the same branch overlay, isolated by entity URI.
+
+concept!: &site
+  this: tonk:site
+  description: A tab's location and the route concept it renders.
+  with:
+    path:
+      description: Currently active path on this site.
+      the: xyz.tonk.site/path
+      cardinality: one
+      as: text
+    anchor:
+      description: Currently active anchor (URL hash) on this site.
+      the: xyz.tonk.site/anchor
+      cardinality: one
+      as: text
+    replica:
+      description: Currently active replica on this site.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+    route:
+      description: Matched route of this site.
+      the: xyz.tonk.site/route
+      cardinality: one
+      as: entity
+    concept:
+      description: Matched route's concept (the model the shell mounts).
+      the: xyz.tonk.site/concept
+      cardinality: one
+      as: entity
+
+# A site renders the route model it matched. The shell mounts a fixed
+# `<tonk-display entity=site:… model=tonk:site>`; this view nests into the
+# matched `{concept}` on the SAME site entity, so the route model
+# (e.g. `tonk:space/route`) resolves on the site (picking its `site/*` fields)
+# and its own view renders. One indirection: site → its matched route model.
+view!: &site/view
+  this: id:tonk:site/view
+  model: tonk:site
+  display: |
+    <tonk-display entity={this} model={concept} />
+
+# ============================================================
+# ROUTING — routes are models picked by the SW per tab
+# ============================================================
+#
+# A `route!` maps a path pattern to a route MODEL. The SW (Level 1) matches the
+# remaining path after the space prefix, picks the route model, and asserts the
+# tab's `tonk:site` with `concept` = that model. The guest mounts
+# `<tonk-display entity=site:… model={the matched concept}>`; the route model
+# resolves on the site entity (picking the `site/*` fields it needs) and its
+# view renders. Patterns use axum/matchit 0.8 brace syntax (`{section}`), fed to
+# `matchit::insert`.
+#
+# Route models are distinct PINNED concepts (`tonk:space/route`, …). Two routes
+# with the same field shape stay distinct by their pinned `this`, so their views
+# never collide — `model` discriminates.
+
+# The durable route table the SW reads to build its matchit router: a path
+# pattern → the route model to render. `route!` instances populate it.
+concept!: &route
+  this: tonk:route
+  description: A route — maps a path pattern to the model the SW mounts.
+  with:
+    path:
+      description: The axum/matchit path pattern.
+      the: xyz.tonk.route/path
+      cardinality: one
+      as: text
+    concept:
+      description: The route model to render when this path matches.
+      the: xyz.tonk.route/concept
+      cardinality: one
+      as: entity
+
+
+
+
+# ---- Route models and their views ----
+
+# The space's default page — a bare `/space/{name}/`. Picks the tab's `replica`
+# off the site entity and renders a view of it (the binder, by default).
+concept!: &space/route
+  this: tonk:space/route
+  description: The space's default page.
+  with:
+    replica:
+      description: The tab's active replica, picked off the site entity.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+
+view!: &space/route/view
+  this: id:tonk:space/route/view
+  model: tonk:space/route
+  display: |
+    <tonk-display entity={replica} model=tonk/space />
+
+# ---- Seeded routes (bootstrap) ----
+#
+# Built-in routes every space starts with. The SW matches against these.
+route!: &route/space
+  this: id:tonk:route/space
+  path: "/"
+  concept: tonk:space/route
 # The sync chip — the default view for `model: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's
 # <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"
@@ -1541,8 +1654,13 @@ view!: &sync/chip
       <button class="workspace__sync-resume" type="submit" form="pause-sync-form" aria-label="Resume sync" title="Resume sync"></button>
     </span>
 
-# what's up
-view/directory!:
+# The workspace shell — the single-mode view for `model: tonk:binder`. Rendered
+# for ONE concrete replica (the binder instance IS the replica entity), so
+# `{this}`/`{subject}`/`{active}` resolve to that tab's replica. The route mounts
+# it via `<tonk-display entity={replica} model=tonk/space>` (tonk/space aliases
+# tonk:binder), so the shell is scoped to this tab's replica, not folded over
+# every replica.
+view!:
   this: tonk:shell
   model: tonk:binder
   display: |
@@ -1560,6 +1678,12 @@ view/directory!:
         .workspace-directory {
           display: flex;
           flex-direction: column;
+          /* The view root owns its fill: the route gives the slot a
+             viewport box and the pass-through display chain flexes height
+             down to here, but the route indirection means this root is no
+             longer the slot's direct child, so it claims the viewport
+             height itself rather than relying on a positional app rule. */
+          min-height: 100dvh;
         }
         .workspace-directory > tonk-display,
         .workspace-directory > tonk-display > tonk-view {
@@ -1809,7 +1933,7 @@ view/directory!:
         <p class="share-dialog__note">Everyone who follows this link becomes a member of this space. The link stays active, so share it only with people you want to let in.</p>
       </wa-dialog>
 
-      <tonk-display model=workspace/sheet data-active={active} />
+      <tonk-display model=workspace/sheet data-binder={this} />
     </div>
 
 
@@ -2179,7 +2303,8 @@ view/directory!:
         }
       </style>
 
-      <tonk-sheet-binder active={dom.host/data-active} class="workspace__binder" onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
+      <tonk-sheet-binder class="workspace__binder" onactivate=workspace/activate-sheet onclose=workspace/close-sheet oncreate=workspace/create-sheet>
+        <tonk-display slot="active" entity={dom.host/data-binder} model=tonk:active-sheet><span slot="no-entity"></span></tonk-display>
         <div slot="empty" class="workspace-launchpad" hidden>
           <div class="workspace-launchpad__inner">
             <h1 class="workspace-launchpad__title">nothing here yet.</h1>
@@ -2203,12 +2328,8 @@ concept!: &tonk/binder
   this: tonk:binder
   description: A binder view of the the tonk replica
   with:
-    active:
-      description: Currently active sheet
-      the: xyz.tonk.binder/active
-      as: entity
     subject:
-      description: >
+      description: |
         The repository's subject DID. The binder and the replica share
         an entity, so the binder carries the replica's `subject` and the
         shell view can read `{subject}` directly to mount the
@@ -2216,40 +2337,42 @@ concept!: &tonk/binder
       the: dialog.origin/subject
       as: entity
 
+concept!: &tonk/active-sheet
+  this: tonk:active-sheet
+  description: A an active sheet on the binder
+  with:
+    active:
+      description: Currently active sheet
+      the: xyz.tonk.binder/active
+      as: entity
+
+# The active-sheet feed — the default view for `tonk:active-sheet`. The
+# shell slots `<tonk-display model=tonk:active-sheet>` into the binder's
+# `[slot="active"]`; this view renders just the active sheet id as bare
+# text, which `<tonk-sheet-binder>` reads to highlight the live tab. When
+# no `tonk/active-sheet` fact exists yet (a freshly created or joined
+# replica that never selected a tab), the model resolves nothing and the
+# slot stays empty, so the binder falls back to the first sheet by order.
+view!:
+  this: id:active-sheet/feed
+  model: tonk:active-sheet
+  display: |
+    {active}
+
 # Tab selection: when an `activate-sheet` command fires, point the
-# binder's `active` at the clicked sheet (replacing the prior
-# selection). The binder is the replica's (one per device, bound
-# through `tonk/replica`), so the command needs only the sheet - no
-# binder id plumbed through the DOM. Mirrors the close/create rules.
+# active sheet at the clicked one (replacing the prior selection). The
+# active sheet is the replica's (one per device, bound through
+# `tonk/replica`), so the command needs only the sheet — no binder id
+# plumbed through the DOM. Mirrors the close/create rules. The slotted
+# `<tonk-display model=tonk:active-sheet>` reads this back to light the
+# live tab.
 rule!:
-  assert!: tonk/binder
+  assert!: tonk/active-sheet
   when:
     - assert: workspace/activate-sheet
       where: { sheet: ?active }
     - assert: tonk/replica
       where: { this: ?this, subject: ?subject }
-
-# Sets active sheet of the binder to about:blank unless
-# it already has an active sheet. This ensures that every
-# replica also matches a binder model.
-rule!:
-  assert!: tonk/binder
-  when:
-    - assert: tonk/initialize
-      where:
-         this: ?init
-    - assert: tonk/replica
-      where:
-         this: ?this
-         subject: ?subject
-    - assert: ==
-      where:
-        this: ?active
-        is: about:blank
-  unless:
-    - assert: tonk/binder
-      where:
-        this: ?this
 
 rule!:
   assert!: tonk/repository

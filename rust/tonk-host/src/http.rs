@@ -22,6 +22,15 @@ fn window_handle() -> Result<Window, ErrorDetail> {
     window().ok_or_else(|| ErrorDetail::new(ErrorKind::Network, "no `window` available"))
 }
 
+/// Append the request-context headers (`X-Tonk-Path`/`X-Tonk-Hash`/
+/// `X-Tonk-Session`) so the SW can tie the request to its originating document.
+/// Best-effort: a failed append never blocks the request.
+fn append_context_headers(headers: &Headers) {
+    for (name, value) in crate::bridge::context_headers() {
+        let _ = headers.append(name, &value);
+    }
+}
+
 /// POST JSON `body` to `url` with `accept: application/json`,
 /// return the response body text. Errors out on non-2xx with a
 /// `Network` kind error carrying the status code.
@@ -41,6 +50,7 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 
@@ -69,6 +79,66 @@ pub(crate) async fn post_json(url: &str, body: &str) -> Result<String, ErrorDeta
         ));
     }
     Ok(body_text)
+}
+
+/// `POST /api/site` to register this document's site and read back the assigned
+/// `site:<client-id>` entity. The SW matches the route from `X-Tonk-Path`, so the
+/// caller passes the **route's** path explicitly rather than relying on
+/// `window.location` — on a client-side navigation the resource fires before the
+/// router has committed the new URL, so reading `window.location` would carry the
+/// stale (previous) path and the SW would resolve the wrong route. The SW keys
+/// the site on the requesting client id, so no body is needed. Returns the `site`
+/// field of the JSON response.
+pub(crate) async fn post_site(path: &str) -> Result<String, ErrorDetail> {
+    ready::wait().await;
+    let init = RequestInit::new();
+    init.set_method("POST");
+    let headers = Headers::new()
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Headers: {e:?}")))?;
+    headers
+        .append("accept", "application/json")
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    // The authoritative path comes from the caller (the route), not the context
+    // headers' `window.location` read — see the doc comment.
+    let _ = headers.append("x-tonk-path", path);
+    init.set_headers(&headers);
+
+    // Same-origin relative URL: the SW intercepts it. The sealed guest never
+    // calls this (the host does), so the opaque-origin caveat doesn't apply.
+    let request = Request::new_with_str_and_init("/api/site", &init)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("Request: {e:?}")))?;
+    let win = window_handle()?;
+    let resp_value = JsFuture::from(win.fetch_with_request(&request))
+        .await
+        .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("fetch: {e:?}")))?;
+    let resp: Response = resp_value
+        .dyn_into()
+        .map_err(|_| ErrorDetail::new(ErrorKind::Network, "fetch did not return Response"))?;
+    let text = JsFuture::from(
+        resp.text()
+            .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("text: {e:?}")))?,
+    )
+    .await
+    .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("read body: {e:?}")))?;
+    let body_text = text
+        .as_string()
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "body was not a string"))?;
+    if !resp.ok() {
+        return Err(ErrorDetail::new(
+            ErrorKind::Network,
+            format!("HTTP {}: {body_text}", resp.status()),
+        ));
+    }
+    // Pull the `site` field out of `{"site":"site:<id>"}` without a serde dep.
+    let value: js_sys::Object = js_sys::JSON::parse(&body_text)
+        .map_err(|e| ErrorDetail::new(ErrorKind::Parse, format!("parse /api/site: {e:?}")))?
+        .dyn_into()
+        .map_err(|_| ErrorDetail::new(ErrorKind::Parse, "/api/site body not an object"))?;
+    js_sys::Reflect::get(&value, &JsValue::from_str("site"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ErrorDetail::new(ErrorKind::Parse, "/api/site response missing `site`"))
 }
 
 /// Open an SSE subscription against `url`, sending `body` as the
@@ -108,6 +178,7 @@ pub(crate) async fn frame_stream(
     headers
         .append("content-type", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("content-type: {e:?}")))?;
+    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
     init.set_signal(Some(&abort.signal()));
@@ -250,6 +321,7 @@ pub(crate) async fn post_text(
     headers
         .append("accept", "application/json")
         .map_err(|e| ErrorDetail::new(ErrorKind::Network, format!("accept: {e:?}")))?;
+    append_context_headers(&headers);
     init.set_headers(&headers);
     init.set_body(&JsValue::from_str(body));
 

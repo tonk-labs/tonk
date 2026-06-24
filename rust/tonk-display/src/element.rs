@@ -1522,6 +1522,10 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
         // launchpad on. Single mode signals `no-entity` — that one row
         // is absent.
         let directory = s.directory;
+        // The resolved model concept's descriptor (parsed), so the
+        // no-entity diagnostic can name the concept's required attributes
+        // and probe which ones the entity is actually missing.
+        let descriptor = s.resolved_model.as_ref().map(|(_, value)| value.clone());
         let empty = serialize_conclusions(&[]);
         for slide in s.slides.values() {
             call_render(&slide.view_el, &empty);
@@ -1534,19 +1538,13 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
             state::set(host, State::Empty);
         } else {
             // Single mode: the one entity's row is absent. The embedder
-            // may slot `no-entity`; otherwise show the instance query that
-            // matched nothing, as notation keyed by the model concept.
-            let model = host.get_attribute("model").unwrap_or_default();
-            let entity = host.get_attribute("entity").unwrap_or_default();
-            state::set_absence(
-                host,
-                State::NoEntity,
-                "Not found",
-                &format!(
-                    r#"{model}:
-  this: {entity}"#
-                ),
-            );
+            // may slot `no-entity`; otherwise diagnose *why* the entity did
+            // not match the concept — probe each required attribute and
+            // report which are missing — then show that as the notation.
+            let host = host.clone();
+            spawn_local(async move {
+                diagnose_no_entity(&host, descriptor).await;
+            });
         }
         return;
     }
@@ -1581,6 +1579,86 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
         state::set(host, rendered);
     }
     dispatch_event(host, "tonk-display:result", Some(event_detail(&first)));
+}
+
+/// Explain why the single entity did not match its model concept.
+///
+/// The entity is on the branch but the concept query (a conjunction over
+/// every required attribute) matched nothing — so at least one required
+/// attribute is absent. A dialog query is all-or-nothing, so the failing
+/// conjunction can't say *which* attribute is missing; this probes each
+/// required attribute independently (one single-field query per `with:`
+/// entry) and reports the split: which the entity has (with their values)
+/// and which it lacks. That split is exactly the manual diagnosis a
+/// missing-instance otherwise forces — e.g. "tonk:binder requires
+/// `active`, `subject`; entity has `subject` but not `active`".
+///
+/// The result drives the loud `no-entity` absence: a structured summary
+/// on top, the raw present facts as notation below. A descriptor that
+/// isn't available (or has no `with:` map) falls back to the bare
+/// `model: / this:` notation — there is nothing to diff against.
+async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value>) {
+    let model = host.get_attribute("model").unwrap_or_default();
+    let entity = host.get_attribute("entity").unwrap_or_default();
+
+    // Without a descriptor `with:` map there is nothing to probe; keep the
+    // old bare notation so the state still renders something meaningful.
+    let with = descriptor
+        .as_ref()
+        .and_then(|d| d.get("with"))
+        .and_then(|w| w.as_object());
+    let Some(with) = with else {
+        state::set_absence(
+            host,
+            State::NoEntity,
+            "Not found",
+            &format!(
+                r#"{model}:
+  this: {entity}"#
+            ),
+        );
+        return;
+    };
+
+    // Probe each required attribute on its own: a one-field predicate
+    // pinned to this entity. A non-empty result means the entity carries
+    // that attribute (capture its value); an empty result means it is
+    // missing — the reason the whole-concept match failed. Missing rows
+    // carry the attribute URI (`the:`) so the diagnostic can name it.
+    let mut present: Vec<(String, String)> = Vec::new();
+    let mut missing: Vec<(String, String)> = Vec::new();
+    for (field, spec) in with {
+        let one = serde_json::json!({
+            "terms": { "this": entity, field: { "?": { "name": field } } },
+            "predicate": { "with": { field: spec } },
+        });
+        let value = match serde_json::from_value::<Query>(one).ok().as_ref() {
+            Some(query) => match to_body(query) {
+                Ok(body) => host_consumer::query(host, &body)
+                    .await
+                    .ok()
+                    .and_then(|result| first_field(&result, field).ok().flatten()),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        match value {
+            Some(value) => present.push((field.clone(), value)),
+            None => {
+                // The dialog attribute key (`the:`), so the tooltip can name
+                // exactly which attribute the entity lacks. Fall back to the
+                // field name if the descriptor omits it.
+                let uri = spec
+                    .get("the")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(field)
+                    .to_owned();
+                missing.push((field.clone(), uri));
+            }
+        }
+    }
+
+    state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing);
 }
 
 /// Refresh the trailing notation slide's source `<script>` with

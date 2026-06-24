@@ -242,11 +242,12 @@ body {
    through, no shadow so they read as flat outlined boxes. The
    default top/bottom *and* left/right borders are kept so cards
    look like proper containers. `appearance="plain"` opts out
-   entirely. Danger callouts are exempt — they need the loud
-   filled appearance Web Awesome ships by default so an error
-   surface reads as an alert, not just another bordered card. */
+   entirely. Status callouts (`danger`, `warning`) are exempt — they
+   keep the loud filled appearance Web Awesome's theme ships per
+   variant so an alert reads as an alert, not just another bordered
+   card. */
 wa-card:not([appearance="plain"]),
-wa-callout:not([appearance="plain"]):not([variant="danger"]) {
+wa-callout:not([appearance="plain"]):not([variant="danger"]):not([variant="warning"]) {
     background: transparent;
     box-shadow: none;
 }
@@ -315,8 +316,22 @@ tonk-repository.display-route,
     flex: 1 1 auto;
     min-height: 0;
 }
-.display-view-slot > tonk-display > tonk-view > * {
-    min-height: 100dvh;
+/* Route indirection pass-through: the `tonk:site` view nests into the matched
+   route view, which nests into the page model, so the page-view root sits a few
+   displays below the slot. Each level is a bare `<tonk-display>` rendered
+   directly inside a `<tonk-view>` (a pure pass-through, no wrapper) — flex-fill
+   those so the slot's height reaches the real page view. This targets ONLY the
+   pass-through chain: a content slide (carousel slide, board tile) is a NAMED
+   element under `tonk-view`, never a bare nested `tonk-display`, so its own
+   sizing is untouched. No viewport height is imposed here — the height flows by
+   flex from the slot, and each page-view root sets its own `100dvh` below, so
+   nothing stacks per indirection level. */
+.display-view-slot tonk-view > tonk-display,
+.display-view-slot tonk-view > tonk-display > tonk-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .display-view-slot:has(.workspace) {
@@ -1196,6 +1211,15 @@ tonk-notation .tonk-cm-entity {
 tonk-notation .tonk-cm-variable {
     color: var(--tonk-code-variable);
     font-style: italic;
+}
+/* A value flagged as a missing required attribute by the no-entity
+   diagnostic: a red wavy underline (the editor's "this is wrong" cue),
+   wrapped in a `<wa-tooltip>` that names the absent attribute on hover. */
+tonk-notation .tonk-notation-error {
+    text-decoration: underline wavy var(--wa-color-danger-fill-loud, #d33);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 3px;
+    cursor: help;
 }
 
 /* Evaluate results — two views over the same data:

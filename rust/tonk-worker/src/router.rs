@@ -53,6 +53,13 @@ pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBloc
 mod query;
 pub use query::QueryPath;
 
+// Level 0 routing lives in `tonk-schema` (shared with the UI); re-export it so
+// the SW's routing/containment code reads it locally.
+pub use tonk_schema::{DEFAULT_BRANCH, SpaceRef, parse_space};
+
+mod session;
+pub use session::SiteResponse;
+
 mod transact;
 pub use transact::{ProfileTransactPath, TransactPath, TransactResponse};
 
@@ -129,6 +136,11 @@ pub fn api_router_from_state(state: AppState) -> (Router, Arc<LspHub>) {
             "/api/profile/branch/{branch}/transact",
             post(transact::transact_profile),
         )
+        // Register the requesting client's site (per-tab navigation state).
+        // The page calls this on load and on each client-side navigation; the
+        // SW asserts the tab's `tonk:site` and returns the site id. Reads never
+        // stamp — see `router/session.rs`.
+        .route("/api/site", post(session::register_site))
         // Join an invite — creates a fresh replica or refreshes
         // access on an existing one. See `router/join.rs`.
         .route("/api/profile/join", post(join::join))

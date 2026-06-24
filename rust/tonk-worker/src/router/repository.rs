@@ -581,31 +581,34 @@ async fn run_invite(
         remote: AuthorizationRemote(remote),
     };
 
-    // Acquire the content branch through the reactor so the durable
-    // commit and the overlay write target the same cached branch the
-    // share view reads from.
-    let session = tonk
-        .reactor
+    // Write the private seed into the session overlay and schedule a poll
+    // of this branch so the change propagates even though it never commits
+    // durably. The seed never reaches replicated storage. `Seed` is
+    // cardinality-one keyed on the subject, so asserting supersedes any
+    // prior credential in place — no whole-overlay clear, which would also
+    // drop the tab's `tonk:site` fact and collapse the share view to "not
+    // found".
+    tonk.reactor
         .repository(repo_name)
         .branch(CONTENT_BRANCH)
-        .acquire(&tonk.operator)
+        .overlay()
+        .assert(Credential {
+            this: subject_entity,
+            seed: Seed(seed),
+        })
+        .write()
+        .perform(&tonk.operator)
         .await
-        .map_err(|e| TonkWorkerError::Internal(format!("failed to acquire content branch: {e}")))?;
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
+        })?;
 
-    // Write the private seed into the session overlay, then schedule a
-    // poll of this branch so the change propagates even though it never
-    // commits durably. The seed never reaches replicated storage; clearing
-    // first keeps exactly one live credential.
-    session.state.clear_overlay();
-    session.state.assert_overlay(Credential {
-        this: subject_entity,
-        seed: Seed(seed),
-    });
-    // Re-stamp state:self after clear_overlay wiped it — without this the
-    // topbar identity chip loses its data until the next sync_status poll.
+    // Ensure the self-identity overlay (`state:self`) is present so the
+    // topbar identity chip renders. The overlay builder above no longer
+    // clears the whole overlay (which previously wiped `state:self` and the
+    // tab's `tonk:site`), so this is a guarantee, not a recovery: if no
+    // sync-status poll has stamped it yet, this fills it in.
     crate::router::sync::publish_self_identity(&tonk, repo_name, CONTENT_BRANCH).await;
-    tonk.reactor
-        .schedule_poll(std::sync::Arc::clone(&session.state));
 
     // Assert the public authorization durably — committed **through the
     // reactor** so its cached branch sees the fact. The commit schedules
