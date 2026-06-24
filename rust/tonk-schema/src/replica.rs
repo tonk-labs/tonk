@@ -286,6 +286,12 @@ impl Replica {
     /// question.
     pub const SYNC_STATE_HERE: &'static str = "state:here";
 
+    /// The fixed entity the self-identity overlay is keyed on — a
+    /// well-known singleton so the topbar chip can subscribe without
+    /// resolving this device's membership entity. One space per page, so
+    /// a singleton suffices (same rationale as `SYNC_STATE_HERE`).
+    pub const SELF_STATE_HERE: &'static str = "state:self";
+
     /// `tonk/sync` `status` URI: up to date, nothing to do.
     pub const IDLE: &'static str = "sync:idle";
 

@@ -384,7 +384,8 @@ where
     // A member claiming their own invite is not provenance.
     let self_invite = invitation.inviter.0 == tonk.profile.did().this();
 
-    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    let member_name = MemberName::new(membership.this().clone(), display_name);
     let mut transaction = tonk
         .reactor
         .repository(key)
@@ -740,6 +741,61 @@ fn notify_navigate(client: Option<&crate::router::ClientId>, href: &str) {
         );
         if let Err(e) = client.post_message(&message) {
             log!("join: post_message(navigate) failed: {e:?}");
+        }
+    });
+}
+
+/// Post a `{ type: "sync" }` message to the originating client so it
+/// dispatches a `tonk:committed` window event, prompting the sync
+/// controller to push immediately instead of waiting for the heartbeat.
+///
+/// Mirrors [`notify_navigate`] exactly — fire-and-forget on a spawned
+/// task, no `TonkState` access, so the caller's held read lock is
+/// irrelevant.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) fn notify_sync(client: Option<&crate::router::ClientId>) {
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::{JsFuture, spawn_local};
+
+    let Some(client) = client else {
+        log!("notify_sync: no originating client; skipping prompt sync");
+        return;
+    };
+    let client_id = client.0.clone();
+
+    let global: web_sys::ServiceWorkerGlobalScope = match js_sys::global().dyn_into() {
+        Ok(g) => g,
+        Err(_) => {
+            log!("notify_sync: not in a service worker scope; skipping prompt sync");
+            return;
+        }
+    };
+
+    spawn_local(async move {
+        let client_value = match JsFuture::from(global.clients().get(&client_id)).await {
+            Ok(value) if !value.is_undefined() && !value.is_null() => value,
+            Ok(_) => {
+                log!("notify_sync: originating client {client_id} is gone; skipping");
+                return;
+            }
+            Err(e) => {
+                log!("notify_sync: clients.get failed: {e:?}");
+                return;
+            }
+        };
+        let Ok(client) = client_value.dyn_into::<web_sys::Client>() else {
+            log!("notify_sync: clients.get did not yield a Client; skipping");
+            return;
+        };
+
+        let message = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &message,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("sync"),
+        );
+        if let Err(e) = client.post_message(&message) {
+            log!("notify_sync: post_message(sync) failed: {e:?}");
         }
     });
 }

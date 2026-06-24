@@ -250,6 +250,33 @@ pub mod command {
         pub struct PauseSync(pub Entity);
     }
 
+    /// Attributes the `profile/rename` command reads from the identity
+    /// chip's `<tonk-editable>` commit event.
+    pub mod rename {
+        use super::super::Entity;
+        use super::Attribute;
+
+        /// The new name, read from `event.currentTarget.value` on commit
+        /// (blur/Enter) — the same read-path the repo-title editable uses.
+        /// The struct is named `Value` so the attribute is
+        /// `dom.event.current-target/value`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target")]
+        pub struct Value(pub String);
+
+        /// Per-command marker read from the editable's `data-rename`
+        /// attribute. Gives `profile/rename` an attribute the declarative
+        /// `tonk/rename-repository` transient does NOT carry, so a
+        /// repo-title edit (which also writes `current-target/value`)
+        /// never also decodes as a `ProfileRename`. An `Entity` because
+        /// the marker value (`tonk:profile`) carries a `:` — see the
+        /// invite marker note. Derived attribute:
+        /// `dom.event.current-target.dataset/rename`.
+        #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[domain("dom.event.current-target.dataset")]
+        pub struct Rename(pub Entity);
+    }
+
     /// Attributes the `tonk:join` command reads from the `<tonk-page>`
     /// `mount` event's `detail` — a flat, URL-shaped record (fields mirror
     /// the DOM `URL` interface). The service worker can't see the `#hash`,
@@ -280,6 +307,40 @@ pub mod command {
         #[domain("dom.event.detail")]
         pub struct Hash(pub String);
     }
+}
+
+/// Attributes on the transient self-identity overlay the topbar chip
+/// reads (`state:self`). Overlay-only — never persisted, never replicated.
+pub mod identity {
+    use super::{Attribute, Entity};
+
+    /// The self profile DID (feeds `<tonk-sigil did=>`). Derived
+    /// attribute: `xyz.tonk.identity/did`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.identity")]
+    pub struct Did(pub Entity);
+
+    /// The self display name (the editable chip label). Derived
+    /// attribute: `xyz.tonk.identity/name`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.identity")]
+    pub struct Name(pub String);
+}
+
+/// Attributes on the profile's own identity facts, written to the
+/// profile's meta branch (private, never replicated) and keyed by the
+/// profile DID entity.
+pub mod profile {
+    use super::Attribute;
+
+    /// The member's chosen display name override. Absent until the user
+    /// renames themselves; `tonk-worker` falls back to a deterministic
+    /// `petname` when it is missing. Cardinality-one (last write wins).
+    /// The struct is named `DisplayName` so the derived attribute is
+    /// `xyz.tonk.profile/display-name`.
+    #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    #[domain("xyz.tonk.profile")]
+    pub struct DisplayName(pub String);
 }
 
 /// Attributes that live on a repository's own `tonk/repository`

@@ -15,7 +15,7 @@
 
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
-use web_sys::{MessageEvent, window};
+use web_sys::{CustomEvent, CustomEventInit, MessageEvent, window};
 
 /// A handle owning the installed `message` listener. Dropping it (or calling
 /// [`remove`](NavigateListener::remove)) detaches the listener.
@@ -35,14 +35,22 @@ impl NavigateListener {
     }
 }
 
-/// Install a `navigator.serviceWorker` `message` listener that performs a
-/// navigation on `{ type: "navigate", href }`. Returns `None` when there is
-/// no service-worker container (e.g. a non-secure context or a test stub).
+/// Install a `navigator.serviceWorker` `message` listener that handles
+/// worker→page messages:
+/// - `{ type: "navigate", href }` — assigns `window.location`.
+/// - `{ type: "sync" }` — dispatches `tonk:committed` on `window` so the
+///   sync controller pushes immediately instead of waiting for the heartbeat.
+///
+/// Returns `None` when there is no service-worker container (e.g. a
+/// non-secure context or a test stub).
 pub(crate) fn install() -> Option<NavigateListener> {
     let container = service_worker_container()?;
     let closure = Closure::wrap(Box::new(move |event: MessageEvent| {
-        if let Some(href) = navigate_href(&event.data()) {
+        let data = event.data();
+        if let Some(href) = navigate_href(&data) {
             navigate_to(&href);
+        } else if is_sync_message(&data) {
+            dispatch_committed();
         }
     }) as Box<dyn FnMut(MessageEvent)>);
     container
@@ -67,6 +75,28 @@ fn navigate_href(data: &JsValue) -> Option<String> {
         return None;
     }
     Some(href)
+}
+
+/// Return `true` for a `{ type: "sync" }` message.
+fn is_sync_message(data: &JsValue) -> bool {
+    js_sys::Reflect::get(data, &JsValue::from_str("type"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .map(|kind| kind == "sync")
+        .unwrap_or(false)
+}
+
+/// Dispatch `tonk:committed` on `window` so the sync controller treats it
+/// like a local commit and pushes promptly. Keeps tonk-host decoupled from
+/// tonk-ui — no cross-crate dependency needed.
+fn dispatch_committed() {
+    let Some(win) = window() else { return };
+    let init = CustomEventInit::new();
+    init.set_bubbles(false);
+    init.set_cancelable(false);
+    if let Ok(event) = CustomEvent::new_with_event_init_dict("tonk:committed", &init) {
+        let _ = win.dispatch_event(&event);
+    }
 }
 
 /// Assign `window.location` to `href`, redirecting the page.
@@ -103,6 +133,16 @@ mod tests {
         object.into()
     }
 
+    fn sync_message() -> JsValue {
+        let object = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(
+            &object,
+            &JsValue::from_str("type"),
+            &JsValue::from_str("sync"),
+        );
+        object.into()
+    }
+
     /// `navigate_href` accepts only a `{ type: "navigate", href }` shape with
     /// a non-empty href; everything else yields `None` (so an unrelated SW
     /// message never navigates). We assert the parse, not the navigation —
@@ -128,6 +168,28 @@ mod tests {
             navigate_href(&JsValue::from_str("not an object")),
             None,
             "a non-object payload should yield None"
+        );
+    }
+
+    /// `is_sync_message` accepts only `{ type: "sync" }`; navigate and
+    /// unrelated messages yield `false`.
+    #[dialog_common::test]
+    async fn it_recognises_only_a_sync_message() {
+        assert!(
+            is_sync_message(&sync_message()),
+            "a sync message should be recognised"
+        );
+        assert!(
+            !is_sync_message(&message("navigate", "/space/abc")),
+            "a navigate message must not be treated as sync"
+        );
+        assert!(
+            !is_sync_message(&message("other", "")),
+            "an unrelated message must not be treated as sync"
+        );
+        assert!(
+            !is_sync_message(&JsValue::from_str("not an object")),
+            "a non-object payload should not be recognised as sync"
         );
     }
 }

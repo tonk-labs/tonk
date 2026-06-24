@@ -91,3 +91,9 @@ pub use space::{DEFAULT_BRANCH, RouteTarget, SpaceRef, parse_space, resolve_path
 
 pub mod site;
 pub use site::{Route, Site};
+
+mod identity;
+pub use identity::{ProfileIdentity, ProfileName};
+
+mod petname;
+pub use petname::petname;

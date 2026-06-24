@@ -20,8 +20,6 @@ mod default_remote;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod editable;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-mod invite;
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod origin;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod page;
@@ -31,7 +29,7 @@ mod sheet;
 // unit-tested natively; the custom elements inside are wasm-gated.
 mod sync;
 
-/// `<tonk-sheet-binder>`, `<tonk-page>`, `<tonk-invite>`,
+/// `<tonk-sheet-binder>`, `<tonk-page>`, `<tonk-origin>`,
 /// `<tonk-sync-state>` — the status pill that doubles as the pause/resume
 /// button — `<tonk-default-remote>`, and `<tonk-editable>`) with the page.
 /// Idempotent — calling more than once is harmless.
@@ -41,7 +39,6 @@ pub fn register() {
     binder::register();
     origin::register();
     page::register();
-    invite::register();
     sync::register();
     default_remote::register();
     editable::register();

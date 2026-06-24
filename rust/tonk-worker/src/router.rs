@@ -45,6 +45,8 @@ mod lsp_env;
 mod profile;
 pub use profile::{ProfileInfo, SpaceEntry};
 
+mod profile_name;
+
 mod evaluate;
 pub use evaluate::{CommitSummary, EvaluatePath, EvaluateResponse, QueryMatchBlock, QueryResult};
 

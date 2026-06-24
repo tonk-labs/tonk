@@ -603,6 +603,13 @@ async fn run_invite(
             TonkWorkerError::Internal(format!("failed to write credential overlay: {e}"))
         })?;
 
+    // Ensure the self-identity overlay (`state:self`) is present so the
+    // topbar identity chip renders. The overlay builder above no longer
+    // clears the whole overlay (which previously wiped `state:self` and the
+    // tab's `tonk:site`), so this is a guarantee, not a recovery: if no
+    // sync-status poll has stamped it yet, this fills it in.
+    crate::router::sync::publish_self_identity(&tonk, repo_name, CONTENT_BRANCH).await;
+
     // Assert the public authorization durably — committed **through the
     // reactor** so its cached branch sees the fact. The commit schedules
     // its own poll on the same branch; the dispatcher's drain coalesces it
@@ -727,6 +734,144 @@ impl crate::reactor::CommandHandler<crate::router::CommandEnv> for PauseSyncHand
             }
         })
     }
+}
+
+/// Post-commit handler for the [`ProfileRename`] command.
+///
+/// Fired when the topbar identity chip's `<tonk-editable>` commits a
+/// transient [`ProfileRename`]. It persists the new display name as a
+/// durable [`ProfileName`] override on the profile's meta branch, then
+/// re-stamps the self member's [`MemberName`] on the *origin* space's
+/// content branch so the current space's roster updates at once.
+///
+/// The new name is the only payload (read from `currentTarget.value`);
+/// the space to re-stamp is read from
+/// [`CommandEnv::origin`](crate::router::CommandEnv::origin), not a
+/// command field. An empty/whitespace name is a no-op — a member can't
+/// blank their own name out.
+///
+/// A custom handler (not a plain `Provider<ProfileRename>`) because it
+/// writes durable branch state the decoded command doesn't carry and
+/// targets the repo from the origin rather than a command field — like
+/// [`InviteHandler`]/[`PauseSyncHandler`].
+///
+/// [`ProfileRename`]: tonk_schema::command::ProfileRename
+/// [`ProfileName`]: tonk_schema::ProfileName
+/// [`MemberName`]: tonk_schema::MemberName
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub(crate) struct ProfileRenameHandler {
+    attributes: Vec<String>,
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl ProfileRenameHandler {
+    /// Cache `ProfileRename`'s trigger attributes (its `name` field) so
+    /// the registry indexes this handler under them.
+    pub(crate) fn new() -> Self {
+        use crate::reactor::Decode as _;
+        Self {
+            attributes: tonk_schema::command::ProfileRename::trigger_attributes(),
+        }
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+impl crate::reactor::CommandHandler<crate::router::CommandEnv> for ProfileRenameHandler {
+    fn trigger_attributes(&self) -> &[String] {
+        &self.attributes
+    }
+
+    fn matches(&self, facts: &crate::reactor::EntityFacts) -> bool {
+        use crate::reactor::Decode as _;
+        facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|this| tonk_schema::command::ProfileRename::decode(this, facts))
+            .is_some()
+    }
+
+    fn run(
+        &self,
+        facts: &crate::reactor::EntityFacts,
+        env: &crate::router::CommandEnv,
+    ) -> crate::reactor::RunFuture {
+        use crate::reactor::Decode as _;
+
+        // Decode synchronously (the caller still holds the lock), then
+        // hand the owned new name + an env clone to the `'static` future.
+        let name = facts
+            .first()
+            .map(|artifact| artifact.of.clone())
+            .and_then(|entity| tonk_schema::command::ProfileRename::decode(entity, facts))
+            .map(|command| command.name.0);
+        let key = env.origin().repo.clone();
+        let env = env.clone();
+
+        Box::pin(async move {
+            let Some(name) = name else {
+                return;
+            };
+            let name = name.trim();
+            // Don't let a member blank their own name out.
+            if name.is_empty() {
+                return;
+            }
+            log!("command ProfileRename repo={} name={}", key, name);
+
+            if let Err(error) = run_profile_rename(&env, &key, name).await {
+                log!("ProfileRename for repo '{}' failed: {}", key, error);
+            }
+        })
+    }
+}
+
+/// Persist the display-name override on the profile meta branch and
+/// re-stamp `MemberName` on the origin space's content branch.
+///
+/// Split out from [`ProfileRenameHandler::run`] so the `?` early-return
+/// funnels into the single `log!` there — the command future itself
+/// returns `()`.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+async fn run_profile_rename(
+    env: &crate::router::CommandEnv,
+    key: &str,
+    name: &str,
+) -> Result<(), TonkWorkerError> {
+    let tonk = env.state().read().await;
+    let profile_entity = tonk.profile.did().this();
+
+    // 1. Persist the override on the profile meta branch.
+    tonk.reactor
+        .profile_repository()
+        .branch(META_BRANCH)
+        .transaction()
+        .assert(tonk_schema::ProfileName::new(
+            profile_entity,
+            name.to_string(),
+        ))
+        .commit()
+        .perform(&tonk.operator)
+        .await
+        .map_err(|e| {
+            TonkWorkerError::Internal(format!("failed to persist profile name override: {e}"))
+        })?;
+
+    // 2. Re-stamp MemberName on the current space.
+    crate::router::profile_name::restamp_member_name(&tonk, key, name)
+        .await
+        .map_err(|e| TonkWorkerError::Internal(format!("failed to restamp member name: {e}")))?;
+
+    // 3. Re-stamp the self-identity overlay so the topbar chip reflects the
+    //    new name instantly without waiting for the next sync cycle.
+    crate::router::sync::publish_self_identity(&tonk, key, CONTENT_BRANCH).await;
+
+    // 4. Prompt an immediate push so peers see the new name without waiting
+    //    for the 20s heartbeat. Fire-and-forget: the held read lock is
+    //    released before the spawned task runs.
+    drop(tonk);
+    crate::router::join::notify_sync(env.client());
+
+    Ok(())
 }
 
 /// Toggle the durable `enabled` preference on the replica and publish the
@@ -1487,7 +1632,8 @@ where
     } else {
         MemberRole::member(membership.this().clone())
     };
-    let member_name = MemberName::new(membership.this().clone(), tonk.profile_name.clone());
+    let display_name = crate::router::profile_name::resolve_display_name(tonk).await;
+    let member_name = MemberName::new(membership.this().clone(), display_name);
 
     // Write through the *reactor's* cached content-branch handle, not a
     // fresh `repository.branch().open()`. Background sync pulls/publishes
@@ -2701,6 +2847,117 @@ mod tests {
         assert!(founder.name.is_some(), "founder is named");
     }
 
+    /// Build a one-entity transient `ProfileRename{this, name, marker}`
+    /// batch — the facts the identity chip's `<tonk-editable>` commit
+    /// asserts. Mirrors how `command::tests::ping_transient` hand-builds a
+    /// command transient via `the!`, carrying both the `name`
+    /// (`current-target/value`) and the `marker`
+    /// (`current-target.dataset/rename`) so it decodes as a `ProfileRename`.
+    fn profile_rename_transient(of: &str, name: &str) -> dialog_artifacts::Changes {
+        use dialog_artifacts::{Entity, Statement};
+        use dialog_query::the;
+
+        let entity: Entity = of.parse().expect("entity URI");
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("dom.event.current-target/value")
+            .of(entity.clone())
+            .is(name.to_string())
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/rename")
+            .of(entity)
+            .is("tonk:profile".parse::<Entity>().expect("marker URI"))
+            .assert(&mut changes);
+        changes
+    }
+
+    /// Read the self member's stamped name off the space's content
+    /// branch.
+    async fn self_member_name(state: &AppState, key: &str) -> Option<String> {
+        let tonk = state.read().await;
+        use dialog_repository::RepositoryExt as _;
+        let repository: dialog_repository::Repository = tonk
+            .profile
+            .repository(key)
+            .load()
+            .perform(&tonk.operator)
+            .await
+            .expect("repo loads");
+        let info = super::build_repository_info(&tonk, key, &repository).await;
+        info.members
+            .into_iter()
+            .find(|m| m.is_self)
+            .and_then(|m| m.name)
+    }
+
+    /// A `profile/rename` command persists the display-name override AND
+    /// re-stamps the self member's `MemberName` on the current space.
+    #[dialog_common::test]
+    async fn it_persists_the_override_and_restamps_the_current_space() {
+        let (_app, state, key) = fresh_repo("test-profile-rename").await;
+
+        // Drive the transient command through the real dispatcher, scoped
+        // to the space's content branch — mirrors
+        // `command::tests::it_dispatches_every_matched_command_in_a_batch`.
+        let changes = profile_rename_transient("did:key:zRenameCmd", "brave-lynx");
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: key.clone(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        // Override is on the profile meta branch.
+        {
+            let tonk = state.read().await;
+            assert_eq!(
+                crate::router::profile_name::resolve_display_name(&tonk).await,
+                "brave-lynx",
+                "the override is persisted on the profile meta branch",
+            );
+        }
+
+        // The current space's roster now reads the re-stamped name.
+        assert_eq!(
+            self_member_name(&state, &key).await.as_deref(),
+            Some("brave-lynx"),
+            "the self member's MemberName is re-stamped on the space",
+        );
+    }
+
+    /// An empty/whitespace name is a no-op: the prior name stands (a
+    /// member can't blank their own name out).
+    #[dialog_common::test]
+    async fn it_ignores_a_whitespace_only_rename() {
+        let (_app, state, key) = fresh_repo("test-profile-rename-empty").await;
+
+        // The founder is already named at create time; capture it.
+        let before = self_member_name(&state, &key)
+            .await
+            .expect("founder is named");
+
+        let changes = profile_rename_transient("did:key:zRenameEmpty", "   ");
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: key.clone(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        assert_eq!(
+            self_member_name(&state, &key).await,
+            Some(before),
+            "a whitespace-only rename leaves the name unchanged",
+        );
+    }
+
     /// Seed a notation document into the repo's `main` branch.
     async fn seed(state: &AppState, repo: &str, document: &str) {
         let guard = state.read().await;
@@ -3025,5 +3282,92 @@ mod tests {
         assert_eq!(names.len(), 1, "exactly the founder's name");
         assert_eq!(names[0].this, memberships[0].this);
         assert!(!names[0].name.0.is_empty(), "a non-empty display name");
+    }
+
+    /// Build a one-entity transient `Invite{this, time, marker}` batch —
+    /// the facts the share form's submit event asserts. Carries both the
+    /// `time-stamp` (`dom.event/time-stamp`) and the `marker`
+    /// (`dom.event.current-target.dataset/invite`) so it decodes as an
+    /// `Invite` command and not a `PauseSync` (identical `{this, time}`
+    /// shape otherwise).
+    fn invite_transient(of: &str) -> dialog_artifacts::Changes {
+        use dialog_artifacts::{Entity, Statement};
+        use dialog_query::the;
+
+        let entity: Entity = of.parse().expect("entity URI");
+        let mut changes = dialog_artifacts::Changes::new();
+        the!("dom.event/time-stamp")
+            .of(entity.clone())
+            .is(1.0_f64)
+            .assert(&mut changes);
+        the!("dom.event.current-target.dataset/invite")
+            .of(entity)
+            .is("tonk:invite".parse::<Entity>().expect("marker URI"))
+            .assert(&mut changes);
+        changes
+    }
+
+    /// Dispatching a `tonk:invite` command clears the overlay (to rotate
+    /// the credential) but MUST re-stamp `state:self` so the topbar chip
+    /// retains the member's identity data. Without the re-stamp the chip
+    /// goes blank until the next sync_status poll (~20 s).
+    #[dialog_common::test]
+    async fn it_restamps_state_self_after_invite_clears_the_overlay() {
+        use dialog_query::{Output as _, Query, Term};
+
+        let (_app, state, key) = fresh_repo("test-invite-restamps-self").await;
+
+        // Prime state:self so we have something to lose.
+        {
+            let tonk = state.read().await;
+            crate::router::sync::publish_self_identity(&tonk, &key, "main").await;
+        }
+
+        // Drive the invite command through the real dispatcher — same path
+        // the share modal takes.
+        let changes = invite_transient("did:key:zInviteCmd");
+        crate::router::dispatch(
+            &state,
+            crate::router::CommandOrigin {
+                repo: key.clone(),
+                branch: "main".to_string(),
+                client: None,
+            },
+            changes,
+        )
+        .await;
+
+        // state:self must still be present on the overlay after run_invite's
+        // clear_overlay + re-stamp sequence.
+        let tonk = state.read().await;
+        let session = tonk
+            .reactor
+            .repository(&key)
+            .branch("main")
+            .acquire(&tonk.operator)
+            .await
+            .expect("acquire main");
+
+        let entity: dialog_artifacts::Entity =
+            tonk_schema::Replica::SELF_STATE_HERE.parse().unwrap();
+        let rows: Vec<tonk_schema::ProfileIdentity> = session
+            .handle()
+            .query()
+            .with(session.overlay())
+            .select(Query::<tonk_schema::ProfileIdentity> {
+                this: Term::from(entity),
+                did: Term::var("did"),
+                name: Term::var("name"),
+            })
+            .perform(&tonk.operator)
+            .try_vec()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rows.len(),
+            1,
+            "state:self must be re-stamped after invite clears the overlay",
+        );
     }
 }
