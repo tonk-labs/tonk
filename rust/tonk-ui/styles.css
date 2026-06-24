@@ -1209,6 +1209,15 @@ tonk-notation .tonk-cm-variable {
     color: var(--tonk-code-variable);
     font-style: italic;
 }
+/* A value flagged as a missing required attribute by the no-entity
+   diagnostic: a red wavy underline (the editor's "this is wrong" cue),
+   wrapped in a `<wa-tooltip>` that names the absent attribute on hover. */
+tonk-notation .tonk-notation-error {
+    text-decoration: underline wavy var(--wa-color-danger-fill-loud, #d33);
+    text-decoration-skip-ink: none;
+    text-underline-offset: 3px;
+    cursor: help;
+}
 
 /* Evaluate results — two views over the same data:
    `.query-tree` (grouped `<wa-tree>`, concept → entity → field →

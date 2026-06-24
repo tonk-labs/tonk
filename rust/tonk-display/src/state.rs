@@ -343,11 +343,13 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
     };
     // A missing model/view concept is a config/authoring problem the
     // display can't render around → `danger`. A missing *instance*
-    // (`no-entity`) is expected and recoverable (the concept + view
-    // resolved fine) → `neutral`. The variant carries the severity; the
-    // icon is the same info glyph for every absence.
+    // (`no-entity`) is also `danger`: the entity is on the branch but
+    // does not match the concept (some required attribute is absent), so
+    // the diagnostic that accompanies it explains why the match failed —
+    // not a quiet still-syncing placeholder. The variant carries the
+    // severity; the icon is the same info glyph for every absence.
     let variant = match state {
-        State::NoModel | State::NoView => "danger",
+        State::NoModel | State::NoView | State::NoEntity => "danger",
         _ => "neutral",
     };
     let _ = callout.set_attribute("variant", variant);
@@ -394,6 +396,106 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
         let _ = query.set_attribute("class", "tonk-display-query");
         // Same sentinel so `remove_absence_callout` clears the query
         // sibling alongside the callout on the next transition.
+        let _ = query.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+        let _ = query.append_child(&body);
+        let _ = host.append_child(&query);
+    }
+}
+
+/// Loud `no-entity` diagnostic: the entity is on the branch but does not
+/// match its model concept because one or more required attributes are
+/// absent. Renders the concept as an entity dump where every required
+/// attribute is a line — present ones carry their value, missing ones
+/// render as a squiggled `_` with a `<wa-tooltip>` naming the absent
+/// attribute URI — so the viewer sees *why* the match failed without
+/// hand-querying.
+///
+/// `present` is `(field, value)` for attributes the entity carries;
+/// `missing` is `(field, attribute_uri)` for the absent ones. The
+/// notation source stays clean (`field: _`); the tooltip text rides
+/// out-of-band as a `data-error-<field>` attribute on the
+/// `<tonk-notation>`, which its renderer turns into the squiggle +
+/// tooltip. An embedder may still own the state via a `slot="no-entity"`
+/// child.
+#[cfg(target_arch = "wasm32")]
+pub fn set_no_entity_diagnostic(
+    host: &Element,
+    model: &str,
+    entity: &str,
+    present: &[(String, String)],
+    missing: &[(String, String)],
+) {
+    let _ = host.set_attribute("data-state", State::NoEntity.as_str());
+    remove_error_callout(host);
+    remove_absence_callout(host);
+
+    // An embedder may skin `no-entity` itself; if it did, show that child
+    // and skip the built-in diagnostic.
+    if update_slot_children(host, Some(State::NoEntity)) {
+        return;
+    }
+
+    let Some(document) = window().and_then(|w| w.document()) else {
+        return;
+    };
+
+    // The loud callout strip — danger, like a missing model/view.
+    if let Ok(callout) = document.create_element("wa-callout") {
+        let _ = callout.set_attribute("variant", "danger");
+        let _ = callout.set_attribute(ABSENCE_CALLOUT_ATTR, "");
+        if let Ok(icon) = document.create_element("wa-icon") {
+            let _ = icon.set_attribute("slot", "icon");
+            let _ = icon.set_attribute("name", "circle-info");
+            let _ = callout.append_child(&icon);
+        }
+        let label = document.create_text_node("Concept mismatch: required attribute missing");
+        let _ = callout.append_child(&label);
+        let _ = host.append_child(&callout);
+    }
+
+    // Build the entity dump as notation: one line per required attribute,
+    // present values verbatim, missing ones as `_`. The renderer paints
+    // every blank as a variable; the `data-error-<line>` attributes below
+    // upgrade the missing ones to a squiggle + tooltip. Errors are keyed by
+    // **line index** (not field name) because notation renders arbitrary
+    // expressions where a field name is not unique — a line number points
+    // at exactly one row whatever the shape. Line 0 is the head; the first
+    // field (`this`) is line 1.
+    let mut source = format!("{model}:\n  this: {entity}\n");
+    let mut line = 2usize; // head (0), `this` (1) already emitted.
+    for (field, value) in present {
+        source.push_str(&format!("  {field}: {value}\n"));
+        line += 1;
+    }
+    let mut error_lines: Vec<(usize, String)> = Vec::new();
+    for (field, uri) in missing {
+        source.push_str(&format!("  {field}: _\n"));
+        error_lines.push((line, format!("Attribute {uri} is missing")));
+        line += 1;
+    }
+
+    let notation_el = match (
+        document.create_element("tonk-notation"),
+        document.create_element("script"),
+    ) {
+        (Ok(notation_el), Ok(script)) => {
+            let _ = script.set_attribute("type", "text/tonk-notation");
+            script.set_text_content(Some(&source));
+            let _ = notation_el.append_child(&script);
+            // Name each missing attribute out-of-band, keyed by line index,
+            // so the renderer can decorate exactly that line.
+            for (index, message) in &error_lines {
+                let _ = notation_el.set_attribute(&format!("data-error-{index}"), message);
+            }
+            Some(notation_el)
+        }
+        _ => None,
+    };
+
+    if let Some(body) = notation_el
+        && let Ok(query) = document.create_element("div")
+    {
+        let _ = query.set_attribute("class", "tonk-display-query");
         let _ = query.set_attribute(ABSENCE_CALLOUT_ATTR, "");
         let _ = query.append_child(&body);
         let _ = host.append_child(&query);
