@@ -440,7 +440,7 @@ async fn build_inject_payload() -> Result<(JsValue, JsValue), String> {
     // version), so the guest loads fully; SWR refreshes the manifest in the
     // background and the next load picks up the new build.
     let manifest: GuestManifest = {
-        let text = fetch_manifest_text("/guest/manifest.json").await?;
+        let text = fetch_text("/guest/manifest.json").await?;
         serde_json::from_str(&text).map_err(|e| format!("guest manifest: {e}"))?
     };
 
@@ -630,33 +630,6 @@ async fn resp_text(resp: web_sys::Response) -> Result<String, String> {
     text.as_string().ok_or_else(|| "text not a string".into())
 }
 
-/// Fetch the guest manifest network-first, falling back to cache offline.
-///
-/// The manifest names the current build's hashed assets. If a STALE cached
-/// manifest were used while online, it could name a previous build's hashes
-/// that the server no longer has — and a missing hashed asset returns the
-/// SPA fallback (HTTP 200 `text/html`), which then blows up wasm-instantiate
-/// with a bad magic word. So online we force the network (`cache: "reload"`)
-/// to stay in lock-step with the served assets; if that throws (offline), we
-/// fall back to the SW-cached copy, whose assets are also cached. Either way
-/// manifest and assets agree.
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-async fn fetch_manifest_text(url: &str) -> Result<String, String> {
-    let win = window().ok_or("no window")?;
-    let init = web_sys::RequestInit::new();
-    init.set_cache(web_sys::RequestCache::Reload);
-    match wasm_bindgen_futures::JsFuture::from(win.fetch_with_str_and_init(url, &init)).await {
-        Ok(value) => {
-            let resp = value
-                .dyn_into::<web_sys::Response>()
-                .map_err(|_| "manifest: not a Response".to_string())?;
-            resp_text(resp).await
-        }
-        // Network unreachable (offline): fall back to the SW-cached manifest.
-        Err(_) => fetch_text(url).await,
-    }
-}
-
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 async fn fetch_array_buffer(url: &str) -> Result<JsValue, String> {
     let resp = fetch(url).await?;
@@ -683,8 +656,8 @@ async fn fetch(url: &str) -> Result<web_sys::Response, String> {
     // by the guest manifest), so the SW's stale-while-revalidate shell cache
     // can hold them immutably — a sealed `/space` works OFFLINE (populated on
     // the first online load, served from cache after) and a content change
-    // is a NEW URL (cache miss → fresh), never a stale hit. Only the manifest
-    // itself is fetched `no-store` (see `fetch_text_no_store`).
+    // is a NEW URL (cache miss → fresh), never a stale hit. The manifest rides
+    // the same SWR cache so an offline guest can still resolve its assets.
     let resp_value = wasm_bindgen_futures::JsFuture::from(win.fetch_with_str(url))
         .await
         .map_err(|e| format!("fetch {url}: {e:?}"))?;
