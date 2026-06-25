@@ -85,7 +85,8 @@ jobs:
             ```
             curl -fsSL https://github.com/${{ github.repository }}/releases/download/tonk-staging/install.sh | sh -s -- --staging
             ```
-            (Drop `--staging` to install the stable release instead.)
+            (Or set `TONK_CHANNEL=staging` instead of the flag. Drop both to
+            install the stable release.)
 
             **Or download manually:** grab the archive for your platform, then
             `tar xzf` it — the extracted `tonk` is ready to run.

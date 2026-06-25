@@ -5,16 +5,18 @@
 # Stable (default):
 #   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
 #
-# Pre-release (staging channel):
-#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh -s -- --pre
+# Pre-release (staging channel) — either way:
+#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh -s -- --staging
+#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
 #
 # Flags:
 #   --stable   install the latest stable release (default)
-#   --pre      install the latest staging pre-release
+#   --staging  install the latest staging pre-release (alias: --pre)
 #
-# Environment overrides:
-#   TONK_INSTALL_DIR   where to install (default: $HOME/.local/bin)
-#   TONK_RELEASE       pin an explicit release tag (wins over --pre/--stable)
+# Environment overrides (env wins over flags):
+#   TONK_CHANNEL=staging   install the pre-release channel
+#   TONK_RELEASE=<tag>     pin an explicit release tag (wins over everything)
+#   TONK_INSTALL_DIR       where to install (default: $HOME/.local/bin)
 set -eu
 
 REPO="tonk-labs/tonk"
@@ -23,25 +25,31 @@ INSTALL_DIR="${TONK_INSTALL_DIR:-$HOME/.local/bin}"
 say() { printf 'install: %s\n' "$1" >&2; }
 die() { printf 'install: error: %s\n' "$1" >&2; exit 1; }
 
-# Channel selection. --pre/--stable pick a channel; TONK_RELEASE pins an
-# explicit tag and overrides the channel entirely.
+# Channel selection, lowest to highest precedence:
+#   default stable -> --staging/--stable flag -> TONK_CHANNEL env -> TONK_RELEASE tag.
 channel="stable"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --pre|--prerelease|--staging) channel="pre" ;;
+    --staging|--pre|--prerelease) channel="staging" ;;
     --stable|--latest) channel="stable" ;;
     -h|--help)
-      say "usage: install.sh [--stable | --pre]"
+      say "usage: install.sh [--stable | --staging]"
       exit 0
       ;;
-    *) die "unknown argument: $1 (expected --stable or --pre)" ;;
+    *) die "unknown argument: $1 (expected --stable or --staging)" ;;
   esac
   shift
 done
 
+# Env channel overrides the flag. Only the exact value `staging` opts into
+# the pre-release; any other value (or unset) leaves the flag's choice.
+if [ "${TONK_CHANNEL:-}" = "staging" ]; then
+  channel="staging"
+fi
+
 if [ -n "${TONK_RELEASE:-}" ]; then
   RELEASE="$TONK_RELEASE"
-elif [ "$channel" = "pre" ]; then
+elif [ "$channel" = "staging" ]; then
   RELEASE="tonk-staging"
 else
   RELEASE="latest"
