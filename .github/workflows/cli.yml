@@ -49,6 +49,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: tonk-macos-arm64
@@ -59,9 +60,14 @@ jobs:
           path: artifacts/linux-x86_64
       - name: Prepare release assets
         run: |
-          mv artifacts/macos-arm64/tonk tonk-macos-arm64
-          mv artifacts/linux-x86_64/tonk tonk-linux-x86_64
-          chmod +x tonk-macos-arm64 tonk-linux-x86_64
+          # Archive each binary as `tonk` so it extracts ready to run,
+          # with the executable bit preserved across the download.
+          install -m 0755 artifacts/macos-arm64/tonk tonk
+          tar -czf tonk-macos-arm64.tar.gz tonk
+          rm tonk
+          install -m 0755 artifacts/linux-x86_64/tonk tonk
+          tar -czf tonk-linux-x86_64.tar.gz tonk
+          rm tonk
       - name: Delete existing staging release
         run: gh release delete tonk-staging --yes --cleanup-tag || true
         env:
@@ -75,20 +81,25 @@ jobs:
           body: |
             Rolling staging release of the tonk CLI, built from the latest `staging` branch.
 
-            **Download for your platform:**
-            - macOS (Apple Silicon): `tonk-macos-arm64`
-            - Linux (x86_64): `tonk-linux-x86_64`
+            **Install (macOS / Linux):**
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/tonk-staging/install.sh | sh
+            ```
 
-            After downloading, make it executable: `chmod +x tonk-*`
+            **Or download manually:** grab the archive for your platform, then
+            `tar xzf` it — the extracted `tonk` is ready to run.
+            - macOS (Apple Silicon): `tonk-macos-arm64.tar.gz`
+            - Linux (x86_64): `tonk-linux-x86_64.tar.gz`
 
-            On macOS, the binary is unsigned, so Gatekeeper quarantines it on
-            download. Clear the quarantine attribute before running:
-            `xattr -d com.apple.quarantine tonk-macos-arm64`
+            On macOS the binary is unsigned. The install script clears the
+            Gatekeeper quarantine for you; if you extract by hand and macOS
+            blocks it, run `xattr -d com.apple.quarantine tonk`.
           prerelease: true
           make_latest: false
           files: |
-            tonk-macos-arm64
-            tonk-linux-x86_64
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            install.sh
 
   publish-stable:
     name: 'Publish Stable'
@@ -98,6 +109,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: tonk-macos-arm64
@@ -108,9 +120,14 @@ jobs:
           path: artifacts/linux-x86_64
       - name: Prepare release assets
         run: |
-          mv artifacts/macos-arm64/tonk tonk-macos-arm64
-          mv artifacts/linux-x86_64/tonk tonk-linux-x86_64
-          chmod +x tonk-macos-arm64 tonk-linux-x86_64
+          # Archive each binary as `tonk` so it extracts ready to run,
+          # with the executable bit preserved across the download.
+          install -m 0755 artifacts/macos-arm64/tonk tonk
+          tar -czf tonk-macos-arm64.tar.gz tonk
+          rm tonk
+          install -m 0755 artifacts/linux-x86_64/tonk tonk
+          tar -czf tonk-linux-x86_64.tar.gz tonk
+          rm tonk
       - name: Delete existing rolling release
         run: gh release delete tonk-latest --yes --cleanup-tag || true
         env:
@@ -124,17 +141,26 @@ jobs:
           body: |
             Rolling release of the tonk CLI, built from the latest `stable` branch.
 
-            **Download for your platform:**
-            - macOS (Apple Silicon): `tonk-macos-arm64`
-            - Linux (x86_64): `tonk-linux-x86_64`
+            **Install (macOS / Linux):**
+            ```
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
+            ```
 
-            After downloading, make it executable: `chmod +x tonk-*`
+            **Or download manually:** grab the archive for your platform, then
+            `tar xzf` it — the extracted `tonk` is ready to run.
+            - macOS (Apple Silicon): `tonk-macos-arm64.tar.gz`
+            - Linux (x86_64): `tonk-linux-x86_64.tar.gz`
 
-            On macOS, the binary is unsigned, so Gatekeeper quarantines it on
-            download. Clear the quarantine attribute before running:
-            `xattr -d com.apple.quarantine tonk-macos-arm64`
-          prerelease: true
-          make_latest: false
+            Canonical latest links (always resolve to this release):
+            - https://github.com/${{ github.repository }}/releases/latest/download/tonk-macos-arm64.tar.gz
+            - https://github.com/${{ github.repository }}/releases/latest/download/tonk-linux-x86_64.tar.gz
+
+            On macOS the binary is unsigned. The install script clears the
+            Gatekeeper quarantine for you; if you extract by hand and macOS
+            blocks it, run `xattr -d com.apple.quarantine tonk`.
+          prerelease: false
+          make_latest: true
           files: |
-            tonk-macos-arm64
-            tonk-linux-x86_64
+            tonk-macos-arm64.tar.gz
+            tonk-linux-x86_64.tar.gz
+            install.sh
