@@ -2,19 +2,51 @@
 # Install the tonk CLI. Detects your platform, downloads the matching
 # release archive, and drops the `tonk` binary on your PATH.
 #
+# Stable (default):
 #   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
+#
+# Pre-release (staging channel):
+#   curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh -s -- --pre
+#
+# Flags:
+#   --stable   install the latest stable release (default)
+#   --pre      install the latest staging pre-release
 #
 # Environment overrides:
 #   TONK_INSTALL_DIR   where to install (default: $HOME/.local/bin)
-#   TONK_RELEASE       release tag to pull (default: latest)
+#   TONK_RELEASE       pin an explicit release tag (wins over --pre/--stable)
 set -eu
 
 REPO="tonk-labs/tonk"
 INSTALL_DIR="${TONK_INSTALL_DIR:-$HOME/.local/bin}"
-RELEASE="${TONK_RELEASE:-latest}"
 
 say() { printf 'install: %s\n' "$1" >&2; }
 die() { printf 'install: error: %s\n' "$1" >&2; exit 1; }
+
+# Channel selection. --pre/--stable pick a channel; TONK_RELEASE pins an
+# explicit tag and overrides the channel entirely.
+channel="stable"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --pre|--prerelease|--staging) channel="pre" ;;
+    --stable|--latest) channel="stable" ;;
+    -h|--help)
+      say "usage: install.sh [--stable | --pre]"
+      exit 0
+      ;;
+    *) die "unknown argument: $1 (expected --stable or --pre)" ;;
+  esac
+  shift
+done
+
+if [ -n "${TONK_RELEASE:-}" ]; then
+  RELEASE="$TONK_RELEASE"
+elif [ "$channel" = "pre" ]; then
+  RELEASE="tonk-staging"
+else
+  RELEASE="latest"
+fi
+say "channel: $channel (release: $RELEASE)"
 
 # Map uname output to a release asset platform slug.
 os="$(uname -s)"

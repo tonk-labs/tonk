@@ -81,10 +81,11 @@ jobs:
           body: |
             Rolling staging release of the tonk CLI, built from the latest `staging` branch.
 
-            **Install (macOS / Linux):**
+            **Install this pre-release (macOS / Linux):**
             ```
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/tonk-staging/install.sh | sh
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/tonk-staging/install.sh | sh -s -- --staging
             ```
+            (Drop `--staging` to install the stable release instead.)
 
             **Or download manually:** grab the archive for your platform, then
             `tar xzf` it — the extracted `tonk` is ready to run.
@@ -145,6 +146,7 @@ jobs:
             ```
             curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh
             ```
+            (Add `-s -- --staging` to install the latest pre-release instead.)
 
             **Or download manually:** grab the archive for your platform, then
             `tar xzf` it — the extracted `tonk` is ready to run.
