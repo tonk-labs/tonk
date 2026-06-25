@@ -37,8 +37,8 @@ pub use tonk_evaluator::evaluate::{CommitSummary, QueryMatchBlock, QueryResult};
 
 /// Wire-shape returned by `/evaluate`. Local to the worker so
 /// the JSON contract is owned at the HTTP boundary, not in the
-/// shared evaluator. Slide owns its own copy of this shape
-/// (`slide::output`) so its `-f json` output stays byte-compatible
+/// shared evaluator. Tonk owns its own copy of this shape
+/// (`tonk_cli::output`) so its `-f json` output stays byte-compatible
 /// with the HTTP body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EvaluateResponse {

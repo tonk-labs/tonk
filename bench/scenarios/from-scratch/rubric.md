@@ -1,7 +1,7 @@
 # From-scratch rubric
 
 Goal: a working two-concept habit tracker authored entirely through
-slide.
+tonk.
 
 - Outcome 9-10: both views render; `habits` shows all three habits,
   `log` shows entries joined to habit names (not raw entity URIs).

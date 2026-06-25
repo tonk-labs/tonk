@@ -14,4 +14,4 @@ conversion into tonk: same data, recognizably the same UI intent.
 - Outcome 0: blank or no data.
 
 Friction focus: where did the agent struggle to express the UI in the
-view system? Which slide errors or guide gaps cost the most attempts?
+view system? Which tonk errors or guide gaps cost the most attempts?

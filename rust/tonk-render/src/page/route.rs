@@ -1,5 +1,5 @@
 //! The parsed render route — the `{entity}@{model}!{view}` shorthand
-//! shared by the SW/display routes and `slide render`.
+//! shared by the SW/display routes and `tonk render`.
 
 use crate::page::RenderError;
 

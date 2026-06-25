@@ -20,7 +20,7 @@ members = [
     "rust/tonk-portal",
     "rust/tonk-render",
     "rust/tonk-template",
-    "rust/slide",
+    "rust/tonk-cli",
     "rust/tonk-schema",
     "rust/tonk-sigil",
     "rust/tonk-ui",
@@ -107,7 +107,7 @@ rand_core = "0.9"
 # Pinned to 0.12 to match dialog-db's transport crates (dialog-remote-ucan-s3 /
 # dialog-remote-s3) so Cargo unifies features into the same reqwest. `rustls-tls`
 # keeps the embedded webpki roots; `rustls-tls-native-roots` additionally trusts
-# the OS CA store (and SSL_CERT_FILE/DIR) so slide works behind TLS-intercepting
+# the OS CA store (and SSL_CERT_FILE/DIR) so tonk works behind TLS-intercepting
 # egress proxies (e.g. the Claude Code sandbox gateway). Both root sets load — a
 # strict superset, non-breaking. TLS deps are gated off wasm, so this is a no-op
 # for tonk-ui's wasm build. default-features = false avoids pulling in native-tls.

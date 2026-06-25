@@ -5,7 +5,7 @@ Headless (no-DOM) rendering of `tonk-display` view templates to HTML strings.
 This is the server-side half of the `<tonk-display>` rendering pipeline: it
 parses a `{field}`-interpolated HTML template, collects bindings, runs them
 through the shared [`tonk-template`] planner, and renders against query
-conclusions, all without a browser. `slide render` uses it to produce the same
+conclusions, all without a browser. `tonk render` uses it to produce the same
 markup the browser component produces, headlessly.
 
 ## Pipeline

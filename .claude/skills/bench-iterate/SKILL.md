@@ -31,10 +31,10 @@ the scenario name as argument (default: from-scratch). See
 3. Pick the single highest-leverage friction item: prefer items that
    (a) appear in multiple runs, (b) caused failed tool results or
    repeated commands, (c) have a concrete `suggested_fix`.
-4. Fix it in the product: slide CLI behavior or errors
-   (`rust/slide`), the guide text (`rust/slide/src/guide*.md`), the
+4. Fix it in the product: tonk CLI behavior or errors
+   (`rust/tonk-cli`), the guide text (`rust/tonk-cli/src/guide*.md`), the
    notation/analyzer surface, or tonk-ui rendering. Rebuild what
-   changed (`cargo build --release -p slide`; the stack rebuilds
+   changed (`cargo build --release -p tonk-cli`; the stack rebuilds
    tonk-ui on the next run).
 5. Rerun: `nix develop -c bench/bin/bench run <scenario>`.
 6. Compare outcome, friction count, failed_tool_results, num_turns
