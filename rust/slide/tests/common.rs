@@ -97,7 +97,7 @@ concept!: &task
 pub const VIEW_DECL: &str = r#"
 attribute!: &html-body
   description: "HTML body of a slide-authored view"
-  the:         text/html
+  the:         "text/html"
   as:          text
   cardinality: many
 

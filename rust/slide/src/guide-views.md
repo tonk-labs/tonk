@@ -126,7 +126,7 @@ and serve it through the iframe viewer:
 ```yaml
 attribute!: &html-body
   description: "HTML body of a one-off page"
-  the:         text/html
+  the:         "text/html"
   as:          text
   cardinality: many
 
