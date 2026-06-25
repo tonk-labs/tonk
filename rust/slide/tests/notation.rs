@@ -190,6 +190,78 @@ task!:
         assert_eq!(total, 0);
         Ok(())
     }
+
+    #[dialog_common::test]
+    async fn it_does_not_commit_a_dry_run_mutation() -> Result<()> {
+        use slide::eval::Options;
+        use slide::output::Format;
+
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+
+        let dry_run = Options {
+            format: Format::Notation,
+            quiet: false,
+            dry_run: true,
+        };
+        let outcome = test
+            .eval_inline_with(
+                "task!: &t\n  title: \"Drafted, not saved\"\n  done: false\n",
+                dry_run,
+            )
+            .await?;
+
+        // A dry run plans but drops the transaction: nothing
+        // committed, zero claims, and the branch head is unmoved.
+        assert!(!outcome.committed);
+        assert_eq!(outcome.response.commits.claims, 0);
+        assert_eq!(
+            outcome.response.revision_before,
+            outcome.response.revision_after,
+        );
+
+        // The task never landed: a follow-up query finds nothing.
+        let after = test.eval_inline("task:\n  this: ?t\n").await?;
+        let total: usize = after
+            .response
+            .matches_after
+            .iter()
+            .map(|b| b.results.len())
+            .sum();
+        assert_eq!(total, 0, "dry-run mutation must not persist");
+        Ok(())
+    }
+
+    #[dialog_common::test]
+    async fn it_returns_matches_for_a_dry_run_query() -> Result<()> {
+        use slide::eval::Options;
+        use slide::output::Format;
+
+        let test = common::TestSite::new().await?;
+        test.eval_inline(ATTRIBUTE_DECL).await?;
+        test.eval_inline(CONCEPT_DECL).await?;
+        test.eval_inline("task!: &t\n  title: \"Real task\"\n  done: false\n")
+            .await?;
+
+        // A pure query under --dry-run still surfaces matches.
+        let dry_run = Options {
+            format: Format::Notation,
+            quiet: false,
+            dry_run: true,
+        };
+        let outcome = test
+            .eval_inline_with("task:\n  this: ?t\n  title: ?title\n", dry_run)
+            .await?;
+        let total: usize = outcome
+            .response
+            .matches_after
+            .iter()
+            .map(|b| b.results.len())
+            .sum();
+        assert_eq!(total, 1, "dry-run query should still return matches");
+        Ok(())
+    }
 }
 
 mod when_reporting_errors {
@@ -250,6 +322,7 @@ task!: &ax
                 eval::Options {
                     format: Format::Notation,
                     quiet: false,
+                    dry_run: false,
                 },
             )
             .await?;

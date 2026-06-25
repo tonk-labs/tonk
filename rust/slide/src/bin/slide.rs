@@ -332,7 +332,7 @@ enum RemoteCommand {
 
 #[derive(Args, Debug)]
 #[command(
-    after_help = "Examples:\n  slide eval -c 'person:'\n  slide eval ./doc.notation\n  cat doc.notation | slide eval -\n  slide eval -c 'person:' --format json\n  slide eval ./doc.notation --no-sync"
+    after_help = "Examples:\n  slide eval -c 'person:'\n  slide eval ./doc.notation\n  cat doc.notation | slide eval -\n  slide eval -c 'person:' --format json\n  slide eval ./doc.notation --no-sync\n  slide eval ./doc.notation --dry-run"
 )]
 struct EvalArgs {
     /// Inline document. Mutually exclusive with the positional
@@ -360,6 +360,15 @@ struct EvalArgs {
     /// settable via the `SLIDE_NO_SYNC` environment variable.
     #[arg(long = "no-sync")]
     no_sync: bool,
+
+    /// Run the document without committing: analyze, query, and
+    /// plan, then drop the transaction. Query matches are returned
+    /// and the commit summary shows zero claims; the branch is left
+    /// untouched. Implies `--no-sync` (a preview never touches the
+    /// remote). Mirrors the worker's `transact=false` preview the
+    /// notebook editor uses to render results as you type.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -453,6 +462,7 @@ async fn eval(args: EvalArgs) -> ExitCode {
     let options = eval::Options {
         format: args.format.into(),
         quiet: args.quiet,
+        dry_run: args.dry_run,
     };
 
     let site = match site::SlideSite::discover_and_open(&cwd).await {
@@ -460,7 +470,9 @@ async fn eval(args: EvalArgs) -> ExitCode {
         Err(err) => return print_error(err.to_string()),
     };
 
-    let sync = auto_sync::enabled(args.no_sync);
+    // A dry run never commits, so there's nothing to push; force
+    // auto-sync off so a preview can't pull the remote in either.
+    let sync = !args.dry_run && auto_sync::enabled(args.no_sync);
     match auto_sync::run_eval(&site, source, options, sync).await {
         Ok(outcome) => {
             let mut stdout = std::io::stdout().lock();
