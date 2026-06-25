@@ -79,7 +79,7 @@ Identity is preserved: a concept with no optional fields hashes exactly as befor
 
 ### Consequences for this repo
 
-1. **`descriptor.with().iter()` now yields `ConceptFieldDescriptor`, not `AttributeDescriptor`.** Every iteration site must switch from `attr.content_type()` / `attr.to_uri()` to `attr.descriptor().content_type()` / `attr.to_uri()` (the wrapper forwards `to_uri`/`the`) and may read `attr.is_optional()`. This is a **mechanical but repo-wide** change — ~40 call sites across analyzer, evaluator, schema, language-server, slide.
+1. **`descriptor.with().iter()` now yields `ConceptFieldDescriptor`, not `AttributeDescriptor`.** Every iteration site must switch from `attr.content_type()` / `attr.to_uri()` to `attr.descriptor().content_type()` / `attr.to_uri()` (the wrapper forwards `to_uri`/`the`) and may read `attr.is_optional()`. This is a **mechanical but repo-wide** change — ~40 call sites across analyzer, evaluator, schema, language-server, tonk-cli.
 
 2. **`ConceptDescriptor::from(Vec<(String, AttributeDescriptor)>)` is gone**, replaced by fallible `try_from(Vec<(String, ConceptFieldDescriptor)>)` that rejects empty/all-optional field sets. Every constructor site must wrap descriptors in `ConceptFieldDescriptor::required(...)` / `::optional(...)` and handle the `Result`.
 
@@ -136,11 +136,11 @@ Treat every field as **required** so behavior is unchanged; this isolates the AP
   - `tonk-evaluator`: `evaluate.rs:711,763,982`, `effects.rs:563,592,631,769`.
   - `tonk-schema`: `concept.rs` emit/resolve (`emit_concept_facts` ~1271, `resolve` ~263), `transact.rs:289-314`, `rule_query.rs`, `builtin.rs`, `resolution.rs`.
   - `tonk-language-server`: `server.rs:794,983`.
-  - `slide`: `schema.rs:340`, `views.rs`.
+  - `tonk-cli`: `schema.rs:340`, `views.rs`.
 - **Constructor sites** — replace `ConceptDescriptor::from(fields)` with `ConceptDescriptor::try_from(fields.into_iter().map(|(n,d)| (n, ConceptFieldDescriptor::required(d))).collect())?` and thread the `Result`/`expect` as appropriate:
   - `tonk-schema`: `concept.rs:287` (resolve), `transact.rs:314`, `rule_query.rs`.
   - `tonk-analyzer`: `declaration.rs` (the `serde_json::from_value::<ConceptDescriptor>` path keeps working as-is — serde handles the new shape — but verify the `with` JSON it builds round-trips; required fields serialize without `optional`).
-  - test fixtures in `tonk-evaluator` (`effects.rs:1473`, `evaluate.rs:1029`) and `slide/tests`.
+  - test fixtures in `tonk-evaluator` (`effects.rs:1473`, `evaluate.rs:1029`) and `tonk-cli/tests`.
 - **`AttributeQuery` sites** — `with_is` is removed but a grep shows this repo never calls `with_is`; the ~50 `AttributeQuery::new/from` sites use the term-builder form (`.of(..).is(..)`) which is unchanged. Confirm `Resolution` defaults to `Required` so these stay required.
 - **Remove dead `maybe`/`parse_maybe`** in `tonk-schema/src/concept.rs` (and their tests at ~1333). Leave `with`/`parse_with`.
 
