@@ -65,6 +65,11 @@ pub struct Options {
     pub format: Format,
     /// Suppress the matches section and emit only the envelope.
     pub quiet: bool,
+    /// Run analysis + queries + planning but drop the transaction
+    /// instead of committing. Mirrors the worker's `transact=false`
+    /// preview: `commits.claims` is zeroed and `revision_after ==
+    /// revision_before`, so the branch is left untouched.
+    pub dry_run: bool,
 }
 
 impl Default for Options {
@@ -72,6 +77,7 @@ impl Default for Options {
         Self {
             format: Format::Notation,
             quiet: false,
+            dry_run: false,
         }
     }
 }
@@ -159,10 +165,11 @@ pub async fn run_against_site(
         .await
         .map_err(map_evaluate_error)?;
 
-    // Slide always commits when there are mutation statements
-    // (the CLI doesn't have a dry-run mode today). Pure-query
-    // docs short-circuit so we don't pay for a no-op commit.
-    let (response, committed) = if evaluated.analysis.analysis.has_statements() {
+    // Commit only a mutating document that wasn't run as a dry
+    // run. Pure-query docs and `--dry-run` short-circuit so we
+    // don't pay for (or apply) a commit.
+    let (response, committed) = if !options.dry_run && evaluated.analysis.analysis.has_statements()
+    {
         let revision_after = evaluated
             .txn
             .commit()
@@ -184,13 +191,20 @@ pub async fn run_against_site(
             true,
         )
     } else {
+        // Pure-query or dry-run: drop the transaction. The
+        // pre-mutation matches double as "after" because nothing
+        // landed. Zero `claims` so the summary reflects what *did*
+        // commit (nothing), not what *would* have — same contract
+        // the worker's `transact=false` preview honors.
+        let mut commits = evaluated.commits;
+        commits.claims = 0;
         (
             EvaluateResponse {
                 revision_before: revision_before.clone(),
                 revision_after: revision_before,
                 matches_before: evaluated.matches.clone(),
                 matches_after: evaluated.matches,
-                commits: evaluated.commits,
+                commits,
             },
             false,
         )

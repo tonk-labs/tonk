@@ -15,6 +15,9 @@ them, and publish views that render those facts.
    - `slide eval <path>`       — from a file
    - `<doc> | slide eval -`    — from stdin
    A committing eval auto-syncs (pull-before / push-after) unless `--no-sync`.
+   Add `--dry-run` to preview a document without committing: queries run and
+   matches come back, but the transaction is dropped and the branch is left
+   untouched (zero claims, unchanged revision). Implies `--no-sync`.
 3. Share a live view: `slide share display <entity> --view <name>`.
 4. Render a view to HTML headlessly: `slide render <route>` —
    `slide render person` (directory), `slide render alice@person` (one
