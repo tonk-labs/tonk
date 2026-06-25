@@ -9,9 +9,15 @@
 //! 1. **Project tabs** — for each `<tonk-sheet>` child it builds one
 //!    tab button (bullet + title) in a strip it owns, keyed by the
 //!    sheet's `sheet` attribute.
-//! 2. **Active** — the `active` attribute names the live sheet. The
-//!    matching `<tonk-sheet>` panel is shown (the rest hidden) and the
-//!    matching tab gets `is-active`.
+//! 2. **Active** — the `active` attribute names the LIVE sheet (the
+//!    one shown, its tab `is-active`). It is owned by the binder: only
+//!    the click handler sets it, so switching is instant. The data
+//!    model never writes `active` directly — a fact change must not
+//!    yank the live tab. Instead the view supplies a separate,
+//!    NON-observed `default-active` attribute (the persisted selection,
+//!    like a form control's `defaultValue`); the binder reads it ONCE
+//!    at connect to seed `active` when unset, and ignores later changes
+//!    to it, so a data update never switches the tab.
 //! 3. **Ordering** — sheets and their tabs are ordered by each
 //!    sheet's `order` attribute. The view's `{sheet}` iteration is
 //!    CID-keyed (not author-controllable), so the binder is what makes
@@ -109,6 +115,13 @@ const TAB: &str = "tonk-sheet-binder__tab";
 const TAB_LABEL: &str = "tonk-sheet-binder__tab-label";
 const CLOSE: &str = "tonk-sheet-binder__close";
 const ACTIVE: &str = "is-active";
+
+/// The non-observed attribute the view sets from the persisted
+/// `tonk/binder.active` fact. Read once at connect to seed the live
+/// `active` selection; later changes are ignored (it is deliberately
+/// absent from [`observed_attributes`]) so a data update never switches
+/// the tab. The live-selection counterpart is the `active` attribute.
+const DEFAULT_ACTIVE: &str = "default-active";
 /// The "+" add-sheet button shown at the end of the strip when idle.
 const ADD: &str = "tonk-sheet-binder__add";
 /// The inline create form shown in place of the "+" button while
@@ -151,8 +164,8 @@ fn project(this: &HtmlElement) {
     // persist the wrong sheet and steal focus from the genuinely-active
     // one. Keeping `active` untouched means once the real active sheet
     // re-mounts the next `project()` shows it again, and a genuinely
-    // stale pointer is corrected by the data model (the active-sheet
-    // rules), not by the binder guessing.
+    // stale seed is corrected when the click handler next sets `active`,
+    // not by the binder guessing.
     let shown = if sheets.iter().any(|s| s.id == active) {
         active.clone()
     } else {
@@ -196,40 +209,39 @@ fn project(this: &HtmlElement) {
     ensure_add_control(this, &strip, &document);
 }
 
-/// The active sheet id the binder should show. Read from the
-/// `[slot="active"]` child's text — the consuming view slots a
-/// `<tonk-display model=tonk:active-sheet>` there, which renders the
-/// binder entity's recorded `active` sheet id (and nothing when no
-/// `active` fact exists yet, e.g. a freshly joined replica). An empty
-/// result lets `project()` fall back to the first sheet by order.
-///
-/// Falls back to the `active` attribute when no slot is present, so a
-/// view that sets `active` directly (or an older markup) still works.
-/// The slot wins when both are present — it is the live, queryable
-/// source; the attribute is the static legacy path.
+/// The active sheet id the binder should show. The live `active`
+/// attribute wins once set (the click handler owns it); otherwise it
+/// is seeded ONCE from `default-active`, the non-observed attribute the
+/// consuming view sets from the binder entity's persisted
+/// `tonk/binder.active` field (empty when no selection exists yet, e.g.
+/// a freshly joined replica). An empty result lets `project()` fall
+/// back to the first sheet by order.
 fn active_sheet(this: &HtmlElement) -> String {
     // The binder's own `active` attribute is the source of truth once set:
     // the click handler sets it optimistically on selection, so switching is
-    // instant and immune to the persisted `tonk/active-sheet` fact changing
-    // underneath (which would otherwise yank the tab around). It behaves like
-    // a form control's value after the user has interacted.
+    // instant and immune to the persisted selection changing underneath
+    // (which would otherwise yank the tab around). It behaves like a form
+    // control's value after the user has interacted.
     if let Some(active) = this.get_attribute("active").filter(|s| !s.is_empty()) {
         return active;
     }
 
-    // Not yet set: seed it ONCE from the `[slot="active"]` display, which
-    // renders the persisted `tonk:active-sheet` id (the default / initial
-    // selection, like `defaultValue`). Writing it onto the attribute makes
-    // the binder own it from here on; a later slot change is ignored. An
-    // empty slot (no persisted active — a fresh replica) leaves the
-    // attribute unset so `project()` falls back to the first sheet.
-    if let Ok(Some(slot)) = this.query_selector(":scope > [slot=\"active\"]") {
-        let seed = slot.text_content().unwrap_or_default();
-        let seed = seed.trim();
-        if !seed.is_empty() {
-            let _ = this.set_attribute("active", seed);
-            return seed.to_owned();
-        }
+    // Not yet set: seed it ONCE from `default-active`, the NON-observed
+    // attribute the view sets from the persisted `tonk/binder.active` fact
+    // (the default / initial selection, like `defaultValue`). Writing it
+    // onto `active` makes the binder own it from here on; because
+    // `default-active` is not in `observed_attributes`, a later fact-driven
+    // change to it does NOT fire `attribute_changed_callback`, so a data
+    // update never switches the live tab. Empty (no persisted active — a
+    // fresh replica) leaves `active` unset so `project()` falls back to the
+    // first sheet.
+    if let Some(seed) = this
+        .get_attribute(DEFAULT_ACTIVE)
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+    {
+        let _ = this.set_attribute("active", &seed);
+        return seed;
     }
     String::new()
 }
@@ -521,30 +533,35 @@ fn install_click(this: &HtmlElement, slot: &ClickClosure) {
             return;
         };
 
-        // Close button: don't activate — retract the sheet. Tell the
-        // command which sheet to fall back to (the neighbour by
-        // order) so closing the active tab reveals an adjacent one
-        // rather than leaving the workspace blank.
+        // Close button: don't activate — retract the sheet.
         if node.closest(&format!(".{CLOSE}")).ok().flatten().is_some() {
             event.stop_propagation();
             let next = neighbour(&host, &sheet);
 
-            // Optimistic: if the closed sheet was active, move `active`
-            // to the neighbour *before* the data round-trip retracts
-            // the sheet. Otherwise `active` keeps pointing at a sheet
-            // that is about to vanish, and once its `<tonk-sheet>` panel
-            // is gone the panel CSS (`:has(tonk-sheet:not([hidden]))`)
-            // finds no visible panel and collapses the layout. Pointing
-            // `active` at the surviving neighbour now keeps a panel
-            // shown throughout. With no neighbour (the last sheet),
-            // `active` moves to `about:blank` so the binder reads as
-            // empty and reveals the launchpad. The command (fired below)
-            // persists the same `active` via the reassign rule.
+            // If the closed sheet was the live one, hand selection to the
+            // neighbour *before* the data round-trip retracts the sheet.
+            // Otherwise `active` keeps pointing at a sheet about to vanish,
+            // and once its `<tonk-sheet>` panel is gone the panel CSS
+            // (`:has(tonk-sheet:not([hidden]))`) finds no visible panel and
+            // collapses the layout. With a neighbour we move `active` to it
+            // (live switch) and dispatch `activate` so the new selection is
+            // persisted as the binder's default — the same single writer
+            // a click uses. With no neighbour (the last sheet) we clear
+            // `active` so the binder reads as empty and reveals the
+            // launchpad; nothing is persisted, so reopening starts fresh.
             if host.get_attribute("active").as_deref() == Some(sheet.as_str()) {
-                let _ = host.set_attribute("active", next.as_deref().unwrap_or(NO_NEIGHBOUR));
+                match next.as_deref() {
+                    Some(neighbour) => {
+                        let _ = host.set_attribute("active", neighbour);
+                        dispatch_activate(&host, neighbour);
+                    }
+                    None => {
+                        let _ = host.remove_attribute("active");
+                    }
+                }
             }
 
-            dispatch_close(&host, &sheet, next.as_deref());
+            dispatch_close(&host, &sheet);
             return;
         }
 
@@ -623,30 +640,21 @@ fn neighbour(this: &HtmlElement, sheet: &str) -> Option<String> {
         .map(|s| s.id.clone())
 }
 
-/// Dispatch `close` with `detail = { closed, next }`, bubbling +
-/// composed. The closed sheet is carried as `closed` (NOT `sheet`):
-/// the `activate` event uses `sheet`, and the workspace's
-/// `activate-sheet` command reads `dom.event.detail/sheet`, so a close
-/// carrying `sheet` would also match that command and select the
-/// closed tab. `next` is the neighbour to activate after the close; when
-/// the closed sheet was the only one it falls back to `about:blank` (the
-/// "no selection" sentinel) so the command always has a value to bind —
-/// the `close-sheet` command's `next` field is required, and an absent
-/// event field would fail the whole command build, leaving the last tab
-/// unclosable. Reassigning active to `about:blank` renders as empty, so
-/// closing the last sheet reveals the launchpad.
-const NO_NEIGHBOUR: &str = "about:blank";
-fn dispatch_close(host: &HtmlElement, closed: &str, next: Option<&str>) {
+/// Dispatch `close` with `detail = { closed }`, bubbling + composed.
+/// The closed sheet is carried as `closed` (NOT `sheet`): the
+/// `activate` event uses `sheet`, and the workspace's `activate-sheet`
+/// command reads `dom.event.detail/sheet`, so a close carrying `sheet`
+/// would also match that command and select the closed tab. The close
+/// command only retracts the sheet's `order` (demoting it); reassigning
+/// the live selection to the neighbour is handled in the click handler,
+/// which dispatches an `activate` for the neighbour — so the event
+/// carries no `next`.
+fn dispatch_close(host: &HtmlElement, closed: &str) {
     let detail = js_sys::Object::new();
     let _ = js_sys::Reflect::set(
         &detail,
         &JsValue::from_str("closed"),
         &JsValue::from_str(closed),
-    );
-    let _ = js_sys::Reflect::set(
-        &detail,
-        &JsValue::from_str("next"),
-        &JsValue::from_str(next.unwrap_or(NO_NEIGHBOUR)),
     );
     let init = CustomEventInit::new();
     init.set_detail(&detail);
@@ -790,13 +798,12 @@ fn reobserve(observer: &MutationObserver, target: &HtmlElement) {
     let init = MutationObserverInit::new();
     init.set_child_list(true);
     init.set_subtree(true);
+    // Watch attributes (incl. the non-observed `default-active` seed, which
+    // the consuming view sets after connect as its `<tonk-display>` resolves)
+    // so the first appearance re-runs `project()` and seeds the binder's
+    // live `active`. The observer is disconnected during `project()`, so the
+    // binder's own attribute writes don't re-trigger this.
     init.set_attributes(true);
-    // The active-sheet `[slot="active"]` display surfaces the seed id as a
-    // text node that lands asynchronously; watch character data so the first
-    // resolve re-runs `project()` and seeds the binder's `active`. The
-    // observer is disconnected during `project()`, so the binder's own text
-    // writes don't re-trigger this.
-    init.set_character_data(true);
     let _ = observer.observe_with_options(target, &init);
 }
 
