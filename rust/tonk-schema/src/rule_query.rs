@@ -105,8 +105,8 @@ fn resolve_entity_filter(term: &Option<Term<dialog_query::Any>>, input: &Match) 
     match t {
         Term::Constant(value) => Entity::try_from(value.clone()).ok(),
         Term::Variable { name: Some(_), .. } => {
-            let value = input.lookup(t).ok()?;
-            Entity::try_from(value).ok()
+            let binding = input.lookup(t).ok()?;
+            Entity::try_from(binding.as_value()?.clone()).ok()
         }
         Term::Variable { name: None, .. } => None,
     }
@@ -177,9 +177,19 @@ impl Application for AnonymousRuleQuery {
         // is unused by `realize` so a stub stands in.
         let synthetic = ConceptQuery {
             terms: self.terms.clone(),
-            predicate: ConceptDescriptor::from(
-                Vec::<(&str, dialog_query::AttributeDescriptor)>::new(),
-            ),
+            // A descriptor must have at least one required field;
+            // `realize` never reads the predicate, so a single
+            // placeholder field suffices.
+            predicate: ConceptDescriptor::try_from(vec![(
+                "_",
+                dialog_query::AttributeDescriptor::new(
+                    the!("dialog.rule/stub"),
+                    "",
+                    dialog_query::Cardinality::default(),
+                    None,
+                ),
+            )])
+            .expect("single-field stub descriptor is valid"),
         };
         Application::realize(&synthetic, source)
     }
@@ -286,7 +296,7 @@ mod tests {
 
     /// `counter` concept with a single `count` field.
     fn counter_head() -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             "count",
             AttributeDescriptor::new(
                 the!("counter/count"),
@@ -295,11 +305,12 @@ mod tests {
                 Some(Type::UnsignedInt),
             ),
         )])
+        .unwrap()
     }
 
     /// `increment` command concept.
     fn increment_concept() -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             "subject",
             AttributeDescriptor::new(
                 the!("command/subject"),
@@ -308,6 +319,7 @@ mod tests {
                 Some(Type::Entity),
             ),
         )])
+        .unwrap()
     }
 
     /// Build a `ConceptQuery` premise binding `this` and the
@@ -406,14 +418,18 @@ mod tests {
         let row = &conclusions[0];
 
         // `this` binds the effect entity.
-        let this: Entity = Entity::try_from(row.source().lookup(&Term::<Any>::var("this"))?)
-            .expect("this binding must be an entity");
+        let this: Entity =
+            Entity::try_from(row.source().lookup(&Term::<Any>::var("this"))?.content()?)
+                .expect("this binding must be an entity");
         assert_eq!(this, effect_entity);
 
         // `definition` carries the JSON-serialised RuleDefinition.
-        let definition_json: String =
-            String::try_from(row.source().lookup(&Term::<Any>::var("definition"))?)
-                .expect("definition binding must be a string");
+        let definition_json: String = String::try_from(
+            row.source()
+                .lookup(&Term::<Any>::var("definition"))?
+                .content()?,
+        )
+        .expect("definition binding must be a string");
         let definition: RuleDefinition = serde_json::from_str(&definition_json)?;
         assert_eq!(definition.polarity, EffectPolarity::Assert);
         assert_eq!(definition.rule.assert.this(), expected.assert.this());

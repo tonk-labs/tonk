@@ -642,7 +642,16 @@ fn check_complete_when_unbound(
     // setting.
     let mut set: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    for (field_name, _) in descriptor.with().iter() {
+    for (field_name, attr) in descriptor.with().iter() {
+        // Optional fields never count toward completeness — omitting
+        // one on a fresh entity is intentional, not an error.
+        if attr.is_optional() {
+            if matches!(user_fields.get(field_name), Some((value, _)) if !matches!(value, FieldValue::Blank))
+            {
+                set.push(field_name.to_string());
+            }
+            continue;
+        }
         match user_fields.get(field_name) {
             Some((FieldValue::Blank, _)) => {
                 // Per-field `_` retraction — counts as

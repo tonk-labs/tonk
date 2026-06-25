@@ -45,9 +45,10 @@ pub(crate) fn field_value_to_term(
     expected: Option<Type>,
 ) -> Result<Term<dialog_query::Any>, AnalyzeError> {
     Ok(match value {
-        FieldValue::Literal(scalar) => {
-            Term::Constant(scalar_to_value(scalar, expected).map_err(|e| e.with_range(range))?)
-        }
+        FieldValue::Literal(scalar) => Term::Constant(
+            scalar_to_value(scalar, expected)
+                .map_err(|e| e.with_field(field_name).with_range(range))?,
+        ),
         FieldValue::Variable(name) => {
             // If this variable was derived in Phase 1, substitute
             // the entity now; otherwise leave it as a variable
@@ -130,26 +131,41 @@ pub(crate) fn field_value_to_term(
 
 /// Translate a parsed [`Scalar`] into a [`Value`].
 ///
-/// `expected` carries the field's declared [`Type`] when known.
-/// The notation parser always parses a non-negative integer
-/// literal as a signed `Scalar::Integer` (it falls back to
-/// unsigned only for values too large for `i128`). When the
-/// declared type is `Type::UnsignedInt` and the literal is
-/// non-negative, coerce to `Value::UnsignedInt`. Every other case
-/// keeps the parsed scalar's natural mapping: a negative
-/// `Integer` stays signed, an explicit `UnsignedInteger` stays
-/// unsigned, and a `None` or non-integer `expected` changes
-/// nothing.
+/// `expected` carries the field's declared [`Type`] when known. The
+/// notation parser types a literal only by its lexical form, not by
+/// the field it lands in, so this is where a literal is checked
+/// against the field's declared type:
+///
+/// - A non-negative `Scalar::Integer` (the parser's default for
+///   `1`, which only falls back to unsigned for values too large
+///   for `i128`) coerces to `Value::UnsignedInt` when the field is
+///   declared `as: unsigned-integer`.
+/// - Otherwise the scalar must already match the declared type. A
+///   mismatch (e.g. a bare integer `3` written into an `as: text`
+///   field) is a [`TypeMismatch`](AnalyzeErrorKind::TypeMismatch)
+///   error rather than a silently-coerced or
+///   wrong-typed fact: the strict concept query would never match
+///   such a fact, so the entity would vanish from its own concept
+///   with no signal. Surfacing it points at the schema mistake
+///   directly.
+///
+/// A `None` `expected` (untyped slots — `this`, claim attributes,
+/// formula operands) keeps the parsed scalar's natural mapping.
 pub(crate) fn scalar_to_value(
     scalar: &Scalar,
     expected: Option<Type>,
 ) -> Result<Value, AnalyzeError> {
-    Ok(match scalar {
+    // Schema-directed integer coercion: a non-negative signed
+    // literal fills an unsigned field.
+    if let (Scalar::Integer(i), Some(Type::UnsignedInt)) = (scalar, expected)
+        && *i >= 0
+    {
+        return Ok(Value::UnsignedInt(*i as u128));
+    }
+
+    let value = match scalar {
         Scalar::String(s) => Value::String(s.clone()),
         Scalar::Boolean(b) => Value::Boolean(*b),
-        Scalar::Integer(i) if *i >= 0 && expected == Some(Type::UnsignedInt) => {
-            Value::UnsignedInt(*i as u128)
-        }
         Scalar::Integer(i) => Value::SignedInt(*i),
         Scalar::UnsignedInteger(u) => Value::UnsignedInt(*u),
         Scalar::Float(f) => Value::Float(*f),
@@ -160,7 +176,25 @@ pub(crate) fn scalar_to_value(
             }
             .into());
         }
-    })
+    };
+
+    // Reject a literal whose type contradicts the field's declared
+    // type. `data_type()` is the concrete [`Type`] the value
+    // inhabits; an `expected` that doesn't admit it is a schema
+    // mismatch the user should see at assert time. A `None`
+    // `expected` (untyped slot) admits any type.
+    if let Some(expected) = expected
+        && value.data_type() != expected
+    {
+        return Err(AnalyzeErrorKind::TypeMismatch {
+            field: "<scalar>".into(),
+            expected,
+            found: value.data_type(),
+        }
+        .into());
+    }
+
+    Ok(value)
 }
 
 pub(crate) fn scalar_to_string(scalar: &Scalar) -> Result<String, AnalyzeError> {

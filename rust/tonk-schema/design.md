@@ -19,9 +19,12 @@ claims.
   newtypes for the `dialog.attribute/*` namespace, and the
   `Named` / `AttributeFacts` concepts used by the resolver.
 - **`concept.rs`** — re-exports `dialog_query::{AttributeDescriptor,
-  ConceptDescriptor}` and exposes `with(name)` / `maybe(name)`
-  helpers for constructing `dialog.concept.with/{field}` /
-  `dialog.concept.maybe/{field}` relations.
+  ConceptDescriptor, ConceptFieldDescriptor}` and exposes
+  `with(name)` / `optional(name)` helpers for constructing
+  `dialog.concept.with/{field}` attribute-link relations and the
+  `dialog.concept.optional/{field}` boolean marker that flags a
+  field as optional. Required fields carry only the `with` link;
+  optional fields carry both.
 - **`rule.rs`** — re-exports `dialog_query::DeductiveRuleDescriptor`.
 
 ### Interpreter (`interpret.rs`)
@@ -44,8 +47,10 @@ Turns a `tonk_notation::Syntax` into a `Transaction { claims, bookmarks }`.
 
 ## Resolver
 
-Concept fields in `with` / `maybe` can reference an attribute four
-ways:
+A concept declares required fields under `with:` and optional fields
+under `maybe:`; both merge into the descriptor's single `with` map,
+with `maybe:` fields flagged optional. Concept fields (required or
+optional) can reference an attribute four ways:
 
 1. **Inline descriptor** — full `attribute:` body in the value
    slot. Asserted recursively, descriptor in hand.

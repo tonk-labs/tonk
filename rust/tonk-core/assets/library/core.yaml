@@ -53,17 +53,20 @@ concept!: &view/directory
       cardinality: one
       as: text
 
-# The default directory view: `model: _:_` matches any model with no
-# specific `view/directory`. <tonk-display> with no `entity` resolves a
-# directory view for the model first; finding none, it falls back to
-# this. It renders the model's instances in a <wa-carousel>, one slide
-# per instance, each a nested single-entity <tonk-display> (which then
-# resolves its own view, or this default's detail counterpart). The
-# nested `model` is threaded from the host via `{dom.host/model}`,
-# since an instance carries no pointer to its own model.
+# The default directory view: `model: tonk:_` matches any model with no
+# specific `view/directory`. `tonk:_` is the wildcard-model sentinel — a
+# valid entity URI standing in for "no specific model" (the `model` field
+# is `as: entity`, so the value must be a real entity, not bare text).
+# <tonk-display> with no `entity` resolves a directory view for the model
+# first; finding none, it falls back to this. It renders the model's
+# instances in a <wa-carousel>, one slide per instance, each a nested
+# single-entity <tonk-display> (which then resolves its own view, or this
+# default's detail counterpart). The nested `model` is threaded from the
+# host via `{dom.host/model}`, since an instance carries no pointer to
+# its own model.
 view/directory!:
   this: id:tonk:view/directory/default
-  model: _:_
+  model: tonk:_
   display: |
     <wa-carousel class="vertical seamless" pagination orientation="vertical">
       <wa-carousel-item subject={this}>

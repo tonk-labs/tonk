@@ -806,6 +806,27 @@ mod tests {
             self.assert_concept_named(name, &descriptor).await;
         }
 
+        /// Like [`concept_typed`] but each field carries an
+        /// `optional` flag, so the registered concept exercises the
+        /// optional-attribute paths (completeness, set-widening,
+        /// marker round-trip).
+        async fn concept_typed_optional(&self, name: &str, fields: &[(&str, &str, &str, bool)]) {
+            let mut with = serde_json::Map::new();
+            for (field, the, ty, optional) in fields {
+                let mut spec = serde_json::json!({ "the": the, "as": ty, "cardinality": "one" });
+                if *optional {
+                    spec.as_object_mut()
+                        .unwrap()
+                        .insert("optional".into(), serde_json::Value::Bool(true));
+                }
+                with.insert((*field).into(), spec);
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            self.assert_concept_named(name, &descriptor).await;
+        }
+
         /// Commit the attribute facts every field of `descriptor`
         /// references, the concept marker claim, and an
         /// `id:<name>` referent so name resolution finds the
@@ -1176,7 +1197,7 @@ attribute!: &person-name
         let syntax = must_parse(
             r#"
 demo/stuff!:
-  stuff: 1
+  stuff: "1"
 "#,
         );
         let spec = fixed_concept("demo/stuff", &[("stuff", "xyz.tonk.demo/stuff")]);
@@ -1295,6 +1316,141 @@ concept!: &person
             panic!("expected Assert(Concept) for concept");
         };
         assert_eq!(name.as_ref().map(AnchorName::as_str), Some("person"));
+    }
+
+    /// A `maybe:` block declares optional fields. The descriptor
+    /// carries the optional flag on those fields and the required
+    /// flag on `with:` fields.
+    #[dialog_common::test]
+    async fn it_marks_maybe_block_fields_optional() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  description: "A person"
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    nickname:
+      description: "Nickname"
+      the: xyz.tonk.person/nickname
+      as:  Text
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let person = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = person else {
+            panic!("expected concept assertion");
+        };
+        // The emitted concept-schema records each field's attribute
+        // link under `with.<field>`, plus a boolean optional marker
+        // `optional.<field>` for `maybe:` fields only.
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(field_names.contains(&"with.name"));
+        assert!(field_names.contains(&"with.nickname"));
+        assert!(
+            field_names.contains(&"optional.nickname"),
+            "optional `maybe:` field must emit an optional marker"
+        );
+        assert!(
+            !field_names.contains(&"optional.name"),
+            "required `with:` field must not emit an optional marker"
+        );
+        // And the marker term is actually populated on the assertion.
+        assert!(
+            query.terms.get("optional.nickname").is_some(),
+            "expected optional.nickname term on the concept assertion"
+        );
+        assert!(query.terms.get("optional.name").is_none());
+    }
+
+    /// A concept with only `maybe:` fields (no required field) is
+    /// rejected — it would constrain nothing and match every entity.
+    #[dialog_common::test]
+    async fn it_rejects_concept_with_only_optional_fields() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  maybe:
+    nickname:
+      description: "Nickname"
+      the: xyz.tonk.person/nickname
+      as:  Text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for all-optional concept, got {err:?}"
+        );
+    }
+
+    /// A field declared in both `with:` and `maybe:` is a hard
+    /// error — a field is required or optional, never both.
+    #[dialog_common::test]
+    async fn it_rejects_field_in_both_with_and_maybe() {
+        let syntax = must_parse(
+            r#"
+concept!: &person
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::DuplicateConceptField { field, .. } if field == "name"
+            ),
+            "expected DuplicateConceptField for `name`, got {err:?}"
+        );
+        assert_eq!(err.kind.code(), "E_DUPLICATE_CONCEPT_FIELD");
+    }
+
+    /// A `maybe:` field can be a bare reference to an attribute
+    /// declared earlier in the document (not just an inline
+    /// definition). The referenced field is still marked optional.
+    #[dialog_common::test]
+    async fn it_marks_maybe_bare_reference_optional() {
+        let syntax = must_parse(
+            r#"
+attribute!: &person-nick
+  the:         xyz.tonk.person/nickname
+  as:          Text
+  cardinality: one
+  description: "Nickname"
+concept!: &person
+  with:
+    name:
+      description: "Name"
+      the: xyz.tonk.person/name
+      as:  Text
+  maybe:
+    nickname: person-nick
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let person = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = person else {
+            panic!("expected concept assertion");
+        };
+        // The `maybe:` bare reference emits an optional marker.
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(
+            field_names.contains(&"optional.nickname"),
+            "bare-reference `maybe:` field must emit an optional marker; saw {field_names:?}"
+        );
+        assert!(query.terms.get("optional.nickname").is_some());
     }
 
     /// A bare symbol in field-value position resolves through the
@@ -1551,11 +1707,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -1599,11 +1755,11 @@ person!:
   name: "Alice"
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let tree = analyze_with(&syntax, &resolver).await.unwrap();
@@ -1698,6 +1854,86 @@ reading!:
             ),
             "value literal should stay SignedInt, got {:?}",
             q.terms.get("value")
+        );
+    }
+
+    /// A bare integer literal written into a `text` field is a
+    /// type mismatch, not a silent miscast. Storing `3` as a
+    /// `SignedInt` under a Text-typed attribute makes the entity
+    /// invisible to its own (strictly-typed) concept query, so the
+    /// analyzer rejects it up front and points at the field.
+    /// User-reported: `age: 3` into an `as: text` field.
+    #[dialog_common::test]
+    async fn it_rejects_integer_literal_for_text_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 3
+"#,
+        );
+        let resolver = fixed_concept_typed("person", &[("age", "xyz.tonk.person/age", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        let AnalyzeErrorKind::TypeMismatch { field, .. } = &err.kind else {
+            panic!("expected TypeMismatch, got {:?}", err.kind);
+        };
+        assert_eq!(field, "age", "the diagnostic must name the offending field");
+        assert!(
+            err.range.is_some(),
+            "the diagnostic must carry a range so the editor can highlight the value"
+        );
+    }
+
+    /// A quoted string written into a `text` field is fine — the
+    /// type matches, so no diagnostic. Guards against the rejection
+    /// above over-firing on valid input.
+    #[dialog_common::test]
+    async fn it_accepts_string_literal_for_text_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: "3"
+"#,
+        );
+        let resolver = fixed_concept_typed("person", &[("age", "xyz.tonk.person/age", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("age"), Some(Term::Constant(Value::String(s))) if s == "3"),
+            "age should stay a Text value, got {:?}",
+            q.terms.get("age")
+        );
+    }
+
+    /// A claim head (`squash.bug:`) has no schema, so its fields
+    /// carry no declared type. With `expected = None`, any literal
+    /// is accepted — a bare integer stays a `SignedInt` and never
+    /// raises `TypeMismatch`. Guards the "no type specified accepts
+    /// any type" rule.
+    #[dialog_common::test]
+    async fn it_accepts_any_literal_for_untyped_claim_field() {
+        let syntax = must_parse(
+            r#"
+xyz.tonk.person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 3
+"#,
+        );
+        // No concept registered — `xyz.tonk.person` is a domain
+        // (claim) head, so the `age` slot has no declared type.
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("age").cloned();
+        assert!(
+            matches!(term, Some(Term::Constant(Value::SignedInt(3)))),
+            "an untyped claim field must accept the integer as-is, got {term:?}"
         );
     }
 
@@ -2340,11 +2576,11 @@ person!:
   age: 28
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -2367,7 +2603,7 @@ thing!:
   active: true
 "#,
         );
-        let resolver = fixed_concept("thing", &[("active", "x.y/active")]);
+        let resolver = fixed_concept_typed("thing", &[("active", "x.y/active", "Boolean")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
@@ -2388,7 +2624,7 @@ thing!:
   weight: 1.5
 "#,
         );
-        let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
+        let resolver = fixed_concept_typed("thing", &[("weight", "x.y/weight", "Float")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
@@ -2553,7 +2789,7 @@ view!:
         let notation_this = derive_this(&pinned, &body);
 
         // The wire descriptor for the `view` concept — `{display}`.
-        let descriptor = DialogConceptDescriptor::from(vec![(
+        let descriptor = DialogConceptDescriptor::try_from(vec![(
             "display",
             AttributeDescriptor::new(
                 "xyz.tonk.view/display".parse().unwrap(),
@@ -2561,7 +2797,8 @@ view!:
                 DialogCardinality::One,
                 Some(Type::String),
             ),
-        )]);
+        )])
+        .unwrap();
 
         // Wire path WITH `this` carried (the real bootstrap shape):
         // derivation is skipped, the carried entity is used verbatim.
@@ -2987,11 +3224,11 @@ person!:
   age:  _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3020,11 +3257,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3057,11 +3294,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3219,11 +3456,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3237,6 +3474,69 @@ person!:
                        && selector_form.contains("?alice")
             ),
             "expected IncompleteAssertion for `?alice` + age-only body, got {err:?}"
+        );
+    }
+
+    /// Omitting an *optional* field on a fresh entity is fine —
+    /// `IncompleteAssertion` only counts required fields. Here the
+    /// body sets the required `name` but omits the optional
+    /// `nickname`; the assertion must succeed.
+    #[dialog_common::test]
+    async fn it_allows_assertion_omitting_optional_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  name: "Alice"
+"#,
+        );
+        let fixture = new_fixture().await;
+        fixture
+            .concept_typed_optional(
+                "person",
+                &[
+                    ("name", "io.gozala.person/name", "Text", false),
+                    ("nickname", "io.gozala.person/nickname", "Text", true),
+                ],
+            )
+            .await;
+        let analysis = fixture.analyze(&syntax).await;
+        assert!(
+            analysis.is_ok(),
+            "omitting an optional field must not raise IncompleteAssertion, got {:?}",
+            analysis.err()
+        );
+    }
+
+    /// The complement: with an optional field present in the
+    /// schema, omitting the *required* field on a fresh entity
+    /// still raises `IncompleteAssertion`, and the optional field
+    /// is not listed as missing.
+    #[dialog_common::test]
+    async fn it_still_requires_required_field_when_optional_present() {
+        let syntax = must_parse(
+            r#"
+person!:
+  nickname: "Al"
+"#,
+        );
+        let fixture = new_fixture().await;
+        fixture
+            .concept_typed_optional(
+                "person",
+                &[
+                    ("name", "io.gozala.person/name", "Text", false),
+                    ("nickname", "io.gozala.person/nickname", "Text", true),
+                ],
+            )
+            .await;
+        let err = fixture.analyze(&syntax).await.unwrap_err();
+        assert!(
+            matches!(
+                &err.kind,
+                AnalyzeErrorKind::IncompleteAssertion { missing, .. }
+                    if missing == &vec!["name".to_string()]
+            ),
+            "expected IncompleteAssertion listing only `name`, got {err:?}"
         );
     }
 
@@ -3255,11 +3555,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3276,11 +3576,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3305,11 +3605,11 @@ person!: &alice
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3331,11 +3631,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3352,11 +3652,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3374,11 +3674,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3397,11 +3697,11 @@ person!:
   age: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3473,11 +3773,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3508,11 +3808,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3542,11 +3842,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3600,11 +3900,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());

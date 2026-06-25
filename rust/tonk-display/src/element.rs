@@ -1136,9 +1136,11 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 }
 
 /// The sentinel model entity for a default view: a `view!`/
-/// `view/directory!` declared with `model: _:_` matches any model that
-/// has no specific view of that kind. See `tonk-core/docs/templates.md`.
-const DEFAULT_MODEL: &str = "_:_";
+/// `view/directory!` declared with `model: tonk:_` matches any model
+/// that has no specific view of that kind. `tonk:_` is the
+/// wildcard-model entity seeded by core.yaml. See
+/// `tonk-core/docs/templates.md`.
+const DEFAULT_MODEL: &str = "tonk:_";
 
 /// Query the `_:_` default view (same view concept, `model = _:_`) and
 /// mount its template as the default slide. Spawned from

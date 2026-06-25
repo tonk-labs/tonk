@@ -26,7 +26,7 @@ use dialog_artifacts::{Artifact, Changes, Entity, Instruction};
 use dialog_capability::{Command, Provider};
 use dialog_common::ConditionalSync;
 use dialog_query::concept::Concept;
-use dialog_query::{Application, ConceptDescriptor, Conclusion, Match, Term};
+use dialog_query::{Application, ConceptDescriptor, Conclusion, Descriptor, Match, Term};
 
 /// The asserted facts for a single transient entity — the `(the, of,
 /// is)` triples grouped under one `of`. [`Artifact`] is `Clone`
@@ -51,15 +51,15 @@ pub type EntityFacts = Vec<Artifact>;
 /// facts in hand — it can't be re-queried. This is that decode.
 pub fn decode_concept<C>(this: Entity, facts: &EntityFacts) -> Option<C>
 where
-    C: Concept<Conclusion = C> + Conclusion,
+    C: Concept<Conclusion = C> + Conclusion + Descriptor<ConceptDescriptor>,
     C::Application: Default + Application<Conclusion = C>,
-    ConceptDescriptor: From<C::Application>,
 {
     let query = C::Application::default();
 
     // field name → fully-qualified attribute name (`domain/name`),
-    // from the concept's descriptor.
-    let descriptor = ConceptDescriptor::from(C::Application::default());
+    // from the concept's descriptor (read via the derive-generated
+    // `Descriptor<ConceptDescriptor>` impl).
+    let descriptor = <C as Descriptor<ConceptDescriptor>>::descriptor();
     let attribute_to_field: HashMap<String, String> = descriptor
         .with()
         .iter()
@@ -106,12 +106,14 @@ pub trait Decode: Sized {
 
 impl<C> Decode for C
 where
-    C: Concept<Conclusion = C> + Conclusion,
+    C: Concept<Conclusion = C> + Conclusion + Descriptor<ConceptDescriptor>,
     C::Application: Default + Application<Conclusion = C>,
-    ConceptDescriptor: From<C::Application>,
 {
     fn trigger_attributes() -> Vec<String> {
-        ConceptDescriptor::from(C::Application::default())
+        // The derive exposes the concept's descriptor via the
+        // `Descriptor<ConceptDescriptor>` trait (it no longer emits
+        // `From<Query> for ConceptDescriptor`).
+        <C as Descriptor<ConceptDescriptor>>::descriptor()
             .with()
             .iter()
             .map(|(_, attribute)| attribute.the().to_string())

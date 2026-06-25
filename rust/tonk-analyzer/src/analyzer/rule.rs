@@ -927,7 +927,7 @@ mod tests {
     /// string field. Same helper shape as the effects-side
     /// tests use.
     fn one_text_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -936,13 +936,16 @@ mod tests {
                 Some(Type::String),
             ),
         )])
+        .unwrap()
     }
 
     /// Build a `ConceptDescriptor` with one cardinality-one
     /// entity-reference field. Used to exercise digest behaviour
-    /// for fields whose value names *another* entity.
+    /// for fields whose value names *another* entity, and where a
+    /// `?this`-shaped variable must stay entity-typed under rule
+    /// type inference.
     fn one_entity_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -951,6 +954,7 @@ mod tests {
                 Some(Type::Entity),
             ),
         )])
+        .unwrap()
     }
 
     /// Extract the lone `Statement::InstallEffect` from an
@@ -1024,7 +1028,7 @@ rule!:\n\
     async fn it_lifts_retract_polarity() {
         let fixture = new_fixture().await;
         fixture
-            .declare("ack", one_text_field("io.gozala.mailbox", "target"))
+            .declare("ack", one_entity_field("io.gozala.mailbox", "target"))
             .await;
         fixture
             .declare("message", one_text_field("io.gozala.mailbox", "body"))
@@ -1287,7 +1291,7 @@ rule!:\n\
     /// unsigned-integer field — counters and other numeric
     /// concepts the formula tests assert against.
     fn one_uint_field(domain: &str, name: &str) -> ConceptDescriptor {
-        ConceptDescriptor::from(vec![(
+        ConceptDescriptor::try_from(vec![(
             name,
             AttributeDescriptor::new(
                 format!("{domain}/{name}").parse().unwrap(),
@@ -1296,6 +1300,7 @@ rule!:\n\
                 Some(Type::UnsignedInt),
             ),
         )])
+        .unwrap()
     }
 
     /// A `rule!:` whose body uses the `math/sum` formula lifts

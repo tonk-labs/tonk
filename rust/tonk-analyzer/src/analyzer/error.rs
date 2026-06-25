@@ -14,6 +14,17 @@
 use lsp_types::Range;
 use thiserror::Error;
 
+/// Render a [`dialog_query::Type`] in the notation's `as:`
+/// vocabulary (e.g. `Text`, `SignedInteger`, `UnsignedInteger`)
+/// rather than its Rust `Debug` spelling. Falls back to the Debug
+/// form if serde can't produce a string label.
+fn type_label(ty: dialog_query::Type) -> String {
+    serde_json::to_value(ty)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{ty:?}"))
+}
+
 /// Analyzer error: a [`AnalyzeErrorKind`] payload plus an
 /// optional source range. Construct from a kind via
 /// `kind.into()` (no range) or [`AnalyzeError::new`] /
@@ -49,6 +60,16 @@ impl AnalyzeError {
     pub fn with_range(mut self, range: Range) -> Self {
         if self.range.is_none() {
             self.range = Some(range);
+        }
+        self
+    }
+
+    /// Builder-style: fill in the `field` name on a kind that was
+    /// raised without one (the value-coercion helpers don't know
+    /// the field they're translating). A no-op for any other kind.
+    pub fn with_field(mut self, field: &str) -> Self {
+        if let AnalyzeErrorKind::TypeMismatch { field: f, .. } = &mut self.kind {
+            *f = field.to_owned();
         }
         self
     }
@@ -308,6 +329,19 @@ pub enum AnalyzeErrorKind {
         /// The field name the user wrote.
         field: String,
     },
+    /// A `concept!` declared the same field name more than once —
+    /// either twice in one block or in both `with:` and `maybe:`.
+    /// A field is required *or* optional, never both.
+    #[error(
+        "field {field:?} is declared more than once in concept {concept:?} \
+         (a field cannot be both required and optional)"
+    )]
+    DuplicateConceptField {
+        /// The concept being declared.
+        concept: String,
+        /// The duplicated field name.
+        field: String,
+    },
     /// A premise's `where:` names an operand the formula doesn't
     /// have. Unlike concepts (whose schema lives on the branch),
     /// formulas have a fixed operand set, so the analyzer can
@@ -379,6 +413,27 @@ pub enum AnalyzeErrorKind {
         field: String,
         /// What kind of value it was.
         form: &'static str,
+    },
+    /// A literal's type contradicts the field's declared `as:`
+    /// type. Caught at assert time because the strictly-typed
+    /// concept query would never match a fact stored under the
+    /// wrong value type, so the entity would silently vanish from
+    /// its own concept. A field with no declared type accepts any
+    /// literal and never raises this. `expected`/`found` render in
+    /// the notation's `as:` vocabulary (e.g. `Text`,
+    /// `SignedInteger`) via [`type_label`].
+    #[error(
+        "field {field:?} expects {} but got a {} literal — \
+         quote it for text or fix the attribute's `as:` type",
+        type_label(*expected), type_label(*found)
+    )]
+    TypeMismatch {
+        /// Field whose declared type the literal violated.
+        field: String,
+        /// The field's declared content type.
+        expected: dialog_query::Type,
+        /// The literal's actual content type.
+        found: dialog_query::Type,
     },
     /// Resolver I/O failed.
     #[error("resolver error for {context}: {reason}")]
@@ -462,12 +517,14 @@ impl AnalyzeErrorKind {
             Self::InvalidConceptBody { .. } => "E_INVALID_CONCEPT_BODY",
             Self::UnknownConcept { .. } => "E_UNKNOWN_CONCEPT",
             Self::UnknownField { .. } => "E_UNKNOWN_FIELD",
+            Self::DuplicateConceptField { .. } => "E_DUPLICATE_CONCEPT_FIELD",
             Self::UnknownFormulaOperand { .. } => "E_UNKNOWN_FORMULA_OPERAND",
             Self::MissingFormulaOperand { .. } => "E_MISSING_FORMULA_OPERAND",
             Self::UnknownNameReference { .. } => "E_UNKNOWN_NAME_REFERENCE",
             Self::ClaimWithoutFields { .. } => "E_CLAIM_WITHOUT_FIELDS",
             Self::InvalidClaimAttribute { .. } => "E_INVALID_CLAIM_ATTRIBUTE",
             Self::UnsupportedFieldValue { .. } => "E_UNSUPPORTED_FIELD_VALUE",
+            Self::TypeMismatch { .. } => "E_TYPE_MISMATCH",
             Self::ResolverFailed { .. } => "E_RESOLVER_FAILED",
             Self::ProtectedUri { .. } => "E_PROTECTED_URI",
             Self::IncompleteAssertion { .. } => "E_INCOMPLETE_ASSERTION",

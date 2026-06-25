@@ -88,8 +88,14 @@ mod tests {
             "a formula is not a concept query"
         );
 
+        // A concept descriptor must declare at least one required
+        // field (valid-by-construction), so the object carries one.
         let concept: Query = serde_json::from_value(serde_json::json!({
-            "predicate": { "with": {} },
+            "predicate": {
+                "with": {
+                    "name": { "the": "person/name", "as": "Text", "cardinality": "one" }
+                }
+            },
             "terms": {}
         }))
         .expect("object predicate parses");

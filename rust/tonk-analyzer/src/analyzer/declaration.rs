@@ -7,7 +7,9 @@ use dialog_artifacts::{Entity, Value};
 use dialog_query::{
     AttributeDescriptor, ConceptDescriptor, Parameters, Term, concept::query::ConceptQuery,
 };
-use tonk_notation::{Application as SyntaxApplication, FieldValue, Scalar};
+use std::collections::BTreeMap;
+
+use tonk_notation::{Application as SyntaxApplication, Field as SyntaxField, FieldValue, Scalar};
 
 use super::error::{AnalyzeError, AnalyzeErrorKind};
 use super::field::{is_meta_field, scalar_to_string};
@@ -181,7 +183,9 @@ pub(crate) fn parse_concept_body(
 ) -> Result<ConceptBody, AnalyzeError> {
     let mut description: Option<String> = None;
     let mut transient: bool = false;
-    let mut with_fields: Vec<(String, AttributeDefinition)> = Vec::new();
+    // Each entry: (field name, definition, optional). `with:` fields
+    // are required; `maybe:` fields are optional.
+    let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
     // A concept's entity is content-derived from its descriptor by
     // default, but a `this: <uri>` pins it to a stable, chosen
@@ -189,6 +193,9 @@ pub(crate) fn parse_concept_body(
     // that URI even if its published name later moves. Mirrors how
     // built-in concepts pin themselves to `db:<name>`.
     let mut pinned_entity: Option<Entity> = None;
+    // Track declared field names (with their first occurrence range)
+    // to reject duplicates across `with:`/`maybe:`.
+    let mut seen: BTreeMap<String, lsp_types::Range> = BTreeMap::new();
     for field in &assertion.fields {
         // `..:` is the rest-retraction marker and never contributes
         // to a concept descriptor. `this:` is read below as the
@@ -208,35 +215,24 @@ pub(crate) fn parse_concept_body(
                 transient = parse_transient_tag(field)?;
             }
             "with" => {
-                let FieldValue::Nested(inner) = &field.value else {
-                    return Err(AnalyzeErrorKind::InvalidConceptBody {
-                        reason: "`with:` must be a mapping of field name → \
-                                 attribute reference (bare symbol, `?var`, \
-                                 URI) or inline attribute definition \
-                                 (mapping with `the`/`as`/`cardinality`/\
-                                 `description`)"
-                            .into(),
-                    }
-                    .into());
-                };
-                for sub in inner {
-                    if let FieldValue::Nested(attr_fields) = &sub.value {
-                        // Inline attribute definition. Parse it
-                        // as an attribute body and register it
-                        // for emission as a separate meta-head
-                        // plan.
-                        let plan = parse_attribute_fields(attr_fields)?;
-                        let resolved = AttributeDefinition {
-                            entity: plan.entity.clone(),
-                            descriptor: plan.descriptor.clone(),
-                        };
-                        with_fields.push((sub.name.clone(), resolved));
-                        inline_attributes.push(plan);
-                    } else {
-                        let resolved = resolve_concept_field(&sub.name, &sub.value, scope)?;
-                        with_fields.push((sub.name.clone(), resolved));
-                    }
-                }
+                parse_concept_field_block(
+                    field,
+                    false,
+                    scope,
+                    &mut fields,
+                    &mut inline_attributes,
+                    &mut seen,
+                )?;
+            }
+            "maybe" => {
+                parse_concept_field_block(
+                    field,
+                    true,
+                    scope,
+                    &mut fields,
+                    &mut inline_attributes,
+                    &mut seen,
+                )?;
             }
             other => {
                 return Err(AnalyzeErrorKind::UnknownField {
@@ -247,7 +243,10 @@ pub(crate) fn parse_concept_body(
             }
         }
     }
-    if with_fields.is_empty() {
+    // A concept must declare at least one *required* field. An empty
+    // `with:` or a body with only `maybe:` fields would constrain
+    // nothing and match every entity.
+    if !fields.iter().any(|(_, _, optional)| !optional) {
         return Err(AnalyzeErrorKind::InvalidConceptBody {
             reason: "`with:` is required and must declare at least one field".into(),
         }
@@ -257,14 +256,17 @@ pub(crate) fn parse_concept_body(
     if let Some(d) = &description {
         shape.insert("description".into(), serde_json::Value::String(d.clone()));
     }
-    let with_obj: serde_json::Map<String, serde_json::Value> = with_fields
+    let with_obj: serde_json::Map<String, serde_json::Value> = fields
         .iter()
-        .map(|(name, attr)| {
-            (
-                name.clone(),
-                serde_json::to_value(&attr.descriptor)
-                    .expect("AttributeDescriptor is serializable"),
-            )
+        .map(|(name, attr, optional)| {
+            let mut value = serde_json::to_value(&attr.descriptor)
+                .expect("AttributeDescriptor is serializable");
+            // The optional flag is flattened into each field object
+            // on the wire; required fields omit it entirely.
+            if *optional && let Some(obj) = value.as_object_mut() {
+                obj.insert("optional".into(), serde_json::Value::Bool(true));
+            }
+            (name.clone(), value)
         })
         .collect();
     shape.insert("with".into(), serde_json::Value::Object(with_obj));
@@ -309,6 +311,66 @@ fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, An
         }
         _ => Ok(None),
     }
+}
+
+/// Parse one `with:` or `maybe:` block of a `concept!` body. Both
+/// blocks share the same field shapes (bare reference or inline
+/// attribute definition); `optional` selects whether the fields are
+/// required (`with:`) or set-widened (`maybe:`).
+///
+/// Appends `(name, definition, optional)` to `fields`, registers any
+/// inline definitions in `inline_attributes`, and rejects a field
+/// name already seen in either block via `seen`.
+fn parse_concept_field_block(
+    field: &SyntaxField,
+    optional: bool,
+    scope: &Scope,
+    fields: &mut Vec<(String, AttributeDefinition, bool)>,
+    inline_attributes: &mut Vec<AttributeBody>,
+    seen: &mut BTreeMap<String, lsp_types::Range>,
+) -> Result<(), AnalyzeError> {
+    let block = if optional { "maybe" } else { "with" };
+    let FieldValue::Nested(inner) = &field.value else {
+        return Err(AnalyzeErrorKind::InvalidConceptBody {
+            reason: format!(
+                "`{block}:` must be a mapping of field name → \
+                 attribute reference (bare symbol, `?var`, URI) or \
+                 inline attribute definition (mapping with \
+                 `the`/`as`/`cardinality`/`description`)"
+            ),
+        }
+        .into());
+    };
+    for sub in inner {
+        // Reject a field name declared twice (in one block or across
+        // `with:`/`maybe:`) — a field is required or optional, never
+        // both. Anchor the diagnostic at the second occurrence.
+        if seen.insert(sub.name.clone(), sub.name_range).is_some() {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::DuplicateConceptField {
+                    concept: "concept".into(),
+                    field: sub.name.clone(),
+                },
+                sub.name_range,
+            ));
+        }
+        if let FieldValue::Nested(attr_fields) = &sub.value {
+            // Inline attribute definition. Parse it as an attribute
+            // body and register it for emission as a separate
+            // meta-head plan.
+            let plan = parse_attribute_fields(attr_fields)?;
+            let resolved = AttributeDefinition {
+                entity: plan.entity.clone(),
+                descriptor: plan.descriptor.clone(),
+            };
+            fields.push((sub.name.clone(), resolved, optional));
+            inline_attributes.push(plan);
+        } else {
+            let resolved = resolve_concept_field(&sub.name, &sub.value, scope)?;
+            fields.push((sub.name.clone(), resolved, optional));
+        }
+    }
+    Ok(())
 }
 
 /// Resolve one `with:`-map field reference to its
@@ -444,6 +506,14 @@ pub(crate) fn concept_application(
             format!("with.{field_name}"),
             Term::Constant(Value::Entity(attr_entity)),
         );
+        // Optional fields carry a boolean marker claim; required
+        // fields leave the term absent so no claim is emitted.
+        if attr.is_optional() {
+            terms.insert(
+                format!("optional.{field_name}"),
+                Term::Constant(Value::Boolean(true)),
+            );
+        }
     }
     if let Some(desc) = descriptor.description()
         && !desc.is_empty()
@@ -503,7 +573,7 @@ fn attribute_schema() -> ConceptDescriptor {
 /// description fields.
 fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
     let mut with = serde_json::Map::new();
-    for (name, _attr) in descriptor.with().iter() {
+    for (name, attr) in descriptor.with().iter() {
         with.insert(
             format!("with.{name}"),
             serde_json::json!({
@@ -512,6 +582,18 @@ fn concept_schema(descriptor: &ConceptDescriptor) -> ConceptDescriptor {
                 "cardinality": "one",
             }),
         );
+        // Optional fields get a sibling boolean marker field so the
+        // `optional.{name}` term above is recognized by the schema.
+        if attr.is_optional() {
+            with.insert(
+                format!("optional.{name}"),
+                serde_json::json!({
+                    "the": format!("dialog.concept.optional/{name}"),
+                    "as": "Boolean",
+                    "cardinality": "one",
+                }),
+            );
+        }
     }
     with.insert(
         "concept".into(),
