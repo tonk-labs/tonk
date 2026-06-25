@@ -1225,6 +1225,33 @@ concept!: &person
         assert_eq!(analysis.mutate.statements.len(), 3);
     }
 
+    /// A `concept!`'s `with:` field can reference a `/`-namespaced
+    /// anchor (`issue/title`) the same way it references a bare one.
+    /// The slash-bearing token is a qualified symbol — a name lookup
+    /// against the in-doc anchor table — not a string literal, so it
+    /// resolves instead of erroring `E_UNSUPPORTED_FIELD_VALUE`.
+    #[dialog_common::test]
+    async fn it_resolves_namespaced_attribute_referenced_by_a_concept() {
+        let syntax = must_parse(
+            r#"
+attribute!: &issue/title
+  the:         io.gozala.issue/title
+  as:          Text
+  cardinality: one
+  description: "Issue title"
+concept!: &issue
+  description: "Work item"
+  with:
+    title: issue/title
+"#,
+        );
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        assert!(analysis.declarations.contains_key("issue/title"));
+        assert!(analysis.declarations.contains_key("issue"));
+        // 2 statements — 1 attribute + 1 concept.
+        assert_eq!(analysis.mutate.statements.len(), 2);
+    }
+
     /// `concept!` `with:` accepts inline attribute definitions
     /// alongside bare-symbol references. Each inline definition
     /// becomes its own `Statement::Assert` so the attribute

@@ -41,7 +41,7 @@ the `text/html` attribute. The seed schema:
 ```yaml
 attribute! html-body:
   description: "HTML body of a slide-authored view"
-  the:         text/html
+  the:         "text/html"
   as:          Text
   cardinality: many
 

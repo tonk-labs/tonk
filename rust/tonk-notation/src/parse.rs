@@ -943,15 +943,17 @@ fn walk_field_value(
 ///
 /// - `_` → [`FieldValue::Blank`]
 /// - `?name` → [`FieldValue::Variable`]
-/// - URI shapes (contains `:` or `/`) → [`FieldValue::Uri`]
-/// - bare lowercase identifier → [`FieldValue::Symbol`]
-/// - everything else (uppercase, mixed case, dotted) → string
-///   literal
+/// - URI shapes (`<scheme>:…` or `<dotted-domain>/name`) →
+///   [`FieldValue::Uri`]
+/// - bare lowercase identifier (`title`) or a `/`-qualified one
+///   (`issue/title`, `space/route/view`) → [`FieldValue::Symbol`]
+/// - everything else (uppercase, mixed case) → string literal
 ///
 /// References require an explicit shape (no leading sigil for
 /// symbols — bare lowercase is itself the marker). Quotes
 /// distinguish string literals that would otherwise look like
-/// symbols.
+/// symbols — `text/html` reads as a qualified symbol, so the MIME
+/// literal must be written `"text/html"`.
 fn classify_plain_value(text: &str) -> FieldValue {
     if text == "_" {
         return FieldValue::Blank;
@@ -969,7 +971,7 @@ fn classify_plain_value(text: &str) -> FieldValue {
     if let Some(scalar) = parse_typed_scalar(text) {
         return FieldValue::Literal(scalar);
     }
-    if is_symbol(text) {
+    if is_symbol(text) || is_qualified_symbol(text) {
         return FieldValue::Symbol(text.to_owned());
     }
     FieldValue::Literal(Scalar::String(text.to_owned()))
@@ -1081,6 +1083,24 @@ fn is_symbol(text: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '+'))
+}
+
+/// Qualified symbol: one or more `/`-joined [`is_symbol`] segments
+/// (`issue/title`, `space/route/view`). A name lookup against the
+/// anchor table, same as a bare symbol — the slash is a namespace
+/// separator, not a URI marker. Mirrors the anchor charset
+/// ([`is_anchor_char`] allows `/`) so any anchor name can be
+/// referenced back.
+///
+/// A `/` whose left side contains a `.` (`io.gozala.issue/title`)
+/// is a URI, not a qualified symbol — [`looks_like_uri`] claims
+/// those first, matching the head-name convention in
+/// [`is_attribute_identifier`].
+fn is_qualified_symbol(text: &str) -> bool {
+    match text.split_once('/') {
+        Some((first, rest)) => is_symbol(first) && rest.split('/').all(is_symbol),
+        None => false,
+    }
 }
 
 fn is_blank_scalar(value: &MarkedYaml<'_>) -> bool {
@@ -2295,16 +2315,58 @@ page!:
         }
     }
 
-    /// MIME-type-shaped plain scalars (`text/html`,
-    /// `application/json`) classify as string literals, not
-    /// URIs. The reverse-dotted-domain rule requires at least
-    /// one `.` before the `/`; `text/` doesn't have one.
+    /// A `/`-joined bare identifier (`issue/title`,
+    /// `space/route/view`) classifies as a qualified
+    /// [`FieldValue::Symbol`] — a name lookup against the anchor
+    /// table, symmetric with the slash-bearing anchor charset.
     #[dialog_common::test]
-    fn it_parses_mime_type_as_string_literal() {
+    fn it_parses_namespaced_reference_as_symbol() {
+        let syntax = parse_clean(
+            r#"
+concept!:
+  with:
+    title: issue/title
+    body:  space/route/view
+"#,
+        );
+        let Expression::Claim(Effectful {
+            anchor: _anchor,
+            inner: a,
+        }) = &syntax.expressions[0]
+        else {
+            panic!("expected Assertion");
+        };
+        let with = a
+            .fields
+            .iter()
+            .find(|f| f.name == "with")
+            .expect("with field");
+        let FieldValue::Nested(fields) = &with.value else {
+            panic!("expected nested with map, got {:?}", with.value);
+        };
+        let title = fields.iter().find(|f| f.name == "title").expect("title");
+        assert!(
+            matches!(&title.value, FieldValue::Symbol(s) if s == "issue/title"),
+            "got {:?}",
+            title.value,
+        );
+        let body = fields.iter().find(|f| f.name == "body").expect("body");
+        assert!(
+            matches!(&body.value, FieldValue::Symbol(s) if s == "space/route/view"),
+            "got {:?}",
+            body.value,
+        );
+    }
+
+    /// MIME-type-shaped plain scalars (`text/html`) now read as
+    /// qualified symbols (no `.` before the `/`), so the literal
+    /// MIME string must be quoted. The quoted form stays a string.
+    #[dialog_common::test]
+    fn it_parses_quoted_mime_type_as_string_literal() {
         let syntax = parse_clean(
             r#"
 page!:
-  type: text/html
+  type: "text/html"
 "#,
         );
         let Expression::Claim(Effectful {
