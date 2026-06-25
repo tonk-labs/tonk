@@ -1197,7 +1197,7 @@ attribute!: &person-name
         let syntax = must_parse(
             r#"
 demo/stuff!:
-  stuff: 1
+  stuff: "1"
 "#,
         );
         let spec = fixed_concept("demo/stuff", &[("stuff", "xyz.tonk.demo/stuff")]);
@@ -1707,11 +1707,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -1755,11 +1755,11 @@ person!:
   name: "Alice"
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let tree = analyze_with(&syntax, &resolver).await.unwrap();
@@ -1854,6 +1854,86 @@ reading!:
             ),
             "value literal should stay SignedInt, got {:?}",
             q.terms.get("value")
+        );
+    }
+
+    /// A bare integer literal written into a `text` field is a
+    /// type mismatch, not a silent miscast. Storing `3` as a
+    /// `SignedInt` under a Text-typed attribute makes the entity
+    /// invisible to its own (strictly-typed) concept query, so the
+    /// analyzer rejects it up front and points at the field.
+    /// User-reported: `age: 3` into an `as: text` field.
+    #[dialog_common::test]
+    async fn it_rejects_integer_literal_for_text_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 3
+"#,
+        );
+        let resolver = fixed_concept_typed("person", &[("age", "xyz.tonk.person/age", "Text")]);
+        let err = analyze_with(&syntax, &resolver).await.unwrap_err();
+        let AnalyzeErrorKind::TypeMismatch { field, .. } = &err.kind else {
+            panic!("expected TypeMismatch, got {:?}", err.kind);
+        };
+        assert_eq!(field, "age", "the diagnostic must name the offending field");
+        assert!(
+            err.range.is_some(),
+            "the diagnostic must carry a range so the editor can highlight the value"
+        );
+    }
+
+    /// A quoted string written into a `text` field is fine — the
+    /// type matches, so no diagnostic. Guards against the rejection
+    /// above over-firing on valid input.
+    #[dialog_common::test]
+    async fn it_accepts_string_literal_for_text_field() {
+        let syntax = must_parse(
+            r#"
+person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: "3"
+"#,
+        );
+        let resolver = fixed_concept_typed("person", &[("age", "xyz.tonk.person/age", "Text")]);
+        let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
+        let Statement::Assert(Application::Concept { query: q, .. }) =
+            &analysis.mutate.statements[0]
+        else {
+            panic!("expected Assert(Concept)");
+        };
+        assert!(
+            matches!(q.terms.get("age"), Some(Term::Constant(Value::String(s))) if s == "3"),
+            "age should stay a Text value, got {:?}",
+            q.terms.get("age")
+        );
+    }
+
+    /// A claim head (`squash.bug:`) has no schema, so its fields
+    /// carry no declared type. With `expected = None`, any literal
+    /// is accepted — a bare integer stays a `SignedInt` and never
+    /// raises `TypeMismatch`. Guards the "no type specified accepts
+    /// any type" rule.
+    #[dialog_common::test]
+    async fn it_accepts_any_literal_for_untyped_claim_field() {
+        let syntax = must_parse(
+            r#"
+xyz.tonk.person!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  age: 3
+"#,
+        );
+        // No concept registered — `xyz.tonk.person` is a domain
+        // (claim) head, so the `age` slot has no declared type.
+        let analysis = flat(analyze_empty(&syntax).await.unwrap());
+        let Statement::Assert(application) = &analysis.mutate.statements[0] else {
+            panic!("expected an Assert statement");
+        };
+        let term = application.parameters().get("age").cloned();
+        assert!(
+            matches!(term, Some(Term::Constant(Value::SignedInt(3)))),
+            "an untyped claim field must accept the integer as-is, got {term:?}"
         );
     }
 
@@ -2496,11 +2576,11 @@ person!:
   age: 28
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -2523,7 +2603,7 @@ thing!:
   active: true
 "#,
         );
-        let resolver = fixed_concept("thing", &[("active", "x.y/active")]);
+        let resolver = fixed_concept_typed("thing", &[("active", "x.y/active", "Boolean")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
@@ -2544,7 +2624,7 @@ thing!:
   weight: 1.5
 "#,
         );
-        let resolver = fixed_concept("thing", &[("weight", "x.y/weight")]);
+        let resolver = fixed_concept_typed("thing", &[("weight", "x.y/weight", "Float")]);
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
         let Statement::Assert(Application::Concept { query, .. }) = &analysis.mutate.statements[0]
         else {
@@ -3144,11 +3224,11 @@ person!:
   age:  _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3177,11 +3257,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3214,11 +3294,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3376,11 +3456,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3475,11 +3555,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3496,11 +3576,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3525,11 +3605,11 @@ person!: &alice
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3551,11 +3631,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3572,11 +3652,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3594,11 +3674,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         analyze_with(&syntax, &resolver).await.unwrap();
@@ -3617,11 +3697,11 @@ person!:
   age: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let err = analyze_with(&syntax, &resolver).await.unwrap_err();
@@ -3693,11 +3773,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3728,11 +3808,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3762,11 +3842,11 @@ person!:
   ..: _
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());
@@ -3820,11 +3900,11 @@ person!:
   age: 29
 "#,
         );
-        let resolver = fixed_concept(
+        let resolver = fixed_concept_typed(
             "person",
             &[
-                ("name", "io.gozala.person/name"),
-                ("age", "io.gozala.person/age"),
+                ("name", "io.gozala.person/name", "Text"),
+                ("age", "io.gozala.person/age", "SignedInteger"),
             ],
         );
         let analysis = flat(analyze_with(&syntax, &resolver).await.unwrap());

@@ -3792,4 +3792,54 @@ person!:\n\
         );
         Ok(())
     }
+
+    /// User-reported repro, end-to-end through notation: a concept
+    /// with a `text` field, asserting a bare integer (`age: 3`)
+    /// into it. The evaluate path must fail with a type error
+    /// rather than committing a `SignedInt` fact that the strictly
+    /// typed `person:` concept query can never match (which made
+    /// the entity silently vanish from its own concept). The
+    /// analyzer-level diagnostic and "untyped accepts any" cases
+    /// are covered in `tonk-analyzer`; this guards the wiring
+    /// through `evaluate`.
+    #[dialog_common::test]
+    async fn it_errors_evaluating_integer_into_text_field() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        let setup = "\
+concept!: &person\n\
+\x20 description: Person\n\
+\x20 with:\n\
+\x20   age:\n\
+\x20     description: Age of the person\n\
+\x20     the: xyz.tonk.person/age\n\
+\x20     as: text\n";
+        let parsed = parse(setup);
+        let syntax = parsed.syntax.expect("syntax");
+        syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup evaluate: {e}"))?
+            .commit()
+            .perform(&operator)
+            .await
+            .map_err(|e| anyhow::anyhow!("setup commit: {e}"))?;
+
+        let parsed = parse("person!:\n  age: 3\n");
+        let query_syntax = parsed.syntax.expect("assert syntax");
+        let result = query_syntax
+            .evaluate(branch.transaction())
+            .perform(&operator)
+            .await;
+        let err = result.err().expect("integer into a text field must error");
+        assert!(
+            err.to_string().to_lowercase().contains("text")
+                || err.to_string().to_lowercase().contains("type"),
+            "expected a type-mismatch error mentioning the text type, got: {err}"
+        );
+        Ok(())
+    }
 }

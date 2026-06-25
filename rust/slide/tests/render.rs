@@ -101,8 +101,8 @@ async fn it_renders_a_directory_of_every_instance() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     // A person-specific directory view (the built-in `view/directory`
-    // concept, keyed to `model: person`). Overrides the stdlib's `_:_`
-    // default carousel so the test asserts this exact template.
+    // concept, keyed to `model: person`). Overrides the stdlib's
+    // `tonk:_` default carousel so the test asserts this exact template.
     test.eval_inline(
         r#"view/directory!: &people
   model: person
@@ -131,7 +131,7 @@ async fn it_errors_when_no_view_exists_for_the_model() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline("person!: &alice\n  name: Alice\n").await?;
-    // No view declared for `person` and no `_:_` default seeded.
+    // No view declared for `person` and no `tonk:_` default seeded.
     let route = RenderRoute::parse("alice@person")?;
     let err = render::render(&test.site, &route).await.unwrap_err();
     assert!(
@@ -141,21 +141,19 @@ async fn it_errors_when_no_view_exists_for_the_model() -> Result<()> {
     Ok(())
 }
 
-// BUG-16: the `_:_` default-model sentinel is stored as Text but the
-// view query keys `model` as an Entity. Dialog's strict Entity/Text
-// typing (feat/narrowing-diagnostics) no longer matches across the
-// two, and `_:_` is not a valid entity URI, so the sentinel needs a
-// representation decision. Independent of optionals; un-ignore once
-// BUG-16 is resolved.
+// The `tonk:_` wildcard-model sentinel: a view keyed to it renders
+// any model that has no specific view. `tonk:_` is a valid entity
+// URI, so it satisfies the `model` field's `as: entity` type under
+// dialog's strict Entity/Text typing (the old `_:_` text sentinel
+// did not — see BUG-16).
 #[dialog_common::test]
-#[ignore = "BUG-16: `_:_` default-model sentinel breaks under dialog strict Entity/Text typing"]
 async fn it_falls_back_to_the_default_model_view() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
-    // A view keyed to the `_:_` default model rather than `person`.
+    // A view keyed to the `tonk:_` default model rather than `person`.
     test.eval_inline(
         r#"view!: &fallback
-  model: _:_
+  model: tonk:_
   display: "<div class=\"default\">{name}</div>"
 "#,
     )
