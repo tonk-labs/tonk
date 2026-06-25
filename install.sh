@@ -12,6 +12,10 @@
 #   TONK_CHANNEL=staging   install the pre-release channel (default: stable)
 #   TONK_RELEASE=<tag>     pin an explicit release tag (wins over TONK_CHANNEL)
 #   TONK_INSTALL_DIR       where to install (default: $HOME/.local/bin)
+#
+# The macOS binary is not Apple-signed (see BUG: Apple code signing). This
+# script clears the Gatekeeper quarantine and ad-hoc signs the binary so it
+# runs; a hand-downloaded binary needs the same `xattr -c` + `codesign`.
 set -eu
 
 REPO="tonk-labs/tonk"
@@ -81,20 +85,41 @@ say "extracting"
 tar -xzf "$tmp/$asset" -C "$tmp" || die "extract failed"
 [ -f "$tmp/tonk" ] || die "archive did not contain a 'tonk' binary"
 
-# Clear the macOS quarantine attribute so Gatekeeper doesn't block the
-# unsigned binary on first run. No-op (and absent) off macOS.
-if command -v xattr >/dev/null 2>&1; then
-  xattr -d com.apple.quarantine "$tmp/tonk" 2>/dev/null || true
-fi
 chmod +x "$tmp/tonk"
 
 mkdir -p "$INSTALL_DIR"
 mv "$tmp/tonk" "$INSTALL_DIR/tonk"
-say "installed tonk to $INSTALL_DIR/tonk"
+dest="$INSTALL_DIR/tonk"
+
+# macOS-only Gatekeeper handling. The tonk binary is not Apple-signed, so
+# Gatekeeper would otherwise quarantine it (and, on recent macOS, can kill
+# it on first launch). Two steps make an unsigned binary runnable:
+#   1. clear every extended attribute, including com.apple.quarantine;
+#   2. apply an ad-hoc signature, which arm64 binaries require to execute
+#      and which is re-established after the move/clear.
+# Both are no-ops off macOS (the tools are absent), so the guard is `Darwin`.
+if [ "$os" = "Darwin" ]; then
+  xattr -c "$dest" 2>/dev/null || true
+  if command -v codesign >/dev/null 2>&1; then
+    codesign --force --sign - "$dest" 2>/dev/null || true
+  fi
+fi
+
+say "installed tonk to $dest"
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "note: $INSTALL_DIR is not on your PATH; add it, e.g. export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 
-"$INSTALL_DIR/tonk" --version 2>/dev/null || true
+# Confirm the binary actually runs; if macOS still blocks it, surface the
+# exact recovery command instead of leaving a silent broken install.
+if ! "$dest" --version >/dev/null 2>&1; then
+  say "warning: '$dest --version' did not run cleanly."
+  if [ "$os" = "Darwin" ]; then
+    say "if macOS blocked it, run: xattr -c \"$dest\" && codesign --force --sign - \"$dest\""
+    say "or allow it once under System Settings > Privacy & Security."
+  fi
+else
+  "$dest" --version 2>/dev/null || true
+fi
