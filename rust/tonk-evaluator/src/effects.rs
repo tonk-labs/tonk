@@ -481,16 +481,26 @@ async fn fire_effect<Env: InduceEnv>(
     for frame in matches {
         // Project the match into a `Parameters` map of the head's
         // operands. The conclusion-variable check at rule-compile
-        // time guarantees every operand is bound somewhere in the
-        // body.
+        // time guarantees every required operand is bound somewhere
+        // in the body.
+        //
+        // `required_operands()` covers `this` + required keys;
+        // optional keys are appended so a *present* optional still
+        // emits its fact. An optional the frame lacks resolves to
+        // `Absent` and is skipped by the `as_value()` guard, so no
+        // fact is emitted for it.
         let mut parameters = Parameters::new();
-        for operand in head.operands() {
-            // An optional operand the frame lacks resolves to
-            // `Absent`; omit it so no fact is emitted for it.
-            if let Ok(binding) = frame.lookup(&Term::<dialog_query::Any>::var(operand))
+        let operands = head.required_operands().map(str::to_owned).chain(
+            head.with()
+                .iter()
+                .filter(|(_, attribute)| attribute.is_optional())
+                .map(|(name, _)| name.to_owned()),
+        );
+        for operand in operands {
+            if let Ok(binding) = frame.lookup(&Term::<dialog_query::Any>::var(&operand))
                 && let Some(value) = binding.as_value()
             {
-                parameters.insert(operand.to_string(), Term::Constant(value.clone()));
+                parameters.insert(operand.clone(), Term::Constant(value.clone()));
             }
         }
 

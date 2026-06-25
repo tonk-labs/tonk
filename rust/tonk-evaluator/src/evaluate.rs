@@ -3633,14 +3633,11 @@ person:\n\
     /// (one without `age`), queried with bare `person:`. The
     /// `age`-less person must still appear.
     ///
-    /// Currently fails because of the dialog-db planner bug captured
-    /// minimally in [`dialog_repro_optional_field_sorted_first_drops_rows`]:
-    /// `age` sorts before `name`, so the optional field leads the
-    /// unbound scan and the `age`-less person is dropped. Un-ignore
-    /// once dialog-db fixes lead-premise selection.
+    /// This previously failed (only the person *with* `age` returned)
+    /// because `age` sorts before `name`, so the optional field led
+    /// the unbound scan. Fixed by the dialog-db query-engine rework
+    /// on `feat/narrowing-diagnostics`; kept as a regression guard.
     #[dialog_common::test]
-    #[ignore = "blocked on dialog-db planner bug — see \
-                dialog_repro_optional_field_sorted_first_drops_rows"]
     async fn it_set_widens_body_derived_entities_with_bare_query() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
         let repo = test_repo(&operator, &profile).await;
@@ -3715,44 +3712,19 @@ person!:\n\
         Ok(())
     }
 
-    /// Minimal **dialog-level** reproduction for upstream (dialog-db)
-    /// triage. Uses only `dialog_query` + `dialog_repository` APIs —
-    /// no tonk notation, analyzer, or reconstruction.
+    /// Regression guard at the **dialog level** for set-widening
+    /// when the optional field sorts alphabetically *before* every
+    /// required field. Uses only `dialog_query` + `dialog_repository`
+    /// APIs — no tonk notation, analyzer, or reconstruction.
     ///
-    /// ## Bug
-    ///
-    /// A `this`-unbound concept query whose **alphabetically-first
-    /// field is optional** drops every entity that lacks that
-    /// optional field, instead of set-widening it to `Absent`.
-    ///
-    /// Here the concept has `bio` (optional) and `name` (required).
-    /// `bio` < `name`, so the planner picks `bio` as the lead
-    /// premise of the unbound scan. The lead optional scan only
-    /// yields entities that *have* a `bio` fact (its `Absent`
-    /// fallback is suppressed because `entity_known` is false while
-    /// `this` is still unbound — see `attribute/query/all.rs`). So
-    /// `alice`, who has no `bio`, never produces a row at all.
-    ///
-    /// Flip the trigger by renaming `bio` → `zbio` (sorts *after*
-    /// `name`): the required `name` leads, and both entities return.
-    /// Dialog's own unit test
-    /// `concept::query::tests::it_executes_concept_with_optional_field`
-    /// passes precisely because its optional field (`nickname`) sorts
-    /// after the required `name`.
-    ///
-    /// ## Expected vs actual
-    ///
-    /// Expected 2 conclusions (alice with `bio` Absent, bob with
-    /// `bio` Present); actual 1 (bob only). The fix belongs in
-    /// dialog's concept-query planner: the lead premise of an
-    /// unbound scan must be a *required* field, never an optional
-    /// one.
+    /// The concept has `bio` (optional, sorts first) and `name`
+    /// (required). A `this`-unbound query must return both alice
+    /// (`bio` Absent) and bob (`bio` Present). This previously
+    /// returned only bob, because the planner led the unbound scan
+    /// with the optional `bio` premise. Fixed by the dialog-db
+    /// query-engine rework on `feat/narrowing-diagnostics`.
     #[dialog_common::test]
-    #[ignore = "reproduces a dialog-db planner bug: an optional field that sorts \
-                alphabetically before every required field becomes the lead premise \
-                of a `this`-unbound scan and drops entities lacking it. Un-ignore \
-                once dialog-db fixes lead-premise selection."]
-    async fn dialog_repro_optional_field_sorted_first_drops_rows() -> anyhow::Result<()> {
+    async fn it_set_widens_optional_field_sorted_before_required() -> anyhow::Result<()> {
         use dialog_query::concept::descriptor::ConceptConclusion;
         use dialog_query::concept::query::ConceptQuery;
         use dialog_query::{Output as _, Parameters, Term};

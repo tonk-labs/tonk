@@ -2709,7 +2709,7 @@ view!:
         let notation_this = derive_this(&pinned, &body);
 
         // The wire descriptor for the `view` concept — `{display}`.
-        let descriptor = DialogConceptDescriptor::from(vec![(
+        let descriptor = DialogConceptDescriptor::try_from(vec![(
             "display",
             AttributeDescriptor::new(
                 "xyz.tonk.view/display".parse().unwrap(),
@@ -2717,7 +2717,8 @@ view!:
                 DialogCardinality::One,
                 Some(Type::String),
             ),
-        )]);
+        )])
+        .unwrap();
 
         // Wire path WITH `this` carried (the real bootstrap shape):
         // derivation is skipped, the carried entity is used verbatim.
