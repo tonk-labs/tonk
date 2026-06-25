@@ -1,6 +1,6 @@
 ---
 name: tonk-bug
-description: Submit (and query/update) a bug in a tonk space using the `tonk`/`slide` CLI and asserted-notation. Use whenever asked to file, report, triage, or list bugs in a tonk repo — NOT the `terma:bug-report` skill (that writes BUGS.md). Covers the `bug` concept schema, value conventions, the next-ident lookup, and the create/retract notation that actually works against this CLI.
+description: Submit (and query/update) a bug in a tonk space using the `tonk`/`slide` CLI and asserted-notation. Use whenever asked to file, report, triage, or list bugs in a tonk repo. Covers the `bug` concept schema, value conventions, the next-ident lookup, and the create/retract notation that actually works against this CLI.
 allowed-tools: Read, Bash(tonk:*), Bash(slide:*), Bash, Glob, Grep
 ---
 
