@@ -111,10 +111,12 @@ impl CustomElement for TonkFab {
 /// - `mouseleave`: schedule collapse after `COLLAPSE_MS`; on fire, remove
 ///   `expanded` class and re-post resize.
 ///
-/// Both closures are `forget()`-ed. This is safe because the FAB element is
-/// created once and lives for the page lifetime. `connected_callback` guards
+/// All closures are `forget()`-ed exactly once. `connected_callback` guards
 /// against double-registration via the `data-fab-hover-bound` flag, so this
-/// function is called at most once per element instance.
+/// function is called at most once per element instance. The collapse
+/// `Closure` is created ONCE here and its JS `Function` handle is captured
+/// by the `on_leave` closure — reused across every `mouseleave` — so no
+/// new closure is allocated per interaction.
 fn attach_hover(element: &HtmlElement) {
     let element_for_enter = element.clone();
     let on_enter = Closure::<dyn Fn()>::new(move || {
@@ -130,17 +132,30 @@ fn attach_hover(element: &HtmlElement) {
         post_resize(&element_for_enter);
     });
 
+    // Build the collapse closure ONCE. Its JS Function handle is captured by
+    // `on_leave` and passed to `setTimeout` on each mouseleave, so no new
+    // Closure is allocated per interaction. `forget()` here is safe: the
+    // element is a singleton that lives for the page lifetime, and the
+    // collapse logic is idempotent (removing an absent class is a no-op).
+    let element_for_collapse = element.clone();
+    let collapse_once = Closure::<dyn Fn()>::new(move || {
+        element_for_collapse.dataset().delete("collapseTimer");
+        element_for_collapse.class_list().remove_1("expanded").ok();
+        post_resize(&element_for_collapse);
+    });
+    let collapse_fn = collapse_once
+        .as_ref()
+        .unchecked_ref::<js_sys::Function>()
+        .clone();
+    collapse_once.forget();
+
     let element_for_leave = element.clone();
     let on_leave = Closure::<dyn Fn()>::new(move || {
-        let element_for_timer = element_for_leave.clone();
-        let collapse = Closure::<dyn Fn()>::new(move || {
-            element_for_timer.dataset().delete("collapseTimer");
-            element_for_timer.class_list().remove_1("expanded").ok();
-            post_resize(&element_for_timer);
-        });
-        let id = set_timeout(collapse.as_ref().unchecked_ref(), COLLAPSE_MS as i32);
-        collapse.forget();
-        element_for_leave.dataset().set("collapseTimer", &id.to_string()).ok();
+        let id = set_timeout(&collapse_fn, COLLAPSE_MS as i32);
+        element_for_leave
+            .dataset()
+            .set("collapseTimer", &id.to_string())
+            .ok();
     });
 
     let target: &web_sys::EventTarget = element.unchecked_ref();

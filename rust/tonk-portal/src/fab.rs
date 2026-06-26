@@ -20,16 +20,13 @@
 //! { "__tonkFab": { "type": "drop", "x": 200, "y": 400 } }
 //! ```
 //!
-//! Host → guest:
-//! ```json
-//! { "__tonkFab": { "type": "position", "x": 200, "y": 400 } }
-//! ```
+//! Host → guest: none (the guest computes submenu direction from its own rect).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Object, Reflect};
+use js_sys::Reflect;
 use tonk_fab::logic::{FabIntent, FabState, geometry_box};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
@@ -226,31 +223,6 @@ impl CustomElement for TonkFabPortal {
                 let _ = style.set_property("height", &format!("{}px", fab_box.height));
                 // Drop the initial centering transform once a real position arrives.
                 let _ = style.remove_property("transform");
-
-                // Send position acknowledgement back to the guest.
-                let reply = Object::new();
-                let inner_reply = Object::new();
-                let _ = Reflect::set(
-                    &inner_reply,
-                    &"type".into(),
-                    &JsValue::from_str("position"),
-                );
-                let _ = Reflect::set(
-                    &inner_reply,
-                    &"x".into(),
-                    &JsValue::from_f64(fab_box.left),
-                );
-                let _ = Reflect::set(
-                    &inner_reply,
-                    &"y".into(),
-                    &JsValue::from_f64(fab_box.top),
-                );
-                let _ = Reflect::set(&reply, &"__tonkFab".into(), &inner_reply);
-                if let Some(cw_win) = iframe.content_window() {
-                    let _ = cw_win
-                        .post_message(&reply, "*")
-                        .ok();
-                }
             }) as Box<dyn FnMut(MessageEvent)>);
 
         if let Some(win) = window() {

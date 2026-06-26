@@ -191,7 +191,7 @@ command!: &workspace/activate-sheet
       the: dom.event.detail/sheet
       as: entity
 
-# The Enable-sync command. Submitting the topbar's "Enable sync" form
+# The Enable-sync command. Submitting the sync chip's "Enable sync" form
 # asserts this transient command; the worker's `CreateSpaceHandler`
 # (which serves both this and `space/create`, keyed on the shared `name`
 # attribute) idempotently attaches the remote to the named space — the
@@ -1877,8 +1877,8 @@ view!:
            resolved repo name into the hidden `name` input on click; the
            `remote` input + `<tonk-default-remote>` button collect the
            URL; submit asserts the transient `space/enable-sync` command.
-           Lives in this always-rendered directory view (with the topbar)
-           so sync can be enabled on any space, including an empty one. -->
+           Lives in this always-rendered directory view so sync can be
+           enabled on any space, including an empty one. -->
       <wa-dialog id="enable-sync" label="Enable sync" class="workspace__sync-dialog">
         <form id="enable-sync-form" class="workspace__sync-form" onsubmit=space/enable-sync>
           <input type="hidden" name="name">
