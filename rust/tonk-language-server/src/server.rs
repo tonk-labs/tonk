@@ -12,10 +12,11 @@ use std::collections::HashMap;
 
 use lsp_types::{
     CompletionItem, CompletionList, CompletionOptions, CompletionParams, CompletionResponse,
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams, Hover,
-    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    MarkupContent, MarkupKind, PositionEncodingKind, PublishDiagnosticsParams, ServerCapabilities,
-    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    CompletionTextEdit, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, MarkupContent, MarkupKind, Position, PositionEncodingKind,
+    PublishDiagnosticsParams, Range, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri,
     notification::{Notification as LspNotificationTrait, PublishDiagnostics},
     request::{Completion, HoverRequest, Initialize, Request as LspRequestTrait},
 };
@@ -269,31 +270,39 @@ impl Server {
         // sources only fire when the host opens one.
         let opened = open_for(uri, env).await;
 
-        if is_head_position(&line_prefix) {
-            return head_completions(opened.as_ref()).await;
-        }
-
-        // A premise's `assert:` value accepts a concept name, a
-        // built-in formula name, or a built-in constraint name —
-        // offer all three.
-        if is_premise_assert_position(&line_prefix) {
+        let mut items = if is_head_position(&line_prefix) {
+            head_completions(opened.as_ref()).await
+        } else if is_premise_assert_position(&line_prefix) {
+            // A premise's `assert:` value accepts a concept name, a
+            // built-in formula name, or a built-in constraint name —
+            // offer all three.
             let mut out = head_completions(opened.as_ref()).await;
             out.extend(formula_completions_items());
             out.extend(constraint_completions_items());
-            return out;
-        }
-
-        if is_variable_position(&line_prefix) {
-            return variable_completions(text, position);
-        }
-
-        if let Some(head) = enclosing_head(text, position)
+            out
+        } else if is_variable_position(&line_prefix) {
+            variable_completions(text, position)
+        } else if let Some(head) = enclosing_head(text, position)
             && is_body_position(&line_prefix)
         {
-            return field_completions(&head, opened.as_ref()).await;
-        }
+            field_completions(&head, opened.as_ref()).await
+        } else {
+            return Vec::new();
+        };
 
-        Vec::new()
+        // Without an explicit `text_edit`, `@codemirror/lsp-client`
+        // computes the replace range from `wordAt`, whose default
+        // word regex stops at `/`. A namespaced completion like
+        // `tonk/employee` accepted over a typed `tonk/emp` then
+        // only replaces `emp`, leaving `tonk/` to produce
+        // `tonk/tonk/employee` (BUG-21). Pin each item's edit to the
+        // whole partial token the cursor sits in so the client
+        // replaces the namespace prefix too.
+        let range = completion_replace_range(&line_prefix, position);
+        for item in &mut items {
+            apply_replace_range(item, range);
+        }
+        items
     }
 
     /// Compute hover contents for a `textDocument/hover`
@@ -657,6 +666,59 @@ fn is_variable_position(line_prefix: &str) -> bool {
 /// the variable / anchor namespace forbids namespace separators.
 fn is_symbol_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '+')
+}
+
+/// Charset for the partial token a completion replaces. A superset
+/// of [`is_symbol_char`] that also admits `/`: concept and formula
+/// names are namespaced (`tonk/employee`, `data/text`), so the token
+/// the user is mid-typing spans the namespace separator.
+fn is_completion_token_char(c: char) -> bool {
+    is_symbol_char(c) || c == '/'
+}
+
+/// The range a completion item should replace: the whole partial
+/// token immediately to the left of the cursor. Walks back from the
+/// cursor over [`is_completion_token_char`], stopping at the `?`/`&`
+/// sigil (which is not part of the inserted text), whitespace, or
+/// the line start. Returns a zero-width range at the cursor when no
+/// token precedes it (a completion triggered on empty space inserts
+/// without replacing).
+///
+/// `line_prefix` is the text from the line start up to the cursor,
+/// so its length is the cursor column.
+fn completion_replace_range(line_prefix: &str, position: Position) -> Range {
+    let end_col = line_prefix.len();
+    let start_col = line_prefix
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_completion_token_char(*c))
+        .last()
+        .map_or(end_col, |(idx, _)| idx);
+    Range {
+        start: Position {
+            line: position.line,
+            character: start_col as u32,
+        },
+        end: Position {
+            line: position.line,
+            character: end_col as u32,
+        },
+    }
+}
+
+/// Attach `range` to a completion item as an explicit `text_edit`,
+/// using the item's `insert_text` (falling back to its `label`) as
+/// the replacement. Clears `insert_text` since `text_edit` supersedes
+/// it. A no-op when the item already carries its own `text_edit`.
+fn apply_replace_range(item: &mut CompletionItem, range: Range) {
+    if item.text_edit.is_some() {
+        return;
+    }
+    let new_text = item
+        .insert_text
+        .take()
+        .unwrap_or_else(|| item.label.clone());
+    item.text_edit = Some(CompletionTextEdit::Edit(TextEdit { range, new_text }));
 }
 
 /// Collect every named logic variable (`?<name>`) and anchor
@@ -1543,6 +1605,70 @@ mod tests {
                 "expected `{name}` in completion list, got {labels:?}",
             );
         }
+    }
+
+    /// Accepting a namespaced completion over a typed partial name
+    /// must replace the *whole* token, namespace prefix included.
+    /// Each item carries an explicit `textEdit` whose range starts
+    /// before the `/` (at the token start), not after it — otherwise
+    /// the client keeps the typed `math/` and produces
+    /// `math/math/sum` (BUG-21).
+    #[dialog_common::test]
+    async fn it_replaces_the_namespace_prefix_on_namespaced_completions() {
+        let mut server = Server::new();
+        let _ = run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "capabilities": {} }
+            }),
+        )
+        .await;
+        // Cursor sits just after the partial `math/su`.
+        let text = "rule!:\n  assert!: counter\n  when:\n    - assert: math/su";
+        run(
+            &mut server,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {
+                    "textDocument": {
+                        "uri": "tonk-buffer:///test",
+                        "languageId": "carry-asserted",
+                        "version": 1,
+                        "text": text
+                    }
+                }
+            }),
+        )
+        .await;
+        let _ = server.take_outbound();
+        // `    - assert: math/su` is 21 characters; the cursor is at
+        // the end of the line.
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": "tonk-buffer:///test" },
+                "position": { "line": 3, "character": 21 }
+            }
+        });
+        let reply = run(&mut server, &req).await.expect("response");
+        let items = reply["result"]["items"].as_array().expect("items array");
+        let sum = items
+            .iter()
+            .find(|i| i["label"] == "math/sum")
+            .expect("math/sum offered");
+        let edit = &sum["textEdit"];
+        // The range starts at the `m` of `math/su` (column 14, right
+        // after `    - assert: `), spanning the whole partial token,
+        // and replaces it with the full namespaced name.
+        assert_eq!(edit["range"]["start"]["character"], 14);
+        assert_eq!(edit["range"]["end"]["character"], 21);
+        assert_eq!(edit["newText"], "math/sum");
     }
 
     /// Inside a body (line indented, cursor past the indent)
