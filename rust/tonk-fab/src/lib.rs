@@ -1,10 +1,22 @@
 //! `tonk-fab` — floating action button element.
 //!
 //! `logic` contains the pure geometry calculations (DOM-free, native-testable).
-//! The DOM element and registration live here; full implementation lands in
-//! Task 6.
+//! The DOM element and `register()` live here. The element measures its own
+//! content box on connect and posts a `{ __tonkFab: { type: "resize", w, h } }`
+//! message to its parent window so the `<tonk-fab-portal>` host can resize the
+//! iframe to fit.
 
 pub mod logic;
 
-/// Register `<tonk-fab>` with the page. Implemented in Task 6.
+#[cfg(target_arch = "wasm32")]
+mod element;
+
+/// Register `<tonk-fab>` with the page. Idempotent — safe to call multiple times.
+#[cfg(target_arch = "wasm32")]
+pub fn register() {
+    element::register();
+}
+
+/// No-op on non-wasm targets (tests / native build checks).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn register() {}

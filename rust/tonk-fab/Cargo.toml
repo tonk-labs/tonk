@@ -10,6 +10,7 @@ description = "<tonk-fab> custom element — floating action button rendered in 
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+custom-elements = { workspace = true }
 js-sys = { workspace = true }
 serde_json = { workspace = true }
 tonk-common = { workspace = true }
@@ -17,6 +18,10 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
 web-sys = { workspace = true, features = [
     "console",
+    "CustomElementRegistry",
+    "DomRect",
+    "Element",
+    "HtmlElement",
     "Window",
 ] }
 

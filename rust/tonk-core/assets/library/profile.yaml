@@ -143,6 +143,114 @@ view/directory!:
     </div>
 
 # ============================================================
+# FAB — floating action button view (rendered in the FAB portal iframe)
+# ============================================================
+#
+# These declarations live on profile/meta because the FAB portal is
+# scoped to the profile branch (`<tonk-repository profile>`). The
+# guest renders `tonk:profile/fab` via a `<tonk-display>` mounted
+# by the shell's FAB portal content string.
+#
+# Identity note: `state:self` (`tonk:identity`) is stamped on the
+# SPACE branch overlay, not profile/meta. Until the worker stamps
+# identity on the profile branch too, the identity chip here renders
+# from the `data-did`/`data-name` host attributes passed through the
+# portal content string from the outer shell context — which itself
+# resolves `state:self` on the space branch and embeds the values.
+
+# The FAB concept — a structural marker; the view reads all display
+# values directly from the host element's data attributes via the
+# `{dom.host/data-*}` template escape hatch (the same mechanism the
+# invite-link and agent-prompt views use for `data-base`/`data-page`).
+# The outer shell view template embeds `{space}` (from the site entity)
+# plus identity fields into the `<tonk-display>` element's `data-*`
+# attributes inside the portal content string, so the FAB view template
+# reads them back as `{dom.host/data-space}` etc.
+concept!: &profile/fab
+  this: tonk:profile/fab
+  description: The FAB overlay view (profile-sourced workspace chrome).
+  with:
+    space:
+      description: >
+        The active space name. The FAB portal content string (in the shell
+        view) embeds `{space}` from the site entity as `data-space` on the
+        `<tonk-display>` element; the view template reads it back as
+        `{dom.host/data-space}`. Declared here so the concept body satisfies
+        the analyzer's at-least-one-field requirement — the field is not
+        resolved from the branch DB.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
+
+# A directory view (no entity): the FAB portal mounts
+# `<tonk-display model=tonk:profile/fab>` with no entity, so this
+# directory view resolves. Space + identity arrive as `data-*` host
+# attributes on the `<tonk-display>` element in the portal content.
+view/directory!: &profile/fab/view
+  this: id:tonk:profile/fab/view
+  model: tonk:profile/fab
+  display: |
+    <tonk-fab>
+      <div class="fab">
+        <span class="fab__circle" data-sync="idle"></span>
+        <span class="fab__identity">
+          <tonk-sigil class="fab__sigil" did={dom.host/data-did}></tonk-sigil>
+          <span class="fab__name">{dom.host/data-name}</span>
+        </span>
+        <span class="fab__space">{dom.host/data-space}</span>
+      </div>
+      <style>
+        :host, tonk-fab { display: block; }
+        .fab {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 12px;
+          background: var(--wa-color-surface-raised, #fff);
+          border: 1px solid var(--wa-color-surface-border, #ddd);
+          border-radius: 24px;
+          font-family: var(--wa-font-family-body, sans-serif);
+          font-size: 13px;
+          white-space: nowrap;
+        }
+        .fab__circle {
+          flex: none;
+          width: 24px;
+          height: 24px;
+          border-radius: 50%;
+          background: #cddc39;
+        }
+        .fab__identity {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .fab__sigil {
+          flex: none;
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          overflow: hidden;
+        }
+        .fab__name {
+          font-weight: 500;
+          color: var(--wa-color-text-normal, #111);
+          max-width: 120px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .fab__space {
+          color: var(--wa-color-text-quiet, #666);
+          font-family: var(--wa-font-family-code, monospace);
+          font-size: 11px;
+          max-width: 80px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+      </style>
+    </tonk-fab>
+
+# ============================================================
 # JOIN — redeem an invite at /join (runs on the profile meta branch)
 # ============================================================
 

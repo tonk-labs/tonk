@@ -4844,6 +4844,7 @@ dependencies = [
 name = "tonk-fab"
 version = "0.1.0"
 dependencies = [
+ "custom-elements",
  "dialog-common",
  "js-sys",
  "serde_json",
@@ -4864,6 +4865,7 @@ dependencies = [
  "js-sys",
  "tonk-board",
  "tonk-display",
+ "tonk-fab",
  "tonk-portal",
  "tonk-sigil",
  "tonk-tree",

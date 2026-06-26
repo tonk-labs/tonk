@@ -1695,7 +1695,7 @@ view!: &workspace/shell/view
       </tonk-repository>
       <tonk-repository profile>
         <tonk-branch name="meta">
-          <tonk-fab-portal runtime content="<div style='width:64px;height:64px;border-radius:50%;background:#cddc39'></div>"></tonk-fab-portal>
+          <tonk-fab-portal runtime content="<tonk-host><tonk-display model='tonk:profile/fab' data-space='{space}'></tonk-display></tonk-host>"></tonk-fab-portal>
         </tonk-branch>
       </tonk-repository>
     </div>

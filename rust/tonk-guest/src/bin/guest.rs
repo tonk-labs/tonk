@@ -36,6 +36,7 @@ pub fn start() {
     tonk_board::register();
     tonk_workspace::register();
     tonk_tree::register();
+    tonk_fab::register();
     // A view inside the guest can itself mount a `<tonk-portal>` (the Sketch
     // sheet's imperative canvas). Register it so a NESTED portal upgrades —
     // it nests cleanly since the canvas portal is plain `content=` (a
