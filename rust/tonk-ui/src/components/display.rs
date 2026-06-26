@@ -6,7 +6,7 @@
 //! are captured whole instead of being truncated at the first slash.
 //!
 //! Mounts a `<tonk-display>` element. With no `subject` the space's
-//! default model ([`SPACE_MODEL`]) is shown. Otherwise the segment
+//! default model ([`SPACE_CONCEPT`]) is shown. Otherwise the segment
 //! encodes up to three attributes with `@` and `!` delimiters:
 //!
 //! - `{model}` — directory mode: only `model` is set, so the element
@@ -50,7 +50,7 @@ use tonk_schema::parse_space;
 /// The model a bare `/space/{name}/` renders — the space's primary
 /// interface. A user can override it per repository; it presets to the
 /// workspace concept from the wireframes.
-const SPACE_MODEL: &str = "tonk/space";
+const SPACE_CONCEPT: &str = "tonk/space";
 
 #[derive(Params, PartialEq, Clone, Debug)]
 pub struct TonkDisplayParams {
@@ -97,13 +97,13 @@ pub fn TonkDisplayView() -> impl IntoView {
         Some(s) => parse_subject(&s),
         None => Subject {
             entity: None,
-            model: SPACE_MODEL.to_owned(),
+            concept: SPACE_CONCEPT.to_owned(),
             view: None,
         },
     });
     let entity_name = Signal::derive_local(move || parsed.get().entity.filter(|s| !s.is_empty()));
-    let model_name =
-        Signal::derive_local(move || Some(parsed.get().model).filter(|s| !s.is_empty()));
+    let concept_name =
+        Signal::derive_local(move || Some(parsed.get().concept).filter(|s| !s.is_empty()));
     let view_name = Signal::derive_local(move || parsed.get().view.filter(|s| !s.is_empty()));
 
     // Run background sync for the space while the workspace is shown —
@@ -172,8 +172,8 @@ pub fn TonkDisplayView() -> impl IntoView {
                 if let Some(uri) = uri {
                     let _ = host.set_attribute("entity", &uri);
                 }
-                if let Some(m) = model_name.get() {
-                    let _ = host.set_attribute("model", &m);
+                if let Some(m) = concept_name.get() {
+                    let _ = host.set_attribute("concept", &m);
                 }
                 if let Some(v) = view_name.get() {
                     let _ = host.set_attribute("view", &v);
@@ -223,7 +223,7 @@ pub fn TonkDisplayView() -> impl IntoView {
 #[derive(Clone)]
 struct Subject {
     entity: Option<String>,
-    model: String,
+    concept: String,
     view: Option<String>,
 }
 
@@ -243,13 +243,13 @@ fn parse_subject(segment: &str) -> Subject {
         Some((head, view)) => (head, Some(view.to_owned())),
         None => (segment, None),
     };
-    let (entity, model) = match head.split_once('@') {
-        Some((entity, model)) => (Some(entity.to_owned()), model.to_owned()),
+    let (entity, concept) = match head.split_once('@') {
+        Some((entity, concept)) => (Some(entity.to_owned()), concept.to_owned()),
         None => (None, head.to_owned()),
     };
     Subject {
         entity,
-        model,
+        concept,
         view,
     }
 }

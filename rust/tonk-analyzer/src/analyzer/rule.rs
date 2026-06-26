@@ -1411,7 +1411,10 @@ rule!:\n\
     async fn it_lifts_a_rule_with_an_equality_constraint_premise() {
         let fixture = new_fixture().await;
         fixture
-            .declare("artifact", one_entity_field("io.gozala.artifact", "model"))
+            .declare(
+                "artifact",
+                one_entity_field("io.gozala.artifact", "concept"),
+            )
             .await;
         fixture
             .declare("request", one_text_field("io.gozala.request", "name"))
@@ -1424,7 +1427,7 @@ rule!:
     - assert: request
       where: { this: ?this, name: ?name }
     - assert: ==
-      where: { this: ?model, is: about:blank }
+      where: { this: ?concept, is: about:blank }
 "#;
         let parsed = parse(doc);
         assert!(
@@ -1450,7 +1453,10 @@ rule!:
     async fn it_rejects_unknown_constraint_operand() {
         let fixture = new_fixture().await;
         fixture
-            .declare("artifact", one_entity_field("io.gozala.artifact", "model"))
+            .declare(
+                "artifact",
+                one_entity_field("io.gozala.artifact", "concept"),
+            )
             .await;
 
         let doc = r#"
@@ -1481,7 +1487,10 @@ rule!:
     async fn it_rejects_missing_constraint_operand() {
         let fixture = new_fixture().await;
         fixture
-            .declare("artifact", one_entity_field("io.gozala.artifact", "model"))
+            .declare(
+                "artifact",
+                one_entity_field("io.gozala.artifact", "concept"),
+            )
             .await;
 
         let doc = r#"
@@ -1596,9 +1605,9 @@ view!:\n\
 
         let fixture = new_fixture().await;
 
-        // A `view` concept whose sole field, `model`, is an entity
+        // A `view` concept whose sole field, `concept`, is an entity
         // reference, plus two distinct concepts it can point at.
-        let view = one_entity_field("xyz.tonk.view", "model");
+        let view = one_entity_field("xyz.tonk.view", "concept");
         fixture.declare("view", view.clone()).await;
         fixture
             .declare("counter", one_text_field("xyz.tonk.counter", "count"))
@@ -1607,10 +1616,13 @@ view!:\n\
             .declare("greeting", one_text_field("xyz.tonk.greeting", "message"))
             .await;
 
-        // Helper: lower a `view!: { model: <name> }` document and
+        // Helper: lower a `view!: { concept: <name> }` document and
         // pull the derived `this` entity out of the lone statement.
-        async fn notation_this_for(fixture: &Fixture<impl FixtureEnv>, model_name: &str) -> Entity {
-            let doc = format!("view!:\n  model: {model_name}\n");
+        async fn notation_this_for(
+            fixture: &Fixture<impl FixtureEnv>,
+            concept_name: &str,
+        ) -> Entity {
+            let doc = format!("view!:\n  concept: {concept_name}\n");
             let syntax = parse(&doc).syntax.expect("parsed syntax");
             let analysis = fixture
                 .analyze(&syntax)
@@ -1646,7 +1658,7 @@ view!:\n\
         // entity, so both paths see identical `(predicate, payload)`.
         let counter_concept = one_text_field("xyz.tonk.counter", "count").this();
         let mut parameters = ValueMap::new();
-        parameters.insert("model".into(), Value::Entity(counter_concept));
+        parameters.insert("concept".into(), Value::Entity(counter_concept));
         let wire_plan = application_plan_from_predicate(PredicateApplication {
             predicate: DurableConceptDescriptor::Durable(view),
             parameters,
@@ -1679,14 +1691,14 @@ view!:\n\
     async fn it_rejects_unresolved_reference_in_derived_entity() {
         let fixture = new_fixture().await;
         // Declare `view` (so the head concept resolves) but NOT the
-        // concept its `model` points at.
+        // concept its `concept` points at.
         fixture
-            .declare("view", one_entity_field("xyz.tonk.view", "model"))
+            .declare("view", one_entity_field("xyz.tonk.view", "concept"))
             .await;
 
         let doc = "\
 view!: &broken\n\
-\x20 model: nonexistent\n";
+\x20 concept: nonexistent\n";
         let syntax = parse(doc).syntax.expect("parsed syntax");
         let err = fixture
             .analyze(&syntax)

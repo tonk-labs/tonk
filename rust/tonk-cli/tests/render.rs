@@ -35,7 +35,7 @@ async fn seeded() -> Result<TestSite> {
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline(
         r#"view!: &person-card
-  model: person
+  concept: person
   display: "<article><h2>{name}</h2></article>"
 "#,
     )
@@ -76,11 +76,11 @@ async fn it_renders_one_entity_through_its_view() -> Result<()> {
 async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
-    // A view that reads {dom.host/model} into an attribute.
+    // A view that reads {dom.host/concept} into an attribute.
     test.eval_inline(
         r#"view!: &person-card
-  model: person
-  display: "<article data-model=\"{dom.host/model}\"><h2>{name}</h2></article>"
+  concept: person
+  display: "<article data-model=\"{dom.host/concept}\"><h2>{name}</h2></article>"
 "#,
     )
     .await?;
@@ -88,7 +88,7 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
 
     let route = RenderRoute::parse("bob@person")?;
     let html = render::render(&test.site, &route).await?;
-    // {dom.host/model} resolves to the route's model name.
+    // {dom.host/concept} resolves to the route's model name.
     assert!(
         html.contains("data-model=\"person\""),
         "dom.host/model resolved: {html}"
@@ -105,7 +105,7 @@ async fn it_renders_a_directory_of_every_instance() -> Result<()> {
     // `tonk:_` default carousel so the test asserts this exact template.
     test.eval_inline(
         r#"view/directory!: &people
-  model: person
+  concept: person
   display: "<ul><li data-id=\"{this}\">{name}</li></ul>"
 "#,
     )
@@ -153,7 +153,7 @@ async fn it_falls_back_to_the_default_model_view() -> Result<()> {
     // A view keyed to the `tonk:_` default model rather than `person`.
     test.eval_inline(
         r#"view!: &fallback
-  model: tonk:_
+  concept: tonk:_
   display: "<div class=\"default\">{name}</div>"
 "#,
     )

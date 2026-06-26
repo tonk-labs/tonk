@@ -40,7 +40,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{CustomEvent, CustomEventInit, Element, HtmlElement, Node, window};
 
 use crate::resolve::{
-    directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_model_query,
+    directory_view_predicate, entity_query, instances_query, looks_like_uri, view_by_concept_query,
     view_predicate,
 };
 use crate::state::{self, State};
@@ -95,16 +95,16 @@ struct Inner {
     /// a one-shot) so a concept seeded *after* the element mounts
     /// pushes a frame and the display recovers from `no-model` without
     /// a reload. Each model frame (re)starts the downstream view +
-    /// entity flow via `handle_model_frame`.
-    model_sub: Option<HostSubscription>,
+    /// entity flow via `handle_concept_frame`.
+    concept_sub: Option<HostSubscription>,
     /// Bumped every time a model frame (re)starts the downstream flow.
     /// A downstream async chain captures this at spawn and bails if a
     /// newer model frame has superseded it, mirroring `generation` but
     /// scoped to the model→downstream restart so a late model frame
     /// doesn't race an in-flight downstream setup.
     downstream_generation: u64,
-    /// The `(model_entity, descriptor_json)` the current downstream flow
-    /// was started for, recorded **synchronously** in `handle_model_frame`
+    /// The `(concept_entity, descriptor_json)` the current downstream flow
+    /// was started for, recorded **synchronously** in `handle_concept_frame`
     /// before the async `start_downstream` spawns. The model subscription
     /// re-pushes a frame on every branch revision (including unrelated
     /// data writes); this lets the handler skip restarting the downstream
@@ -121,7 +121,7 @@ struct Inner {
     /// values is order-independent, so an unrelated branch write (which
     /// re-pushes the same concept with shuffled keys) no longer counts as
     /// a change and the list is not torn down.
-    resolved_model: Option<(String, serde_json::Value)>,
+    resolved_concept: Option<(String, serde_json::Value)>,
     /// Cancels the view (or views-for-model) subscription on
     /// disconnect / attribute change. Dropping the handle calls
     /// the host's `cancel()` and dispatches `tonk-unsubscribe`.
@@ -177,15 +177,15 @@ struct Inner {
     portal_descriptor: Option<String>,
     /// The resolved model entity, surfaced to the portal as its `model`
     /// attribute (the bridge's `context.model`).
-    portal_model: Option<String>,
+    portal_concept: Option<String>,
     /// The view-concept descriptor used to resolve a view by model.
     /// Retained so the `_:_` default-view fallback can re-query against
     /// the same view concept when the model-specific view frame is
     /// empty.
     view_descriptor: Option<serde_json::Value>,
-    /// The resolved model entity (`model_entity`), retained for the
+    /// The resolved model entity (`concept_entity`), retained for the
     /// `_:_` fallback query and for comparison.
-    model_entity: Option<String>,
+    concept_entity: Option<String>,
     /// True when the currently-mounted slide came from the `_:_`
     /// default view rather than a model-specific view. A non-empty
     /// model-specific view frame replaces it (the specific view takes
@@ -203,9 +203,9 @@ impl Inner {
         Self {
             disposed: false,
             generation: 0,
-            model_sub: None,
+            concept_sub: None,
             downstream_generation: 0,
-            resolved_model: None,
+            resolved_concept: None,
             view_sub: None,
             entity_sub: None,
             last_frame: Vec::new(),
@@ -217,9 +217,9 @@ impl Inner {
             delegate_generation: 0,
             depth_annotator: None,
             portal_descriptor: None,
-            portal_model: None,
+            portal_concept: None,
             view_descriptor: None,
-            model_entity: None,
+            concept_entity: None,
             default_slide: false,
             directory: false,
         }
@@ -228,13 +228,13 @@ impl Inner {
     fn abort_all(&mut self) {
         // Dropping the subscriptions cancels via the host and
         // dispatches `tonk-unsubscribe`.
-        self.model_sub.take();
+        self.concept_sub.take();
         self.view_sub.take();
         self.entity_sub.take();
         // Forget the resolved concept so a restart (attribute change /
         // reconnect) re-resolves and remounts even if the new model
         // happens to resolve to the same concept.
-        self.resolved_model = None;
+        self.resolved_concept = None;
         // Drop the delegate — its impl removes listeners from the
         // host on Drop.
         self.delegate.take();
@@ -262,7 +262,7 @@ impl CustomElement for TonkDisplay {
         // restarting. `data-base` lets a wrapping `<tonk-origin>` deliver
         // the invite-URL base (`{origin}/join`) into the view after mount.
         // See `attribute_changed_callback`.
-        &["entity", "model", "view", "data-active", "data-base"]
+        &["entity", "concept", "view", "data-active", "data-base"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -430,7 +430,7 @@ fn on_reset(host: &Element, state: &Rc<RefCell<Inner>>, payload: JsValue, opts: 
         }
     };
     match tag.as_deref() {
-        Some("model") => handle_model_frame(host, state, conclusions),
+        Some("concept") => handle_concept_frame(host, state, conclusions),
         Some("view") => handle_view_frame(host, state, conclusions),
         Some("entity") => handle_entity_frame(host, state, conclusions),
         _ => {
@@ -600,7 +600,7 @@ fn check_downstream(
 /// subscription. The model resolve is a live subscription (not a
 /// one-shot) so a concept seeded *after* the element mounts pushes a
 /// frame and the display leaves `no-model` without a reload. Each
-/// model frame routes to `handle_model_frame`, which (re)starts the
+/// model frame routes to `handle_concept_frame`, which (re)starts the
 /// downstream view + entity flow ([`start_downstream`]).
 ///
 /// Attribute errors (bad `entity`, missing `model`, carousel) surface
@@ -632,7 +632,7 @@ async fn run(
 
     // `view="about:blank"` is the carousel sentinel: enumerate every
     // view defined for the model. This is the two-step flow from the
-    // design (step 1: query the `{model}` display contract for all
+    // design (step 1: query the `{concept}` display contract for all
     // conforming view kinds; step 2: resolve each kind's template).
     // Step 2 is not built yet, so carousel surfaces a clear error
     // rather than rendering a half-resolved frame.
@@ -645,13 +645,13 @@ async fn run(
 
     // `model` is required: it both projects the subject's fields and
     // constrains the view query.
-    let model = host
-        .get_attribute("model")
+    let concept = host
+        .get_attribute("concept")
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             ErrorDetail::new(
                 ErrorKind::Descriptor,
-                "<tonk-display> requires a `model` attribute",
+                "<tonk-display> requires a `concept` attribute",
             )
         })?;
 
@@ -659,26 +659,26 @@ async fn run(
     // name rarely lands late; an attribute change restarts the flow),
     // then *subscribe* to its phase-1 concept query so a concept seeded
     // after mount pushes a frame. The empty frame is `no-model`, not a
-    // hard error — `handle_model_frame` keeps the subscription and
+    // hard error — `handle_concept_frame` keeps the subscription and
     // starts the downstream flow once the concept lands.
-    let model_q = resolve_model_query(host, &model).await?;
+    let concept_q = resolve_concept_query(host, &concept).await?;
     check_generation(&state, generation)?;
-    let model_body = to_body(&model_q)?;
-    let model_tag = JsValue::from_str("model");
-    let model_sub = host_consumer::subscribe(host, &model_body, Some(&model_tag))?;
+    let concept_body = to_body(&concept_q)?;
+    let concept_tag = JsValue::from_str("concept");
+    let concept_sub = host_consumer::subscribe(host, &concept_body, Some(&concept_tag))?;
     {
         let mut s = state.borrow_mut();
         if s.generation != generation {
             return Err(ErrorDetail::new(ErrorKind::Descriptor, "superseded"));
         }
-        s.model_sub = Some(model_sub);
+        s.concept_sub = Some(concept_sub);
     }
     Ok(())
 }
 
-/// Phase 2: with the model concept resolved (`model_entity` +
+/// Phase 2: with the model concept resolved (`concept_entity` +
 /// `descriptor_json`), open the view + entity subscriptions. Invoked
-/// from `handle_model_frame` on every non-empty model frame, so a
+/// from `handle_concept_frame` on every non-empty model frame, so a
 /// branch revision that (re)defines the model — or a view that lands
 /// later — re-runs this against the freshest descriptor. Tears down
 /// the prior view/entity subscriptions first and bumps
@@ -686,7 +686,7 @@ async fn run(
 async fn start_downstream(
     host: &Element,
     state: Rc<RefCell<Inner>>,
-    model_entity: String,
+    concept_entity: String,
     descriptor_json: String,
     downstream_generation: u64,
 ) -> Result<(), ErrorDetail> {
@@ -714,7 +714,7 @@ async fn start_downstream(
             // model subscription leaves once the view concept lands and
             // the next model frame re-runs this. Other resolve failures
             // still propagate.
-            match resolve_model(host, view_ref).await {
+            match resolve_concept(host, view_ref).await {
                 Ok((_, view_descriptor_json)) => {
                     check_downstream(&state, downstream_generation)?;
                     serde_json::from_str(&view_descriptor_json).map_err(|e| {
@@ -722,7 +722,7 @@ async fn start_downstream(
                     })?
                 }
                 Err(err) if err.kind == ErrorKind::UnknownSource => {
-                    let model = host.get_attribute("model").unwrap_or_default();
+                    let concept = host.get_attribute("concept").unwrap_or_default();
                     state::set_absence(
                         host,
                         State::NoView,
@@ -730,7 +730,7 @@ async fn start_downstream(
                         &format!(
                             r#"view:
   this: {view_ref}
-  model: {model}"#
+  concept: {concept}"#
                         ),
                     );
                     return Ok(());
@@ -739,7 +739,7 @@ async fn start_downstream(
             }
         }
     };
-    let view_q = view_by_model_query(&view_descriptor, &model_entity).map_err(|e| {
+    let view_q = view_by_concept_query(&view_descriptor, &concept_entity).map_err(|e| {
         ErrorDetail::new(ErrorKind::Descriptor, format!("view-by-model query: {e}"))
     })?;
     let view_body = to_body(&view_q)?;
@@ -792,7 +792,7 @@ async fn start_downstream(
         // model-specific view frame is empty, `handle_view_frame`
         // re-queries the same view concept with `model = _:_`.
         s.view_descriptor = Some(view_descriptor.clone());
-        s.model_entity = Some(model_entity.clone());
+        s.concept_entity = Some(concept_entity.clone());
         // Context handed to a `<tonk-portal>` if a view frame routes
         // here in portal mode: the subject's model entity (the
         // bridge's `context.model`) and its descriptor (so the bridge
@@ -800,7 +800,7 @@ async fn start_downstream(
         // fetches data itself, so the entity subscription above just
         // no-ops against the portal (it has no `draw`).
         s.portal_descriptor = Some(descriptor_json);
-        s.portal_model = Some(model_entity);
+        s.portal_concept = Some(concept_entity);
     }
     dispatch_event(host, "tonk-display:connected", None);
     Ok(())
@@ -868,21 +868,21 @@ fn first_field(value: &JsValue, field: &str) -> Result<Option<String>, ErrorDeta
 /// resolve — the concept carries a `Name` claim but no
 /// `dialog.meta/name`, so a direct `name`-filtered Phase-1 would miss
 /// it. A value that is already a URI skips name resolution.
-async fn resolve_model(host: &Element, source: &str) -> Result<(String, String), ErrorDetail> {
-    let phase1_q = resolve_model_query(host, source).await?;
+async fn resolve_concept(host: &Element, source: &str) -> Result<(String, String), ErrorDetail> {
+    let phase1_q = resolve_concept_query(host, source).await?;
     let result = host_consumer::query(host, &to_body(&phase1_q)?).await?;
     extract_phase1(&result)
 }
 
 /// Build the phase-1 concept query for `source` *without executing it*.
 ///
-/// Splits the front half of [`resolve_model`]: a bare bookmark name is
+/// Splits the front half of [`resolve_concept`]: a bare bookmark name is
 /// resolved through the Name concept (`id:<name>` →
 /// `dialog.name/referent`) into a concept URI (a one-shot `query`),
 /// then `phase1_query` is built from the resolved `ParsedSource`. The
 /// caller decides whether to run it once or open a subscription on it —
 /// the model link subscribes so a late-seeded concept recovers.
-async fn resolve_model_query(host: &Element, source: &str) -> Result<Query, ErrorDetail> {
+async fn resolve_concept_query(host: &Element, source: &str) -> Result<Query, ErrorDetail> {
     let parsed: ParsedSource = parse_source(source);
     let parsed = if parsed.is_uri() {
         parsed
@@ -903,7 +903,7 @@ async fn resolve_model_query(host: &Element, source: &str) -> Result<Query, Erro
     Ok(phase1_query(&parsed))
 }
 
-/// Route a `"model"` subscription frame. The model resolve is a live
+/// Route a `"concept"` subscription frame. The model resolve is a live
 /// subscription, so this fires on every branch revision touching the
 /// concept-of-concepts view:
 ///
@@ -914,20 +914,20 @@ async fn resolve_model_query(host: &Element, source: &str) -> Result<Query, Erro
 /// - **resolved row** → bump `downstream_generation` and (re)start the
 ///   downstream view + entity flow against the freshest descriptor, so
 ///   a model (re)definition or a late-landing view is picked up.
-fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
+fn handle_concept_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Vec<Conclusion>) {
     let resolved = extract_phase1_conclusion(conclusions);
-    let Some((model_entity, descriptor_json)) = resolved else {
+    let Some((concept_entity, descriptor_json)) = resolved else {
         // The concept is not on the branch yet. Stay subscribed; the
         // embedder may skin `no-model` via a `slot="no-model"` child,
         // otherwise the built-in fallback names the missing model.
-        let model = host.get_attribute("model").unwrap_or_default();
+        let concept = host.get_attribute("concept").unwrap_or_default();
         state::set_absence(
             host,
-            State::NoModel,
-            "Model not found",
+            State::NoConcept,
+            "Concept not found",
             &format!(
                 r#"concept:
-  this: {model}"#
+  this: {concept}"#
             ),
         );
         return;
@@ -944,7 +944,7 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         // view/entity subscriptions and wipe the rendered rows. The
         // entity subscription already streams data updates in place.
         //
-        // The comparison is against `resolved_model`, set synchronously
+        // The comparison is against `resolved_concept`, set synchronously
         // here (not `start_downstream`'s async tail), so a burst of model
         // frames during one write doesn't each see a stale value and
         // remount.
@@ -958,11 +958,11 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         // still compares.
         let next_descriptor = serde_json::from_str::<serde_json::Value>(&descriptor_json)
             .unwrap_or_else(|_| serde_json::Value::String(descriptor_json.clone()));
-        let next = (model_entity.clone(), next_descriptor);
-        if s.resolved_model.as_ref() == Some(&next) {
+        let next = (concept_entity.clone(), next_descriptor);
+        if s.resolved_concept.as_ref() == Some(&next) {
             return;
         }
-        s.resolved_model = Some(next);
+        s.resolved_concept = Some(next);
         s.downstream_generation = s.downstream_generation.wrapping_add(1);
         s.downstream_generation
     };
@@ -972,7 +972,7 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
         if let Err(err) = start_downstream(
             &host,
             state.clone(),
-            model_entity,
+            concept_entity,
             descriptor_json,
             downstream_generation,
         )
@@ -991,7 +991,7 @@ fn handle_model_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: V
 }
 
 /// Decode a phase-1 subscription frame (already-deserialized
-/// `Vec<Conclusion>`) into `(model_entity, descriptor_json)`. Returns
+/// `Vec<Conclusion>`) into `(concept_entity, descriptor_json)`. Returns
 /// `None` for an empty frame or a row missing the `source` descriptor —
 /// both are the `no-model` steady state, not a hard error.
 fn extract_phase1_conclusion(conclusions: Vec<Conclusion>) -> Option<(String, String)> {
@@ -1026,7 +1026,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
     // document mounted into a `<tonk-portal>` — whose bridge fetches
     // the entity's own data through the live `tonk` object — rather
     // than interpolated inline. `type` rides the view query only when
-    // the view concept declares it (see `view_by_model_query`), so an
+    // the view concept declares it (see `view_by_concept_query`), so an
     // ordinary view never trips this; a `display` change just reloads
     // the portal's `content` in place.
     // No model-specific view resolved: fall back to the `_:_` default
@@ -1140,7 +1140,7 @@ fn handle_view_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: Ve
 /// that has no specific view of that kind. `tonk:_` is the
 /// wildcard-model entity seeded by core.yaml. See
 /// `tonk-core/docs/templates.md`.
-const DEFAULT_MODEL: &str = "tonk:_";
+const DEFAULT_CONCEPT: &str = "tonk:_";
 
 /// Query the `_:_` default view (same view concept, `model = _:_`) and
 /// mount its template as the default slide. Spawned from
@@ -1162,7 +1162,7 @@ fn spawn_default_view(host: &Element, state: &Rc<RefCell<Inner>>) {
         // forever — there is genuinely no presentation for this model
         // (not even the `_:_` default is seeded).
         let resolved = async {
-            let query = view_by_model_query(&descriptor, DEFAULT_MODEL).ok()?;
+            let query = view_by_concept_query(&descriptor, DEFAULT_CONCEPT).ok()?;
             let body = to_body(&query).ok()?;
             let result = host_consumer::query(&host, &body).await.ok()?;
             first_field(&result, "display").ok().flatten()
@@ -1242,7 +1242,7 @@ fn mount_notation_fallback(host: &Element, state: &Rc<RefCell<Inner>>, conclusio
     };
     let _ = script.set_attribute("type", "text/tonk-notation");
     let head = host
-        .get_attribute("model")
+        .get_attribute("concept")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "concept".to_owned());
     let text = crate::notation_format::format(&conclusion.this, &conclusion.fields, &head, None);
@@ -1325,8 +1325,8 @@ fn mount_portal_slide(host: &Element, inner: &Inner, display: &str) -> Option<Sl
     if let Some(entity) = host.get_attribute("entity") {
         let _ = portal.set_attribute("entity", &entity);
     }
-    if let Some(model) = inner.portal_model.as_ref() {
-        let _ = portal.set_attribute("model", model);
+    if let Some(concept) = inner.portal_concept.as_ref() {
+        let _ = portal.set_attribute("concept", concept);
     }
     if let Some(descriptor) = inner.portal_descriptor.as_ref() {
         let _ = Reflect::set(
@@ -1440,9 +1440,9 @@ async fn refresh_delegate(host: &Element, state: &Rc<RefCell<Inner>>, delegate_g
             }
         }
         // Resolve through the same name-first path as the model/view
-        // (`resolve_model`), so an event-handler concept named after a
+        // (`resolve_concept`), so an event-handler concept named after a
         // pinned-`this` concept resolves via the Name index too.
-        match resolve_model(host, name).await {
+        match resolve_concept(host, name).await {
             Ok((_entity, descriptor_json)) => {
                 match serde_json::from_str::<serde_json::Value>(&descriptor_json) {
                     Ok(value) => {
@@ -1527,7 +1527,7 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
         // The resolved model concept's descriptor (parsed), so the
         // no-entity diagnostic can name the concept's required attributes
         // and probe which ones the entity is actually missing.
-        let descriptor = s.resolved_model.as_ref().map(|(_, value)| value.clone());
+        let descriptor = s.resolved_concept.as_ref().map(|(_, value)| value.clone());
         let empty = serialize_conclusions(&[]);
         for slide in s.slides.values() {
             call_render(&slide.view_el, &empty);
@@ -1600,7 +1600,7 @@ fn handle_entity_frame(host: &Element, state: &Rc<RefCell<Inner>>, conclusions: 
 /// isn't available (or has no `with:` map) falls back to the bare
 /// `model: / this:` notation — there is nothing to diff against.
 async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value>) {
-    let model = host.get_attribute("model").unwrap_or_default();
+    let concept = host.get_attribute("concept").unwrap_or_default();
     let entity = host.get_attribute("entity").unwrap_or_default();
 
     // Without a descriptor `with:` map there is nothing to probe; keep the
@@ -1615,7 +1615,7 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
             State::NoEntity,
             "Not found",
             &format!(
-                r#"{model}:
+                r#"{concept}:
   this: {entity}"#
             ),
         );
@@ -1660,7 +1660,7 @@ async fn diagnose_no_entity(host: &Element, descriptor: Option<serde_json::Value
         }
     }
 
-    state::set_no_entity_diagnostic(host, &model, &entity, &present, &missing);
+    state::set_no_entity_diagnostic(host, &concept, &entity, &present, &missing);
 }
 
 /// Refresh the trailing notation slide's source `<script>` with
@@ -1671,7 +1671,7 @@ fn update_notation(host: &Element, inner: &Inner, conclusion: &Conclusion) {
         return;
     };
     let head = host
-        .get_attribute("model")
+        .get_attribute("concept")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "concept".to_owned());
     let text = crate::notation_format::format(&conclusion.this, &conclusion.fields, &head, None);
@@ -1828,7 +1828,7 @@ fn with_host_attributes(host: &Element, conclusion: &Conclusion) -> Conclusion {
 /// the in-place path to re-run the query without rebuilding the DOM,
 /// which is a larger change left for later.
 fn resolves_template(name: &str) -> bool {
-    matches!(name, "entity" | "model" | "view")
+    matches!(name, "entity" | "concept" | "view")
 }
 
 /// Re-project the host's current attributes into the mounted view(s)
@@ -1898,7 +1898,7 @@ mod tests {
     #[dialog_common::test]
     fn it_tears_down_only_on_subject_input_changes() {
         assert!(resolves_template("entity"));
-        assert!(resolves_template("model"));
+        assert!(resolves_template("concept"));
         assert!(resolves_template("view"));
         assert!(
             !resolves_template("data-active"),
@@ -2109,7 +2109,7 @@ mod tests {
             /// Tags of every subscription opened.
             subscribe_tags: Vec<String>,
             /// The phase-1 model concept frame, auto-pushed the moment
-            /// the `"model"` subscription opens — the model resolve is a
+            /// the `"concept"` subscription opens — the model resolve is a
             /// live subscription now, not a one-shot. `None` makes the
             /// model subscription stay empty (the `no-model` state).
             model_frame: Option<JsValue>,
@@ -2121,7 +2121,7 @@ mod tests {
             }
 
             /// Like [`install`] but with an explicit model concept frame
-            /// auto-pushed on the `"model"` subscription. `None` leaves
+            /// auto-pushed on the `"concept"` subscription. `None` leaves
             /// the model subscription empty so the display sits in
             /// `no-model`.
             fn install_with_model(
@@ -2183,7 +2183,7 @@ mod tests {
                                 // soon as the model subscription opens, so
                                 // the downstream flow starts the way a live
                                 // host would on the first revision.
-                                if tag == "model" {
+                                if tag == "concept" {
                                     s.model_frame.clone()
                                 } else {
                                     None
@@ -2195,8 +2195,11 @@ mod tests {
                             let _ = Reflect::set(&detail, &"subscription".into(), &sub);
                             if let Some(frame) = model_frame {
                                 let opts = Object::new();
-                                let _ =
-                                    Reflect::set(&opts, &"tag".into(), &JsValue::from_str("model"));
+                                let _ = Reflect::set(
+                                    &opts,
+                                    &"tag".into(),
+                                    &JsValue::from_str("concept"),
+                                );
                                 if let Ok(reset) = Reflect::get(&consumer, &"reset".into())
                                     && let Ok(reset) = reset.dyn_into::<Function>()
                                 {
@@ -2253,11 +2256,11 @@ mod tests {
             }
         }
 
-        fn mount_display(host: &FakeHost, view: &str, model: &str, entity: &str) -> Element {
+        fn mount_display(host: &FakeHost, view: &str, concept: &str, entity: &str) -> Element {
             register();
             let display = document().create_element("tonk-display").unwrap();
             display.set_attribute("view", view).unwrap();
-            display.set_attribute("model", model).unwrap();
+            display.set_attribute("concept", concept).unwrap();
             display.set_attribute("entity", entity).unwrap();
             host.container.append_child(&display).unwrap();
             display
@@ -2266,10 +2269,10 @@ mod tests {
         // The flow resolves two concepts in order: the subject `model`
         // concept (projected for the entity query) then the `view`
         // concept (the query predicate). The view concept declares a
-        // `type` attribute, so `view_by_model_query` projects `type` and
+        // `type` attribute, so `view_by_concept_query` projects `type` and
         // each view frame carries the value that decides portal mode.
         //
-        // `resolve_model` resolves a bare name through the Name concept
+        // `resolve_concept` resolves a bare name through the Name concept
         // first (`id:<name>` → `dialog.name/referent`), then runs the
         // Phase-1 concept query by `this`. So each bare-name resolution
         // is TWO queries: a name lookup, then the concept lookup. The
@@ -2279,7 +2282,7 @@ mod tests {
         fn name_row(entity: &str) -> JsValue {
             rows(&[("did:key:zName", &[("entity", entity)])])
         }
-        // The model concept resolves through a live `"model"`
+        // The model concept resolves through a live `"concept"`
         // subscription now, so its phase-1 row is auto-pushed as the
         // model frame (see `install_with_model`) rather than answered as
         // a one-shot. The remaining one-shots are the model *name*
@@ -2318,7 +2321,7 @@ mod tests {
                     "did:key:zViewConcept",
                     &[(
                         "source",
-                        r#"{"with":{"model":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
+                        r#"{"with":{"concept":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
                     )],
                 )]),
             ]
@@ -2347,7 +2350,7 @@ mod tests {
                     &[
                         ("display", "<h1>monolith</h1>"),
                         ("type", "text/html"),
-                        ("model", "did:key:zModel"),
+                        ("concept", "did:key:zModel"),
                     ],
                 )]),
             );
@@ -2382,7 +2385,7 @@ mod tests {
             // `draw`).
             assert_eq!(
                 host.subscribe_tags(),
-                vec!["model".to_owned(), "view".to_owned(), "entity".to_owned()],
+                vec!["concept".to_owned(), "view".to_owned(), "entity".to_owned()],
             );
         }
 
@@ -2415,7 +2418,7 @@ mod tests {
             tags.sort();
             assert_eq!(
                 tags,
-                vec!["entity".to_owned(), "model".to_owned(), "view".to_owned()],
+                vec!["entity".to_owned(), "concept".to_owned(), "view".to_owned()],
                 "inline mode opens the model, view, and entity subscriptions",
             );
         }
@@ -2435,28 +2438,28 @@ mod tests {
             // Wait for the model subscription, then deliver an empty frame
             // — that lands the display in `no-model`.
             for _ in 0..200 {
-                if host.subscribe_tags().contains(&"model".to_owned()) {
+                if host.subscribe_tags().contains(&"concept".to_owned()) {
                     break;
                 }
                 sleep(5).await;
             }
-            host.push_frame("model", &rows(&[]));
+            host.push_frame("concept", &rows(&[]));
             for _ in 0..200 {
-                if display.get_attribute("data-state").as_deref() == Some("no-model") {
+                if display.get_attribute("data-state").as_deref() == Some("no-concept") {
                     break;
                 }
                 sleep(5).await;
             }
             assert_eq!(
                 display.get_attribute("data-state").as_deref(),
-                Some("no-model"),
+                Some("no-concept"),
                 "an absent model concept is `no-model`, not an error",
             );
 
             // The concept lands: the model subscription pushes a non-empty
             // frame, the downstream view + entity subs open, and a view +
             // entity frame render the row live.
-            host.push_frame("model", &model_concept_frame());
+            host.push_frame("concept", &model_concept_frame());
             for _ in 0..200 {
                 if host.subscribe_tags().contains(&"view".to_owned())
                     && host.subscribe_tags().contains(&"entity".to_owned())
@@ -2629,7 +2632,7 @@ mod tests {
             );
             register();
             let display = document().create_element("tonk-display").unwrap();
-            display.set_attribute("model", "counter").unwrap();
+            display.set_attribute("concept", "counter").unwrap();
             display.set_attribute("entity", "id:demo-counter").unwrap();
             host.container.append_child(&display).unwrap();
             for _ in 0..200 {
@@ -2696,7 +2699,7 @@ mod tests {
             // key-order-stable. The guard must treat it as unchanged: the
             // mounted <tonk-view> survives, no remount, no wiped list.
             let subs_before = host.subscribe_tags().len();
-            host.push_frame("model", &model_concept_frame_reordered());
+            host.push_frame("concept", &model_concept_frame_reordered());
             sleep(50).await;
 
             assert!(
@@ -2728,7 +2731,7 @@ mod tests {
         fn directory_resolve_responses() -> Vec<JsValue> {
             vec![name_row("did:key:zModel")]
         }
-        // The directory model concept, auto-pushed on the `"model"`
+        // The directory model concept, auto-pushed on the `"concept"`
         // subscription (the built-in directory view predicate needs no
         // branch lookup, so only the model name lookup remains a
         // one-shot).
@@ -2748,11 +2751,11 @@ mod tests {
             )
         }
 
-        fn mount_directory(host: &FakeHost, model: &str) -> Element {
+        fn mount_directory(host: &FakeHost, concept: &str) -> Element {
             register();
             crate::view::register();
             let display = document().create_element("tonk-display").unwrap();
-            display.set_attribute("model", model).unwrap();
+            display.set_attribute("concept", concept).unwrap();
             host.container.append_child(&display).unwrap();
             display
         }
@@ -2913,7 +2916,7 @@ mod tests {
                     "did:key:zView",
                     &[(
                         "display",
-                        "<div><tonk-display entity={this} model=item data-id={this}></tonk-display><p class=\"after\">keep me</p></div>",
+                        "<div><tonk-display entity={this} concept=item data-id={this}></tonk-display><p class=\"after\">keep me</p></div>",
                     )],
                 )]),
             );

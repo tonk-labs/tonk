@@ -139,7 +139,7 @@ const BOOTSTRAP_JS: &str = r#"(function(){
     });
   }
   var tonk={
-    context:{this:"",model:""},
+    context:{this:"",concept:""},
     ready:ready,
     query:function(body){return call("query",{body:body});},
     transact:function(request){return call("transact",{request:request});},
@@ -1306,7 +1306,7 @@ fn no_arg_entity_query(host: &Element) -> Result<JsValue, String> {
         .filter(|s| !s.is_empty())
         .ok_or("tonk.subscribe()/query() with no argument requires a scoped `entity`")?;
     let descriptor = read_descriptor(host)
-        .ok_or("tonk.subscribe()/query() with no argument requires a model descriptor")?;
+        .ok_or("tonk.subscribe()/query() with no argument requires a concept descriptor")?;
     let query = crate::query::entity_query(&descriptor, &entity)
         .map_err(|e| format!("entity query: {e}"))?;
     serde_wasm_bindgen::to_value(&query).map_err(|e| format!("query body: {e}"))
@@ -1330,7 +1330,7 @@ fn read_descriptor(host: &Element) -> Option<String> {
 fn build_context(host: &Element) -> Object {
     let context = Object::new();
     let this = host.get_attribute("entity").unwrap_or_default();
-    let model = host.get_attribute("model").unwrap_or_default();
+    let concept = host.get_attribute("concept").unwrap_or_default();
     let location = window().map(|w| w.location());
     let origin = location
         .as_ref()
@@ -1369,7 +1369,7 @@ fn build_context(host: &Element) -> Object {
     // actually stamped.
     let site = tonk_host::bridge::site_id();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
-    let _ = Reflect::set(&context, &"model".into(), &JsValue::from_str(&model));
+    let _ = Reflect::set(&context, &"concept".into(), &JsValue::from_str(&concept));
     let _ = Reflect::set(&context, &"origin".into(), &JsValue::from_str(&origin));
     let _ = Reflect::set(&context, &"path".into(), &JsValue::from_str(&path));
     let _ = Reflect::set(&context, &"hash".into(), &JsValue::from_str(&hash));
@@ -1679,15 +1679,15 @@ mod tests {
     fn relay_consumer(
         host: &FakeHost,
         entity: Option<&str>,
-        model: Option<&str>,
+        concept: Option<&str>,
         descriptor: Option<&str>,
     ) -> Element {
         let consumer = document().create_element("div").expect("div");
         if let Some(e) = entity {
             consumer.set_attribute("entity", e).expect("entity");
         }
-        if let Some(m) = model {
-            consumer.set_attribute("model", m).expect("model");
+        if let Some(m) = concept {
+            consumer.set_attribute("concept", m).expect("concept");
         }
         if let Some(d) = descriptor {
             let _ = Reflect::set(
@@ -1816,7 +1816,7 @@ mod tests {
             get_str(&context, "this").as_deref(),
             Some("id:demo-counter")
         );
-        assert_eq!(get_str(&context, "model").as_deref(), Some("counter"));
+        assert_eq!(get_str(&context, "concept").as_deref(), Some("counter"));
     }
 
     #[dialog_common::test]
@@ -2054,7 +2054,7 @@ mod tests {
         host: &FakeHost,
         content: &str,
         entity: Option<&str>,
-        model: Option<&str>,
+        concept: Option<&str>,
         descriptor: Option<&str>,
     ) -> Element {
         crate::register();
@@ -2065,8 +2065,8 @@ mod tests {
         if let Some(e) = entity {
             portal.set_attribute("entity", e).expect("entity");
         }
-        if let Some(m) = model {
-            portal.set_attribute("model", m).expect("model");
+        if let Some(m) = concept {
+            portal.set_attribute("concept", m).expect("concept");
         }
         if let Some(d) = descriptor {
             let _ = Reflect::set(portal.as_ref(), &"descriptor".into(), &JsValue::from_str(d));

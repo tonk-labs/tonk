@@ -71,7 +71,7 @@ pub enum RenderError {
 
     /// No view resolved for a model (no model-specific view and no
     /// `tonk:_` default).
-    #[error("no view found for model `{0}` (no model-specific view and no `tonk:_` default)")]
+    #[error("no view found for concept `{0}` (no concept-specific view and no `tonk:_` default)")]
     NoView(String),
 
     /// A bookmark name did not resolve to an entity.

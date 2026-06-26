@@ -123,7 +123,7 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // the host, unknown when this markup is built).
     const CONTENT: &str = "<tonk-host>\
 <div class=\"display-view-slot\">\
-<tonk-display model=tonk:site data-tonk-entity=\"site\"></tonk-display>\
+<tonk-display concept=tonk:site data-tonk-entity=\"site\"></tonk-display>\
 </div>\
 </tonk-host>";
 

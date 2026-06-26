@@ -13,7 +13,7 @@
 //! - [`share_display`] points at the `<tonk-display>` route —
 //!   `then=<subject>?view=<view-name>` (maps to `/space/<name>/<subject>`
 //!   via the `*subject` wildcard). `<view-name>` is the view's anchor name;
-//!   the view carries its own `model`.
+//!   the view carries its own `concept`.
 //!
 //! The launcher URL extends the standard invite URL with two
 //! extra query parameters:
@@ -113,10 +113,10 @@ pub struct ShareDisplayOutcome {
     pub subject_entity: Entity,
     /// View anchor name forwarded as `?view=`, when supplied.
     pub view_name: Option<String>,
-    /// Model (concept name or URI) forwarded as `?model=`, when
+    /// Concept (name or URI) forwarded as `?concept=`, when
     /// supplied — carousel mode only; with `--view` the view
     /// declares its own model. Mirrors what the caller passed.
-    pub model: Option<String>,
+    pub concept: Option<String>,
     /// `name=` value embedded into the URL.
     pub space_name: String,
 }
@@ -392,12 +392,12 @@ pub async fn share_view(
 /// 2. Validate the model when it looks like a name.
 /// 3. Run the shared share prep.
 /// 4. Mint the invite.
-/// 5. Compose the launcher URL with the `?view=&model=` suffix.
+/// 5. Compose the launcher URL with the `?view=&concept=` suffix.
 pub async fn share_display(
     site: &TonkSite,
     subject: &str,
     view_name: Option<&str>,
-    model: Option<&str>,
+    concept: Option<&str>,
     options: ShareOptions,
 ) -> Result<ShareDisplayOutcome, ShareError> {
     let (entity, subject_name) =
@@ -407,7 +407,7 @@ pub async fn share_display(
     // Validate the model when it's a bare identifier. URI-shaped
     // models (anything containing `:`) pass through — same
     // convention as `did:key:…` subjects.
-    if let Some(name) = model.filter(|m| !m.contains(':')) {
+    if let Some(name) = concept.filter(|m| !m.contains(':')) {
         let concepts = schema::list_concepts(site)
             .await
             .map_err(|e| ShareError::Io(format!("failed to list concepts: {e}")))?;
@@ -426,7 +426,7 @@ pub async fn share_display(
     // Bookmarks survive entity-URI changes (re-asserting a view
     // body produces a new entity); the name does not.
     let subject_segment = subject_name.as_deref().unwrap_or(subject);
-    let then = compose_display_then(subject_segment, view_name, model);
+    let then = compose_display_then(subject_segment, view_name, concept);
     let url = mint_and_compose(
         site,
         options.ui_base.as_deref(),
@@ -443,14 +443,14 @@ pub async fn share_display(
         subject_name,
         subject_entity: entity,
         view_name: view_name.map(str::to_owned),
-        model: model.map(str::to_owned),
+        concept: concept.map(str::to_owned),
         space_name,
     })
 }
 
 /// Build the `then=` suffix for a display share: a path under the
-/// recipient's space root with optional `view` / `model` query
-/// parameters appended. The `view`/`model` values are
+/// recipient's space root with optional `view` / `concept` query
+/// parameters appended. The `view`/`concept` values are
 /// form-urlencoded so a stray `&` or `?` in a name doesn't corrupt
 /// the inner query when tonk-ui pastes it onto its space-root path.
 /// The `subject` is left verbatim as a path segment — `did:key:…`
@@ -460,7 +460,7 @@ pub async fn share_display(
 /// The display route is `space/:space/*subject` — a wildcard that
 /// captures the remainder after the space prefix, so the suffix is
 /// just `{subject}` with no leading `display/` keyword segment.
-fn compose_display_then(subject: &str, view: Option<&str>, model: Option<&str>) -> String {
+fn compose_display_then(subject: &str, view: Option<&str>, concept: Option<&str>) -> String {
     let mut path = subject.to_owned();
     let mut pairs = form_urlencoded::Serializer::new(String::new());
     let mut has_any = false;
@@ -468,8 +468,8 @@ fn compose_display_then(subject: &str, view: Option<&str>, model: Option<&str>) 
         pairs.append_pair("view", view);
         has_any = true;
     }
-    if let Some(model) = model {
-        pairs.append_pair("model", model);
+    if let Some(concept) = concept {
+        pairs.append_pair("concept", concept);
         has_any = true;
     }
     if has_any {

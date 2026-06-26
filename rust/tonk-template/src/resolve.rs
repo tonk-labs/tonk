@@ -1,7 +1,7 @@
 //! Wire-query construction for `<tonk-display>`.
 //!
-//! - [`view_by_model_query`] — resolve a view by querying a view
-//!   *concept* (the predicate) constrained to a `model`, projecting
+//! - [`view_by_concept_query`] — resolve a view by querying a view
+//!   *concept* (the predicate) constrained to a `concept`, projecting
 //!   `display` (and `type` when the concept declares it).
 //! - [`entity_query`] — subscribe to a single entity by URI,
 //!   projecting every field in the model concept's descriptor.
@@ -17,18 +17,18 @@ use tonk_schema::query::Query;
 
 /// Build the live view-resolution query for the new design: given a
 /// view *concept* descriptor (the concept named by the `view`
-/// attribute, or the built-in `view`) and a `model_entity`, find the
-/// instance of that view concept whose `model` field equals
-/// `model_entity`, projecting `display` (the template) and, if the
+/// attribute, or the built-in `view`) and a `concept_entity`, find the
+/// instance of that view concept whose `concept` field equals
+/// `concept_entity`, projecting `display` (the template) and, if the
 /// descriptor declares it, `type` (the render mode).
 ///
-/// The view concept is the query predicate; `model` is the
+/// The view concept is the query predicate; `concept` is the
 /// constraint. The view attribute thus names a concept whose
 /// `display` we query for, rather than an anchor that resolves to
 /// one fixed entity.
-pub fn view_by_model_query(
+pub fn view_by_concept_query(
     view_descriptor: &Value,
-    model_entity: &str,
+    concept_entity: &str,
 ) -> Result<Query, serde_json::Error> {
     let has_type = view_descriptor
         .get("with")
@@ -36,7 +36,7 @@ pub fn view_by_model_query(
         .is_some();
     let mut terms: IndexMap<String, Value> = IndexMap::new();
     terms.insert("this".into(), json!({ "?": { "name": "view" } }));
-    terms.insert("model".into(), json!(model_entity));
+    terms.insert("concept".into(), json!(concept_entity));
     terms.insert("display".into(), json!({ "?": { "name": "display" } }));
     if has_type {
         terms.insert("type".into(), json!({ "?": { "name": "type" } }));
@@ -69,7 +69,7 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
 
 /// The descriptor of the built-in `view` concept.
 ///
-/// Two fields: `model` (entity — the concept being displayed) and
+/// Two fields: `concept` (entity — the concept being displayed) and
 /// `display` (text — the HTML template). Used as the default view
 /// predicate when `<tonk-display>` has no `view` attribute, so the
 /// built-in presentation resolves without reading the concept from
@@ -79,24 +79,24 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
 pub fn view_predicate() -> Value {
     json!({
         "with": {
-            "model":   { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
+            "concept": { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
             "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
         }
     })
 }
 
 /// The descriptor of the built-in **directory** view concept
-/// (`tonk:view/directory`). Same `model` field as [`view_predicate`],
-/// but its template lives under `xyz.tonk.view/directory` so a model
+/// (`tonk:view/directory`). Same `concept` field as [`view_predicate`],
+/// but its template lives under `xyz.tonk.view/directory` so a concept
 /// can declare a detail view and a directory view independently (both
-/// keyed by `model`). Used as the default view predicate when
+/// keyed by `concept`). Used as the default view predicate when
 /// `<tonk-display>` has no `entity` (directory mode). The `display`
-/// term name is kept so `view_by_model_query` and the renderer read
+/// term name is kept so `view_by_concept_query` and the renderer read
 /// the template uniformly regardless of view kind.
 pub fn directory_view_predicate() -> Value {
     json!({
         "with": {
-            "model":   { "the": "xyz.tonk.view/model",     "as": "Entity", "cardinality": "one" },
+            "concept": { "the": "xyz.tonk.view/model",     "as": "Entity", "cardinality": "one" },
             "display": { "the": "xyz.tonk.view/directory", "as": "Text",   "cardinality": "one" }
         }
     })
@@ -413,11 +413,11 @@ mod tests {
     fn the_view_predicate_has_no_name_field() {
         let p = view_predicate();
         let with = p.get("with").and_then(|v| v.as_object()).expect("with");
-        assert!(with.contains_key("model"));
+        assert!(with.contains_key("concept"));
         assert!(with.contains_key("display"));
         assert!(
             !with.contains_key("name"),
-            "the built-in view concept is keyed by (concept, model), not a `name` field"
+            "the built-in view concept is keyed by concept, not a `name` field"
         );
     }
 
@@ -453,14 +453,15 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_builds_a_view_by_model_query_constraining_model() {
-        // The view concept is the predicate; `model` is pinned to
-        // the subject's model entity and `display` flows back.
+    fn it_builds_a_view_by_concept_query_constraining_concept() {
+        // The view concept is the predicate; `concept` is pinned to
+        // the subject's concept entity and `display` flows back.
         let predicate = view_predicate();
-        let q = view_by_model_query(&predicate, "concept:zCounter").expect("view_by_model_query");
-        let model = q.terms.get("model").expect("model term");
+        let q =
+            view_by_concept_query(&predicate, "concept:zCounter").expect("view_by_concept_query");
+        let concept = q.terms.get("concept").expect("concept term");
         assert_eq!(
-            serde_json::to_value(model).unwrap(),
+            serde_json::to_value(concept).unwrap(),
             json!("concept:zCounter"),
         );
         let display = q.terms.get("display").expect("display term");
@@ -479,12 +480,13 @@ mod tests {
         // projected so the render-mode fork can read it.
         let predicate = json!({
             "with": {
-                "model":   { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
+                "concept": { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
                 "type":    { "the": "xyz.tonk.view/type",    "as": "Text",   "cardinality": "one" },
                 "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
             }
         });
-        let q = view_by_model_query(&predicate, "concept:zCounter").expect("view_by_model_query");
+        let q =
+            view_by_concept_query(&predicate, "concept:zCounter").expect("view_by_concept_query");
         let typ = q.terms.get("type").expect("type term");
         assert_eq!(
             serde_json::to_value(typ).unwrap(),

@@ -1244,7 +1244,7 @@ mod when_sharing_a_display {
 
         assert_eq!(outcome.subject_name.as_deref(), Some("buy-milk"));
         assert_eq!(outcome.view_name.as_deref(), Some("basic"));
-        assert_eq!(outcome.model.as_deref(), Some("task"));
+        assert_eq!(outcome.concept.as_deref(), Some("task"));
         assert_eq!(outcome.remote_name, "origin");
 
         let url = Url::parse(&outcome.url)?;
@@ -1256,7 +1256,7 @@ mod when_sharing_a_display {
         // so the URL survives entity-URI churn.
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("buy-milk?view=basic&model=task"),
+            Some("buy-milk?view=basic&concept=task"),
         );
         Ok(())
     }
@@ -1337,7 +1337,7 @@ mod when_sharing_a_display {
             .collect();
         // URI subjects land in `then=` verbatim — no bookmark to
         // prefer over them.
-        let expected = format!("{entity}?view=basic&model=task");
+        let expected = format!("{entity}?view=basic&concept=task");
         assert_eq!(
             pairs.get("then").map(String::as_str),
             Some(expected.as_str())
@@ -1401,7 +1401,7 @@ mod when_sharing_a_display {
             .collect();
         assert_eq!(
             pairs.get("then").map(String::as_str),
-            Some("buy-milk?model=did%3Akey%3AzPretendConcept"),
+            Some("buy-milk?concept=did%3Akey%3AzPretendConcept"),
         );
         Ok(())
     }

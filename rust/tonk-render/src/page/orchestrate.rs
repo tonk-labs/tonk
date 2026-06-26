@@ -15,7 +15,7 @@ use tonk_schema::conclusion::Conclusion;
 use tonk_template::fold::select_rows;
 use tonk_template::resolve::{
     directory_view_predicate, entity_query, instances_query, looks_like_uri, name_query,
-    parse_source, phase1_query, view_by_model_query, view_predicate,
+    parse_source, phase1_query, view_by_concept_query, view_predicate,
 };
 use tonk_template::{build_plan_nodes, split_plan, this_repeat_root};
 
@@ -50,7 +50,7 @@ async fn render_guarded<B: QueryBackend>(
         return Err(RenderError::RecursionDepth(MAX_DEPTH));
     }
     if visited.contains(route) {
-        return Err(RenderError::RenderCycle(route.model.clone()));
+        return Err(RenderError::RenderCycle(route.concept.clone()));
     }
     visited.push(route.clone());
     let out = render_at_depth(backend, route, depth, visited).await;
@@ -65,7 +65,7 @@ async fn render_at_depth<B: QueryBackend>(
     visited: &mut Vec<RenderRoute>,
 ) -> Result<String, RenderError> {
     // 1. Resolve the model concept to its entity URI + descriptor.
-    let (model_entity, descriptor_json) = resolve_model(backend, &route.model).await?;
+    let (concept_entity, descriptor_json) = resolve_concept(backend, &route.concept).await?;
 
     // 2. Resolve the target entity, if any (bookmark name -> URI).
     let entity_uri = match &route.entity {
@@ -79,7 +79,7 @@ async fn render_at_depth<B: QueryBackend>(
     //    the `display` template + optional `type`.
     let view_descriptor = match &route.view {
         Some(view_name) => {
-            let (_, view_desc_json) = resolve_model(backend, view_name).await?;
+            let (_, view_desc_json) = resolve_concept(backend, view_name).await?;
             serde_json::from_str(&view_desc_json).map_err(|e| {
                 RenderError::Descriptor(format!(
                     "view concept `{view_name}` descriptor invalid: {e}"
@@ -89,9 +89,9 @@ async fn render_at_depth<B: QueryBackend>(
         None if entity_uri.is_some() => view_predicate(),
         None => directory_view_predicate(),
     };
-    let view = resolve_view(backend, &view_descriptor, &model_entity).await?;
+    let view = resolve_view(backend, &view_descriptor, &concept_entity).await?;
     let Some(view) = view else {
-        return Err(RenderError::NoView(route.model.clone()));
+        return Err(RenderError::NoView(route.concept.clone()));
     };
 
     // 4. Portal views (type=text/html) render as an isolated iframe.
@@ -110,7 +110,7 @@ async fn render_at_depth<B: QueryBackend>(
 
     // 6. Parse the template, collect bindings, plan, and render. Inject
     //    the host attributes (model/entity/view) as `dom.host/*` fields
-    //    so a nested `<tonk-display model={dom.host/model}>` resolves,
+    //    so a nested `<tonk-display model={dom.host/concept}>` resolves,
     //    matching the browser's `with_host_attributes`.
     let mut roots = crate::parse_fragment(&view.display);
     let bindings = crate::collect_bindings(&mut roots);
@@ -130,12 +130,12 @@ async fn render_at_depth<B: QueryBackend>(
 
 /// The host attributes a `<tonk-display>` would carry, as
 /// `dom.host/<attr>` fields, so templates that reference
-/// `{dom.host/model}` (the directory -> detail idiom) resolve.
+/// `{dom.host/concept}` (the directory -> detail idiom) resolve.
 fn host_fields(route: &RenderRoute) -> BTreeMap<String, Ipld> {
     let mut fields = BTreeMap::new();
     fields.insert(
-        "dom.host/model".to_string(),
-        Ipld::String(route.model.clone()),
+        "dom.host/concept".to_string(),
+        Ipld::String(route.concept.clone()),
     );
     if let Some(entity) = &route.entity {
         fields.insert("dom.host/entity".to_string(), Ipld::String(entity.clone()));
@@ -160,7 +160,7 @@ struct ResolvedView {
 /// `tonk:workspace`, resolves), then a Phase-1 concept lookup runs
 /// against the resolved URI. An unresolved name falls through to the
 /// Phase-1 name lookup, which reports a clean "no concept matched".
-async fn resolve_model<B: QueryBackend>(
+async fn resolve_concept<B: QueryBackend>(
     backend: &B,
     name_or_uri: &str,
 ) -> Result<(String, String), RenderError> {
@@ -204,7 +204,7 @@ async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String
 /// model-specific view is absent the browser re-queries the view
 /// concept constrained to this sentinel; we mirror that. `tonk:_`
 /// is the wildcard-model entity seeded by core.yaml.
-const DEFAULT_MODEL: &str = "tonk:_";
+const DEFAULT_CONCEPT: &str = "tonk:_";
 
 /// Resolve the view template by querying the view concept constrained
 /// to the model. Falls back to the `tonk:_` default-model view when
@@ -213,13 +213,13 @@ const DEFAULT_MODEL: &str = "tonk:_";
 async fn resolve_view<B: QueryBackend>(
     backend: &B,
     view_descriptor: &serde_json::Value,
-    model_entity: &str,
+    concept_entity: &str,
 ) -> Result<Option<ResolvedView>, RenderError> {
-    if let Some(view) = query_view(backend, view_descriptor, model_entity).await? {
+    if let Some(view) = query_view(backend, view_descriptor, concept_entity).await? {
         return Ok(Some(view));
     }
     // No model-specific view: try the `tonk:_` default.
-    query_view(backend, view_descriptor, DEFAULT_MODEL).await
+    query_view(backend, view_descriptor, DEFAULT_CONCEPT).await
 }
 
 /// Run the view-by-model query for one model value and read the first
@@ -227,9 +227,9 @@ async fn resolve_view<B: QueryBackend>(
 async fn query_view<B: QueryBackend>(
     backend: &B,
     view_descriptor: &serde_json::Value,
-    model_entity: &str,
+    concept_entity: &str,
 ) -> Result<Option<ResolvedView>, RenderError> {
-    let query = view_by_model_query(view_descriptor, model_entity)
+    let query = view_by_concept_query(view_descriptor, concept_entity)
         .map_err(|e| RenderError::QueryConstruction(format!("view query: {e}")))?;
     let rows = run_query(backend, query).await?;
     let Some(row) = rows.into_iter().next() else {
@@ -299,7 +299,7 @@ fn expand_nested_nodes<'a, B: QueryBackend>(
 
 /// Build a child route from a nested `<tonk-display>`'s attributes.
 /// Requires a non-empty `model`; `entity` and `view` are optional. A
-/// missing or empty `model` (e.g. a `{dom.host/model}` that resolved
+/// missing or empty `model` (e.g. a `{dom.host/concept}` that resolved
 /// to nothing) yields `None` so the nested display is left as-is
 /// rather than triggering a bogus "no concept matched" on an empty
 /// name. Empty `entity`/`view` attributes are likewise treated as
@@ -312,9 +312,9 @@ fn route_from_attrs(attrs: &[(String, String)]) -> Option<RenderRoute> {
             .map(|(_, v)| v.clone())
             .filter(|v| !v.is_empty())
     };
-    let model = get("model")?;
+    let concept = get("concept")?;
     Some(RenderRoute {
-        model,
+        concept,
         entity: get("entity"),
         view: get("view"),
     })

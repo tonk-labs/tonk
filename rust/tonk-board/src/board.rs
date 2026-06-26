@@ -11,7 +11,7 @@
 //!    standard library at repository creation, not by this element.
 //!
 //! 2. **Mount a `<tonk-display>`** against the resolved entity
-//!    with `model="board-view"` (no `view`, so the built-in view
+//!    with `concept="board-view"` (no `view`, so the built-in view
 //!    for that model is used). The view template chain drives
 //!    strip / column / tile rendering.
 
@@ -191,9 +191,9 @@ fn mount_display(host: &Element, entity: &str) {
         return;
     };
     let _ = display.set_attribute("entity", entity);
-    // No `view` attribute: with `model="board-view"` the display
-    // resolves the built-in view whose `model` is `board-view`.
-    let _ = display.set_attribute("model", "board-view");
+    // No `view` attribute: with `concept="board-view"` the display
+    // resolves the built-in view whose `concept` is `board-view`.
+    let _ = display.set_attribute("concept", "board-view");
     let _ = host.append_child(&display);
 }
 

@@ -3167,11 +3167,11 @@ concept!: &workspace/sheet
       as: entity
       cardinality: one
       description: "entity"
-    model:
+    concept:
       the: xyz.tonk.artifact/model
       as: entity
       cardinality: one
-      description: "model"
+      description: "concept"
     order:
       the: xyz.tonk.sheet/order
       as: text
@@ -3207,7 +3207,7 @@ rule!:
     - assert: ==
       where: { this: ?entity, is: ?this }
     - assert: ==
-      where: { this: ?model, is: tonk:empty-artifact }
+      where: { this: ?concept, is: tonk:empty-artifact }
 
 rule!:
   assert!: empty-artifact

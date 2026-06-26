@@ -2793,7 +2793,7 @@ concept!: &view
   this: tonk:view
   description: "A view"
   with:
-    model:
+    concept:
       description: "Concept this view renders"
       the:         xyz.tonk.view/model
       as:          Entity
@@ -2804,7 +2804,7 @@ concept!: &view
       as:          Text
       cardinality: one
 view!:
-  model: tonk:view
+  concept: tonk:view
   display: "x"
 "#,
         );
@@ -2831,7 +2831,7 @@ view!:
             use tonk_core::claim::ValueMap;
             use tonk_schema::transact::derive_this;
             let mut body = ValueMap::new();
-            body.insert("model".into(), Value::Entity(pinned.clone()));
+            body.insert("concept".into(), Value::Entity(pinned.clone()));
             body.insert("display".into(), Value::String("x".into()));
             derive_this(&pinned, &body)
         };

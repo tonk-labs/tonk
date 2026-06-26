@@ -23,7 +23,7 @@ use web_sys::{Element, window};
 /// the matching one, hiding the rest — see [`update_slot_children`]). For
 /// a state with no embedder slot, the display mounts a built-in fallback:
 /// a neutral, informative callout for the recoverable absences
-/// ([`State::NoModel`] / [`State::NoView`] / [`State::NoEntity`], via
+/// ([`State::NoConcept`] / [`State::NoView`] / [`State::NoEntity`], via
 /// [`set_absence`]) and a loud danger callout for the broken states
 /// ([`State::Malformed`] / [`State::Offline`] / [`State::Unauthorized`],
 /// via [`set_error`]). See `plan/tonk-display-states.md`.
@@ -38,7 +38,7 @@ pub enum State {
     DefaultView,
     /// The `model` concept is not defined on the branch (yet). The
     /// model subscription stays open and recovers when it lands.
-    NoModel,
+    NoConcept,
     /// Model resolved; an explicit `view` was requested but is not
     /// defined and there is no `_:_` fallback to fall through to.
     NoView,
@@ -66,7 +66,7 @@ impl State {
             State::Loading => "loading",
             State::Ready => "ready",
             State::DefaultView => "default-view",
-            State::NoModel => "no-model",
+            State::NoConcept => "no-concept",
             State::NoView => "no-view",
             State::NoEntity => "no-entity",
             State::Empty => "empty",
@@ -78,7 +78,7 @@ impl State {
 
     /// Whether this state is a *loud* failure — it drives a danger
     /// callout via [`set_error`]. The recoverable absences
-    /// ([`State::NoModel`], [`State::NoView`], [`State::NoEntity`]) are
+    /// ([`State::NoConcept`], [`State::NoView`], [`State::NoEntity`]) are
     /// not loud: they get a neutral informative fallback via
     /// [`set_absence`] (or the embedder's slot), so a still-seeding card
     /// reads as a quiet placeholder rather than a red error.
@@ -198,11 +198,11 @@ fn set_default_notice(host: &Element) {
         let _ = callout.append_child(&icon);
     }
     // Name the model so the viewer knows exactly which one lacks a view.
-    let model = host.get_attribute("model").unwrap_or_default();
-    let text = if model.is_empty() {
-        "No view for this model; showing the default.".to_owned()
+    let concept = host.get_attribute("concept").unwrap_or_default();
+    let text = if concept.is_empty() {
+        "No view for this concept; showing the default.".to_owned()
     } else {
-        format!("No view for {model}; showing the default.")
+        format!("No view for {concept}; showing the default.")
     };
     let label = document.create_text_node(&text);
     let _ = callout.append_child(&label);
@@ -307,7 +307,7 @@ const ABSENCE_CALLOUT_ATTR: &str = "data-tonk-display-absence";
 /// syntax-highlighted, monospace `<tonk-notation>`.
 ///
 /// The embedder may handle the state itself by providing a light-DOM
-/// child with `slot="<state>"` (e.g. `<span slot="no-model">…</span>`).
+/// child with `slot="<state>"` (e.g. `<span slot="no-concept">…</span>`).
 /// `<tonk-display>` is light-DOM (no shadow root), so a bare `slot=`
 /// attribute would otherwise render *always*; this fn drives the
 /// projection manually — it shows the child whose `slot` matches the
@@ -349,7 +349,7 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
     // not a quiet still-syncing placeholder. The variant carries the
     // severity; the icon is the same info glyph for every absence.
     let variant = match state {
-        State::NoModel | State::NoView | State::NoEntity => "danger",
+        State::NoConcept | State::NoView | State::NoEntity => "danger",
         _ => "neutral",
     };
     let _ = callout.set_attribute("variant", variant);
@@ -420,7 +420,7 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
 #[cfg(target_arch = "wasm32")]
 pub fn set_no_entity_diagnostic(
     host: &Element,
-    model: &str,
+    concept: &str,
     entity: &str,
     present: &[(String, String)],
     missing: &[(String, String)],
@@ -461,7 +461,7 @@ pub fn set_no_entity_diagnostic(
     // expressions where a field name is not unique — a line number points
     // at exactly one row whatever the shape. Line 0 is the head; the first
     // field (`this`) is line 1.
-    let mut source = format!("{model}:\n  this: {entity}\n");
+    let mut source = format!("{concept}:\n  this: {entity}\n");
     let mut line = 2usize; // head (0), `this` (1) already emitted.
     for (field, value) in present {
         source.push_str(&format!("  {field}: {value}\n"));
@@ -560,7 +560,7 @@ fn is_state_slot(slot: &str) -> bool {
         "loading"
             | "ready"
             | "default-view"
-            | "no-model"
+            | "no-concept"
             | "no-view"
             | "no-entity"
             | "empty"
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(State::Loading.as_str(), "loading");
         assert_eq!(State::Ready.as_str(), "ready");
         assert_eq!(State::DefaultView.as_str(), "default-view");
-        assert_eq!(State::NoModel.as_str(), "no-model");
+        assert_eq!(State::NoConcept.as_str(), "no-concept");
         assert_eq!(State::NoView.as_str(), "no-view");
         assert_eq!(State::NoEntity.as_str(), "no-entity");
         assert_eq!(State::Empty.as_str(), "empty");
@@ -618,7 +618,7 @@ mod tests {
         // `data-state`, not a forced callout, so a still-seeding card
         // never flashes a red box. The genuinely-broken states stay loud.
         assert!(!State::Loading.is_loud());
-        assert!(!State::NoModel.is_loud());
+        assert!(!State::NoConcept.is_loud());
         assert!(!State::NoView.is_loud());
         assert!(!State::NoEntity.is_loud());
         assert!(!State::DefaultView.is_loud());
@@ -676,10 +676,10 @@ mod tests {
         // embedder skins it from `data-state` (CSS placeholder). The
         // display must not force a red callout into the host.
         let host = host();
-        set(&host, State::NoModel);
+        set(&host, State::NoConcept);
         assert_eq!(
             host.get_attribute("data-state").as_deref(),
-            Some("no-model")
+            Some("no-concept")
         );
         assert!(
             host.query_selector("wa-callout").unwrap().is_none(),
@@ -716,11 +716,16 @@ mod tests {
         // matched nothing. A missing model concept is a config error the
         // display can't render around → `danger`.
         let host = host();
-        set_absence(&host, State::NoModel, "Not found", "concept:\n  this: test");
+        set_absence(
+            &host,
+            State::NoConcept,
+            "Not found",
+            "concept:\n  this: test",
+        );
 
         assert_eq!(
             host.get_attribute("data-state").as_deref(),
-            Some("no-model")
+            Some("no-concept")
         );
         let callout = host
             .query_selector("wa-callout")
@@ -815,12 +820,17 @@ mod tests {
         let host = host();
         let document = web_sys::window().unwrap().document().unwrap();
         let mine = document.create_element("span").unwrap();
-        mine.set_attribute("slot", "no-model").unwrap();
+        mine.set_attribute("slot", "no-concept").unwrap();
         mine.set_attribute("hidden", "").unwrap();
         mine.set_text_content(Some("Untitled"));
         host.append_child(&mine).unwrap();
 
-        set_absence(&host, State::NoModel, "No matching concept ", "{ this: x }");
+        set_absence(
+            &host,
+            State::NoConcept,
+            "No matching concept ",
+            "{ this: x }",
+        );
 
         assert!(
             host.query_selector("wa-callout").unwrap().is_none(),
@@ -839,7 +849,7 @@ mod tests {
         // the child whose `slot` matches the current state is visible.
         let host = host();
         let document = web_sys::window().unwrap().document().unwrap();
-        for state in ["no-model", "no-entity", "loading"] {
+        for state in ["no-concept", "no-entity", "loading"] {
             let s = document.create_element("span").unwrap();
             s.set_attribute("slot", state).unwrap();
             s.set_attribute("hidden", "").unwrap();
@@ -859,7 +869,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!shown.has_attribute("hidden"), "matching slot is shown");
-        let other = host.query_selector("[slot=\"no-model\"]").unwrap().unwrap();
+        let other = host
+            .query_selector("[slot=\"no-concept\"]")
+            .unwrap()
+            .unwrap();
         assert!(
             other.has_attribute("hidden"),
             "non-matching slot stays hidden",

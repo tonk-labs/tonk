@@ -405,15 +405,15 @@ mod quote_tests {
 
     #[test]
     fn it_parses_unquoted_brace_attribute_like_the_browser() {
-        // Browser: <article data-model="{dom.host/model}"><h2>x</h2></article>
-        let r = parse_fragment("<article data-model={dom.host/model}><h2>x</h2></article>");
+        // Browser: <article data-model="{dom.host/concept}"><h2>x</h2></article>
+        let r = parse_fragment("<article data-model={dom.host/concept}><h2>x</h2></article>");
         let Node::Element(article) = &r[0] else {
             panic!("expected <article>, got {r:?}");
         };
         assert_eq!(article.tag, "article");
         assert_eq!(
             article.attrs,
-            vec![("data-model".to_string(), "{dom.host/model}".to_string())]
+            vec![("data-model".to_string(), "{dom.host/concept}".to_string())]
         );
         // <h2> is a child of <article>, not mis-parsed into it.
         assert!(matches!(&article.children[0], Node::Element(h) if h.tag == "h2"));
@@ -478,24 +478,24 @@ mod quote_tests {
 
     #[test]
     fn it_keeps_an_unquoted_value_with_a_colon() {
-        // Browser: model="tonk:repository".
+        // Browser: concept="tonk:repository".
         assert_eq!(
-            first_attrs("<tonk-display entity={subject} model=tonk:repository></tonk-display>"),
+            first_attrs("<tonk-display entity={subject} concept=tonk:repository></tonk-display>"),
             vec![
                 ("entity".to_string(), "{subject}".to_string()),
-                ("model".to_string(), "tonk:repository".to_string()),
+                ("concept".to_string(), "tonk:repository".to_string()),
             ]
         );
     }
 
     #[test]
     fn it_parses_a_self_closing_custom_element_with_unquoted_values() {
-        // Browser: <tonk-display model="workspace/sheet" data-active="{active}">
+        // Browser: <tonk-display concept="workspace/sheet" data-active="{active}">
         // (the trailing /> is ignored for a non-void element).
         assert_eq!(
-            first_attrs("<tonk-display model=workspace/sheet data-active={active} />"),
+            first_attrs("<tonk-display concept=workspace/sheet data-active={active} />"),
             vec![
-                ("model".to_string(), "workspace/sheet".to_string()),
+                ("concept".to_string(), "workspace/sheet".to_string()),
                 ("data-active".to_string(), "{active}".to_string()),
             ]
         );

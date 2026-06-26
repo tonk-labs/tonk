@@ -258,10 +258,10 @@ enum ShareCommand {
     /// `/space/<space-name>/branch/main/display/<subject>` with
     /// the supplied `--view` carried across as a query parameter.
     /// Use this for declarative views built against the `view`
-    /// concept (`{model, display}`), identified by their anchor
+    /// concept (`{concept, display}`), identified by their anchor
     /// name — `share view` is for the iframe viewer.
     #[command(
-        after_help = "Examples:\n  tonk share display alice --view person-card\n  tonk share display alice --model person"
+        after_help = "Examples:\n  tonk share display alice --view person-card\n  tonk share display alice --concept person"
     )]
     Display {
         /// Bookmark name or `did:key:…` entity URI for the
@@ -274,16 +274,15 @@ enum ShareCommand {
         /// forwarded as `?view=`. `<tonk-display>` resolves it to
         /// the view entity the name points at and reads that
         /// view's own `model`. Omit it for carousel mode (every
-        /// view published for `--model`). Mutually exclusive with
-        /// `--model`: a named view declares its own model.
-        #[arg(long, value_name = "NAME", conflicts_with = "model")]
+        /// view published for `--concept`). Mutually exclusive with        /// `--concept`: a named view declares its own model.
+        #[arg(long, value_name = "NAME", conflicts_with = "concept")]
         view: Option<String>,
         /// Concept name (validated locally) or URI for carousel
-        /// mode, forwarded as `?model=`. Not needed with `--view`
+        /// mode, forwarded as `?concept=`. Not needed with `--view`
         /// (the view declares its own model); required when
         /// `--view` is omitted.
         #[arg(long, value_name = "CONCEPT", required_unless_present = "view")]
-        model: Option<String>,
+        concept: Option<String>,
         /// Override the URL prefix the launcher is built against.
         #[arg(long, value_name = "URL", default_value_t = tonk_invite::DEFAULT_BASE_URL.to_string())]
         ui_base: String,
@@ -852,7 +851,7 @@ async fn share_op(command: ShareCommand) -> ExitCode {
         ShareCommand::Display {
             subject,
             view,
-            model,
+            concept,
             ui_base,
             space_name,
             remote,
@@ -862,8 +861,14 @@ async fn share_op(command: ShareCommand) -> ExitCode {
                 remote,
                 space_name,
             };
-            match share::share_display(&site, &subject, view.as_deref(), model.as_deref(), options)
-                .await
+            match share::share_display(
+                &site,
+                &subject,
+                view.as_deref(),
+                concept.as_deref(),
+                options,
+            )
+            .await
             {
                 Ok(outcome) => {
                     print_share_display_outcome(&outcome);
@@ -912,8 +917,8 @@ fn print_share_display_outcome(outcome: &ShareDisplayOutcome) {
     if let Some(view) = &outcome.view_name {
         eprintln!("view:    {}", view);
     }
-    if let Some(model) = &outcome.model {
-        eprintln!("model:   {}", model);
+    if let Some(concept) = &outcome.concept {
+        eprintln!("concept: {}", concept);
     }
     eprintln!("space:   {}", outcome.space_name);
     eprintln!(

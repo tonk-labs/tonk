@@ -79,12 +79,12 @@ concept!: &stop
 
 # The trip view: a sheet with a header row, then one nested
 # `<tonk-display>` per stop. The nested display omits `view`, so it
-# resolves the built-in view for `model=stop` (the stop-row view
+# resolves the built-in view for `concept=stop` (the stop-row view
 # below). A cardinality-many `{stop}` binding repeats the element
 # per value.
 view!:
   this: id:tonk-workspace/trip-view
-  model: trip
+  concept: trip
   display: |
     <div class="sheet">
       <style>
@@ -142,17 +142,17 @@ view!:
       <div class="sheet__head">
         <span>day</span><span>item</span><span>time</span><span>cost</span>
       </div>
-      <tonk-display entity={stop} model=stop></tonk-display>
+      <tonk-display entity={stop} concept=stop></tonk-display>
       <div class="sheet__total">
         <span>total</span><span></span><span>-</span>
       </div>
     </div>
 
 # The stop-row view, published under the built-in `view` concept
-# (no `this:` pin needed) so the nested `<tonk-display model=stop>`
+# (no `this:` pin needed) so the nested `<tonk-display concept=stop>`
 # resolves it by model.
 view!:
-  model: stop
+  concept: stop
   display: |
     <div class="sheet__row">
       <span>{day}</span><span>{item}</span><span>{time}</span><span>{cost}</span>
@@ -275,7 +275,7 @@ workspace/sheet!:
   subtitle: "day-by-day plan - 5 days - 7 stops"
   icon: "table-list"
   entity: id:tonk-workspace/itinerary
-  model: trip
+  concept: trip
   view: tonk:view
   order: "a"
 
@@ -285,7 +285,7 @@ workspace/sheet!:
   subtitle: "where we sleep - 1 booking"
   icon: "table-list"
   entity: id:tonk-workspace/lodging
-  model: trip
+  concept: trip
   view: tonk:view
   order: "b"
 
@@ -350,7 +350,7 @@ workspace/sheet!:
   subtitle: "an imperative canvas in a sandboxed iframe"
   icon: "palette"
   entity: id:tonk-workspace/sketch
-  model: portal
+  concept: portal
   view: tonk:view
   order: "c"
 
@@ -374,7 +374,7 @@ inspector!: &home-inspector
 
 tile!: &inspector-tile
   order: "a"
-  model: inspector
+  concept: inspector
   entity: home-inspector
 
 column-view!: &column-a

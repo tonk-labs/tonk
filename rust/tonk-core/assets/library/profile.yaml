@@ -91,7 +91,7 @@ concept!: &view/directory
   this: tonk:view/directory
   description: A directory view used by tonk-display when entity is not set.
   with:
-    model:
+    concept:
       description: Concept this view renders
       the: xyz.tonk.view/model
       cardinality: one
@@ -109,13 +109,13 @@ concept!: &view/directory
 # The card's name is NOT read from this profile-side record — it is read
 # from the listed space's OWN repository: a nested `<tonk-repository
 # name={subject}>` opens that space's routing context and a
-# `<tonk-display model=tonk:repository view=tonk:view/label>` inside it
+# `<tonk-display concept=tonk:repository view=tonk:view/label>` inside it
 # shows the repo's current name (the cross-device source of truth).
 # Rendered as a directory (no entity) over the `space` model on the
 # profile meta branch.
 view/directory!:
   this: id:tonk:space/directory
-  model: space
+  concept: space
   display: |
     <div class="hub">
       <header class="hub-header">
@@ -134,7 +134,7 @@ view/directory!:
       <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
-          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} model=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-model" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} concept=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-concept" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
@@ -212,7 +212,7 @@ concept!: &view
   this: tonk:view
   description: A display template for rendering an entity.
   with:
-    model:
+    concept:
       description: Concept this view renders
       the: xyz.tonk.view/model
       cardinality: one
@@ -224,18 +224,18 @@ concept!: &view
       as: text
 
 # The /join view — a directory view for `tonk:join/status`, mounted by a
-# no-entity `<tonk-display model=tonk:join/status>` (see the Leptos /join
+# no-entity `<tonk-display concept=tonk:join/status>` (see the Leptos /join
 # route). Directory chrome renders even with zero instances, so the
 # `<tonk-page>` trigger mounts and fires `tonk:join` on load before any
 # status exists. The per-instance repeat shows a spinner while pending and
-# the failure callout (`model=tonk:join/failure`) once a join fails. On
+# the failure callout (`concept=tonk:join/failure`) once a join fails. On
 # success there is no status to show: the worker posts a navigate message
 # to the originating client (see `<tonk-host>`), which redirects into
 # `/space/<subject>` while the chrome's "Joining…" stands until the page
 # leaves.
 view/directory!:
   this: id:tonk:join/status/view
-  model: tonk:join/status
+  concept: tonk:join/status
   display: |
     <main class="join-view">
       <tonk-page onmount=tonk:join></tonk-page>
@@ -243,13 +243,13 @@ view/directory!:
         <div slot="header"><h1>Joining…</h1></div>
         <wa-spinner></wa-spinner>
         <div class="join-status" with={this}>
-          <tonk-display entity={this} model=tonk:join/failure>
+          <tonk-display entity={this} concept=tonk:join/failure>
             <!-- While the join is pending there is a `tonk:join/status` but
                  no `tonk:join/failure` yet: stay quiet (empty slots) instead
                  of the built-in "Not found" callout. The failure view only
                  renders once a failure is actually recorded. -->
             <span slot="no-entity"></span>
-            <span slot="no-model"></span>
+            <span slot="no-concept"></span>
             <span slot="loading"></span>
           </tonk-display>
         </div>
@@ -257,11 +257,11 @@ view/directory!:
     </main>
 
 # The failure view — the default view for `tonk:join/failure`, so the join
-# directory's per-instance `<tonk-display model=tonk:join/failure>` renders
+# directory's per-instance `<tonk-display concept=tonk:join/failure>` renders
 # it only when a failure exists (i.e. status: failed). Shows the reason.
 view!: &join/failure-view
   this: id:tonk:join/failure/view
-  model: tonk:join/failure
+  concept: tonk:join/failure
   display: |
     <wa-callout variant="danger" class="join-error">
       <wa-icon slot="icon" name="circle-exclamation"></wa-icon>

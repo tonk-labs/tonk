@@ -1018,14 +1018,14 @@ mod tests {
         assert_eq!(root, Some(vec![0]));
     }
 
-    // 4. <div data-model={dom.host/model}>    [0]     attr dom.host ref
+    // 4. <div data-model={dom.host/concept}>    [0]     attr dom.host ref
     //      <span data-this={this} data-name={name}>  [0, 0] attrs
     //    The {dom.host/*} reference is ignored for repeat resolution, so
     //    the inner <span> (holding {this} and {name}) repeats.
     #[dialog_common::test]
     fn it_ignores_dom_host_refs_when_resolving_the_repeat_node() {
         let root = this_repeat_root(&[
-            attr_binding(&[0], "data-model", "dom.host/model"),
+            attr_binding(&[0], "data-model", "dom.host/concept"),
             attr_binding(&[0, 0], "data-this", "this"),
             attr_binding(&[0, 0], "data-name", "name"),
         ]);

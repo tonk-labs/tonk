@@ -14,7 +14,7 @@
 use custom_elements::CustomElement;
 use web_sys::{HtmlElement, window};
 
-/// The Tonk Hub at `/`: a `<tonk-display model="space">` directory over the
+/// The Tonk Hub at `/`: a `<tonk-display concept="space">` directory over the
 /// profile's meta branch. Cards link to `/space/{subject}`.
 #[derive(Default)]
 pub(crate) struct TonkHubElement;
@@ -35,7 +35,7 @@ impl CustomElement for TonkHubElement {
     fn connected_callback(&mut self, _this: &HtmlElement) {}
 }
 
-/// The `/join` view: a `<tonk-display model="tonk:join/status">` directory
+/// The `/join` view: a `<tonk-display concept="tonk:join/status">` directory
 /// over the profile's meta branch. Its chrome holds the
 /// `<tonk-page onmount=tonk:join>` trigger that fires the join command.
 #[derive(Default)]
@@ -65,7 +65,7 @@ const ROUTE_VIEW_MARKUP_HUB: &str = r#"<main class="hub-route">
   <tonk-repository class="display-route" name="home" profile>
     <tonk-branch name="meta">
       <div class="display-view-slot">
-        <tonk-display model="space"></tonk-display>
+        <tonk-display concept="space"></tonk-display>
       </div>
     </tonk-branch>
   </tonk-repository>
@@ -75,7 +75,7 @@ const ROUTE_VIEW_MARKUP_JOIN: &str = r#"<main class="join-route">
   <tonk-repository class="display-route" name="home" profile>
     <tonk-branch name="meta">
       <div class="display-view-slot">
-        <tonk-display model="tonk:join/status"></tonk-display>
+        <tonk-display concept="tonk:join/status"></tonk-display>
       </div>
     </tonk-branch>
   </tonk-repository>

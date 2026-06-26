@@ -42,7 +42,7 @@ impl CustomElement for TonkPortal {
     }
 
     fn observed_attributes() -> &'static [&'static str] {
-        &["content", "entity", "model", "runtime"]
+        &["content", "entity", "concept", "runtime"]
     }
 
     fn inject_children(&mut self, _this: &HtmlElement) {}
@@ -146,7 +146,7 @@ impl CustomElement for TonkPortal {
             "content" => reload(&host, &state),
             // A re-scope reloads the iframe so the bootstrap re-runs
             // author code; the fresh `context` rides the new handshake.
-            "entity" | "model" => reload(&host, &state),
+            "entity" | "concept" => reload(&host, &state),
             _ => {}
         }
     }

@@ -505,7 +505,7 @@ mod tests {
         // raises the iteration root above the inner element so
         // each value gets its own <li> wrapper.
         let host = mount(
-            "<ul><li subject={item}><tonk-display entity={item} model=todo></tonk-display></li></ul>",
+            "<ul><li subject={item}><tonk-display entity={item} concept=todo></tonk-display></li></ul>",
         );
         call_draw(
             &host,

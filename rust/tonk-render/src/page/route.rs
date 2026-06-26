@@ -12,8 +12,8 @@ use crate::page::RenderError;
 /// - `/{model}!{view}` — directory with an explicit view concept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderRoute {
-    /// The model concept name or URI.
-    pub model: String,
+    /// The concept name or URI.
+    pub concept: String,
     /// The target entity (bookmark name or URI). `None` => directory
     /// mode (render every instance).
     pub entity: Option<String>,
@@ -38,13 +38,13 @@ impl RenderRoute {
             None => (s, None),
         };
         // Then split entity@model.
-        let (entity, model) = match head.split_once('@') {
+        let (entity, concept) = match head.split_once('@') {
             Some((e, m)) if !e.is_empty() && !m.is_empty() => (Some(e.to_string()), m.to_string()),
             Some(_) => return Err(invalid(format!("route `{input}` has an empty side of `@`"))),
             None => (None, head.to_string()),
         };
         Ok(RenderRoute {
-            model,
+            concept,
             entity,
             view,
         })
@@ -62,7 +62,7 @@ mod tests {
     #[dialog_common::test]
     fn it_parses_a_bare_model_route() {
         let r = RenderRoute::parse("/person").unwrap();
-        assert_eq!(r.model, "person");
+        assert_eq!(r.concept, "person");
         assert_eq!(r.entity, None);
         assert_eq!(r.view, None);
     }
@@ -70,7 +70,7 @@ mod tests {
     #[dialog_common::test]
     fn it_parses_entity_at_model() {
         let r = RenderRoute::parse("alice@person").unwrap();
-        assert_eq!(r.model, "person");
+        assert_eq!(r.concept, "person");
         assert_eq!(r.entity.as_deref(), Some("alice"));
         assert_eq!(r.view, None);
     }
@@ -78,7 +78,7 @@ mod tests {
     #[dialog_common::test]
     fn it_parses_entity_at_model_bang_view() {
         let r = RenderRoute::parse("/alice@person!card").unwrap();
-        assert_eq!(r.model, "person");
+        assert_eq!(r.concept, "person");
         assert_eq!(r.entity.as_deref(), Some("alice"));
         assert_eq!(r.view.as_deref(), Some("card"));
     }
@@ -86,7 +86,7 @@ mod tests {
     #[dialog_common::test]
     fn it_parses_directory_with_view() {
         let r = RenderRoute::parse("person!directory").unwrap();
-        assert_eq!(r.model, "person");
+        assert_eq!(r.concept, "person");
         assert_eq!(r.entity, None);
         assert_eq!(r.view.as_deref(), Some("directory"));
     }
@@ -95,7 +95,7 @@ mod tests {
     fn it_keeps_a_did_key_entity_uri() {
         let r = RenderRoute::parse("did:key:zABC@person").unwrap();
         assert_eq!(r.entity.as_deref(), Some("did:key:zABC"));
-        assert_eq!(r.model, "person");
+        assert_eq!(r.concept, "person");
     }
 
     #[dialog_common::test]
