@@ -1553,6 +1553,11 @@ concept!: &site
       the: xyz.tonk.site/space
       cardinality: one
       as: text
+    branch:
+      description: The active branch name on this site (defaults to "main").
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
     replica:
       description: Currently active replica on this site.
       the: xyz.tonk.site/replica
@@ -1655,6 +1660,11 @@ concept!: &workspace/shell
       the: xyz.tonk.site/space
       cardinality: one
       as: text
+    branch:
+      description: The active branch name, picked off the site.
+      the: xyz.tonk.site/branch
+      cardinality: one
+      as: text
     replica:
       description: The active replica, picked off the site.
       the: xyz.tonk.site/replica
@@ -1677,7 +1687,7 @@ view!: &workspace/shell/view
   display: |
     <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
       <tonk-repository class="display-route" name={space}>
-        <tonk-branch name="main">
+        <tonk-branch name={branch}>
           <div class="display-view-slot">
             <tonk-portal runtime content="<tonk-host><div class='display-view-slot'><tonk-display model='tonk:space/route' data-tonk-entity='site'></tonk-display></div></tonk-host>" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"></tonk-portal>
           </div>

@@ -117,7 +117,7 @@ async fn stamp_site(tonk: &crate::worker::TonkState, site: &str, path: &str, anc
     // schedules a poll so subscribers are notified — the request dispatcher
     // drains the poll once. Cardinality-one fields supersede in place, so a
     // navigation re-call just updates this site's path/route/concept.
-    let stamp = Site::new(entity, path.to_owned(), anchor, space.name.clone(), replica, route, concept);
+    let stamp = Site::new(entity, path.to_owned(), anchor, space.name.clone(), space.branch.clone(), replica, route, concept);
     if let Err(e) = branch
         .overlay()
         .assert(stamp)
