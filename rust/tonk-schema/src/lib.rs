@@ -54,6 +54,8 @@ pub mod rule_query;
 
 pub mod rule;
 
+pub mod deductive_rule;
+
 pub mod builtin;
 
 pub mod query;

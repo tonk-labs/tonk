@@ -29,6 +29,7 @@ use dialog_artifacts::{Entity, Statement as ArtifactsStatement, Update, Value};
 use dialog_query::{Parameters, Term, concept::query::ConceptQuery};
 use thiserror::Error;
 
+use crate::deductive_rule::DeductiveRule;
 use crate::prelude::EntityExt;
 use crate::rule::Rule;
 use indexmap::IndexMap;
@@ -186,6 +187,22 @@ pub enum Application {
         /// caller-pinned install/retract URI.
         this: ThisIntent,
     },
+    /// `rule!:` head with the deductive (`assert:`, no bang) form —
+    /// a rule that derives on query rather than firing on commit.
+    /// Distinct from [`Application::Rule`] because its storage shape
+    /// is the `db.rule/*` claim set and it has no polarity.
+    ///
+    /// `rule` is boxed for the same reason as [`Application::Rule`]:
+    /// the embedded compiled rule would otherwise inflate every
+    /// `Application` variant.
+    DeductiveRule {
+        /// The deductive rule, packaged with its stored source bytes
+        /// so an `assert` / `retract` writes the exact EAVs.
+        rule: Box<DeductiveRule>,
+        /// Where the install target entity came from — `Derived` for
+        /// the content-addressed default, `Uri(entity)` when pinned.
+        this: ThisIntent,
+    },
 }
 
 impl Application {
@@ -198,16 +215,17 @@ impl Application {
         match self {
             Self::Concept { query, .. } => &query.terms,
             Self::Domain { application, .. } => &application.parameters,
-            Self::Rule { .. } => empty_parameters(),
+            Self::Rule { .. } | Self::DeductiveRule { .. } => empty_parameters(),
         }
     }
 
     /// Where the entity in `terms["this"]` was selected from.
     pub fn this(&self) -> &ThisIntent {
         match self {
-            Self::Concept { this, .. } | Self::Domain { this, .. } | Self::Rule { this, .. } => {
-                this
-            }
+            Self::Concept { this, .. }
+            | Self::Domain { this, .. }
+            | Self::Rule { this, .. }
+            | Self::DeductiveRule { this, .. } => this,
         }
     }
 
@@ -218,7 +236,7 @@ impl Application {
             Self::Concept { name, .. } | Self::Domain { name, .. } => {
                 name.as_ref().map(AnchorName::as_str)
             }
-            Self::Rule { .. } => None,
+            Self::Rule { .. } | Self::DeductiveRule { .. } => None,
         }
     }
 
@@ -378,6 +396,7 @@ impl Planner for Application {
                 name,
             }))),
             Self::Rule { rule, .. } => Ok(ApplicationPlan::Rule(rule)),
+            Self::DeductiveRule { rule, .. } => Ok(ApplicationPlan::DeductiveRule(rule)),
         }
     }
 }
@@ -403,6 +422,9 @@ pub enum ApplicationPlan {
     /// embedded [`InductiveRule`] would otherwise inflate every
     /// concept-shaped plan to rule-storage size.
     Rule(Box<Rule>),
+    /// `db.rule/*` deductive-rule storage. Boxed for the same
+    /// size reason as [`ApplicationPlan::Rule`].
+    DeductiveRule(Box<DeductiveRule>),
 }
 
 /// Concept-side [`ApplicationPlan`] payload — a substituted
@@ -425,12 +447,14 @@ impl ArtifactsStatement for ApplicationPlan {
         match self {
             Self::Concept(plan) => plan.assert(update),
             Self::Rule(rule) => (*rule).assert(update),
+            Self::DeductiveRule(rule) => (*rule).assert(update),
         }
     }
     fn retract(self, update: &mut impl Update) {
         match self {
             Self::Concept(plan) => plan.retract(update),
             Self::Rule(rule) => (*rule).retract(update),
+            Self::DeductiveRule(rule) => (*rule).retract(update),
         }
     }
 }

@@ -412,6 +412,11 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                 // conclusion + polarity + one `on:`
                                 // entry per body attribute).
                                 claim_count += 4 + rule.effect.on_entities().len();
+                            } else if let ApplicationPlan::DeductiveRule(_) = &plan {
+                                // A deductive rule install writes a
+                                // constant set: marker + source +
+                                // conclusion (no polarity, no `on:`).
+                                claim_count += 3;
                             }
                             txn = txn.assert(plan);
                         }
@@ -436,6 +441,13 @@ impl<'s, 'a> Evaluate<'s, 'a> {
                                     // match the stored ones — the
                                     // dissociate is byte-exact.
                                     claim_count += 4 + rule.effect.on_entities().len();
+                                    txn = txn.retract(*rule);
+                                }
+                                ApplicationPlan::DeductiveRule(rule) => {
+                                    // Deductive rules have no notation
+                                    // retract form, but the storage type
+                                    // supports dissociation for completeness.
+                                    claim_count += 3;
                                     txn = txn.retract(*rule);
                                 }
                             }
@@ -907,7 +919,7 @@ fn render_block(
     let descriptor = match application {
         Application::Concept { query: q, .. } => q.predicate.clone(),
         Application::Domain { application: d, .. } => ConceptQuery::from(d.clone()).predicate,
-        Application::Rule { .. } => {
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
             // Rules never appear as a query expression — they are
             // write-only via Statement::Assert/Retract — so the
             // renderer's per-expression block path doesn't reach
@@ -924,7 +936,9 @@ fn render_block(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } => unreachable!("filtered above"),
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            unreachable!("filtered above")
+        }
     };
     for (_, term) in terms.iter() {
         if let Term::Variable {
@@ -965,8 +979,8 @@ fn render_one_result(
     let terms = match application {
         Application::Concept { query: q, .. } => &q.terms,
         Application::Domain { application: d, .. } => &d.parameters,
-        Application::Rule { .. } => {
-            unreachable!("render_one_result is not called for Application::Rule")
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            unreachable!("render_one_result is not called for rule applications")
         }
     };
 

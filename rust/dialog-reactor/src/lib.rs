@@ -34,6 +34,7 @@ mod pull;
 mod push;
 mod query;
 mod repository;
+mod rules;
 mod subscribe;
 mod subscription;
 mod transaction;
@@ -53,6 +54,7 @@ pub use pull::Pull;
 pub use push::Push;
 pub use query::QueryEffect;
 pub use repository::{RepositoryReference, RepositoryState};
+pub use rules::{ConceptCache, ReactorRuleSource};
 pub use subscribe::Subscribe;
 pub use subscription::{QueryHash, Subscriber, SubscriptionPoll, SubscriptionReference};
 /// On-the-wire `Conclusion` and `Query` — re-exported from

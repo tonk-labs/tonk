@@ -75,6 +75,7 @@ impl SubscriptionPoll<'_> {
             .branch
             .query()
             .with(self.state.overlay())
+            .with_rules(std::sync::Arc::new(self.state.rule_source()))
             .select(tonk_schema::concept::QueryPlan::from(query))
             .perform(env)
             .try_vec()

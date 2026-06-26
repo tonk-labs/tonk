@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 use crate::env::SelectProvider;
 use crate::error::ReactorError;
+use crate::rules::ConceptCache;
 use crate::subscription::{
     QueryHash, Status, Subscriber, SubscriberSession, Subscription, SubscriptionPoll,
 };
@@ -56,6 +57,12 @@ pub struct BranchState {
     /// block — a transaction. Per branch, so commits to different branches
     /// proceed in parallel.
     transactor: tokio::sync::Mutex<()>,
+    /// Per-branch cache of resolved deductive rules, keyed by
+    /// conclusion concept. Shared (`Arc`) into the
+    /// [`ReactorRuleSource`](crate::ReactorRuleSource) handed to each
+    /// read query so rule-resolution work is paid once per
+    /// (concept, branch-head) rather than per query.
+    rules: Arc<ConceptCache>,
 }
 
 impl BranchState {
@@ -66,7 +73,28 @@ impl BranchState {
             subscriptions: Mutex::new(HashMap::new()),
             overlay: RwLock::new(Changes::new()),
             transactor: tokio::sync::Mutex::new(()),
+            rules: Arc::new(ConceptCache::new()),
         }
+    }
+
+    /// The per-branch deductive-rule cache. Cloned (cheap `Arc`) into
+    /// a [`ReactorRuleSource`](crate::ReactorRuleSource) for each read.
+    pub fn rule_cache(&self) -> Arc<ConceptCache> {
+        Arc::clone(&self.rules)
+    }
+
+    /// A [`ReactorRuleSource`](crate::ReactorRuleSource) over this
+    /// branch's deductive-rule cache, for
+    /// [`QueryLayer::with_rules`](dialog_repository::QueryLayer::with_rules).
+    /// Carries the current branch head so the cache can distinguish
+    /// fresh entries from stale.
+    pub fn rule_source(&self) -> crate::ReactorRuleSource {
+        let head = self
+            .branch
+            .revision()
+            .map(|revision| revision.tree)
+            .unwrap_or_default();
+        crate::ReactorRuleSource::new(self.rule_cache(), head)
     }
 
     /// The per-branch transaction lock. A transaction takes it

@@ -42,11 +42,13 @@ impl<'a> QueryEffect<'a> {
         let terms = self.query.terms.clone();
         // Fold in the branch's session overlay (ephemeral facts kept out
         // of storage, e.g. an invite's private seed) so the read sees
-        // them alongside branch facts.
+        // them alongside branch facts, and install the deductive-rule
+        // source so stored `db.rule/*` rules resolve for this query.
         let conclusions = session
             .handle()
             .query()
             .with(session.overlay())
+            .with_rules(std::sync::Arc::new(session.rule_source()))
             .select(tonk_schema::concept::QueryPlan::from(self.query))
             .perform(env)
             .try_vec()

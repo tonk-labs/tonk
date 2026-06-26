@@ -364,6 +364,21 @@ fn expand(
                                 .push(Statement::Retract(Application::Rule { rule, this: intent }));
                             claim_labels.push(None);
                         }
+                        Some(rule::RuleAction::InstallDeductive {
+                            rule,
+                            this: install_at,
+                        }) => {
+                            let intent = match install_at {
+                                Some(entity) => ThisIntent::Uri(entity),
+                                None => ThisIntent::Derived,
+                            };
+                            this = intent.clone();
+                            claims.push(Statement::Assert(Application::DeductiveRule {
+                                rule,
+                                this: intent,
+                            }));
+                            claim_labels.push(None);
+                        }
                         None => {
                             // Retract of a rule that isn't installed:
                             // silently no-op, matching the prior
@@ -529,7 +544,9 @@ fn predicate_of(application: &Application, transient: bool) -> Predicate {
             })
         }
         Application::Domain { application, .. } => Predicate::Domain(application.domain.clone()),
-        Application::Rule { .. } => Predicate::Domain("rule".to_owned()),
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            Predicate::Domain("rule".to_owned())
+        }
     }
 }
 
@@ -575,7 +592,10 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
         // retract of `dialog.effect/*` claims contributes no
         // implicit query.
         let application = planned.statement.application();
-        if matches!(application, Application::Rule { .. }) {
+        if matches!(
+            application,
+            Application::Rule { .. } | Application::DeductiveRule { .. }
+        ) {
             continue;
         }
         // Two cases of "we know which entity to snapshot":
@@ -668,8 +688,8 @@ fn synthesize_implicit_queries(document: &mut DocumentAnalysis) {
             // Rules were filtered out above; the rule-snapshot path
             // is the read-side `rule:` query, not a per-write
             // synthesised one.
-            Application::Rule { .. } => unreachable!(
-                "Application::Rule should have been filtered out by the matches! check"
+            Application::Rule { .. } | Application::DeductiveRule { .. } => unreachable!(
+                "rule applications should have been filtered out by the matches! check"
             ),
         };
         // Reuse the assertion's head name so the rendered

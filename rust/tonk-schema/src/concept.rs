@@ -1012,8 +1012,8 @@ pub fn application_to_plan(application: crate::transact::Application) -> QueryPl
     match application {
         Application::Concept { query, .. } => QueryPlan::from(query),
         Application::Domain { application, .. } => QueryPlan::from(ConceptQuery::from(application)),
-        Application::Rule { .. } => panic!(
-            "Application::Rule has no QueryPlan projection — \
+        Application::Rule { .. } | Application::DeductiveRule { .. } => panic!(
+            "rule applications have no QueryPlan projection — \
              rules are write-only via Statement::Assert/Retract"
         ),
     }

@@ -236,6 +236,8 @@ impl DocumentAnalysis {
                 &planned.statement,
                 Statement::Assert(Application::Rule { .. })
                     | Statement::Retract(Application::Rule { .. })
+                    | Statement::Assert(Application::DeductiveRule { .. })
+                    | Statement::Retract(Application::DeductiveRule { .. })
             ) {
                 continue;
             }
@@ -258,6 +260,22 @@ impl DocumentAnalysis {
         let mut rules = Vec::new();
         for planned in self.statements() {
             if let Statement::Assert(Application::Rule { rule, .. }) = &planned.statement {
+                rules.push((**rule).clone());
+            }
+        }
+        rules
+    }
+
+    /// Lift every deductive `rule!:` install (the `assert:` no-bang
+    /// form) in the document into a
+    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule),
+    /// in document/eval order. Like [`rule_installs`](Self::rule_installs),
+    /// these have no [`TransactRequest`] representation and are returned
+    /// separately for a seed loop to `assert` directly.
+    pub fn deductive_rule_installs(&self) -> Vec<tonk_schema::deductive_rule::DeductiveRule> {
+        let mut rules = Vec::new();
+        for planned in self.statements() {
+            if let Statement::Assert(Application::DeductiveRule { rule, .. }) = &planned.statement {
                 rules.push((**rule).clone());
             }
         }
@@ -301,7 +319,9 @@ fn lower_statement(
     let (query, name) = match application {
         Application::Concept { query, name, .. } => (query, name.clone()),
         Application::Domain { .. } => return Err(AnalyzeLowerError::Domain),
-        Application::Rule { .. } => return Err(AnalyzeLowerError::Rule),
+        Application::Rule { .. } | Application::DeductiveRule { .. } => {
+            return Err(AnalyzeLowerError::Rule);
+        }
     };
     let this = query.terms.get("this").and_then(term_entity);
     let descriptor = query.predicate.clone();
