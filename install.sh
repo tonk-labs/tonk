@@ -11,18 +11,28 @@
 # Environment:
 #   TONK_CHANNEL=staging   install the pre-release channel (default: stable)
 #   TONK_RELEASE=<tag>     pin an explicit release tag (wins over TONK_CHANNEL)
-#   TONK_INSTALL_DIR       where to install (default: $HOME/.local/bin)
+#   TONK_INSTALL_DIR       where to install (default: /usr/local/bin if
+#                          writable, else $HOME/.local/bin)
 #
-# The macOS binary is not Apple-signed (see BUG: Apple code signing). This
+# The macOS binary is not Apple-signed (see BUG-22: Apple code signing). This
 # script clears the Gatekeeper quarantine and ad-hoc signs the binary so it
 # runs; a hand-downloaded binary needs the same `xattr -c` + `codesign`.
 set -eu
 
 REPO="tonk-labs/tonk"
-INSTALL_DIR="${TONK_INSTALL_DIR:-$HOME/.local/bin}"
 
 say() { printf 'install: %s\n' "$1" >&2; }
 die() { printf 'install: error: %s\n' "$1" >&2; exit 1; }
+
+# Install location: honor the override, else prefer a writable /usr/local/bin
+# (usually already on PATH) and fall back to the per-user bin.
+if [ -n "${TONK_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$TONK_INSTALL_DIR"
+elif [ -w /usr/local/bin ]; then
+  INSTALL_DIR="/usr/local/bin"
+else
+  INSTALL_DIR="$HOME/.local/bin"
+fi
 
 # Channel selection. Only the exact value `staging` opts into the
 # pre-release; TONK_RELEASE pins an explicit tag and wins over the channel.
@@ -72,13 +82,49 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-say "downloading $asset"
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$url" -o "$tmp/$asset" || die "download failed: $url"
-elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$tmp/$asset" "$url" || die "download failed: $url"
+# Resolve the checksums.txt URL alongside the asset on the same release.
+if [ "$RELEASE" = "latest" ]; then
+  sums_url="https://github.com/${REPO}/releases/latest/download/checksums.txt"
 else
-  die "need curl or wget to download"
+  sums_url="https://github.com/${REPO}/releases/download/${RELEASE}/checksums.txt"
+fi
+
+fetch() {
+  # fetch <url> <output> -> 0 on success, non-zero otherwise.
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$2" "$1"
+  else
+    die "need curl or wget to download"
+  fi
+}
+
+say "downloading $asset"
+fetch "$url" "$tmp/$asset" || die "download failed: $url"
+
+# Verify the archive against the release's checksums.txt. Refuse to install
+# on mismatch; the binary is unsigned, so this is our integrity gate.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  else
+    return 1
+  fi
+}
+
+if fetch "$sums_url" "$tmp/checksums.txt"; then
+  expected="$(awk -v f="$asset" '{name=$2; sub(/^\*/, "", name); if (name == f) {print $1; exit}}' "$tmp/checksums.txt")"
+  [ -n "$expected" ] || die "no checksum entry for $asset in checksums.txt"
+  actual="$(sha256_of "$tmp/$asset")" || die "no sha256 tool found (need sha256sum, shasum, or openssl)"
+  [ "$expected" = "$actual" ] || die "checksum mismatch for $asset (expected $expected, got $actual)"
+  say "checksum verified"
+else
+  die "could not download checksums.txt from $sums_url; refusing to install unverified binary"
 fi
 
 say "extracting"
@@ -98,6 +144,12 @@ dest="$INSTALL_DIR/tonk"
 #   2. apply an ad-hoc signature, which arm64 binaries require to execute
 #      and which is re-established after the move/clear.
 # Both are no-ops off macOS (the tools are absent), so the guard is `Darwin`.
+#
+# Ad-hoc signing is unconditional ONLY because the release binary is
+# currently unsigned, so re-signing can't clobber anything of value. Once
+# BUG-22 ships a real Developer ID signature, make this opt-in (e.g. a
+# TONK_RESIGN_MACOS flag) so a normal install preserves the notarized
+# signature instead of replacing it with a local ad-hoc one.
 if [ "$os" = "Darwin" ]; then
   xattr -c "$dest" 2>/dev/null || true
   if command -v codesign >/dev/null 2>&1; then

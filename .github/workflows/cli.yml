@@ -68,6 +68,8 @@ jobs:
           install -m 0755 artifacts/linux-x86_64/tonk tonk
           tar -czf tonk-linux-x86_64.tar.gz tonk
           rm tonk
+          # Checksums the installer verifies before installing.
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
       - name: Delete existing staging release
         run: gh release delete tonk-staging --yes --cleanup-tag || true
         env:
@@ -100,6 +102,7 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            checksums.txt
             install.sh
 
   publish-stable:
@@ -129,6 +132,8 @@ jobs:
           install -m 0755 artifacts/linux-x86_64/tonk tonk
           tar -czf tonk-linux-x86_64.tar.gz tonk
           rm tonk
+          # Checksums the installer verifies before installing.
+          sha256sum tonk-macos-arm64.tar.gz tonk-linux-x86_64.tar.gz > checksums.txt
       - name: Delete existing rolling release
         run: gh release delete tonk-latest --yes --cleanup-tag || true
         env:
@@ -165,4 +170,5 @@ jobs:
           files: |
             tonk-macos-arm64.tar.gz
             tonk-linux-x86_64.tar.gz
+            checksums.txt
             install.sh
