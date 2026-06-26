@@ -6,19 +6,22 @@
 //! [`RuleSource`](dialog_repository::RuleSource) for the rules
 //! concluding that concept. This module is the reactor's
 //! implementation: it reads the rule facts through the query's own
-//! branch+overlay union, hydrates them, and caches the result per
-//! concept so repeat queries pay no scan.
+//! branch+overlay union, hydrates them, and reuses already-built rule
+//! bodies via a per-branch hydration cache.
 //!
-//! # Cache
+//! # Cache: hydration only, never a "skip the scan" cache
 //!
-//! [`ConceptCache`] lives on a [`BranchState`](crate::BranchState).
-//! Each entry records the [`TreeReference`] (branch head) it was
-//! scanned at alongside the hydrated rules; a lookup that finds the
-//! recorded head still current returns the cached rules with no tree
-//! scan, while a head advance on *that concept's* entry triggers a
-//! single re-scan. Rules are keyed within an entry by their
-//! content-addressed entity, so a body shared across concepts or
-//! surviving an unrelated head change is reused without re-hydrating.
+//! [`ConceptCache`] lives on a [`BranchState`](crate::BranchState). It
+//! maps each conclusion concept to the compiled rule bodies already
+//! built, keyed by content-addressed rule entity. It does NOT decide
+//! *which* rules apply: the conclusion lookup is re-run through the
+//! branch+overlay union on every resolve, so a rule asserted into the
+//! overlay (`tx.assert(rule)` / `.with(rule)`, uncommitted — the branch
+//! head has not moved) is always seen. A head-keyed "skip the scan"
+//! cache would hit on the unchanged head and silently ignore such a
+//! rule. The cache only avoids re-paying CBOR decode + recompile for a
+//! body we already built; content addressing means a cached body is
+//! never stale.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,28 +31,25 @@ use dialog_query::DeductiveRule as CompiledRule;
 use dialog_query::concept::descriptor::ConceptDescriptor;
 use dialog_query::concept::query::ConceptRules;
 use dialog_query::error::EvaluationError;
-use dialog_repository::{RuleClaims, RuleSource, TreeReference};
+use dialog_repository::{RuleClaims, RuleSource};
 use parking_lot::RwLock;
 
 use tonk_schema::deductive_rule::DeductiveRule as StoredRule;
 
-/// Hydrated deductive rules for one concept, tagged with the branch
-/// head they were scanned at.
-#[derive(Default)]
-struct RuleCache {
-    /// Branch head this entry was scanned at. A lookup compares it
-    /// against the current head to decide fresh-vs-stale.
-    tree: TreeReference,
-    /// Hydrated rules keyed by their content-addressed entity
-    /// (`rule:<hash>`), so unchanged rules are reused across re-scans.
-    rules: HashMap<Entity, CompiledRule>,
-}
-
-/// Per-branch cache of resolved deductive rules, keyed by conclusion
-/// concept entity. Held on [`BranchState`](crate::BranchState).
+/// Per-branch HYDRATION cache: for each conclusion concept, the
+/// compiled rule bodies already built, keyed by their
+/// content-addressed entity (`rule:<hash>`). Held on
+/// [`BranchState`](crate::BranchState).
+///
+/// This is deliberately NOT a "which rules apply" cache keyed by
+/// branch head: the conclusion lookup is always re-run through the
+/// branch+overlay union (so an overlay-asserted, uncommitted rule is
+/// seen — the head hasn't moved). The cache only avoids re-paying CBOR
+/// decode + recompile for a rule body we've already built. Content
+/// addressing means a cached body is never stale.
 #[derive(Default)]
 pub struct ConceptCache {
-    concepts: RwLock<HashMap<Entity, RuleCache>>,
+    concepts: RwLock<HashMap<Entity, HashMap<Entity, CompiledRule>>>,
 }
 
 impl ConceptCache {
@@ -58,34 +58,18 @@ impl ConceptCache {
         Self::default()
     }
 
-    /// Return the cached rules for `concept` if the entry was scanned
-    /// at `head`; otherwise `None` (caller must re-scan).
-    fn get_fresh(&self, concept: &Entity, head: &TreeReference) -> Option<Vec<CompiledRule>> {
-        let concepts = self.concepts.read();
-        let entry = concepts.get(concept)?;
-        if &entry.tree == head {
-            Some(entry.rules.values().cloned().collect())
-        } else {
-            None
-        }
-    }
-
-    /// Replace the cached entry for `concept` with `rules` scanned at
-    /// `head`. Reuses already-hydrated rule bodies by entity so a
-    /// re-scan doesn't re-pay hydration for unchanged rules.
-    fn store(&self, concept: Entity, head: TreeReference, rules: HashMap<Entity, CompiledRule>) {
-        self.concepts
-            .write()
-            .insert(concept, RuleCache { tree: head, rules });
+    /// Replace the cached hydrated bodies for `concept`.
+    fn store(&self, concept: Entity, rules: HashMap<Entity, CompiledRule>) {
+        self.concepts.write().insert(concept, rules);
     }
 
     /// Snapshot of an existing entry's hydrated bodies, so a re-scan
-    /// can reuse rules whose entity (content hash) is unchanged.
+    /// reuses rules whose entity (content hash) is unchanged.
     fn hydrated(&self, concept: &Entity) -> HashMap<Entity, CompiledRule> {
         self.concepts
             .read()
             .get(concept)
-            .map(|entry| entry.rules.clone())
+            .cloned()
             .unwrap_or_default()
     }
 }
@@ -106,15 +90,12 @@ fn rule_attr(name: &str) -> Attribute {
 /// benefits later ones.
 pub struct ReactorRuleSource {
     cache: Arc<ConceptCache>,
-    /// Current branch head, for the cache freshness check.
-    head: TreeReference,
 }
 
 impl ReactorRuleSource {
-    /// Build a rule source over `cache`, treating `head` as the
-    /// current branch revision for freshness.
-    pub fn new(cache: Arc<ConceptCache>, head: TreeReference) -> Self {
-        Self { cache, head }
+    /// Build a rule source over the branch's shared hydration cache.
+    pub fn new(cache: Arc<ConceptCache>) -> Self {
+        Self { cache }
     }
 }
 
@@ -129,16 +110,17 @@ impl RuleSource for ReactorRuleSource {
     ) -> Result<ConceptRules, EvaluationError> {
         let concept_entity = concept.this();
 
-        // Fast path: cache holds rules scanned at the current head.
-        if let Some(cached) = self.cache.get_fresh(&concept_entity, &self.head) {
-            for rule in cached {
-                rules.install(rule);
-            }
-            return Ok(rules);
-        }
-
-        // Slow path: find rule entities whose conclusion is this
-        // concept, via the same branch+overlay union the query reads.
+        // Always run the conclusion lookup through the branch+overlay
+        // union the query reads — this is what makes a rule asserted into
+        // the overlay (`tx.assert(rule)` / `.with(rule)`, uncommitted, so
+        // the branch head has NOT moved) visible. The cache must NOT be
+        // used to skip this scan: a head-keyed cache would hit on the
+        // unchanged head and silently ignore an overlay rule (or, having
+        // cached an empty result, mask it). So the cache below is a pure
+        // *hydration* cache (skip CBOR decode + recompile for a
+        // content-addressed rule we already built), never a "skip the
+        // scan" cache. The expensive part (hydrate) is still cached; the
+        // cheap part (the indexed union select) always runs.
         let conclusion_claims = claims
             .select_claims(
                 ArtifactSelector::new()
@@ -148,16 +130,14 @@ impl RuleSource for ReactorRuleSource {
             .await
             .map_err(|e| EvaluationError::Store(format!("rule conclusion lookup: {e:?}")))?;
 
-        // Nothing concludes this concept: cache the empty result so we
-        // don't re-scan until the head advances, and return implicit-only.
         if conclusion_claims.is_empty() {
-            self.cache
-                .store(concept_entity, self.head.clone(), HashMap::new());
             return Ok(rules);
         }
 
-        // Reuse bodies already hydrated for this concept (unchanged
-        // rules across a head advance); hydrate the rest from source.
+        // Reuse already-hydrated bodies by rule entity (content hash), so
+        // a rule seen before isn't re-decoded/re-compiled; hydrate the
+        // rest from source. Entries are keyed by rule.this() which is a
+        // content hash, so a cached body is never stale.
         let mut prior = self.cache.hydrated(&concept_entity);
         let mut resolved: HashMap<Entity, CompiledRule> = HashMap::new();
 
@@ -174,8 +154,10 @@ impl RuleSource for ReactorRuleSource {
         for rule in resolved.values() {
             rules.install(rule.clone());
         }
-        self.cache
-            .store(concept_entity, self.head.clone(), resolved);
+        // Cache the hydrated bodies for reuse (keyed by content-addressed
+        // rule entity). This is a hydration cache only — it never gates
+        // whether to scan, so overlay rules are always picked up above.
+        self.cache.store(concept_entity, resolved);
 
         Ok(rules)
     }
@@ -289,17 +271,10 @@ mod tests {
         };
 
         let cache = Arc::new(ConceptCache::new());
-        let head = branch
-            .revision()
-            .map(|revision| revision.tree)
-            .unwrap_or_default();
 
         let conclusions: Vec<ConceptConclusion> = branch
             .query()
-            .with_rules(Arc::new(ReactorRuleSource::new(
-                cache.clone(),
-                head.clone(),
-            )))
+            .with_rules(Arc::new(ReactorRuleSource::new(cache.clone())))
             .select(query.clone())
             .perform(&operator)
             .try_vec()
@@ -316,15 +291,80 @@ mod tests {
             "expected Alice as a derived employee, got {conclusions:?}"
         );
 
-        // Second query reuses the cache (same head) — still resolves.
+        // Second query reuses the hydration cache — still resolves.
         let again: Vec<ConceptConclusion> = branch
             .query()
-            .with_rules(Arc::new(ReactorRuleSource::new(cache, head)))
+            .with_rules(Arc::new(ReactorRuleSource::new(cache)))
             .select(query)
             .perform(&operator)
             .try_vec()
             .await?;
         assert!(again.iter().any(|c| *c.entity() == alice));
+
+        Ok(())
+    }
+
+    /// Regression: a rule asserted into the OVERLAY (`.with(rule)`,
+    /// uncommitted, so the branch head has NOT moved) must resolve —
+    /// even after a prior query of the same concept ran and populated
+    /// the cache. A head-keyed "skip the scan" cache would hit on the
+    /// unchanged head and silently ignore the overlay rule (the bug
+    /// that made the inspector's evaluate preview show no deductions).
+    #[dialog_common::test]
+    async fn it_resolves_an_overlay_rule_after_a_prior_query() -> anyhow::Result<()> {
+        let (operator, profile) = test_operator_with_profile().await;
+        let repo = test_repo(&operator, &profile).await;
+        let branch = repo.branch("main").open().perform(&operator).await?;
+
+        // Commit ONLY the flat person fact — no rule on the branch.
+        let alice: dialog_artifacts::Entity = "id:alice".parse()?;
+        branch
+            .transaction()
+            .assert(
+                the!("org/person-name")
+                    .of(alice.clone())
+                    .is("Alice".to_string()),
+            )
+            .commit()
+            .perform(&operator)
+            .await?;
+
+        let mut terms = Parameters::new();
+        terms.insert("this".into(), Term::var("this"));
+        terms.insert("name".into(), Term::var("name"));
+        let query = ConceptQuery {
+            predicate: employee_descriptor(),
+            terms,
+        };
+
+        // The branch's shared cache, reused across both queries below.
+        let cache = Arc::new(ConceptCache::new());
+
+        // First query: no rule exists yet. Under the old design this
+        // would cache an empty result for `employee` at the current head.
+        let before: Vec<ConceptConclusion> = branch
+            .query()
+            .with_rules(Arc::new(ReactorRuleSource::new(cache.clone())))
+            .select(query.clone())
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(before.is_empty(), "no rule yet, got {before:?}");
+
+        // Now add the rule to the OVERLAY (not committed — head is the
+        // same as the first query) and re-resolve. It MUST surface.
+        let after: Vec<ConceptConclusion> = branch
+            .query()
+            .with(employee_from_person())
+            .with_rules(Arc::new(ReactorRuleSource::new(cache)))
+            .select(query)
+            .perform(&operator)
+            .try_vec()
+            .await?;
+        assert!(
+            after.iter().any(|c| *c.entity() == alice),
+            "overlay rule must resolve despite the prior cached query, got {after:?}"
+        );
 
         Ok(())
     }

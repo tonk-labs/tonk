@@ -85,16 +85,10 @@ impl BranchState {
 
     /// A [`ReactorRuleSource`](crate::ReactorRuleSource) over this
     /// branch's deductive-rule cache, for
-    /// [`QueryLayer::with_rules`](dialog_repository::QueryLayer::with_rules).
-    /// Carries the current branch head so the cache can distinguish
-    /// fresh entries from stale.
+    /// [`QueryLayer::with_rules`](dialog_repository::QueryLayer::with_rules)
+    /// — over this branch's shared rule hydration cache.
     pub fn rule_source(&self) -> crate::ReactorRuleSource {
-        let head = self
-            .branch
-            .revision()
-            .map(|revision| revision.tree)
-            .unwrap_or_default();
-        crate::ReactorRuleSource::new(self.rule_cache(), head)
+        crate::ReactorRuleSource::new(self.rule_cache())
     }
 
     /// The per-branch transaction lock. A transaction takes it

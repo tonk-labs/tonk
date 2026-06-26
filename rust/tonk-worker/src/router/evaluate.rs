@@ -216,7 +216,15 @@ async fn evaluate_on_branch<'a>(
     // is read-only and gets `induce`-swept on commit (below) so it never
     // lands durably.
     let overlay = session.overlay();
-    let txn = branch.transaction().integrate(overlay.clone());
+    // Install the branch's deductive-rule source so the evaluation's
+    // match queries (`txn.query()` inside the evaluator) resolve stored
+    // `db.rule/*` rules — the same deductions a committed `query` /
+    // `subscribe` returns. Without this, the inspector's dry-run preview
+    // would silently omit rule-derived rows.
+    let txn = branch
+        .transaction()
+        .integrate(overlay.clone())
+        .with_rules(std::sync::Arc::new(session.rule_source()));
 
     let t_eval = web_time::Instant::now();
     let evaluated = syntax
