@@ -1636,13 +1636,67 @@ view!: &space/route/view
   display: |
     <tonk-display entity={replica} model=tonk/space />
 
+# The workspace shell — the declarative two-portal composition the space route
+# resolves to. It renders OUTER-side (the top document mounts
+# `<tonk-display model=tonk:site>`, whose site view nests `{concept}` =
+# `tonk:workspace/shell` on the same site entity). The shell owns the page
+# layout and mounts the CONTENT portal: a sealed `<tonk-portal runtime>` whose
+# guest renders the space's content. The FAB portal is a later task — a slot
+# comment for now.
+#
+# It renders on the site entity, so it reuses the site's `space`/`replica`
+# fields (`space` annotates the `<tonk-repository>`, picked off the site).
+concept!: &workspace/shell
+  this: tonk:workspace/shell
+  description: Two-portal workspace shell — content portal plus FAB overlay.
+  with:
+    space:
+      description: The active space (repository name), picked off the site.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
+    replica:
+      description: The active replica, picked off the site.
+      the: xyz.tonk.site/replica
+      cardinality: one
+      as: entity
+
+# The shell's content portal carries the guest markup verbatim from the former
+# Leptos `TonkSpaceSealed` body, with ONE change: the guest renders
+# `model=tonk:space/route` (the space's content concept) directly rather than
+# `model=tonk:site`. The shell already IS the site's matched `{concept}`, so a
+# nested `model=tonk:site` would re-resolve to the shell and recurse the portal.
+# `tonk:space/route` picks the tab's `replica` off the same site entity (filled
+# by `data-tonk-entity="site"`) and renders `tonk/space` — identical content to
+# before, now composed by the shell. The proxy `<tonk-host>` inside the guest is
+# the IO owner; its query/subscribe events relay over `window.tonk` to the outer
+# bridge. The `.display-view-slot` chain is the bare-route fill-height layout.
+view!: &workspace/shell/view
+  this: id:tonk:workspace/shell/view
+  model: tonk:workspace/shell
+  display: |
+    <div class="workspace-shell" style="display:flex; flex-direction:column; min-height:100dvh;">
+      <tonk-repository class="display-route" name={space}>
+        <tonk-branch name="main">
+          <div class="display-view-slot">
+            <tonk-portal runtime content="<tonk-host><div class='display-view-slot'><tonk-display model='tonk:space/route' data-tonk-entity='site'></tonk-display></div></tonk-host>" style="display:flex; flex-direction:column; flex:1 1 auto; min-height:100dvh;"></tonk-portal>
+          </div>
+        </tonk-branch>
+      </tonk-repository>
+      <!-- FAB portal slot — added in Task 4 -->
+    </div>
+
 # ---- Seeded routes (bootstrap) ----
 #
 # Built-in routes every space starts with. The SW matches against these.
+# The space route resolves the declarative workspace shell (the site's
+# `{concept}` indirection mounts it on the site entity). Editing this entry's
+# `concept` rather than adding a second `path: "/"` route avoids a matchit
+# conflict (the SW skips conflicting paths — `session.rs match_route`).
 route!: &route/space
   this: id:tonk:route/space
   path: "/"
-  concept: tonk:space/route
+  concept: tonk:workspace/shell
 # The sync chip — the default view for `model: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's
 # <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"
