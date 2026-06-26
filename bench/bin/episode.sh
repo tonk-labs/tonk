@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the episode agent: a fresh headless claude in the site dir with
-# the scenario task. It gets slide on PATH and nothing else from this
+# the scenario task. It gets tonk on PATH and nothing else from this
 # repo — its struggles with the CLI are the benchmark signal.
 #
 # Env: ROOT, RUN_DIR, SCENARIO
@@ -43,7 +43,7 @@ set +e
   PATH="$ROOT/target/release:$PATH" \
   timeout -k 30 "$EPISODE_TIMEOUT" claude -p "$(cat "$SCENARIO/task.md")" \
     --output-format stream-json --verbose \
-    --allowedTools "Bash(slide:*),Read,Write,Edit,Glob,Grep" \
+    --allowedTools "Bash(tonk:*),Read,Write,Edit,Glob,Grep" \
 ) > "$RUN_DIR/episode.jsonl" 2> "$RUN_DIR/episode.stderr"
 status=$?
 set -e

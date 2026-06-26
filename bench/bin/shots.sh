@@ -2,7 +2,7 @@
 # Capture the scenario's checkpoint screenshots. Each line of the
 # scenario's `checkpoints` file is either:
 #   home                — the shell root ($BENCH_URL/)
-#   display:<view-name> — resolved at capture time via `slide share display`
+#   display:<view-name> — resolved at capture time via `tonk share display`
 #   <path>              — a suffix under /space/$SPACE_NAME/
 # Blank lines and #-comments are skipped. A failed screenshot is
 # recorded as missing, not fatal — the judge sees what there is.
@@ -13,13 +13,13 @@ set -euo pipefail
 ROOT="${ROOT:?}"; RUN_DIR="${RUN_DIR:?}"; BENCH_URL="${BENCH_URL:?}"
 SPACE_NAME="${SPACE_NAME:-bench}"; SCENARIO="${SCENARIO:?}"
 B="$ROOT/bench/bin/browser.sh"
-SLIDE="$ROOT/target/release/slide"
+TONK="$ROOT/target/release/tonk"
 mkdir -p "$RUN_DIR/shots"
 
 # Resolve a display:<view-name> checkpoint to a navigable URL.
 #
 # Strategy:
-# 1. Run `slide share display <view-name> --view <view-name>` to confirm
+# 1. Run `tonk share display <view-name> --view <view-name>` to confirm
 #    the view bookmark exists and push the repo. Parse the view entity
 #    URI from stderr.
 # 2. Query the view instance to find its model URI and resolve that to a
@@ -45,9 +45,9 @@ resolve_display() {
   # from stderr ("subject: <name> (<entity>)" or "subject: <entity>").
   local share_stderr view_entity
   share_stderr="$(mktemp)"
-  cd "$site" && "$SLIDE" share display "$view_name" --view "$view_name" \
+  cd "$site" && "$TONK" share display "$view_name" --view "$view_name" \
     >"$share_stderr.stdout" 2>"$share_stderr" || {
-    echo "shots: slide share display $view_name --view $view_name failed: $(cat "$share_stderr")" >&2
+    echo "shots: tonk share display $view_name --view $view_name failed: $(cat "$share_stderr")" >&2
     rm -f "$share_stderr" "$share_stderr.stdout"
     return 1
   }
@@ -62,13 +62,13 @@ resolve_display() {
   local model_name="$view_name"
   if [ -n "$view_entity" ] && command -v jq >/dev/null 2>&1; then
     local model_uri
-    model_uri="$(cd "$site" && "$SLIDE" eval --no-sync --format json -c 'view:' 2>/dev/null \
+    model_uri="$(cd "$site" && "$TONK" eval --no-sync --format json -c 'view:' 2>/dev/null \
       | jq -r --arg e "$view_entity" \
           '.matches_before[0].results[] | select(.this == $e) | .fields.model // empty' \
         2>/dev/null || true)"
     if [ -n "$model_uri" ]; then
       local resolved
-      resolved="$(cd "$site" && "$SLIDE" eval --no-sync --format json -c 'concept:' 2>/dev/null \
+      resolved="$(cd "$site" && "$TONK" eval --no-sync --format json -c 'concept:' 2>/dev/null \
         | jq -r --arg u "$model_uri" \
             '.matches_before[0].results[] | select(.this == $u) | .fields.name // empty' \
           2>/dev/null || true)"

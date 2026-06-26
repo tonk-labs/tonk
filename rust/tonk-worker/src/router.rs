@@ -1402,7 +1402,7 @@ pub mod tests {
 
     /// Wire `main`'s upstream to a sibling `upstream` branch in the
     /// same repo — the in-process stand-in for a real remote, the
-    /// same pattern the slide sync tests use — so the status route's
+    /// same pattern the tonk sync tests use — so the status route's
     /// fetch + classify path has somewhere local to read from.
     /// Returns the router for driving the HTTP surface.
     async fn repo_with_sibling_upstream(label: &str) -> (Router, String) {
@@ -3043,7 +3043,7 @@ attribute!: &{name}
 
     /// The reactor's one-shot [`query`](crate::reactor::QueryEffect)
     /// effect — what the non-streaming `/query` arm and headless
-    /// callers (e.g. `slide render`) use — returns the same
+    /// callers (e.g. `tonk render`) use — returns the same
     /// projected conclusions the HTTP route does, without opening a
     /// subscription.
     #[dialog_common::test]

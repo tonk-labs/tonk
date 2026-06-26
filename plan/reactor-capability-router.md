@@ -24,7 +24,7 @@ request router.** The reactor already owns the mechanism (`CommandRegistry`,
 dispatch *loop* and the concrete `Env` live up in the worker. Moving
 dispatch into the reactor's commit cycle gives origin for free (from the
 committing `BranchReference`) and makes every commit path fire commands
-uniformly (today only `/transact` does; `slide` never does).
+uniformly (today only `/transact` does; `tonk` never does).
 
 ## Design
 
@@ -177,7 +177,7 @@ queryable fact remains the right general follow-up for views.
 
 - `dialog-reactor`: `Reactor<S>`, `State<S>`, commit absorbs dispatch and
   returns `{ revision, effect }`, `CommandRegistry`/`Provider` receiver
-  becomes `State<S>`. Shared with `slide` — slide passes `()` / no commands
+  becomes `State<S>`. Shared with `tonk` — tonk passes `()` / no commands
   → no behavior change (it just ignores `effect`).
 - `dialog-common`: reuse `TaskQueue` (no change) as the internal `Effect`
   carrier.

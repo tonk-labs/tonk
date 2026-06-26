@@ -1,12 +1,12 @@
 ---
 name: tonk-bug
-description: Submit (and query/update) a bug in a tonk space using the `tonk`/`slide` CLI and asserted-notation. Use whenever asked to file, report, triage, or list bugs in a tonk repo. Covers the `bug` concept schema, value conventions, the next-ident lookup, and the create/retract notation that actually works against this CLI.
-allowed-tools: Read, Bash(tonk:*), Bash(slide:*), Bash, Glob, Grep
+description: Submit (and query/update) a bug in a tonk space using the `tonk` CLI and asserted-notation. Use whenever asked to file, report, triage, or list bugs in a tonk repo. Covers the `bug` concept schema, value conventions, the next-ident lookup, and the create/retract notation that actually works against this CLI.
+allowed-tools: Read, Bash(tonk:*), Bash, Glob, Grep
 ---
 
 # Submitting bugs to a tonk space
 
-`tonk` (aliased as `slide`) is a notation-driven CLI. It is **not** the
+`tonk` is a notation-driven CLI. It is **not** the
 `tonk --json concept define / create / query` interface described in the
 plugin `tonk` guide — that flag-based interface does not exist on this
 binary. Everything goes through `tonk eval` running an asserted-notation

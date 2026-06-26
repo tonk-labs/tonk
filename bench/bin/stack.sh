@@ -22,9 +22,9 @@ ensure_access_bin() {
   (cd "$ROOT" && cargo build --release -p tonk-access-service --features helpers --bin tonk-access-local)
 }
 
-ensure_slide() {
-  echo "stack: cargo build slide..." >&2
-  (cd "$ROOT" && cargo build --release -p slide)
+ensure_tonk() {
+  echo "stack: cargo build tonk-cli..." >&2
+  (cd "$ROOT" && cargo build --release -p tonk-cli)
 }
 
 start() {
@@ -37,7 +37,7 @@ start() {
 
   ensure_ui
   ensure_access_bin
-  ensure_slide
+  ensure_tonk
   mkdir -p "$RUN_DIR"
 
   # --- launch access service ---

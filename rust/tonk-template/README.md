@@ -38,4 +38,4 @@ and target-free.
 - `tonk-display` re-exports `resolve` and `fold` and adds the web-sys DOM
   snapshot + renderer.
 - `tonk-render` adds the `tl` parser + native node tree + string renderer.
-- `slide` (the `render` command) drives resolve + fold + the planner directly.
+- `tonk` (the `render` command) drives resolve + fold + the planner directly.

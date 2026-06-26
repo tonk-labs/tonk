@@ -13,12 +13,12 @@ documented. Summary of the fixes (commits on `feat/ssr-render`):
 - Attribute dispatch: boolean presence/absence, absent-field omission,
   non-string property semantics — all matched to the browser via Chrome
   goldens.
-- slide render: `dom.host/*` injection, `_:_` default-view fallback,
+- tonk render: `dom.host/*` injection, `_:_` default-view fallback,
   pinned-concept model name resolution, empty-attr nested-route guard,
   visited-set cycle guard.
-- Tests: 7 slide render integration tests; restored wasm coverage for
+- Tests: 7 tonk render integration tests; restored wasm coverage for
   the moved resolve/fold tests; new attribute/parse/serialize compat +
-  unit tests. Docs: READMEs + `slide render` in the guides.
+  unit tests. Docs: READMEs + `tonk render` in the guides.
 - Inherent to SSR (documented, not "fixed"): a `text/html` portal's
   `display` is an author-written HTML *document* (not a template) that
   runs its own JS against the `window.tonk` bridge — the browser loads
@@ -36,7 +36,7 @@ The original findings, for the record:
 
 
 Review of the `feat/ssr-render` work (tonk-template / tonk-render /
-`slide render`). Empirically verified findings, grouped by severity. The
+`tonk render`). Empirically verified findings, grouped by severity. The
 headline correction: the "byte-identical to the browser" claim holds only for
 **well-formed, lowercase, table-free, style-free, entity-free** templates with
 literal-string fields. Several common real-world shapes diverge.
@@ -88,24 +88,24 @@ construction the binding paths assume. Confirmed divergences:
    so wouldn't appear in `outerHTML` at all; SSR emits a spurious attribute.
    VERIFIED by code comparison.
 
-### `slide render` resolution divergence (slide/src/render.rs)
+### `tonk render` resolution divergence (tonk-cli/src/render.rs)
 8. **`{dom.host/*}` not injected (CRITICAL)** — the browser augments each
    conclusion with `dom.host/<attr>` fields (`with_host_attributes`) so a nested
    `<tonk-display entity={this} model={dom.host/model}>` resolves its model.
-   slide injects nothing, so `{dom.host/model}` renders empty, and the nested
+   tonk injects nothing, so `{dom.host/model}` renders empty, and the nested
    recursion then builds a route with `model=""` → "no concept matched". The
    canonical directory→detail nesting idiom is unusable in SSR.
 9. **No `_:_` default-view fallback (CRITICAL)** — when the model-specific view
    query is empty the browser re-queries with `model="_:_"` (DEFAULT_MODEL) then
-   falls to a notation dump; it never errors. slide hard-errors "no view found".
+   falls to a notation dump; it never errors. tonk hard-errors "no view found".
    This is exactly the directory smoke-test failure.
-10. **Model name not resolved via the Name concept** — slide's `resolve_model`
+10. **Model name not resolved via the Name concept** — tonk's `resolve_model`
     only `phase1_query`s; for a non-URI it relies on the `dialog.meta/name`
     filter, which (per resolve.rs's own comment) *misses pinned concepts*. The
     browser name-resolves non-URI models first. A model given as a pinned
-    bookmark name (e.g. `workspace`) breaks in slide.
+    bookmark name (e.g. `workspace`) breaks in tonk.
 11. **`ParsedSource` filters parsed then dropped** — `?key=value` constraints
-    are never applied; slide uses `entity_query`/`instances_query` (no filters),
+    are never applied; tonk uses `entity_query`/`instances_query` (no filters),
     never `phase2_query`. A filtered route renders the unfiltered set.
 12. **Portal renders an inert shell** — `render_portal` inlines the template in
     an iframe with no entity/model/descriptor context, so the portal can't fetch
@@ -122,7 +122,7 @@ construction the binding paths assume. Confirmed divergences:
   for tables, tag-omission, `<style>`, entities, boolean attrs, typed attr
   values, uppercase, the whole-fragment (path=None) repeat, or the no-`<template>`
   snapshot path's top-level whitespace/comment trimming.
-- slide/src/render.rs: ONLY route-parser unit tests. Zero tests of
+- tonk-cli/src/render.rs: ONLY route-parser unit tests. Zero tests of
   `resolve_model`/`resolve_view`/`resolve_name`/`expand_nested`/`route_from_attrs`/
   `render_portal`, directory mode, empty-entity, filters, or `{dom.host/*}`.
 - dialog-reactor: `QueryEffect` has no in-crate unit test (covered only via
@@ -134,7 +134,7 @@ construction the binding paths assume. Confirmed divergences:
 
 ## Documentation / hygiene gaps
 - No README for `tonk-render` or `tonk-template` (every peer crate has one).
-- `slide render` is undocumented in the guides (guide-index, guide-views).
+- `tonk render` is undocumented in the guides (guide-index, guide-views).
 - `tonk-template`'s crate doc claims "pure std-only Rust" but it now depends on
   `tonk-schema` (→ the dialog stack) via resolve/fold. Misleading; also weakens
   the "destined for dialog-db repo, dependency-light" goal.
@@ -147,6 +147,6 @@ The architecture is sound and the happy path is proven against the real browser.
 But "byte-identical" was overstated: it is byte-identical for the tested template
 class only. Before this is production-trustworthy for arbitrary authored views,
 the parser tree-construction divergences (1-2), raw-text/entity serialization
-(3-4), and the two CRITICAL slide-resolution gaps (8-9) need addressing — those
+(3-4), and the two CRITICAL tonk-resolution gaps (8-9) need addressing — those
 are the ones that silently produce wrong output on common templates rather than
 erroring.

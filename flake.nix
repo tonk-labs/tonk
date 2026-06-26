@@ -230,13 +230,13 @@
           tests-web-debug = buildTestArchive {
             name = "web-debug";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude slide";
+            args = "--workspace --exclude tonk-cli";
           };
 
           tests-web-release = buildTestArchive {
             name = "web-release";
             target = "wasm32-unknown-unknown";
-            args = "--workspace --exclude slide --release";
+            args = "--workspace --exclude tonk-cli --release";
           };
 
           tests = pkgs.runCommand "tests-all" { } ''
@@ -247,9 +247,9 @@
             cp ${self.packages.${system}.tests-web-release}/*.tar.zst $out/
           '';
 
-          slide = buildCrate {
-            pname = "slide";
-            cargoExtraArgs = "--package slide";
+          tonk-cli = buildCrate {
+            pname = "tonk-cli";
+            cargoExtraArgs = "--package tonk-cli";
             fixupPhase = darwinBinaryFixup;
           };
 

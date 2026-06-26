@@ -1,6 +1,6 @@
-You are working in a directory that is a slide site, already connected
+You are working in a directory that is a tonk site, already connected
 to its remote. Build a small habit tracker in the tonk system from
-scratch using the slide CLI (run `slide guide` to learn it).
+scratch using the tonk CLI (run `tonk guide` to learn it).
 
 Requirements:
 
@@ -12,4 +12,4 @@ Requirements:
 4. A view named `habits` showing each habit with its name and target.
 5. A view named `log` showing entries with habit name and date.
 
-Stop when `slide status` reports the branch is synced.
+Stop when `tonk status` reports the branch is synced.

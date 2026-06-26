@@ -1,10 +1,10 @@
-You are working in a directory that is a slide site, already connected
+You are working in a directory that is a tonk site, already connected
 to its remote. The file `artifact.html` in this directory is a web app
 a user built as a Claude artifact. The user wants it converted into
 the tonk system so the data lives as concepts and the UI renders as
 tonk views, editable and syncable like any other tonk data.
 
-Use the slide CLI (run `slide guide` to learn it). Convert the
+Use the tonk CLI (run `tonk guide` to learn it). Convert the
 artifact:
 
 1. Model the artifact's data as one or more concepts. Name the main
@@ -16,4 +16,4 @@ artifact:
    system allows: item names, categories, packed/unpacked distinction,
    and the packed count if possible.
 
-Stop when `slide status` reports the branch is synced.
+Stop when `tonk status` reports the branch is synced.

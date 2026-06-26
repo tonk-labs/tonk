@@ -33,7 +33,7 @@ shots_list=$(ls "$RUN_DIR/shots"/*.png 2>/dev/null || true)
 
 prompt() {
   cat <<EOF
-You are judging one benchmark run of an agent that used the slide CLI
+You are judging one benchmark run of an agent that used the tonk CLI
 to build something rendered by the tonk web UI.
 
 Rubric:
