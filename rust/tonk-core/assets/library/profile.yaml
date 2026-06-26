@@ -255,6 +255,24 @@ view/directory!: &profile/fab/view
       </style>
     </tonk-fab>
 
+# The persisted FAB position — x/y in viewport pixels, stored as a
+# durable claim on `state:fab` so the FAB reappears at the same
+# spot after a reload. Updated on every pointer-up drop.
+concept!: &fab/position
+  this: tonk:fab/position
+  description: Persisted FAB position (profile-meta claim).
+  with:
+    x:
+      description: Horizontal position in px.
+      the: xyz.tonk.fab/x
+      cardinality: one
+      as: unsigned-integer
+    y:
+      description: Vertical position in px.
+      the: xyz.tonk.fab/y
+      cardinality: one
+      as: unsigned-integer
+
 # ============================================================
 # JOIN — redeem an invite at /join (runs on the profile meta branch)
 # ============================================================

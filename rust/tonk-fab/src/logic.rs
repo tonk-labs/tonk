@@ -2,6 +2,8 @@
 //!
 //! No DOM imports — compiles and tests on the native target.
 
+use serde_json::{Value, json};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FabBox {
     pub left: f64,
@@ -83,6 +85,58 @@ impl Default for CollapseMachine {
     }
 }
 
+/// Clamp the drop position so the circle stays fully on-screen.
+///
+/// `x`, `y` are the desired top-left of the circle (viewport coords).
+/// `vw`, `vh` are the viewport width/height.
+/// `w`, `h` are the circle's width/height.
+/// Returns the clamped `(x, y)`.
+pub fn clamp_position(x: f64, y: f64, vw: f64, vh: f64, w: f64, h: f64) -> (f64, f64) {
+    (x.clamp(0.0, (vw - w).max(0.0)), y.clamp(0.0, (vh - h).max(0.0)))
+}
+
+/// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
+///
+/// Asserts the `tonk:fab/position` concept on `state:fab` with the given
+/// x/y pixel values. The JSON shape matches the `TransactRequest` serde
+/// derive in `tonk-core/src/claim.rs`:
+///
+/// - `Claim` → `#[serde(tag="op", content="application")]` → `"op":"assert"`, `"application":{...}`
+/// - `ConceptDescriptor` → `#[serde(tag="kind", content="concept")]` → `"kind":"transient"`, `"concept":{...}`
+/// - `PredicateApplication` → `{ predicate, parameters }`
+pub fn position_claim_json(x: u32, y: u32) -> Value {
+    json!({
+        "claims": [{
+            "op": "assert",
+            "application": {
+                "predicate": {
+                    "kind": "transient",
+                    "concept": {
+                        "description": "Persisted FAB position (profile-meta claim).",
+                        "with": {
+                            "x": {
+                                "the": "xyz.tonk.fab/x",
+                                "cardinality": "one",
+                                "as": "UnsignedInteger"
+                            },
+                            "y": {
+                                "the": "xyz.tonk.fab/y",
+                                "cardinality": "one",
+                                "as": "UnsignedInteger"
+                            }
+                        }
+                    }
+                },
+                "parameters": {
+                    "this": "state:fab",
+                    "x": x,
+                    "y": y
+                }
+            }
+        }]
+    })
+}
+
 #[cfg(test)]
 mod collapse {
     use super::*;
@@ -145,5 +199,29 @@ mod geometry {
         let state = FabState { x: 100.0, y: 50.0, w: 320.0, h: 64.0, dragging: true };
         let b = geometry_box(&FabIntent::DragMove { x: 200.0, y: 300.0, state }, 1000.0, 800.0);
         assert_eq!(b, FabBox { left: 200.0, top: 300.0, width: 320.0, height: 64.0 });
+    }
+}
+
+#[cfg(test)]
+mod persist {
+    use super::*;
+
+    #[test]
+    fn clamp_keeps_circle_on_screen() {
+        assert_eq!(clamp_position(-30.0, 5.0, 1000.0, 800.0, 64.0, 64.0), (0.0, 5.0));
+        assert_eq!(clamp_position(2000.0, 5.0, 1000.0, 800.0, 64.0, 64.0), (936.0, 5.0));
+    }
+
+    #[test]
+    fn claim_json_targets_fab_position() {
+        let v = position_claim_json(120, 240);
+        assert_eq!(v["claims"][0]["op"], "assert");
+        let app = &v["claims"][0]["application"];
+        assert_eq!(app["parameters"]["x"], 120);
+        assert_eq!(app["parameters"]["y"], 240);
+        // verify predicate shape matches claim.rs serde derive
+        assert_eq!(app["predicate"]["kind"], "transient");
+        assert!(app["predicate"]["concept"]["with"].is_object());
+        assert_eq!(app["parameters"]["this"], "state:fab");
     }
 }
