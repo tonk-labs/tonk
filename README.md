@@ -49,11 +49,40 @@ Add new rules, concepts, or extend existing ones as your needs evolve. No migrat
 
 Check out the [Dialog DB repository](https://github.com/dialog-db/dialog-db) to learn more about how it works under the hood.
 
+## The `tonk` CLI
+
+`tonk` is a local-first command-line companion for reading and writing Tonk data without a browser. It operates on a `.tonk/` site (a Dialog repository in the current directory) and speaks the same asserted-notation as the rest of the substrate: you assert claims, query them, and define concepts and rules with `tonk eval`, plus read-only introspection (`tonk schema`, `tonk concepts`, `tonk views`) and a built-in notation reference (`tonk guide`).
+
+### Install
+
+```sh
+curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
+```
+
+This detects your platform, verifies the download against the release checksums, and installs the `tonk` binary to `/usr/local/bin` (or `~/.local/bin` if that is not writable). Apple Silicon macOS and x86_64 Linux are published. If `tonk` isn't found afterward, the install location isn't on your `PATH` — add it, e.g. `export PATH="$HOME/.local/bin:$PATH"`. Set `TONK_INSTALL_DIR` to install elsewhere.
+
+To install the pre-release channel instead, set `TONK_CHANNEL=staging`:
+
+```sh
+curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | TONK_CHANNEL=staging sh
+```
+
+You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. The macOS binary is not yet Apple-signed, so a hand-downloaded copy needs `xattr -c tonk && codesign --force --sign - tonk` before it will run (the install script does this for you).
+
+### Quick start
+
+```sh
+tonk init                  # create a .tonk/ repo in the current directory
+tonk eval -c 'person:'     # run a notation document (inline, file, or piped)
+tonk schema                # every named attribute + concept on the branch
+tonk guide                 # built-in asserted-notation reference
+```
+
 # What's in This Repo
 
 This is a Rust workspace where we are implementing our early experimentations on the Tonk substrate.
 
-> ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try some of our experiments, see the [Released Experiments](#released-experiments) section below!
+> ⚠️ This repo is heavily in flux, and not meant to be friendly for public access or contributions. If you would like to try it, the [`tonk` CLI](#the-tonk-cli) is the easiest entry point.
 
 ### Rust Crates
 
@@ -66,16 +95,6 @@ This is a Rust workspace where we are implementing our early experimentations on
 | **tonk-ui**             | Leptos-based web frontend                                                                           |
 | **tonk-worker**         | Browser service worker (WASM) for offline web support                                               |
 | **tonk-core**           | Core library (in progress)                                                                          |
-
-# Released Experiments
-
-## Carry
-
-[Carry](https://github.com/tonk-labs/carry) is a local-first semantic database for humans and machines in the form of a CLI tool. It allows you to assert, query, and manage structured data in a local Dialog DB repository.
-
-This is useful for a few things, but one that's been working well for us is as a persistent memory layer for local LLM-driven workflows. You can read more about the use cases in [the documentation](https://tonk-labs.github.io/carry/philosophy.html).
-
-Carry is synced from this monorepo and published separately.
 
 # Adjacent Projects
 
