@@ -182,6 +182,37 @@ concept!: &profile/fab
       cardinality: one
       as: text
 
+# A compact space-list view kind for the FAB switcher. Its `display`
+# template lives under `xyz.tonk.view/fab-menu` — a distinct RDF
+# attribute from `xyz.tonk.view/directory` (used by `tonk:view/directory`)
+# — so a model can carry both a full Hub directory and this compact roster
+# without the two colliding when queried. `<tonk-display>` selects it
+# explicitly via `view=tonk:view/fab-menu`.
+concept!: &view/fab-menu
+  this: tonk:view/fab-menu
+  description: A compact space-list view kind for the FAB space switcher.
+  with:
+    model:
+      description: Concept this view renders
+      the: xyz.tonk.view/model
+      cardinality: one
+      as: entity
+    display:
+      description: HTML template for the FAB compact space menu
+      the: xyz.tonk.view/fab-menu
+      cardinality: one
+      as: text
+
+# The FAB compact space roster — one anchor per `tonk:space` instance,
+# linking to `/space/{subject}` (the space DID, same as the Hub uses).
+# Rendered inside the FAB chrome's `.fab__menu` via
+# `<tonk-display model="space" view="tonk:view/fab-menu">`.
+view/fab-menu!:
+  this: id:tonk:fab/space-menu
+  model: space
+  display: |
+    <a class="fab__menu-item" href="/space/{subject}" with={this}>{subject}</a>
+
 # A directory view (no entity): the FAB portal mounts
 # `<tonk-display model=tonk:profile/fab>` with no entity, so this
 # directory view resolves. Space + identity arrive as `data-*` host
@@ -199,7 +230,7 @@ view/directory!: &profile/fab/view
         </span>
         <span class="fab__space">{dom.host/data-space}</span>
         <nav class="fab__menu">
-          <a class="fab__menu-item" href="/space/{subject}" with={this}>{subject}</a>
+          <tonk-display model="space" view="tonk:view/fab-menu"></tonk-display>
         </nav>
       </div>
       <style>
