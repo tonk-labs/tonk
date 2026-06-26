@@ -72,6 +72,12 @@ impl CustomElement for TonkFab {
             this.dataset().set("fabHoverBound", "1").ok();
             attach_hover(this);
             attach_drag(this);
+            // Listen for host→guest `__tonkFab` sync messages. The sync
+            // state lives on the SPACE branch overlay (`state:here`/`tonk:sync`),
+            // not on profile/meta — the host `<tonk-fab-portal>` relays it via
+            // `{ __tonkFab: { type: "sync", state } }`. V1 sends an honest
+            // `offline` default; real state observation is a follow-up task.
+            attach_host_messages(this);
         }
         // Query persisted position and relay it to the host portal.
         restore_position();
@@ -448,6 +454,59 @@ fn apply_menu_direction(element: &HtmlElement) {
             cl.add_1("opens-up").ok();
         }
     }
+}
+
+/// Listen for `{ __tonkFab: { type: "sync", state } }` messages from the
+/// parent host and apply `data-sync` to `.fab__circle`.
+///
+/// The sync state lives on the SPACE branch overlay (`state:here` /
+/// `Replica::SYNC_STATE_HERE`) — content-replica state, NOT profile/meta.
+/// The FAB guest is sealed to the profile branch and cannot query the content
+/// branch. The host `<tonk-fab-portal>` observes the active space's sync state
+/// and relays it through this `__tonkFab` channel. V1 sends an honest `offline`
+/// default; wiring the real value is a follow-up task for the host.
+///
+/// Valid `state` values: `"synced"` (filled circle), `"offline"` (outlined),
+/// `"syncing"` (blinking). Any unrecognised value falls back to `"offline"`.
+fn attach_host_messages(element: &HtmlElement) {
+    let element_clone = element.clone();
+    let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
+        move |event: web_sys::MessageEvent| {
+            let data = event.data();
+            let fab_payload =
+                Reflect::get(&data, &"__tonkFab".into()).unwrap_or(JsValue::UNDEFINED);
+            if fab_payload.is_undefined() || fab_payload.is_null() {
+                return;
+            }
+            let msg_type = Reflect::get(&fab_payload, &"type".into())
+                .ok()
+                .and_then(|v| v.as_string());
+            if msg_type.as_deref() != Some("sync") {
+                return;
+            }
+            let state = Reflect::get(&fab_payload, &"state".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            // Map to a valid data-sync value; any unrecognised state → offline.
+            let sync_val = match state.as_str() {
+                "synced" => "synced",
+                "syncing" => "syncing",
+                _ => "offline",
+            };
+            let elem: &web_sys::Element = element_clone.unchecked_ref();
+            if let Some(circle) = elem.query_selector(".fab__circle").ok().flatten() {
+                circle.set_attribute("data-sync", sync_val).ok();
+            }
+        },
+    );
+    if let Some(win) = window() {
+        win.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())
+            .ok();
+    }
+    // Safe to forget: the FAB element is a singleton that lives for the page
+    // lifetime, so the closure never becomes dangling.
+    on_message.forget();
 }
 
 /// Measure `element`'s bounding rect and post a `__tonkFab` resize message to

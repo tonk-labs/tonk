@@ -223,7 +223,7 @@ view/directory!: &profile/fab/view
   display: |
     <tonk-fab>
       <div class="fab">
-        <span class="fab__circle" data-sync="idle"></span>
+        <span class="fab__circle" data-sync="offline"></span>
         <span class="fab__identity">
           <tonk-sigil class="fab__sigil" did={dom.host/data-did}></tonk-sigil>
           <span class="fab__name">{dom.host/data-name}</span>
@@ -256,7 +256,16 @@ view/directory!: &profile/fab/view
           width: 24px;
           height: 24px;
           border-radius: 50%;
-          background: #cddc39;
+          color: #cddc39;
+          background: currentColor;
+        }
+        .fab__circle[data-sync="synced"]  { background: currentColor; border: 0; }
+        .fab__circle[data-sync="offline"] { background: transparent; border: 2px solid currentColor; box-sizing: border-box; }
+        .fab__circle[data-sync="syncing"] { animation: fab-sync 1s steps(2, jump-none) infinite; }
+        @keyframes fab-sync {
+          0%   { background: currentColor; }
+          50%  { background: transparent; box-shadow: inset 0 0 0 2px currentColor; }
+          100% { background: currentColor; }
         }
         .fab__identity {
           display: flex;
