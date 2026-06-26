@@ -33,6 +33,7 @@
 //! through a `<tonk-display>`), so a `MutationObserver` re-projects as
 //! they land.
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -105,8 +106,24 @@ impl CustomElement for TonkSheetBinder {
         if old == new {
             return;
         }
+        // Skip the callback when it fires re-entrantly from our own
+        // `active` write inside `project` (seeding from `default-active`).
+        // The in-progress `project` renders with the seeded value, so a
+        // nested re-project is redundant — and re-entering would deadlock
+        // the custom-element harness mutex held across this callback.
+        if PROJECTING.with(Cell::get) {
+            return;
+        }
         project(this);
     }
+}
+
+thread_local! {
+    /// Set while [`project`] runs so a synchronous `active` write it makes
+    /// (seeding from `default-active`) does not re-enter via
+    /// `attribute_changed_callback`. wasm is single-threaded, so a plain
+    /// `Cell` suffices.
+    static PROJECTING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// CSS class names the consuming view styles.
@@ -143,6 +160,18 @@ const EMPTY: &str = "data-empty";
 /// Build/refresh the tab strip from the `<tonk-sheet>` children, then
 /// apply ordering + the active state. Idempotent.
 fn project(this: &HtmlElement) {
+    // Mark this pass so a synchronous `active` write (the `default-active`
+    // seed in `active_sheet`) does not re-enter `attribute_changed_callback`.
+    // The drop guard clears the flag on every exit path.
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            PROJECTING.with(|p| p.set(false));
+        }
+    }
+    PROJECTING.with(|p| p.set(true));
+    let _reset = Reset;
+
     let Some(document) = window().and_then(|w| w.document()) else {
         return;
     };
