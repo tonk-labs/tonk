@@ -79,6 +79,8 @@ curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh
 
 Check what you have with `tonk --version`. Add `TONK_CHANNEL=staging` to track the pre-release channel instead.
 
+The installer overwrites the existing binary in place and re-runs the macOS de-quarantine and ad-hoc re-sign, so an upgrade through it needs nothing extra. If you instead replace the binary from a manually downloaded tarball, re-run `xattr -c tonk && codesign --force --sign - tonk` on the new copy, since the replacement is unsigned just like a fresh download.
+
 ### Quick start
 
 ```sh
