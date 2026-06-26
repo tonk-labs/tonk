@@ -142,7 +142,7 @@
           "dev:web" = {
             description = "Start a dev server (set UCAN_ENDPOINT to override /ucan/ proxy)";
             command = ''
-              ENDPOINT="''${UCAN_ENDPOINT:-https://tonk-access-service.tonk.workers.dev/ucan/}"
+              ENDPOINT="''${UCAN_ENDPOINT:-https://staging.tonk.xyz/ucan/}"
               trunk serve --config ./rust/tonk-ui/Trunk.toml --proxy-backend "$ENDPOINT"
             '';
           };
