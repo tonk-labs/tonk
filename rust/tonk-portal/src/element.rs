@@ -23,11 +23,10 @@ use std::rc::Rc;
 use custom_elements::CustomElement;
 use js_sys::{Function, Reflect};
 use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
-use wasm_bindgen::closure::Closure;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
+use crate::shared::{connect_portal, reload_portal};
 
 /// The custom element. Holds the shared [`PortalState`]; `None` until
 /// `connected_callback` builds it.
@@ -48,70 +47,17 @@ impl CustomElement for TonkPortal {
     fn inject_children(&mut self, _this: &HtmlElement) {}
 
     fn connected_callback(&mut self, this: &HtmlElement) {
-        let host: Element = this.clone().into();
-
-        let Some(document) = window().and_then(|w| w.document()) else {
-            return;
-        };
-        let Ok(iframe) = document.create_element("iframe") else {
-            return;
-        };
-        let Ok(iframe) = iframe.dyn_into::<HtmlIFrameElement>() else {
-            return;
-        };
-
-        // Opaque-origin sandbox: scripts run but `parent.document` is
-        // unreachable. The bridge bootstrap reaches the parent only over
-        // a `MessagePort` it opens and transfers in its `hello`.
-        //
-        // `allow-forms` lets the guest's `<form>`s fire their `submit` event
-        // (so declarative `onsubmit=` bindings run); it does NOT let a form
-        // navigate the guest away, because the runtime installs a global
-        // capture-phase `submit` guard that `preventDefault`s every
-        // submission before its native action. We deliberately withhold
-        // `allow-top-navigation` and `allow-same-origin` — the guest still
-        // can't reach the parent or a real origin.
-        let _ = iframe.set_attribute("sandbox", "allow-scripts allow-forms");
-
-        // Delegate the `clipboard-write` Permissions Policy into the guest so
-        // its copy buttons (e.g. the share dialog's invite-link copy) can call
-        // `navigator.clipboard.writeText`. This is Permissions Policy, NOT a
-        // sandbox grant — orthogonal to the sandbox lockdown above; without it
-        // the API is blocked outright regardless of sandbox flags.
-        let _ = iframe.set_attribute("allow", "clipboard-write");
-
-        // The iframe always fills its container. `flex: 1` + `align-self:
-        // stretch` make it fill a flex-column host (the display-route layout)
-        // without needing a definite-height ancestor for `height: 100%`.
-        let style = iframe.style();
-        let _ = style.set_property("width", "100%");
-        let _ = style.set_property("height", "100%");
-        let _ = style.set_property("flex", "1 1 auto");
-        let _ = style.set_property("align-self", "stretch");
-        let _ = style.set_property("border", "0");
-
-        let state = Rc::new(RefCell::new(PortalState::new()));
-        bridge::register_portal(&iframe, &host, &state);
-        install_method_delegates(&host, &state);
-
-        // Append before assigning `srcdoc` so `contentWindow` exists;
-        // the `hello` listener matches the live `contentWindow`, so the
-        // bootstrap script resolves this portal when it posts `hello`.
-        let content = host.get_attribute("content").unwrap_or_default();
-        // In `runtime` mode the guest renders OUR elements (a real
-        // `<tonk-display>`): the bootstrap additionally pulls in the
-        // injected element runtime + CSS before `content` upgrades.
-        let runtime = host.has_attribute("runtime");
-        let _ = host.append_child(&iframe);
-        let srcdoc = if runtime {
-            bridge::bootstrap_srcdoc_with_runtime(&content)
-        } else {
-            bridge::bootstrap_srcdoc(&content)
-        };
-        let _ = iframe.set_attribute("srcdoc", &srcdoc);
-
-        state.borrow_mut().iframe = Some(iframe);
-        *self.inner.borrow_mut() = Some(state);
+        connect_portal(this, &self.inner, |iframe| {
+            // The iframe always fills its container. `flex: 1` + `align-self:
+            // stretch` make it fill a flex-column host (the display-route layout)
+            // without needing a definite-height ancestor for `height: 100%`.
+            let style = iframe.style();
+            let _ = style.set_property("width", "100%");
+            let _ = style.set_property("height", "100%");
+            let _ = style.set_property("flex", "1 1 auto");
+            let _ = style.set_property("align-self", "stretch");
+            let _ = style.set_property("border", "0");
+        });
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
@@ -143,52 +89,13 @@ impl CustomElement for TonkPortal {
         };
         match name.as_str() {
             // New content reloads the iframe wholesale.
-            "content" => reload(&host, &state),
+            "content" => reload_portal(&host, &state),
             // A re-scope reloads the iframe so the bootstrap re-runs
             // author code; the fresh `context` rides the new handshake.
-            "entity" | "model" => reload(&host, &state),
+            "entity" | "model" => reload_portal(&host, &state),
             _ => {}
         }
     }
-}
-
-/// Cancel the portal's live subscriptions and reload the iframe from
-/// the current `content`. Reassigning `srcdoc` discards the old
-/// window — and with it any author `for await` loops — so we cancel
-/// the host subscriptions they fed first.
-fn reload(host: &Element, state: &Rc<RefCell<PortalState>>) {
-    let mut s = state.borrow_mut();
-    s.clear_subs();
-    if let Some(iframe) = s.iframe.as_ref() {
-        let content = host.get_attribute("content").unwrap_or_default();
-        let srcdoc = if host.has_attribute("runtime") {
-            bridge::bootstrap_srcdoc_with_runtime(&content)
-        } else {
-            bridge::bootstrap_srcdoc(&content)
-        };
-        let _ = iframe.set_attribute("srcdoc", &srcdoc);
-    }
-}
-
-/// Write the per-instance `__tonkReset` / `__tonkError` closures the
-/// prototype shims forward subscription frames to. Mirrors
-/// `<tonk-display>`'s method-delegate pattern.
-fn install_method_delegates(host: &Element, state: &Rc<RefCell<PortalState>>) {
-    let reset_state = state.clone();
-    let reset: Closure<dyn FnMut(JsValue, JsValue)> =
-        Closure::wrap(Box::new(move |payload, opts| {
-            bridge::route_reset(&reset_state, payload, opts);
-        }));
-    let _ = Reflect::set(host, &"__tonkReset".into(), reset.as_ref());
-    reset.forget();
-
-    let error_state = state.clone();
-    let error: Closure<dyn FnMut(JsValue, JsValue)> =
-        Closure::wrap(Box::new(move |payload, opts| {
-            bridge::route_error(&error_state, payload, opts);
-        }));
-    let _ = Reflect::set(host, &"__tonkError".into(), error.as_ref());
-    error.forget();
 }
 
 /// Register `<tonk-portal>` with the page. Idempotent. Installs the

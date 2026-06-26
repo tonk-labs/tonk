@@ -1693,7 +1693,11 @@ view!: &workspace/shell/view
           </div>
         </tonk-branch>
       </tonk-repository>
-      <!-- FAB portal slot — added in Task 4 -->
+      <tonk-repository profile>
+        <tonk-branch name="meta">
+          <tonk-fab-portal runtime content="<div style='width:64px;height:64px;border-radius:50%;background:#cddc39'></div>"></tonk-fab-portal>
+        </tonk-branch>
+      </tonk-repository>
     </div>
 
 # ---- Seeded routes (bootstrap) ----

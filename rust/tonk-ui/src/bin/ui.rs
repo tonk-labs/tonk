@@ -19,6 +19,7 @@ async fn main() {
     tonk_display::register();
     tonk_board::register();
     tonk_portal::register();
+    tonk_portal::register_fab_portal();
     tonk_workspace::register();
     tonk_ui::components::register_inspector();
     tonk_ui::components::register_route_views();
