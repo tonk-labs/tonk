@@ -30,16 +30,30 @@ pub enum FabIntent {
 
 pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     match intent {
-        FabIntent::DragStart => FabBox { left: 0.0, top: 0.0, width: vw, height: vh },
-        FabIntent::DragMove { x, y, state } => {
-            FabBox { left: *x, top: *y, width: state.w, height: state.h }
-        }
-        FabIntent::Resize { w, h, state } => {
-            FabBox { left: state.x, top: state.y, width: *w, height: *h }
-        }
-        FabIntent::Drop { x, y, state } => {
-            FabBox { left: *x, top: *y, width: state.w, height: state.h }
-        }
+        FabIntent::DragStart => FabBox {
+            left: 0.0,
+            top: 0.0,
+            width: vw,
+            height: vh,
+        },
+        FabIntent::DragMove { x, y, state } => FabBox {
+            left: *x,
+            top: *y,
+            width: state.w,
+            height: state.h,
+        },
+        FabIntent::Resize { w, h, state } => FabBox {
+            left: state.x,
+            top: state.y,
+            width: *w,
+            height: *h,
+        },
+        FabIntent::Drop { x, y, state } => FabBox {
+            left: *x,
+            top: *y,
+            width: state.w,
+            height: state.h,
+        },
     }
 }
 
@@ -58,7 +72,10 @@ pub struct CollapseMachine {
 
 impl CollapseMachine {
     pub fn new() -> Self {
-        Self { expanded: false, since_leave: None }
+        Self {
+            expanded: false,
+            since_leave: None,
+        }
     }
 
     pub fn expanded(&self) -> bool {
@@ -98,7 +115,10 @@ impl Default for CollapseMachine {
 /// `w`, `h` are the circle's width/height.
 /// Returns the clamped `(x, y)`.
 pub fn clamp_position(x: f64, y: f64, vw: f64, vh: f64, w: f64, h: f64) -> (f64, f64) {
-    (x.clamp(0.0, (vw - w).max(0.0)), y.clamp(0.0, (vh - h).max(0.0)))
+    (
+        x.clamp(0.0, (vw - w).max(0.0)),
+        y.clamp(0.0, (vh - h).max(0.0)),
+    )
 }
 
 /// Build a `TransactRequest` JSON body for `window.tonk.transact(...)`.
@@ -193,28 +213,102 @@ mod geometry {
     #[test]
     fn dragstart_covers_full_viewport() {
         let b = geometry_box(&FabIntent::DragStart, 1000.0, 800.0);
-        assert_eq!(b, FabBox { left: 0.0, top: 0.0, width: 1000.0, height: 800.0 });
+        assert_eq!(
+            b,
+            FabBox {
+                left: 0.0,
+                top: 0.0,
+                width: 1000.0,
+                height: 800.0
+            }
+        );
     }
 
     #[test]
     fn resize_keeps_position_changes_size() {
-        let state = FabState { x: 100.0, y: 50.0, w: 320.0, h: 64.0, dragging: false };
-        let b = geometry_box(&FabIntent::Resize { w: 320.0, h: 64.0, state }, 1000.0, 800.0);
-        assert_eq!(b, FabBox { left: 100.0, top: 50.0, width: 320.0, height: 64.0 });
+        let state = FabState {
+            x: 100.0,
+            y: 50.0,
+            w: 320.0,
+            h: 64.0,
+            dragging: false,
+        };
+        let b = geometry_box(
+            &FabIntent::Resize {
+                w: 320.0,
+                h: 64.0,
+                state,
+            },
+            1000.0,
+            800.0,
+        );
+        assert_eq!(
+            b,
+            FabBox {
+                left: 100.0,
+                top: 50.0,
+                width: 320.0,
+                height: 64.0
+            }
+        );
     }
 
     #[test]
     fn drop_moves_to_point_keeps_size() {
-        let state = FabState { x: 100.0, y: 50.0, w: 320.0, h: 64.0, dragging: true };
-        let b = geometry_box(&FabIntent::Drop { x: 400.0, y: 600.0, state }, 1000.0, 800.0);
-        assert_eq!(b, FabBox { left: 400.0, top: 600.0, width: 320.0, height: 64.0 });
+        let state = FabState {
+            x: 100.0,
+            y: 50.0,
+            w: 320.0,
+            h: 64.0,
+            dragging: true,
+        };
+        let b = geometry_box(
+            &FabIntent::Drop {
+                x: 400.0,
+                y: 600.0,
+                state,
+            },
+            1000.0,
+            800.0,
+        );
+        assert_eq!(
+            b,
+            FabBox {
+                left: 400.0,
+                top: 600.0,
+                width: 320.0,
+                height: 64.0
+            }
+        );
     }
 
     #[test]
     fn dragmove_moves_to_point_keeps_size() {
-        let state = FabState { x: 100.0, y: 50.0, w: 320.0, h: 64.0, dragging: true };
-        let b = geometry_box(&FabIntent::DragMove { x: 200.0, y: 300.0, state }, 1000.0, 800.0);
-        assert_eq!(b, FabBox { left: 200.0, top: 300.0, width: 320.0, height: 64.0 });
+        let state = FabState {
+            x: 100.0,
+            y: 50.0,
+            w: 320.0,
+            h: 64.0,
+            dragging: true,
+        };
+        let b = geometry_box(
+            &FabIntent::DragMove {
+                x: 200.0,
+                y: 300.0,
+                state,
+            },
+            1000.0,
+            800.0,
+        );
+        assert_eq!(
+            b,
+            FabBox {
+                left: 200.0,
+                top: 300.0,
+                width: 320.0,
+                height: 64.0
+            }
+        );
     }
 }
 
@@ -224,8 +318,14 @@ mod persist {
 
     #[test]
     fn clamp_keeps_circle_on_screen() {
-        assert_eq!(clamp_position(-30.0, 5.0, 1000.0, 800.0, 64.0, 64.0), (0.0, 5.0));
-        assert_eq!(clamp_position(2000.0, 5.0, 1000.0, 800.0, 64.0, 64.0), (936.0, 5.0));
+        assert_eq!(
+            clamp_position(-30.0, 5.0, 1000.0, 800.0, 64.0, 64.0),
+            (0.0, 5.0)
+        );
+        assert_eq!(
+            clamp_position(2000.0, 5.0, 1000.0, 800.0, 64.0, 64.0),
+            (936.0, 5.0)
+        );
     }
 
     #[test]

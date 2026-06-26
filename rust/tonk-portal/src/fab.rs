@@ -50,7 +50,13 @@ struct FabGeom {
 impl Default for FabGeom {
     fn default() -> Self {
         Self {
-            state: FabState { x: 0.0, y: 12.0, w: 64.0, h: 64.0, dragging: false },
+            state: FabState {
+                x: 0.0,
+                y: 12.0,
+                w: 64.0,
+                h: 64.0,
+                dragging: false,
+            },
             has_position: false,
         }
     }
@@ -124,8 +130,7 @@ impl CustomElement for TonkFabPortal {
                 let Some(iframe) = iframe_opt else {
                     return;
                 };
-                let source =
-                    Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
+                let source = Reflect::get(&event, &"source".into()).unwrap_or(JsValue::NULL);
                 let cw: JsValue = match iframe.content_window() {
                     Some(w) => w.into(),
                     None => return,
@@ -160,7 +165,11 @@ impl CustomElement for TonkFabPortal {
                                 .ok()
                                 .and_then(|v| v.as_f64())
                                 .unwrap_or(g.state.y);
-                            FabIntent::DragMove { x, y, state: g.state }
+                            FabIntent::DragMove {
+                                x,
+                                y,
+                                state: g.state,
+                            }
                         }
                         Some("drop") => {
                             let x = Reflect::get(&fab_payload, &"x".into())
@@ -171,7 +180,11 @@ impl CustomElement for TonkFabPortal {
                                 .ok()
                                 .and_then(|v| v.as_f64())
                                 .unwrap_or(g.state.y);
-                            FabIntent::Drop { x, y, state: g.state }
+                            FabIntent::Drop {
+                                x,
+                                y,
+                                state: g.state,
+                            }
                         }
                         Some("resize") => {
                             let w = Reflect::get(&fab_payload, &"w".into())
@@ -182,7 +195,11 @@ impl CustomElement for TonkFabPortal {
                                 .ok()
                                 .and_then(|v| v.as_f64())
                                 .unwrap_or(g.state.h);
-                            FabIntent::Resize { w, h, state: g.state }
+                            FabIntent::Resize {
+                                w,
+                                h,
+                                state: g.state,
+                            }
                         }
                         _ => return,
                     }
@@ -226,10 +243,8 @@ impl CustomElement for TonkFabPortal {
             }) as Box<dyn FnMut(MessageEvent)>);
 
         if let Some(win) = window() {
-            let _ = win.add_event_listener_with_callback(
-                "message",
-                listener.as_ref().unchecked_ref(),
-            );
+            let _ =
+                win.add_event_listener_with_callback("message", listener.as_ref().unchecked_ref());
         }
         // Store the closure so it stays alive while connected and can be
         // removed in `disconnected_callback`.

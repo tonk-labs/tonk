@@ -207,8 +207,8 @@ mod profile_write_boundary {
     use wasm_bindgen_test::wasm_bindgen_test_configure;
     wasm_bindgen_test_configure!(run_in_service_worker);
 
-    use std::sync::Arc;
     use axum::{Extension, body::Bytes, http::HeaderMap};
+    use std::sync::Arc;
     use tokio::sync::RwLock;
     use tonk_schema::claim::TransactRequest;
 
@@ -245,8 +245,7 @@ mod profile_write_boundary {
         // trigger the short-circuit path, so without the auth guard this
         // call would succeed (proving the guard is the gating change).
         let body_bytes = Bytes::from(
-            serde_json::to_vec(&TransactRequest::default())
-                .expect("TransactRequest serializes"),
+            serde_json::to_vec(&TransactRequest::default()).expect("TransactRequest serializes"),
         );
 
         // Act

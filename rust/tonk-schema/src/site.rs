@@ -19,7 +19,9 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
-use crate::domain::site::{Anchor, Branch, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space};
+use crate::domain::site::{
+    Anchor, Branch, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space,
+};
 
 /// A tab's location and matched route, keyed on the per-tab site entity. The SW
 /// stamps it; the shell reads it. All fields cardinality one, so a navigation
@@ -46,6 +48,7 @@ pub struct Site {
 
 impl Site {
     /// A site stamp for the given site entity.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         this: Entity,
         path: String,

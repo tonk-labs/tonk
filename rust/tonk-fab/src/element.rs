@@ -26,11 +26,11 @@
 
 use crate::logic::{COLLAPSE_MS, clamp_position, position_claim_json, submenu_opens_down};
 use custom_elements::CustomElement;
+use js_sys::Promise;
 use js_sys::{Function, Object, Reflect};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
-use js_sys::Promise;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{HtmlElement, PointerEvent, window};
 
@@ -187,9 +187,7 @@ fn attach_drag(element: &HtmlElement) {
         // Mark element as dragging.
         el_down.dataset().set("fabDragging", "1").ok();
         // Capture pointer so moves/up fire even outside element bounds.
-        el_down
-            .set_pointer_capture(e.pointer_id())
-            .ok();
+        el_down.set_pointer_capture(e.pointer_id()).ok();
         // Tell the host to expand the iframe to full viewport.
         post_fab_msg("dragstart", None, None);
     });
@@ -485,8 +483,8 @@ fn apply_menu_direction(element: &HtmlElement) {
 /// `"syncing"` (blinking). Any unrecognised value falls back to `"offline"`.
 fn attach_host_messages(element: &HtmlElement) {
     let element_clone = element.clone();
-    let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
-        move |event: web_sys::MessageEvent| {
+    let on_message =
+        Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
             let data = event.data();
             let fab_payload =
                 Reflect::get(&data, &"__tonkFab".into()).unwrap_or(JsValue::UNDEFINED);
@@ -513,8 +511,7 @@ fn attach_host_messages(element: &HtmlElement) {
             if let Some(circle) = elem.query_selector(".fab__circle").ok().flatten() {
                 circle.set_attribute("data-sync", sync_val).ok();
             }
-        },
-    );
+        });
     if let Some(win) = window() {
         win.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())
             .ok();
