@@ -2418,8 +2418,8 @@ mod tests {
             tags.sort();
             assert_eq!(
                 tags,
-                vec!["entity".to_owned(), "concept".to_owned(), "view".to_owned()],
-                "inline mode opens the model, view, and entity subscriptions",
+                vec!["concept".to_owned(), "entity".to_owned(), "view".to_owned()],
+                "inline mode opens the concept, view, and entity subscriptions",
             );
         }
 
