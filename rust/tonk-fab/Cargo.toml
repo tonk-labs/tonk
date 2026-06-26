@@ -1,0 +1,26 @@
+[package]
+name = "tonk-fab"
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
+description = "<tonk-fab> custom element — floating action button rendered in a sealed iframe."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+js-sys = { workspace = true }
+serde_json = { workspace = true }
+tonk-common = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+    "console",
+    "Window",
+] }
+
+[dev-dependencies]
+dialog-common = { workspace = true, features = ["helpers"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
+wasm-bindgen-test = { workspace = true }

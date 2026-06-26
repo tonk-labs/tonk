@@ -4841,6 +4841,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonk-fab"
+version = "0.1.0"
+dependencies = [
+ "dialog-common",
+ "js-sys",
+ "serde_json",
+ "tokio",
+ "tonk-common",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-bindgen-test",
+ "web-sys",
+]
+
+[[package]]
 name = "tonk-guest"
 version = "0.1.0"
 dependencies = [
@@ -4959,6 +4974,7 @@ dependencies = [
  "serde_json",
  "tonk-common",
  "tonk-display",
+ "tonk-fab",
  "tonk-host",
  "tonk-schema",
  "wasm-bindgen",
