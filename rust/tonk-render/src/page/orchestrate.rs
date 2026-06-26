@@ -1,6 +1,6 @@
 //! The render orchestrator: `route -> conclusions -> HTML`.
 //!
-//! Runs the same model -> view -> entity resolution the browser
+//! Runs the same concept -> view -> entity resolution the browser
 //! component runs, against a [`QueryBackend`], then feeds the result
 //! through the shared `tonk-template` planner and this crate's pure
 //! headless renderer ([`crate::render`]). Nested `<tonk-display>`
@@ -35,7 +35,7 @@ pub async fn render<B: QueryBackend>(
     render_guarded(backend, route, 0, &mut visited).await
 }
 
-/// Render with both a depth backstop and a `(model, entity, view)`
+/// Render with both a depth backstop and a `(concept, entity, view)`
 /// visited-set: the depth cap catches runaway recursion, while the
 /// visited-set distinguishes a genuine cycle (a view that nests
 /// itself with the same parameters) from legitimately deep but finite
@@ -64,7 +64,7 @@ async fn render_at_depth<B: QueryBackend>(
     depth: usize,
     visited: &mut Vec<RenderRoute>,
 ) -> Result<String, RenderError> {
-    // 1. Resolve the model concept to its entity URI + descriptor.
+    // 1. Resolve the concept to its entity URI + descriptor.
     let (concept_entity, descriptor_json) = resolve_concept(backend, &route.concept).await?;
 
     // 2. Resolve the target entity, if any (bookmark name -> URI).
@@ -75,7 +75,7 @@ async fn render_at_depth<B: QueryBackend>(
     };
 
     // 3. Resolve the view: pick the view predicate (explicit concept,
-    //    or built-in detail/directory), query it by model, and read
+    //    or built-in detail/directory), query it by concept, and read
     //    the `display` template + optional `type`.
     let view_descriptor = match &route.view {
         Some(view_name) => {
@@ -109,8 +109,8 @@ async fn render_at_depth<B: QueryBackend>(
     let folded = select_rows(rows);
 
     // 6. Parse the template, collect bindings, plan, and render. Inject
-    //    the host attributes (model/entity/view) as `dom.host/*` fields
-    //    so a nested `<tonk-display model={dom.host/concept}>` resolves,
+    //    the host attributes (concept/entity/view) as `dom.host/*` fields
+    //    so a nested `<tonk-display concept={dom.host/concept}>` resolves,
     //    matching the browser's `with_host_attributes`.
     let mut roots = crate::parse_fragment(&view.display);
     let bindings = crate::collect_bindings(&mut roots);
@@ -153,8 +153,8 @@ struct ResolvedView {
     is_portal: bool,
 }
 
-/// Resolve a model/view concept name (or URI) to `(entity_uri,
-/// descriptor_json)`. Mirrors the browser's `resolve_model_query`: a
+/// Resolve a concept/view concept name (or URI) to `(entity_uri,
+/// descriptor_json)`. Mirrors the browser's `resolve_concept_query`: a
 /// non-URI source is first resolved through the Name concept (so a
 /// pinned concept addressed by its bookmark name, e.g. `workspace` ->
 /// `tonk:workspace`, resolves), then a Phase-1 concept lookup runs
@@ -200,15 +200,15 @@ async fn resolve_name<B: QueryBackend>(backend: &B, name: &str) -> Result<String
         .ok_or_else(|| RenderError::Descriptor(format!("name `{name}` has no referent")))
 }
 
-/// The model the built-in default view is keyed under. When a
-/// model-specific view is absent the browser re-queries the view
+/// The concept the built-in default view is keyed under. When a
+/// concept-specific view is absent the browser re-queries the view
 /// concept constrained to this sentinel; we mirror that. `tonk:_`
-/// is the wildcard-model entity seeded by core.yaml.
+/// is the wildcard-concept entity seeded by core.yaml.
 const DEFAULT_CONCEPT: &str = "tonk:_";
 
 /// Resolve the view template by querying the view concept constrained
-/// to the model. Falls back to the `tonk:_` default-model view when
-/// the model has no specific one, matching the browser's
+/// to the concept. Falls back to the `tonk:_` default-concept view when
+/// the concept has no specific one, matching the browser's
 /// `spawn_default_view`. Returns `None` only when neither exists.
 async fn resolve_view<B: QueryBackend>(
     backend: &B,
@@ -218,11 +218,11 @@ async fn resolve_view<B: QueryBackend>(
     if let Some(view) = query_view(backend, view_descriptor, concept_entity).await? {
         return Ok(Some(view));
     }
-    // No model-specific view: try the `tonk:_` default.
+    // No concept-specific view: try the `tonk:_` default.
     query_view(backend, view_descriptor, DEFAULT_CONCEPT).await
 }
 
-/// Run the view-by-model query for one model value and read the first
+/// Run the view-by-concept query for one concept value and read the first
 /// row's `display` + `type`.
 async fn query_view<B: QueryBackend>(
     backend: &B,
@@ -253,7 +253,7 @@ async fn run_query<B: QueryBackend>(
 }
 
 /// Find and recursively render nested `<tonk-display>` elements in
-/// `html`. Each nested element carries `model` / `entity` / `view`
+/// `html`. Each nested element carries `concept` / `entity` / `view`
 /// attributes (already substituted by the parent render), which we
 /// turn into a child route.
 async fn expand_nested<B: QueryBackend>(
@@ -298,8 +298,8 @@ fn expand_nested_nodes<'a, B: QueryBackend>(
 }
 
 /// Build a child route from a nested `<tonk-display>`'s attributes.
-/// Requires a non-empty `model`; `entity` and `view` are optional. A
-/// missing or empty `model` (e.g. a `{dom.host/concept}` that resolved
+/// Requires a non-empty `concept`; `entity` and `view` are optional. A
+/// missing or empty `concept` (e.g. a `{dom.host/concept}` that resolved
 /// to nothing) yields `None` so the nested display is left as-is
 /// rather than triggering a bogus "no concept matched" on an empty
 /// name. Empty `entity`/`view` attributes are likewise treated as

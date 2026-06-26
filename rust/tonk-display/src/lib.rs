@@ -2,7 +2,7 @@
 //! entity using a view template stored on the branch.
 //!
 //! The element coordinates three live data flows:
-//! 1. One-shot resolution of the `model` concept descriptor.
+//! 1. One-shot resolution of the `concept` descriptor.
 //! 2. A live subscription on the matching `view` row so a template
 //!    edited on the branch swaps the rendered DOM.
 //! 3. A live subscription on the entity's attributes that patches

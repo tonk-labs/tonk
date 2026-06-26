@@ -510,7 +510,7 @@ fn this_term_for_assertion(
 /// Project an assertion body into the [`ValueMap`] shape fed to
 /// [`derive_this`] for entity derivation. Every field contributes
 /// its *resolved* value, with references (bare symbols, URIs)
-/// resolved to the entity they name — so a view's `model: counter`
+/// resolved to the entity they name — so a view's `concept: counter`
 /// identifies the view by the concept it points at, not merely by
 /// the fields that happen to be literals.
 ///

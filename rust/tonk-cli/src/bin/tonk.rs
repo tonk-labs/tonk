@@ -126,8 +126,8 @@ enum Command {
 
     /// Render a `<tonk-display>` view to HTML, headlessly.
     ///
-    /// Route grammar: `/{model}` (directory), `/{entity}@{model}`
-    /// (one entity), `/{entity}@{model}!{view}` (explicit view).
+    /// Route grammar: `/{concept}` (directory), `/{entity}@{concept}`
+    /// (one entity), `/{entity}@{concept}!{view}` (explicit view).
     /// Writes HTML to stdout unless `--out <file>` is given.
     #[command(
         after_help = "Examples:\n  tonk render person\n  tonk render alice@person\n  tonk render alice@person!card --out alice.html"
@@ -273,13 +273,13 @@ enum ShareCommand {
         /// The view's anchor name (the `&name` on its `view!:`),
         /// forwarded as `?view=`. `<tonk-display>` resolves it to
         /// the view entity the name points at and reads that
-        /// view's own `model`. Omit it for carousel mode (every
-        /// view published for `--concept`). Mutually exclusive with        /// `--concept`: a named view declares its own model.
+        /// view's own `concept`. Omit it for carousel mode (every
+        /// view published for `--concept`). Mutually exclusive with        /// `--concept`: a named view declares its own concept.
         #[arg(long, value_name = "NAME", conflicts_with = "concept")]
         view: Option<String>,
         /// Concept name (validated locally) or URI for carousel
         /// mode, forwarded as `?concept=`. Not needed with `--view`
-        /// (the view declares its own model); required when
+        /// (the view declares its own concept); required when
         /// `--view` is omitted.
         #[arg(long, value_name = "CONCEPT", required_unless_present = "view")]
         concept: Option<String>,

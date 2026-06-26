@@ -514,7 +514,7 @@ mod dom {
         #[dialog_common::test]
         fn it_skips_a_template_nested_in_a_component() {
             let host = host_with(
-                "<tonk-display entity=\"did:key:zBook\"><ul><template><li>{title}</li></template></ul></tonk-display>",
+                "<tonk-display this=\"did:key:zBook\"><ul><template><li>{title}</li></template></ul></tonk-display>",
             );
             assert!(find_template(&host).is_none());
         }
@@ -524,7 +524,7 @@ mod dom {
         #[dialog_common::test]
         fn it_prefers_an_own_template_over_one_inside_a_nested_component() {
             let host = host_with(
-                "<tonk-display entity=\"did:key:zBook\"><template data-which=\"nested\"><li>{b}</li></template></tonk-display><template data-which=\"own\"><p>{a}</p></template>",
+                "<tonk-display this=\"did:key:zBook\"><template data-which=\"nested\"><li>{b}</li></template></tonk-display><template data-which=\"own\"><p>{a}</p></template>",
             );
             let found = find_template(&host).expect("a usable own template");
             assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
@@ -546,7 +546,7 @@ mod dom {
         #[dialog_common::test]
         fn it_finds_an_own_template_in_a_wrapper_preceding_a_component() {
             let host = host_with(
-                "<div><template data-which=\"own\"><p>{a}</p></template></div><tonk-display entity=\"did:key:zBook\"><template data-which=\"nested\"><li>{b}</li></template></tonk-display>",
+                "<div><template data-which=\"own\"><p>{a}</p></template></div><tonk-display this=\"did:key:zBook\"><template data-which=\"nested\"><li>{b}</li></template></tonk-display>",
             );
             let found = find_template(&host).expect("own template in the leading wrapper");
             assert_eq!(found.get_attribute("data-which").as_deref(), Some("own"));
@@ -1018,14 +1018,14 @@ mod tests {
         assert_eq!(root, Some(vec![0]));
     }
 
-    // 4. <div data-model={dom.host/concept}>    [0]     attr dom.host ref
+    // 4. <div data-concept={dom.host/concept}>    [0]     attr dom.host ref
     //      <span data-this={this} data-name={name}>  [0, 0] attrs
     //    The {dom.host/*} reference is ignored for repeat resolution, so
     //    the inner <span> (holding {this} and {name}) repeats.
     #[dialog_common::test]
     fn it_ignores_dom_host_refs_when_resolving_the_repeat_node() {
         let root = this_repeat_root(&[
-            attr_binding(&[0], "data-model", "dom.host/concept"),
+            attr_binding(&[0], "data-concept", "dom.host/concept"),
             attr_binding(&[0, 0], "data-this", "this"),
             attr_binding(&[0, 0], "data-name", "name"),
         ]);

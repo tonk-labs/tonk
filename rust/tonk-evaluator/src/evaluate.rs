@@ -2510,7 +2510,7 @@ ping!:\n\
     /// active sheet) must leave `active` pointing at the same sheet —
     /// removing a background tab never steals focus.
     ///
-    /// Mirrors the `core.yaml` workspace model: a `workspace` concept
+    /// Mirrors the `core.yaml` workspace concept: a `workspace` concept
     /// (with `active` + `sheet`), the `workspace/active-sheet` and
     /// `workspace/sheet-member` projections, the transient
     /// `close-sheet` command, and the two close rules (retract the
@@ -2523,7 +2523,7 @@ ping!:\n\
         let repo = test_repo(&operator, &profile).await;
         let branch = repo.branch("main").open().perform(&operator).await?;
 
-        // Declare the workspace model + close rules, then seed a
+        // Declare the workspace concept + close rules, then seed a
         // workspace owning three sheets with `a` active, asserted at
         // `about:blank` across multiple statements — mirroring exactly
         // how core.yaml seeds the demo workspace.
@@ -2737,7 +2737,7 @@ workspace!:
     /// command carries (`next`). The companion to
     /// [`it_keeps_active_when_a_background_sheet_closes`]: here the
     /// reassign rule *must* fire, because the closed sheet is the
-    /// active one. Shares the same workspace model.
+    /// active one. Shares the same workspace concept.
     #[dialog_common::test]
     async fn it_moves_active_to_the_neighbour_when_the_active_sheet_closes() -> anyhow::Result<()> {
         let (operator, profile) = test_operator_with_profile().await;
@@ -3126,7 +3126,7 @@ workspace!:
     }
 
     /// The real `core.yaml` create flow: a `create-sheet` command mints
-    /// a self-describing empty sheet (entity = the sheet itself, model =
+    /// a self-describing empty sheet (entity = the sheet itself, concept =
     /// empty-artifact), titles its empty-artifact entity with the typed
     /// name, and auto-activates it. Mirrors the three create rules in
     /// the standard library.
@@ -3293,7 +3293,7 @@ workspace!:
             "the new sheet/empty-artifact should be titled \"Notes\"; saw {title:?}"
         );
 
-        // The sheet's entity points at itself, and its model is the
+        // The sheet's entity points at itself, and its concept is the
         // empty-artifact concept.
         let entity: Vec<dialog_query::Claim> = branch
             .query()
@@ -3311,7 +3311,7 @@ workspace!:
                 .any(|c| format!("{:?}", c.is).contains("zNewSheet")),
             "the sheet's entity should be self-referential; saw {entity:?}"
         );
-        let model: Vec<dialog_query::Claim> = branch
+        let concept: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
                 Term::from(the!("xyz.tonk.artifact/model"))
@@ -3322,10 +3322,10 @@ workspace!:
             .try_vec()
             .await?;
         assert!(
-            model
+            concept
                 .iter()
                 .any(|c| format!("{:?}", c.is).contains("tonk:empty-artifact")),
-            "the sheet's model should be tonk:empty-artifact; saw {model:?}"
+            "the sheet's concept should be tonk:empty-artifact; saw {concept:?}"
         );
 
         // The workspace auto-activated the new sheet.

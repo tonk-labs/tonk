@@ -7,7 +7,7 @@
 //!
 //! ```html
 //! <tonk-origin>
-//!   <tonk-display bind:base="data-base" model=invitation entity={subject}>
+//!   <tonk-display bind:base="data-base" concept=invitation this={subject}>
 //!     <wa-input readonly value="{dom.host/data-base}?access={access}#{code}">
 //!     </wa-input>
 //!   </tonk-display>
@@ -70,7 +70,7 @@ fn join_base() -> String {
 /// The repository subject DID — `window.tonk.context.repo`, the same value
 /// the `<tonk-repository name=…>` ancestor carries. Provided as the
 /// `subject` bind value so a template can mount a display at the repo
-/// subject (`<tonk-display entity={subject}>`) — e.g. to resolve the
+/// subject (`<tonk-display this={subject}>`) — e.g. to resolve the
 /// `tonk:invitation` join, which keys on the subject. `None` when there is
 /// no bridge context (the element running outside a sealed guest with no
 /// `<tonk-repository>` to read).
@@ -192,13 +192,13 @@ mod tests {
             .dyn_into()
             .unwrap();
         let sink = document.create_element("tonk-display").unwrap();
-        sink.set_attribute("bind:subject", "entity").unwrap();
+        sink.set_attribute("bind:subject", "this").unwrap();
         host.append_child(&sink).unwrap();
         body.append_child(&host).unwrap();
 
         distribute(&host, "http://x/join", Some("did:key:zX"));
 
-        assert_eq!(sink.get_attribute("entity").as_deref(), Some("did:key:zX"));
+        assert_eq!(sink.get_attribute("this").as_deref(), Some("did:key:zX"));
         host.remove();
     }
 
@@ -216,15 +216,15 @@ mod tests {
             .dyn_into()
             .unwrap();
         let sink = document.create_element("tonk-display").unwrap();
-        sink.set_attribute("bind:subject", "entity").unwrap();
+        sink.set_attribute("bind:subject", "this").unwrap();
         host.append_child(&sink).unwrap();
         body.append_child(&host).unwrap();
 
         distribute(&host, "http://x/join", None);
 
         assert!(
-            !sink.has_attribute("entity"),
-            "no subject context → entity stays unset",
+            !sink.has_attribute("this"),
+            "no subject context → this stays unset",
         );
         host.remove();
     }

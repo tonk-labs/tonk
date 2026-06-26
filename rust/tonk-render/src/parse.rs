@@ -405,15 +405,15 @@ mod quote_tests {
 
     #[test]
     fn it_parses_unquoted_brace_attribute_like_the_browser() {
-        // Browser: <article data-model="{dom.host/concept}"><h2>x</h2></article>
-        let r = parse_fragment("<article data-model={dom.host/concept}><h2>x</h2></article>");
+        // Browser: <article data-concept="{dom.host/concept}"><h2>x</h2></article>
+        let r = parse_fragment("<article data-concept={dom.host/concept}><h2>x</h2></article>");
         let Node::Element(article) = &r[0] else {
             panic!("expected <article>, got {r:?}");
         };
         assert_eq!(article.tag, "article");
         assert_eq!(
             article.attrs,
-            vec![("data-model".to_string(), "{dom.host/concept}".to_string())]
+            vec![("data-concept".to_string(), "{dom.host/concept}".to_string())]
         );
         // <h2> is a child of <article>, not mis-parsed into it.
         assert!(matches!(&article.children[0], Node::Element(h) if h.tag == "h2"));
@@ -480,9 +480,9 @@ mod quote_tests {
     fn it_keeps_an_unquoted_value_with_a_colon() {
         // Browser: concept="tonk:repository".
         assert_eq!(
-            first_attrs("<tonk-display entity={subject} concept=tonk:repository></tonk-display>"),
+            first_attrs("<tonk-display this={subject} concept=tonk:repository></tonk-display>"),
             vec![
-                ("entity".to_string(), "{subject}".to_string()),
+                ("this".to_string(), "{subject}".to_string()),
                 ("concept".to_string(), "tonk:repository".to_string()),
             ]
         );

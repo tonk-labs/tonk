@@ -1,7 +1,7 @@
-//! Headless `model -> view -> entity -> HTML` page orchestration.
+//! Headless `concept -> view -> entity -> HTML` page orchestration.
 //!
 //! The host-agnostic half of server-side `<tonk-display>` rendering.
-//! It runs the same model/view/entity resolution the browser component
+//! It runs the same concept/view/entity resolution the browser component
 //! runs, feeds the result through the shared [`tonk_template`] planner
 //! and this crate's headless renderer, and recursively expands nested
 //! `<tonk-display>` elements. Where the pure renderer ([`crate::render`])
@@ -61,7 +61,7 @@ pub enum RenderError {
     #[error("render queries must be concept queries, not formulas")]
     NotConceptQuery,
 
-    /// No concept matched a model/view name or URI.
+    /// No concept matched a concept/view name or URI.
     #[error("no concept matched `{0}`")]
     NoConcept(String),
 
@@ -69,7 +69,7 @@ pub enum RenderError {
     #[error("{0}")]
     Descriptor(String),
 
-    /// No view resolved for a model (no model-specific view and no
+    /// No view resolved for a concept (no concept-specific view and no
     /// `tonk:_` default).
     #[error("no view found for concept `{0}` (no concept-specific view and no `tonk:_` default)")]
     NoView(String),

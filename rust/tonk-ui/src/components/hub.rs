@@ -3,7 +3,7 @@
 //! A repository picker: the set of spaces this profile can open,
 //! rendered as cards that link to `/space/{name}`. The list lives on
 //! the profile repository's meta branch (one `space`/replica record per
-//! repository), so the Hub is a `<tonk-display model=space>` directory
+//! repository), so the Hub is a `<tonk-display concept=space>` directory
 //! mounted under a `<tonk-repository profile>` — the `profile` flag
 //! routes its queries to the profile-as-repository endpoint
 //! (`/api/profile/branch/meta/query`) rather than a named repo.

@@ -12,7 +12,7 @@
 # Lowering runs `analyze_local` (no running system), so every
 # `&anchor` / bare-name reference must resolve within this file. Both
 # definitions below are self-contained: the directory view's
-# `model: space` resolves to the `&space` anchor here.
+# `concept: space` resolves to the `&space` anchor here.
 
 # A space (replica) the profile has access to. These records live on
 # the profile repository's meta branch — one per repository this device
@@ -84,7 +84,7 @@ command!: &space/create
       the: dom.event.do/prevent-default
 
 # The `view/directory` concept — the shape `<tonk-display>` queries to
-# find a directory view (a `model` + a `display` template under
+# find a directory view (a `concept` + a `display` template under
 # `xyz.tonk.view/directory`). The `view/directory!:` instance below is
 # an instance of it, so its concept must be present on this branch too.
 concept!: &view/directory
@@ -111,7 +111,7 @@ concept!: &view/directory
 # name={subject}>` opens that space's routing context and a
 # `<tonk-display concept=tonk:repository view=tonk:view/label>` inside it
 # shows the repo's current name (the cross-device source of truth).
-# Rendered as a directory (no entity) over the `space` model on the
+# Rendered as a directory (no entity) over the `space` concept on the
 # profile meta branch.
 view/directory!:
   this: id:tonk:space/directory
@@ -134,7 +134,7 @@ view/directory!:
       <a class="hub-card" href="/space/{subject}" data-kind={kind} data-status={status} with={this}>
         <span class="hub-card__sigil"><tonk-sigil>{subject}</tonk-sigil></span>
         <span class="hub-card__body">
-          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display entity={subject} concept=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-concept" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
+          <span class="hub-card__name"><tonk-host><tonk-repository name={subject}><tonk-branch name="main"><tonk-display this={subject} concept=tonk:repository view=tonk:view/label><span slot="no-entity" class="hub-card__untitled" hidden>Untitled</span><span slot="no-concept" class="hub-card__untitled" hidden>Untitled</span><span slot="no-view" class="hub-card__untitled" hidden>Untitled</span><span slot="loading" class="hub-card__untitled" hidden>Untitled</span></tonk-display></tonk-branch></tonk-repository></tonk-host></span>
           <span class="hub-card__url">/space/{subject}</span>
           <span class="hub-card__status"></span>
         </span>
@@ -204,7 +204,7 @@ concept!: &join/failure
       as: text
 
 # The `view` concept — the shape `<tonk-display>` queries to resolve a
-# default (entity-set) view: a `model` + a `display` template. The
+# default (entity-set) view: a `concept` + a `display` template. The
 # join-failure `view!:` instance below is an instance of it, so its concept
 # must be present on this branch. (The Hub above gets by with only
 # `view/directory`; the join failure needs an entity-set view, hence this.)
@@ -243,7 +243,7 @@ view/directory!:
         <div slot="header"><h1>Joining…</h1></div>
         <wa-spinner></wa-spinner>
         <div class="join-status" with={this}>
-          <tonk-display entity={this} concept=tonk:join/failure>
+          <tonk-display this={this} concept=tonk:join/failure>
             <!-- While the join is pending there is a `tonk:join/status` but
                  no `tonk:join/failure` yet: stay quiet (empty slots) instead
                  of the built-in "Not found" callout. The failure view only

@@ -7,7 +7,7 @@
 //!
 //! ```html
 //! <tonk-page onmount=tonk/join>
-//!   <tonk-display model=tonk:join/status entity=tonk:join/status></tonk-display>
+//!   <tonk-display concept=tonk:join/status this=tonk:join/status></tonk-display>
 //! </tonk-page>
 //! ```
 //!

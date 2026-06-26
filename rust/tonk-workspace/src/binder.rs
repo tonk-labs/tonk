@@ -12,7 +12,7 @@
 //! 2. **Active** — the `active` attribute names the LIVE sheet (the
 //!    one shown, its tab `is-active`). It is owned by the binder: only
 //!    the click handler sets it, so switching is instant. The data
-//!    model never writes `active` directly — a fact change must not
+//!    concept never writes `active` directly — a fact change must not
 //!    yank the live tab. Instead the view supplies a separate,
 //!    NON-observed `default-active` attribute (the persisted selection,
 //!    like a form control's `defaultValue`); the binder reads it ONCE

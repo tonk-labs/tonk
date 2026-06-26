@@ -588,8 +588,8 @@ mod tests {
         // `counter-name` is a bookmark we navigate to from the
         // display route.
         let setup = r#"
-attribute!: &view-model
-  description: "view model"
+attribute!: &view-concept
+  description: "view concept"
   the:         xyz.tonk.view/model
   as:          entity
   cardinality: one
@@ -603,7 +603,7 @@ attribute!: &view-display
 concept!: &view
   description: "A rendered view of an entity"
   with:
-    model:   view-model
+    concept:   view-concept
     display: view-display
 
 concept!: &counter
@@ -634,7 +634,7 @@ rule!:
       where: { of: 1, with: ?m, is: ?count }
 
 view!: &counter-view
-  model:   counter
+  concept:   counter
   display: "<div><button onclick=increment data-counter={this}>+</button><span class=\"value\">{count}</span></div>"
 
 counter!: &my-counter
@@ -674,8 +674,8 @@ counter!: &my-counter
         );
 
         // Navigate to the display route for the named counter. The
-        // `{entity}@{model}!{view}` subject encoding carries the
-        // view and model into the path: `my-counter@counter!counter-view`.
+        // `{entity}@{concept}!{view}` subject encoding carries the
+        // view and concept into the path: `my-counter@counter!counter-view`.
         // The route resolves the bookmark `my-counter` to its
         // entity URI via the built-in Name index.
         driver

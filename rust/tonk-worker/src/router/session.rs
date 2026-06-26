@@ -7,7 +7,7 @@
 //! its current path; the SW reads the requesting **client id**, derives the site
 //! entity (`site:<client-id>`), asserts a [`Site`] `{path, anchor, replica,
 //! route, concept}` on the Level-0-resolved branch's overlay, and returns the
-//! site id. The page renders `<tonk-display entity={site} model=tonk:site>`; the
+//! site id. The page renders `<tonk-display this={site} concept=tonk:site>`; the
 //! `tonk:site` view nests into the matched `{concept}` and renders.
 //!
 //! The same endpoint handles navigation updates: the page re-calls it on each
@@ -162,7 +162,7 @@ async fn origin_entity(
 }
 
 /// Match `rest` (the Level 1 remaining path) against the branch's durable
-/// `tonk:route` table, returning the matched `(route entity, route model)`.
+/// `tonk:route` table, returning the matched `(route entity, route concept)`.
 ///
 /// Builds a fresh `matchit::Router` per call from the queried routes. Routes are
 /// inserted in stable entity-URI order so a `matchit` conflict (two structurally

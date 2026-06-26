@@ -13,11 +13,11 @@
 //! one imperative thing — assign the iframe's `srcdoc`. The iframe
 //! always fills its container. The
 //! `content` is itself first-class dialog data: the `portal` concept
-//! holds it, and a nested `<tonk-display model=portal>` fetches it,
+//! holds it, and a nested `<tonk-display concept=portal>` fetches it,
 //! exactly as a board column fetches its tiles.
 //!
 //! This crate ships the element. The `portal` concept and its canonical
-//! view (resolved by model) that bridges it to the element live in the
+//! view (resolved by concept) that bridges it to the element live in the
 //! standard library (`tonk-core/assets/library/core.yaml`), seeded by
 //! the service worker at repository creation.
 

@@ -27,7 +27,7 @@ const META_BRANCH: &str = "meta";
 /// index carries no display name: the space's name lives in its own
 /// `tonk/repository` concept on its content branch, so the UI resolves
 /// the label from the space's own repo (per-space `<tonk-display
-/// model=tonk:repository>`), not from this listing.
+/// concept=tonk:repository>`), not from this listing.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpaceEntry {
     /// Routing/storage key — the `subject` DID suffix. The URL segment

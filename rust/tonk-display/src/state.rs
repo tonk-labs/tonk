@@ -31,15 +31,15 @@ use web_sys::{Element, window};
 pub enum State {
     /// A resolve query is in flight; nothing known yet.
     Loading,
-    /// Row(s) rendered by a model-specific view.
+    /// Row(s) rendered by a concept-specific view.
     Ready,
-    /// No model-specific view defined; the built-in `_:_` fallback
+    /// No concept-specific view defined; the built-in `_:_` fallback
     /// view is rendering. Rows render, but via the generic fallback.
     DefaultView,
-    /// The `model` concept is not defined on the branch (yet). The
-    /// model subscription stays open and recovers when it lands.
+    /// The `concept` concept is not defined on the branch (yet). The
+    /// concept subscription stays open and recovers when it lands.
     NoConcept,
-    /// Model resolved; an explicit `view` was requested but is not
+    /// Concept resolved; an explicit `view` was requested but is not
     /// defined and there is no `_:_` fallback to fall through to.
     NoView,
     /// Single mode: concept + view resolved, the entity **row** is
@@ -53,7 +53,7 @@ pub enum State {
     Unauthorized,
     /// Transport failure / the service worker is unreachable.
     Offline,
-    /// Author/protocol error — a bad `model`/`entity` attribute or a
+    /// Author/protocol error — a bad `concept`/`entity` attribute or a
     /// decode failure. Recovers when the author fixes the attribute.
     Malformed,
 }
@@ -128,7 +128,7 @@ const ERROR_CALLOUT_ATTR: &str = "data-tonk-display-error";
 /// with the same state.
 ///
 /// Transitioning to any non-loud state removes a callout a prior loud
-/// state injected, so a recoverable absence (`no-model` / `no-entity`)
+/// state injected, so a recoverable absence (`no-concept` / `no-entity`)
 /// or a recovery to `ready` never leaves a stale red box behind.
 #[cfg(target_arch = "wasm32")]
 pub fn set(host: &Element, state: State) {
@@ -138,7 +138,7 @@ pub fn set(host: &Element, state: State) {
     }
     // Any state set through this path (rather than `set_absence`) clears a
     // lingering absence fallback — e.g. recovery to `ready` /
-    // `default-view` after a `no-model`, so the informative callout does
+    // `default-view` after a `no-concept`, so the informative callout does
     // not sit beside the rendered content.
     remove_absence_callout(host);
     // The default-view notice coexists with rendered content, so it is
@@ -162,12 +162,12 @@ pub fn set(host: &Element, state: State) {
 #[cfg(target_arch = "wasm32")]
 const DEFAULT_NOTICE_ATTR: &str = "data-tonk-display-default-notice";
 
-/// Inject a `<wa-callout variant="warning">` telling the viewer that the model
+/// Inject a `<wa-callout variant="warning">` telling the viewer that the concept
 /// has no view of its own, so the built-in default presentation (the `_:_` view
 /// or the notation dump) is shown instead. Same shape as the absence callouts
 /// ([`set_absence`]) — a `circle-info` icon and a plain text label — but
-/// `warning` (theme yellow), not the `danger` red of a missing model/view: a
-/// model without its own view still renders something, so it is a heads-up, not
+/// `warning` (theme yellow), not the `danger` red of a missing concept/view: a
+/// concept without its own view still renders something, so it is a heads-up, not
 /// an error. Unlike the absence callouts it coexists with the rendered fallback
 /// content rather than replacing it, so it is **prepended** (sits on top, above
 /// the default presentation). An embedder can suppress it with a
@@ -197,7 +197,7 @@ fn set_default_notice(host: &Element) {
         let _ = icon.set_attribute("name", "circle-info");
         let _ = callout.append_child(&icon);
     }
-    // Name the model so the viewer knows exactly which one lacks a view.
+    // Name the concept so the viewer knows exactly which one lacks a view.
     let concept = host.get_attribute("concept").unwrap_or_default();
     let text = if concept.is_empty() {
         "No view for this concept; showing the default.".to_owned()
@@ -301,7 +301,7 @@ fn remove_error_callout(host: &Element) {
 #[cfg(target_arch = "wasm32")]
 const ABSENCE_CALLOUT_ATTR: &str = "data-tonk-display-absence";
 
-/// Enter a recoverable-absence `state` (`no-model` / `no-view` /
+/// Enter a recoverable-absence `state` (`no-concept` / `no-view` /
 /// `no-entity`), naming what was missing: a prose `label` plus a
 /// `notation` snippet (e.g. `{ this: did:key:… }`) rendered as
 /// syntax-highlighted, monospace `<tonk-notation>`.
@@ -341,7 +341,7 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
     let Ok(callout) = document.create_element("wa-callout") else {
         return;
     };
-    // A missing model/view concept is a config/authoring problem the
+    // A missing concept/view concept is a config/authoring problem the
     // display can't render around → `danger`. A missing *instance*
     // (`no-entity`) is also `danger`: the entity is on the branch but
     // does not match the concept (some required attribute is absent), so
@@ -359,7 +359,7 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
         let _ = icon.set_attribute("name", "circle-info");
         let _ = callout.append_child(&icon);
     }
-    // The callout is just the message strip — a short title like "Model
+    // The callout is just the message strip — a short title like "Concept
     // not found". It carries no query detail itself.
     let label_text = document.create_text_node(label);
     let _ = callout.append_child(&label_text);
@@ -403,7 +403,7 @@ pub fn set_absence(host: &Element, state: State, label: &str, notation: &str) {
 }
 
 /// Loud `no-entity` diagnostic: the entity is on the branch but does not
-/// match its model concept because one or more required attributes are
+/// match its concept because one or more required attributes are
 /// absent. Renders the concept as an entity dump where every required
 /// attribute is a line — present ones carry their value, missing ones
 /// render as a squiggled `_` with a `<wa-tooltip>` naming the absent
@@ -439,7 +439,7 @@ pub fn set_no_entity_diagnostic(
         return;
     };
 
-    // The loud callout strip — danger, like a missing model/view.
+    // The loud callout strip — danger, like a missing concept/view.
     if let Ok(callout) = document.create_element("wa-callout") {
         let _ = callout.set_attribute("variant", "danger");
         let _ = callout.set_attribute(ABSENCE_CALLOUT_ATTR, "");
@@ -672,7 +672,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
     fn it_does_not_inject_a_callout_for_a_recoverable_absence() {
-        // `no-model` is a still-seeding card, not an error: the
+        // `no-concept` is a still-seeding card, not an error: the
         // embedder skins it from `data-state` (CSS placeholder). The
         // display must not force a red callout into the host.
         let host = host();
@@ -691,7 +691,7 @@ mod tests {
     #[dialog_common::test]
     fn it_clears_a_prior_callout_when_recovering_to_a_quiet_state() {
         // A loud failure injects a callout; a later recovery to a
-        // quiet state (e.g. the concept lands → no-model→no-entity, or
+        // quiet state (e.g. the concept lands → no-concept→no-entity, or
         // straight to ready) must clear it so no red box latches.
         let host = host();
         set_error(&host, State::Offline, "Connection failed", "boom");
@@ -710,10 +710,10 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[dialog_common::test]
-    fn it_injects_a_danger_fallback_naming_the_missing_model() {
-        // A bare `<tonk-display>` (no slot child) with a missing model
+    fn it_injects_a_danger_fallback_naming_the_missing_concept() {
+        // A bare `<tonk-display>` (no slot child) with a missing concept
         // must NOT render blank — it shows a callout with the query that
-        // matched nothing. A missing model concept is a config error the
+        // matched nothing. A missing concept is a config error the
         // display can't render around → `danger`.
         let host = host();
         set_absence(
@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(
             callout.get_attribute("variant").as_deref(),
             Some("danger"),
-            "a missing model is a danger, not informative",
+            "a missing concept is a danger, not informative",
         );
         assert_eq!(
             callout.text_content().unwrap().trim(),
@@ -764,7 +764,7 @@ mod tests {
             &host,
             State::NoView,
             "Not found",
-            "view:\n  this: tonk:view/x\n  model: person",
+            "view:\n  this: tonk:view/x\n  concept: person",
         );
         assert_eq!(host.get_attribute("data-state").as_deref(), Some("no-view"));
         let callout = host

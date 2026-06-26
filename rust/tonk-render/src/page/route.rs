@@ -1,4 +1,4 @@
-//! The parsed render route — the `{entity}@{model}!{view}` shorthand
+//! The parsed render route — the `{entity}@{concept}!{view}` shorthand
 //! shared by the SW/display routes and `tonk render`.
 
 use crate::page::RenderError;
@@ -6,10 +6,10 @@ use crate::page::RenderError;
 /// A parsed render route.
 ///
 /// Grammar (mirrors the SW/display route shorthand):
-/// - `/{model}` — directory: every instance of the model.
-/// - `/{entity}@{model}` — a single entity of the model.
-/// - `/{entity}@{model}!{view}` — a single entity, explicit view.
-/// - `/{model}!{view}` — directory with an explicit view concept.
+/// - `/{concept}` — directory: every instance of the concept.
+/// - `/{entity}@{concept}` — a single entity of the concept.
+/// - `/{entity}@{concept}!{view}` — a single entity, explicit view.
+/// - `/{concept}!{view}` — directory with an explicit view concept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderRoute {
     /// The concept name or URI.
@@ -37,7 +37,7 @@ impl RenderRoute {
             Some((_, _)) => return Err(invalid("route has a trailing `!` with no view".into())),
             None => (s, None),
         };
-        // Then split entity@model.
+        // Then split entity@concept.
         let (entity, concept) = match head.split_once('@') {
             Some((e, m)) if !e.is_empty() && !m.is_empty() => (Some(e.to_string()), m.to_string()),
             Some(_) => return Err(invalid(format!("route `{input}` has an empty side of `@`"))),
@@ -60,7 +60,7 @@ mod tests {
     wasm_bindgen_test_configure!(run_in_browser);
 
     #[dialog_common::test]
-    fn it_parses_a_bare_model_route() {
+    fn it_parses_a_bare_concept_route() {
         let r = RenderRoute::parse("/person").unwrap();
         assert_eq!(r.concept, "person");
         assert_eq!(r.entity, None);
@@ -68,7 +68,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_parses_entity_at_model() {
+    fn it_parses_entity_at_concept() {
         let r = RenderRoute::parse("alice@person").unwrap();
         assert_eq!(r.concept, "person");
         assert_eq!(r.entity.as_deref(), Some("alice"));
@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[dialog_common::test]
-    fn it_parses_entity_at_model_bang_view() {
+    fn it_parses_entity_at_concept_bang_view() {
         let r = RenderRoute::parse("/alice@person!card").unwrap();
         assert_eq!(r.concept, "person");
         assert_eq!(r.entity.as_deref(), Some("alice"));

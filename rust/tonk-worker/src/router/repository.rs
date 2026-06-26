@@ -1811,7 +1811,7 @@ pub async fn bootstrap_profile_meta(tonk: &TonkState) -> Result<(), RepositoryEr
 
     // Seed the standard library onto the profile meta branch so a
     // `<tonk-display>` reading the profile (the Hub at `/`) can resolve
-    // the library's concepts and views — the `space` model and its
+    // the library's concepts and views — the `space` concept and its
     // directory view — there, the same way a named repo's content
     // branch carries them. Idempotent: re-evaluating the library
     // de-duplicates rather than minting fresh claims, so it's safe on

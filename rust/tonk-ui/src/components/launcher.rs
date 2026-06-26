@@ -33,15 +33,15 @@ pub fn TonkLauncher() -> impl IntoView {
                     // `{branch}@{name}` (branch defaults to `main`);
                     // `*subject` is a wildcard so entity URIs containing `/`
                     // (e.g. `id:tonk-workspace/itinerary`) are captured whole
-                    // rather than truncated. Models like `board` and
+                    // rather than truncated. Concepts like `board` and
                     // `inspector` are reached here too, as directory views
                     // (`/space/{name}/board`, `/space/{name}/inspector`).
                     //
                     //   /space/{name}/                       default view
                     //   /space/{branch}@{name}/              + branch
-                    //   /space/{name}/{model}/               directory
-                    //   /space/{name}/{entity}@{model}/*     artifact
-                    //   /space/{name}/{entity}@{model}!{view}/*  ad-hoc
+                    //   /space/{name}/{concept}/               directory
+                    //   /space/{name}/{entity}@{concept}/*     artifact
+                    //   /space/{name}/{entity}@{concept}!{view}/*  ad-hoc
                     // SPIKE: the bare `/space/:space` route now renders the
                     // space's default view inside a SEALED opaque-origin
                     // iframe (the new architecture). The `/*subject` routes

@@ -457,7 +457,7 @@ fn parse_rule_body(application: &SyntaxApplication) -> Result<RuleBody<'_>, Anal
             }
             "description" => {
                 // Description is preserved on the descriptor through
-                // dialog's planner; we don't model it on the analyzer
+                // dialog's planner; we don't concept it on the analyzer
                 // side beyond shape validation.
                 if !matches!(&field.value, FieldValue::Literal(Scalar::String(_))) {
                     return Err(AnalyzeError::at(
@@ -1464,7 +1464,7 @@ rule!:
   assert!: artifact
   when:
     - assert: ==
-      where: { this: ?model, equals: about:blank }
+      where: { this: ?concept, equals: about:blank }
 "#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
@@ -1498,7 +1498,7 @@ rule!:
   assert!: artifact
   when:
     - assert: ==
-      where: { this: ?model }
+      where: { this: ?concept }
 "#;
         let parsed = parse(doc);
         let syntax = parsed.syntax.expect("parsed syntax");
@@ -1583,7 +1583,7 @@ view!:\n\
 
     /// Entity derivation includes reference fields, not just
     /// literals — so a concept identified by an entity *reference*
-    /// (e.g. a view's `model`) gets a distinct, correct entity.
+    /// (e.g. a view's `concept`) gets a distinct, correct entity.
     ///
     /// Regression guard for a `body_digest` defect: it used to
     /// include only literal scalars and skip references, so two
@@ -1591,7 +1591,7 @@ view!:\n\
     /// to the **same** entity, and the notation path diverged from
     /// the wire path (`application_plan_from_predicate`), which
     /// always included the reference. Two facets are asserted:
-    ///   1. distinctness — different `model` ⇒ different entity;
+    ///   1. distinctness — different `concept` ⇒ different entity;
     ///   2. convergence  — notation and wire paths agree.
     #[dialog_common::test]
     async fn it_derives_distinct_entities_for_distinct_reference_fields() {
@@ -1642,12 +1642,12 @@ view!:\n\
         let view_of_counter = notation_this_for(&fixture, "counter").await;
         let view_of_greeting = notation_this_for(&fixture, "greeting").await;
 
-        // Facet 1 — distinctness. Today both drop `model` from the
+        // Facet 1 — distinctness. Today both drop `concept` from the
         // digest and collide on `derive_this(view, {})`.
         assert_ne!(
             view_of_counter, view_of_greeting,
-            "views for different models must be different entities; \
-             body_digest dropping the `model` reference makes them collide"
+            "views for different concepts must be different entities; \
+             body_digest dropping the `concept` reference makes them collide"
         );
 
         // Facet 2 — convergence with the wire path for the counter
@@ -1677,14 +1677,14 @@ view!:\n\
         assert_eq!(
             view_of_counter, wire_this,
             "notation and wire paths must derive the same entity when the body \
-             carries a `model` reference"
+             carries a `concept` reference"
         );
     }
 
     /// A reference field that doesn't resolve is an error, not a
-    /// silent skip. Dropping the unresolved `model` from the digest
+    /// silent skip. Dropping the unresolved `concept` from the digest
     /// would fold the view into the entity it would have had with
-    /// no model at all — deriving the wrong subject. The anchor
+    /// no concept at all — deriving the wrong subject. The anchor
     /// (`&broken`) routes derivation through `body_digest` in the
     /// resolve pass, so this exercises that path specifically.
     #[dialog_common::test]

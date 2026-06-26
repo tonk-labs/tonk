@@ -33,7 +33,7 @@ fn tonk_global() -> Result<JsValue, ErrorDetail> {
 }
 
 /// Read a string field off the bridge `window.tonk.context`, if present and
-/// non-empty. The host populates the context (`{this, model, origin, repo,
+/// non-empty. The host populates the context (`{this, concept, origin, repo,
 /// branch}`) in its `ready` envelope; guest controls read routing they can't
 /// resolve from the DOM (the `<tonk-repository>`/`<tonk-branch>` ancestors
 /// live outside the iframe) from here.

@@ -13,7 +13,7 @@
 //! context (the `<tonk-repository>` / `<tonk-branch>` ancestors a
 //! display route mounts) annotates space + branch and performs the
 //! IO — exactly as `<tonk-display>` consumes the host. Dropped into
-//! a board tile via `<tonk-display model=inspector>`, it evaluates
+//! a board tile via `<tonk-display concept=inspector>`, it evaluates
 //! against whatever space the route is showing.
 
 // The inspector is a DOM custom element that consumes the host via

@@ -154,7 +154,7 @@ pub enum BindingKind {
 /// subject). The renderer renders `chrome` once, then clones the repeat
 /// element once per conclusion, rendering `body` against each. See
 /// [`this_repeat_root`] for how the repeat element is chosen and
-/// `tonk-core/docs/templates.md` for the model.
+/// `tonk-core/docs/templates.md` for the concept.
 #[derive(Debug, Clone, Default)]
 pub struct BindingPlan {
     /// Plan nodes outside the repeat element — bindings and iterations
@@ -283,7 +283,7 @@ pub fn binding_fields(binding: &Binding) -> Vec<String> {
 }
 
 /// A field name in the `dom.host/` namespace — the host element's own
-/// attributes injected into the conclusion (e.g. `{dom.host/model}`).
+/// attributes injected into the conclusion (e.g. `{dom.host/concept}`).
 /// These describe the *outer* host, not the repeated subject, so they
 /// never participate in repeat-node resolution.
 fn is_dom_host_field(name: &str) -> bool {
@@ -335,7 +335,7 @@ fn refers_subject(binding: &Binding) -> bool {
 ///    — `{this}` is *deeper* than `{count}`, so it is not on the
 ///    outermost ref-bearing element. Repeat node falls back to the
 ///    fragment root (`<div>`).
-/// 4. `<div data-model={dom.host/model}><span data-this={this} ...>` —
+/// 4. `<div data-concept={dom.host/concept}><span data-this={this} ...>` —
 ///    the `{dom.host/*}` reference is ignored; the `<span>` holding
 ///    `{this}` repeats.
 ///

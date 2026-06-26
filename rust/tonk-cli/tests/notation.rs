@@ -36,7 +36,7 @@ mod when_evaluating_a_document {
         // library — the same `core.yaml` the tonk-ui service worker
         // seeds at repository creation — so the renderer's `tonk:view`
         // concept is present without the user defining it.
-        // `<tonk-display>` queries `tonk:view` by `model`, so views
+        // `<tonk-display>` queries `tonk:view` by `concept`, so views
         // authored through tonk resolve and render instead of
         // showing "View not found".
         let test = common::TestSite::new().await?;

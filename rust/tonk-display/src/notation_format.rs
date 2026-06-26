@@ -262,9 +262,9 @@ mod tests {
 
     #[test]
     fn it_leaves_uri_values_unquoted() {
-        let f = fields(&[("model", json!("xyz.tonk.view/greeting"))]);
+        let f = fields(&[("concept", json!("xyz.tonk.view/greeting"))]);
         let out = format("did:key:zX", &f, "view", None);
-        assert!(out.contains("model: xyz.tonk.view/greeting\n"));
+        assert!(out.contains("concept: xyz.tonk.view/greeting\n"));
     }
 
     #[test]

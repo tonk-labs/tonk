@@ -4,7 +4,7 @@
 //!   *concept* (the predicate) constrained to a `concept`, projecting
 //!   `display` (and `type` when the concept declares it).
 //! - [`entity_query`] — subscribe to a single entity by URI,
-//!   projecting every field in the model concept's descriptor.
+//!   projecting every field in the concept's descriptor.
 //! - [`view_predicate`] — the descriptor JSON of the built-in
 //!   `view` concept, used as the default view predicate when the
 //!   `<tonk-display>` has no `view` attribute.
@@ -44,7 +44,7 @@ pub fn view_by_concept_query(
     serde_json::from_value(json!({ "terms": terms, "predicate": view_descriptor }))
 }
 
-/// Build the live entity subscription query: given the model
+/// Build the live entity subscription query: given the concept
 /// concept's `descriptor_json` (raw JSON from a Phase-1 resolve)
 /// and the target `entity` URI, return a query that pins `this` to
 /// `entity` and projects every field in the descriptor's `with:`
@@ -104,7 +104,7 @@ pub fn directory_view_predicate() -> Value {
 
 /// Build the live **directory** subscription query: like
 /// [`entity_query`] but with `this` left as a variable instead of
-/// pinned, so the query matches *every* instance of the model. The
+/// pinned, so the query matches *every* instance of the concept. The
 /// worker emits one flat row per (instance, many-value) tuple; the
 /// caller groups them by `this`. Used when `<tonk-display>` has no
 /// `entity` (directory mode).
@@ -226,9 +226,9 @@ fn hex_digit(b: u8) -> Option<u8> {
 /// including concepts pinned to a `this:` URI (e.g. `&workspace` +
 /// `this: tonk:workspace` → `id:workspace` → `tonk:workspace`). A
 /// concept's `dialog.meta/name` claim, by contrast, is only emitted
-/// when its `this:` is *derived*, so resolving a model/view name
+/// when its `this:` is *derived*, so resolving a concept/view name
 /// against `dialog.meta/name` misses pinned concepts. Resolving names
-/// here and feeding the resulting URI to [`phase1_query`] makes model,
+/// here and feeding the resulting URI to [`phase1_query`] makes concept,
 /// view, and entity name resolution agree.
 ///
 /// Reads back as `(entity)` — the referent URI.

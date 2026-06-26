@@ -283,7 +283,7 @@ mod tests {
     #[dialog_common::test]
     fn it_preserves_a_nested_component_template() {
         let host = mount(
-            "<div class=\"app\"><tonk-display entity=\"did:key:zBook\"><ul><template><li>{title}</li></template></ul></tonk-display></div>",
+            "<div class=\"app\"><tonk-display this=\"did:key:zBook\"><ul><template><li>{title}</li></template></ul></tonk-display></div>",
         );
         call_draw(&host, &detail("did:key:zLibrary", &[]));
         assert!(
@@ -474,7 +474,7 @@ mod tests {
         // clone (which is what the `<li>` direct-child-of-<ul>
         // rule effectively forbids in semantic terms).
         let host = mount(
-            "<ul><li subject={item}><tonk-display entity={item}>{item}</tonk-display></li></ul>",
+            "<ul><li subject={item}><tonk-display this={item}>{item}</tonk-display></li></ul>",
         );
         call_draw(
             &host,
@@ -505,7 +505,7 @@ mod tests {
         // raises the iteration root above the inner element so
         // each value gets its own <li> wrapper.
         let host = mount(
-            "<ul><li subject={item}><tonk-display entity={item} concept=todo></tonk-display></li></ul>",
+            "<ul><li subject={item}><tonk-display this={item} concept=todo></tonk-display></li></ul>",
         );
         call_draw(
             &host,
@@ -521,7 +521,7 @@ mod tests {
                 displays
                     .item(i)
                     .and_then(|n| n.dyn_into::<Element>().ok())
-                    .and_then(|el| el.get_attribute("entity"))
+                    .and_then(|el| el.get_attribute("this"))
             })
             .collect();
         assert_eq!(

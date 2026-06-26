@@ -6,14 +6,14 @@
 //! are captured whole instead of being truncated at the first slash.
 //!
 //! Mounts a `<tonk-display>` element. With no `subject` the space's
-//! default model ([`SPACE_CONCEPT`]) is shown. Otherwise the segment
+//! default concept ([`SPACE_CONCEPT`]) is shown. Otherwise the segment
 //! encodes up to three attributes with `@` and `!` delimiters:
 //!
-//! - `{model}` — directory mode: only `model` is set, so the element
-//!   renders every instance of the model (e.g. `trip`).
-//! - `{entity}@{model}` — `entity` + `model` (e.g.
+//! - `{concept}` — directory mode: only `concept` is set, so the element
+//!   renders every instance of the concept (e.g. `trip`).
+//! - `{entity}@{concept}` — `entity` + `concept` (e.g.
 //!   `id:x@trip`).
-//! - `{entity}@{model}!{view}` — all three (e.g.
+//! - `{entity}@{concept}!{view}` — all three (e.g.
 //!   `id:x@trip!tonk:view`).
 //!
 //! The entity part resolves to a concrete URI before mounting:
@@ -26,7 +26,7 @@
 //!   rendered and the element is never mounted. (Directory mode
 //!   supplies no entity, so there is nothing to resolve.)
 //!
-//! The model and view parts pass through verbatim as the `model` /
+//! The concept and view parts pass through verbatim as the `concept` /
 //! `view` attributes.
 //!
 //! Doing name resolution at the route (rather than inside
@@ -47,7 +47,7 @@ use crate::api;
 use crate::error::TonkUiError;
 use tonk_schema::parse_space;
 
-/// The model a bare `/space/{name}/` renders — the space's primary
+/// The concept a bare `/space/{name}/` renders — the space's primary
 /// interface. A user can override it per repository; it presets to the
 /// workspace concept from the wireframes.
 const SPACE_CONCEPT: &str = "tonk/space";
@@ -59,9 +59,9 @@ pub struct TonkDisplayParams {
 }
 
 /// Display route. Parses the path's `subject` segment into
-/// `entity`/`model`/`view` (see the module docs), resolves the
+/// `entity`/`concept`/`view` (see the module docs), resolves the
 /// optional entity to a URI, and mounts a `<tonk-display>` with those
-/// attributes. With no entity it is directory mode (only `model`).
+/// attributes. With no entity it is directory mode (only `concept`).
 #[component]
 #[allow(clippy::unused_unit)]
 pub fn TonkDisplayView() -> impl IntoView {
@@ -79,13 +79,13 @@ pub fn TonkDisplayView() -> impl IntoView {
     let space_name = Signal::derive_local(move || space_ref.get().map(|s| s.name));
     let branch_name = Signal::derive_local(move || space_ref.get().map(|s| s.branch));
     // The `*subject` segment encodes up to three attributes:
-    //   `{model}`                 → directory mode: only `model`.
-    //   `{entity}@{model}`        → `entity` + `model`.
-    //   `{entity}@{model}!{view}` → `entity` + `model` + `view`.
-    // `@` separates the (optional) entity from the model; `!`
+    //   `{concept}`                 → directory mode: only `concept`.
+    //   `{entity}@{concept}`        → `entity` + `concept`.
+    //   `{entity}@{concept}!{view}` → `entity` + `concept` + `view`.
+    // `@` separates the (optional) entity from the concept; `!`
     // separates the (optional) view. The entity may be a bookmark
-    // name (resolved below); the model/view pass through verbatim.
-    // Absent (`/space/{name}/`) → the space's default model.
+    // name (resolved below); the concept/view pass through verbatim.
+    // Absent (`/space/{name}/`) → the space's default concept.
     let segment = Signal::derive_local(move || {
         params
             .get()
@@ -116,7 +116,7 @@ pub fn TonkDisplayView() -> impl IntoView {
     // Resolve the entity part (if present) → entity URI. URIs pass
     // through; names hit the worker via a `Name` query. In directory
     // mode (no `@`, so no entity) this resolves to `None` and the
-    // element mounts with only `model`. The Suspense below waits on
+    // element mounts with only `concept`. The Suspense below waits on
     // the resolve before rendering anything substantive.
     let resolved_entity = LocalResource::new(move || {
         let space = space_name.get();
@@ -138,7 +138,7 @@ pub fn TonkDisplayView() -> impl IntoView {
     });
 
     // The mount node + a single Effect that reads every signal it
-    // cares about. When any of (entity-resolution, view, model)
+    // cares about. When any of (entity-resolution, view, concept)
     // updates, the effect re-runs and rebuilds the `<tonk-display>`
     // host with current attribute values. Creating an Effect inside
     // `view!` (the previous shape) racey-mounted multiple hosts as
@@ -170,7 +170,7 @@ pub fn TonkDisplayView() -> impl IntoView {
                 // element itself. `entity` is set only when present
                 // (absent in directory mode).
                 if let Some(uri) = uri {
-                    let _ = host.set_attribute("entity", &uri);
+                    let _ = host.set_attribute("this", &uri);
                 }
                 if let Some(m) = concept_name.get() {
                     let _ = host.set_attribute("concept", &m);
@@ -218,7 +218,7 @@ pub fn TonkDisplayView() -> impl IntoView {
 }
 
 /// The `<tonk-display>` attributes encoded in a display-route path
-/// segment. `model` is always present; `entity` and `view` are
+/// segment. `concept` is always present; `entity` and `view` are
 /// optional.
 #[derive(Clone)]
 struct Subject {
@@ -229,14 +229,14 @@ struct Subject {
 
 /// Parse a display-route path segment into its attributes. Grammar:
 ///
-/// - `{model}`                 → `entity: None, model, view: None`
-/// - `{entity}@{model}`        → `entity, model, view: None`
-/// - `{entity}@{model}!{view}` → `entity, model, view`
+/// - `{concept}`                 → `entity: None, concept, view: None`
+/// - `{entity}@{concept}`        → `entity, concept, view: None`
+/// - `{entity}@{concept}!{view}` → `entity, concept, view`
 ///
-/// `@` separates an optional entity from the model; `!` separates an
-/// optional view. Entity URIs / model / view names may contain `:`
+/// `@` separates an optional entity from the concept; `!` separates an
+/// optional view. Entity URIs / concept / view names may contain `:`
 /// and `/`, but not `@` or `!`, so the split is unambiguous. The view
-/// is split off first so a `!` after the model is honored even when
+/// is split off first so a `!` after the concept is honored even when
 /// there is no `@`.
 fn parse_subject(segment: &str) -> Subject {
     let (head, view) = match segment.split_once('!') {

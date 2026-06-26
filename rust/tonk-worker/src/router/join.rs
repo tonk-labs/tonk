@@ -586,7 +586,7 @@ async fn run_join(env: &crate::router::CommandEnv, command: tonk_schema::command
             // at creation), a joined space's content, including its `tonk/space`
             // view, only arrives over the pull from the remote. Redirecting
             // before that pull lands would drop the recipient on a branch with
-            // no view — `<tonk-display>` would resolve "Model not found".
+            // no view — `<tonk-display>` would resolve "Concept not found".
             //
             // So pull the content branch now, while the "Joining…" spinner is
             // still up, and only navigate once it has landed. A renewed replica
@@ -657,7 +657,7 @@ fn build_invite_url(command: &tonk_schema::command::Join) -> String {
 /// Pull the freshly joined replica's `main` content branch from its remote,
 /// so the standard-library views (notably `tonk/space`) are present before
 /// the recipient is redirected into the space. Without this the redirect can
-/// land on an empty branch and `<tonk-display>` resolves "Model not found".
+/// land on an empty branch and `<tonk-display>` resolves "Concept not found".
 ///
 /// A pull failure is logged, not fatal: the redirect still fires (the
 /// recipient lands on the space and a later sync / reload fills it in) — far

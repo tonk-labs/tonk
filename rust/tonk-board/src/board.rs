@@ -12,7 +12,7 @@
 //!
 //! 2. **Mount a `<tonk-display>`** against the resolved entity
 //!    with `concept="board-view"` (no `view`, so the built-in view
-//!    for that model is used). The view template chain drives
+//!    for that concept is used). The view template chain drives
 //!    strip / column / tile rendering.
 
 use std::cell::RefCell;
@@ -190,7 +190,7 @@ fn mount_display(host: &Element, entity: &str) {
     let Ok(display) = document.create_element("tonk-display") else {
         return;
     };
-    let _ = display.set_attribute("entity", entity);
+    let _ = display.set_attribute("this", entity);
     // No `view` attribute: with `concept="board-view"` the display
     // resolves the built-in view whose `concept` is `board-view`.
     let _ = display.set_attribute("concept", "board-view");

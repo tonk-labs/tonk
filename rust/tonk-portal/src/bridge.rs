@@ -13,7 +13,7 @@
 //!
 //! ```text
 //! window.tonk = {
-//!   context: { this, model },
+//!   context: { this, concept },
 //!   query(body?)      -> Promise<Conclusion[]>,
 //!   subscribe(body?)  -> ReadableStream<Conclusion[]>,
 //!   transact(request) -> Promise<receipt>,
@@ -1302,9 +1302,9 @@ fn query_body(host: &Element, arg: &JsValue) -> Result<JsValue, String> {
 
 fn no_arg_entity_query(host: &Element) -> Result<JsValue, String> {
     let entity = host
-        .get_attribute("entity")
+        .get_attribute("this")
         .filter(|s| !s.is_empty())
-        .ok_or("tonk.subscribe()/query() with no argument requires a scoped `entity`")?;
+        .ok_or("tonk.subscribe()/query() with no argument requires a scoped `this`")?;
     let descriptor = read_descriptor(host)
         .ok_or("tonk.subscribe()/query() with no argument requires a concept descriptor")?;
     let query = crate::query::entity_query(&descriptor, &entity)
@@ -1318,8 +1318,8 @@ fn read_descriptor(host: &Element) -> Option<String> {
         .and_then(|v| v.as_string())
 }
 
-/// Build the `context` object (`{ this, model, origin, repo, branch }`) the
-/// iframe receives in its `ready` envelope. `this`/`model` come from the
+/// Build the `context` object (`{ this, concept, origin, repo, branch }`) the
+/// iframe receives in its `ready` envelope. `this`/`concept` come from the
 /// host's attributes; `origin` is the host page's real origin (the opaque
 /// guest's is `"null"`); `repo`/`branch` come from the portal's
 /// `<tonk-repository>`/`<tonk-branch>` ancestors — those routing elements
@@ -1329,7 +1329,7 @@ fn read_descriptor(host: &Element) -> Option<String> {
 /// from `window.tonk.context` rather than the DOM/`window.location`.
 fn build_context(host: &Element) -> Object {
     let context = Object::new();
-    let this = host.get_attribute("entity").unwrap_or_default();
+    let this = host.get_attribute("this").unwrap_or_default();
     let concept = host.get_attribute("concept").unwrap_or_default();
     let location = window().map(|w| w.location());
     let origin = location
@@ -1365,7 +1365,7 @@ fn build_context(host: &Element) -> Object {
     // are ultimately issued by the host's `<tonk-host>` over HTTP, which stamps
     // THIS site on `X-Tonk-Site` — so the SW keys this tab's `tonk:site` facts by
     // it, not by the guest's own `guest:…` id. Guest content that renders the
-    // routing indirection binds `entity` to this so it resolves the facts the SW
+    // routing indirection binds `this` to this so it resolves the facts the SW
     // actually stamped.
     let site = tonk_host::bridge::site_id();
     let _ = Reflect::set(&context, &"this".into(), &JsValue::from_str(&this));
@@ -1674,8 +1674,8 @@ mod tests {
     }
 
     /// A consumer element that dispatches the bridge's events: a `<div>`
-    /// under the fake host carrying the scoped `entity` / `model` and the
-    /// model `descriptor` the relay reads for no-argument calls.
+    /// under the fake host carrying the scoped `this` / `concept` and the
+    /// concept `descriptor` the relay reads for no-argument calls.
     fn relay_consumer(
         host: &FakeHost,
         entity: Option<&str>,
@@ -1684,7 +1684,7 @@ mod tests {
     ) -> Element {
         let consumer = document().create_element("div").expect("div");
         if let Some(e) = entity {
-            consumer.set_attribute("entity", e).expect("entity");
+            consumer.set_attribute("this", e).expect("this");
         }
         if let Some(m) = concept {
             consumer.set_attribute("concept", m).expect("concept");
@@ -2063,7 +2063,7 @@ mod tests {
             .expect("tonk-portal");
         portal.set_attribute("content", content).expect("content");
         if let Some(e) = entity {
-            portal.set_attribute("entity", e).expect("entity");
+            portal.set_attribute("this", e).expect("this");
         }
         if let Some(m) = concept {
             portal.set_attribute("concept", m).expect("concept");

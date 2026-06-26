@@ -8,7 +8,7 @@
 //! per-profile cache to fall stale when another device renames it.
 //!
 //! The concept is pinned to the `tonk:repository` URI so a
-//! `<tonk-display model=tonk:repository>` can resolve its view, but its
+//! `<tonk-display concept=tonk:repository>` can resolve its view, but its
 //! *instances* are keyed by the repository's subject DID (the entity the
 //! name attaches to). The standard-library `tonk/rename-repository` rule
 //! writes it; the banner and the Hub card read it.

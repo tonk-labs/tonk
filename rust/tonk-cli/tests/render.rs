@@ -1,4 +1,4 @@
-//! Behavioural tests for `tonk render`: the full model -> view ->
+//! Behavioural tests for `tonk render`: the full concept -> view ->
 //! entity resolution and HTML rendering against a seeded `.tonk`
 //! site. The route-parser unit tests live in `src/render.rs`; these
 //! exercise the resolve / render / recurse / fallback paths that need
@@ -80,7 +80,7 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
     test.eval_inline(
         r#"view!: &person-card
   concept: person
-  display: "<article data-model=\"{dom.host/concept}\"><h2>{name}</h2></article>"
+  display: "<article data-concept=\"{dom.host/concept}\"><h2>{name}</h2></article>"
 "#,
     )
     .await?;
@@ -88,10 +88,10 @@ async fn it_injects_dom_host_fields_for_nested_resolution() -> Result<()> {
 
     let route = RenderRoute::parse("bob@person")?;
     let html = render::render(&test.site, &route).await?;
-    // {dom.host/concept} resolves to the route's model name.
+    // {dom.host/concept} resolves to the route's concept name.
     assert!(
-        html.contains("data-model=\"person\""),
-        "dom.host/model resolved: {html}"
+        html.contains("data-concept=\"person\""),
+        "dom.host/concept resolved: {html}"
     );
     Ok(())
 }
@@ -101,7 +101,7 @@ async fn it_renders_a_directory_of_every_instance() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     // A person-specific directory view (the built-in `view/directory`
-    // concept, keyed to `model: person`). Overrides the stdlib's
+    // concept, keyed to `concept: person`). Overrides the stdlib's
     // `tonk:_` default carousel so the test asserts this exact template.
     test.eval_inline(
         r#"view/directory!: &people
@@ -127,7 +127,7 @@ async fn it_renders_a_directory_of_every_instance() -> Result<()> {
 }
 
 #[dialog_common::test]
-async fn it_errors_when_no_view_exists_for_the_model() -> Result<()> {
+async fn it_errors_when_no_view_exists_for_the_concept() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
     test.eval_inline("person!: &alice\n  name: Alice\n").await?;
@@ -141,16 +141,16 @@ async fn it_errors_when_no_view_exists_for_the_model() -> Result<()> {
     Ok(())
 }
 
-// The `tonk:_` wildcard-model sentinel: a view keyed to it renders
-// any model that has no specific view. `tonk:_` is a valid entity
-// URI, so it satisfies the `model` field's `as: entity` type under
+// The `tonk:_` wildcard-concept sentinel: a view keyed to it renders
+// any concept that has no specific view. `tonk:_` is a valid entity
+// URI, so it satisfies the `concept` field's `as: entity` type under
 // dialog's strict Entity/Text typing (the old `_:_` text sentinel
 // did not — see BUG-16).
 #[dialog_common::test]
-async fn it_falls_back_to_the_default_model_view() -> Result<()> {
+async fn it_falls_back_to_the_default_concept_view() -> Result<()> {
     let test = TestSite::new().await?;
     test.eval_inline(PERSON_CONCEPT).await?;
-    // A view keyed to the `tonk:_` default model rather than `person`.
+    // A view keyed to the `tonk:_` default concept rather than `person`.
     test.eval_inline(
         r#"view!: &fallback
   concept: tonk:_
@@ -164,7 +164,7 @@ async fn it_falls_back_to_the_default_model_view() -> Result<()> {
     let html = render::render(&test.site, &route).await?;
     assert!(
         html.contains("class=\"default\"") && html.contains("Alice"),
-        "default-model view rendered: {html}"
+        "default-concept view rendered: {html}"
     );
     Ok(())
 }
@@ -183,13 +183,13 @@ async fn it_renders_empty_chrome_for_a_missing_entity() -> Result<()> {
 }
 
 #[dialog_common::test]
-async fn it_errors_on_an_unknown_model() -> Result<()> {
+async fn it_errors_on_an_unknown_concept() -> Result<()> {
     let test = seeded().await?;
     let route = RenderRoute::parse("nope")?;
     let err = render::render(&test.site, &route).await.unwrap_err();
     assert!(
         err.to_string().contains("no concept matched"),
-        "expected unknown-model error, got: {err}"
+        "expected unknown-concept error, got: {err}"
     );
     Ok(())
 }

@@ -64,7 +64,7 @@ impl CustomElement for GuestHost {
         // `data-tonk-entity="site"` gets its `entity` set to the host's site
         // (the X-Tonk-Site the host stamps on the HTTP queries it issues on this
         // guest's behalf — `window.tonk.context.site`). That is how the routing
-        // shell (`<tonk-display model=tonk:site data-tonk-entity="site">`)
+        // shell (`<tonk-display concept=tonk:site data-tonk-entity="site">`)
         // resolves its own tab's location/route: the site entity carries the
         // `tonk:site` facts the SW stamped. Deferred until `window.tonk.ready`
         // resolves, since the context (with the site) arrives asynchronously
@@ -225,7 +225,7 @@ fn fill_site_entities(root: &HtmlElement) {
     };
     for i in 0..matches.length() {
         if let Some(el) = matches.item(i).and_then(|n| n.dyn_into::<Element>().ok()) {
-            let _ = el.set_attribute("entity", &site);
+            let _ = el.set_attribute("this", &site);
         }
     }
 }

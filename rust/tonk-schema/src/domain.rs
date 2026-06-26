@@ -98,7 +98,7 @@ pub mod sync {
 /// parsed to an [`Entity`]), stamped by the service worker onto the
 /// Level-0-resolved branch's overlay. All cardinality one: a navigation
 /// re-stamps the same entity and supersedes, so the site always reflects the
-/// tab's latest location + route. Route models pick whichever of these they
+/// tab's latest location + route. Route concepts pick whichever of these they
 /// need (e.g. `replica`) as their own fields, so they resolve on the site entity.
 ///
 /// [`Entity`]: dialog_artifacts::Entity
@@ -130,7 +130,7 @@ pub mod site {
     #[cardinality(one)]
     pub struct Route(pub Entity);
 
-    /// The matched route's concept — the model the shell mounts on the site.
+    /// The matched route's concept — the concept the shell mounts on the site.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.site")]
     #[cardinality(one)]
@@ -138,7 +138,7 @@ pub mod site {
 }
 
 /// Attributes for the durable `tonk:route` table the SW reads to build its
-/// matchit router: a path pattern → the route model to mount.
+/// matchit router: a path pattern → the route concept to mount.
 pub mod route {
     use super::{Attribute, Entity};
 
@@ -148,7 +148,7 @@ pub mod route {
     #[cardinality(one)]
     pub struct Path(pub String);
 
-    /// The route model to mount when this path matches.
+    /// The route concept to mount when this path matches.
     #[derive(Attribute, Clone, PartialEq, Eq, PartialOrd, Ord)]
     #[domain("xyz.tonk.route")]
     #[cardinality(one)]

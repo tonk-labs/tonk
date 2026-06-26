@@ -1,7 +1,7 @@
 //! Wire-query construction for the no-argument bridge calls.
 //!
 //! `tonk.subscribe()` / `tonk.query()` with no argument stream the
-//! portal's scoped entity. This builds that query from the model
+//! portal's scoped entity. This builds that query from the
 //! concept's descriptor and the scoped entity URI — the same shape
 //! `<tonk-display>` builds for its entity subscription, so the
 //! imperative escape hatch reads exactly what the declarative path
@@ -14,7 +14,7 @@ use tonk_schema::query::Query;
 /// Build the scoped-entity query: pin `this` to `entity` and project
 /// every field in the descriptor's `with:` map as a variable. The
 /// descriptor is the raw JSON `<tonk-display>` resolves for the
-/// model concept (`{ "with": { <field>: { the, as, cardinality } } }`)
+/// concept (`{ "with": { <field>: { the, as, cardinality } } }`)
 /// and doubles as the query predicate.
 pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_json::Error> {
     let predicate: Value = serde_json::from_str(descriptor_json)?;

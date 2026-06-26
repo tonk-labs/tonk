@@ -6,9 +6,9 @@
 //! chip uses but keyed per tab instead of a singleton. Multiple tabs coexist as
 //! distinct site entities; a view scoped to a tab's site reads only its context.
 //!
-//! Route models (e.g. `tonk:space/route`) pick the `site/*` fields they need and
-//! resolve on the same site entity; the shell mounts the matched route model
-//! ([`Site::concept`]) on the site entity, and that model's view renders.
+//! Route concepts (e.g. `tonk:space/route`) pick the `site/*` fields they need and
+//! resolve on the same site entity; the shell mounts the matched route concept
+//! ([`Site::concept`]) on the site entity, and that concept's view renders.
 
 // The `#[derive(Concept)]` macro generates helper types without doc comments.
 // Suppress the crate-level `missing_docs` lint for this module so the macros
@@ -36,7 +36,7 @@ pub struct Site {
     pub replica: Replica,
     /// The matched route entity (the route-table entry).
     pub route: SiteRoute,
-    /// The matched route's concept — the model the shell mounts.
+    /// The matched route's concept — the concept the shell mounts.
     pub concept: SiteConcept,
 }
 
@@ -62,7 +62,7 @@ impl Site {
 }
 
 /// A durable route — one row of the table the SW reads to build its matchit
-/// router: a path pattern → the route model to mount. `route!` instances in the
+/// router: a path pattern → the route concept to mount. `route!` instances in the
 /// library populate it; the SW queries them on a branch and feeds
 /// `path` → `concept` to `matchit`.
 #[derive(Concept, Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -71,6 +71,6 @@ pub struct Route {
     pub this: Entity,
     /// The axum/matchit path pattern.
     pub path: RouteTablePath,
-    /// The route model mounted when this path matches.
+    /// The route concept mounted when this path matches.
     pub concept: RoutePathConcept,
 }

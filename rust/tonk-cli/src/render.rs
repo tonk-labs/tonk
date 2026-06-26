@@ -1,7 +1,7 @@
 //! `tonk render <route>` — headless server-side rendering of a
 //! `<tonk-display>` view to an HTML string.
 //!
-//! The model -> view -> entity -> HTML orchestration lives in
+//! The concept -> view -> entity -> HTML orchestration lives in
 //! [`tonk_render::page`]; this module is just the tonk-side wiring:
 //! it implements [`tonk_render::QueryBackend`] over a [`TonkSite`]'s
 //! reactor (the on-disk `.tonk/` `main` branch) and re-exports the

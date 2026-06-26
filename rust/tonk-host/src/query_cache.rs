@@ -1,7 +1,7 @@
 //! Tiny LRU for `tonk-query` responses.
 //!
 //! Every `<tonk-display>` mount fires a phase-1 query to resolve
-//! its model concept's descriptor. With multiple displays
+//! its concept's descriptor. With multiple displays
 //! mounted in a chain (board → column → tile → inspector-view),
 //! that's N serial HTTP round-trips for what's effectively a
 //! few unique concept lookups — measured at ~900 ms across the

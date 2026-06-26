@@ -1,6 +1,6 @@
 //! `/space/:space` — the sealed-iframe space view (spike).
 //!
-//! Renders the space's default view (`<tonk-display model=tonk/space>`)
+//! Renders the space's default view (`<tonk-display concept=tonk/space>`)
 //! **inside a sealed opaque-origin iframe** via `<tonk-portal runtime>`. The
 //! outer document provides only the routing context and the data plane:
 //!
@@ -10,7 +10,7 @@
 //!     <tonk-branch name=main>       ← annotates branch
 //!       <tonk-portal runtime        ← sealed iframe + window.tonk bridge +
 //!         content="<tonk-display       injected element runtime
-//!           model=tonk/space>">
+//!           concept=tonk/space>">
 //! ```
 //!
 //! Inside the guest, a real `<tonk-display>` dispatches its query/subscribe
@@ -18,7 +18,7 @@
 //! which relays them over `window.tonk` to the outer portal, which bubbles
 //! them to the real `<tonk-host>` → SW. The space/branch annotation happens
 //! outer-side from the `<tonk-repository>`/`<tonk-branch>` ancestors, so the
-//! guest only needs the `model`.
+//! guest only needs the `concept`.
 
 use leptos::prelude::*;
 use leptos_router::hooks::use_params;
@@ -77,7 +77,7 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // asserts the tab's `tonk:site` (so the display has something to resolve) and
     // returns the `site:<client-id>` entity the SW keys it on, which the host
     // caches for the guest context. We gate the portal mount on it so the guest's
-    // `<tonk-display model=tonk:site>` never queries an unstamped site. The
+    // `<tonk-display concept=tonk:site>` never queries an unstamped site. The
     // resource tracks `route_path`, so a client-side navigation re-registers the
     // site for the new path.
     let site = LocalResource::new(move || {
@@ -115,7 +115,7 @@ pub fn TonkSpaceSealed() -> impl IntoView {
     // `display: contents` (the app CSS `tonk-host:has(> .display-view-slot)`
     // rule).
     //
-    // The space renders the tab's SITE. The fixed `model=tonk:site` resolves the
+    // The space renders the tab's SITE. The fixed `concept=tonk:site` resolves the
     // `tonk:site` instance the SW stamped on this tab's `site:<uuid>` entity; its
     // view nests into the matched route's `{concept}` on the same entity, which
     // resolves and renders. `data-tonk-entity="site"` is the seam — the guest

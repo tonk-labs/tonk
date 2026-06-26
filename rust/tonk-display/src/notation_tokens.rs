@@ -31,7 +31,7 @@ pub enum Decoration {
     /// A `?variable` or `_` blank field value.
     Variable,
     /// A field name (the level-3 mapping key — `this`, `message`,
-    /// `model`, etc.). In the editor these are painted by
+    /// `concept`, etc.). In the editor these are painted by
     /// CodeMirror's YAML grammar via the `--tonk-code-key`
     /// variable; we don't have Lezer here so the tokenizer emits
     /// the same class explicitly.
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn it_decorates_a_bare_symbol_value() {
-        let text = "view!:\n  model: greeting\n";
+        let text = "view!:\n  concept: greeting\n";
         let marks = collect_marks(text);
         assert!(
             marks

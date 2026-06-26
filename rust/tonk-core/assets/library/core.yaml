@@ -19,7 +19,7 @@
 # ============================================================
 
 # The `view` concept. Shape matches what `<tonk-display>` queries
-# (resolve.rs `view_predicate`): a `model` (the concept it renders)
+# (resolve.rs `view_predicate`): a `concept` (the concept it renders)
 # and a `display` (the HTML template). Pinned to the stable
 # `tonk:view` URI so <tonk-display> can refer to the built-in view
 # concept directly, without a name-resolution round-trip.
@@ -53,24 +53,24 @@ concept!: &view/directory
       cardinality: one
       as: text
 
-# The default directory view: `model: tonk:_` matches any model with no
-# specific `view/directory`. `tonk:_` is the wildcard-model sentinel — a
-# valid entity URI standing in for "no specific model" (the `model` field
+# The default directory view: `concept: tonk:_` matches any concept with no
+# specific `view/directory`. `tonk:_` is the wildcard-concept sentinel — a
+# valid entity URI standing in for "no specific concept" (the `concept` field
 # is `as: entity`, so the value must be a real entity, not bare text).
-# <tonk-display> with no `entity` resolves a directory view for the model
-# first; finding none, it falls back to this. It renders the model's
+# <tonk-display> with no `entity` resolves a directory view for the concept
+# first; finding none, it falls back to this. It renders the concept's
 # instances in a <wa-carousel>, one slide per instance, each a nested
 # single-entity <tonk-display> (which then resolves its own view, or this
-# default's detail counterpart). The nested `model` is threaded from the
+# default's detail counterpart). The nested `concept` is threaded from the
 # host via `{dom.host/concept}`, since an instance carries no pointer to
-# its own model.
+# its own concept.
 view/directory!:
   this: id:tonk:view/directory/default
   concept: tonk:_
   display: |
     <wa-carousel class="vertical seamless" pagination orientation="vertical">
       <wa-carousel-item subject={this}>
-        <tonk-display entity={this} concept={dom.host/concept} />
+        <tonk-display this={this} concept={dom.host/concept} />
       </wa-carousel-item>
     </wa-carousel>
 
@@ -79,10 +79,10 @@ view/directory!:
 # WORKSPACE
 # ============================================================
 
-# The `artifact` concept. Binds an entity to a model and a view,
+# The `artifact` concept. Binds an entity to a concept and a view,
 # plus the tab metadata (title, icon) the viewer shell shows. Its
-# (entity, model, view) map one-to-one onto
-# `<tonk-display entity model view>`. Pinned to `tonk:artifact` so
+# (entity, concept, view) map one-to-one onto
+# `<tonk-display entity concept view>`. Pinned to `tonk:artifact` so
 # the viewer can query artifacts by a stable concept entity.
 concept!: &artifact
   this: tonk:artifact
@@ -124,7 +124,7 @@ concept!: &artifact
 # `xyz.tonk.artifact/title` attribute, and its view renders the
 # "empty artifact" canvas (a deeplink to hand to an agent, plus
 # instructions). Pinned to `tonk:empty-artifact` so the create rule can
-# point a new sheet's `model` at it by a stable URI.
+# point a new sheet's `concept` at it by a stable URI.
 concept!: &empty-artifact
   this: tonk:empty-artifact
   description: A newly created, not-yet-configured sheet awaiting content.
@@ -136,7 +136,7 @@ concept!: &empty-artifact
       as: text
 
 # The `sheet` concept: one tab in a workspace. A sheet is an
-# artifact (same title/icon/entity/model/view fields, same attribute
+# artifact (same title/icon/entity/concept/view fields, same attribute
 # URIs) plus an `order` lexicographic key that positions the tab. So
 # every sheet is also a valid artifact; the extra `order` field is
 # what makes it a workspace member.
@@ -333,7 +333,7 @@ concept!: &invitation
       cardinality: one
       as: text
 
-# The invite-link view — the default view for the `invitation` model, so
+# The invite-link view — the default view for the `invitation` concept, so
 # `<tonk-display concept=invitation>` mounts it with no explicit `view=`. It
 # renders only once the handler has asserted both halves for the repo's
 # subject (before that the display is empty). The readonly input shows the
@@ -373,7 +373,7 @@ view!: &invitation/link
 # The agent-invite concept: the live `tonk:invitation` joined with the
 # repository's display `name`, both keyed by the repo subject. The rule
 # below derives it so the agent-prompt view can template the repo name and
-# the invite URL from one model. It resolves only once the invitation's
+# the invite URL from one concept. It resolves only once the invitation's
 # both halves (durable authorization + overlay credential) exist, so the
 # canvas shows "Generating link…" until the mint lands.
 concept!: &tonk/agent-invite
@@ -424,7 +424,7 @@ rule!:
 # `<tonk-display concept=tonk:agent-invite>` mounts it with no explicit
 # `view=`. It renders a full, paste-able agent prompt (task + bootstrap
 # commands) with the minted invite URL embedded, instead of a bare link.
-# The repo `{name}` and invite `{access}`/`{remote}`/`{code}` are model
+# The repo `{name}` and invite `{access}`/`{remote}`/`{code}` are concept
 # fields; the page title arrives as the `data-page` host attribute and the
 # origin base as `data-base` (from `<tonk-origin>`). `<wa-copy-button>`
 # copies the assembled prompt via its `value`.
@@ -508,7 +508,7 @@ concept!: &member
       cardinality: one
       as: text
 
-# A single roster row — the default view for `model: tonk:member`. Each
+# A single roster row — the default view for `concept: tonk:member`. Each
 # member is one entry in the "shared with" list: a sigil-glyph avatar, the
 # member's display name (with the DID tail beneath as a fallback id), and a
 # role badge.
@@ -661,13 +661,13 @@ view/directory!:
           border-color: var(--wa-color-surface-border);
         }
       </style>
-      <tonk-display entity={this} concept={dom.host/concept} />
+      <tonk-display this={this} concept={dom.host/concept} />
     </div>
 
 # The repository's own name, stored in its content branch so the repo
 # is self-describing — the name travels with the repository rather than
 # living only in the joining profile's replica index. The banner reads
-# it via `<tonk-display concept=tonk:repository entity={subject}>`;
+# it via `<tonk-display concept=tonk:repository this={subject}>`;
 # `tonk/rename-repository` edits it. The concept is pinned to
 # `tonk:repository` so the display can resolve its view, but its
 # *instances* are keyed by the replica's `subject` DID (the entity the
@@ -720,7 +720,7 @@ rule!:
 # `onchange` fires on commit (blur or Enter), reading the new value from
 # `dom.event.current-target/value`; the rename rule above then writes it
 # back. The banner mounts this via `<tonk-display concept=tonk:repository
-# entity={subject}>`, so a repo with no name yet (just the seeded
+# this={subject}>`, so a repo with no name yet (just the seeded
 # "Untitled") still renders an editable field.
 view!:
   this: id:tonk:repository/name-view
@@ -816,7 +816,7 @@ concept!: &view/label
       as: text
 
 # The repository's name as plain, non-editable text. The Hub card
-# mounts this via `<tonk-display concept=tonk:repository entity={subject}
+# mounts this via `<tonk-display concept=tonk:repository this={subject}
 # view=tonk:view/label>` inside a per-space `<tonk-repository>` routing
 # context, so each card shows its own space's current name (read from
 # that space's `tonk/repository`, the cross-device source of truth)
@@ -863,7 +863,7 @@ concept!: &workspace/sheet-order
       as: text
 
 # Retract the order: when `close-sheet` fires, drop the closed sheet's
-# `order` triple. The sheet's artifact facts (title/entity/model/...)
+# `order` triple. The sheet's artifact facts (title/entity/concept/...)
 # persist - only the `order` that made it a `tonk:sheet` is removed, so
 # the directory query (which requires `order`) no longer matches it and
 # the tab disappears. The artifact could be re-promoted to a sheet
@@ -883,7 +883,7 @@ rule!:
 # `title`/`subtitle`/`icon` and `<tonk-sheet-binder>` projects the tab
 # strip from the same attributes; the view supplies only the
 # attributes and the content. The sheet's content renders directly
-# from the sheet's own `entity`/`model`/`view` fields - a sheet is
+# from the sheet's own `entity`/`concept`/`view` fields - a sheet is
 # self-describing, so no intermediate concept is needed.
 
 
@@ -893,7 +893,7 @@ view!:
   concept: tonk:sheet
   display: |
     <tonk-sheet sheet={this} order={order} title={title} subtitle={subtitle} icon={icon}>
-      <tonk-display entity={entity} concept={concept} view={view} />
+      <tonk-display this={entity} concept={concept} view={view} />
     </tonk-sheet>
 
 # The empty-artifact canvas: what a freshly created sheet renders until
@@ -1082,9 +1082,9 @@ concept!: &portal
       cardinality: one
       as: text
 
-# One view per concept, keyed by `model`. Each nested
-# `<tonk-display>` passes only `concept=…` (and `entity=…`); with no
-# `view` attribute it resolves the view whose `model` matches. The
+# One view per concept, keyed by `concept`. Each nested
+# `<tonk-display>` passes only `concept=…` (and `this=…`); with no
+# `view` attribute it resolves the view whose `concept` matches. The
 # chain iterates one level of the hierarchy per template via
 # `subject={field}` and bottoms out in the tile's content display.
 
@@ -1148,14 +1148,14 @@ view!:
           display: contents;
         }
       </style>
-      <tonk-display entity={column} concept=column-view />
+      <tonk-display this={column} concept=column-view />
     </tonk-strip>
 
 view/directory!:
   this: tonk:board/directory
   concept: board
   display: |
-    <tonk-display entity={this} concept={dom.host/concept} view={dom.host/view} />
+    <tonk-display this={this} concept={dom.host/concept} view={dom.host/view} />
 
 view!:
   this: tonk:board/column
@@ -1240,7 +1240,7 @@ view!:
         }
       </style>
       <div class="tile" subject={tile}>
-        <tonk-display entity={tile} concept=tile />
+        <tonk-display this={tile} concept=tile />
       </div>
     </tonk-column>
 
@@ -1248,7 +1248,7 @@ view!:
   this: tonk:board/tile
   concept: tile
   display: |
-    <tonk-display entity={entity} concept={concept} />
+    <tonk-display this={entity} concept={concept} />
 
 view!:
   this: tonk:inspector
@@ -1268,7 +1268,7 @@ view/directory!:
 # `<tonk-portal>` element. `html:` forces the binding through
 # setAttribute so `attributeChangedCallback` fires. Users never write
 # this; nesting a `<tonk-display concept=portal>` over a portal entity
-# resolves it by model and renders it.
+# resolves it by concept and renders it.
 view!:
   this: tonk:portal
   concept: portal
@@ -1372,7 +1372,7 @@ concept!: &space
 
 
 # Set the binder shell as the space's default view. The space route mounts
-# `<tonk-display entity={replica} concept=tonk/space>`; this alias resolves
+# `<tonk-display this={replica} concept=tonk/space>`; this alias resolves
 # `tonk/space` to `tonk:binder`, so the single-mode `tonk:shell` view (the topbar
 # over the sheet binder) renders for that one replica's binder.
 name!:
@@ -1406,7 +1406,7 @@ command!: &workspace/create-sheet
 
 
 # A created sheet is self-describing: its `entity` is the sheet entity
-# itself (`?this`), its `model` is `tonk:empty-artifact`, and its `view`
+# itself (`?this`), its `concept` is `tonk:empty-artifact`, and its `view`
 # is the built-in default. The companion rule below asserts the
 # `empty-artifact` title against that same entity, so the empty-artifact
 # canvas can render the sheet's name. `entity: ?this` is expressed as an
@@ -1544,43 +1544,43 @@ concept!: &site
       cardinality: one
       as: entity
     concept:
-      description: Matched route's concept (the model the shell mounts).
+      description: Matched route's concept (the concept the shell mounts).
       the: xyz.tonk.site/concept
       cardinality: one
       as: entity
 
-# A site renders the route model it matched. The shell mounts a fixed
-# `<tonk-display entity=site:… concept=tonk:site>`; this view nests into the
-# matched `{concept}` on the SAME site entity, so the route model
+# A site renders the route concept it matched. The shell mounts a fixed
+# `<tonk-display this=site:… concept=tonk:site>`; this view nests into the
+# matched `{concept}` on the SAME site entity, so the route concept
 # (e.g. `tonk:space/route`) resolves on the site (picking its `site/*` fields)
-# and its own view renders. One indirection: site → its matched route model.
+# and its own view renders. One indirection: site → its matched route concept.
 view!: &site/view
   this: id:tonk:site/view
   concept: tonk:site
   display: |
-    <tonk-display entity={this} concept={concept} />
+    <tonk-display this={this} concept={concept} />
 
 # ============================================================
-# ROUTING — routes are models picked by the SW per tab
+# ROUTING — routes are concepts picked by the SW per tab
 # ============================================================
 #
-# A `route!` maps a path pattern to a route MODEL. The SW (Level 1) matches the
-# remaining path after the space prefix, picks the route model, and asserts the
-# tab's `tonk:site` with `concept` = that model. The guest mounts
-# `<tonk-display entity=site:… concept={the matched concept}>`; the route model
+# A `route!` maps a path pattern to a route CONCEPT. The SW (Level 1) matches the
+# remaining path after the space prefix, picks the route concept, and asserts the
+# tab's `tonk:site` with `concept` = that concept. The guest mounts
+# `<tonk-display this=site:… concept={the matched concept}>`; the route concept
 # resolves on the site entity (picking the `site/*` fields it needs) and its
 # view renders. Patterns use axum/matchit 0.8 brace syntax (`{section}`), fed to
 # `matchit::insert`.
 #
-# Route models are distinct PINNED concepts (`tonk:space/route`, …). Two routes
+# Route concepts are distinct PINNED concepts (`tonk:space/route`, …). Two routes
 # with the same field shape stay distinct by their pinned `this`, so their views
-# never collide — `model` discriminates.
+# never collide — `concept` discriminates.
 
 # The durable route table the SW reads to build its matchit router: a path
-# pattern → the route model to render. `route!` instances populate it.
+# pattern → the route concept to render. `route!` instances populate it.
 concept!: &route
   this: tonk:route
-  description: A route — maps a path pattern to the model the SW mounts.
+  description: A route — maps a path pattern to the concept the SW mounts.
   with:
     path:
       description: The axum/matchit path pattern.
@@ -1588,7 +1588,7 @@ concept!: &route
       cardinality: one
       as: text
     concept:
-      description: The route model to render when this path matches.
+      description: The route concept to render when this path matches.
       the: xyz.tonk.route/concept
       cardinality: one
       as: entity
@@ -1596,7 +1596,7 @@ concept!: &route
 
 
 
-# ---- Route models and their views ----
+# ---- Route concepts and their views ----
 
 # The space's default page — a bare `/space/{name}/`. Picks the tab's `replica`
 # off the site entity and renders a view of it (the binder, by default).
@@ -1614,7 +1614,7 @@ view!: &space/route/view
   this: id:tonk:space/route/view
   concept: tonk:space/route
   display: |
-    <tonk-display entity={replica} concept=tonk/space />
+    <tonk-display this={replica} concept=tonk/space />
 
 # ---- Seeded routes (bootstrap) ----
 #
@@ -1623,7 +1623,7 @@ route!: &route/space
   this: id:tonk:route/space
   path: "/"
   concept: tonk:space/route
-# The sync chip — the default view for `model: tonk:sync`. A pill whose dot
+# The sync chip — the default view for `concept: tonk:sync`. A pill whose dot
 # colour + label come from `status` via CSS (rules in the shell topbar's
 # <style>). The chip is the pause-trigger: clicking it opens the "Pause sync?"
 # confirm dialog (`data-dialog`). When paused, a `resume` button overlays on
@@ -1639,10 +1639,10 @@ view!: &sync/chip
       <button class="workspace__sync-resume" type="submit" form="pause-sync-form" aria-label="Resume sync" title="Resume sync"></button>
     </span>
 
-# The workspace shell — the single-mode view for `model: tonk:binder`. Rendered
+# The workspace shell — the single-mode view for `concept: tonk:binder`. Rendered
 # for ONE concrete replica (the binder instance IS the replica entity), so
 # `{this}`/`{subject}`/`{active}` resolve to that tab's replica. The route mounts
-# it via `<tonk-display entity={replica} concept=tonk/space>` (tonk/space aliases
+# it via `<tonk-display this={replica} concept=tonk/space>` (tonk/space aliases
 # tonk:binder), so the shell is scoped to this tab's replica, not folded over
 # every replica.
 view!:
@@ -1787,7 +1787,7 @@ view!:
       <div class="workspace__topbar">
         <span class="workspace__brand">tonk</span>
         <a class="workspace__crumb" href="/">&lsaquo; all repos</a>
-        <span class="workspace__title"><tonk-display entity={subject} concept=tonk:repository></tonk-display></span>
+        <span class="workspace__title"><tonk-display this={subject} concept=tonk:repository></tonk-display></span>
         <!-- The sync chip: subscribes to the `tonk:sync` `state:here` overlay
              the worker stamps on THIS space branch (the one the shell is
              already scoped to), so it needs no extra repository context. The
@@ -1795,7 +1795,7 @@ view!:
              status lands — which is honest, since a status check / sync fires
              on load. Without the slot `<tonk-display>` would dump the
              missing-instance notation as text. -->
-        <tonk-display entity=state:here concept=tonk:sync>
+        <tonk-display this=state:here concept=tonk:sync>
           <span slot="no-entity" class="workspace__sync" data-sync-status="sync:pending" role="button" tabindex="0" data-dialog="open pause-sync" aria-label="Pause sync" title="Pause sync"></span>
         </tonk-display>
         <span class="workspace__spacer"></span>
@@ -1809,7 +1809,7 @@ view!:
                nothing while `state:self` is briefly absent (e.g. just after
                an overlay clear) — without it `<tonk-display>` would dump the
                missing-instance notation as text, mirroring the sync chip. -->
-          <tonk-display entity=state:self concept=tonk:identity>
+          <tonk-display this=state:self concept=tonk:identity>
             <span slot="no-entity" class="workspace__identity" aria-hidden="true"></span>
           </tonk-display>
           <!-- One click both opens the share dialog (`data-dialog`) and
@@ -1866,7 +1866,7 @@ view!:
            keypair, delegates the origin repo to it, asserts the public
            `tonk:authorization` durably and the private seed as an
            overlay-only `tonk:credential` — both keyed by the repo's
-           subject DID. The nested `<tonk-display entity={subject}>`
+           subject DID. The nested `<tonk-display this={subject}>`
            resolves the `tonk:invitation` join (authorization + credential)
            and composes the link. `<tonk-origin>` supplies the `data-base`
            (`{origin}/join`) host attribute so the template can build an
@@ -1894,7 +1894,7 @@ view!:
         <form id="share-form" data-invite="tonk:invite" onsubmit=tonk:invite></form>
         <tonk-origin>
           <tonk-display
-            entity={subject}
+            this={subject}
             concept=invitation
             bind:base="data-base">
             <!-- Until the handler asserts both halves of the invitation,
@@ -2296,7 +2296,7 @@ view/directory!:
             <button type="button" class="workspace-launchpad__add" data-create>+ add artifact</button>
           </div>
         </div>
-        <tonk-display entity={this} concept=tonk:sheet />
+        <tonk-display this={this} concept=tonk:sheet />
       </tonk-sheet-binder>
     </div>
 
@@ -2338,7 +2338,7 @@ concept!: &tonk/binder
 # prior one). The binder is the replica's (one per device, bound through
 # `tonk/replica`), so the command needs only the sheet — no binder id
 # plumbed through the DOM. The shell view reads `{active}` straight off
-# the binder model to seed the live tab; the binder element owns the live
+# the binder concept to seed the live tab; the binder element owns the live
 # selection thereafter, so this write only persists the default for the
 # next mount.
 rule!:
@@ -2382,7 +2382,7 @@ tonk/initialize!:
 # ============================================================
 concept!: &diagnose
   this: dialog:diagnose
-  description: Marker model for the search-tree inspector view.
+  description: Marker concept for the search-tree inspector view.
   with:
     name:
       description: A label for the inspector (unused; satisfies the concept shape).
@@ -2392,7 +2392,7 @@ concept!: &diagnose
 
 # A directory-kind view (not a plain `view!`): a `/space/{repo}/dialog:diagnose`
 # URL carries no entity, so `<tonk-display>` resolves a `view/directory`
-# for the model. The inspector needs no entity — it renders the whole
+# for the concept. The inspector needs no entity — it renders the whole
 # branch's tree — so the directory view is the right kind.
 view/directory!:
   this: id:dialog:diagnose/view

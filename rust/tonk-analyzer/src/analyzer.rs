@@ -2822,7 +2822,7 @@ view!:
 
         // The view instance derives its subject from the pinned
         // predicate entity, so its `this` is `derive_this(tonk:view,
-        // {model, display})` — NOT derived from the descriptor hash.
+        // {concept, display})` — NOT derived from the descriptor hash.
         let instance = analysis.mutate.statements.last().unwrap();
         let Statement::Assert(Application::Concept { query, .. }) = instance else {
             panic!("expected view instance assertion");
@@ -3044,7 +3044,7 @@ xyz.tonk:
     /// old `Resolver`-trait world made simulating an I/O failure
     /// trivial; under the source-and-env world the failure has
     /// to come from a misbehaving `QueryEnv`, which the existing
-    /// helpers don't model. Re-enabling this test waits on a
+    /// helpers don't concept. Re-enabling this test waits on a
     /// failure-injecting env helper.
     #[dialog_common::test]
     #[ignore = "scope-env refactor: needs a failure-injecting QueryEnv helper"]

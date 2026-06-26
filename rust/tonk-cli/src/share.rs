@@ -97,7 +97,7 @@ pub struct ShareOutcome {
 pub struct ShareDisplayOutcome {
     /// The launcher URL — `then=` resolves to the
     /// `<tonk-display>` route with `?view=…` (the view's anchor
-    /// name), and `?model=…` only in carousel mode.
+    /// name), and `?concept=…` only in carousel mode.
     pub url: String,
     /// Local name of the remote whose endpoint got embedded.
     pub remote_name: String,
@@ -115,7 +115,7 @@ pub struct ShareDisplayOutcome {
     pub view_name: Option<String>,
     /// Concept (name or URI) forwarded as `?concept=`, when
     /// supplied — carousel mode only; with `--view` the view
-    /// declares its own model. Mirrors what the caller passed.
+    /// declares its own concept. Mirrors what the caller passed.
     pub concept: Option<String>,
     /// `name=` value embedded into the URL.
     pub space_name: String,
@@ -372,11 +372,11 @@ pub async fn share_view(
 }
 
 /// Push the local repo and mint a launcher URL that points at
-/// the `<tonk-display>` route with the supplied view and model
+/// the `<tonk-display>` route with the supplied view and concept
 /// selectors baked into the query string.
 ///
 /// Subject resolution is identical to [`share_view`] (bookmark
-/// name or `did:key:…` URI). The model argument can be a concept
+/// name or `did:key:…` URI). The concept argument can be a concept
 /// name (validated against the local schema) or a URI (passed
 /// through verbatim). The view argument is forwarded without
 /// validation: `<tonk-display>` resolves the name to a view
@@ -389,7 +389,7 @@ pub async fn share_view(
 /// Steps parallel [`share_view`]:
 ///
 /// 1. Resolve the subject to an entity + optional bookmark.
-/// 2. Validate the model when it looks like a name.
+/// 2. Validate the concept when it looks like a name.
 /// 3. Run the shared share prep.
 /// 4. Mint the invite.
 /// 5. Compose the launcher URL with the `?view=&concept=` suffix.
@@ -404,8 +404,8 @@ pub async fn share_display(
         resolve_bookmark_or_uri(site, subject, |t| ShareError::SubjectNotFound { target: t })
             .await?;
 
-    // Validate the model when it's a bare identifier. URI-shaped
-    // models (anything containing `:`) pass through — same
+    // Validate the concept when it's a bare identifier. URI-shaped
+    // concepts (anything containing `:`) pass through — same
     // convention as `did:key:…` subjects.
     if let Some(name) = concept.filter(|m| !m.contains(':')) {
         let concepts = schema::list_concepts(site)

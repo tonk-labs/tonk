@@ -1228,7 +1228,7 @@ mod when_sharing_a_display {
     }
 
     #[dialog_common::test]
-    async fn it_produces_a_launcher_url_with_view_and_model_in_the_then_suffix() -> Result<()> {
+    async fn it_produces_a_launcher_url_with_view_and_concept_in_the_then_suffix() -> Result<()> {
         let test = shareable_display_site().await?;
         let outcome = share::share_display(
             &test.site,
@@ -1262,7 +1262,7 @@ mod when_sharing_a_display {
     }
 
     #[dialog_common::test]
-    async fn it_omits_query_params_when_neither_view_nor_model_is_supplied() -> Result<()> {
+    async fn it_omits_query_params_when_neither_view_nor_concept_is_supplied() -> Result<()> {
         let test = shareable_display_site().await?;
         let outcome =
             share::share_display(&test.site, "buy-milk", None, None, ShareOptions::default())
@@ -1364,7 +1364,7 @@ mod when_sharing_a_display {
     }
 
     #[dialog_common::test]
-    async fn it_errors_when_the_model_concept_is_not_defined() -> Result<()> {
+    async fn it_errors_when_the_concept_is_not_defined() -> Result<()> {
         let test = shareable_display_site().await?;
         let result = share::share_display(
             &test.site,
@@ -1382,8 +1382,8 @@ mod when_sharing_a_display {
     }
 
     #[dialog_common::test]
-    async fn it_accepts_a_uri_shaped_model_without_validation() -> Result<()> {
-        // A `:`-bearing model passes through without a concept
+    async fn it_accepts_a_uri_shaped_concept_without_validation() -> Result<()> {
+        // A `:`-bearing concept passes through without a concept
         // lookup. Mirrors the convention for `did:key:…` subjects.
         let test = shareable_display_site().await?;
         let outcome = share::share_display(

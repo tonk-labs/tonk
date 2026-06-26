@@ -142,7 +142,7 @@ view!:
       <div class="sheet__head">
         <span>day</span><span>item</span><span>time</span><span>cost</span>
       </div>
-      <tonk-display entity={stop} concept=stop></tonk-display>
+      <tonk-display this={stop} concept=stop></tonk-display>
       <div class="sheet__total">
         <span>total</span><span></span><span>-</span>
       </div>
@@ -150,7 +150,7 @@ view!:
 
 # The stop-row view, published under the built-in `view` concept
 # (no `this:` pin needed) so the nested `<tonk-display concept=stop>`
-# resolves it by model.
+# resolves it by concept.
 view!:
   concept: stop
   display: |
@@ -267,7 +267,7 @@ stop!:
   time: "-"
   cost: "EUR 820"
 
-# Two sheets (= artifacts + order). Each sheet's `entity`/`model`/
+# Two sheets (= artifacts + order). Each sheet's `entity`/`concept`/
 # `view` point at the trip it displays; `order` positions the tab.
 workspace/sheet!:
   this: id:tonk-workspace/sheet/itinerary
@@ -292,7 +292,7 @@ workspace/sheet!:
 # A portal entity: a self-contained HTML document (with its own
 # script + canvas) rendered into a sandboxed iframe. This is the
 # imperative escape hatch - the kind of drawing the declarative
-# template stack cannot express. `model: portal` on the sheet below
+# template stack cannot express. `concept: portal` on the sheet below
 # resolves the portal view, which mounts `<tonk-portal>` over it.
 portal!:
   this: id:tonk-workspace/sketch
@@ -341,9 +341,9 @@ portal!:
       </body>
     </html>
 
-# The portal sheet. `model: portal` (not `trip`) routes the sheet
+# The portal sheet. `concept: portal` (not `trip`) routes the sheet
 # content through the portal view to `<tonk-portal>`. No `view:`
-# override - the default model-resolved view is the portal bridge.
+# override - the default concept-resolved view is the portal bridge.
 workspace/sheet!:
   this: id:tonk-workspace/sheet/sketch
   title: "Sketch"
