@@ -21,6 +21,7 @@ pub struct FabState {
 
 pub enum FabIntent {
     DragStart,
+    DragMove { x: f64, y: f64, state: FabState },
     Resize { w: f64, h: f64, state: FabState },
     Drop { x: f64, y: f64, state: FabState },
 }
@@ -28,6 +29,9 @@ pub enum FabIntent {
 pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     match intent {
         FabIntent::DragStart => FabBox { left: 0.0, top: 0.0, width: vw, height: vh },
+        FabIntent::DragMove { x, y, state } => {
+            FabBox { left: *x, top: *y, width: state.w, height: state.h }
+        }
         FabIntent::Resize { w, h, state } => {
             FabBox { left: state.x, top: state.y, width: *w, height: *h }
         }
@@ -59,5 +63,12 @@ mod geometry {
         let state = FabState { x: 100.0, y: 50.0, w: 320.0, h: 64.0, dragging: true };
         let b = geometry_box(&FabIntent::Drop { x: 400.0, y: 600.0, state }, 1000.0, 800.0);
         assert_eq!(b, FabBox { left: 400.0, top: 600.0, width: 320.0, height: 64.0 });
+    }
+
+    #[test]
+    fn dragmove_moves_to_point_keeps_size() {
+        let state = FabState { x: 100.0, y: 50.0, w: 320.0, h: 64.0, dragging: true };
+        let b = geometry_box(&FabIntent::DragMove { x: 200.0, y: 300.0, state }, 1000.0, 800.0);
+        assert_eq!(b, FabBox { left: 200.0, top: 300.0, width: 320.0, height: 64.0 });
     }
 }

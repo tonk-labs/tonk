@@ -66,6 +66,9 @@ impl Default for FabGeom {
 pub struct TonkFabPortal {
     inner: RefCell<Option<Rc<RefCell<PortalState>>>>,
     geom: RefCell<FabGeom>,
+    /// The `message` listener installed by `connected_callback`. Stored so
+    /// `disconnected_callback` can remove it and drop the closure.
+    message_listener: RefCell<Option<Closure<dyn FnMut(MessageEvent)>>>,
 }
 
 impl CustomElement for TonkFabPortal {
@@ -151,7 +154,18 @@ impl CustomElement for TonkFabPortal {
                     let g = *geom.borrow();
                     match msg_type.as_deref() {
                         Some("dragstart") => FabIntent::DragStart,
-                        Some("dragmove") | Some("drop") => {
+                        Some("dragmove") => {
+                            let x = Reflect::get(&fab_payload, &"x".into())
+                                .ok()
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(g.state.x);
+                            let y = Reflect::get(&fab_payload, &"y".into())
+                                .ok()
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(g.state.y);
+                            FabIntent::DragMove { x, y, state: g.state }
+                        }
+                        Some("drop") => {
                             let x = Reflect::get(&fab_payload, &"x".into())
                                 .ok()
                                 .and_then(|v| v.as_f64())
@@ -185,6 +199,11 @@ impl CustomElement for TonkFabPortal {
                     match &intent {
                         FabIntent::DragStart => {
                             g.state.dragging = true;
+                        }
+                        FabIntent::DragMove { x, y, .. } => {
+                            g.state.x = *x;
+                            g.state.y = *y;
+                            // dragging stays true — mid-drag
                         }
                         FabIntent::Drop { x, y, .. } => {
                             g.state.x = *x;
@@ -240,12 +259,24 @@ impl CustomElement for TonkFabPortal {
                 listener.as_ref().unchecked_ref(),
             );
         }
-        // Lives for the page's lifetime — leaked intentionally (one per
-        // portal instance; cleaned up when the page unloads).
-        listener.forget();
+        // Store the closure so it stays alive while connected and can be
+        // removed in `disconnected_callback`.
+        *self.message_listener.borrow_mut() = Some(listener);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {
+        // Remove the per-instance geometry listener before dropping it so
+        // re-connects don't accumulate stale listeners.
+        if let Some(listener) = self.message_listener.borrow_mut().take() {
+            if let Some(win) = window() {
+                let _ = win.remove_event_listener_with_callback(
+                    "message",
+                    listener.as_ref().unchecked_ref(),
+                );
+            }
+            drop(listener);
+        }
+
         if let Some(state) = self.inner.borrow_mut().take() {
             let mut s = state.borrow_mut();
             s.disposed = true;
