@@ -51,10 +51,23 @@ impl CustomElement for TonkFab {
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         post_resize(this);
-        attach_hover(this);
+        // Guard against double-registration if the element reconnects.
+        if this.dataset().get("fabHoverBound").is_none() {
+            this.dataset().set("fabHoverBound", "1").ok();
+            attach_hover(this);
+        }
     }
 
-    fn disconnected_callback(&mut self, _this: &HtmlElement) {}
+    fn disconnected_callback(&mut self, this: &HtmlElement) {
+        // Cancel any pending collapse timer so the closure doesn't fire against
+        // a detached element and send a spurious resize postMessage.
+        if let Some(id_str) = this.dataset().get("collapseTimer") {
+            if let Ok(id) = id_str.parse::<i32>() {
+                clear_timeout(id);
+            }
+            this.dataset().delete("collapseTimer");
+        }
+    }
 
     fn attribute_changed_callback(
         &mut self,
@@ -73,7 +86,10 @@ impl CustomElement for TonkFab {
 /// - `mouseleave`: schedule collapse after `COLLAPSE_MS`; on fire, remove
 ///   `expanded` class and re-post resize.
 ///
-/// Both closures are `forget()`-ed — the element lives for the page lifetime.
+/// Both closures are `forget()`-ed. This is safe because the FAB element is
+/// created once and lives for the page lifetime. `connected_callback` guards
+/// against double-registration via the `data-fab-hover-bound` flag, so this
+/// function is called at most once per element instance.
 fn attach_hover(element: &HtmlElement) {
     let element_for_enter = element.clone();
     let on_enter = Closure::<dyn Fn()>::new(move || {

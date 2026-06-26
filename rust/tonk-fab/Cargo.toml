@@ -23,7 +23,6 @@ web-sys = { workspace = true, features = [
     "Element",
     "EventTarget",
     "HtmlElement",
-    "MouseEvent",
     "Window",
 ] }
 
