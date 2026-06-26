@@ -1,0 +1,79 @@
+# Reference
+
+A quick lookup for the notation. For the full reference, run `tonk guide`.
+
+## Heads
+
+A head ending in `!` writes; without `!` it queries.
+
+| Head            | Effect                                          |
+|-----------------|-------------------------------------------------|
+| `concept!:`     | Define a concept (a named set of relations).    |
+| `command!:`     | Define a command (a transient, event-fed concept). |
+| `rule!:`        | Define a rule (a deduction).                     |
+| `view!:`        | Define a view (renders one entity).             |
+| `view/directory!:` | Define a directory view (renders every instance). |
+| `<concept>!:`   | Assert an instance of a concept.                |
+| `<concept>:`    | Query instances of a concept.                   |
+
+## Body keys
+
+| Key     | Meaning                                                          |
+|---------|-----------------------------------------------------------------|
+| `this:` | The entity to operate on: omitted (derived from content), `?v` (variable), bare name, or `did:key:…`. |
+| `with:` | In `concept!`/`command!`, the field-name to attribute map.       |
+| `when:` | In `rule!`, the list of premises that must hold.                |
+| `..: _` | Retract every attribute the concept selects that is not named.   |
+
+## Field values
+
+| Value             | Meaning                                       |
+|-------------------|-----------------------------------------------|
+| `"Alice"`         | String literal.                               |
+| `28`, `1.5`       | Number literal.                               |
+| `?name`           | Variable (binds, and joins across premises).  |
+| `_`               | Blank: query matches any; assertion retracts. |
+| `person` (bare)   | Symbol, resolved through the name table.       |
+| `id:foo`, `did:key:…` | URI, used directly.                       |
+
+## Attribute fields
+
+| Field         | Values                                         |
+|---------------|------------------------------------------------|
+| `the`         | `domain/name` URI, the attribute's identity.   |
+| `as`          | `text`, `entity`, `unsigned-integer`, `float`. |
+| `cardinality` | `one` (default) or `many`.                     |
+| `description` | Required.                                      |
+
+## `<tonk-display>`
+
+| Attribute | Meaning                                                       |
+|-----------|--------------------------------------------------------------|
+| `model`   | The concept to render. Required.                             |
+| `entity`  | The single entity to render. Absent renders every instance.  |
+| `view`    | A specific view to use. Omitted uses the model's default.    |
+
+## Template placeholders
+
+| Form        | Meaning                                          |
+|-------------|--------------------------------------------------|
+| `{field}`   | A field of the rendered entity.                  |
+| `{this}`    | The entity's own id.                             |
+
+## Command sources
+
+Read from the DOM event with the `the:` of a command field.
+
+| URI                                            | Reads                              |
+|------------------------------------------------|------------------------------------|
+| `dom.event.current-target/value`               | the target's `value`               |
+| `dom.event.current-target.dataset/foo`         | the target's `data-foo`            |
+| `dom.event.detail/foo`                          | a custom event's `detail.foo`      |
+
+## CLI
+
+| Command        | Does                                            |
+|----------------|-------------------------------------------------|
+| `tonk guide`  | Print the full notation reference.              |
+| `tonk schema` | List the concepts on the current branch.        |
+| `tonk join …` | Join a space from an invite link.               |
