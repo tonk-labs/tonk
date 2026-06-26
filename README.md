@@ -69,6 +69,16 @@ curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh
 
 You can also download a `tonk-<platform>.tar.gz` directly from the [releases page](https://github.com/tonk-labs/tonk/releases) and extract the `tonk` binary onto your `PATH`. The macOS binary is not yet Apple-signed, so a hand-downloaded copy needs `xattr -c tonk && codesign --force --sign - tonk` before it will run (the install script does this for you).
 
+### Update
+
+There is no self-update command yet. To upgrade, re-run the install command — it downloads the newest release and overwrites the binary in place:
+
+```sh
+curl -fsSL https://github.com/tonk-labs/tonk/releases/latest/download/install.sh | sh
+```
+
+Check what you have with `tonk --version`. Add `TONK_CHANNEL=staging` to track the pre-release channel instead.
+
 ### Quick start
 
 ```sh
