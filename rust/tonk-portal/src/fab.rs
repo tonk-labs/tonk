@@ -16,12 +16,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Function, Reflect};
-use wasm_bindgen::JsCast;
-use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
+use web_sys::{Element, HtmlElement, window};
 
 use crate::bridge::{self, PortalState};
-use crate::shared::{connect_portal, reload_portal};
+use crate::shared::{connect_portal, install_method_shims, reload_portal};
 
 /// The FAB portal custom element. Holds the shared [`PortalState`];
 /// `None` until `connected_callback` builds it.
@@ -102,37 +100,7 @@ pub fn register_fab_portal() {
         return;
     }
     TonkFabPortal::define("tonk-fab-portal");
-    install_method_shims();
-}
-
-/// Install `reset` / `update` / `error` on the `<tonk-fab-portal>`
-/// prototype, each forwarding to the per-instance `__tonk*` closure.
-fn install_method_shims() {
-    let Some(win) = window() else {
-        return;
-    };
-    let constructor = win.custom_elements().get("tonk-fab-portal");
-    if constructor.is_undefined() {
-        return;
-    }
-    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
-        return;
-    };
-    let reset_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
-    );
-    let update_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
-    );
-    let error_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
-    );
-    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
-    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
-    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+    install_method_shims("tonk-fab-portal");
 }
 
 fn already_registered() -> bool {

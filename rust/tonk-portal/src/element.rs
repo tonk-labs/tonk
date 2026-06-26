@@ -21,12 +21,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use custom_elements::CustomElement;
-use js_sys::{Function, Reflect};
 use wasm_bindgen::JsCast;
 use web_sys::{Element, HtmlElement, HtmlIFrameElement, window};
 
 use crate::bridge::{self, PortalState};
-use crate::shared::{connect_portal, reload_portal};
+use crate::shared::{connect_portal, install_method_shims, reload_portal};
 
 /// The custom element. Holds the shared [`PortalState`]; `None` until
 /// `connected_callback` builds it.
@@ -108,39 +107,7 @@ pub fn register() {
         return;
     }
     TonkPortal::define("tonk-portal");
-    install_method_shims();
-}
-
-/// Install `reset` / `update` / `error` on the `<tonk-portal>`
-/// prototype, each forwarding to the per-instance `__tonk*` closure.
-/// On the prototype (not each instance) so `this`-binding is correct
-/// when the host invokes `consumer.reset(payload, opts)`.
-fn install_method_shims() {
-    let Some(win) = window() else {
-        return;
-    };
-    let constructor = win.custom_elements().get("tonk-portal");
-    if constructor.is_undefined() {
-        return;
-    }
-    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
-        return;
-    };
-    let reset_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
-    );
-    let update_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
-    );
-    let error_fn = Function::new_with_args(
-        "payload, opts",
-        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
-    );
-    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
-    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
-    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
+    install_method_shims("tonk-portal");
 }
 
 fn already_registered() -> bool {

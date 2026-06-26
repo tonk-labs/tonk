@@ -8,7 +8,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use js_sys::Reflect;
+use js_sys::{Function, Reflect};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
@@ -106,6 +106,40 @@ pub(crate) fn reload_portal(host: &Element, state: &Rc<RefCell<PortalState>>) {
         };
         let _ = iframe.set_attribute("srcdoc", &srcdoc);
     }
+}
+
+/// Install `reset` / `update` / `error` on the named element's prototype,
+/// each forwarding to the per-instance `__tonk*` closure.
+///
+/// Called once during `register()` / `register_fab_portal()` after
+/// `CustomElement::define` so the constructor is already registered.
+/// The `element_name` must match the name passed to `define`.
+pub(crate) fn install_method_shims(element_name: &str) {
+    let Some(win) = window() else {
+        return;
+    };
+    let constructor = win.custom_elements().get(element_name);
+    if constructor.is_undefined() {
+        return;
+    }
+    let Ok(proto) = Reflect::get(&constructor, &"prototype".into()) else {
+        return;
+    };
+    let reset_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkReset === 'function') this.__tonkReset(payload, opts);",
+    );
+    let update_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkUpdate === 'function') this.__tonkUpdate(payload, opts);",
+    );
+    let error_fn = Function::new_with_args(
+        "payload, opts",
+        "if (typeof this.__tonkError === 'function') this.__tonkError(payload, opts);",
+    );
+    let _ = Reflect::set(&proto, &"reset".into(), &reset_fn);
+    let _ = Reflect::set(&proto, &"update".into(), &update_fn);
+    let _ = Reflect::set(&proto, &"error".into(), &error_fn);
 }
 
 /// Write the per-instance `__tonkReset` / `__tonkError` closures the
