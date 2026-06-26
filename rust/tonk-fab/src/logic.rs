@@ -43,6 +43,12 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     }
 }
 
+/// Returns `true` when the FAB's top-left `y` is in the top half of the viewport
+/// (height `vh`), meaning the submenu should open downward.
+pub fn submenu_opens_down(y: f64, vh: f64) -> bool {
+    y < vh / 2.0
+}
+
 pub const COLLAPSE_MS: u64 = 1000;
 
 pub struct CollapseMachine {
@@ -135,6 +141,16 @@ pub fn position_claim_json(x: u32, y: u32) -> Value {
             }
         }]
     })
+}
+
+#[cfg(test)]
+mod submenu {
+    use super::*;
+    #[test]
+    fn opens_down_in_top_half() {
+        assert!(submenu_opens_down(10.0, 800.0));
+        assert!(!submenu_opens_down(700.0, 800.0));
+    }
 }
 
 #[cfg(test)]

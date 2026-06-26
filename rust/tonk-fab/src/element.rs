@@ -24,7 +24,7 @@
 //!
 //! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
-use crate::logic::{COLLAPSE_MS, clamp_position, position_claim_json};
+use crate::logic::{COLLAPSE_MS, clamp_position, position_claim_json, submenu_opens_down};
 use custom_elements::CustomElement;
 use js_sys::{Function, Object, Reflect};
 use wasm_bindgen::closure::Closure;
@@ -120,6 +120,7 @@ fn attach_hover(element: &HtmlElement) {
             element_for_enter.dataset().delete("collapseTimer");
         }
         element_for_enter.class_list().add_1("expanded").ok();
+        apply_menu_direction(&element_for_enter);
         post_resize(&element_for_enter);
     });
 
@@ -414,6 +415,39 @@ fn post_default_position() {
         (480.0, 16.0)
     };
     post_fab_msg("drop", Some(x), Some(y));
+}
+
+/// Apply `opens-down` or `opens-up` to the `.fab__menu` inside `element`,
+/// based on whether the FAB is in the top or bottom half of the viewport.
+fn apply_menu_direction(element: &HtmlElement) {
+    let Some(win) = window() else {
+        return;
+    };
+    let vh = win
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(768.0);
+
+    // Read current_y from the element's bounding rect.
+    let elem: &web_sys::Element = element.unchecked_ref();
+    let rect = elem.get_bounding_client_rect();
+    let current_y = rect.top();
+
+    let opens_down = submenu_opens_down(current_y, vh);
+
+    // Find the .fab__menu child and toggle the direction class.
+    let menu = elem.query_selector(".fab__menu").ok().flatten();
+    if let Some(menu_el) = menu {
+        let cl = menu_el.class_list();
+        if opens_down {
+            cl.remove_1("opens-up").ok();
+            cl.add_1("opens-down").ok();
+        } else {
+            cl.remove_1("opens-down").ok();
+            cl.add_1("opens-up").ok();
+        }
+    }
 }
 
 /// Measure `element`'s bounding rect and post a `__tonkFab` resize message to

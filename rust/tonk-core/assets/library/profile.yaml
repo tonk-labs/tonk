@@ -198,6 +198,9 @@ view/directory!: &profile/fab/view
           <span class="fab__name">{dom.host/data-name}</span>
         </span>
         <span class="fab__space">{dom.host/data-space}</span>
+        <nav class="fab__menu">
+          <a class="fab__menu-item" href="/space/{subject}" with={this}>{subject}</a>
+        </nav>
       </div>
       <style>
         :host, tonk-fab { display: block; }
@@ -212,6 +215,7 @@ view/directory!: &profile/fab/view
           font-family: var(--wa-font-family-body, sans-serif);
           font-size: 13px;
           white-space: nowrap;
+          position: relative;
         }
         .fab.expanded {
           padding: 6px 12px;
@@ -252,6 +256,33 @@ view/directory!: &profile/fab/view
         }
         .fab:not(.expanded) .fab__identity,
         .fab:not(.expanded) .fab__space { display: none; }
+        .fab__menu {
+          position: absolute;
+          left: 0;
+          display: flex;
+          flex-direction: column;
+          background: var(--wa-color-surface-raised, #fff);
+          border: 1px solid var(--wa-color-surface-border, #ddd);
+          border-radius: 8px;
+          padding: 4px 0;
+          min-width: 160px;
+          box-shadow: 0 4px 12px rgba(0,0,0,.12);
+          z-index: 100;
+        }
+        .fab__menu.opens-down { top: 100%; margin-top: 4px; }
+        .fab__menu.opens-up { bottom: 100%; margin-bottom: 4px; }
+        .fab__menu-item {
+          display: block;
+          padding: 6px 12px;
+          color: var(--wa-color-text-normal, #111);
+          text-decoration: none;
+          font-size: 13px;
+          font-family: var(--wa-font-family-code, monospace);
+        }
+        .fab__menu-item:hover {
+          background: var(--wa-color-surface-hover, #f5f5f5);
+        }
+        .fab:not(.expanded) .fab__menu { display: none; }
       </style>
     </tonk-fab>
 
