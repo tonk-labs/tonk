@@ -21,7 +21,9 @@ web-sys = { workspace = true, features = [
     "CustomElementRegistry",
     "DomRect",
     "Element",
+    "EventTarget",
     "HtmlElement",
+    "MouseEvent",
     "Window",
 ] }
 

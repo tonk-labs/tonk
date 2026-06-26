@@ -205,13 +205,16 @@ view/directory!: &profile/fab/view
           display: flex;
           align-items: center;
           gap: 8px;
-          padding: 6px 12px;
+          padding: 6px;
           background: var(--wa-color-surface-raised, #fff);
           border: 1px solid var(--wa-color-surface-border, #ddd);
           border-radius: 24px;
           font-family: var(--wa-font-family-body, sans-serif);
           font-size: 13px;
           white-space: nowrap;
+        }
+        .fab.expanded {
+          padding: 6px 12px;
         }
         .fab__circle {
           flex: none;
@@ -247,6 +250,8 @@ view/directory!: &profile/fab/view
           overflow: hidden;
           text-overflow: ellipsis;
         }
+        .fab:not(.expanded) .fab__identity,
+        .fab:not(.expanded) .fab__space { display: none; }
       </style>
     </tonk-fab>
 

@@ -41,6 +41,81 @@ pub fn geometry_box(intent: &FabIntent, vw: f64, vh: f64) -> FabBox {
     }
 }
 
+pub const COLLAPSE_MS: u64 = 1000;
+
+pub struct CollapseMachine {
+    expanded: bool,
+    since_leave: Option<u64>,
+}
+
+impl CollapseMachine {
+    pub fn new() -> Self {
+        Self { expanded: false, since_leave: None }
+    }
+
+    pub fn expanded(&self) -> bool {
+        self.expanded
+    }
+
+    pub fn on_enter(&mut self) {
+        self.expanded = true;
+        self.since_leave = None;
+    }
+
+    pub fn on_leave(&mut self) {
+        self.since_leave = Some(0);
+    }
+
+    pub fn tick(&mut self, elapsed_ms: u64) {
+        if let Some(acc) = self.since_leave.as_mut() {
+            *acc += elapsed_ms;
+            if *acc >= COLLAPSE_MS {
+                self.expanded = false;
+                self.since_leave = None;
+            }
+        }
+    }
+}
+
+impl Default for CollapseMachine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod collapse {
+    use super::*;
+
+    #[test]
+    fn enter_expands_immediately() {
+        let mut m = CollapseMachine::new();
+        m.on_enter();
+        assert!(m.expanded());
+    }
+
+    #[test]
+    fn leave_then_timeout_collapses() {
+        let mut m = CollapseMachine::new();
+        m.on_enter();
+        m.on_leave();
+        assert!(m.expanded(), "still expanded right after leave");
+        m.tick(1000);
+        assert!(!m.expanded(), "collapsed after 1s");
+    }
+
+    #[test]
+    fn reenter_cancels_collapse() {
+        let mut m = CollapseMachine::new();
+        m.on_enter();
+        m.on_leave();
+        m.tick(500);
+        m.on_enter();
+        m.tick(1000);
+        assert!(m.expanded());
+    }
+}
+
 #[cfg(test)]
 mod geometry {
     use super::*;

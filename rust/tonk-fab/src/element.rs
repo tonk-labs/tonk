@@ -8,18 +8,33 @@
 //! { "__tonkFab": { "type": "resize", "w": <f64>, "h": <f64> } }
 //! ```
 //!
-//! The element does NOT use Shadow DOM — it is a transparent wrapper. It
-//! exposes its own box via `getBoundingClientRect()`, which returns the
-//! content rectangle once the element is connected and laid out.
+//! Hover expand/collapse: `mouseenter` adds the `expanded` class (and
+//! re-posts resize for the expanded bar); `mouseleave` schedules a collapse
+//! after `COLLAPSE_MS` (removes the class, re-posts resize for the circle).
+//! A re-enter before the timeout cancels the pending collapse.
+//!
+//! The element does NOT use Shadow DOM — it is a transparent wrapper.
 
+use crate::logic::COLLAPSE_MS;
 use custom_elements::CustomElement;
-use js_sys::{Object, Reflect};
+use js_sys::{Function, Object, Reflect};
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
 use web_sys::{HtmlElement, window};
 
-/// The `<tonk-fab>` custom element struct. Stateless: all behaviour is in
-/// `connected_callback`.
+// web-sys doesn't expose a typed `clearTimeout`/`setTimeout` wrapper in the
+// features we have, so we call them via js_sys::Function from the global.
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = globalThis, js_name = setTimeout)]
+    fn set_timeout(handler: &Function, delay: i32) -> i32;
+
+    #[wasm_bindgen(js_namespace = globalThis, js_name = clearTimeout)]
+    fn clear_timeout(id: i32);
+}
+
+/// The `<tonk-fab>` custom element.
 #[derive(Default)]
 pub struct TonkFab;
 
@@ -36,6 +51,7 @@ impl CustomElement for TonkFab {
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         post_resize(this);
+        attach_hover(this);
     }
 
     fn disconnected_callback(&mut self, _this: &HtmlElement) {}
@@ -50,18 +66,60 @@ impl CustomElement for TonkFab {
     }
 }
 
+/// Attach `mouseenter` / `mouseleave` listeners to `element`.
+///
+/// - `mouseenter`: add `expanded` class, re-post resize, cancel any pending
+///   collapse timer.
+/// - `mouseleave`: schedule collapse after `COLLAPSE_MS`; on fire, remove
+///   `expanded` class and re-post resize.
+///
+/// Both closures are `forget()`-ed — the element lives for the page lifetime.
+fn attach_hover(element: &HtmlElement) {
+    let element_for_enter = element.clone();
+    let on_enter = Closure::<dyn Fn()>::new(move || {
+        // Cancel any pending collapse stored in the element dataset.
+        if let Some(id_str) = element_for_enter.dataset().get("collapseTimer") {
+            if let Ok(id) = id_str.parse::<i32>() {
+                clear_timeout(id);
+            }
+            element_for_enter.dataset().delete("collapseTimer");
+        }
+        element_for_enter.class_list().add_1("expanded").ok();
+        post_resize(&element_for_enter);
+    });
+
+    let element_for_leave = element.clone();
+    let on_leave = Closure::<dyn Fn()>::new(move || {
+        let element_for_timer = element_for_leave.clone();
+        let collapse = Closure::<dyn Fn()>::new(move || {
+            element_for_timer.dataset().delete("collapseTimer");
+            element_for_timer.class_list().remove_1("expanded").ok();
+            post_resize(&element_for_timer);
+        });
+        let id = set_timeout(collapse.as_ref().unchecked_ref(), COLLAPSE_MS as i32);
+        collapse.forget();
+        element_for_leave.dataset().set("collapseTimer", &id.to_string()).ok();
+    });
+
+    let target: &web_sys::EventTarget = element.unchecked_ref();
+    target
+        .add_event_listener_with_callback("mouseenter", on_enter.as_ref().unchecked_ref())
+        .ok();
+    target
+        .add_event_listener_with_callback("mouseleave", on_leave.as_ref().unchecked_ref())
+        .ok();
+
+    on_enter.forget();
+    on_leave.forget();
+}
+
 /// Measure `element`'s bounding rect and post a `__tonkFab` resize message to
-/// `window.parent`. If the element has no size yet (width/height both zero),
-/// we still post so the host has a defined initial state.
+/// `window.parent`.
 fn post_resize(element: &HtmlElement) {
     let Some(win) = window() else {
         return;
     };
 
-    // `getBoundingClientRect()` is available immediately after connect,
-    // though the layout may still be pending. The portal host applies the
-    // dimensions on receipt; a subsequent re-measure (Task 7's
-    // ResizeObserver) will correct any initial-layout inaccuracy.
     let elem: &web_sys::Element = element.unchecked_ref();
     let rect = elem.get_bounding_client_rect();
     let w = rect.width();
@@ -74,9 +132,6 @@ fn post_resize(element: &HtmlElement) {
     Reflect::set(&fab, &"h".into(), &JsValue::from_f64(h)).ok();
     Reflect::set(&msg, &"__tonkFab".into(), &fab).ok();
 
-    // `window.parent` is the outer document's window (the FAB portal host).
-    // In a sandboxed opaque-origin iframe `parent` is the same as `window`
-    // when there is no parent; the host silently ignores unknown messages.
     if let Ok(Some(parent)) = win.parent() {
         parent.post_message(&msg, "*").ok();
     }
@@ -87,8 +142,6 @@ pub fn register() {
     let Some(win) = window() else {
         return;
     };
-    // Guard against double-registration (the element crate may be imported
-    // by multiple consumers in a single document).
     if !win.custom_elements().get("tonk-fab").is_undefined() {
         return;
     }
