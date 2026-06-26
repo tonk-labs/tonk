@@ -1889,7 +1889,7 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test_configure!(run_in_browser);
 
-    /// Only the subject inputs (`entity`/`concept`/`view`) re-resolve what
+    /// Only the subject inputs (`this`/`concept`/`view`) re-resolve what
     /// the display renders, so only those force a teardown. A host-context
     /// attribute like `data-active` (threaded in for a template to read
     /// as `{dom.host/data-active}`) leaves the resolved view unchanged and
@@ -1897,7 +1897,7 @@ mod tests {
     /// the whole subtree on every selection change.
     #[dialog_common::test]
     fn it_tears_down_only_on_subject_input_changes() {
-        assert!(resolves_template("entity"));
+        assert!(resolves_template("this"));
         assert!(resolves_template("concept"));
         assert!(resolves_template("view"));
         assert!(

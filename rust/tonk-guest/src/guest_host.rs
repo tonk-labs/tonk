@@ -61,7 +61,7 @@ impl CustomElement for GuestHost {
 
     fn connected_callback(&mut self, this: &HtmlElement) {
         // Bind the per-tab `site` entity: any descendant that opted in with
-        // `data-tonk-entity="site"` gets its `entity` set to the host's site
+        // `data-tonk-entity="site"` gets its `this` set to the host's site
         // (the X-Tonk-Site the host stamps on the HTTP queries it issues on this
         // guest's behalf — `window.tonk.context.site`). That is how the routing
         // shell (`<tonk-display concept=tonk:site data-tonk-entity="site">`)
