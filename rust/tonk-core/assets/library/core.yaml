@@ -1548,6 +1548,11 @@ concept!: &site
       the: xyz.tonk.site/anchor
       cardinality: one
       as: text
+    space:
+      description: The space (repository name) on this site.
+      the: xyz.tonk.site/space
+      cardinality: one
+      as: text
     replica:
       description: Currently active replica on this site.
       the: xyz.tonk.site/replica

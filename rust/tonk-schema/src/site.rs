@@ -19,7 +19,7 @@ use dialog_artifacts::Entity;
 use dialog_query::Concept;
 
 use crate::domain::route::{Concept as RoutePathConcept, Path as RouteTablePath};
-use crate::domain::site::{Anchor, Concept as SiteConcept, Path, Replica, Route as SiteRoute};
+use crate::domain::site::{Anchor, Concept as SiteConcept, Path, Replica, Route as SiteRoute, Space};
 
 /// A tab's location and matched route, keyed on the per-tab site entity. The SW
 /// stamps it; the shell reads it. All fields cardinality one, so a navigation
@@ -32,6 +32,8 @@ pub struct Site {
     pub path: Path,
     /// The document fragment (may be empty).
     pub anchor: Anchor,
+    /// The space (repository name) the tab is on.
+    pub space: Space,
     /// This tab's active replica entity.
     pub replica: Replica,
     /// The matched route entity (the route-table entry).
@@ -46,6 +48,7 @@ impl Site {
         this: Entity,
         path: String,
         anchor: String,
+        space: String,
         replica: Entity,
         route: Entity,
         concept: Entity,
@@ -54,10 +57,34 @@ impl Site {
             this,
             path: Path(path),
             anchor: Anchor(anchor),
+            space: Space(space),
             replica: Replica(replica),
             route: SiteRoute(route),
             concept: SiteConcept(concept),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test_configure;
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    #[dialog_common::test]
+    async fn it_carries_the_space_name() {
+        let site = Site::new(
+            "site:test".parse().unwrap(),
+            "/space/home".to_owned(),
+            String::new(),
+            "home".to_owned(),
+            "replica:r".parse().unwrap(),
+            "route:x".parse().unwrap(),
+            "concept:y".parse().unwrap(),
+        );
+        assert_eq!(site.space.0, "home");
     }
 }
 
