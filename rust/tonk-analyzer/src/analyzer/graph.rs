@@ -332,13 +332,15 @@ pub(crate) fn push(syntax: &Syntax) -> Result<Graph, AnalyzeError> {
     })
 }
 
-/// Gather the attribute references a `concept!`'s `with:` map makes
-/// by bare symbol / `?var` / URI, as [`Need`]s. Inline attribute
-/// definitions (a nested mapping) declare their own entity and
-/// need no resolution, so they're skipped here.
+/// Gather the attribute references a `concept!`'s `with:` and
+/// `maybe:` maps make by bare symbol / `?var` / URI, as [`Need`]s.
+/// Both required and optional fields can reference branch attributes
+/// by name or URI, so both blocks must be prefetched. Inline
+/// attribute definitions (a nested mapping) declare their own entity
+/// and need no resolution, so they're skipped here.
 fn collect_concept_with_needs(assertion: &tonk_notation::Application, needs: &mut Vec<Need>) {
     for field in &assertion.fields {
-        if field.name != "with" {
+        if field.name != "with" && field.name != "maybe" {
             continue;
         }
         let FieldValue::Nested(inner) = &field.value else {

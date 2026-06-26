@@ -876,6 +876,40 @@ mod tests {
                 .expect("concept assertion commits");
         }
 
+        /// Assert standalone attributes on the branch and publish
+        /// each under a name. Builds a throwaway concept descriptor
+        /// so [`assert_concept_named`] writes the `dialog.attribute/
+        /// {id,type,cardinality}` claims an `AttributeDefinition`
+        /// needs, then publishes a `dialog.name/referent` for each
+        /// attribute entity so a bare-symbol reference resolves it by
+        /// name (mirrors `attribute!: &name` in real notation).
+        ///
+        /// Each entry is `(published name, field key, `the` URI,
+        /// type label)`.
+        async fn attributes(&self, attrs: &[(&str, &str, &str, &str)]) {
+            let mut with = serde_json::Map::new();
+            for (_, field, the, ty) in attrs {
+                with.insert(
+                    (*field).into(),
+                    serde_json::json!({ "the": the, "as": ty, "cardinality": "one" }),
+                );
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            self.assert_concept_named("__attrs", &descriptor).await;
+            for (name, field, _, _) in attrs {
+                let attr = descriptor
+                    .with()
+                    .iter()
+                    .find(|(f, _)| f == field)
+                    .map(|(_, a)| a)
+                    .expect("field is in the descriptor");
+                let entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                self.publish_name(name, entity).await;
+            }
+        }
+
         /// Publish a `dialog.name/referent` claim binding `name`
         /// to `entity`. Used by tests that need a name to resolve
         /// to a specific entity (not a concept the test asserted).
@@ -1451,6 +1485,59 @@ concept!: &person
             "bare-reference `maybe:` field must emit an optional marker; saw {field_names:?}"
         );
         assert!(query.terms.get("optional.nickname").is_some());
+    }
+
+    /// A `maybe:` field referencing an attribute that lives on the
+    /// branch (not declared in the document) must resolve, exactly
+    /// like a `with:` field does. The prefetch phase has to gather
+    /// references from both blocks — gathering only `with:` left
+    /// branch attributes referenced solely from `maybe:` unresolved,
+    /// surfacing as a spurious "unknown name" error.
+    #[dialog_common::test]
+    async fn it_resolves_branch_attribute_referenced_from_maybe() {
+        // The branch holds two attributes published as the bare
+        // (dot-free) names `dir/title` and `dir/icon` so a reference
+        // parses as a name lookup, not a dotted-domain URI.
+        let fixture = new_fixture().await;
+        fixture
+            .attributes(&[
+                ("dir/title", "title", "xyz.tonk.dir/title", "Text"),
+                ("dir/icon", "icon", "xyz.tonk.dir/icon", "Text"),
+            ])
+            .await;
+
+        // A fresh concept references `title` from `with:` (control)
+        // and `icon` from `maybe:` (the path the bug broke) — both
+        // by published branch name, neither declared in this doc.
+        let syntax = must_parse(
+            r#"
+concept!: &card
+  description: "A card"
+  with:
+    title: dir/title
+  maybe:
+    icon: dir/icon
+"#,
+        );
+        let analysis = flat(fixture.analyze(&syntax).await.unwrap());
+        assert!(analysis.declarations.contains_key("card"));
+        let card = analysis.mutate.statements.last().unwrap();
+        let Statement::Assert(Application::Concept { query, .. }) = card else {
+            panic!("expected concept assertion");
+        };
+        let field_names: Vec<&str> = query.predicate.with().iter().map(|(n, _)| n).collect();
+        assert!(
+            field_names.contains(&"with.title"),
+            "required `with:` reference must resolve; saw {field_names:?}"
+        );
+        assert!(
+            field_names.contains(&"with.icon"),
+            "optional `maybe:` reference to a branch attribute must resolve; saw {field_names:?}"
+        );
+        assert!(
+            field_names.contains(&"optional.icon"),
+            "the `maybe:` field must still be marked optional; saw {field_names:?}"
+        );
     }
 
     /// A bare symbol in field-value position resolves through the
