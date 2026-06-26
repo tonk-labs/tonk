@@ -888,13 +888,14 @@ mod tests {
     }
 
     #[dialog_common::test]
-    async fn it_dispatches_close_with_the_neighbour_as_next() {
+    async fn it_dispatches_close_carrying_only_the_closed_sheet() {
         let binder = mount_binder("a", &[("a", "a", "First"), ("b", "b", "Second")]);
         let (closed, _closed_l) = capture_detail("close", "closed");
         let (next, _next_l) = capture_detail("close", "next");
 
-        // Click the close button of the first tab. Its neighbour by
-        // order is the second sheet, so `next` should be `b`.
+        // Click the close button of the first tab. The `close` event
+        // carries only `closed`; the neighbour switch is handled by a
+        // separate `activate` dispatch, so `close` has no `next` field.
         let close = binder
             .query_selector(&format!(".{TAB}[data-sheet=\"a\"] .{CLOSE}"))
             .unwrap()
@@ -902,16 +903,41 @@ mod tests {
         close.dyn_ref::<HtmlElement>().unwrap().click();
 
         assert_eq!(closed.borrow().as_deref(), Some("a"));
-        assert_eq!(next.borrow().as_deref(), Some("b"));
+        assert_eq!(
+            next.borrow().as_deref(),
+            None,
+            "close no longer carries a next field",
+        );
         binder.remove();
     }
 
     #[dialog_common::test]
-    async fn it_falls_back_to_about_blank_next_when_closing_the_only_sheet() {
-        // Closing the last sheet has no neighbour, so `next` falls back to
-        // `about:blank` rather than being omitted: the `close-sheet`
-        // command's `next` field is required, and an absent event field
-        // would fail the whole command build, leaving the tab unclosable.
+    async fn it_activates_the_neighbour_when_closing_the_active_sheet() {
+        // Closing the active sheet hands selection to its neighbour via a
+        // separate `activate` event (the single writer a click uses), not
+        // through a `next` field on `close`.
+        let binder = mount_binder("a", &[("a", "a", "First"), ("b", "b", "Second")]);
+        let (activated, _activated_l) = capture_detail("activate", "sheet");
+
+        let close = binder
+            .query_selector(&format!(".{TAB}[data-sheet=\"a\"] .{CLOSE}"))
+            .unwrap()
+            .expect("close button on active tab a");
+        close.dyn_ref::<HtmlElement>().unwrap().click();
+
+        assert_eq!(
+            activated.borrow().as_deref(),
+            Some("b"),
+            "closing the active sheet activates its neighbour",
+        );
+        binder.remove();
+    }
+
+    #[dialog_common::test]
+    async fn it_omits_next_when_closing_the_only_sheet() {
+        // Closing the last sheet has no neighbour: `active` is removed and
+        // the `close` event carries only `closed` (no `next`). Reopening
+        // therefore starts with no selection and reveals the launchpad.
         let binder = mount_binder("a", &[("a", "a", "Only")]);
         let (closed, _closed_l) = capture_detail("close", "closed");
         let (next, _next_l) = capture_detail("close", "next");
@@ -925,8 +951,13 @@ mod tests {
         assert_eq!(closed.borrow().as_deref(), Some("a"));
         assert_eq!(
             next.borrow().as_deref(),
-            Some("about:blank"),
-            "the only sheet has no neighbour, so next falls back to about:blank",
+            None,
+            "the only sheet has no neighbour, so close carries no next",
+        );
+        assert_eq!(
+            binder.get_attribute("active"),
+            None,
+            "closing the last sheet clears active",
         );
         binder.remove();
     }
