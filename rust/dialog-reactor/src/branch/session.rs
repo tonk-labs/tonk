@@ -14,7 +14,6 @@ use dialog_repository::Branch;
 use crate::BranchState;
 use crate::env::SelectProvider;
 use crate::error::ReactorError;
-use crate::rules::ReactorRuleSource;
 use crate::subscription::{QueryHash, Subscriber, SubscriptionReference};
 
 /// Resolved branch handle paired with the cache entry that owns
@@ -43,15 +42,6 @@ impl BranchSession {
     /// query via [`QueryLayer::with`](dialog_repository::QueryLayer).
     pub fn overlay(&self) -> Changes {
         self.state.overlay()
-    }
-
-    /// A [`ReactorRuleSource`](crate::ReactorRuleSource) over this
-    /// branch's deductive-rule cache, to install on a read query via
-    /// [`QueryLayer::with_rules`](dialog_repository::QueryLayer::with_rules)
-    /// so stored deductive rules resolve. Carries the current branch
-    /// head so the cache can tell fresh entries from stale.
-    pub fn rule_source(&self) -> ReactorRuleSource {
-        self.state.rule_source()
     }
 
     /// The inverse of this branch's overlay — retracts every overlay
