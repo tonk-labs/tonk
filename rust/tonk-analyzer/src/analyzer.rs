@@ -313,17 +313,43 @@ fn expand(
                         claims.push(Statement::Assert(inline));
                         claim_labels.push(None);
                     }
-                    collect_unbound_variables(&declaration.application, &working, &mut requires);
+                    // `predicate`/`this`/`anchor` describe the head for
+                    // the analysis tree. A normal declaration derives
+                    // them from its asserted application; a
+                    // retraction-only `concept!:` body has no
+                    // assertion, so probe its first retraction
+                    // application instead.
+                    let probe = declaration
+                        .application
+                        .as_ref()
+                        .or(declaration.retractions.first());
                     // A declaration head applies the built-in
                     // `concept` / `attribute` schema — that schema
                     // is durable; the declared concept's own
                     // transience is a field of the body, not the
                     // predicate this assertion applies.
-                    predicate = predicate_of(&declaration.application, false);
-                    this = declaration.application.this().clone();
-                    anchor = declaration.application.name().map(str::to_owned);
-                    claims.push(Statement::Assert(declaration.application));
-                    claim_labels.push(None);
+                    predicate = probe
+                        .map(|app| predicate_of(app, false))
+                        .unwrap_or(Predicate::Domain(a.predicate.source.clone()));
+                    this = probe
+                        .map(|app| app.this().clone())
+                        .unwrap_or(ThisIntent::Derived);
+                    anchor = declaration
+                        .application
+                        .as_ref()
+                        .and_then(|app| app.name().map(str::to_owned));
+                    // Retractions emit first so the dissociate sees the
+                    // prior state before any re-assert lands.
+                    for retraction in declaration.retractions {
+                        collect_unbound_variables(&retraction, &working, &mut requires);
+                        claims.push(Statement::Retract(retraction));
+                        claim_labels.push(None);
+                    }
+                    if let Some(application) = declaration.application {
+                        collect_unbound_variables(&application, &working, &mut requires);
+                        claims.push(Statement::Assert(application));
+                        claim_labels.push(None);
+                    }
                     is_declaration = true;
                 } else if is_rule_claim(a) {
                     // `rule!:` claims lower to a single
@@ -908,6 +934,68 @@ mod tests {
                 let entity: Entity = attr.to_uri().parse().expect("attribute URI");
                 self.publish_name(name, entity).await;
             }
+        }
+
+        /// Assert a concept at an explicit pinned `entity` (rather
+        /// than the content-derived `descriptor.this()`), so a test
+        /// can reference it via `this: <entity>` in the notation —
+        /// the form a `concept!:` field retraction targets. Each
+        /// field is `(field, the, "Text")`; `optional` widens none.
+        async fn assert_concept_at(&self, entity: &Entity, fields: &[(&str, &str)]) {
+            let mut with = serde_json::Map::new();
+            for (field, the) in fields {
+                with.insert(
+                    (*field).into(),
+                    serde_json::json!({ "the": the, "as": "Text", "cardinality": "one" }),
+                );
+            }
+            let descriptor: ConceptDescriptor =
+                serde_json::from_value(serde_json::json!({ "with": with }))
+                    .expect("descriptor JSON is well-formed");
+            let mut txn = self.branch.transaction();
+            for (_, attr) in descriptor.with().iter() {
+                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                txn = txn
+                    .assert(
+                        the!("dialog.attribute/id")
+                            .of(attr_entity.clone())
+                            .is(format!("{}/{}", attr.domain(), attr.name())),
+                    )
+                    .assert(
+                        the!("dialog.attribute/type")
+                            .of(attr_entity.clone())
+                            .is("Text".to_owned()),
+                    )
+                    .assert(
+                        the!("dialog.attribute/cardinality")
+                            .of(attr_entity.clone())
+                            .is("one".to_owned()),
+                    )
+                    .assert(
+                        the!("dialog.meta/description")
+                            .of(attr_entity)
+                            .is(String::new()),
+                    );
+            }
+            // Pin the concept at `entity` by emitting its facts there
+            // directly (mirrors `emit_concept_facts`): the marker plus
+            // one `dialog.concept.with/<field>` per field.
+            txn = txn.assert(
+                the!("dialog.meta/concept")
+                    .of(entity.clone())
+                    .is("db:concept".parse::<Entity>().expect("db:concept")),
+            );
+            for (field, attr) in descriptor.with().iter() {
+                let attr_entity: Entity = attr.to_uri().parse().expect("attribute URI");
+                let the = format!("dialog.concept.with/{field}")
+                    .parse::<dialog_query::attribute::The>()
+                    .expect("with attribute parses");
+                txn = txn.assert(the.of(entity.clone()).is(attr_entity));
+            }
+            txn.commit()
+                .perform(&self.operator)
+                .await
+                .expect("pinned concept assertion commits");
         }
 
         /// Publish a `dialog.name/referent` claim binding `name`
@@ -1822,6 +1910,179 @@ person!:
             assert!(
                 matches!(q.terms.get(field), Some(Term::Variable { name: None, .. })),
                 "field {field:?} should be blank"
+            );
+        }
+    }
+
+    /// `concept!: { this: <pinned>, with: { f: _ } }` retracts the
+    /// named field from a stored concept: a `Statement::Retract`
+    /// carrying the `with.f` term bound to the field's stored
+    /// attribute entity, and nothing else (no marker, no other
+    /// field).
+    #[dialog_common::test]
+    async fn it_retracts_a_named_field_from_a_concept() {
+        let fixture = new_fixture().await;
+        let entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .expect("valid entity");
+        fixture
+            .assert_concept_at(
+                &entity,
+                &[
+                    ("name", "io.gozala.person/name"),
+                    ("age", "io.gozala.person/age"),
+                ],
+            )
+            .await;
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  with:
+    age: _
+"#,
+        );
+        let analysis = flat(fixture.analyze(&syntax).await.unwrap());
+        // A pure retraction emits exactly one statement: the retract.
+        let retracts: Vec<_> = analysis
+            .mutate
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Statement::Retract(Application::Concept { query, .. }) => Some(query),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(retracts.len(), 1, "exactly one concept retraction");
+        let q = retracts[0];
+        // `with.age` is blank: the evaluator dissociates whatever the
+        // branch holds for age (the instance-retraction model).
+        assert!(
+            matches!(
+                q.terms.get("with.age"),
+                Some(Term::Variable { name: None, .. })
+            ),
+            "with.age is a blank retraction directive",
+        );
+        // `name` is untouched — no term for it, and no marker term.
+        assert!(
+            q.terms.get("with.name").is_none(),
+            "the kept field is not retracted",
+        );
+        assert!(
+            q.terms.get("concept").is_none(),
+            "the concept marker is not retracted",
+        );
+        // No assert side for a retraction-only body.
+        assert!(
+            !analysis
+                .mutate
+                .statements
+                .iter()
+                .any(|s| matches!(s, Statement::Assert(Application::Concept { .. }))),
+            "retraction-only body emits no concept assertion",
+        );
+    }
+
+    /// `..: _` on a pinned concept retracts every stored field.
+    #[dialog_common::test]
+    async fn it_retracts_every_field_from_a_concept_via_rest() {
+        let fixture = new_fixture().await;
+        let entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .expect("valid entity");
+        fixture
+            .assert_concept_at(
+                &entity,
+                &[
+                    ("name", "io.gozala.person/name"),
+                    ("age", "io.gozala.person/age"),
+                ],
+            )
+            .await;
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  ..: _
+"#,
+        );
+        let analysis = flat(fixture.analyze(&syntax).await.unwrap());
+        let q = analysis
+            .mutate
+            .statements
+            .iter()
+            .find_map(|s| match s {
+                Statement::Retract(Application::Concept { query, .. }) => Some(query),
+                _ => None,
+            })
+            .expect("a concept retraction");
+        for field in ["name", "age"] {
+            assert!(
+                q.terms.get(&format!("with.{field}")).is_some(),
+                "`..: _` retracts every stored field, including {field}",
+            );
+        }
+    }
+
+    /// Retracting a field the concept doesn't carry is a hard error
+    /// (strict policy): there's no stored triple to dissociate.
+    #[dialog_common::test]
+    async fn it_rejects_retracting_an_absent_field() {
+        let fixture = new_fixture().await;
+        let entity: Entity = "did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv"
+            .parse()
+            .expect("valid entity");
+        fixture
+            .assert_concept_at(&entity, &[("name", "io.gozala.person/name")])
+            .await;
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  with:
+    nonexistent: _
+"#,
+        );
+        let err = fixture.analyze(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for absent-field retraction, got {err:?}",
+        );
+    }
+
+    /// Retracting against a concept that doesn't exist on the branch
+    /// is a hard error — the attribute value to dissociate is unknown.
+    #[dialog_common::test]
+    async fn it_rejects_retraction_against_unknown_concept() {
+        let syntax = must_parse(
+            r#"
+concept!:
+  this: did:key:z6MkfpAVgERtxfLXxr8wpJp3CQpXi2VZkAjJBgvw9q5tGBkv
+  with:
+    age: _
+"#,
+        );
+        let err = analyze_empty(&syntax).await.unwrap_err();
+        assert!(
+            matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+            "expected InvalidConceptBody for unknown-concept retraction, got {err:?}",
+        );
+    }
+
+    /// `..` is the top-level rest-retraction marker, not a field
+    /// name. Nested inside a `with:`/`maybe:` block it must be a
+    /// parse error, not a silent "retract a field named `..`".
+    #[dialog_common::test]
+    async fn it_rejects_rest_marker_nested_in_a_block() {
+        for block in ["with", "maybe"] {
+            let syntax = must_parse(&format!(
+                "concept!:\n  this: id:thing\n  {block}:\n    ..: _\n"
+            ));
+            let err = analyze_empty(&syntax).await.unwrap_err();
+            assert!(
+                matches!(err.kind, AnalyzeErrorKind::InvalidConceptBody { .. }),
+                "expected InvalidConceptBody for `..` nested in `{block}:`, got {err:?}",
             );
         }
     }
