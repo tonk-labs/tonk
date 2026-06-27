@@ -29,7 +29,7 @@ concept!: &view
   with:
     concept:
       description: Concept this view renders
-      the: xyz.tonk.view/model
+      the: xyz.tonk.view/concept
       cardinality: one
       as: entity
     display:
@@ -44,7 +44,7 @@ concept!: &view/directory
   with:
     concept:
       description: Concept this view renders
-      the: xyz.tonk.view/model
+      the: xyz.tonk.view/concept
       cardinality: one
       as: entity
     display:
@@ -110,7 +110,7 @@ concept!: &artifact
       as: entity
     concept:
       description: Concept used to display the entity
-      the: xyz.tonk.artifact/model
+      the: xyz.tonk.artifact/concept
       cardinality: one
       as: entity
     view:
@@ -166,7 +166,7 @@ concept!: &workspace/sheet
       as: entity
     concept:
       description: Concept used to display the entity
-      the: xyz.tonk.artifact/model
+      the: xyz.tonk.artifact/concept
       cardinality: one
       as: entity
     view:
@@ -806,7 +806,7 @@ concept!: &view/label
   with:
     concept:
       description: Concept this view renders
-      the: xyz.tonk.view/model
+      the: xyz.tonk.view/concept
       cardinality: one
       as: entity
     display:
@@ -1050,7 +1050,7 @@ concept!: &tile
       as: text
     concept:
       description: Concept the tile body renders
-      the: xyz.tonk.tile/model
+      the: xyz.tonk.tile/concept
       cardinality: one
       as: entity
     entity:

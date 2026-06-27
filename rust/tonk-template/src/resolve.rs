@@ -79,7 +79,7 @@ pub fn entity_query(descriptor_json: &str, entity: &str) -> Result<Query, serde_
 pub fn view_predicate() -> Value {
     json!({
         "with": {
-            "concept": { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
+            "concept": { "the": "xyz.tonk.view/concept",   "as": "Entity", "cardinality": "one" },
             "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
         }
     })
@@ -96,7 +96,7 @@ pub fn view_predicate() -> Value {
 pub fn directory_view_predicate() -> Value {
     json!({
         "with": {
-            "concept": { "the": "xyz.tonk.view/model",     "as": "Entity", "cardinality": "one" },
+            "concept": { "the": "xyz.tonk.view/concept",     "as": "Entity", "cardinality": "one" },
             "display": { "the": "xyz.tonk.view/directory", "as": "Text",   "cardinality": "one" }
         }
     })
@@ -480,7 +480,7 @@ mod tests {
         // projected so the render-mode fork can read it.
         let predicate = json!({
             "with": {
-                "concept": { "the": "xyz.tonk.view/model",   "as": "Entity", "cardinality": "one" },
+                "concept": { "the": "xyz.tonk.view/concept",   "as": "Entity", "cardinality": "one" },
                 "type":    { "the": "xyz.tonk.view/type",    "as": "Text",   "cardinality": "one" },
                 "display": { "the": "xyz.tonk.view/display", "as": "Text",   "cardinality": "one" }
             }

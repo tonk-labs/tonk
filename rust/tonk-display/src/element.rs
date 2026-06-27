@@ -2321,7 +2321,7 @@ mod tests {
                     "did:key:zViewConcept",
                     &[(
                         "source",
-                        r#"{"with":{"concept":{"the":"xyz.tonk.view/model","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
+                        r#"{"with":{"concept":{"the":"xyz.tonk.view/concept","as":"Entity","cardinality":"one"},"display":{"the":"xyz.tonk.view/display","as":"Text","cardinality":"one"},"type":{"the":"xyz.tonk.view/type","as":"Text","cardinality":"one"}}}"#,
                     )],
                 )]),
             ]

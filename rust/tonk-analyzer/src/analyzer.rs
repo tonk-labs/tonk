@@ -2795,7 +2795,7 @@ concept!: &view
   with:
     concept:
       description: "Concept this view renders"
-      the:         xyz.tonk.view/model
+      the:         xyz.tonk.view/concept
       as:          Entity
       cardinality: one
     display:

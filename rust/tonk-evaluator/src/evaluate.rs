@@ -3168,7 +3168,7 @@ concept!: &workspace/sheet
       cardinality: one
       description: "entity"
     concept:
-      the: xyz.tonk.artifact/model
+      the: xyz.tonk.artifact/concept
       as: entity
       cardinality: one
       description: "concept"
@@ -3314,7 +3314,7 @@ workspace!:
         let concept: Vec<dialog_query::Claim> = branch
             .query()
             .select(dialog_query::AttributeQuery::from(
-                Term::from(the!("xyz.tonk.artifact/model"))
+                Term::from(the!("xyz.tonk.artifact/concept"))
                     .of(Term::from(new_sheet.clone()))
                     .is(Term::<dialog_artifacts::Entity>::var("v")),
             ))

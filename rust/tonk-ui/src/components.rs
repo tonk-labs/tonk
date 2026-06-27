@@ -590,7 +590,7 @@ mod tests {
         let setup = r#"
 attribute!: &view-concept
   description: "view concept"
-  the:         xyz.tonk.view/model
+  the:         xyz.tonk.view/concept
   as:          entity
   cardinality: one
 
