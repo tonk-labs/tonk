@@ -26,8 +26,9 @@
 //!
 //! - `db.rule/source` — the full
 //!   [`DeductiveRuleDescriptor`](dialog_query::DeductiveRuleDescriptor)
-//!   serialized as JSON. Source of truth; the rule is rebuilt from
-//!   this single text claim.
+//!   as canonical dag-cbor (a `Value::Bytes`). Source of truth; the
+//!   rule is rebuilt from this single claim via
+//!   [`DeductiveRule::decode`](dialog_query::DeductiveRule::decode).
 //! - `db.rule/conclusion` — index pointing at the head concept
 //!   entity ([`ConceptDescriptor::this`](dialog_query::ConceptDescriptor::this)).
 //!   The [`RuleSource`](dialog_repository::RuleSource) resolver looks
@@ -44,18 +45,19 @@
 //! polarity, which deductive rules lack). Asserting the same rule
 //! twice is idempotent.
 
-use base58::ToBase58;
 use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Value};
-use dialog_common::Blake3Hash;
-use dialog_query::{DeductiveRule as CompiledRule, DeductiveRuleDescriptor};
+use dialog_query::DeductiveRule as CompiledRule;
 use thiserror::Error;
-// `content_entity` hashes the canonical JSON `source_string`, not
-// dag-cbor — see the note there for why.
 
 /// A deductive rule installed on a branch — pairs a compiled
 /// [`DeductiveRule`](dialog_query::DeductiveRule) with the entity its
-/// `db.rule/*` claims are written against and the exact source string
-/// stored under `db.rule/source`.
+/// `db.rule/*` claims are written against and the canonical dag-cbor
+/// body stored under `db.rule/source`.
+///
+/// Identity and encoding are owned by dialog-query
+/// ([`DeductiveRule::this`](dialog_query::DeductiveRule::this) /
+/// [`encode`](dialog_query::DeductiveRule::encode)); this type just
+/// projects them onto the `db.rule/*` claim shape.
 ///
 /// Construct via [`DeductiveRule::asserting`] for content-addressed
 /// installs or [`DeductiveRule::asserting_at`] for installs at a
@@ -65,28 +67,28 @@ pub struct DeductiveRule {
     /// The compiled rule — conclusion + analyzed premises.
     rule: CompiledRule,
     /// The entity URI the `db.rule/*` claims are written against.
-    /// Defaults to the content-derived [`DeductiveRule::this`]; a
+    /// Defaults to the content-derived
+    /// [`DeductiveRule::this`](dialog_query::DeductiveRule::this); a
     /// caller can override via [`DeductiveRule::asserting_at`].
     this: Entity,
-    /// The exact source string carried on `db.rule/source` (JSON
-    /// `DeductiveRuleDescriptor`). Synthesised once at construction so
-    /// the `Statement` impl writes and (on retract) dissociates the
-    /// same bytes.
-    source: String,
+    /// The canonical dag-cbor body carried on `db.rule/source`.
+    /// Captured once at construction so `assert` writes and `retract`
+    /// dissociates the same bytes.
+    source: Vec<u8>,
 }
 
 impl DeductiveRule {
     /// Wrap a compiled rule for an `assert` against its
-    /// content-derived entity.
+    /// content-derived entity ([`DeductiveRule::this`](dialog_query::DeductiveRule::this)).
     pub fn asserting(rule: CompiledRule) -> Self {
-        let this = content_entity(&rule);
+        let this = rule.this();
         Self::asserting_at(rule, this)
     }
 
     /// Wrap a compiled rule for an `assert` against a caller-chosen
     /// entity (e.g. a stable `rule!: this: <entity>` URI).
     pub fn asserting_at(rule: CompiledRule, entity: Entity) -> Self {
-        let source = source_string(&rule);
+        let source = rule.encode();
         Self {
             rule,
             this: entity,
@@ -100,15 +102,13 @@ impl DeductiveRule {
     }
 
     /// The head concept entity — the value of the `db.rule/conclusion`
-    /// claim. The [`RuleSource`](dialog_repository::RuleSource)
-    /// resolver indexes rules by this.
+    /// claim. The resolver indexes rules by this.
     pub fn conclusion(&self) -> Entity {
         self.rule.conclusion().this()
     }
 
-    /// The exact `db.rule/source` string (JSON-encoded
-    /// [`DeductiveRuleDescriptor`]).
-    pub fn source(&self) -> &str {
+    /// The canonical dag-cbor `db.rule/source` bytes.
+    pub fn source(&self) -> &[u8] {
         &self.source
     }
 
@@ -118,18 +118,13 @@ impl DeductiveRule {
     }
 
     /// Rebuild a compiled [`DeductiveRule`](dialog_query::DeductiveRule)
-    /// from a stored `db.rule/source` string.
+    /// from stored `db.rule/source` dag-cbor bytes.
     ///
-    /// Deserialization runs dialog's full rule compilation (type
-    /// inference + planning), so a malformed or no-longer-valid stored
-    /// rule surfaces as [`DeductiveRuleError::Source`] here rather than
-    /// failing deeper in the query engine.
-    pub fn from_source(source: &str) -> Result<CompiledRule, DeductiveRuleError> {
-        let descriptor: DeductiveRuleDescriptor =
-            serde_json::from_str(source).map_err(|e| DeductiveRuleError::Source(e.to_string()))?;
-        descriptor
-            .compile()
-            .map_err(|e| DeductiveRuleError::Compile(e.to_string()))
+    /// Decoding runs dialog's full rule compilation (type inference +
+    /// planning), so a malformed or no-longer-valid stored rule surfaces
+    /// as [`DeductiveRuleError`] here rather than deeper in the engine.
+    pub fn from_source(source: &[u8]) -> Result<CompiledRule, DeductiveRuleError> {
+        CompiledRule::decode(source).map_err(DeductiveRuleError)
     }
 }
 
@@ -149,7 +144,7 @@ impl dialog_artifacts::Statement for DeductiveRule {
         update.associate_unique(
             meta_attr("db.rule", "source"),
             this.clone(),
-            Value::String(self.source),
+            Value::Bytes(self.source),
         );
         // Conclusion index.
         update.associate_unique(
@@ -182,7 +177,7 @@ impl dialog_artifacts::Statement for DeductiveRule {
         update.dissociate(
             meta_attr("db.rule", "source"),
             this.clone(),
-            Value::String(self.source),
+            Value::Bytes(self.source),
         );
         update.dissociate(
             meta_attr("db.rule", "conclusion"),
@@ -201,75 +196,17 @@ impl dialog_artifacts::Statement for DeductiveRule {
     }
 }
 
-/// Errors rehydrating a deductive rule from its stored source.
+/// Error rehydrating a deductive rule from its stored `db.rule/source`
+/// bytes — the dag-cbor failed to decode, or the decoded descriptor
+/// didn't compile (type inference / planning). Carries dialog's reason.
 #[derive(Debug, Error)]
-pub enum DeductiveRuleError {
-    /// The stored `db.rule/source` string did not parse as a
-    /// `DeductiveRuleDescriptor`.
-    #[error("deductive rule source parse failed: {0}")]
-    Source(String),
-    /// The descriptor parsed but failed dialog's rule compilation
-    /// (type inference / planning).
-    #[error("deductive rule compile failed: {0}")]
-    Compile(String),
-}
+#[error("deductive rule hydrate failed: {0}")]
+pub struct DeductiveRuleError(String);
 
-/// Canonical JSON form of the rule descriptor — the value of the
-/// `db.rule/source` claim.
-///
-/// **Canonicalization is load-bearing.** A premise's `where` terms
-/// serialize from a `HashMap` ([`Parameters`](dialog_query::Parameters)),
-/// whose iteration order is non-deterministic. Serializing the
-/// descriptor directly would yield different byte strings for the same
-/// rule across compilations, breaking content-addressed identity and
-/// idempotent re-seeding. So we round-trip through a
-/// [`serde_json::Value`] with every object's keys sorted, giving a
-/// stable canonical form. (`serde_json` is built with `preserve_order`
-/// here, so sorting overrides insertion order deterministically.)
-fn source_string(rule: &CompiledRule) -> String {
-    let mut value = serde_json::to_value(rule.descriptor())
-        .expect("DeductiveRuleDescriptor always serializes to JSON");
-    sort_keys(&mut value);
-    serde_json::to_string(&value).expect("a serde_json::Value always re-serializes")
-}
-
-/// Recursively sort every object's keys so serialization is a pure
-/// function of the value, independent of map iteration order.
-fn sort_keys(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut sorted = serde_json::Map::new();
-            let mut keys: Vec<String> = map.keys().cloned().collect();
-            keys.sort();
-            for key in keys {
-                let mut child = map.remove(&key).expect("key present");
-                sort_keys(&mut child);
-                sorted.insert(key, child);
-            }
-            *map = sorted;
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(sort_keys),
-        _ => {}
+impl From<String> for DeductiveRuleError {
+    fn from(reason: String) -> Self {
+        Self(reason)
     }
-}
-
-/// Content-addressed entity for a compiled rule:
-/// `rule:<base58(blake3(canonical-json(descriptor)))>`.
-///
-/// Hashes the canonical (key-sorted) JSON stored under
-/// `db.rule/source`, so identity is a pure function of the stored
-/// bytes. This deliberately differs from
-/// [`Effect::this`](tonk_core::effect::Effect::this), which hashes
-/// dag-cbor: a `DeductiveRuleDescriptor` does not dag-cbor encode
-/// (its premise propositions serialize as untagged structs that
-/// dag-cbor rejects), and hashing the canonical JSON is both
-/// sufficient and consistent with what we store.
-fn content_entity(rule: &CompiledRule) -> Entity {
-    let hash = Blake3Hash::hash(source_string(rule).as_bytes());
-    let encoded = hash.as_bytes().as_ref().to_base58();
-    format!("rule:{encoded}")
-        .parse()
-        .expect("rule:<base58> is a valid entity URI")
 }
 
 /// Build a runtime [`Attribute`](dialog_artifacts::Attribute) from a
@@ -291,6 +228,7 @@ fn rule_marker_entity() -> Entity {
 mod tests {
     use super::*;
     use dialog_artifacts::{Changes, Statement as _};
+    use dialog_query::DeductiveRuleDescriptor;
 
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test_configure;
@@ -335,9 +273,10 @@ mod tests {
         let stored = DeductiveRule::asserting(rule.clone());
         let rebuilt =
             DeductiveRule::from_source(stored.source()).expect("stored source rehydrates");
-        // Recompiling the rebuilt rule's descriptor yields the same
-        // source string — the body survived the round-trip.
-        assert_eq!(source_string(&rebuilt), stored.source());
+        // Re-encoding the rebuilt rule yields the same dag-cbor bytes —
+        // the body survived the round-trip.
+        assert_eq!(rebuilt.encode(), stored.source());
+        assert_eq!(rebuilt.this(), rule.this());
     }
 
     #[dialog_common::test]
