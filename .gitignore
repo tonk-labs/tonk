@@ -59,6 +59,9 @@ references/
 # bench runs
 bench/runs/
 
+# mdBook build output
+guide/book/
+
 # temp dirs
 tmp/**
 temp/**

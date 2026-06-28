@@ -31,11 +31,17 @@ use tonk_schema::transact::{Application, ThisIntent};
 /// the branch by the time anything reads back. Empty for
 /// `attribute!` heads.
 pub(crate) struct DeclaredApplication {
-    /// The head's own `Application`, ready to commit.
-    pub application: Application,
+    /// The head's own `Application`, ready to commit. `None` for a
+    /// retraction-only `concept!:` body (`with: { f: _ }` / `..: _`
+    /// with no asserted fields), which emits only `retractions`.
+    pub application: Option<Application>,
     /// Anonymous attribute applications declared inline inside
     /// this concept's `with:` map. Empty for `attribute!` heads.
     pub inline_attributes: Vec<Application>,
+    /// Per-field retraction applications emitted as
+    /// `Statement::Retract` — one per `concept!:` field retraction
+    /// (`with: { f: _ }` / `..: _`). Empty otherwise.
+    pub retractions: Vec<Application>,
 }
 
 /// Parsed `attribute!` body — descriptor plus entity URI.
@@ -157,12 +163,39 @@ pub(crate) fn parse_attribute_fields(
     Ok(AttributeBody { descriptor, entity })
 }
 
+/// A field the concept body asks to retract via `field: _`,
+/// regardless of which block (`with:`/`maybe:`) it appeared under.
+/// The emitter resolves the field's stored attribute (and its
+/// optional sibling) from the branch, so the block is immaterial
+/// here — only the name matters.
+pub(crate) struct RetractedField {
+    pub name: String,
+}
+
+/// `..: _` rest-retraction: the body asks to drop *every* stored
+/// field of the concept. The concrete field set isn't known from
+/// the source — it's read from the concept's existing facts on the
+/// branch at emission time.
+pub(crate) struct RestRetraction;
+
 /// Parsed `concept!` body — descriptor plus entity URI plus any
 /// inline attribute definitions that need to be registered as
 /// their own meta-head plans alongside the concept's own.
 pub(crate) struct ConceptBody {
     pub descriptor: ConceptDescriptor,
     pub entity: Entity,
+    /// Fields named for retraction via `field: _`. Never enter the
+    /// descriptor's with-map (a retracted field must not become a
+    /// required field, feed `concept_schema`, or shift the
+    /// content-derived entity).
+    pub retracted: Vec<RetractedField>,
+    /// `Some` when the body carried `..: _` — retract all stored
+    /// fields of the concept.
+    pub rest_retraction: Option<RestRetraction>,
+    /// `true` when the body asserts no fields (a retraction-only
+    /// `concept!:`). `descriptor` then holds an unemitted stub; the
+    /// graph skips the concept assertion and emits only retractions.
+    pub asserts_nothing: bool,
     /// `true` when the body carried the `transient:` tag (bare
     /// key with no value, or the explicit `transient: true`).
     /// Drives emission of the `dialog.concept/transient` marker
@@ -187,6 +220,8 @@ pub(crate) fn parse_concept_body(
     // are required; `maybe:` fields are optional.
     let mut fields: Vec<(String, AttributeDefinition, bool)> = Vec::new();
     let mut inline_attributes: Vec<AttributeBody> = Vec::new();
+    let mut retracted: Vec<RetractedField> = Vec::new();
+    let mut rest_retraction: Option<RestRetraction> = None;
     // A concept's entity is content-derived from its descriptor by
     // default, but a `this: <uri>` pins it to a stable, chosen
     // entity (e.g. `tonk:view`) so the concept is referenceable by
@@ -197,10 +232,14 @@ pub(crate) fn parse_concept_body(
     // to reject duplicates across `with:`/`maybe:`.
     let mut seen: BTreeMap<String, lsp_types::Range> = BTreeMap::new();
     for field in &assertion.fields {
-        // `..:` is the rest-retraction marker and never contributes
-        // to a concept descriptor. `this:` is read below as the
-        // optional entity pin; it likewise doesn't become a field.
+        // `..: _` is the rest-retraction marker: drop every stored
+        // field of the concept. It never contributes to the
+        // descriptor. `this:` is read below as the optional entity
+        // pin; it likewise doesn't become a field.
         if field.name == ".." {
+            if matches!(field.value, FieldValue::Blank) {
+                rest_retraction = Some(RestRetraction);
+            }
             continue;
         }
         if field.name == "this" {
@@ -221,6 +260,7 @@ pub(crate) fn parse_concept_body(
                     scope,
                     &mut fields,
                     &mut inline_attributes,
+                    &mut retracted,
                     &mut seen,
                 )?;
             }
@@ -231,6 +271,7 @@ pub(crate) fn parse_concept_body(
                     scope,
                     &mut fields,
                     &mut inline_attributes,
+                    &mut retracted,
                     &mut seen,
                 )?;
             }
@@ -243,10 +284,13 @@ pub(crate) fn parse_concept_body(
             }
         }
     }
-    // A concept must declare at least one *required* field. An empty
-    // `with:` or a body with only `maybe:` fields would constrain
-    // nothing and match every entity.
-    if !fields.iter().any(|(_, _, optional)| !optional) {
+    // A retraction-only body (`with: { field: _ }` or `..: _`) is a
+    // valid edit of an existing concept and carries no asserted
+    // fields. Otherwise a concept must declare at least one
+    // *required* field — an empty `with:` or a body with only
+    // `maybe:` fields would constrain nothing and match every entity.
+    let is_retraction_only = !retracted.is_empty() || rest_retraction.is_some();
+    if !is_retraction_only && !fields.iter().any(|(_, _, optional)| !optional) {
         return Err(AnalyzeErrorKind::InvalidConceptBody {
             reason: "`with:` is required and must declare at least one field".into(),
         }
@@ -269,19 +313,63 @@ pub(crate) fn parse_concept_body(
             (name.clone(), value)
         })
         .collect();
-    shape.insert("with".into(), serde_json::Value::Object(with_obj));
-    let descriptor: ConceptDescriptor = serde_json::from_value(serde_json::Value::Object(shape))
-        .map_err(|e| AnalyzeErrorKind::InvalidConceptBody {
-            reason: e.to_string(),
+    // A descriptor must carry at least one field. A retraction-only
+    // body (`with: { f: _ }` / `..: _` with nothing left to assert)
+    // has none — it asserts nothing, so the descriptor is a stub
+    // never emitted (the emitter skips the assertion when the
+    // descriptor is empty) and the entity must come from the `this:`
+    // pin. Mark the stub so `with()` reports empty downstream.
+    let asserts_nothing = with_obj.is_empty();
+    if asserts_nothing {
+        let mut stub = serde_json::Map::new();
+        stub.insert(STUB_FIELD.into(), stub_attr());
+        shape.insert("with".into(), serde_json::Value::Object(stub));
+    } else {
+        shape.insert("with".into(), serde_json::Value::Object(with_obj));
+    }
+    let raw_descriptor: ConceptDescriptor =
+        serde_json::from_value(serde_json::Value::Object(shape)).map_err(|e| {
+            AnalyzeErrorKind::InvalidConceptBody {
+                reason: e.to_string(),
+            }
         })?;
     // `this:` pins the entity; otherwise derive it from the
-    // descriptor (content-addressed).
-    let entity = pinned_entity.unwrap_or_else(|| descriptor.this());
+    // descriptor (content-addressed). A retraction-only body has no
+    // content to derive from, so the pin is mandatory.
+    let entity = match pinned_entity {
+        Some(e) => e,
+        None if asserts_nothing => {
+            return Err(AnalyzeErrorKind::InvalidConceptBody {
+                reason: "a retraction-only `concept!:` body (`field: _` / `..: _`) \
+                         must pin the concept with `this: <uri>`"
+                    .into(),
+            }
+            .into());
+        }
+        None => raw_descriptor.this(),
+    };
+    let descriptor = raw_descriptor;
     Ok(ConceptBody {
         descriptor,
         entity,
+        retracted,
+        rest_retraction,
+        asserts_nothing,
         transient,
         inline_attributes,
+    })
+}
+
+/// Placeholder field for the stub descriptor a retraction-only body
+/// carries — valid (a descriptor needs ≥1 field) but never emitted.
+const STUB_FIELD: &str = "_";
+
+/// The placeholder attribute spec paired with [`STUB_FIELD`].
+fn stub_attr() -> serde_json::Value {
+    serde_json::json!({
+        "the": "dialog.concept/stub",
+        "as": "Text",
+        "cardinality": "one",
     })
 }
 
@@ -319,14 +407,16 @@ fn parse_concept_this(field: &tonk_notation::Field) -> Result<Option<Entity>, An
 /// required (`with:`) or set-widened (`maybe:`).
 ///
 /// Appends `(name, definition, optional)` to `fields`, registers any
-/// inline definitions in `inline_attributes`, and rejects a field
-/// name already seen in either block via `seen`.
+/// inline definitions in `inline_attributes`, collects `field: _`
+/// retractions into `retracted`, and rejects a field name already
+/// seen in either block via `seen`.
 fn parse_concept_field_block(
     field: &SyntaxField,
     optional: bool,
     scope: &Scope,
     fields: &mut Vec<(String, AttributeDefinition, bool)>,
     inline_attributes: &mut Vec<AttributeBody>,
+    retracted: &mut Vec<RetractedField>,
     seen: &mut BTreeMap<String, lsp_types::Range>,
 ) -> Result<(), AnalyzeError> {
     let block = if optional { "maybe" } else { "with" };
@@ -342,6 +432,21 @@ fn parse_concept_field_block(
         .into());
     };
     for sub in inner {
+        // `..` is the top-level rest-retraction marker, not a field
+        // name. Nested in a `with:`/`maybe:` block it would otherwise
+        // be misread as a field literally named `..`; reject it with a
+        // pointer to the correct placement.
+        if sub.name == ".." {
+            return Err(AnalyzeError::at(
+                AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "`..:` is the rest-retraction marker and must be a direct \
+                         child of the `concept!:` body, not nested inside `{block}:`"
+                    ),
+                },
+                sub.name_range,
+            ));
+        }
         // Reject a field name declared twice (in one block or across
         // `with:`/`maybe:`) — a field is required or optional, never
         // both. Anchor the diagnostic at the second occurrence.
@@ -354,7 +459,16 @@ fn parse_concept_field_block(
                 sub.name_range,
             ));
         }
-        if let FieldValue::Nested(attr_fields) = &sub.value {
+        if matches!(sub.value, FieldValue::Blank) {
+            // `field: _` retracts the named field from the stored
+            // concept. It is NOT a reference and never enters the
+            // descriptor — recorded separately so the emitter
+            // dissociates `dialog.concept.<block>/<field>` (plus the
+            // `optional` sibling) without re-asserting anything.
+            retracted.push(RetractedField {
+                name: sub.name.clone(),
+            });
+        } else if let FieldValue::Nested(attr_fields) = &sub.value {
             // Inline attribute definition. Parse it as an attribute
             // body and register it for emission as a separate
             // meta-head plan.
@@ -546,6 +660,133 @@ pub(crate) fn concept_application(
         this: ThisIntent::Uri(entity.clone()),
         name,
     }
+}
+
+/// Lower a `concept!:` body's field retractions (`with: { f: _ }`,
+/// `maybe: { f: _ }`, `..: _`) into retraction [`Application`]s.
+///
+/// `resolved` is the concept as read off the branch (the scope's
+/// prefetch). Retraction is strict: a body that asks to drop a field
+/// must target a concept that exists on the branch and actually
+/// carries that field — otherwise there's no `dialog.concept.with/…`
+/// triple to dissociate (its value is unknown). Both cases surface
+/// as [`AnalyzeErrorKind::InvalidConceptBody`].
+pub(crate) fn build_concept_retractions(
+    entity: &Entity,
+    retracted: &[RetractedField],
+    rest: Option<&RestRetraction>,
+    resolved: Option<&ConceptDescriptor>,
+) -> Result<Vec<Application>, AnalyzeError> {
+    if retracted.is_empty() && rest.is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(stored) = resolved else {
+        return Err(AnalyzeErrorKind::InvalidConceptBody {
+            reason: format!(
+                "field retraction (`field: _` / `..: _`) requires the concept \
+                 `{entity}` to already exist on the branch, but no concept was \
+                 found there"
+            ),
+        }
+        .into());
+    };
+
+    // `..: _` drops every stored field; otherwise drop just the named
+    // ones, verifying each is actually present.
+    let field_names: Vec<String> = if rest.is_some() {
+        stored
+            .with()
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect()
+    } else {
+        for field in retracted {
+            if !stored
+                .with()
+                .iter()
+                .any(|(name, _)| name == field.name.as_str())
+            {
+                return Err(AnalyzeErrorKind::InvalidConceptBody {
+                    reason: format!(
+                        "cannot retract field `{}` from concept `{entity}`: \
+                         the concept has no such field on the branch",
+                        field.name
+                    ),
+                }
+                .into());
+            }
+        }
+        retracted.iter().map(|f| f.name.clone()).collect()
+    };
+
+    Ok(concept_field_retraction(stored, entity, &field_names)
+        .into_iter()
+        .collect())
+}
+
+/// Build a retraction `Application::Concept` that dissociates the
+/// named `fields` from a stored concept, leaving the concept's
+/// marker and every other field intact.
+///
+/// `stored` is the concept as resolved off the branch — it supplies
+/// each retracted field's attribute `the:` so the predicate maps the
+/// field to the right `dialog.concept.with/<field>` relation. The
+/// field terms are emitted **blank** (`Term::blank()`): the evaluator
+/// reads each as a retraction directive and queries the branch for
+/// the stored value to dissociate (mirroring how instance `..: _`
+/// retraction resolves its targets). Only `this` + one blank
+/// `with.<field>` term per retracted field is set — no
+/// `concept`/`name`/`description`/`transient` term, so a
+/// `Statement::Retract` of this application touches nothing else.
+///
+/// Returns `None` when none of `fields` is present on the stored
+/// concept (nothing to retract).
+fn concept_field_retraction(
+    stored: &ConceptDescriptor,
+    entity: &Entity,
+    fields: &[String],
+) -> Option<Application> {
+    // Pull the stored field set as JSON so each retracted field's
+    // descriptor (carrying its `the:` attribute) can be lifted into a
+    // sub-descriptor of exactly the fields being dropped.
+    let stored_json = serde_json::to_value(stored).expect("ConceptDescriptor is serializable");
+    let stored_with = stored_json
+        .get("with")
+        .and_then(serde_json::Value::as_object);
+
+    let mut sub_with = serde_json::Map::new();
+    for field in fields {
+        if let Some(entry) = stored_with.and_then(|w| w.get(field)) {
+            sub_with.insert(field.clone(), entry.clone());
+        }
+    }
+    if sub_with.is_empty() {
+        return None;
+    }
+
+    let sub_descriptor: ConceptDescriptor =
+        serde_json::from_value(serde_json::json!({ "with": sub_with }))
+            .expect("sub-descriptor of a valid descriptor is valid");
+
+    let mut terms = Parameters::new();
+    terms.insert("this".into(), Term::Constant(Value::Entity(entity.clone())));
+    for (field_name, _attr) in sub_descriptor.with().iter() {
+        // Blank term → the evaluator dissociates whatever value the
+        // branch holds for this field (no need to recompute the
+        // attribute entity analyzer-side).
+        terms.insert(
+            format!("with.{field_name}"),
+            Term::<dialog_query::Any>::blank(),
+        );
+    }
+    Some(Application::Concept {
+        query: ConceptQuery {
+            terms,
+            predicate: concept_schema(&sub_descriptor),
+        },
+        this: ThisIntent::Uri(entity.clone()),
+        name: None,
+    })
 }
 
 /// Build the `dialog.attribute` built-in schema descriptor. Its
