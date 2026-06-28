@@ -47,7 +47,11 @@
 
 use dialog_artifacts::{Attribute as ArtifactsAttribute, Entity, Value};
 use dialog_query::DeductiveRule as CompiledRule;
+use dialog_query::{Output as _, Term, the};
 use thiserror::Error;
+
+use crate::concept::QueryEnv;
+use crate::query_source::Source;
 
 /// A deductive rule installed on a branch — pairs a compiled
 /// [`DeductiveRule`](dialog_query::DeductiveRule) with the entity its
@@ -126,6 +130,93 @@ impl DeductiveRule {
     pub fn from_source(source: &[u8]) -> Result<CompiledRule, DeductiveRuleError> {
         CompiledRule::decode(source).map_err(DeductiveRuleError)
     }
+
+    /// Begin building a [`DeductiveRule`] for a `retract` mutation. The
+    /// returned [`Retracting`] resolves against a branch to read the
+    /// stored `db.rule/source` dag-cbor and bake those exact bytes into
+    /// the resulting rule, so the dissociate removes the same EAVs that
+    /// were written. The deductive counterpart to
+    /// [`Rule::retracting`](crate::rule::Rule::retracting) — there is no
+    /// polarity to recover.
+    pub fn retracting(entity: Entity) -> Retracting {
+        Retracting { entity }
+    }
+}
+
+/// A deductive rule resolved off a branch for retraction. Built by
+/// [`DeductiveRule::retracting`]; carries only the target entity until
+/// [`resolve`](Self::resolve) reads the stored body.
+#[derive(Debug, Clone)]
+pub struct Retracting {
+    entity: Entity,
+}
+
+impl Retracting {
+    /// Resolve against a branch. Returns `None` when the entity has no
+    /// `db.rule/source` claim (no such deductive rule installed), so a
+    /// retract of something absent drops silently rather than erroring.
+    pub async fn resolve<Env: QueryEnv>(
+        self,
+        source: &Source<'_>,
+        env: &Env,
+    ) -> Result<Option<DeductiveRule>, DeductiveRuleResolveError> {
+        let source_claims: Vec<dialog_query::Claim> = source
+            .select(dialog_query::AttributeQuery::from(
+                Term::<dialog_query::attribute::The>::from(rule_source_attr())
+                    .of(Term::<Entity>::from(self.entity.clone()))
+                    .is(Term::<Vec<u8>>::var("__source")),
+            ))
+            .perform(env)
+            .try_vec()
+            .await
+            .map_err(|e| {
+                DeductiveRuleResolveError::Query(format!("source lookup failed: {e:?}"))
+            })?;
+        let Some(source_claim) = source_claims.into_iter().next() else {
+            return Ok(None);
+        };
+        let Value::Bytes(source_bytes) = source_claim.is else {
+            return Err(DeductiveRuleResolveError::Storage(
+                "db.rule/source claim was not bytes".to_owned(),
+            ));
+        };
+
+        // Rehydrate the compiled rule from the stored source so
+        // `conclusion()` etc. line up with what was written. The carried
+        // `source` field stays the *exact* stored bytes so the dissociate
+        // targets the same EAVs (including content-addressed installs).
+        let rule = DeductiveRule::from_source(&source_bytes).map_err(|e| {
+            DeductiveRuleResolveError::Storage(format!("rule rehydrate failed: {e}"))
+        })?;
+
+        Ok(Some(DeductiveRule {
+            rule,
+            // The stored claims live at `self.entity` regardless of what
+            // `rule.this()` would hash to from the rehydrated descriptor.
+            this: self.entity,
+            source: source_bytes,
+        }))
+    }
+}
+
+/// Errors resolving an installed deductive rule for retraction: either
+/// the branch query plumbing failed, or the stored facts are malformed.
+/// The deductive counterpart to
+/// [`RuleResolveError`](crate::rule::RuleResolveError).
+#[derive(Debug, Error)]
+pub enum DeductiveRuleResolveError {
+    /// The branch query infrastructure returned an error.
+    #[error("deductive rule resolve query failed: {0}")]
+    Query(String),
+    /// A stored claim had the wrong shape — wrong value kind, or a
+    /// `db.rule/source` body that no longer decodes.
+    #[error("deductive rule storage shape: {0}")]
+    Storage(String),
+}
+
+/// The `db.rule/source` attribute as a query [`The`](dialog_query::attribute::The).
+fn rule_source_attr() -> dialog_query::attribute::The {
+    the!("db.rule/source")
 }
 
 impl dialog_artifacts::Statement for DeductiveRule {

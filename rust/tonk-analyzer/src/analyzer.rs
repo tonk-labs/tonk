@@ -405,6 +405,15 @@ fn expand(
                             }));
                             claim_labels.push(None);
                         }
+                        Some(rule::RuleAction::RetractDeductive { rule, this: entity }) => {
+                            let intent = ThisIntent::Uri(entity);
+                            this = intent.clone();
+                            claims.push(Statement::Retract(Application::DeductiveRule {
+                                rule,
+                                this: intent,
+                            }));
+                            claim_labels.push(None);
+                        }
                         None => {
                             // Retract of a rule that isn't installed:
                             // silently no-op, matching the prior

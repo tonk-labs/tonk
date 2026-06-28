@@ -78,6 +78,17 @@ pub(crate) enum RuleAction {
         /// Caller-supplied install-at entity from `this: <entity>`.
         this: Option<Entity>,
     },
+    /// Retract an installed deductive rule. `rule` carries the
+    /// [`DeductiveRule`](tonk_schema::deductive_rule::DeductiveRule)
+    /// resolved off the branch with its stored `db.rule/source` bytes —
+    /// handed to `Statement::Retract` so the dissociate matches what was
+    /// written. The deductive counterpart to [`Retract`](Self::Retract).
+    RetractDeductive {
+        /// The rule resolved off the branch, carrying exact stored bytes.
+        rule: Box<DeductiveRule>,
+        /// The entity the `db.rule/*` claims live under.
+        this: Entity,
+    },
 }
 
 /// `true` when the claim body is the rule-retract shape
@@ -126,29 +137,38 @@ pub(crate) fn lift_rule_claim(
             )
         })?;
         // The stored rule was read off the branch during resolve's
-        // prefetch pass (so the carried `source` bytes match
-        // what's installed) and cached on the scope. `Some(None)`
-        // means the entity holds no `dialog.effect/source` claim —
-        // the user is retracting a rule that isn't installed (or
-        // already retracted in this document); propagate the
-        // absent signal upward so the analyzer drops the claim
-        // silently. `None` means resolve never prefetched it,
-        // which is an analyzer bug.
-        let resolved = scope.resolved_rule(&entity).ok_or_else(|| {
-            AnalyzeError::at(
+        // prefetch pass (so the carried `source` bytes match what's
+        // installed) and cached on the scope. A retract entity may name
+        // an inductive or a deductive rule, so resolve consulted both;
+        // whichever is present wins. `Some(None)` on a map means that
+        // kind is confirmed absent; `None` means resolve never
+        // prefetched it, which is an analyzer bug.
+        let inductive = scope.resolved_rule(&entity);
+        let deductive = scope.resolved_deductive_rule(&entity);
+        if inductive.is_none() && deductive.is_none() {
+            return Err(AnalyzeError::at(
                 AnalyzeErrorKind::RuleCompileFailed {
                     reason: format!("rule retract at {entity} was not prefetched during resolve"),
                 },
                 application.range,
-            )
-        })?;
-        let Some(rule) = resolved else {
-            return Ok(None);
-        };
-        Ok(Some(RuleAction::Retract {
-            rule: Box::new(rule),
-            this: entity,
-        }))
+            ));
+        }
+        if let Some(Some(rule)) = inductive {
+            return Ok(Some(RuleAction::Retract {
+                rule: Box::new(rule),
+                this: entity,
+            }));
+        }
+        if let Some(Some(rule)) = deductive {
+            return Ok(Some(RuleAction::RetractDeductive {
+                rule: Box::new(rule),
+                this: entity,
+            }));
+        }
+        // Both kinds confirmed absent — retracting something not
+        // installed (or already retracted in this document); drop the
+        // claim silently.
+        Ok(None)
     } else {
         let this = parse_rule_this_entity(application)?;
         match lift_rule(application, scope, analysis)? {
@@ -1002,6 +1022,26 @@ mod tests {
                 .perform(&self.operator)
                 .await
         }
+
+        /// Analyze a deductive-rule install document, commit the
+        /// resulting rule onto the branch, and return the entity its
+        /// `db.rule/*` claims live under — so a later retract can name it.
+        async fn install_deductive(&self, doc: &str) -> Entity {
+            let syntax = parse(doc).syntax.expect("install parses");
+            let analysis = self.analyze(&syntax).await.expect("install analyzes");
+            let installs = analysis.analysis.deductive_rule_installs();
+            assert_eq!(installs.len(), 1, "fixture expects one deductive rule");
+            let rule = installs[0].clone();
+            let entity = rule.this();
+            self.branch
+                .transaction()
+                .assert(rule)
+                .commit()
+                .perform(&self.operator)
+                .await
+                .expect("deductive rule commits");
+            entity
+        }
     }
 
     /// Build a `ConceptDescriptor` with one cardinality-one
@@ -1152,6 +1192,76 @@ mod tests {
         );
         // ...and not through the inductive accessor.
         assert!(analysis.analysis.rule_installs().is_empty());
+    }
+
+    /// Retracting an installed deductive rule by entity
+    /// (`rule!: this: <entity> ..: _`) lifts to a
+    /// `Statement::Retract(Application::DeductiveRule)`, the symmetric
+    /// counterpart to the inductive `RuleAction::Retract`.
+    #[dialog_common::test]
+    async fn it_retracts_an_installed_deductive_rule() {
+        let fixture = new_fixture().await;
+        fixture
+            .declare("ping", one_text_field("io.gozala.ping", "tag"))
+            .await;
+        fixture
+            .declare("pong", one_text_field("io.gozala.pong", "tag"))
+            .await;
+
+        // Install + commit a deductive rule, then retract it by entity.
+        let entity = fixture
+            .install_deductive(
+                r#"rule!:
+  assert: pong
+  when:
+    - assert: ping
+      where: { this: ?this, tag: ?tag }
+"#,
+            )
+            .await;
+
+        let doc = format!(
+            r#"rule!:
+  this: {entity}
+  ..: _
+"#
+        );
+        let syntax = parse(&doc).syntax.expect("retract parses");
+        let analysis = fixture.analyze(&syntax).await.expect("retract analyzes");
+
+        use tonk_schema::transact::{Application, Statement};
+        let statements = analysis.analysis.statements();
+        assert_eq!(statements.len(), 1, "one retract statement");
+        assert!(
+            matches!(
+                &statements[0].statement,
+                Statement::Retract(Application::DeductiveRule { .. })
+            ),
+            "deductive retract should lift to Retract(Application::DeductiveRule), got {:?}",
+            statements[0].statement
+        );
+    }
+
+    /// Retracting an entity that holds no installed rule (neither
+    /// inductive nor deductive) drops the claim silently — no statement,
+    /// no error.
+    #[dialog_common::test]
+    async fn it_drops_retract_of_absent_rule() {
+        let fixture = new_fixture().await;
+
+        let doc = r#"rule!:
+  this: rule:zNonexistentRuleEntity
+  ..: _
+"#;
+        let syntax = parse(doc).syntax.expect("retract parses");
+        let analysis = fixture
+            .analyze(&syntax)
+            .await
+            .expect("retract of absent rule analyzes");
+        assert!(
+            analysis.analysis.statements().is_empty(),
+            "retracting an uninstalled rule emits no statement"
+        );
     }
 
     /// `retract:` (no bang) is not a valid head — deductive rules
